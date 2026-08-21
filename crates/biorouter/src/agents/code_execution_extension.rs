@@ -369,6 +369,119 @@ impl ToolInfo {
     }
 }
 
+enum ModuleSearchMatcher {
+    Regex(Vec<Regex>),
+    Plain {
+        phrases: Vec<String>,
+        tokens: Vec<String>,
+    },
+}
+
+fn build_module_search_matcher(
+    terms: &[String],
+    use_regex: bool,
+) -> Result<ModuleSearchMatcher, String> {
+    if use_regex {
+        let patterns = terms
+            .iter()
+            .map(|term| {
+                Regex::new(&format!("(?i){term}"))
+                    .map_err(|error| format!("Invalid regex '{term}': {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(ModuleSearchMatcher::Regex(patterns));
+    }
+
+    let phrases = terms
+        .iter()
+        .take(MAX_MODULE_SEARCH_TERMS)
+        .map(|term| {
+            term.chars()
+                .take(MAX_MODULE_SEARCH_TERM_CHARS)
+                .collect::<String>()
+                .to_lowercase()
+        })
+        .collect::<Vec<_>>();
+    let mut seen = BTreeSet::new();
+    let tokens = phrases
+        .iter()
+        .filter(|phrase| phrase.split_whitespace().count() > 1)
+        .flat_map(|phrase| phrase.split_whitespace())
+        .map(|token| {
+            token.trim_matches(|character: char| {
+                !character.is_alphanumeric() && character != '_' && character != '-'
+            })
+        })
+        .filter(|token| token.chars().count() >= 2)
+        .filter(|token| !MODULE_SEARCH_TOKEN_STOP_WORDS.contains(token))
+        .filter(|token| seen.insert((*token).to_string()))
+        .take(MAX_MODULE_SEARCH_TOKENS)
+        .map(str::to_string)
+        .collect();
+    Ok(ModuleSearchMatcher::Plain { phrases, tokens })
+}
+
+fn module_search_match_score(tool: &ToolInfo, matcher: &ModuleSearchMatcher) -> usize {
+    match matcher {
+        ModuleSearchMatcher::Regex(patterns) => patterns
+            .iter()
+            .map(|pattern| {
+                usize::from(pattern.is_match(&tool.tool_name)) * 20
+                    + usize::from(pattern.is_match(&tool.server_name)) * 8
+                    + usize::from(pattern.is_match(&tool.description)) * 4
+            })
+            .sum(),
+        ModuleSearchMatcher::Plain { phrases, tokens } => {
+            let tool_name = tool.tool_name.to_lowercase();
+            let server_name = tool.server_name.to_lowercase();
+            let description = tool.description.to_lowercase();
+            let phrase_score = phrases
+                .iter()
+                .map(|term| {
+                    let tool_score = if tool_name == *term {
+                        40
+                    } else if tool_name.contains(term) {
+                        20
+                    } else {
+                        0
+                    };
+                    let server_score = if server_name == *term {
+                        16
+                    } else if server_name.contains(term) {
+                        8
+                    } else {
+                        0
+                    };
+                    let description_score = usize::from(description.contains(term)) * 4;
+                    tool_score + server_score + description_score
+                })
+                .sum::<usize>();
+            let token_score = tokens
+                .iter()
+                .map(|token| {
+                    let tool_score = if tool_name == *token {
+                        10
+                    } else if tool_name.contains(token) {
+                        5
+                    } else {
+                        0
+                    };
+                    let server_score = if server_name == *token {
+                        4
+                    } else if server_name.contains(token) {
+                        2
+                    } else {
+                        0
+                    };
+                    let description_score = usize::from(description.contains(token)) * 2;
+                    tool_score + server_score + description_score
+                })
+                .sum::<usize>();
+            phrase_score + token_score
+        }
+    }
+}
+
 fn module_search_alias(server_name: &str) -> String {
     let sanitized = server_name
         .chars()
@@ -1772,117 +1885,12 @@ impl CodeExecutionClient {
         terms: &[String],
         use_regex: bool,
     ) -> Result<Vec<Content>, String> {
-        enum Matcher {
-            Regex(Vec<Regex>),
-            Plain {
-                phrases: Vec<String>,
-                tokens: Vec<String>,
-            },
-        }
-
-        let matcher = if use_regex {
-            let patterns: Result<Vec<_>, _> = terms
-                .iter()
-                .map(|t| {
-                    Regex::new(&format!("(?i){t}")).map_err(|e| format!("Invalid regex '{t}': {e}"))
-                })
-                .collect();
-            Matcher::Regex(patterns?)
-        } else {
-            let phrases = terms
-                .iter()
-                .take(MAX_MODULE_SEARCH_TERMS)
-                .map(|term| {
-                    term.chars()
-                        .take(MAX_MODULE_SEARCH_TERM_CHARS)
-                        .collect::<String>()
-                        .to_lowercase()
-                })
-                .collect::<Vec<_>>();
-            let mut seen = BTreeSet::new();
-            let tokens = phrases
-                .iter()
-                .filter(|phrase| phrase.split_whitespace().count() > 1)
-                .flat_map(|phrase| phrase.split_whitespace())
-                .map(|token| {
-                    token.trim_matches(|character: char| {
-                        !character.is_alphanumeric() && character != '_' && character != '-'
-                    })
-                })
-                .filter(|token| token.chars().count() >= 2)
-                .filter(|token| !MODULE_SEARCH_TOKEN_STOP_WORDS.contains(token))
-                .filter(|token| seen.insert((*token).to_string()))
-                .take(MAX_MODULE_SEARCH_TOKENS)
-                .map(str::to_string)
-                .collect();
-            Matcher::Plain { phrases, tokens }
-        };
-
-        let match_score = |tool: &ToolInfo| -> usize {
-            match &matcher {
-                Matcher::Regex(patterns) => patterns
-                    .iter()
-                    .map(|pattern| {
-                        usize::from(pattern.is_match(&tool.tool_name)) * 20
-                            + usize::from(pattern.is_match(&tool.server_name)) * 8
-                            + usize::from(pattern.is_match(&tool.description)) * 4
-                    })
-                    .sum(),
-                Matcher::Plain { phrases, tokens } => {
-                    let tool_name = tool.tool_name.to_lowercase();
-                    let server_name = tool.server_name.to_lowercase();
-                    let description = tool.description.to_lowercase();
-                    let phrase_score: usize = phrases
-                        .iter()
-                        .map(|term| {
-                            let tool_score = if tool_name == *term {
-                                40
-                            } else if tool_name.contains(term) {
-                                20
-                            } else {
-                                0
-                            };
-                            let server_score = if server_name == *term {
-                                16
-                            } else if server_name.contains(term) {
-                                8
-                            } else {
-                                0
-                            };
-                            let description_score = usize::from(description.contains(term)) * 4;
-                            tool_score + server_score + description_score
-                        })
-                        .sum();
-                    let token_score: usize = tokens
-                        .iter()
-                        .map(|token| {
-                            let tool_score = if tool_name == *token {
-                                10
-                            } else if tool_name.contains(token) {
-                                5
-                            } else {
-                                0
-                            };
-                            let server_score = if server_name == *token {
-                                4
-                            } else if server_name.contains(token) {
-                                2
-                            } else {
-                                0
-                            };
-                            let description_score = usize::from(description.contains(token)) * 2;
-                            tool_score + server_score + description_score
-                        })
-                        .sum();
-                    phrase_score + token_score
-                }
-            }
-        };
+        let matcher = build_module_search_matcher(terms, use_regex)?;
 
         let mut matching_tools = tools
             .iter()
             .filter_map(|tool| {
-                let score = match_score(tool);
+                let score = module_search_match_score(tool, &matcher);
                 (score > 0).then_some((score, tool))
             })
             .collect::<Vec<_>>();
