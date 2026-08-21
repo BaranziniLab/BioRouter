@@ -18,11 +18,15 @@ ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"],
 
 def run(*args, as_json=False):
     p = subprocess.run([CG, *args], cwd=ROOT, capture_output=True, text=True, timeout=180)
+    if p.returncode != 0:
+        command = " ".join([CG, *args])
+        detail = p.stderr.strip() or p.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"{command} failed with exit {p.returncode}: {detail}")
     if as_json:
         try:
             return json.loads(p.stdout)
-        except json.JSONDecodeError:
-            return {}
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{CG} returned invalid JSON for {' '.join(args)}") from exc
     return p.stdout
 
 
@@ -67,9 +71,12 @@ out = run("node", "shouldAutoRepairArtifact")
 check("node resolves a TSX symbol (shouldAutoRepairArtifact)",
       "BaseChat" in out or "ARTIFACT_REPAIR_ACTIVE_GRACE_MS" in out)
 
-# 6. Vendored bundles stay OUT of the graph (codegraph.json exclude works).
-out = run("query", "gsap", "--limit", "5")
-check("minified vendor bundles are excluded", ".min.js" not in out)
+# 6. Vendored bundles stay OUT of a complete, successful file listing. The
+# positive checks keep an empty-but-successful response from satisfying the
+# negative exclusion assertion.
+files = run("files")
+check("minified vendor bundles are excluded",
+      "Project Structure (" in files and "crates" in files and ".min.js" not in files)
 
 # 7. affected narrows, rather than returning the whole suite, at low depth.
 n1 = len([l for l in run("affected", "ui/desktop/src/components/artifacts/ArtifactViewer.tsx",
