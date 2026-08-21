@@ -9,6 +9,11 @@ import {
   isSensitivePreviewPath,
 } from './pathContainment';
 
+const protectedSystemPath =
+  process.platform === 'win32'
+    ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'drivers', 'etc', 'hosts')
+    : '/etc/hosts';
+
 /**
  * Gate for the live false-denial: a session tool call wrote /tmp/qa-r1b/hi.txt
  * and the preview panel refused it with "Access denied: path '/tmp/qa-r1b/hi.txt'
@@ -88,7 +93,15 @@ describe('isSensitivePreviewPath', () => {
   const home = os.homedir();
 
   it('denies protected system directories', () => {
-    for (const p of ['/etc/hosts', '/usr/bin/x', '/bin/ls', '/System/Library/x', '/Library/y']) {
+    const paths =
+      process.platform === 'win32'
+        ? [
+            protectedSystemPath,
+            path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Biorouter', 'x'),
+            path.join(process.env.ProgramData || 'C:\\ProgramData', 'Biorouter', 'x'),
+          ]
+        : ['/etc/hosts', '/usr/bin/x', '/bin/ls', '/System/Library/x', '/Library/y'];
+    for (const p of paths) {
       expect(isSensitivePreviewPath(p)).toBe(true);
     }
   });
@@ -121,11 +134,13 @@ describe('isFilePathAllowedForPreview', () => {
       isFilePathAllowedForPreview(path.join(home, 'a.txt'), [home], { fullyAutomatic: false })
     ).toBe(true);
     // Outside the allowed roots → denied when not fully automatic.
-    expect(
-      isFilePathAllowedForPreview('/data/out.csv', [home], { fullyAutomatic: false })
-    ).toBe(false);
+    expect(isFilePathAllowedForPreview('/data/out.csv', [home], { fullyAutomatic: false })).toBe(
+      false
+    );
     // Sensitive even though it would be "contained" → denied.
-    expect(isFilePathAllowedForPreview('/etc/hosts', [home], { fullyAutomatic: false })).toBe(false);
+    expect(
+      isFilePathAllowedForPreview(protectedSystemPath, [home], { fullyAutomatic: false })
+    ).toBe(false);
   });
 
   it('in Fully-Automatic mode, any non-sensitive path is allowed (parity with backend)', () => {
@@ -138,9 +153,13 @@ describe('isFilePathAllowedForPreview', () => {
   });
 
   it('keeps sensitive paths denied even in Fully-Automatic mode', () => {
-    expect(isFilePathAllowedForPreview('/etc/hosts', [home], { fullyAutomatic: true })).toBe(false);
+    expect(isFilePathAllowedForPreview(protectedSystemPath, [home], { fullyAutomatic: true })).toBe(
+      false
+    );
     expect(
-      isFilePathAllowedForPreview(path.join(home, '.ssh', 'id_rsa'), [home], { fullyAutomatic: true })
+      isFilePathAllowedForPreview(path.join(home, '.ssh', 'id_rsa'), [home], {
+        fullyAutomatic: true,
+      })
     ).toBe(false);
   });
 });

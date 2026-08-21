@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 /**
  * The update download streams to disk. The hand-rolled read/write loop it
  * replaced had two bugs that only surface on a failing disk, and both were bad

@@ -115,6 +115,17 @@ jobs:
         with:
           toolchain: "1.92"
           components: clippy
+
+      # MSVC's test PDBs dominate the Windows link and cache footprint (the
+      # biorouter harness alone produced a ~1.1 GiB PDB). This keeps debug
+      # assertions, overflow checks and panic locations while omitting debugger
+      # symbols that CI never consumes. Set it before rust-cache so the action's
+      # CARGO_* environment hash separates these artifacts from debug=2 builds.
+      - name: Disable Windows CI test debuginfo
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: echo 'CARGO_PROFILE_TEST_DEBUG=0' >> "$GITHUB_ENV"
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}
@@ -152,28 +163,24 @@ jobs:
       # read as "a new rotating set of failures" and was really one hidden queue
       # being drained one CI round-trip at a time. One run now names them all.
       - name: cargo test (workspace, lib + bins)
-        run: cargo test --workspace --lib --bins --locked --no-fail-fast
+        run: cargo test --workspace --lib --bins --locked --no-fail-fast --timings
+
+      - name: Upload Windows Cargo timings
+        if: matrix.os == 'windows-latest' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cargo-timings
+          path: target/cargo-timings/cargo-timing.html
+          if-no-files-found: warn
+          retention-days: 14
 
       # The cross-platform-sensitive suites BR-70 exists to prove, run on every
-      # OS they apply to.
-      #
-      # ⚠ `shell: bash` and the explicit `rc` are both here for windows-latest,
-      # and the first one is a correctness fix rather than a preference. A `run:`
-      # block on a Windows runner is `pwsh`, and pwsh does NOT abort a script on
-      # a native command's non-zero exit: GitHub takes `$LASTEXITCODE`, so only
-      # the THIRD line here decided whether this step passed and the first two
-      # could fail in silence. `bash` restores "any failure fails the step" on
-      # all three runners, and collecting `rc` rather than relying on `-e` means
-      # all three suites still report in one run instead of the step stopping at
-      # the first.
-      - name: cargo test (sandbox + developer shell/background + security)
-        shell: bash
-        run: |
-          rc=0
-          cargo test -p biorouter-sandbox --locked --no-fail-fast || rc=1
-          cargo test -p biorouter-mcp --lib developer:: --locked --no-fail-fast || rc=1
-          cargo test -p biorouter --lib security:: --locked --no-fail-fast || rc=1
-          exit $rc
+      # OS they apply to. The workspace step above already runs the sandbox,
+      # developer shell/background and security unit tests through their library
+      # targets. Only the sandbox integration target sits outside --lib/--bins;
+      # name it directly rather than executing those unit tests a second time.
+      - name: cargo test (sandbox integration)
+        run: cargo test -p biorouter-sandbox --test sandbox --locked --no-fail-fast
 
       - name: clippy (host, informational until warnings are burned down)
         if: matrix.os == 'ubuntu-latest'

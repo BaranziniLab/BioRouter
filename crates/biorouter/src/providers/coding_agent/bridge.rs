@@ -1564,14 +1564,22 @@ mod tests {
         hook_specific_output: &serde_json::Value,
     ) -> Arc<crate::hooks::HooksManager> {
         let payload = serde_json::json!({ "hookSpecificOutput": hook_specific_output }).to_string();
-        // Single-quoted for `sh -c`, with any embedded quote escaped the usual
-        // way. The JSON above contains none, but a future edit to the fixtures
-        // should not become a mysterious hook failure.
-        let quoted = payload.replace('\'', "'\"'\"'");
+        let command = if cfg!(target_os = "windows") {
+            // Command hooks run through cmd.exe on Windows. Unlike sh, cmd keeps
+            // the JSON's double quotes intact and would echo literal single
+            // quotes, making the hook output invalid JSON.
+            format!("echo {payload}")
+        } else {
+            // Single-quoted for `sh -c`, with any embedded quote escaped the
+            // usual way. The JSON above contains none, but a future edit to the
+            // fixtures should not become a mysterious hook failure.
+            let quoted = payload.replace('\'', "'\"'\"'");
+            format!("echo '{quoted}'")
+        };
         let yaml = format!(
             "PreToolUse:\n  - matcher: {}\n    hooks:\n      - type: command\n        command: {}\n",
             serde_json::to_string(matcher).expect("a json string"),
-            serde_json::to_string(&format!("echo '{quoted}'")).expect("a json string"),
+            serde_json::to_string(&command).expect("a json string"),
         );
         let config = serde_yaml::from_str(&yaml).expect("the hook config parses");
         Arc::new(crate::hooks::HooksManager::with_config(

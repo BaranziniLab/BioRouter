@@ -3279,9 +3279,19 @@ mod knowledge_selection_tests {
             let svc = Arc::clone(&svc);
             std::thread::spawn(move || svc.create_base("gamma", "gamma", None).unwrap())
         };
-        // Long enough for `create_base` to be holding the root lock, short
-        // enough that it is nowhere near registering `gamma`.
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        // Wait for an observable write that happens only after `create_base`
+        // has taken the root lock. A fixed sleep lost this race on slower
+        // Windows runners: the apply could finish before the creator thread was
+        // scheduled, making `gamma` legitimately visible when it landed later.
+        let gamma_root = biorouter_mcp::knowledge::paths::kb_root(svc.root(), "gamma");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !gamma_root.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the creator must begin writing gamma while the test is waiting"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         apply_workflow_knowledge_selection(&svc, "s1", &workflow).unwrap();
         creator.join().unwrap();
 

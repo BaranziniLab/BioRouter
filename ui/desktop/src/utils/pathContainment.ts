@@ -63,6 +63,28 @@ const SENSITIVE_ABSOLUTE_PREFIXES = [
   '/lib64',
 ];
 
+function comparisonPath(p: string): string {
+  return canonicalizeForContainment(p).toLowerCase().split(path.sep).join('/');
+}
+
+function windowsSensitivePrefixes(): string[] {
+  if (process.platform !== 'win32') return [];
+
+  const systemDrive = process.env.SystemDrive || path.parse(process.cwd()).root.slice(0, 2) || 'C:';
+  const roots = [
+    process.env.SystemRoot,
+    process.env.windir,
+    process.env.ProgramFiles,
+    process.env['ProgramFiles(x86)'],
+    process.env.ProgramData,
+    `${systemDrive}\\Windows`,
+    `${systemDrive}\\Program Files`,
+    `${systemDrive}\\Program Files (x86)`,
+    `${systemDrive}\\ProgramData`,
+  ];
+  return [...new Set(roots.filter((root): root is string => !!root).map(comparisonPath))];
+}
+
 /** Credential / persistence directories under $HOME, `/`-separated + lowercased
  *  relative to the canonical home dir. Mirrors the backend list. */
 const SENSITIVE_HOME_SUBPATHS = [
@@ -88,10 +110,7 @@ const SENSITIVE_HOME_SUBPATHS = [
 /** True for an OS temp tree (`/tmp`, `$TMPDIR`, `/var/folders/**`), which is
  *  ordinary scratch space and must never be treated as sensitive. */
 function isTempPreviewPath(canonicalLower: string): boolean {
-  const tempRoots = [
-    canonicalizeForContainment('/tmp').toLowerCase(),
-    canonicalizeForContainment(os.tmpdir()).toLowerCase(),
-  ];
+  const tempRoots = [comparisonPath('/tmp'), comparisonPath(os.tmpdir())];
   if (tempRoots.some((r) => canonicalLower === r || canonicalLower.startsWith(r + '/'))) {
     return true;
   }
@@ -107,14 +126,14 @@ function isTempPreviewPath(canonicalLower: string): boolean {
  * canonicalized first so a symlink cannot dodge the check.
  */
 export function isSensitivePreviewPath(candidate: string): boolean {
-  const canonical = canonicalizeForContainment(candidate).toLowerCase();
+  const canonical = comparisonPath(candidate);
   if (isTempPreviewPath(canonical)) return false;
 
-  for (const prefix of SENSITIVE_ABSOLUTE_PREFIXES) {
+  for (const prefix of [...SENSITIVE_ABSOLUTE_PREFIXES, ...windowsSensitivePrefixes()]) {
     if (canonical === prefix || canonical.startsWith(prefix + '/')) return true;
   }
 
-  const home = canonicalizeForContainment(os.homedir()).toLowerCase();
+  const home = comparisonPath(os.homedir());
   if (home && (canonical === home || canonical.startsWith(home + '/'))) {
     const rel = canonical === home ? '' : canonical.slice(home.length + 1);
     for (const sub of SENSITIVE_HOME_SUBPATHS) {
