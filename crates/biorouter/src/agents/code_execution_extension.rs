@@ -38,6 +38,9 @@ const MAX_JS_LOOP_ITERATIONS: u64 = 1_000_000;
 const MAX_JS_ARRAY_BUFFER_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_JS_TOOL_CALLS: usize = 256;
 const MAX_MODULE_SEARCH_RESULTS: usize = 12;
+const MAX_MODULE_SEARCH_TERMS: usize = 16;
+const MAX_MODULE_SEARCH_TERM_CHARS: usize = 256;
+const MAX_MODULE_SEARCH_TOKENS: usize = 32;
 /// Cap on per-run sub-call telemetry records (issue #28) so a loop-heavy
 /// script cannot grow the result meta without bound; calls past the cap are
 /// counted, not recorded.
@@ -421,6 +424,46 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// Build the synthetic module for one MCP server: every tool as a named export,
+/// plus the server name bound to a namespace object carrying all of them.
+///
+/// ⚠ **The server name and a tool name can be the SAME string**, and when they
+/// are, the two exports are ONE binding, not two. `Module::synthetic` collects
+/// the export names into an `FxHashSet` (boa 0.21, `module/mod.rs`), so the
+/// duplicate collapses silently, and `set_export` writes by name — so whichever
+/// of the two ran last simply overwrote the other. Writing the namespace object
+/// last therefore replaced the tool's function with a plain object, and every
+/// call form the model is told to use threw `TypeError: not a callable
+/// function`. `chatrecall` (extension key `chatrecall`, sole tool `chatrecall`)
+/// is the built-in that hits this, and because `code_execution` strips every
+/// other tool from the model's list, chat recall was 100% unreachable in the
+/// shipped default configuration — issue #93. It was silent since the initial
+/// commit because every test fixture used a server and tool with different
+/// names.
+///
+/// Two decisions follow, and neither is cosmetic:
+///
+/// 1. **On a collision the namespace export is a CALLABLE that forwards to the
+///    colliding tool.** A function is an object, so the sibling tools attach to
+///    it as properties and all four documented import forms keep working —
+///    `ns.tool()`, `ns["tool"]()`, `import { tool }`, and
+///    `import { server }; server.other()` — with one binding serving both roles.
+///    Merely dropping the server-name export would fix the first three and
+///    break the fourth. The forwarder is a *fresh* function rather than the
+///    tool's own; see the note at its construction for the two things that
+///    buys.
+///
+/// 2. **Tools are attached with `create_data_property_or_throw`, not `set`.**
+///    `set` respects the receiver's existing property attributes, and a function
+///    object has non-writable own `name`/`length` and poisoned `caller`/
+///    `arguments` accessors. Under `set`, a server that collides *and* exposes a
+///    tool called `name` silently served the function's own name string instead
+///    of the tool, and one called `caller` made the whole module fail to
+///    construct — turning a one-tool bug into a whole-extension outage.
+///    `defineProperty` semantics ignore writability and setters, so every tool
+///    name behaves identically whatever the namespace object happens to be.
+///    It also removes a live footgun: `set` returns a `bool` for "refused", and
+///    the previous code mapped only the `Err` arm and dropped that `false`.
 fn create_server_module(
     server_name: &str,
     server_tools: &[&ToolInfo],
@@ -431,11 +474,16 @@ fn create_server_module(
         .map(|t| (t.tool_name.clone(), t.full_name.clone()))
         .collect();
 
+    // De-duplicated: a tool whose name equals the server name contributes ONE
+    // export, and boa would collapse the pair anyway. Making that explicit here
+    // is what stops the collapse being invisible.
     let mut export_names: Vec<JsString> = server_tools
         .iter()
         .map(|t| js_string!(t.tool_name.as_str()))
         .collect();
-    export_names.push(js_string!(server_name));
+    if !server_tools.iter().any(|t| t.tool_name == server_name) {
+        export_names.push(js_string!(server_name));
+    }
 
     let server_name_owned = server_name.to_string();
 
@@ -443,18 +491,82 @@ fn create_server_module(
         &export_names,
         SyntheticModuleInitializer::from_copy_closure_with_captures(
             |module, (tools, server_name), context| {
-                let namespace_obj = boa_engine::JsObject::with_null_proto();
-
+                // Build every tool function first: the namespace object may have
+                // to BE one of them.
+                let mut functions = Vec::with_capacity(tools.len());
                 for (tool_name, full_name) in tools.iter() {
                     let func = create_tool_function(full_name.clone());
-                    let js_func = func.to_js_function(context.realm());
-                    module.set_export(&js_string!(tool_name.as_str()), js_func.clone().into())?;
+                    functions.push((tool_name.clone(), func.to_js_function(context.realm())));
+                }
+
+                let colliding = functions
+                    .iter()
+                    .find(|(tool_name, _)| tool_name == server_name)
+                    .map(|(_, js_func)| js_func.clone());
+
+                let namespace_obj: boa_engine::JsObject = match &colliding {
+                    // A FRESH function that forwards to the colliding tool —
+                    // not the tool's own function object.
+                    //
+                    // Both shapes are callable and both carry the siblings, so
+                    // both fix the bug. The reason to forward is ONE measured
+                    // difference, not a general tidiness argument:
+                    //
+                    // Reusing the tool's function makes the namespace hold
+                    // ITSELF (`ns.x.x.x…`). `record_result` serialises with
+                    // `JsValue::to_json`, whose cycle detection returns `Err`,
+                    // and the `.ok()` there swallows it — so a script that put
+                    // the namespace in its result silently got boa's debug
+                    // rendering with `[Cycle]` in it instead of JSON. A separate
+                    // wrapper has no cycle and serialises normally.
+                    //
+                    // ⚠ What this does NOT buy, despite looking like it should:
+                    // the value a script receives from `import { tool }` on a
+                    // colliding server is this wrapper, and it carries the
+                    // sibling tools as own properties either way. Measured:
+                    // `Object.getOwnPropertyNames` returns
+                    // `[length, name, <every tool>]` under both shapes. Only the
+                    // inner function stays clean, and nothing reaches it except
+                    // the double hop `ns.x.x`.
+                    //
+                    // Costs one extra call frame, on colliding servers only.
+                    Some(js_func) => {
+                        let target: boa_engine::JsObject = js_func.clone().into();
+                        NativeFunction::from_copy_closure_with_captures(
+                            |this, args, target: &boa_engine::JsObject, context| {
+                                target.call(this, args, context)
+                            },
+                            target,
+                        )
+                        .to_js_function(context.realm())
+                        .into()
+                    }
+                    None => boa_engine::JsObject::with_null_proto(),
+                };
+
+                for (tool_name, js_func) in &functions {
+                    // `create_data_property_or_throw`, not `set` — see the note
+                    // on this function.
                     namespace_obj
-                        .set(js_string!(tool_name.as_str()), js_func, false, context)
+                        .create_data_property_or_throw(
+                            js_string!(tool_name.as_str()),
+                            js_func.clone(),
+                            context,
+                        )
                         .map_err(|e| {
                             JsNativeError::error().with_message(format!("Failed to set prop: {e}"))
                         })?;
+
+                    // The colliding tool shares its binding with the server-name
+                    // export below, which already holds the callable namespace.
+                    // Exporting it here too would be the very overwrite this
+                    // function exists to avoid.
+                    if tool_name != server_name {
+                        module
+                            .set_export(&js_string!(tool_name.as_str()), js_func.clone().into())?;
+                    }
                 }
+
                 module.set_export(&js_string!(server_name.as_str()), namespace_obj.into())?;
 
                 Ok(())
@@ -473,21 +585,20 @@ const BOA_NOT_CALLABLE: &str = "not a callable function";
 
 /// Attach a recovery hint to JS engine errors whose own text is too opaque to act on.
 ///
-/// The dominant cause of `not a callable function` in real sessions is a string
-/// method invoked on a tool result that came back as parsed JSON — tool results
-/// are JSON-parsed when they parse, so `shell({…}).trim()` fails the moment the
-/// tool answers with an object instead of plain text. Boa reports only that
-/// *something* was not callable, which sent the model round in circles (observed:
-/// three import forms retried, then a fallback to `"fs"`). The hint names the
-/// likely cause and the check that resolves it.
+/// Boa reports only that *something* was not callable. Two distinct mistakes are
+/// common: calling a module member that is not a function, and calling a string
+/// method on a parsed JSON tool result. The hint must name both without claiming
+/// either one happened, or a correct response to the wrong diagnosis burns more
+/// turns instead of locating the bad callee.
 fn annotate_opaque_js_error(message: &str) -> String {
     if message.contains(BOA_NOT_CALLABLE) {
         format!(
-            "{message}. You called something that is not a function. A tool call \
-             returns a parsed object when the tool's result is JSON, and a string \
-             otherwise, so string methods such as .trim()/.split() fail on a JSON \
-             result. Inspect the shape first (record_result(value)) or convert it \
-             with JSON.stringify(value)."
+            "{message}. Something you called is not a function. Check each callee \
+             with typeof, including the imported module member and any method on \
+             an intermediate result. One possible cause is a tool result: JSON \
+             results are parsed objects, so string methods such as .trim()/.split() \
+             are not callable on them. Inspect the value with record_result(value); \
+             use JSON.stringify(value) only when string output is actually needed."
         )
     } else {
         message.to_string()
@@ -1627,6 +1738,20 @@ impl CodeExecutionClient {
         if terms_vec.is_empty() {
             return Err("Search terms cannot be empty".to_string());
         }
+        if terms_vec.len() > MAX_MODULE_SEARCH_TERMS {
+            return Err(format!(
+                "Search accepts at most {MAX_MODULE_SEARCH_TERMS} terms"
+            ));
+        }
+        if let Some(term) = terms_vec
+            .iter()
+            .find(|term| term.chars().count() > MAX_MODULE_SEARCH_TERM_CHARS)
+        {
+            return Err(format!(
+                "Each search term must be at most {MAX_MODULE_SEARCH_TERM_CHARS} characters; got {}",
+                term.chars().count()
+            ));
+        }
 
         let use_regex = arguments
             .as_ref()
@@ -1645,7 +1770,10 @@ impl CodeExecutionClient {
     ) -> Result<Vec<Content>, String> {
         enum Matcher {
             Regex(Vec<Regex>),
-            Plain(Vec<String>),
+            Plain {
+                phrases: Vec<String>,
+                tokens: Vec<String>,
+            },
         }
 
         let matcher = if use_regex {
@@ -1657,7 +1785,32 @@ impl CodeExecutionClient {
                 .collect();
             Matcher::Regex(patterns?)
         } else {
-            Matcher::Plain(terms.iter().map(|t| t.to_lowercase()).collect())
+            let phrases = terms
+                .iter()
+                .take(MAX_MODULE_SEARCH_TERMS)
+                .map(|term| {
+                    term.chars()
+                        .take(MAX_MODULE_SEARCH_TERM_CHARS)
+                        .collect::<String>()
+                        .to_lowercase()
+                })
+                .collect::<Vec<_>>();
+            let mut seen = BTreeSet::new();
+            let tokens = phrases
+                .iter()
+                .filter(|phrase| phrase.split_whitespace().count() > 1)
+                .flat_map(|phrase| phrase.split_whitespace())
+                .map(|token| {
+                    token.trim_matches(|character: char| {
+                        !character.is_alphanumeric() && character != '_' && character != '-'
+                    })
+                })
+                .filter(|token| token.chars().count() >= 2)
+                .filter(|token| seen.insert((*token).to_string()))
+                .take(MAX_MODULE_SEARCH_TOKENS)
+                .map(str::to_string)
+                .collect();
+            Matcher::Plain { phrases, tokens }
         };
 
         let match_score = |tool: &ToolInfo| -> usize {
@@ -1670,11 +1823,11 @@ impl CodeExecutionClient {
                             + usize::from(pattern.is_match(&tool.description)) * 4
                     })
                     .sum(),
-                Matcher::Plain(terms) => {
+                Matcher::Plain { phrases, tokens } => {
                     let tool_name = tool.tool_name.to_lowercase();
                     let server_name = tool.server_name.to_lowercase();
                     let description = tool.description.to_lowercase();
-                    terms
+                    let phrase_score: usize = phrases
                         .iter()
                         .map(|term| {
                             let tool_score = if tool_name == *term {
@@ -1694,7 +1847,29 @@ impl CodeExecutionClient {
                             let description_score = usize::from(description.contains(term)) * 4;
                             tool_score + server_score + description_score
                         })
-                        .sum()
+                        .sum();
+                    let token_score: usize = tokens
+                        .iter()
+                        .map(|token| {
+                            let tool_score = if tool_name == *token {
+                                10
+                            } else if tool_name.contains(token) {
+                                5
+                            } else {
+                                0
+                            };
+                            let server_score = if server_name == *token {
+                                4
+                            } else if server_name.contains(token) {
+                                2
+                            } else {
+                                0
+                            };
+                            let description_score = usize::from(description.contains(token)) * 2;
+                            tool_score + server_score + description_score
+                        })
+                        .sum();
+                    phrase_score + token_score
                 }
             }
         };
@@ -2107,9 +2282,11 @@ impl McpClientTrait for CodeExecutionClient {
                         - Call: toolName({ param1: value, param2: value })
                         - Result: record_result(value) - call this to return a value from the script
                         - All calls are synchronous.
-                        - A call returns a PARSED OBJECT when the tool's result is JSON, and a string
-                          otherwise. Do not assume a string: `.trim()`/`.split()` on a JSON result throw
-                          "not a callable function". Check with typeof, or use JSON.stringify(value).
+                        - "not a callable function" means some callee is not a function. Check imported
+                          module members and intermediate values with typeof. One possible cause is a
+                          PARSED OBJECT from a JSON tool result: `.trim()`/`.split()` are not callable on
+                          objects. Inspect with record_result(value), or use JSON.stringify(value) when
+                          string output is actually needed.
 
                         MODULES:
                         - Only the modules listed in "Modules:" above are importable: these and only these.
@@ -3044,6 +3221,51 @@ mod tests {
     }
 
     #[test]
+    fn natural_language_module_search_tokenizes_phrases_with_a_fixed_bound() {
+        let tools = vec![ToolInfo {
+            server_name: "chatrecall".to_string(),
+            tool_name: "chatrecall".to_string(),
+            full_name: "chatrecall__chatrecall".to_string(),
+            description: "Search past chat or load session summaries".to_string(),
+            params: vec![],
+            return_type: "string".to_string(),
+        }];
+
+        let result = CodeExecutionClient::handle_search(
+            &tools,
+            &[
+                "conversation history search".to_string(),
+                "past sessions recall".to_string(),
+            ],
+            false,
+        )
+        .unwrap();
+        let text = match &result[0].raw {
+            RawContent::Text(text) => text.text.as_str(),
+            _ => panic!("Expected text"),
+        };
+        assert!(
+            text.contains("chatrecall/chatrecall"),
+            "natural-language phrases must match their useful words: {text}"
+        );
+
+        let mut words = (0..MAX_MODULE_SEARCH_TOKENS)
+            .map(|index| format!("x{index}"))
+            .collect::<Vec<_>>();
+        words.push("chatrecall".to_string());
+        let bounded =
+            CodeExecutionClient::handle_search(&tools, &[words.join(" ")], false).unwrap();
+        let text = match &bounded[0].raw {
+            RawContent::Text(text) => text.text.as_str(),
+            _ => panic!("Expected text"),
+        };
+        assert!(
+            text.contains("No tools matched"),
+            "only the first {MAX_MODULE_SEARCH_TOKENS} phrase tokens may affect matching: {text}"
+        );
+    }
+
+    #[test]
     fn web_news_search_returns_ranked_ready_to_execute_signatures() {
         let tools = vec![
             ToolInfo {
@@ -3305,14 +3527,24 @@ mod tests {
     }
 
     fn one_tool(server: &str, tool: &str) -> Vec<ToolInfo> {
-        vec![ToolInfo {
-            server_name: server.to_string(),
-            tool_name: tool.to_string(),
-            full_name: format!("{server}__{tool}"),
-            description: "A tool".to_string(),
-            params: vec![],
-            return_type: "string".to_string(),
-        }]
+        server_tools(server, &[tool])
+    }
+
+    /// A server exposing several tools. Needed because the interesting cases for
+    /// issue #93 are about how tools on the SAME server interact with the
+    /// server-name export — a one-tool fixture cannot express them.
+    fn server_tools(server: &str, tools: &[&str]) -> Vec<ToolInfo> {
+        tools
+            .iter()
+            .map(|tool| ToolInfo {
+                server_name: server.to_string(),
+                tool_name: (*tool).to_string(),
+                full_name: format!("{server}__{tool}"),
+                description: "A tool".to_string(),
+                params: vec![],
+                return_type: "string".to_string(),
+            })
+            .collect()
     }
 
     /// An unknown module specifier must name the module that failed AND the ones
@@ -3381,9 +3613,8 @@ mod tests {
     }
 
     /// `not a callable function` is Boa's message for calling any non-function,
-    /// and it names neither the value nor the call site. In real sessions it came
-    /// from string methods invoked on a JSON tool result; without the hint the
-    /// model has nothing to act on.
+    /// and it names neither the value nor the call site. A JSON result is one
+    /// possible cause, not a diagnosis the engine actually made.
     #[test]
     fn calling_a_string_method_on_a_json_tool_result_explains_itself() {
         let tools = one_tool("developer", "shell");
@@ -3408,12 +3639,37 @@ mod tests {
             "the engine's own message must survive, got: {error}"
         );
         assert!(
-            error.contains("parsed object when the tool's result is JSON"),
-            "error must explain why the value was not callable, got: {error}"
+            error.contains("JSON results are parsed objects"),
+            "error must explain the JSON-result possibility, got: {error}"
+        );
+        assert!(
+            error.contains("imported module member") && error.contains("One possible cause"),
+            "error must distinguish module-member and result-shape causes, got: {error}"
         );
         assert!(
             error.contains("JSON.stringify"),
             "error must name the recovery, got: {error}"
+        );
+    }
+
+    #[test]
+    fn calling_a_plain_object_gets_multi_cause_guidance() {
+        let tools = one_tool("developer", "shell");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let error = run_js_module(
+            r#"const moduleMember = {}; record_result(moduleMember());"#,
+            &tools,
+            tx,
+        )
+        .expect_err("an object is not callable");
+
+        assert!(error.contains(BOA_NOT_CALLABLE), "got: {error}");
+        assert!(
+            error.contains("Check each callee with typeof")
+                && error.contains("imported module member")
+                && error.contains("One possible cause is a tool result"),
+            "the hint must offer checks and possibilities without inventing one cause: {error}"
         );
     }
 
@@ -3640,6 +3896,201 @@ mod tests {
             Ok("\"function\""),
             "import form did not produce a callable tool: {result:?}"
         );
+    }
+
+    /// ⚠ Issue #93. The twin of the test above, on a server whose name EQUALS
+    /// its tool's name — the shape `chatrecall` has, and the ONLY shape that
+    /// triggers the export collision.
+    ///
+    /// The test above cannot catch it and never could: `one_tool("developer",
+    /// "shell")` gives two distinct export names, so the server-name export and
+    /// the tool export land in different bindings. Every fixture in this file
+    /// was that shape, which is why a defect present since the initial commit
+    /// went unseen until a user enabled Chat Recall.
+    #[test_case(r#"import { chatrecall } from "chatrecall"; record_result(typeof chatrecall);"#; "named")]
+    #[test_case(r#"import * as ns from "chatrecall"; record_result(typeof ns.chatrecall);"#; "namespace")]
+    #[test_case(r#"import * as ns from "chatrecall"; record_result(typeof ns["chatrecall"]);"#; "bracket")]
+    #[test_case(r#"import { chatrecall as srv } from "chatrecall"; record_result(typeof srv.chatrecall);"#; "server_named")]
+    fn every_import_form_yields_a_callable_tool_when_the_server_shares_its_name(code: &str) {
+        let tools = one_tool("chatrecall", "chatrecall");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let result = run_js_module(code, &tools, tx);
+
+        assert_eq!(
+            result.as_deref(),
+            Ok("\"function\""),
+            "a server named after its own tool must still export a callable: {result:?}"
+        );
+    }
+
+    /// The shadowing is per-TOOL, not per-server: on a multi-tool server only
+    /// the colliding tool was eaten, so the failure read as "one flaky tool"
+    /// rather than "this extension is broken". Both must be callable, and the
+    /// siblings must be reachable through the colliding name as well, since that
+    /// is what the server-named import form resolves to.
+    #[test]
+    fn a_colliding_tool_does_not_shadow_its_siblings() {
+        let tools = server_tools("fetch", &["fetch", "fetch_html"]);
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let result = run_js_module(
+            r#"import * as ns from "fetch";
+record_result([typeof ns.fetch, typeof ns.fetch_html, typeof ns.fetch.fetch_html].join(","));"#,
+            &tools,
+            tx,
+        );
+
+        assert_eq!(
+            result.as_deref(),
+            Ok("\"function,function,function\""),
+            "a colliding tool must stay callable and must still carry its siblings: {result:?}"
+        );
+    }
+
+    /// ⚠ Why the namespace properties are defined with
+    /// `create_data_property_or_throw` and not `set`.
+    ///
+    /// On a collision the namespace object IS a function, and a function has
+    /// non-writable own `name`/`length` and poisoned `caller`/`arguments`
+    /// accessors. Under `set` semantics a sibling tool called `name` silently
+    /// resolved to the function's own name STRING, and one called `caller`
+    /// made the entire module fail to construct — a whole-extension outage
+    /// caused by a tool's name. `defineProperty` ignores writability and
+    /// setters, so the tool wins in every case.
+    ///
+    /// These names are not hypothetical for a third-party MCP server, and the
+    /// cost of getting them wrong is silent (`name`) or total (`caller`).
+    #[test_case("name"; "function_own_name")]
+    #[test_case("length"; "function_own_length")]
+    #[test_case("caller"; "poisoned_caller")]
+    #[test_case("arguments"; "poisoned_arguments")]
+    #[test_case("prototype"; "function_prototype")]
+    #[test_case("constructor"; "inherited_constructor")]
+    #[test_case("toString"; "inherited_tostring")]
+    #[test_case("__proto__"; "proto_accessor")]
+    fn a_tool_named_after_a_function_property_still_wins_on_a_colliding_server(tool: &str) {
+        let tools = server_tools("srv", &["srv", tool]);
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let code = format!(
+            r#"import * as ns from "srv"; import {{ srv }} from "srv";
+record_result([typeof ns["{tool}"], typeof srv["{tool}"], typeof ns.srv].join(","));"#
+        );
+        let result = run_js_module(&code, &tools, tx);
+
+        assert_eq!(
+            result.as_deref(),
+            Ok("\"function,function,function\""),
+            "tool `{tool}` was lost to a Function property on the namespace: {result:?}"
+        );
+    }
+
+    /// The colliding server's namespace must NOT be the tool's own function.
+    ///
+    /// This pins the structural half of that choice: the namespace carries the
+    /// siblings, the underlying tool does not. The half that actually matters to
+    /// a script is pinned by `a_colliding_namespace_still_serialises_as_json` —
+    /// reusing the tool's function makes the namespace self-referential and
+    /// costs `record_result` its JSON. Note what is NOT asserted here: the value
+    /// `import { fetch }` yields is the namespace, so it carries the siblings
+    /// under either shape.
+    #[test]
+    fn a_colliding_server_does_not_pollute_the_tools_own_function() {
+        let tools = server_tools("fetch", &["fetch", "fetch_html"]);
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let result = run_js_module(
+            r#"import { fetch_html } from "fetch"; import * as ns from "fetch";
+record_result([
+  Object.getOwnPropertyNames(ns.fetch.fetch).join("|"),
+  Object.getOwnPropertyNames(ns.fetch).join("|"),
+].join(" // "));"#,
+            &tools,
+            tx,
+        );
+
+        assert_eq!(
+            result.as_deref(),
+            Ok("\"length|name // length|name|fetch|fetch_html\""),
+            "the namespace must carry the siblings and the underlying tool must not: {result:?}"
+        );
+    }
+
+    /// A script may put the namespace in its result. That must still serialise.
+    ///
+    /// `record_result` uses `JsValue::to_json`, whose cycle detection returns
+    /// `Err`, and the `.ok()` there swallows it and falls back to boa's debug
+    /// rendering. A namespace that held itself therefore came back as
+    /// `Function { … [Cycle] }` instead of JSON — silently, and only on the
+    /// colliding path.
+    #[test]
+    fn a_colliding_namespace_still_serialises_as_json() {
+        let tools = one_tool("chatrecall", "chatrecall");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let result = run_js_module(
+            r#"import * as ns from "chatrecall"; record_result({ held: ns.chatrecall });"#,
+            &tools,
+            tx,
+        );
+
+        let out = result.expect("the module must evaluate");
+        assert!(
+            !out.contains("Cycle"),
+            "the namespace is self-referential, so `record_result` lost JSON: {out}"
+        );
+        assert!(
+            out.starts_with('{'),
+            "expected a JSON object, got boa's debug rendering: {out}"
+        );
+    }
+
+    /// The degenerate case: the colliding name is ALSO a Function property.
+    #[test]
+    fn a_server_and_tool_both_named_name_still_export_a_callable() {
+        let tools = one_tool("name", "name");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let result = run_js_module(
+            r#"import * as ns from "name"; record_result(typeof ns.name);"#,
+            &tools,
+            tx,
+        );
+
+        assert_eq!(result.as_deref(), Ok("\"function\""), "got {result:?}");
+    }
+
+    /// A colliding tool must still DISPATCH under its fully-qualified MCP name.
+    /// Making the namespace object double as the function must not disturb the
+    /// `server__tool` routing `create_tool_function` closes over — otherwise the
+    /// call would reach the wrong tool, which is worse than not reaching one.
+    #[test]
+    fn a_colliding_tool_dispatches_under_its_full_mcp_name() {
+        let tools = one_tool("chatrecall", "chatrecall");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let handle = std::thread::spawn(move || {
+            run_js_module(
+                r#"import { chatrecall } from "chatrecall"; record_result(chatrecall({ query: "x" }));"#,
+                &tools,
+                tx,
+            )
+        });
+
+        let (full_name, args_json, responder) = rx.blocking_recv().expect("a tool call");
+        assert_eq!(
+            full_name, "chatrecall__chatrecall",
+            "the colliding tool must dispatch under its prefixed MCP name"
+        );
+        assert!(
+            args_json.contains("\"query\""),
+            "arguments were not forwarded: {args_json}"
+        );
+        responder.send(Ok("ok".to_string())).unwrap();
+
+        let result = handle.join().unwrap();
+        assert_eq!(result.as_deref(), Ok("\"ok\""), "got {result:?}");
     }
 
     #[test]

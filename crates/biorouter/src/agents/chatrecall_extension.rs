@@ -1,5 +1,6 @@
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
+use crate::conversation::message::MessageContent;
 use crate::privacy::{CallCapability, ProviderTier};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -20,18 +21,236 @@ struct ChatRecallParams {
     /// Search keywords. Use multiple related terms/synonyms (e.g., 'database postgres sql'). Mutually exclusive with session_id.
     #[serde(skip_serializing_if = "Option::is_none")]
     query: Option<String>,
-    /// Session ID to load. Returns first/last 3 messages. Mutually exclusive with query.
+    /// Session ID to load. Returns the first and last few messages, each clipped to a long
+    /// excerpt. Takes precedence: if `query` is also given, it is ignored.
     #[serde(skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
-    /// Max results (default: 10, max: 50). Search mode only.
+    /// Max MESSAGES to return (default 10, max 50) — not max sessions, so a broad query can
+    /// return few sessions. Search mode only. A non-positive value falls back to the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     limit: Option<i64>,
-    /// ISO 8601 date (e.g., '2025-10-01T00:00:00Z'). Search mode only.
+    /// Inclusive lower bound, ISO 8601 (e.g. '2025-10-01T00:00:00Z'). An exact instant compared
+    /// against when the message was written. Search mode only.
     #[serde(skip_serializing_if = "Option::is_none")]
     after_date: Option<String>,
-    /// ISO 8601 date (e.g., '2025-10-15T23:59:59Z'). Search mode only.
+    /// Inclusive upper bound, ISO 8601. An instant, not a day: use '2025-10-15T23:59:59Z' to
+    /// include the 15th. Search mode only.
     #[serde(skip_serializing_if = "Option::is_none")]
     before_date: Option<String>,
+}
+
+/// The parts LOAD renders, which is deliberately NOT
+/// [`chat_fts::searchable_parts`].
+///
+/// The two have different jobs. `searchable_parts` also feeds the FTS index, so
+/// changing it changes what is indexed for every future message while leaving
+/// every existing row as it was — a content migration, not a rendering change.
+/// LOAD is indexed by nothing, so it can show what a reader actually needs: a
+/// tool RESPONSE's payload, where the index only stores the constant
+/// `[Tool Response]`. Half the messages in an agentic session are tool
+/// responses, and "the model ran a command and then something happened" is not
+/// a transcript.
+fn load_parts(content: &[MessageContent]) -> Vec<String> {
+    content
+        .iter()
+        .map(|part| match part {
+            MessageContent::ToolResponse(tr) => match &tr.tool_result {
+                Ok(result) => {
+                    let body = result
+                        .content
+                        .iter()
+                        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if body.trim().is_empty() {
+                        "[Tool Response: no text content]".to_string()
+                    } else {
+                        format!("[Tool Response] {body}")
+                    }
+                }
+                Err(e) => format!("[Tool Response failed: {e}]"),
+            },
+            other => crate::session::chat_fts::searchable_parts(std::slice::from_ref(other))
+                .pop()
+                .unwrap_or_else(|| "[no renderable content]".to_string()),
+        })
+        .collect()
+}
+
+/// How much of one matched message SEARCH prints.
+///
+/// ⚠ Recall is a *locator*, not a transcript reader: the model gets session ids
+/// and reads the interesting one with LOAD (or `workspace_read_conversation`).
+/// The window is centred on the match, not taken from the head — see [`excerpt`].
+/// Printing whole messages made the answer scale with how much the user had
+/// written rather than with how many things matched — measured at 779,488
+/// characters (~195k tokens) for one ordinary query at `limit: 50`, roughly 8x
+/// the 25k-token inline cap, which pushes the entire result into a file the
+/// model then has to go and grep. At this width a full 50-hit search stays
+/// inside the cap and remains directly readable.
+const MAX_EXCERPT_CHARS: usize = 1200;
+
+/// How much of one message LOAD prints. Wider than [`MAX_EXCERPT_CHARS`] because
+/// LOAD shows at most six messages and exists so the model can actually read
+/// them — but still bounded, because a rendered tool call includes its arguments
+/// and a `text_editor` write carries an entire file in those.
+const MAX_LOAD_MESSAGE_CHARS: usize = 4000;
+
+/// The floor on one part's share of [`MAX_LOAD_MESSAGE_CHARS`]. A message with
+/// many parts would otherwise divide the budget down to nothing and print a
+/// column of ellipses.
+const MIN_LOAD_PART_CHARS: usize = 400;
+const MAX_LOAD_RENDERED_PARTS: usize = MAX_LOAD_MESSAGE_CHARS / MIN_LOAD_PART_CHARS;
+
+/// Clip one content part so the returned string, including its disclosure, is
+/// no longer than `max` characters.
+fn clip_within(content: &str, max: usize, hint: &str) -> String {
+    if content.chars().count() <= max {
+        return content.to_string();
+    }
+
+    let suffix = format!("… [truncated; {hint}]");
+    let suffix_len = suffix.chars().count();
+    if suffix_len >= max {
+        return suffix.chars().take(max).collect();
+    }
+
+    let prefix: String = content.chars().take(max - suffix_len).collect();
+    format!("{prefix}{suffix}")
+}
+
+/// Render a message's parts inside one hard, disclosure-inclusive budget.
+///
+/// A minimum per-part share cannot itself be a cap: with N parts, `max(400,
+/// 4000/N)` emits at least `400*N` characters. At most ten parts fit at the
+/// stated floor, so a larger message keeps its first and last five parts and
+/// names exactly how many middle parts were omitted. The remaining budget is
+/// divided deterministically, with any remainder going to the later parts so a
+/// final answer gets at least as much room as leading reasoning.
+fn render_load_parts(parts: &[String]) -> String {
+    if parts.is_empty() {
+        return "[no renderable content]".to_string();
+    }
+
+    let omitted = parts.len().saturating_sub(MAX_LOAD_RENDERED_PARTS);
+    let displayed = if omitted == 0 {
+        parts.iter().collect::<Vec<_>>()
+    } else {
+        let first = MAX_LOAD_RENDERED_PARTS / 2;
+        let last = MAX_LOAD_RENDERED_PARTS - first;
+        parts
+            .iter()
+            .take(first)
+            .chain(parts.iter().skip(parts.len() - last))
+            .collect::<Vec<_>>()
+    };
+    let omission_marker = (omitted > 0).then(|| {
+        format!(
+            "[{omitted} content part(s) omitted to stay within the \
+             {MAX_LOAD_MESSAGE_CHARS}-character LOAD limit]"
+        )
+    });
+    let entry_count = displayed.len() + usize::from(omission_marker.is_some());
+    let separator_chars = entry_count.saturating_sub(1);
+    let fixed_chars = separator_chars
+        + omission_marker
+            .as_ref()
+            .map_or(0, |marker| marker.chars().count());
+    let content_budget = MAX_LOAD_MESSAGE_CHARS.saturating_sub(fixed_chars);
+    let per_part = content_budget / displayed.len();
+    let remainder = content_budget % displayed.len();
+    let insertion = MAX_LOAD_RENDERED_PARTS / 2;
+    let mut rendered = Vec::with_capacity(entry_count);
+
+    for (index, part) in displayed.iter().enumerate() {
+        if index == insertion {
+            if let Some(marker) = &omission_marker {
+                rendered.push(marker.clone());
+            }
+        }
+        let share = per_part + usize::from(index >= displayed.len() - remainder);
+        rendered.push(clip_within(
+            part,
+            share,
+            "read this session with workspace_read_conversation for the full text",
+        ));
+    }
+
+    let output = rendered.join("\n");
+    debug_assert!(output.chars().count() <= MAX_LOAD_MESSAGE_CHARS);
+    output
+}
+
+/// One matched message, clipped to [`MAX_EXCERPT_CHARS`] on a char boundary.
+/// The marker is load-bearing: silent truncation would let the model conclude a
+/// message does not mention something when it simply was not shown.
+fn excerpt(content: &str, query: &str) -> String {
+    const HINT: &str = "read this session with workspace_read_conversation for the full message";
+
+    let total = content.chars().count();
+    if total <= MAX_EXCERPT_CHARS {
+        return content.to_string();
+    }
+
+    // ⚠ Centre the window on the match, do not take the first N characters.
+    //
+    // A head clip is the wrong shape for a search result: bm25 can rank a
+    // 40,000-character message first because it discusses the query term
+    // starting at character 22,000, and a head clip then shows the unrelated
+    // opening and an ellipsis. The model is told the message matched, shown text
+    // that does not contain the term, and has no way to tell whether the tool or
+    // its own query is at fault.
+    let lower = content.to_lowercase();
+    let hit = query
+        .split_whitespace()
+        .filter(|token| token.chars().any(char::is_alphanumeric))
+        .filter_map(|token| lower.find(&token.to_lowercase()))
+        .min();
+
+    let Some(byte_hit) = hit else {
+        // Nothing to centre on (the match was in another part of the message, or
+        // came from stemming). Head clip is the honest fallback.
+        return clip(content, MAX_EXCERPT_CHARS, HINT);
+    };
+
+    // Byte offset -> char offset, then back off half a window so the match sits
+    // in the middle.
+    //
+    // ⚠ Count against `lower`, NOT against `content`, and count rather than
+    // slice. `byte_hit` came from `lower.find`, and `to_lowercase` is not
+    // length-preserving — "İ" lowercases to two chars — so the same byte index
+    // means different places in the two strings; using it on `content` can land
+    // mid-codepoint and panic. `char_indices` walks boundaries, so it cannot,
+    // and it keeps this off `clippy::string_slice`, which the repo denies
+    // outright. Where lowercasing changed the char count earlier in the string
+    // the centre is off by a few characters — invisible in a 1200-char window.
+    let char_hit = lower
+        .char_indices()
+        .take_while(|(byte, _)| *byte < byte_hit)
+        .count();
+    let start = char_hit.saturating_sub(MAX_EXCERPT_CHARS / 2);
+    let end = std::cmp::min(total, start + MAX_EXCERPT_CHARS);
+
+    let window: String = content.chars().skip(start).take(end - start).collect();
+    let mut out = String::new();
+    if start > 0 {
+        out.push_str("…[earlier text not shown] ");
+    }
+    out.push_str(&window);
+    if end < total {
+        out.push_str(&format!("… [truncated; {HINT}]"));
+    }
+    out
+}
+
+/// Clip `content` to `max` CHARACTERS (never bytes — slicing by byte offset
+/// would panic mid-codepoint on any non-ASCII transcript).
+fn clip(content: &str, max: usize, hint: &str) -> String {
+    if content.chars().count() <= max {
+        return content.to_string();
+    }
+    let clipped: String = content.chars().take(max).collect();
+    format!("{clipped}… [truncated; {hint}]")
 }
 
 pub struct ChatRecallClient {
@@ -211,38 +430,49 @@ impl ChatRecallClient {
                         total
                     );
 
+                    // ⚠ Render EVERY content part, not just `as_text()`.
+                    // A tool call, a tool response and a thinking block all
+                    // return `None` there, so a message that carried only tool
+                    // traffic used to print its header and an empty body —
+                    // 62% of messages in a real store. `chat_fts::searchable_parts`
+                    // is the same flattening SEARCH mode already renders and the
+                    // FTS index already stores, so the two halves of this tool
+                    // can no longer disagree about what a message says.
+                    let render = |msg: &crate::conversation::message::Message| -> String {
+                        let parts = load_parts(&msg.content);
+                        render_load_parts(&parts)
+                    };
+
                     // Show first 3 messages
                     let first_count = std::cmp::min(3, total);
                     output.push_str("--- First Few Messages ---\n\n");
                     for (idx, msg) in msgs.iter().take(first_count).enumerate() {
                         output.push_str(&format!("{}. [{:?}] ", idx + 1, msg.role));
-                        for content in &msg.content {
-                            if let Some(text) = content.as_text() {
-                                output.push_str(text);
-                                output.push('\n');
-                            }
-                        }
-                        output.push('\n');
+                        output.push_str(&render(msg));
+                        output.push_str("\n\n");
                     }
 
-                    // Show last 3 messages (if different from first)
-                    if total > first_count {
+                    // Show the last few messages that the first block did not
+                    // already print.
+                    //
+                    // ⚠ `skip_count` must never fall BELOW `first_count`, or the
+                    // two blocks overlap and the same message is printed twice
+                    // under two different numbers. `total - min(3, total)` alone
+                    // does exactly that at total = 4 (repeats #2 and #3) and
+                    // total = 5 (repeats #3) — the only two sizes where the
+                    // windows meet, and 244 sessions in a real store are in that
+                    // range, which is why "it looked fine" for 3 and for 6.
+                    let skip_count = std::cmp::max(first_count, total.saturating_sub(3));
+                    if skip_count < total {
                         output.push_str("--- Last Few Messages ---\n\n");
-                        let last_count = std::cmp::min(3, total);
-                        let skip_count = total.saturating_sub(last_count);
                         for (idx, msg) in msgs.iter().skip(skip_count).enumerate() {
                             output.push_str(&format!(
                                 "{}. [{:?}] ",
                                 skip_count + idx + 1,
                                 msg.role
                             ));
-                            for content in &msg.content {
-                                if let Some(text) = content.as_text() {
-                                    output.push_str(text);
-                                    output.push('\n');
-                                }
-                            }
-                            output.push('\n');
+                            output.push_str(&render(msg));
+                            output.push_str("\n\n");
                         }
                     }
 
@@ -261,6 +491,12 @@ impl ChatRecallClient {
             let limit = arguments
                 .get("limit")
                 .and_then(|v| v.as_i64())
+                // ⚠ A non-positive limit is a caller mistake, not a request for
+                // nothing. `LIMIT 0` returns no rows, which this tool then
+                // renders as "No results found" — telling the model the user
+                // never discussed the thing, which is the one answer a recall
+                // tool must never invent. Fall back to the default instead.
+                .filter(|l| *l > 0)
                 .map(|l| l as usize)
                 .unwrap_or(10)
                 .min(50);
@@ -326,14 +562,70 @@ impl ChatRecallClient {
                 .await
             {
                 Ok(results) => {
-                    let formatted_results = if results.total_matches == 0 {
+                    let formatted_results = if results.rows_examined == 0 {
                         format!("No results found for query: '{}'", query)
+                    } else if results.total_matches == 0 {
+                        let capped = results.rows_examined >= limit;
+                        format!(
+                            "Found {}{} matching message row(s) for query: '{}', but none could be \
+                             rendered because the stored content was malformed or unsupported. \
+                             This is not evidence that the query had no matches; repair the \
+                             affected session data and retry.{}",
+                            if capped { "at least " } else { "" },
+                            results.rows_examined,
+                            query,
+                            if capped {
+                                format!(
+                                    " The {limit}-message limit was reached, so further \
+                                     unrenderable matches may exist."
+                                )
+                            } else {
+                                String::new()
+                            }
+                        )
                     } else {
+                        // ⚠ `rows_examined` counts the rows that came back AFTER
+                        // `LIMIT`, while `total_matches` counts only the rows that
+                        // rendered. The headline must use the former so malformed
+                        // content cannot become a false absence; hitting the limit
+                        // still means the database may hold more matches.
+                        //
+                        // Derive the disclosure from `rows_examined` — the raw
+                        // row count before rendering dropped any — not from
+                        // `total_matches`. A row whose content will not
+                        // deserialize is skipped in rendering, so a search that
+                        // DID hit its cap could report `total_matches == limit-1`
+                        // and silently lose the warning.
+                        //
+                        // Hitting the cap means "possibly more", not "certainly
+                        // more": a query matching exactly `limit` messages is
+                        // complete and indistinguishable from one that is not.
+                        let capped = results.rows_examined >= limit;
+                        let unreadable = if results.unrenderable_matches == 0 {
+                            String::new()
+                        } else {
+                            format!(
+                                "({} matching message row(s) could not be rendered because the \
+                                 stored content was malformed or unsupported; they are counted \
+                                 above)\n",
+                                results.unrenderable_matches
+                            )
+                        };
                         let mut output = format!(
-                            "Found {} matching message(s) across {} session(s) for query: '{}'\n\n",
-                            results.total_matches,
+                            "Found {}{} matching message(s) across {} readable session(s) for query: '{}'\n{}\n",
+                            if capped { "at least " } else { "" },
+                            results.rows_examined,
                             results.results.len(),
-                            query
+                            query,
+                            if capped {
+                                format!(
+                                    "(the {limit}-message limit was reached, so there may be \
+                                     further matches that are not shown; narrow the query or \
+                                     raise `limit`)\n{unreadable}"
+                                )
+                            } else {
+                                unreadable
+                            }
                         );
                         for (idx, result) in results.results.iter().enumerate() {
                             output.push_str(&format!(
@@ -353,8 +645,7 @@ impl ChatRecallClient {
                                     idx + 1,
                                     msg_idx + 1,
                                     message.role,
-                                    message
-                                        .content
+                                    excerpt(&message.content, &query)
                                         .lines()
                                         .map(|line| format!("   {}", line))
                                         .collect::<Vec<_>>()
@@ -387,8 +678,9 @@ impl ChatRecallClient {
             indoc! {r#"
                 Search past chat or load session summaries. Use when it is clear user expects some memory or context.
 
-                search mode (query): Use multiple keywords/synonyms. Returns messages grouped by session, ordered by recency. Supports date filters.
-                load mode (session_id): Returns first/last 3 messages of a session.
+                search mode (query): Use multiple keywords/synonyms; any of them may match. Returns messages grouped by session, best match first, each message clipped to an excerpt. `limit` caps MESSAGES, not sessions, so a broad query can return few sessions — narrow it rather than raising the limit. `after_date`/`before_date` are exact instants, not days, so `before_date: '2025-10-15T00:00:00Z'` stops at midnight — pass '2025-10-15T23:59:59Z' to include that day.
+                load mode (session_id): Returns the first and last few messages of one session, each clipped to a long excerpt.
+                Mutually exclusive: if both are given, session_id wins and query is ignored.
             "#}
             .to_string(),
             input_schema,
@@ -465,6 +757,28 @@ mod tests {
     use crate::session::SessionManager;
     use rmcp::model::Tool as McpTool;
     use std::sync::Arc;
+
+    #[test]
+    fn load_rendering_has_one_hard_budget_across_arbitrarily_many_parts() {
+        let parts = (0..40)
+            .map(|index| format!("PART-{index:02}:{}", "x".repeat(2_000)))
+            .collect::<Vec<_>>();
+
+        let rendered = render_load_parts(&parts);
+
+        assert!(
+            rendered.chars().count() <= MAX_LOAD_MESSAGE_CHARS,
+            "rendered {} characters despite the {MAX_LOAD_MESSAGE_CHARS}-character cap",
+            rendered.chars().count()
+        );
+        assert!(rendered.contains("PART-00") && rendered.contains("PART-39"));
+        assert!(rendered.contains("30 content part(s) omitted"));
+        assert!(rendered.contains("truncated"));
+        assert!(
+            !rendered.contains("PART-20"),
+            "an omitted middle part was rendered without disclosure"
+        );
+    }
 
     /// A provider whose only interesting property is its tier. `complete_*` is
     /// never reached: every test here dispatches a tool, none runs a turn.

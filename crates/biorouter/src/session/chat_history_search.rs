@@ -28,6 +28,17 @@ pub struct ChatRecallMessage {
 pub struct ChatRecallResults {
     pub results: Vec<ChatRecallResult>,
     pub total_matches: usize,
+    /// Rows SQL returned, before rendering dropped any it could not deserialize.
+    ///
+    /// ⚠ This, not `total_matches`, is what says whether `LIMIT` was reached. A
+    /// row whose `content_json` will not parse is skipped when the results are
+    /// built, so a search that DID hit its cap can end up with
+    /// `total_matches < limit` and silently lose its truncation warning.
+    pub rows_examined: usize,
+    /// Matching SQL rows that could not be rendered because their stored content
+    /// was malformed or contained no supported recall text. These are matches,
+    /// not evidence that the query found nothing.
+    pub unrenderable_matches: usize,
 }
 
 type SqlQueryRow = (
@@ -223,6 +234,8 @@ impl<'a> ChatHistorySearch<'a> {
         let empty = || ChatRecallResults {
             results: vec![],
             total_matches: 0,
+            rows_examined: 0,
+            unrenderable_matches: 0,
         };
 
         // Prefer the FTS5 index (relevance-ranked via bm25) when it exists;
@@ -242,14 +255,20 @@ impl<'a> ChatHistorySearch<'a> {
             self.fetch_rows_like(&keywords).await?
         };
 
+        // ⚠ Count the rows BEFORE `process_rows` drops any it cannot parse:
+        // "did SQL hit the LIMIT" is a question about the query, not about how
+        // many of its rows happened to render.
+        let rows_examined = rows.len();
         let (session_messages, order) = self.process_rows(rows);
         let session_totals = self.get_session_totals(&session_messages).await?;
-        let results = self.convert_to_results(session_messages, order, session_totals);
+        let results =
+            self.convert_to_results(session_messages, order, session_totals, rows_examined);
 
         Ok(results)
     }
 
-    /// True when the FTS5 mirror table exists (created by schema migration 11).
+    /// True when the FTS5 mirror table exists (migration arm 15, and re-created
+    /// unconditionally by `reconcile_loop_schema` on every open).
     async fn fts_available(&self) -> bool {
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='messages_fts'",
@@ -269,12 +288,40 @@ impl<'a> ChatHistorySearch<'a> {
             r#"
             SELECT
                 s.id as session_id,
-                s.description as session_description,
+                -- ⚠ `sessions.description` is a DEAD legacy column: nothing in
+                -- production has written it since the title moved to
+                -- `sessions.name`, so reading it alone rendered every recall hit
+                -- as "Session:  (ID: …)" — an anonymous row the model cannot use
+                -- to decide which chat to open. This COALESCE is the same
+                -- fallback `session_manager.rs`'s summary query already uses, and
+                -- keeping `description` in it is what preserves rows written
+                -- before the rename. NO placeholder here on purpose: both
+                -- builders bind strictly positionally, so a `?` would shift every
+                -- later ordinal and mis-bind silently.
+                COALESCE(NULLIF(s.name, ''), NULLIF(s.description, ''), 'Untitled chat') as session_description,
                 s.working_dir as session_working_dir,
                 s.created_at as session_created_at,
                 m.role,
                 m.content_json,
-                m.timestamp
+                -- ⚠ The AUTHORED time, not `m.timestamp`.
+                --
+                -- `messages.timestamp` is `DEFAULT CURRENT_TIMESTAMP` and is
+                -- never bound on insert, and `replace_conversation_inner`
+                -- DELETEs a session's rows and re-INSERTs them — so every
+                -- compaction re-stamps the whole history to the moment of the
+                -- rewrite. Measured on a real store: 1,023 messages whose
+                -- `created_timestamp` and `timestamp` differ by more than a day,
+                -- and 103 of 740 substantial sessions where every message
+                -- carries one identical `timestamp`. `created_timestamp` is the
+                -- epoch the message was actually written and it survives the
+                -- rewrite, which is why the session-summary and activity queries
+                -- already use it.
+                --
+                -- The COALESCE covers the handful of rows that predate it (86 in
+                -- that store) by falling back to the write time. sqlx decodes an
+                -- INTEGER column into `DateTime<Utc>` via `timestamp_opt`, so the
+                -- row type is unchanged.
+                COALESCE(NULLIF(m.created_timestamp, 0), CAST(strftime('%s', m.timestamp) AS INTEGER)) as timestamp
             FROM messages_fts f
             INNER JOIN messages m ON m.id = f.message_id
             INNER JOIN sessions s ON m.session_id = s.id
@@ -286,10 +333,10 @@ impl<'a> ChatHistorySearch<'a> {
             sql.push_str(" AND s.id != ?");
         }
         if self.after_date.is_some() {
-            sql.push_str(" AND m.timestamp >= ?");
+            sql.push_str(" AND COALESCE(NULLIF(m.created_timestamp, 0), CAST(strftime('%s', m.timestamp) AS INTEGER)) >= ?");
         }
         if self.before_date.is_some() {
-            sql.push_str(" AND m.timestamp <= ?");
+            sql.push_str(" AND COALESCE(NULLIF(m.created_timestamp, 0), CAST(strftime('%s', m.timestamp) AS INTEGER)) <= ?");
         }
 
         // Issue #56 Gate D. `sessions s` is already joined above, so this is one
@@ -320,11 +367,17 @@ impl<'a> ChatHistorySearch<'a> {
         if let Some(exclude_id) = &self.exclude_session_id {
             query_builder = query_builder.bind(exclude_id);
         }
+        // ⚠ Epoch seconds, matching the INTEGER expression the clause compares
+        // against. This used to bind a `DateTime` against the TEXT
+        // `messages.timestamp`, which sqlx encodes as RFC3339 — and since 'T'
+        // sorts after the space that column stores, the bound silently dropped
+        // its own boundary day instead of erroring. Comparing integers removes
+        // the whole class.
         if let Some(after) = self.after_date {
-            query_builder = query_builder.bind(after);
+            query_builder = query_builder.bind(after.timestamp());
         }
         if let Some(before) = self.before_date {
-            query_builder = query_builder.bind(before);
+            query_builder = query_builder.bind(before.timestamp());
         }
         // Issue #56 DR-26 / Task 50 Step 3. Bound HERE — after `before_date`,
         // before the limit — because the clause is appended in exactly that
@@ -349,11 +402,17 @@ impl<'a> ChatHistorySearch<'a> {
             query_builder = query_builder.bind(exclude_id);
         }
 
+        // ⚠ Epoch seconds, matching the INTEGER expression the clause compares
+        // against. This used to bind a `DateTime` against the TEXT
+        // `messages.timestamp`, which sqlx encodes as RFC3339 — and since 'T'
+        // sorts after the space that column stores, the bound silently dropped
+        // its own boundary day instead of erroring. Comparing integers removes
+        // the whole class.
         if let Some(after) = self.after_date {
-            query_builder = query_builder.bind(after);
+            query_builder = query_builder.bind(after.timestamp());
         }
         if let Some(before) = self.before_date {
-            query_builder = query_builder.bind(before);
+            query_builder = query_builder.bind(before.timestamp());
         }
         // See the twin in `fetch_rows_fts`.
         if let Some((_, Some(institution))) = self.affiliation_clause() {
@@ -375,14 +434,36 @@ impl<'a> ChatHistorySearch<'a> {
     fn build_sql(&self, keywords: &[String]) -> String {
         let mut sql = String::from(
             r#"
-            SELECT 
+            SELECT
                 s.id as session_id,
-                s.description as session_description,
+                -- The twin of the COALESCE in `fetch_rows_fts`; see the note
+                -- there. The two builders must render the same title or a recall
+                -- would be named on an FTS-backed store and anonymous on the
+                -- `LIKE` fallback.
+                COALESCE(NULLIF(s.name, ''), NULLIF(s.description, ''), 'Untitled chat') as session_description,
                 s.working_dir as session_working_dir,
                 s.created_at as session_created_at,
                 m.role,
                 m.content_json,
-                m.timestamp
+                -- ⚠ The AUTHORED time, not `m.timestamp`.
+                --
+                -- `messages.timestamp` is `DEFAULT CURRENT_TIMESTAMP` and is
+                -- never bound on insert, and `replace_conversation_inner`
+                -- DELETEs a session's rows and re-INSERTs them — so every
+                -- compaction re-stamps the whole history to the moment of the
+                -- rewrite. Measured on a real store: 1,023 messages whose
+                -- `created_timestamp` and `timestamp` differ by more than a day,
+                -- and 103 of 740 substantial sessions where every message
+                -- carries one identical `timestamp`. `created_timestamp` is the
+                -- epoch the message was actually written and it survives the
+                -- rewrite, which is why the session-summary and activity queries
+                -- already use it.
+                --
+                -- The COALESCE covers the handful of rows that predate it (86 in
+                -- that store) by falling back to the write time. sqlx decodes an
+                -- INTEGER column into `DateTime<Utc>` via `timestamp_opt`, so the
+                -- row type is unchanged.
+                COALESCE(NULLIF(m.created_timestamp, 0), CAST(strftime('%s', m.timestamp) AS INTEGER)) as timestamp
             FROM messages m
             INNER JOIN sessions s ON m.session_id = s.id
             WHERE EXISTS (
@@ -411,10 +492,10 @@ impl<'a> ChatHistorySearch<'a> {
         }
 
         if self.after_date.is_some() {
-            sql.push_str(" AND m.timestamp >= ?");
+            sql.push_str(" AND COALESCE(NULLIF(m.created_timestamp, 0), CAST(strftime('%s', m.timestamp) AS INTEGER)) >= ?");
         }
         if self.before_date.is_some() {
-            sql.push_str(" AND m.timestamp <= ?");
+            sql.push_str(" AND COALESCE(NULLIF(m.created_timestamp, 0), CAST(strftime('%s', m.timestamp) AS INTEGER)) <= ?");
         }
 
         // Issue #56 Gate D — the same clause on the `LIKE` fallback. `execute`
@@ -430,7 +511,7 @@ impl<'a> ChatHistorySearch<'a> {
             sql.push_str(&clause);
         }
 
-        sql.push_str(" ORDER BY m.timestamp DESC LIMIT ?");
+        sql.push_str(" ORDER BY COALESCE(NULLIF(m.created_timestamp, 0), CAST(strftime('%s', m.timestamp) AS INTEGER)) DESC LIMIT ?");
 
         sql
     }
@@ -513,6 +594,7 @@ impl<'a> ChatHistorySearch<'a> {
         mut session_messages: HashMap<String, SessionMessageGroup>,
         order: Vec<String>,
         session_totals: HashMap<String, usize>,
+        rows_examined: usize,
     ) -> ChatRecallResults {
         // Emit sessions in ranked order (best first) rather than re-sorting by
         // recency, so bm25 relevance is what the caller sees.
@@ -555,6 +637,8 @@ impl<'a> ChatHistorySearch<'a> {
         ChatRecallResults {
             results,
             total_matches,
+            rows_examined,
+            unrenderable_matches: rows_examined.saturating_sub(total_matches),
         }
     }
 }
@@ -583,7 +667,10 @@ mod tests {
 
     #[derive(Clone)]
     struct Chat {
-        description: String,
+        /// Seeded into `sessions.name` — the column production writes. The
+        /// legacy `sessions.description` is exercised only by
+        /// `a_pre_rename_row_still_renders_its_legacy_description`.
+        name: String,
         working_dir: String,
         private: bool,
         text: String,
@@ -591,7 +678,7 @@ mod tests {
 
     fn chat(private: bool, text: &str) -> Chat {
         Chat {
-            description: if private {
+            name: if private {
                 "private chat".to_string()
             } else {
                 "public chat".to_string()
@@ -626,7 +713,7 @@ mod tests {
 
     fn private_chat_titled(description: &str, working_dir: &str, term: &str) -> Chat {
         Chat {
-            description: description.to_string(),
+            name: description.to_string(),
             working_dir: working_dir.to_string(),
             private: true,
             text: format!("notes about the {term}"),
@@ -810,8 +897,16 @@ mod tests {
             .await
             .unwrap();
 
+        // ⚠ This fixture must mirror PRODUCTION's `sessions` shape, which has
+        // BOTH `name` (where the title actually lives) and the legacy, never
+        // written `description`. It used to declare `description` only, so every
+        // test here seeded a title into a column production leaves empty — which
+        // is exactly why the empty-"Session:" bug passed a green suite for as
+        // long as it existed. Seed titles into `name`; `description` is only
+        // written by `a_pre_rename_row_still_renders_its_legacy_description`.
         sqlx::query(
-            "CREATE TABLE sessions (id TEXT PRIMARY KEY, description TEXT NOT NULL DEFAULT '', \
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', \
+             description TEXT NOT NULL DEFAULT '', \
              working_dir TEXT NOT NULL DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, \
              privacy_tier TEXT NOT NULL DEFAULT 'public')",
         )
@@ -841,11 +936,11 @@ mod tests {
             let sid = format!("s{i}");
             let ts = base - chrono::Duration::seconds(i as i64);
             sqlx::query(
-                "INSERT INTO sessions (id, description, working_dir, privacy_tier) \
+                "INSERT INTO sessions (id, name, working_dir, privacy_tier) \
                  VALUES (?, ?, ?, ?)",
             )
             .bind(&sid)
-            .bind(&c.description)
+            .bind(&c.name)
             .bind(&c.working_dir)
             .bind(if c.private { "private" } else { "public" })
             .execute(&pool)
@@ -860,8 +955,17 @@ mod tests {
             )
             .bind(&sid)
             .bind(&content_json)
-            .bind(i as i64)
-            .bind(ts)
+            // ⚠ `created_timestamp` must AGREE with `timestamp`, and it must be
+            // the real epoch of `ts`. It used to be the loop index (0, 1, 2 …),
+            // i.e. 1970 — harmless while nothing read the column, and silently
+            // ranking-inverting the moment recall started ordering by it, since
+            // the index ascends while `ts` descends.
+            .bind(ts.timestamp())
+            // ⚠ `.naive_utc()`, because sqlx encodes a `DateTime` as RFC3339 and
+            // production stores `%F %T`. A fixture that stored the RFC3339 form
+            // would make any date-filter test here pass against a format the
+            // real column never holds — which is how the date bug survived.
+            .bind(ts.naive_utc())
             .execute(&pool)
             .await
             .unwrap();
@@ -981,6 +1085,81 @@ mod tests {
                 "post-filtered in Rust instead of in SQL ({path:?})"
             );
         }
+    }
+
+    /// Recall must read the AUTHORED time, not the row's write time.
+    ///
+    /// ⚠ `messages.timestamp` is re-stamped for a whole session on every
+    /// compaction, so ordering and date-filtering on it silently treats an old
+    /// chat as if it happened at the moment it was last rewritten. This
+    /// simulates that: the write time is moved to the far future while
+    /// `created_timestamp` stays put.
+    #[test_case::test_case(QueryPath::Fts; "fts")]
+    #[test_case::test_case(QueryPath::LikeFallback; "like_fallback")]
+    #[tokio::test]
+    async fn a_rewritten_row_is_dated_by_when_it_was_written_not_by_the_rewrite(path: QueryPath) {
+        let db = seeded(path, &[public_chat_containing("ribosome")]).await;
+        let authored = sqlx::query_scalar::<_, i64>("SELECT created_timestamp FROM messages")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE messages SET timestamp = '2099-01-01 00:00:00'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let r = search_as(ProviderTier::Private, &db, "ribosome").await;
+        assert_eq!(
+            r.results[0].messages[0].timestamp.timestamp(),
+            authored,
+            "the rewrite's timestamp was reported as the message's time ({path:?})"
+        );
+        assert!(
+            r.results[0].last_activity.timestamp() == authored,
+            "last_activity followed the rewrite rather than the authored time ({path:?})"
+        );
+    }
+
+    /// The `NULLIF(s.description, '')` arm of the title expression.
+    ///
+    /// ⚠ Without this, that arm and the `'Untitled chat'` literal are dead
+    /// weight in both builders: delete either and the whole suite stays green,
+    /// and a session written before the title moved to `sessions.name` renders
+    /// as `Session:  (ID: …)` again — the exact defect the COALESCE fixes.
+    #[test_case::test_case(QueryPath::Fts; "fts")]
+    #[test_case::test_case(QueryPath::LikeFallback; "like_fallback")]
+    #[tokio::test]
+    async fn a_pre_rename_row_still_renders_its_legacy_description(path: QueryPath) {
+        let db = seeded(path, &[public_chat_containing("ribosome")]).await;
+        // Move this row back to the pre-rename shape: no name, a description.
+        sqlx::query("UPDATE sessions SET name = '', description = 'legacy title' WHERE id = 's0'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let r = search_as(ProviderTier::Private, &db, "ribosome").await;
+        assert_eq!(
+            r.results[0].session_description, "legacy title",
+            "a row written before the rename must still be named ({path:?})"
+        );
+    }
+
+    /// The `'Untitled chat'` arm: both columns empty must not render a blank.
+    #[test_case::test_case(QueryPath::Fts; "fts")]
+    #[test_case::test_case(QueryPath::LikeFallback; "like_fallback")]
+    #[tokio::test]
+    async fn a_row_with_no_title_at_all_renders_a_placeholder(path: QueryPath) {
+        let db = seeded(path, &[public_chat_containing("ribosome")]).await;
+        sqlx::query("UPDATE sessions SET name = '', description = '' WHERE id = 's0'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let r = search_as(ProviderTier::Private, &db, "ribosome").await;
+        assert_eq!(
+            r.results[0].session_description, "Untitled chat",
+            "an untitled row must not render as an empty name ({path:?})"
+        );
     }
 
     #[tokio::test]

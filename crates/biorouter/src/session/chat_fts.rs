@@ -36,7 +36,11 @@ pub fn searchable_parts(content: &[MessageContent]) -> Vec<String> {
         .iter()
         .filter_map(|content| match content {
             MessageContent::Text(tc) => Some(tc.text.clone()),
-            MessageContent::ToolRequest(tr) => Some(format!("[Tool: {}]", tr.to_readable_string())),
+            // `to_readable_string()` already begins "Tool: ", so wrapping it in
+            // another "[Tool: …]" rendered "[Tool: Tool: developer__shell, …]".
+            // Harmless while this text was only ever an FTS index entry; visible
+            // to the model now that recall renders these parts.
+            MessageContent::ToolRequest(tr) => Some(format!("[{}]", tr.to_readable_string())),
             MessageContent::ToolResponse(_) => Some("[Tool Response]".to_string()),
             MessageContent::Thinking(t) => Some(format!("[Thinking: {}]", t.thinking)),
             _ => None,
