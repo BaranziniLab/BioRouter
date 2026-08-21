@@ -14,7 +14,7 @@ BioRouter's updater replaces the old "open the download page, grab the DMG, drag
 |------|--------|-------|
 | Startup "update available" modal | Opened `biorouter.ucsf.edu/download` in a browser | Listens to `electron-updater` events; background-downloads; shows a **Restart & Update** button that quits + installs + relaunches in one click |
 | Settings → Check for Updates | Opened the GitHub release page | Drives the same `electron-updater` pipeline with progress + one-click install |
-| Release artifacts | 7 (5 GUI + 2 CLI) | 10 — adds `Biorouter-darwin-arm64-{ver}.zip`, `Biorouter-darwin-x64-{ver}.zip`, `latest-mac.yml` so `electron-updater` can install in place on macOS |
+| Release artifacts | 7 (5 GUI + 2 CLI) | 11 — 5 GUI + 2 CLI + the headless Linux tarball + `Biorouter-darwin-arm64-{ver}.zip`, `Biorouter-darwin-x64-{ver}.zip`, and `latest-mac.yml` for in-place macOS updates |
 | Dependency / CLI checks | unchanged | **unchanged** (DependencySetupModal "Biorouter CLI Update" card behaves exactly as before) |
 | User config / sessions / extensions | preserved | **preserved** (live in `~/.config/biorouter`, never touched by app replacement) |
 
@@ -200,7 +200,7 @@ installed build `X-1`, then proceed.
 
 Requires building a real signed and notarized release.
 
-- [ ] `scripts/release.sh bump X` updates all 5 version files in lockstep (`scripts/check-version-consistency.sh` passes).
+- [ ] `scripts/release.sh bump X` updates all 6 version-bearing files in lockstep (`scripts/check-version-consistency.sh` passes).
 - [ ] `scripts/release.sh mac-arm64 X` and `mac-intel X` produce:
   - [ ] `ui/desktop/out/make/Biorouter-X-arm64.dmg` and `-x64.dmg`
   - [ ] `ui/desktop/out/make/zip/darwin/arm64/Biorouter-darwin-arm64-X.zip`
@@ -208,8 +208,8 @@ Requires building a real signed and notarized release.
 - [ ] Each darwin zip contains `Biorouter.app/` at the **root** with a `Contents/_CodeSignature` (`unzip -l … | head`).
 - [ ] The `.app` inside each zip is signed + **notarized**: `codesign -dv` and `xcrun stapler validate` pass on `out/Biorouter-darwin-<arch>/Biorouter.app`.
 - [ ] `scripts/release.sh mac-manifest X` writes `out/make/latest-mac.yml`; it references **both** `Biorouter-darwin-arm64-X.zip` and `Biorouter-darwin-x64-X.zip` with correct sizes and base64 SHA-512.
-- [ ] `scripts/release.sh verify X` reports all 9 file artifacts present + the `latest-mac.yml` arch-zip cross-check ✓.
-- [ ] `scripts/release.sh publish X` uploads **10** assets (the 5 GUI + 2 CLI + 2 darwin zips + `latest-mac.yml`). Confirm with `gh release view vX --json assets --jq '.assets[].name'`.
+- [ ] `scripts/release.sh verify X` reports all 10 file artifacts present + the `latest-mac.yml` arch-zip cross-check ✓, and verifies the local provenance manifest binds all 11 assets to the current source SHA.
+- [ ] The draft contains **11** assets (5 GUI + 2 CLI + the headless Linux tarball + 2 darwin zips + `latest-mac.yml`). `scripts/release.sh publish X` must verify every uploaded SHA-256 digest against the local files before publication. Confirm with `gh release view vX --json assets --jq '.assets[].name'`.
 
 ### Section C — macOS GUI auto-update, the core flow (arm64 **and** Intel)
 
