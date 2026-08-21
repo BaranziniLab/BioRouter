@@ -119,7 +119,7 @@ for the Rust build as follows:
 
 ```powershell
 $jobs = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
-cargo build --release --bin biorouter --bin biorouterd --jobs $jobs
+cargo build --release --bin biorouter --bin biorouterd --locked --jobs $jobs
 New-Item -ItemType Directory -Force ui\desktop\src\bin | Out-Null
 Copy-Item target\release\biorouter.exe,target\release\biorouterd.exe ui\desktop\src\bin\
 Set-Location ui\desktop
@@ -143,6 +143,19 @@ The ZIP is written to
 - Electron Forge's Windows ZIP contains `Biorouter.exe` and `resources/` at the
   archive root; there is no extra `Biorouter-win32-x64/` directory after
   extraction.
+- Bundled MinGit is versioned with `mingit-version.txt`. Keep the marker beside
+  `cmd/git.exe`: the desktop startup code uses both files to detect an older or
+  partial persistent copy under `%LOCALAPPDATA%\Biorouter\git`, then replaces it
+  through a verified staging directory.
+- Windows test builds should set `CARGO_PROFILE_TEST_DEBUG=0` before the Rust
+  cache step. This keeps test behavior and assertions intact while avoiding very
+  large MSVC PDB files, and setting it before cache restore gives the optimized
+  artifacts a distinct cache key.
+- Do not repeat unit-test targets after `cargo test --workspace --lib --bins`.
+  Run only integration targets that command does not cover, and retain Cargo's
+  HTML timings artifact so future Windows compile/link regressions are visible.
+  Cargo already uses the available logical processors by default; explicit
+  `--jobs` is useful in local release commands to make that intent clear.
 - Do not consider the release complete until the ZIP itself has been extracted
   on Windows, both embedded binaries report the expected version,
   `biorouter term --help` succeeds, and `Biorouter.exe` remains running through
