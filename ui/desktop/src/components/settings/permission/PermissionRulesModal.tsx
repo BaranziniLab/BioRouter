@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '../../ui/dialog';
 import { FixedExtensionEntry, useConfig } from '../../ConfigContext';
 import { ChevronRight, SlidersHorizontal } from '../../icons/app-icons';
 import PermissionModal from './PermissionModal';
@@ -92,9 +98,9 @@ export default function PermissionRulesModal({ isOpen, onClose }: PermissionRule
               <DialogTitle className="text-base font-semibold text-text-default">
                 Tool permissions
               </DialogTitle>
-              <p className="mt-1 text-sm leading-5 text-text-muted break-words">
+              <DialogDescription className="mt-1 text-sm leading-5 text-text-muted break-words">
                 Choose how Manual and Smart modes handle tools from each enabled extension.
-              </p>
+              </DialogDescription>
             </div>
           </div>
         </DialogHeader>

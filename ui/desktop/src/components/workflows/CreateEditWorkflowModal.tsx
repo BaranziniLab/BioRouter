@@ -10,7 +10,7 @@ import { WorkflowFormFields } from './shared/WorkflowFormFields';
 import { WorkflowFormData } from './shared/workflowFormSchema';
 import { toastSuccess, toastError } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
-import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
 import { storeSubscriptionCleanup } from '../../utils/storeSubscription';
 
 interface CreateEditWorkflowModalProps {
@@ -372,7 +372,7 @@ export default function CreateEditWorkflowModal({
         <div className="flex items-center justify-between px-6 py-5 pr-14 border-b border-border-subtle flex-shrink-0">
           <div>
             <DialogTitle>{isCreateMode ? 'Create Workflow' : 'Edit Workflow'}</DialogTitle>
-            <p className="text-supporting text-text-muted mt-0.5">
+            <DialogDescription className="text-supporting text-text-muted mt-0.5">
               {isCreateMode
                 ? 'Define agent behavior and capabilities for reusable chats.'
                 : 'Edit the workflow to change agent behavior.'}{' '}
@@ -385,7 +385,7 @@ export default function CreateEditWorkflowModal({
                 Learn more
                 <ExternalLink className="w-3 h-3" />
               </a>
-            </p>
+            </DialogDescription>
           </div>
         </div>
 

@@ -39,6 +39,8 @@ describe('ExtensionModal', () => {
       />
     );
 
+    expect(screen.getByRole('dialog')).not.toHaveAttribute('aria-describedby');
+
     const nameInput = screen.getByPlaceholderText('Enter extension name...');
     const submitButton = screen.getByTestId('extension-submit-btn');
 
@@ -99,6 +101,44 @@ describe('ExtensionModal', () => {
     // `userEvent.setup({ delay: null })` in this file; this is the zero-risk
     // version of it.
   }, 60000);
+
+  it('links the visible removal warning only while removal is being confirmed', async () => {
+    const user = userEvent.setup({ delay: null });
+    const initialData: ExtensionFormData = {
+      name: 'developer',
+      description: 'Developer tools',
+      type: 'stdio',
+      cmd: 'developer-server',
+      endpoint: '',
+      enabled: true,
+      timeout: 300,
+      envVars: [],
+      headers: [],
+    };
+
+    render(
+      <ExtensionModal
+        title="Edit extension"
+        initialData={initialData}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        onDelete={vi.fn()}
+        submitLabel="Save"
+        modalType="edit"
+      />
+    );
+
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).not.toHaveAttribute('aria-describedby');
+
+    await user.click(screen.getByRole('button', { name: 'Remove extension' }));
+
+    const descriptionId = dialog.getAttribute('aria-describedby');
+    expect(descriptionId).toBeTruthy();
+    expect(document.getElementById(descriptionId!)).toHaveTextContent(
+      'This will permanently remove this extension and all of its settings.'
+    );
+  });
 
   /**
    * Issue #56 §13.5: "The manual 'Add stdio extension' form carries the same

@@ -7,7 +7,13 @@ import { Input } from '../../../ui/input';
 import { Switch } from '../../../ui/switch';
 import { getPredefinedModelsFromEnv, shouldShowPredefinedModels } from '../predefinedModelsUtils';
 import { fetchModelsForProviders } from '../modelInterface';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '../../../ui/dialog';
 
 interface LeadWorkerSettingsProps {
   isOpen: boolean;
@@ -186,7 +192,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
   if (isLoading) {
     return (
       <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-        <DialogContent className="p-0 sm:max-w-[560px]">
+        <DialogContent aria-describedby={undefined} className="p-0 sm:max-w-[560px]">
           <DialogHeader className="px-5 pb-2 pt-5">
             <DialogTitle>Lead/Worker Mode</DialogTitle>
           </DialogHeader>
@@ -203,9 +209,9 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
           <DialogTitle>Lead/Worker Mode</DialogTitle>
         </DialogHeader>
         <div className="space-y-5 px-5 pb-5">
-          <p className="text-sm text-text-muted">
+          <DialogDescription className="text-sm text-text-muted">
             Configure a lead model for planning and a worker model for execution.
-          </p>
+          </DialogDescription>
 
           <div className="biorouter-modal-panel flex items-center justify-between gap-4 rounded-container px-3 py-2.5">
             <div>

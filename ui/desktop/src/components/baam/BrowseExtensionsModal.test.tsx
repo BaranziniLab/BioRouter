@@ -31,7 +31,7 @@ vi.mock('../BrxtInstallModal', async () => {
       seenRegistrySource(registrySource);
       return (
         <Dialog open onOpenChange={(open) => !open && onClose()}>
-          <DialogContent>
+          <DialogContent aria-describedby={undefined}>
             <DialogTitle>Configure downloaded extension</DialogTitle>
           </DialogContent>
         </Dialog>

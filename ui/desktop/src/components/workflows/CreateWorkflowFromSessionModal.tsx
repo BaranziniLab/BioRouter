@@ -12,7 +12,7 @@ import { saveWorkflow } from '../../workflow/workflow_management';
 import type { ExtensionConfig, Manifest } from '../../api';
 import { ALL_SKILL_DIRS, loadSkillsFromDirs } from '../skills/skillUtils';
 import type { WorkflowResourceItem } from './shared/WorkflowResourcePicker';
-import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
 import { storeSubscriptionCleanup } from '../../utils/storeSubscription';
 
 interface CreateWorkflowFromSessionModalProps {
@@ -401,9 +401,9 @@ export default function CreateWorkflowFromSessionModal({
         >
           <div>
             <DialogTitle>Create workflow from this chat</DialogTitle>
-            <p className="text-supporting text-text-muted mt-0.5">
+            <DialogDescription className="text-supporting text-text-muted mt-0.5">
               Create a reusable workflow based on your current chat
-            </p>
+            </DialogDescription>
           </div>
         </div>
 

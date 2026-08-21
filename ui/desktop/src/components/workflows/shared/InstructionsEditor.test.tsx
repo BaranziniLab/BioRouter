@@ -17,7 +17,7 @@ describe('InstructionsEditor', () => {
 
       return (
         <Dialog open={parentOpen} onOpenChange={setParentOpen}>
-          <DialogContent>
+          <DialogContent aria-describedby={undefined}>
             <DialogTitle>Workflow editor</DialogTitle>
             <InstructionsEditor
               isOpen={editorOpen}

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Button } from '../../ui/button';
-import { Dialog, DialogContent, DialogTitle } from '../../ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../../ui/dialog';
 
 interface JsonSchemaEditorProps {
   isOpen: boolean;
@@ -101,9 +101,9 @@ export default function JsonSchemaEditor({
                 Insert Example
               </Button>
             </div>
-            <p className="text-supporting text-text-muted mb-3">
+            <DialogDescription className="text-supporting text-text-muted mb-3">
               Define the expected structure of the AI's response using JSON Schema format
-            </p>
+            </DialogDescription>
           </div>
 
           <div className="flex-1 min-h-0">
