@@ -161,6 +161,7 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
         onOpenChange={(open) => !open && !isUpdating && !disabled && handleCancel()}
       >
         <DialogContent
+          aria-describedby={undefined}
           dismissible={!isUpdating && !disabled}
           className="w-[500px] max-w-[90vw] sm:max-w-[500px]"
         >

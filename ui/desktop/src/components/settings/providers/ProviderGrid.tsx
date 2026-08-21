@@ -248,7 +248,7 @@ function ProviderCards({
         })}
       </div>
       <Dialog open={showCustomProviderModal} onOpenChange={handleCloseModal}>
-        <DialogContent className="sm:max-w-[600px]">
+        <DialogContent aria-describedby={undefined} className="sm:max-w-[600px]">
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>
           </DialogHeader>

@@ -10,7 +10,7 @@ import {
   type SkillCategory,
 } from './registry';
 import { installRegistrySkill } from './installSkill';
-import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
 
 interface Props {
   onClose: () => void;
@@ -148,7 +148,7 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
         <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
           <div>
             <DialogTitle>Browse Skills</DialogTitle>
-            <p className="text-xs text-text-muted mt-0.5">
+            <DialogDescription className="text-xs text-text-muted mt-0.5">
               Install skills from the Biorouter marketplace. Select as many as you like. Skills need
               no setup.
               {catalogFreshnessLine({ live, fetchedAt }) && (
@@ -157,7 +157,7 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
                   · {catalogFreshnessLine({ live, fetchedAt })}
                 </span>
               )}
-            </p>
+            </DialogDescription>
           </div>
         </div>
 

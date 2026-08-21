@@ -11,7 +11,7 @@ import {
   type BaamRegistry,
   type RegistryExtension,
 } from './registry';
-import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
 import { PrivacyBadge } from '../ui/PrivacyBadge';
 
 interface Props {
@@ -112,7 +112,7 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
         <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
           <div>
             <DialogTitle>Browse Extensions</DialogTitle>
-            <p className="text-xs text-text-muted mt-0.5">
+            <DialogDescription className="text-xs text-text-muted mt-0.5">
               Install MCP extensions from the Biorouter marketplace. Add one at a time. Most need
               credentials configured during install.
               {/* §10.2: a last-good catalogue is dated rather than dismissed as
@@ -123,7 +123,7 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
                   · {catalogFreshnessLine({ live, fetchedAt })}
                 </span>
               )}
-            </p>
+            </DialogDescription>
           </div>
         </div>
 

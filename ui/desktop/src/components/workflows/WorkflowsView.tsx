@@ -33,7 +33,7 @@ import CreateEditWorkflowModal from './CreateEditWorkflowModal';
 import { generateDeepLink, Workflow } from '../../workflow';
 import { useNavigation } from '../../hooks/useNavigation';
 import { CronPicker } from '../schedule/CronPicker';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui/dialog';
 import { SearchView } from '../conversation/SearchView';
 import cronstrue from 'cronstrue';
 import { getInitialWorkingDir } from '../../utils/workingDir';
@@ -746,7 +746,11 @@ export default function WorkflowsView() {
           open={showScheduleDialog}
           onOpenChange={(open) => !isSavingSchedule && setShowScheduleDialog(open)}
         >
-          <DialogContent dismissible={!isSavingSchedule} className="max-w-md">
+          <DialogContent
+            aria-describedby={undefined}
+            dismissible={!isSavingSchedule}
+            className="max-w-md"
+          >
             <DialogHeader>
               <DialogTitle>
                 {scheduleWorkflowManifest.schedule_cron ? 'Edit' : 'Add'} Schedule
@@ -806,9 +810,9 @@ export default function WorkflowsView() {
             </DialogHeader>
             <div className="space-y-4">
               <div>
-                <p className="text-body text-text-muted mb-3">
+                <DialogDescription className="text-body text-text-muted mb-3">
                   Set a slash command to quickly run this workflow from any chat
-                </p>
+                </DialogDescription>
                 <div className="flex gap-2 items-center">
                   <span className="text-text-muted">/</span>
                   <input

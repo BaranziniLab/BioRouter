@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Button } from '../../ui/button';
-import { Dialog, DialogContent, DialogTitle } from '../../ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../../ui/dialog';
 
 interface InstructionsEditorProps {
   isOpen: boolean;
@@ -82,11 +82,11 @@ Use {{parameter_name}} syntax for any user-provided values.`;
                 Insert Example
               </Button>
             </div>
-            <p className="text-supporting text-text-muted mb-3">
+            <DialogDescription className="text-supporting text-text-muted mb-3">
               Use{' '}
               <code className="bg-background-muted px-1 rounded-inner">{`{{parameter_name}}`}</code>{' '}
               syntax to define parameters that users can fill in
-            </p>
+            </DialogDescription>
           </div>
 
           <div className="flex-1 min-h-0">

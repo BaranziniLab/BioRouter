@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Button } from '../ui/button';
 import { parseSkillFrontmatter, toSlug, BIOROUTER_SKILLS_DIR } from './skillUtils';
 import { toastSuccess, toastError } from '../../toasts';
-import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
 
 const TEMPLATE = `---
 name: example-skill
@@ -78,11 +78,11 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
         </div>
 
         <div className="p-6 flex flex-col gap-3 flex-1 overflow-hidden">
-          <p className="text-supporting text-text-muted">
+          <DialogDescription className="text-supporting text-text-muted">
             Edit the YAML frontmatter (<code>name</code> and <code>description</code> required),
             then write your skill instructions below. A folder named after the skill will be created
             in Biorouter Skills with a <code>SKILL.md</code> inside.
-          </p>
+          </DialogDescription>
           <textarea
             className="biorouter-modal-panel flex-1 min-h-[300px] font-mono text-code rounded-element p-3 resize-none"
             value={content}

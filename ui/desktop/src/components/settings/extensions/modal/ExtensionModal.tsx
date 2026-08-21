@@ -348,7 +348,10 @@ export default function ExtensionModal({
   return (
     <>
       <Dialog open={true} onOpenChange={handleClose}>
-        <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
+        <DialogContent
+          {...(showDeleteConfirmation ? {} : { 'aria-describedby': undefined })}
+          className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto"
+        >
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               {getModalIcon()}

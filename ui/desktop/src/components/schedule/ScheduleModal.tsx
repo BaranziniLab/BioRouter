@@ -111,6 +111,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
       }}
     >
       <DialogContent
+        aria-describedby={undefined}
         dismissible={!isLoadingExternally}
         className="flex max-h-[90vh] max-w-md flex-col gap-0 overflow-hidden p-0 sm:max-w-md"
       >

@@ -96,6 +96,7 @@ export function DangerousConfirmDialog({
     <Dialog open={open} onOpenChange={(next) => !next && !busy && onCancel()}>
       <DialogContent
         dismissible={!busy}
+        {...(description ? {} : { 'aria-describedby': undefined })}
         className="sm:max-w-[480px]"
         // (2) above. Radix's default lands on the close button `dialog.tsx`
         // renders; the destructive button must never be the thing focus is

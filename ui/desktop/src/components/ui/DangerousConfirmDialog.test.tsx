@@ -104,4 +104,36 @@ describe('DangerousConfirmDialog', () => {
     await user.keyboard('{Enter}');
     expect(onConfirm).not.toHaveBeenCalled();
   });
+
+  it('links a provided description to the dialog', () => {
+    render(
+      <DangerousConfirmDialog
+        open
+        title="Disable protection?"
+        description="This cannot be undone."
+        confirmLabel="Disable"
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    const dialog = screen.getByRole('dialog');
+    const descriptionId = dialog.getAttribute('aria-describedby');
+    expect(descriptionId).toBeTruthy();
+    expect(document.getElementById(descriptionId!)).toHaveTextContent('This cannot be undone.');
+  });
+
+  it('opts out of aria-describedby when no description is provided', () => {
+    render(
+      <DangerousConfirmDialog
+        open
+        title="Disable protection?"
+        confirmLabel="Disable"
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole('dialog')).not.toHaveAttribute('aria-describedby');
+  });
 });

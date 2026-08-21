@@ -2,7 +2,14 @@ import { useState, useEffect, useRef } from 'react';
 import { Switch } from '../../ui/switch';
 import { Button } from '../../ui/button';
 import { Settings } from '../../icons/app-icons';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../../ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../../ui/dialog';
 import UpdateSection from './UpdateSection';
 import UsageSection from '../usage/UsageSection';
 import ResetPanel from './ResetPanel';
@@ -331,7 +338,9 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
           <div className="py-4">
             {isMacOS ? (
               <div className="space-y-4">
-                <p>To enable notifications on macOS:</p>
+                <DialogDescription className="text-text-default">
+                  To enable notifications on macOS:
+                </DialogDescription>
                 <ol className="list-decimal pl-5 space-y-2">
                   <li>Open System Preferences</li>
                   <li>Click on Notifications</li>
@@ -341,7 +350,9 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
               </div>
             ) : (
               <div className="space-y-4">
-                <p>To enable notifications on Windows:</p>
+                <DialogDescription className="text-text-default">
+                  To enable notifications on Windows:
+                </DialogDescription>
                 <ol className="list-decimal pl-5 space-y-2">
                   <li>Open Settings</li>
                   <li>Go to System &gt; Notifications</li>

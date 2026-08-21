@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PermissionRulesModal from './PermissionRulesModal';
 
 const { getExtensions } = vi.hoisted(() => ({ getExtensions: vi.fn() }));
@@ -18,6 +18,10 @@ vi.mock('./PermissionModal', () => ({
 describe('PermissionRulesModal', () => {
   beforeEach(() => {
     getExtensions.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('lists enabled real extensions without fabricating a platform extension', async () => {
@@ -57,11 +61,16 @@ describe('PermissionRulesModal', () => {
   });
 
   it('shows a retryable error instead of leaving the extension list loading forever', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     getExtensions.mockRejectedValue(new Error('unavailable'));
 
     render(<PermissionRulesModal isOpen onClose={vi.fn()} />);
 
     expect(await screen.findByText('Enabled extensions could not be loaded.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+    expect(error).toHaveBeenCalledWith(
+      'Failed to load extensions for permission settings:',
+      expect.objectContaining({ message: 'unavailable' })
+    );
   });
 });

@@ -50,6 +50,11 @@ describe('CreateWorkflowFromSessionModal', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.assign(window, {
+      electron: {
+        listSkillDirs: vi.fn().mockResolvedValue([]),
+      },
+    });
     const mockResponse: CreateWorkflowResponse = {
       workflow: {
         title: 'Analyzed Workflow Title',
@@ -95,10 +100,11 @@ describe('CreateWorkflowFromSessionModal', () => {
   });
 
   describe('Modal Rendering', () => {
-    it('renders modal when open', () => {
+    it('renders modal when open', async () => {
       render(<CreateWorkflowFromSessionModal {...defaultProps} />);
 
       expect(screen.getByTestId('create-workflow-modal')).toBeInTheDocument();
+      await screen.findByTestId('form-state');
     });
 
     it('does not render when closed', () => {
@@ -107,11 +113,12 @@ describe('CreateWorkflowFromSessionModal', () => {
       expect(screen.queryByTestId('create-workflow-modal')).not.toBeInTheDocument();
     });
 
-    it('renders modal header with close button', () => {
+    it('renders modal header with close button', async () => {
       render(<CreateWorkflowFromSessionModal {...defaultProps} />);
 
       expect(screen.getByTestId('modal-header')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
+      await screen.findByTestId('form-state');
     });
 
     it('calls onClose when close button is clicked', async () => {
@@ -124,11 +131,12 @@ describe('CreateWorkflowFromSessionModal', () => {
   });
 
   describe('Analysis Workflow', () => {
-    it('shows analyzing state initially', () => {
+    it('shows analyzing state initially', async () => {
       render(<CreateWorkflowFromSessionModal {...defaultProps} />);
 
       expect(screen.getByTestId('analyzing-state')).toBeInTheDocument();
       expect(screen.getByTestId('analyzing-title')).toBeInTheDocument();
+      await screen.findByTestId('form-state');
     });
 
     it('displays analysis progress indicator', async () => {
@@ -143,12 +151,14 @@ describe('CreateWorkflowFromSessionModal', () => {
         },
         { timeout: 1000 }
       );
+      await screen.findByTestId('form-state');
     });
 
-    it('shows loading indicator during analysis', () => {
+    it('shows loading indicator during analysis', async () => {
       render(<CreateWorkflowFromSessionModal {...defaultProps} />);
 
       expect(screen.getByTestId('analysis-spinner')).toBeInTheDocument();
+      await screen.findByTestId('form-state');
     });
 
     it('transitions to form state after analysis completes', async () => {
@@ -353,6 +363,7 @@ describe('CreateWorkflowFromSessionModal', () => {
       render(<CreateWorkflowFromSessionModal {...defaultProps} sessionId="" />);
 
       expect(screen.getByTestId('create-workflow-modal')).toBeInTheDocument();
+      await screen.findByTestId('form-state');
     });
 
     it('handles form validation errors', async () => {

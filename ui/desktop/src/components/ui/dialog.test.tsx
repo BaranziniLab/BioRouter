@@ -18,7 +18,7 @@ function ControlledDialog({ dismissible = true, onClose = () => {} }) {
       }}
     >
       <DialogTrigger>Open dialog</DialogTrigger>
-      <DialogContent dismissible={dismissible}>
+      <DialogContent dismissible={dismissible} aria-describedby={undefined}>
         <DialogTitle>Test dialog</DialogTitle>
         <button type="button">Inside action</button>
       </DialogContent>
@@ -83,10 +83,10 @@ describe('DialogContent dismissal contract', () => {
 
       return (
         <Dialog open={parentOpen} onOpenChange={setParentOpen}>
-          <DialogContent>
+          <DialogContent aria-describedby={undefined}>
             <DialogTitle>Parent dialog</DialogTitle>
             <Dialog open={childOpen} onOpenChange={setChildOpen}>
-              <DialogContent>
+              <DialogContent aria-describedby={undefined}>
                 <DialogTitle>Child dialog</DialogTitle>
               </DialogContent>
             </Dialog>
