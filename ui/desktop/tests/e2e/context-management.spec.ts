@@ -6,6 +6,12 @@ let electronApp: ElectronApplication;
 let page: Page;
 
 test.describe('Context Management E2E Tests', () => {
+  const liveRoot = process.env.BIOROUTER_E2E_PATH_ROOT;
+  test.skip(
+    process.env.BIOROUTER_E2E_LIVE !== '1' || !liveRoot,
+    'Set BIOROUTER_E2E_LIVE=1 and BIOROUTER_E2E_PATH_ROOT to a seeded isolated config.'
+  );
+
   test.beforeAll(async () => {
     // Launch Electron app
     electronApp = await electron.launch({
@@ -14,6 +20,7 @@ test.describe('Context Management E2E Tests', () => {
         ...process.env,
         NODE_ENV: 'test',
         BIOROUTER_TEST_MODE: 'true',
+        BIOROUTER_PATH_ROOT: liveRoot,
       },
     });
 

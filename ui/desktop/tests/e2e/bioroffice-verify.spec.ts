@@ -30,6 +30,11 @@ let mainWindow: Page;
 let forgeProcess: ReturnType<typeof spawn>;
 
 test.describe('BiorOffice — dynamic skills + live agent usage', () => {
+  test.skip(
+    process.env.BIOROUTER_E2E_EXTERNAL !== '1',
+    'Set BIOROUTER_E2E_EXTERNAL=1 after installing BiorOffice to run this suite.'
+  );
+
   test.setTimeout(420_000);
 
   test.beforeAll(async () => {

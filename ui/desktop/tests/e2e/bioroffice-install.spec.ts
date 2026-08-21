@@ -33,6 +33,11 @@ let mainWindow: Page;
 let forgeProcess: ReturnType<typeof spawn>;
 
 test.describe('BiorOffice .brxt — real install + agent usage', () => {
+  test.skip(
+    process.env.BIOROUTER_E2E_EXTERNAL !== '1' || !fs.existsSync(BRXT_PATH),
+    'Set BIOROUTER_E2E_EXTERNAL=1 and build BiorOffice to run this destructive live suite.'
+  );
+
   test.setTimeout(420_000);
 
   test.beforeAll(async () => {

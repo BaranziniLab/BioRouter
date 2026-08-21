@@ -24,6 +24,11 @@ let mainWindow: Page;
 let forgeProcess: ReturnType<typeof spawn>;
 
 test.describe('SPOKEAgent .brxt install flow', () => {
+  test.skip(
+    process.env.BIOROUTER_E2E_EXTERNAL !== '1',
+    'Set BIOROUTER_E2E_EXTERNAL=1 with its backend and bundle prerequisites.'
+  );
+
   test.setTimeout(300_000); // 5 min — uv sync downloads deps
 
   test.beforeAll(async () => {

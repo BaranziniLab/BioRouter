@@ -17,6 +17,12 @@ type FixtureCase = {
 };
 
 test.describe('Knowledge ingest workflow', () => {
+  const liveRoot = process.env.BIOROUTER_E2E_PATH_ROOT;
+  test.skip(
+    process.env.BIOROUTER_E2E_LIVE !== '1' || !liveRoot,
+    'Set BIOROUTER_E2E_LIVE=1 and BIOROUTER_E2E_PATH_ROOT to a seeded isolated config.'
+  );
+
   test.beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'biorouter-knowledge-ingest-'));
     folderFixturePath = writeFixtures(tmpDir);
@@ -30,6 +36,7 @@ test.describe('Knowledge ingest workflow', () => {
         NODE_ENV: 'development',
         BIOROUTER_ALLOWLIST_BYPASS: 'true',
         BIOROUTER_KNOWLEDGE_TEST_MODE: '1',
+        BIOROUTER_PATH_ROOT: liveRoot,
         PLAYWRIGHT_SELECT_PATH: folderFixturePath,
         ELECTRON_RUN_AS_NODE: '',
       },

@@ -27,6 +27,11 @@ const SPOKE_BRXT_PATH = '/tmp/spokeagent-0.2.0.brxt';
 const BIOROUTER_PROJECT_ROOT = path.resolve(__dirname, '../../../..');
 
 test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
+  test.skip(
+    process.env.BIOROUTER_E2E_EXTERNAL !== '1' || !fs.existsSync(SPOKE_BRXT_PATH),
+    'Set BIOROUTER_E2E_EXTERNAL=1 and provide the SPOKEAgent bundle to run this suite.'
+  );
+
   test.beforeAll(async () => {
     if (!fs.existsSync(SPOKE_BRXT_PATH)) {
       throw new Error(
