@@ -1,5 +1,5 @@
 import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { ChangeLogDrawer } from './ChangeLogDrawer';
 
 vi.mock('../KnowledgeContext', () => ({
@@ -16,18 +16,21 @@ vi.mock('../hooks/useHistory', () => ({
   }),
 }));
 
+let warn: MockInstance;
+
 beforeEach(() => {
-  vi.mocked(console.warn).mockClear();
+  warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 });
-afterEach(cleanup);
+afterEach(() => {
+  warn.mockRestore();
+  cleanup();
+});
 
 /**
  * ⚠ **This drawer warned on every open in a real browser while the whole suite
- * was green**, because `src/test/setup.ts` replaces `console.warn` with a
- * `vi.fn()` for the entire run — Radix's *"Missing `Description` or
- * `aria-describedby={undefined}` for {DialogContent}"* was swallowed, not
- * absent. The mock is read back here on purpose, and the DOM attribute is
- * asserted beside it because that is the thing a screen reader follows.
+ * was green** while warnings were globally muted. The local spy and the DOM
+ * assertion pin both the diagnostic and the broken reference a screen reader
+ * would follow.
  *
  * The header is a bare title, so there is no visible line to promote into a
  * description; the drawer takes Radix's own opt-out rather than invent copy that
@@ -47,10 +50,8 @@ describe('ChangeLogDrawer — the description contract', () => {
     const drawer = screen.getByRole('dialog');
     expect(drawer).toHaveAccessibleName('Change log');
     expect(drawer.hasAttribute('aria-describedby')).toBe(false);
-    expect(
-      vi
-        .mocked(console.warn)
-        .mock.calls.some((call) => String(call[0]).includes('Missing `Description`'))
-    ).toBe(false);
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('Missing `Description`'))).toBe(
+      false
+    );
   });
 });

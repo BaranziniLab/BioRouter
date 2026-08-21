@@ -474,10 +474,7 @@ async fn close_ephemeral_store_with_manager(
     // — the two fixes address different halves, and a genuinely slow release on
     // a loaded runner still needs waiting out.
     //
-    // The `JoinError` is dropped deliberately: the only way this task fails is a
-    // panic inside `close_ephemeral_store`, which already swallows its own
-    // errors and warns. There is nothing a caller on an exit path could do.
-    let _ = tokio::task::spawn_blocking(move || close_ephemeral_store(ephemeral_store_dir)).await;
+    close_ephemeral_store(ephemeral_store_dir).await;
 }
 
 /// The budget for re-trying a store removal the OS is still refusing: how
@@ -584,7 +581,15 @@ where
 /// The `TempDir` is consumed either way: `close()` forgets itself whether or
 /// not it succeeded, so the retry below owns the path alone and cannot race a
 /// second removal from `Drop`.
-pub(super) fn close_ephemeral_store(ephemeral_store_dir: Option<tempfile::TempDir>) {
+pub(super) async fn close_ephemeral_store(ephemeral_store_dir: Option<tempfile::TempDir>) {
+    // The retry sleeps, and Windows may need the async runtime to keep moving
+    // while sqlx's connection threads release their final file handles.
+    let _ =
+        tokio::task::spawn_blocking(move || close_ephemeral_store_blocking(ephemeral_store_dir))
+            .await;
+}
+
+fn close_ephemeral_store_blocking(ephemeral_store_dir: Option<tempfile::TempDir>) {
     if let Some(dir) = ephemeral_store_dir {
         let path = dir.path().to_path_buf();
         if dir.close().is_ok() {
@@ -1185,13 +1190,13 @@ mod tests {
              open handles make the removal fail where open files cannot be unlinked"
         );
 
-        close_ephemeral_store(Some(dir));
+        close_ephemeral_store(Some(dir)).await;
         assert!(
             !path.exists(),
             "an early exit must not leak the biorouter-no-session-* directory"
         );
         // A run without --no-session has no store to close.
-        close_ephemeral_store(None);
+        close_ephemeral_store(None).await;
     }
 
     /// #31 ordering: the early-exit cleanup closes the SQLite pool BEFORE
@@ -1313,8 +1318,19 @@ mod tests {
         // failure it prevents is only observable on a runner nobody can
         // reproduce locally, and the realistic regression is someone "tidying"
         // the `spawn_blocking` away because the call looks synchronous anyway.
+        let (_, after_remove_signature) = src
+            .split_once("pub(super) async fn close_ephemeral_store(")
+            .expect("the asynchronous store-removal helper is gone");
+        let (remove_body, _) = after_remove_signature
+            .split_once("\n}\n")
+            .expect("could not find the end of close_ephemeral_store");
+        let remove_body: String = remove_body
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
-            body.contains("spawn_blocking"),
+            remove_body.contains("spawn_blocking"),
             "the store removal is being awaited on the runtime thread again. It sleeps, so \
              on a current-thread runtime it parks the only thread there is and the retry \
              re-observes the same locked file until the budget runs out. Put it back on \

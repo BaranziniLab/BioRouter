@@ -2,7 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '../../ui/button';
 import { ChevronDownIcon, SlidersHorizontal } from '../../icons/app-icons';
 import { getTools, PermissionLevel, ToolInfo, upsertPermissions } from '../../../api';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../../ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../../ui/dialog';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -134,9 +141,9 @@ export default function PermissionModal({
               <DialogTitle className="text-base font-semibold text-text-default break-words [overflow-wrap:anywhere]">
                 {extensionLabel}
               </DialogTitle>
-              <p className="mt-1 text-sm leading-5 text-text-muted">
+              <DialogDescription className="mt-1 text-sm leading-5 text-text-muted">
                 Override how this extension’s tools behave in Manual and Smart modes.
-              </p>
+              </DialogDescription>
             </div>
           </div>
         </DialogHeader>

@@ -10,12 +10,12 @@ afterEach(() => {
   cleanup();
 });
 
-// Mock console methods to avoid noise in tests
+// Keep routine application logging quiet. Warnings and errors stay connected to
+// the test runner so unexpected diagnostics cannot pass invisibly; tests that
+// deliberately exercise one must install a local spy.
 global.console = {
   ...console,
   log: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
 };
 
 // Mock window.navigator.clipboard for copy functionality tests

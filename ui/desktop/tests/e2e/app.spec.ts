@@ -1,12 +1,9 @@
 import { test as base, expect } from '@playwright/test';
 import { _electron as electron } from '@playwright/test';
 import { join } from 'path';
-import { spawn, exec } from 'child_process';
-import { promisify } from 'util';
 import { showTestName, clearTestName } from './test-overlay';
 
 const { runningQuotes } = require('./basic-mcp');
-const execAsync = promisify(exec);
 
 // Define provider interface
 type Provider = {
@@ -163,39 +160,17 @@ async function selectProvider(mainWindow: any, provider: Provider) {
 }
 
 test.describe('Biorouter App', () => {
+  const liveRoot = process.env.BIOROUTER_E2E_PATH_ROOT;
+  test.skip(
+    process.env.BIOROUTER_E2E_LIVE !== '1' || !liveRoot,
+    'Set BIOROUTER_E2E_LIVE=1 and BIOROUTER_E2E_PATH_ROOT to a seeded isolated config.'
+  );
+
   let electronApp;
-  let appProcess;
 
   test.beforeAll(async () => {
     console.log('Starting Electron app...');
 
-    // Start the electron-forge process
-    appProcess = spawn('npm', ['run', 'start-gui'], {
-      cwd: join(__dirname, '../..'),
-      stdio: 'pipe',
-      shell: true,
-      env: {
-        ...process.env,
-        ELECTRON_IS_DEV: '1',
-        NODE_ENV: 'development',
-        BIOROUTER_ALLOWLIST_BYPASS: 'true',
-      }
-    });
-
-    // Log process output
-    appProcess.stdout.on('data', (data) => {
-      console.log('App stdout:', data.toString());
-    });
-
-    appProcess.stderr.on('data', (data) => {
-      console.log('App stderr:', data.toString());
-    });
-
-    // Wait a bit for the app to start
-    console.log('Waiting for app to start...');
-    await new Promise(resolve => setTimeout(resolve, 5000));
-
-    // Launch Electron for testing
     electronApp = await electron.launch({
       args: ['.vite/build/main.js'],
       cwd: join(__dirname, '../..'),
@@ -203,6 +178,10 @@ test.describe('Biorouter App', () => {
         ...process.env,
         ELECTRON_IS_DEV: '1',
         NODE_ENV: 'development',
+        BIOROUTER_ALLOWLIST_BYPASS: 'true',
+        BIOROUTER_DISABLE_KEYRING: '1',
+        BIOROUTER_PATH_ROOT: liveRoot,
+        ELECTRON_RUN_AS_NODE: '',
       },
       recordVideo: {
         dir: 'test-results/videos/',
@@ -210,77 +189,26 @@ test.describe('Biorouter App', () => {
       }
     });
 
-    // Get the main window once for all tests
     mainWindow = await electronApp.firstWindow();
     await mainWindow.waitForLoadState('domcontentloaded');
 
-    // Try to wait for networkidle, but don't fail if it times out due to MCP activity
     try {
       await mainWindow.waitForLoadState('networkidle', { timeout: 10000 });
-    } catch (error) {
+    } catch {
       console.log('NetworkIdle timeout (likely due to MCP activity), continuing with test...');
     }
 
-    // Wait for React app to be ready by checking for the root element to have content
     await mainWindow.waitForFunction(() => {
       const root = document.getElementById('root');
       return root && root.children.length > 0;
     });
-
-    // Wait for any animations to complete
     await mainWindow.waitForTimeout(2000);
-
-    // Take a screenshot to debug what's on the screen
     await mainWindow.screenshot({ path: 'test-results/initial-load.png' });
-
-    // Debug: print out the page content
-    const content = await mainWindow.content();
-    console.log('Page content:', content);
   });
 
   test.afterAll(async () => {
-    console.log('Final cleanup...');
-
-    // Close the test instance
     if (electronApp) {
       await electronApp.close().catch(console.error);
-    }
-
-    // Kill any remaining electron processes
-    try {
-      if (process.platform === 'win32') {
-        await execAsync('taskkill /F /IM electron.exe');
-      } else {
-        await execAsync('pkill -f electron || true');
-      }
-    } catch (error) {
-      if (!error.message?.includes('no process found')) {
-        console.error('Error killing electron processes:', error);
-      }
-    }
-
-    // Kill any remaining npm processes from start-gui
-    try {
-      if (process.platform === 'win32') {
-        await execAsync('taskkill /F /IM node.exe');
-      } else {
-        await execAsync('pkill -f "start-gui" || true');
-      }
-    } catch (error) {
-      if (!error.message?.includes('no process found')) {
-        console.error('Error killing npm processes:', error);
-      }
-    }
-
-    // Kill the specific npm process if it's still running
-    try {
-      if (appProcess && appProcess.pid) {
-        process.kill(appProcess.pid);
-      }
-    } catch (error) {
-      if (error.code !== 'ESRCH') {
-        console.error('Error killing npm process:', error);
-      }
     }
   });
 

@@ -111,74 +111,82 @@ async fn a_subagent_cannot_spawn_a_subagent_and_fails_cleanly() {
 
 /// SUB: three ways a child can go wrong, all in one batch — each surfaces
 /// honestly and none of them swallows the others.
-#[tokio::test]
-async fn failing_silent_and_slow_children_all_surface() {
-    let h = harness(vec![
-        call("broken", Call::sub("broken", "fail:broken")),
-        call("mute", Call::sub("mute", "silent:mute")),
-        call("plodder", Call::sub("plodder", "slow:plodder:400")),
-    ])
-    .await;
-    let messages = drain(&h.agent, &h.session_id)
-        .await
-        .expect("turn completes");
+#[test]
+fn failing_silent_and_slow_children_all_surface() {
+    biorouter::execution::runtime::build_agent_runtime()
+        .expect("agent runtime builds")
+        .block_on(async {
+            tokio::spawn(async {
+                let h = harness(vec![
+                    call("broken", Call::sub("broken", "fail:broken")),
+                    call("mute", Call::sub("mute", "silent:mute")),
+                    call("plodder", Call::sub("plodder", "slow:plodder:400")),
+                ])
+                .await;
+                let messages = drain(&h.agent, &h.session_id)
+                    .await
+                    .expect("turn completes");
 
-    let responses = tool_responses(&messages);
-    assert_eq!(responses.len(), 3, "nothing vanished: {responses:?}");
-    let structured = structured_results(&messages);
+                let responses = tool_responses(&messages);
+                assert_eq!(responses.len(), 3, "nothing vanished: {responses:?}");
+                let structured = structured_results(&messages);
 
-    let broken = responses.iter().find(|(id, ..)| id == "broken").unwrap();
-    assert!(
-        broken.2,
-        "SUB-02: a child whose turn aborted must be flagged `is_error`, or the \
+                let broken = responses.iter().find(|(id, ..)| id == "broken").unwrap();
+                assert!(
+                    broken.2,
+                    "SUB-02: a child whose turn aborted must be flagged `is_error`, or the \
          parent's tool card renders a failed delegation green: {}",
-        broken.1
-    );
-    assert!(
-        broken.1.contains("Subagent failed"),
-        "the failure says so in words: {}",
-        broken.1
-    );
-    assert!(
-        broken
-            .1
-            .contains("scripted provider failure for child broken"),
-        "and names the underlying cause: {}",
-        broken.1
-    );
-    assert_eq!(structured["broken"]["status"], "error");
+                    broken.1
+                );
+                assert!(
+                    broken.1.contains("Subagent failed"),
+                    "the failure says so in words: {}",
+                    broken.1
+                );
+                assert!(
+                    broken
+                        .1
+                        .contains("scripted provider failure for child broken"),
+                    "and names the underlying cause: {}",
+                    broken.1
+                );
+                assert_eq!(structured["broken"]["status"], "error");
 
-    // A child that only ever calls tools and never writes a summary. It runs out
-    // of turns, and the loop's own stop notice is what comes back.
-    //
-    // SUB-03 (documented, unfixed): that notice is an ordinary assistant text
-    // message, so the envelope grades this run `completed`. The prose is honest
-    // — it says outright that it stopped for the cap, "not because the task is
-    // necessarily complete" — and this test pins that the parent receives it
-    // verbatim, which is what lets the model react. The *status* is the part
-    // that overstates, and correcting it needs a structural signal the agent
-    // loop does not yet emit for a turn-limit stop. Pinned as-is so the day the
-    // loop grows that signal, this assertion is the thing that fails and points
-    // at the envelope.
-    let mute = responses.iter().find(|(id, ..)| id == "mute").unwrap();
-    assert!(
-        mute.1.contains("action limit for this turn"),
-        "the turn-cap stop notice must reach the parent verbatim: {}",
-        mute.1
-    );
-    assert_eq!(
-        structured["mute"]["status"], "completed",
-        "SUB-03: a turn-capped child still grades `completed`; see the comment above"
-    );
-    assert!(
-        !mute.1.contains("No text content in last message"),
-        "never the old lossy placeholder: {}",
-        mute.1
-    );
+                // A child that only ever calls tools and never writes a summary. It runs out
+                // of turns, and the loop's own stop notice is what comes back.
+                //
+                // SUB-03 (documented, unfixed): that notice is an ordinary assistant text
+                // message, so the envelope grades this run `completed`. The prose is honest
+                // — it says outright that it stopped for the cap, "not because the task is
+                // necessarily complete" — and this test pins that the parent receives it
+                // verbatim, which is what lets the model react. The *status* is the part
+                // that overstates, and correcting it needs a structural signal the agent
+                // loop does not yet emit for a turn-limit stop. Pinned as-is so the day the
+                // loop grows that signal, this assertion is the thing that fails and points
+                // at the envelope.
+                let mute = responses.iter().find(|(id, ..)| id == "mute").unwrap();
+                assert!(
+                    mute.1.contains("action limit for this turn"),
+                    "the turn-cap stop notice must reach the parent verbatim: {}",
+                    mute.1
+                );
+                assert_eq!(
+                    structured["mute"]["status"], "completed",
+                    "SUB-03: a turn-capped child still grades `completed`; see the comment above"
+                );
+                assert!(
+                    !mute.1.contains("No text content in last message"),
+                    "never the old lossy placeholder: {}",
+                    mute.1
+                );
 
-    let plodder = responses.iter().find(|(id, ..)| id == "plodder").unwrap();
-    assert!(!plodder.2);
-    assert!(plodder.1.contains("child plodder done"));
+                let plodder = responses.iter().find(|(id, ..)| id == "plodder").unwrap();
+                assert!(!plodder.2);
+                assert!(plodder.1.contains("child plodder done"));
+            })
+            .await
+            .expect("delegation test runs on an agent worker");
+        });
 }
 
 /// SUB: many children at once. Nothing is lost, nothing crosses over, and the

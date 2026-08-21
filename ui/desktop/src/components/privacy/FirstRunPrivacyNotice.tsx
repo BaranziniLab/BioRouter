@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { listSessions, type Session } from '../../api';
 
@@ -297,21 +297,31 @@ export function FirstRunPrivacyNotice({
 
         <div className="space-y-4 text-sm text-text-default">
           {failed && (
-            <p data-testid="notice-count-error">
+            <DialogDescription
+              data-testid="notice-count-error"
+              className="text-sm text-text-default"
+            >
               Biorouter could not read your chat list, so the numbers below are unavailable. Your
               chats are unchanged by this message.
-            </p>
+            </DialogDescription>
           )}
 
-          {!failed && !resolved && <p data-testid="notice-counting">Counting your chats…</p>}
+          {!failed && !resolved && (
+            <DialogDescription data-testid="notice-counting" className="text-sm text-text-default">
+              Counting your chats…
+            </DialogDescription>
+          )}
 
           {!failed && resolved && (
             <>
-              <p data-testid="notice-headline">
+              <DialogDescription
+                data-testid="notice-headline"
+                className="text-sm text-text-default"
+              >
                 <strong>{resolved.privateVisible}</strong> of your{' '}
                 <strong>{resolved.totalVisible}</strong> chats are now marked private, because that
                 is the model each of them was last using.
-              </p>
+              </DialogDescription>
 
               {resolved.privateByProvider.length > 0 && (
                 <div>
@@ -359,8 +369,8 @@ export function FirstRunPrivacyNotice({
               <strong>{publicClinicalExtensions.join(', ')}</strong>. Any model, including
               commercial models hosted outside your institution, can still call{' '}
               {publicClinicalExtensions.length === 1 ? 'it' : 'them'}. Nothing about{' '}
-              {publicClinicalExtensions.length === 1 ? 'it' : 'them'} has changed. This notice is so you
-              know.
+              {publicClinicalExtensions.length === 1 ? 'it' : 'them'} has changed. This notice is so
+              you know.
             </p>
           )}
         </div>

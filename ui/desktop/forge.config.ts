@@ -198,9 +198,10 @@ module.exports = {
           // Naming it makes the requirement ours instead of a side effect of a
           // dependency we do not control, and the array is merged with those
           // Electron defaults rather than replacing them, so this is additive.
+          // zlib1g provides libz.so.1, linked through git2/libgit2.
           // scripts/check-linux-runtime-deps.sh asserts it stays in step with
           // what the binaries actually link.
-          depends: ['libssl3', 'libgomp1', 'libxcb1'],
+          depends: ['libssl3', 'libgomp1', 'libxcb1', 'zlib1g'],
         },
       },
     },
@@ -220,7 +221,8 @@ module.exports = {
           // openssl-libs ships libssl.so.3 on EL9+/Fedora; libgomp for llama-server.
           // libxcb is the RPM spelling of the deb's libxcb1 — see the maker-deb
           // comment above for why the bundled binaries need it.
-          requires: ['openssl-libs', 'libgomp', 'libxcb'],
+          // zlib provides libz.so.1 on RPM-based distributions.
+          requires: ['openssl-libs', 'libgomp', 'libxcb', 'zlib'],
           fpm: ['--rpm-rpmbuild-define', '_build_id_links none'],
         },
       },

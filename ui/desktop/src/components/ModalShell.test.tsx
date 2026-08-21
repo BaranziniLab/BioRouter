@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { MODAL_SIZE, ModalShell, type ModalPurpose } from './ModalShell';
 
 afterEach(cleanup);
@@ -98,19 +98,24 @@ describe('ModalShell — the purpose axis', () => {
  * is the case that matters: its "Choose which knowledge bases this chat uses…"
  * line reaches the accessibility tree only through this wiring.
  *
- * ⚠ **`console.warn` is a `vi.fn()` for the whole suite** (`src/test/setup.ts`),
- * so Radix's warning is swallowed here rather than absent. Reading the mock back
- * is the only way a jsdom test can see it — which is why the drawers in
- * `components/knowledge/` warned in a browser for months with a green suite.
+ * These tests install a local warning spy because their assertions need to
+ * distinguish a settled description from a warning that was merely hidden.
  */
 describe('ModalShell — the description contract', () => {
+  let warn: MockInstance;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
   const warned = () =>
-    vi
-      .mocked(console.warn)
-      .mock.calls.some((call) => String(call[0]).includes('Missing `Description`'));
+    warn.mock.calls.some((call) => String(call[0]).includes('Missing `Description`'));
 
   it('links the subtitle, so the description and the visible line are one string', () => {
-    vi.mocked(console.warn).mockClear();
     open({ subtitle: 'Choose which knowledge bases this chat uses.' });
 
     const id = surface().getAttribute('aria-describedby');
@@ -122,7 +127,6 @@ describe('ModalShell — the description contract', () => {
   });
 
   it('drops the attribute without a subtitle, rather than dangling it at nothing', () => {
-    vi.mocked(console.warn).mockClear();
     open();
 
     // Absent, not empty: an id that resolves to no element is the actual defect,

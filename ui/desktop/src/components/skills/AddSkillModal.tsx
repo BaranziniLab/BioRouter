@@ -164,6 +164,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
   return (
     <Dialog open onOpenChange={(open) => !open && !isInstalling && onClose()}>
       <DialogContent
+        aria-describedby={undefined}
         dismissible={!isInstalling}
         className="flex max-h-[80vh] w-[480px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[480px]"
       >

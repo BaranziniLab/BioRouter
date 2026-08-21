@@ -1,6 +1,6 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import type { LintResult } from '../../../api/types.gen';
 import { LintDrawer } from './LintDrawer';
 
@@ -193,24 +193,30 @@ describe('LintDrawer', () => {
 });
 
 /**
- * ⚠ **Asserted here AND in a real browser.** `src/test/setup.ts` replaces
- * `console.warn` with a `vi.fn()`, so Radix's *"Missing `Description`"* message
- * is swallowed by the suite rather than absent from it — this drawer warned on
- * every open while every test below stayed green. The mock is read back
- * deliberately; the DOM attribute is asserted as the thing that actually matters.
+ * ⚠ **Asserted here AND in a real browser.** This drawer once warned on every
+ * open while the suite stayed green. The local spy pins that warning as well as
+ * the DOM attribute that actually matters.
  */
 describe('LintDrawer — the description contract', () => {
+  let warn: MockInstance;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
   it('leaves Radix no aria-describedby to dangle', () => {
     render(<LintDrawer open onOpenChange={() => undefined} />);
 
     expect(screen.getByTestId('knowledge-lint-drawer').hasAttribute('aria-describedby')).toBe(
       false
     );
-    expect(
-      vi
-        .mocked(console.warn)
-        .mock.calls.some((call) => String(call[0]).includes('Missing `Description`'))
-    ).toBe(false);
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('Missing `Description`'))).toBe(
+      false
+    );
   });
 });
 

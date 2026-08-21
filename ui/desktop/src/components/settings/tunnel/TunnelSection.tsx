@@ -1,6 +1,13 @@
 import { useState, useEffect } from 'react';
 import { Button } from '../../ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../../ui/dialog';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../ui/card';
 import { QRCodeSVG } from 'qrcode.react';
 import {
@@ -228,10 +235,10 @@ export default function TunnelSection() {
                 </div>
               </div>
 
-              <div className="text-center text-sm text-text-muted">
+              <DialogDescription className="text-center text-sm text-text-muted">
                 Scan this QR code with the Biorouter mobile app. Do not share this code with anyone
                 else as it is for your personal access.
-              </div>
+              </DialogDescription>
 
               <div className="border-t pt-4">
                 <button
@@ -317,10 +324,10 @@ export default function TunnelSection() {
               </div>
             </div>
 
-            <div className="text-center text-sm text-text-muted">
+            <DialogDescription className="text-center text-sm text-text-muted">
               Scan this QR code with your iPhone camera to install the Biorouter mobile app from the
               App Store
-            </div>
+            </DialogDescription>
 
             <div className="text-center">
               <a

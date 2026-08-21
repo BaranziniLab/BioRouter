@@ -65,6 +65,7 @@ export function NonPrivateModelDisclosure({
     <Dialog open={open}>
       <DialogContent
         data-testid="non-private-model-disclosure"
+        aria-describedby={undefined}
         dismissible={false}
         className="sm:max-w-[560px]"
         // Focus lands on the prose, not on the way out of it. Radix's default

@@ -1435,6 +1435,7 @@ mod tests {
                 ("BIOROUTER_KNOWLEDGE_TEST_MODE", None),
                 ("BIOROUTER_LEAD_MODEL", None),
                 ("BIOROUTER_LEAD_PROVIDER", None),
+                ("BIOROUTER_DISABLE_KEYRING", Some("1".to_string())),
                 ("OLLAMA_HOST", Some(host.to_string())),
                 ("OLLAMA_TIMEOUT", Some("1".to_string())),
             ]
