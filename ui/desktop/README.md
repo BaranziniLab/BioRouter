@@ -87,7 +87,67 @@ The built application will be available in:
 - Executable: `out/biorouter-linux-x64/biorouter`
 
 ### Windows
-Use the existing Windows build process as documented.
+
+The release artifact is a Windows x64 ZIP. The supported release path can run
+from a macOS development machine: Docker cross-compiles the GNU Rust binaries,
+then Electron Forge packages those staged binaries on the host.
+
+#### From macOS with Docker (release path)
+
+Use the system Docker installation rather than the Hermit Docker shim. From the
+repository root, build the backends and then package Windows for the current
+version:
+
+```bash
+source ./bin/activate-hermit
+scripts/release.sh backends 1.89.2
+scripts/release.sh windows 1.89.2
+```
+
+For a Windows-only backend rebuild, `just release-windows` uses the same Docker
+recipe as CI. Before packaging, make sure `biorouter.exe`, `biorouterd.exe`, and
+the MinGW runtime DLLs are present in
+`target/x86_64-pc-windows-gnu/release/`. The release script stages them into
+`ui/desktop/src/bin/` automatically.
+
+#### Directly on Windows (local validation)
+
+Install Visual Studio Build Tools with the C++ workload, CMake, NASM, Rust
+1.92, and Node 24. `aws-lc-sys` requires NASM for release builds; disabling
+assembly is not supported in release mode. PowerShell can use every logical CPU
+for the Rust build as follows:
+
+```powershell
+$jobs = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+cargo build --release --bin biorouter --bin biorouterd --jobs $jobs
+New-Item -ItemType Directory -Force ui\desktop\src\bin | Out-Null
+Copy-Item target\release\biorouter.exe,target\release\biorouterd.exe ui\desktop\src\bin\
+Set-Location ui\desktop
+npm ci
+npm run bundle:windows
+```
+
+The ZIP is written to
+`out/make/zip/win32/x64/Biorouter-win32-x64-<version>.zip`.
+
+#### Windows release checks and takeaways
+
+- Keep `bundle:windows` implemented as a Node script. Inline POSIX environment
+  assignments such as `ELECTRON_PLATFORM=win32 command` do not run in Windows
+  Command Prompt or PowerShell.
+- Use Node libraries for archive handling. The Windows llama.cpp download is a
+  ZIP and must not depend on a host `unzip` executable.
+- `ELECTRON_PLATFORM=win32` and `ELECTRON_ARCH=x64` must apply to MinGit
+  download, binary preparation, and Electron Forge packaging. Platform bundles
+  overwrite `src/bin`, so build and stage one platform at a time.
+- Electron Forge's Windows ZIP contains `Biorouter.exe` and `resources/` at the
+  archive root; there is no extra `Biorouter-win32-x64/` directory after
+  extraction.
+- Do not consider the release complete until the ZIP itself has been extracted
+  on Windows, both embedded binaries report the expected version,
+  `biorouter term --help` succeeds, and `Biorouter.exe` remains running through
+  startup. The `Release artifact smoke` GitHub workflow performs these checks
+  against a draft release.
 
 
 # Running with biorouterd server from source

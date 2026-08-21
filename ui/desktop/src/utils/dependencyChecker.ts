@@ -229,11 +229,23 @@ export async function runProbe(
     // `execFile` reports a timeout by killing the child, so the signal is the
     // only reliable marker — the exit code is null in that case.
     const timedOut = !!e?.killed && (e?.signal === 'SIGTERM' || e?.code === undefined);
+    let exitCode = typeof e?.code === 'number' ? e.code : null;
+    if (exitCode === 1 && needsShell(cmd)) {
+      try {
+        await execFileAsync('where.exe', [cmd], {
+          encoding: 'utf8',
+          env: SPAWN_ENV,
+          maxBuffer: 1024 * 1024,
+        });
+      } catch {
+        exitCode = null;
+      }
+    }
     return {
       stdout: e?.stdout ?? '',
       stderr: e?.stderr ?? '',
       ok: false,
-      code: typeof e?.code === 'number' ? e.code : null,
+      code: exitCode,
       timedOut,
       error: e?.message ?? null,
     };
