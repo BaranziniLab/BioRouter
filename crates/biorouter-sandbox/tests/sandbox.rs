@@ -15,6 +15,21 @@ fn ws() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
 }
 
+fn native_shell(unix_script: impl Into<String>, windows_script: impl Into<String>) -> Vec<String> {
+    if cfg!(windows) {
+        vec![
+            "powershell.exe".into(),
+            "-NoLogo".into(),
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-Command".into(),
+            windows_script.into(),
+        ]
+    } else {
+        vec!["sh".into(), "-c".into(), unix_script.into()]
+    }
+}
+
 // ----------------------------- LOCAL: exec -----------------------------
 
 #[tokio::test]
@@ -22,7 +37,10 @@ async fn local_exec_captures_stdout_and_exit_code() {
     let dir = ws();
     let sb = LocalProcessSandbox::new(SandboxSpec::new(dir.path()));
     let out = sb
-        .exec(&["sh".into(), "-c".into(), "echo hello world".into()], None)
+        .exec(
+            &native_shell("echo hello world", "[Console]::Out.Write('hello world')"),
+            None,
+        )
         .await
         .unwrap();
     assert!(out.success(), "stderr={}", out.stderr);
@@ -36,7 +54,10 @@ async fn local_exec_propagates_nonzero_exit() {
     let sb = LocalProcessSandbox::new(SandboxSpec::new(dir.path()));
     let out = sb
         .exec(
-            &["sh".into(), "-c".into(), "echo oops >&2; exit 3".into()],
+            &native_shell(
+                "echo oops >&2; exit 3",
+                "[Console]::Error.Write('oops'); exit 3",
+            ),
             None,
         )
         .await
@@ -51,7 +72,10 @@ async fn local_exec_feeds_stdin() {
     let dir = ws();
     let sb = LocalProcessSandbox::new(SandboxSpec::new(dir.path()));
     let out = sb
-        .exec(&["cat".into()], Some("piped-input-value"))
+        .exec(
+            &native_shell("cat", "[Console]::Out.Write([Console]::In.ReadToEnd())"),
+            Some("piped-input-value"),
+        )
         .await
         .unwrap();
     assert_eq!(out.stdout, "piped-input-value");
@@ -65,11 +89,10 @@ async fn local_exec_injects_env_without_leaking_to_wire() {
     let sb = LocalProcessSandbox::new(spec);
     let out = sb
         .exec(
-            &[
-                "sh".into(),
-                "-c".into(),
-                "printf %s \"$VAULT_SECRET\"".into(),
-            ],
+            &native_shell(
+                "printf %s \"$VAULT_SECRET\"",
+                "[Console]::Out.Write($env:VAULT_SECRET)",
+            ),
             None,
         )
         .await
@@ -90,16 +113,15 @@ async fn local_exec_strips_daemon_credentials_but_keeps_declared_env() {
     let sb = LocalProcessSandbox::new(spec);
     let out = sb
         .exec(
-            &[
-                "sh".into(),
-                "-c".into(),
-                "printf 'daemon=%s extension=%s' \"${BIOROUTER_SERVER__SECRET_KEY-unset}\" \"$SPOKEAGENT_PASSCODE\""
-                    .into(),
-            ],
+            &native_shell(
+                "printf 'daemon=%s extension=%s' \"${BIOROUTER_SERVER__SECRET_KEY-unset}\" \"$SPOKEAGENT_PASSCODE\"",
+                "if ($null -ne $env:BIOROUTER_SERVER__SECRET_KEY) { exit 9 }; [Console]::Out.Write('daemon=unset extension=' + $env:SPOKEAGENT_PASSCODE)",
+            ),
             None,
         )
         .await
         .unwrap();
+    assert!(out.success(), "stderr={}", out.stderr);
     assert_eq!(out.stdout, "daemon=unset extension=extension-private");
 }
 
@@ -110,7 +132,7 @@ async fn local_exec_timeout_kills_runaway_promptly() {
     let sb = LocalProcessSandbox::new(spec);
     let start = std::time::Instant::now();
     let out = sb
-        .exec(&["sh".into(), "-c".into(), "sleep 30".into()], None)
+        .exec(&native_shell("sleep 30", "Start-Sleep -Seconds 30"), None)
         .await
         .unwrap();
     let elapsed = start.elapsed();
@@ -129,11 +151,10 @@ async fn local_exec_drains_large_output_without_deadlock() {
     let sb = LocalProcessSandbox::new(SandboxSpec::new(dir.path()));
     let out = sb
         .exec(
-            &[
-                "sh".into(),
-                "-c".into(),
-                "yes x | head -n 100000 | tr -d '\\n'".into(),
-            ],
+            &native_shell(
+                "yes x | head -n 100000 | tr -d '\\n'",
+                "[Console]::Out.Write('x' * 100000)",
+            ),
             None,
         )
         .await
@@ -149,8 +170,14 @@ async fn local_exec_handles_20_concurrent_commands() {
     for i in 0..20 {
         let sb = sb.clone();
         handles.push(tokio::spawn(async move {
-            sb.exec(&["sh".into(), "-c".into(), format!("echo n{i}")], None)
-                .await
+            sb.exec(
+                &native_shell(
+                    format!("echo n{i}"),
+                    format!("[Console]::Out.Write('n{i}')"),
+                ),
+                None,
+            )
+            .await
         }));
     }
     for (i, h) in handles.into_iter().enumerate() {
