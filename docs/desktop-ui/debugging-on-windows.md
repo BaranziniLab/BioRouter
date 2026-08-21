@@ -117,7 +117,7 @@ artifact actually starts.
 Snapshot of 2026-08-20, on `main` at `efe6cb41`. All five were invisible until the hang
 above was fixed, so none of them is a fresh regression — they are newly *visible*.
 
-### Four bridge tests: `Tool 'developer__shell' not found`
+### Four bridge tests: a PreToolUse hook that cannot speak `cmd.exe`
 
 ```
 providers::coding_agent::bridge::tests::a_pretooluse_rewrite_decides_what_a_bridged_call_runs
@@ -126,26 +126,62 @@ providers::coding_agent::bridge::tests::a_bridged_call_leaves_another_calls_rewr
 providers::coding_agent::bridge::tests::concurrent_bridged_calls_each_run_their_own_rewrite
 ```
 
-Each builds an `ExtensionManager`, adds the `developer` builtin, and dispatches
-`developer__shell`. On Windows the dispatch returns `-32002: Tool 'developer__shell'
-not found`.
+**One root cause, not four.** It is in the test fixture, not in the product.
 
-**Ruled out, with evidence:**
+`hooks_returning` (`crates/biorouter/src/providers/coding_agent/bridge.rs`) builds a
+real hook — deliberately, because the rewrite is staged as a side effect of the hook
+*running*, so a stub would test the assertion rather than the path. The command it
+builds is:
 
-- *The tool is platform-gated.* It is not — `#[tool(name = "shell", …)]` in
+```rust
+// Single-quoted for `sh -c`, with any embedded quote escaped the usual way.
+let quoted = payload.replace('\'', "'\"'\"'");
+... format!("echo '{quoted}'")
+```
+
+That is POSIX shell quoting. `hooks/command_runner.rs` correctly runs hooks through
+`cmd.exe /D /S /C` on Windows and `sh -c` elsewhere — the executor is right; the
+**fixture** assumes the Unix branch. `cmd.exe` does not treat `'` as a quote
+character, so it echoes the single quotes literally and the hook's stdout becomes
+
+```
+'{"hookSpecificOutput":{"updatedInput":{ ... }}}'
+```
+
+which is not valid JSON. The manager parses hook stdout to find
+`hookSpecificOutput.updatedInput`, the parse fails, **no rewrite is staged**, and the
+call dispatches the model's original arguments.
+
+That single failure produces all four symptoms, which is why they look unrelated:
+
+| Test | What you see | Why |
+|---|---|---|
+| `a_pretooluse_rewrite_decides…` | got `CFTR`, expected `TP53` | no rewrite, so the model's chromosome-7 query ran |
+| `a_bridged_call_leaves_another…` | got `CFTR` | same |
+| `concurrent_bridged_calls…` | got `CFTR`, message blames a sibling draining the rewrite | same — the message is a red herring here |
+| `a_rewritten_call_is_re_judged…` | `-32002: Tool 'developer__shell' not found` | no rewrite, so the security floor saw a harmless `ls` and approved it; dispatch then reached for `developer__shell`, which `GeneFixture` never registers |
+
+**Ruled out, with evidence** — do not re-derive these:
+
+- *The `shell` tool is platform-gated.* It is not: `#[tool(name = "shell", …)]` in
   `crates/biorouter-mcp/src/developer/rmcp_developer.rs` is unconditional.
-- *Builtins spawn a subprocess that fails to resolve on Windows.* They do not —
-  `ExtensionConfig::Builtin` loads **in-process** over `tokio::io::duplex` pipes and a
-  `spawn_server` call (`crates/biorouter/src/agents/extension_manager.rs`), with no
-  child process involved.
-- *A pre-existing breakage.* No — all four tests were introduced by `b153fb50` and
-  `c76a2a4d`, both in v1.89.2, so they had never run on Windows at all.
+- *Builtin extensions spawn a subprocess that fails to resolve on Windows.* They do
+  not — `ExtensionConfig::Builtin` loads in-process over `tokio::io::duplex` pipes.
+- *A tool-discovery race.* This was the earlier leading hypothesis and it is **wrong**;
+  the fourth test's fixture simply never registers that tool, and only reaches for it
+  because the rewrite failed first.
+- *A product defect.* The shipped hook executor branches correctly per platform. A
+  Windows user writing a hook writes it in `cmd`/PowerShell syntax and it works.
 
-**Unproven leading hypothesis:** tool discovery is asynchronous, and the test dispatches
-before the routed client has finished listing. That would be a slower-runner race rather
-than a product defect, and it would mean the *product* is fine on Windows. **Do not act
-on this without confirming it** — the cheap confirmation is to have the test await the
-tool appearing in the manager's tool list before calling, push to a branch, and read CI.
+**The fix is in the fixture**: emit valid JSON under both shells. The payloads in use
+contain no `cmd.exe` metacharacters (`> < | &`), so an unquoted `echo {json}` is
+viable on the Windows branch, with the existing single-quoted form kept for `sh`.
+`#[cfg(unix)]`-ing the four tests also works but costs the only Windows coverage of
+the bridge's rewrite path, which is where the bug would actually matter.
+
+⚠ **This has not been executed on Windows.** It is derived from the source and from
+the CI panic messages. Confirm on the box before trusting the `cmd.exe` echo
+behaviour.
 
 ### `close_ephemeral_store_removes_the_directory`
 
@@ -156,6 +192,14 @@ This is the Windows half of the open-handle rule above, and it is **not fixed**.
 for anyone reading older session notes: this fix was once reported as confirmed by CI.
 It was not — the Windows job was hanging on every merged head at the time and never
 confirmed anything. Treat that earlier claim as withdrawn.
+
+⚠ **It is FLAKY, not deterministic, and that changes how you chase it.** On
+`efe6cb41` it failed; on `858d9aaf` — with the CLI crate untouched between the two —
+the same test passed on Windows (`1395 passed; 0 failed`). So a single green run
+proves nothing here, and a single red one is not a regression you just introduced.
+Loop it: `cargo test -p biorouter-cli --lib close_ephemeral_store` twenty times and
+count, before and after any change. The underlying race is an open handle losing to
+the directory removal, so it will correlate with machine load.
 
 Related but distinct: on a developer machine `cargo test -p biorouter-cli` deadlocks
 against a populated `~/.config/biorouter` (real knowledge bases, ~21 lock files) and
