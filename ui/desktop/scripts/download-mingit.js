@@ -19,6 +19,7 @@ const MINGIT_VERSION = '2.49.0';
 const MINGIT_WINDOWS_TAG = `v${MINGIT_VERSION}.windows.1`;
 const MINGIT_ZIP_NAME = `MinGit-${MINGIT_VERSION}-64-bit.zip`;
 const MINGIT_URL = `https://github.com/git-for-windows/git/releases/download/${MINGIT_WINDOWS_TAG}/${MINGIT_ZIP_NAME}`;
+const MINGIT_VERSION_FILE = 'mingit-version.txt';
 
 const DEST_DIR = path.join(__dirname, '..', 'src', 'platform', 'windows', 'bin', 'git');
 const ZIP_PATH = path.join(os.tmpdir(), MINGIT_ZIP_NAME);
@@ -28,33 +29,37 @@ function download(url, dest) {
     const file = fs.createWriteStream(dest);
 
     const get = (url) => {
-      https.get(url, (res) => {
-        if (res.statusCode === 301 || res.statusCode === 302) {
-          get(res.headers.location);
-          return;
-        }
-        if (res.statusCode !== 200) {
-          file.close();
-          reject(new Error(`HTTP ${res.statusCode} downloading ${url}`));
-          return;
-        }
-        const total = parseInt(res.headers['content-length'] || '0', 10);
-        let downloaded = 0;
-        res.on('data', (chunk) => {
-          downloaded += chunk.length;
-          if (total > 0) {
-            const pct = Math.round((downloaded / total) * 100);
-            process.stdout.write(`\r  ${pct}% (${Math.round(downloaded / 1024 / 1024)}MB / ${Math.round(total / 1024 / 1024)}MB)`);
+      https
+        .get(url, (res) => {
+          if (res.statusCode === 301 || res.statusCode === 302) {
+            get(res.headers.location);
+            return;
           }
-        });
-        res.pipe(file);
-        file.on('finish', () => {
-          file.close();
-          process.stdout.write('\n');
-          resolve();
-        });
-        file.on('error', reject);
-      }).on('error', reject);
+          if (res.statusCode !== 200) {
+            file.close();
+            reject(new Error(`HTTP ${res.statusCode} downloading ${url}`));
+            return;
+          }
+          const total = parseInt(res.headers['content-length'] || '0', 10);
+          let downloaded = 0;
+          res.on('data', (chunk) => {
+            downloaded += chunk.length;
+            if (total > 0) {
+              const pct = Math.round((downloaded / total) * 100);
+              process.stdout.write(
+                `\r  ${pct}% (${Math.round(downloaded / 1024 / 1024)}MB / ${Math.round(total / 1024 / 1024)}MB)`
+              );
+            }
+          });
+          res.pipe(file);
+          file.on('finish', () => {
+            file.close();
+            process.stdout.write('\n');
+            resolve();
+          });
+          file.on('error', reject);
+        })
+        .on('error', reject);
     };
 
     get(url);
@@ -69,7 +74,7 @@ function extract(zipPath, destDir) {
   if (process.platform === 'win32') {
     execSync(
       `powershell -NoProfile -Command "Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force"`,
-      { stdio: 'inherit' },
+      { stdio: 'inherit' }
     );
   } else {
     execSync(`unzip -q -o "${zipPath}" -d "${destDir}"`, { stdio: 'inherit' });
@@ -84,8 +89,11 @@ async function main() {
     return;
   }
 
-  // Already present — skip (re-run `node scripts/download-mingit.js` to force refresh)
-  if (fs.existsSync(path.join(DEST_DIR, 'cmd', 'git.exe'))) {
+  const bundledVersionPath = path.join(DEST_DIR, MINGIT_VERSION_FILE);
+  const bundledVersion = fs.existsSync(bundledVersionPath)
+    ? fs.readFileSync(bundledVersionPath, 'utf8').trim()
+    : null;
+  if (bundledVersion === MINGIT_VERSION && fs.existsSync(path.join(DEST_DIR, 'cmd', 'git.exe'))) {
     console.log('MinGit already present, skipping download');
     return;
   }
@@ -95,14 +103,25 @@ async function main() {
 
   try {
     await download(MINGIT_URL, ZIP_PATH);
-    console.log(`Extracting to ${DEST_DIR} ...`);
-    extract(ZIP_PATH, DEST_DIR);
-    fs.unlinkSync(ZIP_PATH);
+    const stagingDir = `${DEST_DIR}.staging`;
+    fs.rmSync(stagingDir, { recursive: true, force: true });
+    console.log(`Extracting to ${stagingDir} ...`);
+    extract(ZIP_PATH, stagingDir);
+    if (!fs.existsSync(path.join(stagingDir, 'cmd', 'git.exe'))) {
+      throw new Error('downloaded MinGit archive is missing cmd/git.exe');
+    }
+    fs.writeFileSync(path.join(stagingDir, MINGIT_VERSION_FILE), `${MINGIT_VERSION}\n`);
+    fs.rmSync(DEST_DIR, { recursive: true, force: true });
+    fs.renameSync(stagingDir, DEST_DIR);
     console.log('MinGit ready.');
   } catch (err) {
     console.error(`\nFailed to download/extract MinGit: ${err.message}`);
-    console.warn('Bundled git will not be available. Windows users without git must install it manually.');
+    console.warn(
+      'Bundled git will not be available. Windows users without git must install it manually.'
+    );
     // Non-fatal — build continues without bundled git
+  } finally {
+    fs.rmSync(ZIP_PATH, { force: true });
   }
 }
 

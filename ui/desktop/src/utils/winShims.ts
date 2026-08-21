@@ -59,20 +59,72 @@ export async function ensureWinShims(): Promise<void> {
   }
 }
 
-async function ensureBundledGit(srcBinDir: string, localAppData: string): Promise<void> {
-  const srcGitDir = path.join(srcBinDir, 'git');
-  const dstGitDir = path.join(localAppData, 'Biorouter', 'git');
-  const gitExe = path.join(dstGitDir, 'cmd', 'git.exe');
+const MINGIT_VERSION_FILE = 'mingit-version.txt';
+
+async function exists(filePath: string): Promise<boolean> {
+  try {
+    await fs.promises.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readMinGitVersion(gitDir: string): Promise<string | null> {
+  try {
+    return (await fs.promises.readFile(path.join(gitDir, MINGIT_VERSION_FILE), 'utf8')).trim();
+  } catch {
+    return null;
+  }
+}
+
+async function replaceBundledGit(srcGitDir: string, dstGitDir: string): Promise<void> {
+  const suffix = `${process.pid}-${Date.now()}`;
+  const stagingDir = `${dstGitDir}.staging-${suffix}`;
+  const backupDir = `${dstGitDir}.backup-${suffix}`;
+  let movedOldInstall = false;
+
+  await fs.promises.rm(stagingDir, { recursive: true, force: true });
+  await fs.promises.rm(backupDir, { recursive: true, force: true });
+  await fs.promises.cp(srcGitDir, stagingDir, { recursive: true, force: true });
+  if (
+    !(await exists(path.join(stagingDir, 'cmd', 'git.exe'))) ||
+    !(await readMinGitVersion(stagingDir))
+  ) {
+    await fs.promises.rm(stagingDir, { recursive: true, force: true });
+    throw new Error('bundled MinGit staging copy is incomplete');
+  }
 
   try {
-    await fs.promises.access(srcGitDir);
-  } catch {
+    if (await exists(dstGitDir)) {
+      await fs.promises.rename(dstGitDir, backupDir);
+      movedOldInstall = true;
+    }
+    await fs.promises.rename(stagingDir, dstGitDir);
+    if (movedOldInstall) {
+      await fs.promises.rm(backupDir, { recursive: true, force: true });
+    }
+  } catch (error) {
+    await fs.promises.rm(stagingDir, { recursive: true, force: true });
+    if (movedOldInstall && !(await exists(dstGitDir)) && (await exists(backupDir))) {
+      await fs.promises.rename(backupDir, dstGitDir);
+    }
+    throw error;
+  }
+}
+
+export async function ensureBundledGit(srcBinDir: string, localAppData: string): Promise<void> {
+  const srcGitDir = path.join(srcBinDir, 'git');
+  const dstGitDir = path.join(localAppData, 'Biorouter', 'git');
+  const srcGitExe = path.join(srcGitDir, 'cmd', 'git.exe');
+  const gitExe = path.join(dstGitDir, 'cmd', 'git.exe');
+
+  const bundledVersion = await readMinGitVersion(srcGitDir);
+  if (!bundledVersion || !(await exists(srcGitExe))) {
     // Not bundled in this build (download-mingit.js may have been skipped)
     return;
   }
 
-  // Only copy once per install; Biorouter updates overwrite by deleting and re-copying.
-  //
   // ⚠ **Asynchronous, and that is issue #88 rather than a style preference.**
   // This ran as `fs.cpSync(...)`: a synchronous recursive copy of the bundled
   // MinGit tree, which is ~120 MB across thousands of files, with Defender
@@ -83,16 +135,11 @@ async function ensureBundledGit(srcBinDir: string, localAppData: string): Promis
   // watchdog nor `startupBlocking.test.ts` could see it. That test only banned
   // synchronous CHILD-PROCESS calls, because #88 was about probes; a bulk
   // filesystem copy blocks the loop just as hard.
-  let installed = true;
-  try {
-    await fs.promises.access(gitExe);
-  } catch {
-    installed = false;
-  }
-  if (!installed) {
-    log.info('Installing bundled git fallback...');
-    await fs.promises.cp(srcGitDir, dstGitDir, { recursive: true, force: true });
-    log.info(`Bundled git installed to ${dstGitDir}`);
+  const installedVersion = await readMinGitVersion(dstGitDir);
+  if (!(await exists(gitExe)) || installedVersion !== bundledVersion) {
+    log.info(`Installing bundled git fallback ${bundledVersion}...`);
+    await replaceBundledGit(srcGitDir, dstGitDir);
+    log.info(`Bundled git ${bundledVersion} installed to ${dstGitDir}`);
   }
 
   // Append to PATH as last-resort fallback — system git (Program Files\Git\bin) takes priority.
