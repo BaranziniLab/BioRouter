@@ -38,6 +38,9 @@ const MAX_JS_LOOP_ITERATIONS: u64 = 1_000_000;
 const MAX_JS_ARRAY_BUFFER_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_JS_TOOL_CALLS: usize = 256;
 const MAX_MODULE_SEARCH_RESULTS: usize = 12;
+const MAX_MODULE_SEARCH_TERMS: usize = 16;
+const MAX_MODULE_SEARCH_TERM_CHARS: usize = 256;
+const MAX_MODULE_SEARCH_TOKENS: usize = 32;
 /// Cap on per-run sub-call telemetry records (issue #28) so a loop-heavy
 /// script cannot grow the result meta without bound; calls past the cap are
 /// counted, not recorded.
@@ -582,21 +585,20 @@ const BOA_NOT_CALLABLE: &str = "not a callable function";
 
 /// Attach a recovery hint to JS engine errors whose own text is too opaque to act on.
 ///
-/// The dominant cause of `not a callable function` in real sessions is a string
-/// method invoked on a tool result that came back as parsed JSON — tool results
-/// are JSON-parsed when they parse, so `shell({…}).trim()` fails the moment the
-/// tool answers with an object instead of plain text. Boa reports only that
-/// *something* was not callable, which sent the model round in circles (observed:
-/// three import forms retried, then a fallback to `"fs"`). The hint names the
-/// likely cause and the check that resolves it.
+/// Boa reports only that *something* was not callable. Two distinct mistakes are
+/// common: calling a module member that is not a function, and calling a string
+/// method on a parsed JSON tool result. The hint must name both without claiming
+/// either one happened, or a correct response to the wrong diagnosis burns more
+/// turns instead of locating the bad callee.
 fn annotate_opaque_js_error(message: &str) -> String {
     if message.contains(BOA_NOT_CALLABLE) {
         format!(
-            "{message}. You called something that is not a function. A tool call \
-             returns a parsed object when the tool's result is JSON, and a string \
-             otherwise, so string methods such as .trim()/.split() fail on a JSON \
-             result. Inspect the shape first (record_result(value)) or convert it \
-             with JSON.stringify(value)."
+            "{message}. Something you called is not a function. Check each callee \
+             with typeof, including the imported module member and any method on \
+             an intermediate result. One possible cause is a tool result: JSON \
+             results are parsed objects, so string methods such as .trim()/.split() \
+             are not callable on them. Inspect the value with record_result(value); \
+             use JSON.stringify(value) only when string output is actually needed."
         )
     } else {
         message.to_string()
@@ -1736,6 +1738,20 @@ impl CodeExecutionClient {
         if terms_vec.is_empty() {
             return Err("Search terms cannot be empty".to_string());
         }
+        if terms_vec.len() > MAX_MODULE_SEARCH_TERMS {
+            return Err(format!(
+                "Search accepts at most {MAX_MODULE_SEARCH_TERMS} terms"
+            ));
+        }
+        if let Some(term) = terms_vec
+            .iter()
+            .find(|term| term.chars().count() > MAX_MODULE_SEARCH_TERM_CHARS)
+        {
+            return Err(format!(
+                "Each search term must be at most {MAX_MODULE_SEARCH_TERM_CHARS} characters; got {}",
+                term.chars().count()
+            ));
+        }
 
         let use_regex = arguments
             .as_ref()
@@ -1754,7 +1770,10 @@ impl CodeExecutionClient {
     ) -> Result<Vec<Content>, String> {
         enum Matcher {
             Regex(Vec<Regex>),
-            Plain(Vec<String>),
+            Plain {
+                phrases: Vec<String>,
+                tokens: Vec<String>,
+            },
         }
 
         let matcher = if use_regex {
@@ -1766,7 +1785,32 @@ impl CodeExecutionClient {
                 .collect();
             Matcher::Regex(patterns?)
         } else {
-            Matcher::Plain(terms.iter().map(|t| t.to_lowercase()).collect())
+            let phrases = terms
+                .iter()
+                .take(MAX_MODULE_SEARCH_TERMS)
+                .map(|term| {
+                    term.chars()
+                        .take(MAX_MODULE_SEARCH_TERM_CHARS)
+                        .collect::<String>()
+                        .to_lowercase()
+                })
+                .collect::<Vec<_>>();
+            let mut seen = BTreeSet::new();
+            let tokens = phrases
+                .iter()
+                .filter(|phrase| phrase.split_whitespace().count() > 1)
+                .flat_map(|phrase| phrase.split_whitespace())
+                .map(|token| {
+                    token.trim_matches(|character: char| {
+                        !character.is_alphanumeric() && character != '_' && character != '-'
+                    })
+                })
+                .filter(|token| token.chars().count() >= 2)
+                .filter(|token| seen.insert((*token).to_string()))
+                .take(MAX_MODULE_SEARCH_TOKENS)
+                .map(str::to_string)
+                .collect();
+            Matcher::Plain { phrases, tokens }
         };
 
         let match_score = |tool: &ToolInfo| -> usize {
@@ -1779,11 +1823,11 @@ impl CodeExecutionClient {
                             + usize::from(pattern.is_match(&tool.description)) * 4
                     })
                     .sum(),
-                Matcher::Plain(terms) => {
+                Matcher::Plain { phrases, tokens } => {
                     let tool_name = tool.tool_name.to_lowercase();
                     let server_name = tool.server_name.to_lowercase();
                     let description = tool.description.to_lowercase();
-                    terms
+                    let phrase_score: usize = phrases
                         .iter()
                         .map(|term| {
                             let tool_score = if tool_name == *term {
@@ -1803,7 +1847,29 @@ impl CodeExecutionClient {
                             let description_score = usize::from(description.contains(term)) * 4;
                             tool_score + server_score + description_score
                         })
-                        .sum()
+                        .sum();
+                    let token_score: usize = tokens
+                        .iter()
+                        .map(|token| {
+                            let tool_score = if tool_name == *token {
+                                10
+                            } else if tool_name.contains(token) {
+                                5
+                            } else {
+                                0
+                            };
+                            let server_score = if server_name == *token {
+                                4
+                            } else if server_name.contains(token) {
+                                2
+                            } else {
+                                0
+                            };
+                            let description_score = usize::from(description.contains(token)) * 2;
+                            tool_score + server_score + description_score
+                        })
+                        .sum();
+                    phrase_score + token_score
                 }
             }
         };
@@ -2216,9 +2282,11 @@ impl McpClientTrait for CodeExecutionClient {
                         - Call: toolName({ param1: value, param2: value })
                         - Result: record_result(value) - call this to return a value from the script
                         - All calls are synchronous.
-                        - A call returns a PARSED OBJECT when the tool's result is JSON, and a string
-                          otherwise. Do not assume a string: `.trim()`/`.split()` on a JSON result throw
-                          "not a callable function". Check with typeof, or use JSON.stringify(value).
+                        - "not a callable function" means some callee is not a function. Check imported
+                          module members and intermediate values with typeof. One possible cause is a
+                          PARSED OBJECT from a JSON tool result: `.trim()`/`.split()` are not callable on
+                          objects. Inspect with record_result(value), or use JSON.stringify(value) when
+                          string output is actually needed.
 
                         MODULES:
                         - Only the modules listed in "Modules:" above are importable: these and only these.
@@ -3153,6 +3221,51 @@ mod tests {
     }
 
     #[test]
+    fn natural_language_module_search_tokenizes_phrases_with_a_fixed_bound() {
+        let tools = vec![ToolInfo {
+            server_name: "chatrecall".to_string(),
+            tool_name: "chatrecall".to_string(),
+            full_name: "chatrecall__chatrecall".to_string(),
+            description: "Search past chat or load session summaries".to_string(),
+            params: vec![],
+            return_type: "string".to_string(),
+        }];
+
+        let result = CodeExecutionClient::handle_search(
+            &tools,
+            &[
+                "conversation history search".to_string(),
+                "past sessions recall".to_string(),
+            ],
+            false,
+        )
+        .unwrap();
+        let text = match &result[0].raw {
+            RawContent::Text(text) => text.text.as_str(),
+            _ => panic!("Expected text"),
+        };
+        assert!(
+            text.contains("chatrecall/chatrecall"),
+            "natural-language phrases must match their useful words: {text}"
+        );
+
+        let mut words = (0..MAX_MODULE_SEARCH_TOKENS)
+            .map(|index| format!("x{index}"))
+            .collect::<Vec<_>>();
+        words.push("chatrecall".to_string());
+        let bounded =
+            CodeExecutionClient::handle_search(&tools, &[words.join(" ")], false).unwrap();
+        let text = match &bounded[0].raw {
+            RawContent::Text(text) => text.text.as_str(),
+            _ => panic!("Expected text"),
+        };
+        assert!(
+            text.contains("No tools matched"),
+            "only the first {MAX_MODULE_SEARCH_TOKENS} phrase tokens may affect matching: {text}"
+        );
+    }
+
+    #[test]
     fn web_news_search_returns_ranked_ready_to_execute_signatures() {
         let tools = vec![
             ToolInfo {
@@ -3500,9 +3613,8 @@ mod tests {
     }
 
     /// `not a callable function` is Boa's message for calling any non-function,
-    /// and it names neither the value nor the call site. In real sessions it came
-    /// from string methods invoked on a JSON tool result; without the hint the
-    /// model has nothing to act on.
+    /// and it names neither the value nor the call site. A JSON result is one
+    /// possible cause, not a diagnosis the engine actually made.
     #[test]
     fn calling_a_string_method_on_a_json_tool_result_explains_itself() {
         let tools = one_tool("developer", "shell");
@@ -3527,12 +3639,37 @@ mod tests {
             "the engine's own message must survive, got: {error}"
         );
         assert!(
-            error.contains("parsed object when the tool's result is JSON"),
-            "error must explain why the value was not callable, got: {error}"
+            error.contains("JSON results are parsed objects"),
+            "error must explain the JSON-result possibility, got: {error}"
+        );
+        assert!(
+            error.contains("imported module member") && error.contains("One possible cause"),
+            "error must distinguish module-member and result-shape causes, got: {error}"
         );
         assert!(
             error.contains("JSON.stringify"),
             "error must name the recovery, got: {error}"
+        );
+    }
+
+    #[test]
+    fn calling_a_plain_object_gets_multi_cause_guidance() {
+        let tools = one_tool("developer", "shell");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let error = run_js_module(
+            r#"const moduleMember = {}; record_result(moduleMember());"#,
+            &tools,
+            tx,
+        )
+        .expect_err("an object is not callable");
+
+        assert!(error.contains(BOA_NOT_CALLABLE), "got: {error}");
+        assert!(
+            error.contains("Check each callee with typeof")
+                && error.contains("imported module member")
+                && error.contains("One possible cause is a tool result"),
+            "the hint must offer checks and possibilities without inventing one cause: {error}"
         );
     }
 

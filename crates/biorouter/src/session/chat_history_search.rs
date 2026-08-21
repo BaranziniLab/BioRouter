@@ -35,6 +35,10 @@ pub struct ChatRecallResults {
     /// built, so a search that DID hit its cap can end up with
     /// `total_matches < limit` and silently lose its truncation warning.
     pub rows_examined: usize,
+    /// Matching SQL rows that could not be rendered because their stored content
+    /// was malformed or contained no supported recall text. These are matches,
+    /// not evidence that the query found nothing.
+    pub unrenderable_matches: usize,
 }
 
 type SqlQueryRow = (
@@ -231,6 +235,7 @@ impl<'a> ChatHistorySearch<'a> {
             results: vec![],
             total_matches: 0,
             rows_examined: 0,
+            unrenderable_matches: 0,
         };
 
         // Prefer the FTS5 index (relevance-ranked via bm25) when it exists;
@@ -633,6 +638,7 @@ impl<'a> ChatHistorySearch<'a> {
             results,
             total_matches,
             rows_examined,
+            unrenderable_matches: rows_examined.saturating_sub(total_matches),
         }
     }
 }

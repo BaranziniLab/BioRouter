@@ -100,6 +100,86 @@ const MAX_LOAD_MESSAGE_CHARS: usize = 4000;
 /// many parts would otherwise divide the budget down to nothing and print a
 /// column of ellipses.
 const MIN_LOAD_PART_CHARS: usize = 400;
+const MAX_LOAD_RENDERED_PARTS: usize = MAX_LOAD_MESSAGE_CHARS / MIN_LOAD_PART_CHARS;
+
+/// Clip one content part so the returned string, including its disclosure, is
+/// no longer than `max` characters.
+fn clip_within(content: &str, max: usize, hint: &str) -> String {
+    if content.chars().count() <= max {
+        return content.to_string();
+    }
+
+    let suffix = format!("… [truncated; {hint}]");
+    let suffix_len = suffix.chars().count();
+    if suffix_len >= max {
+        return suffix.chars().take(max).collect();
+    }
+
+    let prefix: String = content.chars().take(max - suffix_len).collect();
+    format!("{prefix}{suffix}")
+}
+
+/// Render a message's parts inside one hard, disclosure-inclusive budget.
+///
+/// A minimum per-part share cannot itself be a cap: with N parts, `max(400,
+/// 4000/N)` emits at least `400*N` characters. At most ten parts fit at the
+/// stated floor, so a larger message keeps its first and last five parts and
+/// names exactly how many middle parts were omitted. The remaining budget is
+/// divided deterministically, with any remainder going to the later parts so a
+/// final answer gets at least as much room as leading reasoning.
+fn render_load_parts(parts: &[String]) -> String {
+    if parts.is_empty() {
+        return "[no renderable content]".to_string();
+    }
+
+    let omitted = parts.len().saturating_sub(MAX_LOAD_RENDERED_PARTS);
+    let displayed = if omitted == 0 {
+        parts.iter().collect::<Vec<_>>()
+    } else {
+        let first = MAX_LOAD_RENDERED_PARTS / 2;
+        let last = MAX_LOAD_RENDERED_PARTS - first;
+        parts
+            .iter()
+            .take(first)
+            .chain(parts.iter().skip(parts.len() - last))
+            .collect::<Vec<_>>()
+    };
+    let omission_marker = (omitted > 0).then(|| {
+        format!(
+            "[{omitted} content part(s) omitted to stay within the \
+             {MAX_LOAD_MESSAGE_CHARS}-character LOAD limit]"
+        )
+    });
+    let entry_count = displayed.len() + usize::from(omission_marker.is_some());
+    let separator_chars = entry_count.saturating_sub(1);
+    let fixed_chars = separator_chars
+        + omission_marker
+            .as_ref()
+            .map_or(0, |marker| marker.chars().count());
+    let content_budget = MAX_LOAD_MESSAGE_CHARS.saturating_sub(fixed_chars);
+    let per_part = content_budget / displayed.len();
+    let remainder = content_budget % displayed.len();
+    let insertion = MAX_LOAD_RENDERED_PARTS / 2;
+    let mut rendered = Vec::with_capacity(entry_count);
+
+    for (index, part) in displayed.iter().enumerate() {
+        if index == insertion {
+            if let Some(marker) = &omission_marker {
+                rendered.push(marker.clone());
+            }
+        }
+        let share = per_part + usize::from(index >= displayed.len() - remainder);
+        rendered.push(clip_within(
+            part,
+            share,
+            "read this session with workspace_read_conversation for the full text",
+        ));
+    }
+
+    let output = rendered.join("\n");
+    debug_assert!(output.chars().count() <= MAX_LOAD_MESSAGE_CHARS);
+    output
+}
 
 /// One matched message, clipped to [`MAX_EXCERPT_CHARS`] on a char boundary.
 /// The marker is load-bearing: silent truncation would let the model conclude a
@@ -360,33 +440,7 @@ impl ChatRecallClient {
                     // can no longer disagree about what a message says.
                     let render = |msg: &crate::conversation::message::Message| -> String {
                         let parts = load_parts(&msg.content);
-                        if parts.is_empty() {
-                            "[no renderable content]".to_string()
-                        } else {
-                            // ⚠ Clip each PART, never the joined string. The
-                            // parts keep message order, and on a reasoning model
-                            // that order is [Thinking(very long), Text(the
-                            // answer)] — so a single clip of the join spends the
-                            // whole budget on the reasoning and truncates away
-                            // the reply the model came here to read. A per-part
-                            // share means every part survives in some form.
-                            let budget = std::cmp::max(
-                                MIN_LOAD_PART_CHARS,
-                                MAX_LOAD_MESSAGE_CHARS / parts.len(),
-                            );
-                            parts
-                                .iter()
-                                .map(|part| {
-                                    clip(
-                                        part,
-                                        budget,
-                                        "read this session with workspace_read_conversation \
-                                         for the full text",
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        }
+                        render_load_parts(&parts)
                     };
 
                     // Show first 3 messages
@@ -508,13 +562,33 @@ impl ChatRecallClient {
                 .await
             {
                 Ok(results) => {
-                    let formatted_results = if results.total_matches == 0 {
+                    let formatted_results = if results.rows_examined == 0 {
                         format!("No results found for query: '{}'", query)
+                    } else if results.total_matches == 0 {
+                        let capped = results.rows_examined >= limit;
+                        format!(
+                            "Found {}{} matching message row(s) for query: '{}', but none could be \
+                             rendered because the stored content was malformed or unsupported. \
+                             This is not evidence that the query had no matches; repair the \
+                             affected session data and retry.{}",
+                            if capped { "at least " } else { "" },
+                            results.rows_examined,
+                            query,
+                            if capped {
+                                format!(
+                                    " The {limit}-message limit was reached, so further \
+                                     unrenderable matches may exist."
+                                )
+                            } else {
+                                String::new()
+                            }
+                        )
                     } else {
-                        // ⚠ `total_matches` counts the rows that came back
-                        // AFTER `LIMIT`, not the number that matched, so printing
-                        // it as "Found N" told the model N was the whole answer
-                        // exactly when it was least likely to be.
+                        // ⚠ `rows_examined` counts the rows that came back AFTER
+                        // `LIMIT`, while `total_matches` counts only the rows that
+                        // rendered. The headline must use the former so malformed
+                        // content cannot become a false absence; hitting the limit
+                        // still means the database may hold more matches.
                         //
                         // Derive the disclosure from `rows_examined` — the raw
                         // row count before rendering dropped any — not from
@@ -527,20 +601,30 @@ impl ChatRecallClient {
                         // more": a query matching exactly `limit` messages is
                         // complete and indistinguishable from one that is not.
                         let capped = results.rows_examined >= limit;
+                        let unreadable = if results.unrenderable_matches == 0 {
+                            String::new()
+                        } else {
+                            format!(
+                                "({} matching message row(s) could not be rendered because the \
+                                 stored content was malformed or unsupported; they are counted \
+                                 above)\n",
+                                results.unrenderable_matches
+                            )
+                        };
                         let mut output = format!(
-                            "Found {}{} matching message(s) across {} session(s) for query: '{}'\n{}\n",
+                            "Found {}{} matching message(s) across {} readable session(s) for query: '{}'\n{}\n",
                             if capped { "at least " } else { "" },
-                            results.total_matches,
+                            results.rows_examined,
                             results.results.len(),
                             query,
                             if capped {
                                 format!(
                                     "(the {limit}-message limit was reached, so there may be \
                                      further matches that are not shown; narrow the query or \
-                                     raise `limit`)\n"
+                                     raise `limit`)\n{unreadable}"
                                 )
                             } else {
-                                String::new()
+                                unreadable
                             }
                         );
                         for (idx, result) in results.results.iter().enumerate() {
@@ -673,6 +757,28 @@ mod tests {
     use crate::session::SessionManager;
     use rmcp::model::Tool as McpTool;
     use std::sync::Arc;
+
+    #[test]
+    fn load_rendering_has_one_hard_budget_across_arbitrarily_many_parts() {
+        let parts = (0..40)
+            .map(|index| format!("PART-{index:02}:{}", "x".repeat(2_000)))
+            .collect::<Vec<_>>();
+
+        let rendered = render_load_parts(&parts);
+
+        assert!(
+            rendered.chars().count() <= MAX_LOAD_MESSAGE_CHARS,
+            "rendered {} characters despite the {MAX_LOAD_MESSAGE_CHARS}-character cap",
+            rendered.chars().count()
+        );
+        assert!(rendered.contains("PART-00") && rendered.contains("PART-39"));
+        assert!(rendered.contains("30 content part(s) omitted"));
+        assert!(rendered.contains("truncated"));
+        assert!(
+            !rendered.contains("PART-20"),
+            "an omitted middle part was rendered without disclosure"
+        );
+    }
 
     /// A provider whose only interesting property is its tier. `complete_*` is
     /// never reached: every test here dispatches a tool, none runs a turn.

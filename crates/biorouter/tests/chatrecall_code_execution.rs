@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use rmcp::model::{CallToolRequestParams, RawContent};
 use rmcp::object;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -89,6 +90,28 @@ impl Harness {
                 .unwrap();
         }
         s.id
+    }
+
+    async fn corrupt_stored_content(&self, session_id: &str) {
+        let options = SqliteConnectOptions::new()
+            .filename(
+                self._temp
+                    .path()
+                    .join(biorouter::session::session_manager::SESSIONS_FOLDER)
+                    .join(biorouter::session::session_manager::DB_NAME),
+            )
+            .create_if_missing(false);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE messages SET content_json = '{broken' WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
     }
 
     /// Run `execute_code` exactly as the agent loop does and return
@@ -801,7 +824,11 @@ record_result(chatrecall({{ session_id: "{id}" }}));"#
 #[tokio::test]
 async fn the_cap_disclosure_is_derived_from_rows_not_from_rendered_messages() {
     let h = Harness::new().await;
-    for i in 0..4 {
+    let corrupt = h
+        .seed("SPOKE corrupt session", &["SPOKE knowledge graph"])
+        .await;
+    h.corrupt_stored_content(&corrupt).await;
+    for i in 0..3 {
         h.seed(&format!("SPOKE session {i}"), &["SPOKE knowledge graph"])
             .await;
     }
@@ -817,6 +844,10 @@ record_result(chatrecall({ query: "SPOKE", limit: 4 }));"#,
         at_cap.contains("at least") && at_cap.contains("may be"),
         "a search that returned exactly `limit` rows must disclose that more may exist:\n{at_cap}"
     );
+    assert!(
+        at_cap.contains("1 matching message row(s) could not be rendered"),
+        "the malformed matching row was silently dropped:\n{at_cap}"
+    );
 
     // Below the cap: complete answer, no hedge.
     let below = h
@@ -829,6 +860,30 @@ record_result(chatrecall({ query: "SPOKE", limit: 10 }));"#,
         !below.contains("at least"),
         "a complete answer must not be hedged:\n{below}"
     );
+}
+
+#[tokio::test]
+async fn malformed_matching_rows_never_become_a_false_no_results_answer() {
+    let h = Harness::new().await;
+    let corrupt = h
+        .seed("SPOKE corrupt session", &["SPOKE knowledge graph"])
+        .await;
+    h.corrupt_stored_content(&corrupt).await;
+
+    let text = h
+        .exec_ok(
+            r#"import { chatrecall } from "chatrecall";
+record_result(chatrecall({ query: "SPOKE" }));"#,
+        )
+        .await;
+
+    assert!(
+        !text.contains("No results found"),
+        "a matching row was misreported as an empty search:\n{text}"
+    );
+    assert!(text.contains("Found 1 matching message row(s)"));
+    assert!(text.contains("none could be rendered"));
+    assert!(text.contains("malformed or unsupported"));
 }
 
 /// The excerpt must contain the term that matched.
