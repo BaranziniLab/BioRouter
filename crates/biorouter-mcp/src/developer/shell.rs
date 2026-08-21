@@ -1,4 +1,4 @@
-use std::{env, ffi::OsString, process::Stdio, sync::Once};
+use std::{env, ffi::OsString, path::Path, process::Stdio, sync::Once};
 
 pub use biorouter_sandbox::environment::{
     is_daemon_private_env_key, strip_daemon_private_env, strip_daemon_private_env_std,
@@ -90,13 +90,8 @@ pub fn expand_path(path_str: &str) -> String {
 }
 
 pub fn is_absolute_path(path_str: &str) -> bool {
-    if cfg!(windows) {
-        // Check for Windows absolute paths (drive letters and UNC)
-        path_str.contains(":\\") || path_str.starts_with("\\\\")
-    } else {
-        // Unix absolute paths start with /
-        path_str.starts_with('/')
-    }
+    let path = Path::new(path_str);
+    path.is_absolute() || (cfg!(windows) && path.has_root())
 }
 
 pub fn normalize_line_endings(text: &str) -> String {
@@ -669,6 +664,22 @@ pub async fn kill_process_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_absolute_paths_accept_native_and_forward_slash_forms() {
+        for absolute in [
+            r"C:\workspace\out.txt",
+            "C:/workspace/out.txt",
+            r"\workspace\out.txt",
+            r"\\server\share\out.txt",
+        ] {
+            assert!(is_absolute_path(absolute), "expected absolute: {absolute}");
+        }
+        for relative in [r"workspace\out.txt", "workspace/out.txt", r"C:out.txt"] {
+            assert!(!is_absolute_path(relative), "expected relative: {relative}");
+        }
+    }
 
     #[test]
     fn network_flag_parses_truthy_values() {
