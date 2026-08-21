@@ -1804,8 +1804,8 @@ mod tests {
         assert!(value["messages"][0].get("content").is_none());
     }
 
-    /// **[#59]** The accounting frame still reaches the WIRE, through the real
-    /// handler, after the refactor.
+    /// **[#59]** The accounting frame still reaches the WIRE through the real
+    /// bus pump and reply-stream consumer after the refactor.
     ///
     /// This is the only test in this plan that can catch the failure mode the
     /// 7 → 8 ordering exists to prevent: `map_bus_event` repaired with
@@ -1819,70 +1819,63 @@ mod tests {
     /// It publishes onto the bus directly rather than driving a real turn: a
     /// provider-less turn persists nothing, so the frame has to be injected to
     /// be observed. That is exactly the right scope here — the property under
-    /// test is `bus → wire`, which is `/reply`'s half; the agent's half
+    /// test is `bus → wire`, which is `/reply`'s two production halves; the agent's half
     /// (`persist → bus`) is held by
     /// `conversation_writeback_freshness::a_client_that_watched_the_turn_knows_every_stored_message_id`.
     #[tokio::test]
     async fn a_persisted_batch_on_the_bus_reaches_the_reply_client() {
         use biorouter::agents::{AgentEvent, PersistedMessage};
         use biorouter::session_events::{self, SessionBusEvent};
-        use tower::ServiceExt;
 
         let state = AppState::new().await.unwrap();
-        let temp = tempfile::TempDir::new().unwrap();
-        let session = state
-            .session_manager()
-            .create_session(
-                temp.path().to_path_buf(),
-                "reply-persisted-frame".to_string(),
-                biorouter::session::session_manager::SessionType::User,
-            )
-            .await
-            .unwrap();
+        let session_id = "reply-persisted-frame".to_string();
+        let bus = session_events::subscribe(&session_id);
+        let stream = TurnStream::new(&session_id, "turn-persisted-frame");
+        let pump = tokio::spawn(pump_bus_into_stream(
+            state.clone(),
+            session_id.clone(),
+            bus,
+            stream.claim_writer().expect("the test owns this log"),
+            CancellationToken::new(),
+            Duration::ZERO,
+        ));
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        let client = tokio::spawn(drain_stream_to_client(
+            state,
+            session_id.clone(),
+            Arc::clone(&stream),
+            0,
+            false,
+            tx,
+        ));
 
-        // A PUMP, not a single publish, and that is not belt-and-braces.
-        // `broadcast::Receiver` only sees sends made after it was created, and
-        // the handler subscribes inside itself — so a one-shot publish before
-        // the request is guaranteed to be missed, and one after it races the
-        // provider-less turn's fast Error (which breaks the SSE loop and closes
-        // the body). Publishing continuously for the request's whole life makes
-        // the test deterministic in the only direction that matters: at least
-        // one publish lands strictly between "subscribed" and "terminal".
-        let sid = session.id.clone();
-        let pump = tokio::spawn(async move {
-            for _ in 0..400 {
-                session_events::publish(
-                    &sid,
-                    SessionBusEvent::Agent(AgentEvent::MessagesPersisted(vec![PersistedMessage {
-                        id: "probe-1".into(),
-                        user_visible: true,
-                    }])),
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-        });
+        session_events::publish(
+            &session_id,
+            SessionBusEvent::Agent(AgentEvent::MessagesPersisted(vec![PersistedMessage {
+                id: "probe-1".into(),
+                user_visible: true,
+            }])),
+        );
+        session_events::publish(
+            &session_id,
+            SessionBusEvent::TurnFinished {
+                reason: "stop".into(),
+                token_state: None,
+            },
+        );
 
-        let body = serde_json::json!({
-            "user_message": serde_json::to_value(
-                biorouter::conversation::message::Message::user().with_text("hi")
-            ).unwrap(),
-            "session_id": session.id,
-        });
-        let response = routes(state.clone())
-            .oneshot(
-                axum::http::Request::post("/reply")
-                    .header("content-type", "application/json")
-                    .body(axum::body::Body::from(body.to_string()))
-                    .unwrap(),
-            )
+        tokio::time::timeout(Duration::from_secs(10), pump)
             .await
+            .expect("the terminal event must stop the bus pump")
             .unwrap();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        tokio::time::timeout(Duration::from_secs(10), client)
             .await
+            .expect("the closed turn stream must stop the reply client")
             .unwrap();
-        pump.abort();
-
-        let text = String::from_utf8_lossy(&bytes);
+        let mut text = String::new();
+        while let Some(frame) = rx.recv().await {
+            text.push_str(&frame);
+        }
         assert!(
             text.contains("\"type\":\"MessagesPersisted\""),
             "the #59 accounting frame never reached the wire. If `map_bus_event` \
