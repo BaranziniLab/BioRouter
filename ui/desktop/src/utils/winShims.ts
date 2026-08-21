@@ -101,15 +101,20 @@ async function replaceBundledGit(srcGitDir: string, dstGitDir: string): Promise<
       movedOldInstall = true;
     }
     await fs.promises.rename(stagingDir, dstGitDir);
-    if (movedOldInstall) {
-      await fs.promises.rm(backupDir, { recursive: true, force: true });
-    }
   } catch (error) {
     await fs.promises.rm(stagingDir, { recursive: true, force: true });
     if (movedOldInstall && !(await exists(dstGitDir)) && (await exists(backupDir))) {
       await fs.promises.rename(backupDir, dstGitDir);
     }
     throw error;
+  }
+
+  if (movedOldInstall) {
+    try {
+      await fs.promises.rm(backupDir, { recursive: true, force: true });
+    } catch (error) {
+      log.error(`Bundled Git was updated but its old backup remains at ${backupDir}`, error);
+    }
   }
 }
 

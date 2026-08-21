@@ -56,6 +56,8 @@ jobs:
           $cli = Join-Path $app "resources/bin/biorouter.exe"
           $daemon = Join-Path $app "resources/bin/biorouterd.exe"
           $desktop = Join-Path $app "Biorouter.exe"
+          $git = Join-Path $app "resources/bin/git/cmd/git.exe"
+          $minGitMarker = Join-Path $app "resources/bin/git/mingit-version.txt"
 
           $cliVersion = & $cli --version
           if ($LASTEXITCODE -ne 0 -or $cliVersion -notmatch [regex]::Escape($env:VERSION)) {
@@ -67,6 +69,19 @@ jobs:
           }
           & $cli term --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Packaged terminal help failed" }
+
+          if (!(Test-Path -LiteralPath $git) -or !(Test-Path -LiteralPath $minGitMarker)) {
+            throw "Packaged MinGit executable or version marker is missing"
+          }
+          $minGitVersion = (Get-Content -LiteralPath $minGitMarker -Raw).Trim()
+          $gitVersion = & $git --version
+          if (
+            [string]::IsNullOrWhiteSpace($minGitVersion) -or
+            $LASTEXITCODE -ne 0 -or
+            $gitVersion -notmatch [regex]::Escape($minGitVersion)
+          ) {
+            throw "Packaged MinGit did not match marker '$minGitVersion': $gitVersion"
+          }
 
           $process = Start-Process $desktop -PassThru
           Start-Sleep -Seconds 15

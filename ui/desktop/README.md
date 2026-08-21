@@ -147,6 +147,9 @@ The ZIP is written to
   `cmd/git.exe`: the desktop startup code uses both files to detect an older or
   partial persistent copy under `%LOCALAPPDATA%\Biorouter\git`, then replaces it
   through a verified staging directory.
+- Windows package builds fail if MinGit cannot be prepared. Developers who are
+  intentionally testing a package without the fallback can set
+  `BIOROUTER_ALLOW_MISSING_MINGIT=1`; release builds must not set this opt-out.
 - Windows test builds should set `CARGO_PROFILE_TEST_DEBUG=0` before the Rust
   cache step. This keeps test behavior and assertions intact while avoiding very
   large MSVC PDB files, and setting it before cache restore gives the optimized

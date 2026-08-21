@@ -12,6 +12,7 @@ const originalPath = process.env.PATH;
 
 afterEach(() => {
   process.env.PATH = originalPath;
+  vi.restoreAllMocks();
 });
 
 function fixture(version = '2.49.0') {
@@ -61,6 +62,29 @@ describe('ensureBundledGit', () => {
     await ensureBundledGit(f.srcBin, f.localAppData);
 
     expect(fs.readFileSync(path.join(dstGit, 'local-sentinel.txt'), 'utf8')).toBe('keep');
+    fs.rmSync(f.root, { recursive: true, force: true });
+  });
+
+  it('keeps the committed update on PATH when old-backup cleanup is locked', async () => {
+    const f = fixture('2.49.0');
+    const dstGit = path.join(f.localAppData, 'Biorouter', 'git');
+    fs.mkdirSync(path.join(dstGit, 'cmd'), { recursive: true });
+    fs.writeFileSync(path.join(dstGit, 'cmd', 'git.exe'), 'old-git');
+    fs.writeFileSync(path.join(dstGit, 'mingit-version.txt'), '2.48.0\n');
+
+    const realRm = fs.promises.rm.bind(fs.promises);
+    vi.spyOn(fs.promises, 'rm').mockImplementation(async (target, options) => {
+      if (String(target).includes('.backup-') && fs.existsSync(target)) {
+        throw new Error('simulated Windows file lock');
+      }
+      return realRm(target, options);
+    });
+
+    await expect(ensureBundledGit(f.srcBin, f.localAppData)).resolves.toBeUndefined();
+
+    expect(fs.readFileSync(path.join(dstGit, 'cmd', 'git.exe'), 'utf8')).toBe('git-2.49.0');
+    expect((process.env.PATH ?? '').split(path.delimiter)).toContain(path.join(dstGit, 'cmd'));
+    vi.restoreAllMocks();
     fs.rmSync(f.root, { recursive: true, force: true });
   });
 });

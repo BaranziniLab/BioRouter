@@ -6,20 +6,23 @@
  *
  * Run automatically as part of `npm run bundle:windows`.
  * Skipped entirely on non-Windows builds (ELECTRON_PLATFORM != win32).
- * Non-fatal: if the download fails, the build continues without bundled git.
+ * Release builds fail if MinGit cannot be prepared. A developer who is
+ * intentionally testing a package without the fallback may opt out with
+ * BIOROUTER_ALLOW_MISSING_MINGIT=1.
  */
 
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync } = require('child_process');
+const AdmZip = require('adm-zip');
 
 const MINGIT_VERSION = '2.49.0';
 const MINGIT_WINDOWS_TAG = `v${MINGIT_VERSION}.windows.1`;
 const MINGIT_ZIP_NAME = `MinGit-${MINGIT_VERSION}-64-bit.zip`;
 const MINGIT_URL = `https://github.com/git-for-windows/git/releases/download/${MINGIT_WINDOWS_TAG}/${MINGIT_ZIP_NAME}`;
 const MINGIT_VERSION_FILE = 'mingit-version.txt';
+const ALLOW_MISSING_MINGIT_ENV = 'BIOROUTER_ALLOW_MISSING_MINGIT';
 
 const DEST_DIR = path.join(__dirname, '..', 'src', 'platform', 'windows', 'bin', 'git');
 const ZIP_PATH = path.join(os.tmpdir(), MINGIT_ZIP_NAME);
@@ -68,17 +71,17 @@ function download(url, dest) {
 
 function extract(zipPath, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
+  new AdmZip(zipPath).extractAllTo(destDir, true);
+}
 
-  // On Windows (native build): use PowerShell Expand-Archive
-  // On macOS/Linux (cross-compilation): use unzip (available by default on both)
-  if (process.platform === 'win32') {
-    execSync(
-      `powershell -NoProfile -Command "Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force"`,
-      { stdio: 'inherit' }
-    );
-  } else {
-    execSync(`unzip -q -o "${zipPath}" -d "${destDir}"`, { stdio: 'inherit' });
-  }
+function missingMinGitAllowed(env = process.env) {
+  return /^(1|true|on|yes)$/i.test((env[ALLOW_MISSING_MINGIT_ENV] || '').trim());
+}
+
+function handleMinGitFailure(error, env = process.env) {
+  if (!missingMinGitAllowed(env)) throw error;
+  console.warn(`Failed to download/extract MinGit: ${error.message}`);
+  console.warn(`Continuing because ${ALLOW_MISSING_MINGIT_ENV} explicitly allows it.`);
 }
 
 async function main() {
@@ -115,14 +118,17 @@ async function main() {
     fs.renameSync(stagingDir, DEST_DIR);
     console.log('MinGit ready.');
   } catch (err) {
-    console.error(`\nFailed to download/extract MinGit: ${err.message}`);
-    console.warn(
-      'Bundled git will not be available. Windows users without git must install it manually.'
-    );
-    // Non-fatal — build continues without bundled git
+    handleMinGitFailure(err);
   } finally {
     fs.rmSync(ZIP_PATH, { force: true });
   }
 }
 
-main();
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`MinGit preparation failed: ${err.message}`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { extract, handleMinGitFailure, missingMinGitAllowed };
