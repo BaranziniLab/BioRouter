@@ -52,7 +52,14 @@ jobs:
           VERSION: ${{ inputs.version }}
           BIOROUTER_DISABLE_KEYRING: "true"
         run: |
-          $app = Resolve-Path "artifact/unpacked"
+          $desktopMatches = @(
+            Get-ChildItem -LiteralPath "artifact/unpacked" -File -Recurse |
+              Where-Object { $_.Name -ceq "Biorouter.exe" }
+          )
+          if ($desktopMatches.Count -ne 1) {
+            throw "Expected one packaged Biorouter.exe, found $($desktopMatches.Count)"
+          }
+          $app = $desktopMatches[0].Directory.FullName
           $cli = Join-Path $app "resources/bin/biorouter.exe"
           $daemon = Join-Path $app "resources/bin/biorouterd.exe"
           $desktop = Join-Path $app "Biorouter.exe"
