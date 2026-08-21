@@ -16,6 +16,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const AdmZip = require('adm-zip');
 const { execFileSync } = require('child_process');
 
 const LLAMA_BUILD = 'b9611';
@@ -93,7 +94,7 @@ function fetchLlamaServer(platform, arch) {
   const extractDir = fs.mkdtempSync(path.join(os.tmpdir(), 'llamacpp-extract-'));
   try {
     if (asset.endsWith('.zip')) {
-      execFileSync('unzip', ['-oq', archivePath, '-d', extractDir], { stdio: 'inherit' });
+      new AdmZip(archivePath).extractAllTo(extractDir, true);
     } else {
       execFileSync('tar', ['-xzf', archivePath, '-C', extractDir], { stdio: 'inherit' });
     }

@@ -66,6 +66,15 @@ use std::time::Duration;
 /// per turn.
 static PATH_JAIL_RELAXED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+fn redirect_target_within_base(base: &Path, target: &str) -> Option<PathBuf> {
+    // Path::join preserves relative targets and replaces the base for absolute
+    // ones on every supported platform. Always check the resulting path: a
+    // hand-written absolute-path predicate missed Windows C:/ and rooted forms,
+    // which let an out-of-tree target bypass this snapshot-only containment.
+    let resolved = base.join(target);
+    resolved.starts_with(base).then_some(resolved)
+}
+
 /// Relax (or re-engage) the `text_editor` working-directory jail process-wide.
 /// Called by the `biorouter` agent with `biorouter_mode == BioRouterMode::Auto`.
 pub fn set_path_jail_relaxed(relaxed: bool) {
@@ -1098,15 +1107,8 @@ impl DeveloperServer {
                 continue;
             }
             let expanded = expand_path(&raw);
-            let resolved = if is_absolute_path(&expanded) {
-                let p = PathBuf::from(&expanded);
-                // Only snapshot absolute targets inside the working directory.
-                if !p.starts_with(&base) {
-                    continue;
-                }
-                p
-            } else {
-                base.join(&expanded)
+            let Some(resolved) = redirect_target_within_base(&base, &expanded) else {
+                continue;
             };
             // Don't copy ignored files (.env, secrets, ...) into the history.
             if self.is_ignored(&resolved) {
@@ -3625,6 +3627,35 @@ mod tests {
 
         text_editor_undo(&out, &server.file_history).await.unwrap();
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "before\n");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn redirect_snapshots_stay_inside_the_windows_working_directory() {
+        let base = Path::new(r"C:\workspace");
+
+        for inside in [
+            r"logs\out.txt",
+            r"C:\workspace\logs\out.txt",
+            "C:/workspace/out.txt",
+        ] {
+            assert!(
+                redirect_target_within_base(base, inside).is_some(),
+                "expected an in-tree target: {inside}"
+            );
+        }
+        for outside in [
+            r"C:\outside\out.txt",
+            "C:/outside/out.txt",
+            r"\outside\out.txt",
+            r"\\server\share\out.txt",
+            r"C:\workspace-sibling\out.txt",
+        ] {
+            assert!(
+                redirect_target_within_base(base, outside).is_none(),
+                "expected an out-of-tree target: {outside}"
+            );
+        }
     }
 
     #[tokio::test]
