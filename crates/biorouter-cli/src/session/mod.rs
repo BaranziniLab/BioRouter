@@ -347,7 +347,7 @@ impl CliSession {
             // per-connection background thread, so the db/-wal/-shm handles
             // outlive the await and a single removal loses to os error 32.
             // A bare `dir.close()` here leaked the store on every Windows run.
-            builder::close_ephemeral_store(Some(dir));
+            builder::close_ephemeral_store(Some(dir)).await;
         }
     }
 
