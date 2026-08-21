@@ -1,0 +1,6 @@
+{
+  "exclude": [
+    "**/*.min.js",
+    "crates/biorouter-bench/src/assets/"
+  ]
+}
