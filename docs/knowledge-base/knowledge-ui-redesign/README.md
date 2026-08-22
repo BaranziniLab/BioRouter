@@ -37,11 +37,19 @@ about a decision can be settled by looking at it rather than by imagining it.
   The fix is two numbers: ring alpha 0.50 → 0.85, and a lightness band in place of the rungs.
   Within-family separation is *verified* to survive, at ΔE00 4.80 against a guard floor of 3.0.
 
-- **All-circle nodes cost a measured accessibility channel.** The seven silhouettes carry node family
-  precisely because cross-family colour distance under simulated dichromacy bottoms out at ΔE00
-  **0.00**. `R-04` delivers the circles, rebuilds what it can (hollow provenance marks at a thinned
-  1.7px ring, always-on haloed labels, an interactive legend) and states the residual trade plainly,
-  with an opt-in preference that restores the silhouettes. It should not ship without that preference.
+- **All-circle nodes cost a measured accessibility channel, and the replacement is a better one.**
+  The seven silhouettes carried node family precisely because cross-family colour distance under
+  simulated dichromacy bottoms out at ΔE00 **0.00**. `R-04` delivers the circles and rebuilds what it
+  can (hollow provenance marks at a thinned 1.7px ring, always-on haloed labels, an interactive
+  legend). It originally kept the silhouettes behind an opt-in preference and said the design should
+  not ship without it; the operator withdrew that hedge and the channel was removed outright.
+  What closes the gap instead is §5.12's keyboard model, now built: the canvas is one tab stop with
+  arrow-key traversal and a live region that speaks `Multiple sclerosis, Disease, Clinical` on every
+  focus change. That covers strictly more people — a silhouette served a sighted viewer with
+  dichromacy and nobody else, and only while the mark was large enough to resolve. The residual cost
+  stands and is not argued away: ΔE00 0.00 means `Phenotype` and `Food` are one colour under
+  tritanopia, told apart by label, hover, legend and inspector — all deliberate acts, where a
+  silhouette was passive.
 
 ## Two reversals, kept on the record
 

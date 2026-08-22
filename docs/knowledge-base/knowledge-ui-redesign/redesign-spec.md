@@ -31,7 +31,7 @@ because the fix that follows from the stated premise would be the wrong fix.
 | 1 | The base selector and *Manage bases* sit **above the app's banner**. | **The premise is wrong; the complaint is right.** They are the second child of the header's title row, co-linear with the `<h1>` (`KnowledgeView.tsx:149-170`; identical in the built bundle, so not stale-bundle drift). Nothing renders above y=80px except window chrome. **But** the real defect is worse than misplacement: the base is identified **twice, 40px apart** — once by the header selector, again by the subject band. See R-01. |
 | 2 | The facets are crowded and read as buttons. | **Correct, and literally true.** They *are* buttons — `<Button variant="secondary" size="sm">`, the same component and variant as *Manage bases*. A 36px strip with **zero vertical padding** around a 32px input, and a selected facet never changes its own fill. See R-02. |
 | 3 | The ingestion rail is cramped and needs excessive scrolling. | **Correct, and measurable.** The resting empty state is **899px in a 745px viewport**. See R-06. |
-| 4 | Every node should be a circle, as in BioOKF. | **Correct as a description; collides with a measured accessibility decision.** Seven silhouettes carry node *family* because cross-family colour distance under simulated dichromacy bottoms out at **ΔE00 0.00**. See R-04. |
+| 4 | Every node should be a circle, as in BioOKF. | **Correct, and granted in full.** It collided with a measured accessibility decision — seven silhouettes carried node *family* precisely because cross-family colour distance under simulated dichromacy bottoms out at **ΔE00 0.00** — so R-04 originally kept them behind an opt-in preference. The operator withdrew that hedge and directed the shape channel be removed outright; §5.12's live region carries the redundancy instead. See R-04's amendment. |
 | 5 | The node colours are too dark; the legend should move to the side. | **Correct, and the cause is identifiable.** The fills are solved to *text* contrast rungs. See R-05, R-03. |
 | 6 | The dialogs are crowded; everything must work at every window size. | **Correct on both halves, and the sizing half is worse than reported.** One `KBManagerDialog` row packs 5 focusable controls and 12 visual objects into a 40px box. And the section's one breakpoint is a *viewport* media query while the thing that changes size is the *pane* — so at the app's own minimum window it lays two columns into a space that cannot hold them. See R-07, R-08. |
 
@@ -629,11 +629,11 @@ R-05's proposed band (primary 0.745–0.580, provenance 0.780–0.584) failed on
 - Widening to 0.80–0.50 fixed that and broke something worse. **Above ~0.80 the sRGB gamut clips
   chroma**, so every family's lightest member desaturates toward the same pale tint and *cross*-family
   pairs collapse. Measured over the 21 family pairs: the old palette had **7 below ΔE00 3.0**, the
-  0.80 band had **13** — and **no assignment of the seven shapes can cover 13**, which would have
-  silently voided the shape channel R-04 keeps as its accessibility escape hatch.
+  0.80 band had **13** — and **no assignment of the seven shapes can cover 13**, which at the time
+  would have silently voided the shape channel R-04 then kept as its accessibility escape hatch.
 
 The shipped band caps the light end at **0.78**, and leaves 11 pairs below 3.0. A sweep found 36
-bands where a valid shape assignment exists; this is the lightest of them.
+bands where a valid shape assignment existed; this is the lightest of them.
 
 > **The cap stands; its stated reason no longer does.** R-04's amendment deleted the shape channel,
 > so "13 collapsed pairs cannot be covered by seven shapes" is no longer an argument for anything —

@@ -422,7 +422,7 @@ export type GraphCredibilityKey =
 export type GraphPalette = {
   /** The 28 curated fills, keyed by OKF type name. */
   types: Record<string, string>;
-  /** Family name -> its silhouette and its members, in ladder order. */
+  /** Family name -> its members, in ladder order. */
   families: Record<string, { members: string[] }>;
   /** The seven ring hues. */
   credibility: Record<GraphCredibilityKey, string>;
