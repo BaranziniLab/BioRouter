@@ -19,8 +19,8 @@ the whole question is what a loop looks like over time and Markdown cannot show 
 ## Contents
 
 - **[Thinking indicator redesign](thinking-indicator-redesign.md)** — the diagnosis (seven
-  measured findings), the six directions with their costs, and the recommendation. **Status:
-  Proposed**; no implementation has started.
+  measured findings), the six directions with their costs, the recommendation, and a record
+  of what shipped. **Status: A is implemented** on this branch; B–F remain proposals.
 - **[Thinking indicator studio](thinking-indicator-studio.html)** — the rendered companion.
   Every specimen is live and animated inside a real 760 px chat column, painted from the app's
   own tokens under their real names, in the app's Arial-first stack. Controls for light/dark,

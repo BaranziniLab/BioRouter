@@ -1860,6 +1860,140 @@
   border-color: var(--border-accent);
 }
 
+/* ============================================================
+   THE COMPOSER'S WORKING EDGE — "Biorouter has the floor"
+
+   While a turn is running, the composer's own 1px border carries a slow
+   travelling segment of the brand accent. It replaces the breathing dot that
+   used to sit in a row above the composer, which duplicated the transcript's
+   indicator, sat 8px out of line with it (each was anchored to a different
+   grid), and cost a ~34px layout shift on every Send.
+
+   ONE HUE, AND IT IS THE FAMILY'S. Everything below paints `--border-accent`
+   and nothing else — coral in Parchment, teal in Alma Mater, orange in Roche
+   Limit, light and dark. No literal colour appears in this block, so the edge
+   follows the theme the way every other accent in the app does.
+
+   ── FOCUS AND WORKING ARE DIFFERENT AXES, AND BOTH CAN BE ON ─────────────
+   The composer AUTOFOCUSES, so `--border-accent` is its RESTING appearance
+   (D-15, the rule right above). A working state that simply painted the edge
+   accent would therefore be invisible exactly when it matters, and would make
+   "focused" and "working" the same picture. So the two are separated by what
+   each one does to the edge, not by colour:
+
+     focus   = WHERE the accent is        (the whole edge, evenly)
+     working = WHERE THE INK IS CONCENTRATED (one bright segment, moving)
+
+   which gives four legible states from one border and one hue:
+
+     | focused | working | edge                                            |
+     |---------|---------|-------------------------------------------------|
+     | no      | no      | the resting hairline                            |
+     | yes     | no      | evenly accent  (unchanged, D-15)                |
+     | no      | yes     | hairline + a bright accent segment travelling   |
+     | yes     | yes     | accent at 30% + the same segment at full        |
+
+   The focused+working case is the one the whole scheme turns on: the base
+   drops to 30% so the travelling segment has something to be brighter THAN.
+   Without that the segment would be full accent over full accent, i.e. a
+   uniform accent edge — which is precisely the focus state, and the bug this
+   block exists to avoid. The edge stays accent-hued throughout, so focus is
+   never lost; only its evenness is spent to carry the second state.
+
+   AUTHORED CSS, NOT A TAILWIND VARIANT, for the same reason the focus rule
+   above is: a *newly written* arbitrary utility can silently fail to reach the
+   stylesheet under `BIOROUTER_NO_HMR`, where the renderer runs
+   `watch: { ignored: ['**'] }`. A turn indicator may not depend on
+   class-scanning having worked. It also needs `@keyframes` and `@property`,
+   which a utility cannot express at all.
+   ============================================================ */
+
+/* The conic gradient's start angle. A custom property is only animatable once
+   it has a registered type, so this is what makes the sweep possible at all. */
+@property --br-working-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+/* The travelling segment.
+
+   `inset: -1px` is load-bearing: an absolutely positioned child is laid out
+   against the PADDING box, so -1px grows the pseudo back out to the BORDER
+   box — exactly the pixels the border occupies. `padding: 1px` plus the
+   mask-exclude pair then paints only that 1px ring, so the sweep rides on the
+   border itself rather than inside or outside it. No geometry changes, no
+   second edge, and the card's size is untouched. */
+.biorouter-composer-card[data-working='true']::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--br-working-angle),
+    transparent 0deg,
+    transparent 268deg,
+    color-mix(in oklab, var(--border-accent) 22%, transparent) 300deg,
+    var(--border-accent) 340deg,
+    color-mix(in oklab, var(--border-accent) 22%, transparent) 353deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  /* `--dur-slow` is the scale's ambient-loop tier — "the period of an ambient
+     loop that never ends", which had no call sites until this one. Four turns
+     of it is 2.1s: slow enough to read as breathing rather than spinning, fast
+     enough that a glance catches movement. The old dot's 1.8s was off the
+     scale entirely. */
+  animation: br-composer-working calc(var(--dur-slow) * 4) linear infinite;
+  pointer-events: none;
+}
+
+@keyframes br-composer-working {
+  to {
+    --br-working-angle: 360deg;
+  }
+}
+
+/* FOCUSED + WORKING. Written after the focus rule above so it wins on source
+   order at equal specificity — and it must, or a focused composer would hold a
+   full accent edge and swallow the segment. */
+.biorouter-composer-card[data-working='true']:has(textarea:focus) {
+  border-color: color-mix(in oklab, var(--border-accent) 30%, transparent);
+}
+
+/* The global reduced-motion reset nulls duration and clamps iteration count,
+   which would PARK the segment at whatever angle 0deg puts it — a bright blob
+   stuck on one corner, reading as damage rather than as state. So the working
+   edge declares its own resting appearance, the way
+   `.br-progress__fill--indeterminate` does.
+
+   It holds as a DASHED accent ring: still unmistakably the accent, still
+   unmistakably not the focus edge (which is solid), and completely static. A
+   solid ring would have been indistinguishable from focus, which is the one
+   thing this block may not do. */
+@media (prefers-reduced-motion: reduce) {
+  .biorouter-composer-card[data-working='true']::after {
+    animation: none;
+    background: repeating-conic-gradient(
+      from 0deg,
+      var(--border-accent) 0deg 5deg,
+      transparent 5deg 11deg
+    );
+  }
+
+  .biorouter-composer-card[data-working='true']:has(textarea:focus) {
+    border-color: color-mix(in oklab, var(--border-accent) 30%, transparent);
+  }
+}
+
 .br-tab {
   position: relative;
   display: flex;

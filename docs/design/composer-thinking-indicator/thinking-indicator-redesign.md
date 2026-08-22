@@ -3,7 +3,8 @@
 > **What this is.** The design of record for the affordance that tells the user Biorouter is
 > working on their turn — the breathing dot currently sitting above the chat composer. Seven
 > measured findings, six candidate replacements, and a recommendation.
-> **Status:** Proposed. No implementation has started; nothing here is committed to.
+> **Status:** **A is implemented** on `design/composer-thinking-indicator` (not merged).
+> B–F remain proposals and nothing here commits to them.
 > **Audience:** Anyone changing turn-state narration near the composer, and anyone reviewing
 > whether these proposals hold.
 
@@ -164,7 +165,56 @@ what it is doing" in prose, and the transcript dot goes back to being the only d
 `prefers-reduced-motion`, where both A and D flatten to a static frame. That is a real gap in
 every option here and F is the cheapest way to close it.
 
-## Implementation order
+## What shipped
+
+**Specimen A only**, as the composer's working edge. The breathing-dot row above the
+composer is gone; while a turn runs, the card's own 1px border carries a travelling
+segment of `--border-accent`.
+
+| | |
+|---|---|
+| The sweep | `main.css`, beside the focus rule — `@property --br-working-angle`, `@keyframes br-composer-working`, and a masked `::after` painting only the 1px border ring |
+| Period | `calc(var(--dur-slow) * 4)` = 2.1s. **First call site** of the ambient-loop tier, which had none |
+| The hook | `data-working="true"` on `.biorouter-composer-card` in `ChatInput.tsx`, absent when idle |
+| Removed | `renderWorkingStatus()` in `BaseChat.tsx`. `LoadingBioRouter` itself stays — `Hub` and `ProgressiveMessageList` still use it for "loading chat"/"loading messages", which are not turn states |
+
+**The state relationship is the substance of the feature.** The composer autofocuses, so
+`--border-accent` is its *resting* appearance; painting the working edge accent would have
+made focus and working the same picture. Focus and working are separated by what each does
+to the edge instead:
+
+| focused | working | edge |
+|---|---|---|
+| no | no | the resting hairline |
+| yes | no | evenly accent — unchanged, D-15 |
+| no | yes | hairline + a bright accent segment travelling |
+| yes | yes | accent at 30% + the same segment at full strength |
+
+Under `prefers-reduced-motion` the sweep does not freeze mid-rotation (which would park a
+bright blob on one corner); it holds a static *dashed* accent ring — still the accent, still
+not the solid focus edge.
+
+**Known loss, flagged deliberately.** The removed row displayed `getThinkingMessage()`, the
+agent-supplied narration for a turn. Nothing displays it now. That is exactly the cost A's
+own entry listed ("loses the prose unless paired with D"); pairing D restores it in one
+change, and the function is still live in `chatStreamStore`.
+
+### Verification
+
+| Gate | What it covers |
+|---|---|
+| `src/styles/composerWorkingEdge.test.ts` (15) | the declarations — no literal colour anywhere, the dim on focused+working, source order against the focus rule, the reduced-motion frame |
+| `src/components/ChatInput.workingEdge.test.tsx` (11) | the hook — set for every non-Idle state, absent when idle, on the one element that draws the border |
+| `scripts/verify-composer-working-edge.mjs` | what a browser **computes**: 12 scopes (3 families × 2 modes × normal/reduced motion). Proven to fail when the dim is removed |
+| `npm run lint:check` | typecheck, eslint, themes, 332 contrast assertions, token mirrors |
+
+jsdom cannot see any of this — no layout engine, no Tailwind, no `:has()`, no `color-mix()`,
+no `@property`. That is why the browser gate exists and why the unit tests assert the source
+rather than computed style. ⚠ `:has()` style invalidation lags a focus change, so every read
+in the browser gate waits two animation frames; reading sooner returns the previous value and
+looks green.
+
+## Implementation order### The original plan, for the record
 
 1. **Extract the dot into one primitive** before touching anything visual. Three verbatim copies
    is what let the two get out of step; the sidebar keeps the dot, so the primitive is needed
