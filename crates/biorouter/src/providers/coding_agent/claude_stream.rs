@@ -129,6 +129,12 @@ const KNOWN_SYSTEM_SUBTYPES: &[&str] = &[
     "mcp_status",
     "user_message_replay",
     "keep_alive",
+    // Observed in a real `claude` 2.1.235 capture (the `turn-text` fixture) and
+    // added because it was *seen*, not because it was guessed: it closes a turn
+    // with a summary Biorouter already has from the `result` frame. It was the
+    // one frame in the recorded corpus that tripped the drift counter, which is
+    // the counter doing its job.
+    "post_turn_summary",
 ];
 
 /// Top-level frame types that exist and carry nothing this router needs. Listed
@@ -1371,5 +1377,113 @@ mod tests {
         assert!(event.get("session_id").is_none());
         assert!(event.get("uuid").is_none());
         assert!(event.get("parent_tool_use_id").is_none());
+    }
+
+    /// Replay each recorded Claude cell through the router and pin what it yields.
+    ///
+    /// The counts are the bb `row-counts.json` discipline: `unhandled` may only go
+    /// down. A vendor frame Biorouter starts needing shows up here as a number that
+    /// moved, rather than as output quietly going missing in production.
+    #[test]
+    fn recorded_cells_route_without_unhandled_drift() {
+        // (cell, at least this many forwarded text/thinking events, tool events)
+        let expectations = [
+            ("turn-text", 5usize, 0usize),
+            ("turn-thinking", 5, 0),
+            ("turn-tools", 1, 1),
+            ("turn-tool-error", 1, 1),
+        ];
+    
+        for (cell, min_forwarded, min_tool) in expectations {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/coding_agent/claude")
+                .join(format!("{cell}.ndjson"));
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+    
+            let mut router = ClaudeStreamRouter::new();
+            let (mut forwarded, mut tool_events) = (0usize, 0usize);
+            for line in body.lines().filter(|l| !l.trim().is_empty()) {
+                match router.push_line(line) {
+                    RoutedFrame::AnthropicEvent(_) => forwarded += 1,
+                    RoutedFrame::Tool(_) => tool_events += 1,
+                    _ => {}
+                }
+            }
+    
+            assert_eq!(
+                router.unhandled(),
+                0,
+                "{cell}: {} frame(s) the router did not understand. This count may \
+                 only go DOWN — an increase means the vendor changed something and \
+                 output is being dropped silently",
+                router.unhandled()
+            );
+            assert!(
+                forwarded >= min_forwarded,
+                "{cell}: only {forwarded} event(s) reached the text decoder (expected \
+                 at least {min_forwarded}) — the answer would arrive truncated"
+            );
+            assert!(
+                tool_events >= min_tool,
+                "{cell}: only {tool_events} tool event(s) were diverted (expected at \
+                 least {min_tool})"
+            );
+        }
+    }
+    
+    /// **The invariant that keeps the whole design safe**, asserted directly on the
+    /// recorded frames: not one `tool_use` event may reach the Anthropic decoder.
+    ///
+    /// If one did, the decoder's §6.2b flush would mint an *unmarked* `ToolRequest`
+    /// batch, and the agent loop would dispatch it — really re-running a shell
+    /// command the child had already run. The mirrored pair is emitted separately
+    /// and marked; this is the other half of that guarantee.
+    #[test]
+    fn no_tool_use_event_reaches_the_text_decoder_in_any_recorded_cell() {
+        for cell in ["turn-text", "turn-thinking", "turn-tools", "turn-tool-error"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/coding_agent/claude")
+                .join(format!("{cell}.ndjson"));
+            let body = std::fs::read_to_string(&path).expect("fixture");
+    
+            let mut router = ClaudeStreamRouter::new();
+            for line in body.lines().filter(|l| !l.trim().is_empty()) {
+                if let RoutedFrame::AnthropicEvent(data) = router.push_line(line) {
+                    // Parse rather than substring-match: `stop_reason: "tool_use"`
+                    // rides a perfectly legitimate `message_delta` — the one carrying
+                    // the turn's usage — and rejecting that would reject a frame the
+                    // decoder must see. What must never arrive is a tool *content
+                    // block* or its argument deltas.
+                    let payload = data.strip_prefix("data: ").unwrap_or(&data);
+                    let event: serde_json::Value =
+                        serde_json::from_str(payload).expect("a forwarded line is one event");
+                    let kind = event.get("type").and_then(Value::as_str);
+                    if kind == Some("content_block_start") {
+                        assert_ne!(
+                            event
+                                .get("content_block")
+                                .and_then(|b| b.get("type"))
+                                .and_then(Value::as_str),
+                            Some("tool_use"),
+                            "{cell}: a tool_use content block reached the text decoder. It \
+                             would mint an unmarked ToolRequest and the loop would execute \
+                             the call a second time."
+                        );
+                    }
+                    if kind == Some("content_block_delta") {
+                        assert_ne!(
+                            event
+                                .get("delta")
+                                .and_then(|d| d.get("type"))
+                                .and_then(Value::as_str),
+                            Some("input_json_delta"),
+                            "{cell}: tool-call arguments reached the text decoder, which \
+                             buffers them into a dispatchable ToolRequest."
+                        );
+                    }
+                }
+            }
+        }
     }
 }
