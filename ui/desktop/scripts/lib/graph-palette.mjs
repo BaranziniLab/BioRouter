@@ -127,19 +127,10 @@ export const memberHue = (anchorHue, spread, i, n) =>
  * caller's to resolve and the solver's to measure against.
  */
 export function buildGraphPalette(spec, ground, mode) {
-  const {
-    FAMILIES,
-    PRIMARY_L,
-    PROVENANCE_L,
-    FALLBACK_CHROMA,
-    FALLBACK_L,
-    CREDIBILITY,
-    NODE_SHAPES,
-  } = spec;
+  const { FAMILIES, PRIMARY_L, PROVENANCE_L, FALLBACK_CHROMA, FALLBACK_L, CREDIBILITY } = spec;
 
   const types = {};
   const families = {};
-  const shapeOf = {};
 
   for (const family of FAMILIES) {
     const ladder = (family.ladder === 'provenance' ? PROVENANCE_L : PRIMARY_L)[mode];
@@ -149,10 +140,7 @@ export function buildGraphPalette(spec, ground, mode) {
           `"${family.ladder}" ${mode} ladder has only ${ladder.length} rungs`
       );
     }
-    if (!NODE_SHAPES.includes(family.shape)) {
-      throw new Error(`graph palette: family "${family.name}" has unknown shape "${family.shape}"`);
-    }
-    families[family.name] = { shape: family.shape, members: [...family.members] };
+    families[family.name] = { members: [...family.members] };
     family.members.forEach((type, i) => {
       if (type in types) {
         throw new Error(`graph palette: type "${type}" is declared in more than one family`);
@@ -162,7 +150,6 @@ export function buildGraphPalette(spec, ground, mode) {
       // ratio. `oklchToHex` already reduces chroma until the colour fits sRGB,
       // so this is the whole solve — there is nothing left to search for.
       types[type] = oklchToHex(ladder[i], family.chroma, hue);
-      shapeOf[type] = family.shape;
     });
   }
 
@@ -176,7 +163,6 @@ export function buildGraphPalette(spec, ground, mode) {
   return {
     types,
     families,
-    shapeOf,
     credibility,
     ringArcs,
     fallbackChroma: FALLBACK_CHROMA,

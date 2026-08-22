@@ -1,7 +1,7 @@
 // ui/desktop/src/components/knowledge/graph/nodeMark.ts
 import type { GraphNode } from '../../../api/types.gen';
-import { GRAPH_PALETTE, hashedFill, typeFill, typeShape } from '../../../styles/graphPalette';
-import type { GraphCredibilityKey, GraphMode, NodeShape } from '../../../styles/graphPalette';
+import { GRAPH_PALETTE, hashedFill, typeFill } from '../../../styles/graphPalette';
+import type { GraphCredibilityKey, GraphMode } from '../../../styles/graphPalette';
 import { showsCredibility } from './graphModel';
 
 /**
@@ -28,26 +28,6 @@ import { showsCredibility } from './graphModel';
 /** The fill for a node: curated by type, hashed by type, or hashed by legacy `kind`. */
 export function fillFor(n: GraphNode, mode: GraphMode): string {
   return n.node_type ? typeFill(n.node_type, mode) : hashedFill(n.kind, mode);
-}
-
-/**
- * The silhouette for a node.
- *
- * ⚠ **Every node is a circle unless the shape channel is switched on** (R-04).
- * The seven silhouettes are still generated, still assigned per family, and
- * still drawn by the legend and the facet rows when the preference is on — what
- * changed is the default, not the vocabulary. Passing `shapeChannel` explicitly
- * rather than reading the preference in here is deliberate: this module is the
- * one place three surfaces agree about a node's mark, and a hook call would
- * make it unusable from the canvas painter, which is not a component.
- *
- * A typed node takes its family's shape; an untyped one takes the circle, which
- * is also what every node in an OKF base draws — there are no families there,
- * and a shape channel that applies to everything carries nothing.
- */
-export function shapeFor(n: GraphNode, mode: GraphMode, shapeChannel = false): NodeShape {
-  if (!shapeChannel) return 'circle';
-  return n.node_type ? typeShape(n.node_type, mode) : 'circle';
 }
 
 /**

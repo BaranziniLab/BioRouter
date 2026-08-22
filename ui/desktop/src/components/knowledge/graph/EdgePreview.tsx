@@ -5,9 +5,8 @@ import type { GraphEdge, GraphNode, QuantitativeValue } from '../../../api/types
 import type { GraphMode } from '../../../styles/graphPalette';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
-import { GraphShapeGlyph } from './GraphShapeGlyph';
-import { fillFor, shapeFor } from './nodeMark';
-import { useShapeChannel } from './graphPreferences';
+import { fillFor, isHollow } from './nodeMark';
+import { NodeSwatch } from './NodeSwatch';
 import { xrefHref } from './frontmatter';
 import { isNegated, readablePredicate } from './graphModel';
 import type { GraphModel } from './graphModel';
@@ -101,11 +100,6 @@ export function mergeQuantitative(
 }
 
 export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose }: Props) {
-  // ⚠ **The same preference the canvas reads** (R-04). `nodeMark.ts` exists
-  // because two surfaces once disagreed about one node; threading the shape
-  // channel to only SOME readers recreates that exactly, in both directions —
-  // silhouettes here against circles on the canvas, or the reverse.
-  const [shapeChannel] = useShapeChannel();
   const panelRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
 
@@ -141,9 +135,9 @@ export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose
     const body = (
       <>
         {node ? (
-          <GraphShapeGlyph
-            shape={shapeFor(node, mode, shapeChannel)}
+          <NodeSwatch
             fill={fillFor(node, mode)}
+            hollow={isHollow(node, mode)}
             size={8}
             className="br-swatch-ring flex-none"
           />

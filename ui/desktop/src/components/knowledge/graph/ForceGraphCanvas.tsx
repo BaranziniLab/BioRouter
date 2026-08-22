@@ -8,12 +8,10 @@ import type { GraphCredibilityKey } from '../../../styles/graphPalette';
 import { withAlpha } from './graphStyle';
 import { useCanvasTheme } from './useCanvasTheme';
 import type { CanvasTheme } from './useCanvasTheme';
-import { pathForShape } from './nodeShapes';
 import { NODE_RING_ALPHA } from './graphStyle';
 // The mark — fill and silhouette — is shared with the inspector, so the two
 // surfaces cannot disagree about the same node. See `nodeMark.ts`.
-import { credibilityKey, fillFor, isHollow, shapeFor } from './nodeMark';
-import { useShapeChannel } from './graphPreferences';
+import { credibilityKey, fillFor, isHollow } from './nodeMark';
 import { edgePredicate, isNegated, readablePredicate } from './graphModel';
 import type { GraphModel, NodeMetrics } from './graphModel';
 import { EMPTY_FACETS, facetsActive } from './graphFacets';
@@ -180,11 +178,6 @@ export function ForceGraphCanvas({
 }: Props) {
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
   const [containerRef, size] = useSize();
-
-  // R-04: every node is a circle unless the user has switched the shape channel
-  // back on. Read here rather than inside the painter because the painter is a
-  // plain function called `nodes x 60` times a second, not a component.
-  const [shapeChannel] = useShapeChannel();
 
   // §5.11's four 0×0 probes. Non-inherited values (mono family, danger, muted,
   // border) cannot be read off the container, and there is deliberately no
@@ -420,8 +413,10 @@ export function ForceGraphCanvas({
       ctx.fill();
     }
 
+    // ⚠ **Every node is a circle.** The seven silhouettes and their level-of-
+    // detail collapse are gone; `screenDiameter` no longer selects a path.
     ctx.beginPath();
-    pathForShape(ctx, shapeFor(n, t.mode, shapeChannel), n.x, n.y, r, screenDiameter);
+    ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
 
     if (m.external) {
       // A referenced entity with no page yet. Hollow and dashed, in ink — it

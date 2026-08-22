@@ -2,10 +2,9 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { GraphNode } from '../../../api/types.gen';
-import { GRAPH_PALETTE, typeFill, typeShape } from '../../../styles/graphPalette';
+import { GRAPH_PALETTE, typeFill } from '../../../styles/graphPalette';
 import { NodePreview, nodeFacts, nodeSubtitle, nodeTitle } from './NodePreview';
-import { credibilityKey, fillFor, shapeFor } from './nodeMark';
-import { svgPathForShape } from './nodeShapes';
+import { credibilityKey, fillFor, isHollow } from './nodeMark';
 
 let pageContent = '# MYC\nA transcription factor.';
 
@@ -94,15 +93,17 @@ describe('NodePreview', () => {
     const { container } = render(
       <NodePreview kbId="soul" node={typed} mode="light" onClose={() => undefined} />
     );
-    const path = container.querySelector('svg path');
-
-    // Not "a colour and a shape" — the CANVAS's colour and shape, resolved
-    // through the one function both surfaces call.
-    expect(path).toHaveAttribute('fill', fillFor(typed, 'light'));
-    expect(path).toHaveAttribute('d', svgPathForShape(shapeFor(typed, 'light')));
-    // And that function keys on `node_type`, so it agrees with the palette.
+    // The mark is a coloured CIRCLE — the shape channel is gone, so the only
+    // things a swatch still carries are the fill and the solid/hollow split,
+    // and both come from the one function the canvas calls.
+    const swatch = container.querySelector('.br-swatch-ring') as HTMLElement;
+    expect(swatch).not.toBeNull();
+    expect(swatch.style.borderRadius).toBe('9999px');
+    expect(swatch.style.background).toContain('rgb');
+    // Solid, because Drug is a Biomedical Entity rather than Provenance.
+    expect(isHollow(typed, 'light')).toBe(false);
+    // And the fill keys on `node_type`, so it agrees with the palette.
     expect(fillFor(typed, 'light')).toBe(typeFill('Drug', 'light'));
-    expect(shapeFor(typed, 'light')).toBe(typeShape('Drug', 'light'));
   });
 
   it('resolves the mark per mode, so the dark inspector is not the light one', () => {

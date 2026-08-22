@@ -401,23 +401,6 @@ export const THEME_FAMILY_IDS = Object.keys(GENERATED_THEMES) as ThemeFamilyId[]
 /* ── the knowledge-graph palette ── */
 
 /**
- * The seven family silhouettes. SHAPE CARRIES FAMILY; lightness carries the
- * member within a family — the redundant non-colour channel WCAG 1.4.1 asks
- * for, and the reason this palette can be honest that cross-family colour
- * distance under dichromacy bottoms out at ΔE00 0.00. Seven, because seven is
- * about the discriminable limit for a silhouette at 10px; 28 would need shape
- * to do the whole job and could not.
- */
-export type NodeShape =
-  | 'circle'
-  | 'square'
-  | 'rounded-square'
-  | 'diamond'
-  | 'triangle'
-  | 'pentagon'
-  | 'hexagon';
-
-/**
  * The credibility ring's keys: the six `CredibilityTier` values plus
  * `retracted`, which is a FLAG rather than a tier — a retracted source takes
  * the retracted colour and the continuous ring whatever its tier says, because
@@ -440,9 +423,7 @@ export type GraphPalette = {
   /** The 28 curated fills, keyed by OKF type name. */
   types: Record<string, string>;
   /** Family name -> its silhouette and its members, in ladder order. */
-  families: Record<string, { shape: NodeShape; members: string[] }>;
-  /** Type name -> silhouette, precomputed so the node painter does no lookup walk. */
-  shapeOf: Record<string, NodeShape>;
+  families: Record<string, { members: string[] }>;
   /** The seven ring hues. */
   credibility: Record<GraphCredibilityKey, string>;
   /**
@@ -527,23 +508,15 @@ export const GRAPH_PALETTE: { light: GraphPalette; dark: GraphPalette } = {
       Other: '#54414b',
     },
     families: {
-      Genomic: {
-        shape: 'rounded-square',
-        members: ['Gene', 'Variant', 'SequenceFeature', 'Structure'],
-      },
+      Genomic: { members: ['Gene', 'Variant', 'SequenceFeature', 'Structure'] },
       'Molecular & process': {
-        shape: 'diamond',
         members: ['Molecule', 'MolecularClass', 'BiologicalPathway', 'BiologicalFunction'],
       },
-      'Anatomy & organism': { shape: 'triangle', members: ['Anatomy', 'CellType', 'Organism'] },
-      Clinical: {
-        shape: 'square',
-        members: ['Disease', 'Phenotype', 'BiomedicalMeasure', 'MethodOrProcedure'],
-      },
-      Exposome: { shape: 'circle', members: ['Exposure', 'SocialFactor', 'Food'] },
-      Physical: { shape: 'pentagon', members: ['Device', 'MaterialSample'] },
+      'Anatomy & organism': { members: ['Anatomy', 'CellType', 'Organism'] },
+      Clinical: { members: ['Disease', 'Phenotype', 'BiomedicalMeasure', 'MethodOrProcedure'] },
+      Exposome: { members: ['Exposure', 'SocialFactor', 'Food'] },
+      Physical: { members: ['Device', 'MaterialSample'] },
       'Provenance & context': {
-        shape: 'hexagon',
         members: [
           'Publication',
           'Study',
@@ -555,36 +528,6 @@ export const GRAPH_PALETTE: { light: GraphPalette; dark: GraphPalette } = {
           'Other',
         ],
       },
-    },
-    shapeOf: {
-      Gene: 'rounded-square',
-      Variant: 'rounded-square',
-      SequenceFeature: 'rounded-square',
-      Structure: 'rounded-square',
-      Molecule: 'diamond',
-      MolecularClass: 'diamond',
-      BiologicalPathway: 'diamond',
-      BiologicalFunction: 'diamond',
-      Anatomy: 'triangle',
-      CellType: 'triangle',
-      Organism: 'triangle',
-      Disease: 'square',
-      Phenotype: 'square',
-      BiomedicalMeasure: 'square',
-      MethodOrProcedure: 'square',
-      Exposure: 'circle',
-      SocialFactor: 'circle',
-      Food: 'circle',
-      Device: 'pentagon',
-      MaterialSample: 'pentagon',
-      Publication: 'hexagon',
-      Study: 'hexagon',
-      Dataset: 'hexagon',
-      Agent: 'hexagon',
-      Population: 'hexagon',
-      GeographicLocation: 'hexagon',
-      Concept: 'hexagon',
-      Other: 'hexagon',
     },
     credibility: {
       peer_reviewed: '#1c619f',
@@ -640,23 +583,15 @@ export const GRAPH_PALETTE: { light: GraphPalette; dark: GraphPalette } = {
       Other: '#c6b0bc',
     },
     families: {
-      Genomic: {
-        shape: 'rounded-square',
-        members: ['Gene', 'Variant', 'SequenceFeature', 'Structure'],
-      },
+      Genomic: { members: ['Gene', 'Variant', 'SequenceFeature', 'Structure'] },
       'Molecular & process': {
-        shape: 'diamond',
         members: ['Molecule', 'MolecularClass', 'BiologicalPathway', 'BiologicalFunction'],
       },
-      'Anatomy & organism': { shape: 'triangle', members: ['Anatomy', 'CellType', 'Organism'] },
-      Clinical: {
-        shape: 'square',
-        members: ['Disease', 'Phenotype', 'BiomedicalMeasure', 'MethodOrProcedure'],
-      },
-      Exposome: { shape: 'circle', members: ['Exposure', 'SocialFactor', 'Food'] },
-      Physical: { shape: 'pentagon', members: ['Device', 'MaterialSample'] },
+      'Anatomy & organism': { members: ['Anatomy', 'CellType', 'Organism'] },
+      Clinical: { members: ['Disease', 'Phenotype', 'BiomedicalMeasure', 'MethodOrProcedure'] },
+      Exposome: { members: ['Exposure', 'SocialFactor', 'Food'] },
+      Physical: { members: ['Device', 'MaterialSample'] },
       'Provenance & context': {
-        shape: 'hexagon',
         members: [
           'Publication',
           'Study',
@@ -668,36 +603,6 @@ export const GRAPH_PALETTE: { light: GraphPalette; dark: GraphPalette } = {
           'Other',
         ],
       },
-    },
-    shapeOf: {
-      Gene: 'rounded-square',
-      Variant: 'rounded-square',
-      SequenceFeature: 'rounded-square',
-      Structure: 'rounded-square',
-      Molecule: 'diamond',
-      MolecularClass: 'diamond',
-      BiologicalPathway: 'diamond',
-      BiologicalFunction: 'diamond',
-      Anatomy: 'triangle',
-      CellType: 'triangle',
-      Organism: 'triangle',
-      Disease: 'square',
-      Phenotype: 'square',
-      BiomedicalMeasure: 'square',
-      MethodOrProcedure: 'square',
-      Exposure: 'circle',
-      SocialFactor: 'circle',
-      Food: 'circle',
-      Device: 'pentagon',
-      MaterialSample: 'pentagon',
-      Publication: 'hexagon',
-      Study: 'hexagon',
-      Dataset: 'hexagon',
-      Agent: 'hexagon',
-      Population: 'hexagon',
-      GeographicLocation: 'hexagon',
-      Concept: 'hexagon',
-      Other: 'hexagon',
     },
     credibility: {
       peer_reviewed: '#5fa1e4',

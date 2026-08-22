@@ -35,17 +35,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import { GRAPH_PALETTE } from './themes.generated';
-import type { GraphCredibilityKey, NodeShape } from './themes.generated';
+import type { GraphCredibilityKey } from './themes.generated';
 import type { GraphMode } from './graphPalette';
-import {
-  contrastRatio,
-  fnv1a,
-  hashedFill,
-  oklchToHex,
-  solveHex,
-  typeFill,
-  typeShape,
-} from './graphPalette';
+import { contrastRatio, fnv1a, hashedFill, oklchToHex, solveHex, typeFill } from './graphPalette';
 import { NODE_RING_ALPHA } from '../components/knowledge/graph/graphStyle';
 
 /**
@@ -95,45 +87,6 @@ const PAIRS: [string, string][] = [];
 for (let i = 0; i < TYPES.length; i++) {
   for (let j = i + 1; j < TYPES.length; j++) PAIRS.push([TYPES[i], TYPES[j]]);
 }
-
-/**
- * How confusable two silhouettes are at ~10px, from §5.3.1.
- *
- * The twelve pairs the specification measured and names are pinned below; the
- * remaining nine are filled in on the same model (a triangle is unmistakable
- * against anything; a sharp low-vertex shape against a round one is moderate;
- * two blobby outlines, or two shapes with the same basic outline, are weak) and
- * are NOT load-bearing today — no family pair uses them at a colour distance
- * that would make them matter. If a hue or a rung moves and one becomes
- * load-bearing, the assertion below is what will say so.
- */
-const SHAPE_DISTINCTNESS: Record<string, 'weak' | 'moderate' | 'strong'> = {
-  // measured and named in §5.3.1
-  'pentagon|rounded-square': 'moderate',
-  'circle|triangle': 'strong',
-  'circle|diamond': 'moderate',
-  'diamond|hexagon': 'moderate',
-  'rounded-square|triangle': 'strong',
-  'diamond|triangle': 'strong',
-  'circle|square': 'moderate',
-  'square|triangle': 'strong',
-  'circle|hexagon': 'weak',
-  'circle|rounded-square': 'weak',
-  'rounded-square|square': 'weak',
-  'hexagon|pentagon': 'weak',
-  // filled in on the same model
-  'diamond|square': 'moderate',
-  'pentagon|square': 'moderate',
-  'hexagon|square': 'moderate',
-  'diamond|rounded-square': 'moderate',
-  'diamond|pentagon': 'moderate',
-  'pentagon|triangle': 'strong',
-  'hexagon|triangle': 'strong',
-  'hexagon|rounded-square': 'weak',
-  'circle|pentagon': 'weak',
-};
-/** Keys are stored in sorted order, so the lookup is symmetric by construction. */
-const distinctness = (a: NodeShape, b: NodeShape) => SHAPE_DISTINCTNESS[[a, b].sort().join('|')];
 
 /* ── the pinned tables (§5.3, §5.5) ── */
 
@@ -407,52 +360,32 @@ describe('(c) the colour-vision audit', () => {
   });
 
   /**
-   * Cross-family pairs under simulated deficiency are MEASURED AND REPORTED,
-   * and asserted only to differ in shape.
+   * ⚠ **THE SHAPE-COVERAGE AUDIT IS GONE, BECAUSE THE SHAPE CHANNEL IS.**
    *
-   * Asserting a colour floor there would be a lie: the measured minimum is 0.00
-   * and no palette of 28 marks can separate them on one surviving opponent
-   * axis. The structural assertion is the one that can actually fail if someone
-   * edits the family table, and is therefore the one worth having.
-   */
-  it('separates every cross-family pair by shape', () => {
-    const shapes = new Set(Object.values(GRAPH_PALETTE.light.families).map((f) => f.shape));
-    expect(shapes.size).toBe(Object.keys(GRAPH_PALETTE.light.families).length);
-    for (const [a, b] of PAIRS) {
-      if (FAMILY_OF[a] === FAMILY_OF[b]) continue;
-      expect(
-        GRAPH_PALETTE.light.shapeOf[a],
-        `${a} (${FAMILY_OF[a]}) and ${b} (${FAMILY_OF[b]}) must differ in shape`
-      ).not.toBe(GRAPH_PALETTE.light.shapeOf[b]);
-    }
-  });
-
-  /**
-   * §5.3.1's rule, which is what makes the shape ASSIGNMENT measured rather
-   * than chosen by taste: every family pair whose colour distance falls below
-   * ΔE00 3.0 under any simulated vision type must land on a shape pair that is
-   * at least moderately distinct.
+   * Three tests used to live here: every cross-family pair differs in shape; a
+   * distinctness grade is recorded for all 21 unordered shape pairs; and every
+   * family pair collapsing below ΔE00 3.0 under simulated dichromacy lands on a
+   * shape pair that is at least moderately distinct. They were the reason the
+   * shape assignment could be called measured rather than chosen by taste.
    *
-   * This is the assertion that fails if someone reshuffles which family gets
-   * which silhouette, or moves a hue far enough to collapse a new pair.
+   * Every node is now a circle, by product decision, so there is nothing left
+   * for those assertions to check. **What has NOT changed is the underlying
+   * measurement**, and deleting the tests must not delete the fact: cross-family
+   * colour distance under simulated dichromacy bottoms out near ΔE00 0.00 and no
+   * palette of 28 marks can do better on one surviving opponent axis. It is
+   * reported below and asserted only as a report.
+   *
+   * The redundant channel that replaces shape is TEXT, not another visual one —
+   * §5.12's `aria-live` announcement of `<identifier>, <node_type>, <family>`,
+   * plus always-on haloed labels. That is a stronger substitute than a
+   * silhouette, because it serves blind users as well as colour-blind ones; but
+   * it lives in `ForceGraphCanvas`, not in the palette, so it is asserted there
+   * and not here.
    */
-  // The lookup is keyed on the sorted pair, and a missing entry would make the
-  // rule below silently un-assertable for that pair rather than fail — which is
-  // the exact failure mode this whole file exists to avoid.
-  it('records a distinctness for all 21 unordered shape pairs, keyed in sorted order', () => {
-    const shapes = [...new Set(Object.values(GRAPH_PALETTE.light.shapeOf))].sort();
-    expect(shapes).toHaveLength(7);
-    const expected = new Set<string>();
-    for (let i = 0; i < shapes.length; i++) {
-      for (let j = i + 1; j < shapes.length; j++) expected.add(`${shapes[i]}|${shapes[j]}`);
-    }
-    expect(expected.size).toBe(21);
-    expect(new Set(Object.keys(SHAPE_DISTINCTNESS))).toEqual(expected);
-  });
-
-  it('puts every sub-3.0 family pair on an at-least-moderate shape pair', () => {
+  it('reports the cross-family collapse rather than asserting a floor it cannot meet', () => {
     const names = Object.keys(GRAPH_PALETTE.light.families);
     const report: string[] = [];
+    let worst = Infinity;
     for (let i = 0; i < names.length; i++) {
       for (let j = i + 1; j < names.length; j++) {
         const [fa, fb] = [names[i], names[j]];
@@ -467,21 +400,16 @@ describe('(c) the colour-vision audit', () => {
             }
           }
         }
-        const shapeA = GRAPH_PALETTE.light.families[fa].shape as NodeShape;
-        const shapeB = GRAPH_PALETTE.light.families[fb].shape as NodeShape;
-        const grade = distinctness(shapeA, shapeB);
-        expect(grade, `no distinctness recorded for ${shapeA}/${shapeB}`).toBeDefined();
-        report.push(`${fa} <-> ${fb}: ${min.toFixed(2)} ${shapeA}/${shapeB} ${grade}`);
-        if (min < 3.0) {
-          expect(
-            grade,
-            `${fa} <-> ${fb} collapse to ΔE00 ${min.toFixed(2)} under simulated vision, so the ` +
-              `shape pair ${shapeA}/${shapeB} is carrying the distinction and cannot be weak`
-          ).not.toBe('weak');
-        }
+        worst = Math.min(worst, min);
+        report.push(`${fa} <-> ${fb}: ${min.toFixed(2)}`);
       }
     }
     expect(report).toHaveLength(21);
+    // Asserting a floor here would be a lie. The bound is loose on purpose: it
+    // catches the palette being rebuilt into something wildly different without
+    // pretending cross-family colour separation exists.
+    expect(worst).toBeLessThan(3.0);
+    expect(worst).toBeGreaterThanOrEqual(0);
   });
 
   // The regression vectors from §6.4. These prove nothing about the
@@ -575,16 +503,6 @@ describe('(d) the generated hexes equal the specified tables', () => {
     expect(darkSteps[3]).toBeLessThan(darkSteps[0]); // lighter against white
   });
 
-  it('assigns the seven shapes and keeps shapeOf in step with families', () => {
-    for (const mode of MODES) {
-      const { families, shapeOf, types } = GRAPH_PALETTE[mode];
-      expect(Object.keys(shapeOf).sort()).toEqual(Object.keys(types).sort());
-      for (const family of Object.values(families)) {
-        for (const member of family.members) expect(shapeOf[member]).toBe(family.shape);
-      }
-    }
-  });
-
   it('emits the ring treatment, which is the encoding the hue only accompanies', () => {
     expect(GRAPH_PALETTE.light.ringArcs).toEqual({
       peer_reviewed: 4,
@@ -623,14 +541,6 @@ describe('(e) the DR-11 fallback for arbitrary OKF types', () => {
     expect(typeFill('Gene', 'light')).toBe(GRAPH_PALETTE.light.types.Gene);
     expect(typeFill('gene', 'light')).not.toBe(GRAPH_PALETTE.light.types.Gene);
     expect(typeFill('gene', 'light')).toBe(hashedFill('gene', 'light'));
-  });
-
-  it('draws every unknown type as a circle, because a universal marker carries nothing', () => {
-    expect(typeShape('ClinicalTrial', 'light')).toBe('circle');
-    // Genomic moved square -> rounded-square when the fills moved onto the
-    // lightness band: the set of family pairs that collapse under simulated
-    // dichromacy changed, so the set the shape channel must carry changed too.
-    expect(typeShape('Gene', 'light')).toBe('rounded-square');
   });
 
   /**

@@ -58,24 +58,35 @@
  * 5.54 to 4.80, against a guard floor of 3.0. `graphPalette.test.ts` re-measures
  * it; do not take this comment as the guarantee.
  *
- * ⚠ **THE LIGHT END IS CAPPED AT 0.78, AND THE CAP IS THE HARD-WON PART.** A
- * lighter band is not free: above ~0.80 the sRGB gamut clips chroma sharply, so
- * every family's lightest member desaturates towards the same pale tint and
- * CROSS-family pairs start collapsing under simulated dichromacy. Measured over
- * the 21 family pairs:
+ * ⚠ **THE 0.78 CAP HAS OUTLIVED ITS ORIGINAL REASON — READ THIS BEFORE MOVING
+ * IT.** It was derived when the canvas still drew seven silhouettes. Above
+ * ~0.80 the sRGB gamut clips chroma sharply, so every family's lightest member
+ * desaturates towards the same pale tint and CROSS-family pairs collapse under
+ * simulated dichromacy. Measured over the 21 family pairs:
  *
- *     old contrast-rung palette   7 of 21 pairs below ΔE00 3.0
- *     a 0.80–0.50 / 0.84–0.48 band   13 of 21   <- and NO assignment of the
- *                                                  seven shapes can cover 13
- *     this band (0.78 cap)          11 of 21   <- coverable, and covered
+ *     old contrast-rung palette      7 of 21 pairs below ΔE00 3.0
+ *     a 0.80–0.50 / 0.84–0.48 band  13 of 21
+ *     this band (0.78 cap)          11 of 21
  *
- * Cross-family separation was never carried by colour — it bottoms out at ΔE00
- * 0.24 here and 0.00 in the old palette — it is carried by the SHAPE channel,
- * and the shape channel only works if every sub-3.0 pair lands on a shape pair
- * that is not "weak". A parametric sweep over both spans found 36 bands where
- * such an assignment exists; this is the lightest of them. Lightening past 0.78
- * breaks the guard in `graphPalette.test.ts` that checks exactly this, and the
- * right response to that failure is to come back here, not to relax the guard.
+ * With a shape channel, 13 was disqualifying: no assignment of seven shapes can
+ * cover 13 collapsed pairs, so the cap was the constraint that kept the channel
+ * honest. **The shape channel has since been deleted**, so that particular
+ * argument no longer applies and the cap is no longer load-bearing for it.
+ *
+ * It is KEPT anyway, and deliberately rather than by inertia:
+ *
+ *   - Within-family separation still binds and is unrelated to shape — members
+ *     of one family are told apart by lightness alone under dichromacy, and the
+ *     guard floor of ΔE00 3.0 is real. This band measures 4.28.
+ *   - The 11-vs-13 difference is still a real difference in how much colour
+ *     information survives, even with nothing downstream asserting it.
+ *   - The band measures well and looks right; re-deriving it is a separate,
+ *     deliberate decision rather than a side effect of removing shapes.
+ *
+ * So: lightening past 0.78 is now ALLOWED by the guards, and would previously
+ * have been caught. If you do it, re-run the CVD audit and decide what the
+ * cross-family collapse costs, rather than assuming the old cap still protects
+ * you — it does not.
  *
  * DARK IS SOLVED SEPARATELY AND ASCENDS. On a dark ground the readable band
  * sits above the ground rather than below it, so member 0 is the DARKEST and
@@ -157,7 +168,6 @@ export const PROVENANCE_L = {
 export const FAMILIES = [
   {
     name: 'Genomic',
-    shape: 'rounded-square',
     anchorHue: 288,
     chroma: 0.135,
     spread: 30,
@@ -166,7 +176,6 @@ export const FAMILIES = [
   },
   {
     name: 'Molecular & process',
-    shape: 'diamond',
     anchorHue: 192,
     chroma: 0.105,
     spread: 34,
@@ -175,7 +184,6 @@ export const FAMILIES = [
   },
   {
     name: 'Anatomy & organism',
-    shape: 'triangle',
     anchorHue: 148,
     chroma: 0.115,
     spread: 26,
@@ -184,7 +192,6 @@ export const FAMILIES = [
   },
   {
     name: 'Clinical',
-    shape: 'square',
     anchorHue: 18,
     chroma: 0.145,
     spread: 34,
@@ -193,7 +200,6 @@ export const FAMILIES = [
   },
   {
     name: 'Exposome',
-    shape: 'circle',
     anchorHue: 78,
     chroma: 0.12,
     spread: 24,
@@ -202,7 +208,6 @@ export const FAMILIES = [
   },
   {
     name: 'Physical',
-    shape: 'pentagon',
     anchorHue: 250,
     chroma: 0.09,
     spread: 26,
@@ -211,7 +216,6 @@ export const FAMILIES = [
   },
   {
     name: 'Provenance & context',
-    shape: 'hexagon',
     anchorHue: 250,
     chroma: 0.03,
     spread: 190,
@@ -288,13 +292,17 @@ export const CREDIBILITY = [
   { tier: 'retracted', hue: 25, chroma: 0.16, rung: 4.6, arcs: 'solid' },
 ];
 
-/** Every shape a node can take. The order is the legend's order. */
-export const NODE_SHAPES = [
-  'circle',
-  'square',
-  'rounded-square',
-  'diamond',
-  'triangle',
-  'pentagon',
-  'hexagon',
-];
+/* ⚠ **THE SHAPE CHANNEL IS GONE, DELIBERATELY AND ENTIRELY.**
+   `NODE_SHAPES` and the per-family `shape` key used to live here: the canvas
+   drew seven silhouettes, shape carried the FAMILY and lightness carried the
+   member, and that was the redundant non-colour channel WCAG 1.4.1 asks for.
+   Seven silhouettes at 8–12px read as noise rather than as structure, so the
+   product decision is that every node is a circle.
+
+   ⚠ **THE REDUNDANT CHANNEL IS NOW TEXT, NOT SHAPE**, and that is what makes
+   the deletion defensible rather than merely simpler: §5.12's keyboard model
+   gives the canvas a focus model and an `aria-live` region announcing the
+   focused node as `<identifier>, <node_type>, <family>`. That is a channel
+   colour-blind AND blind users can use, where a silhouette only ever served the
+   first group. Labels are also always on and haloed. Do not reintroduce shape
+   here without deciding what it would add over the announcement. */

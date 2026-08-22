@@ -98,7 +98,12 @@ export function buildGraphModel(graph: Graph): GraphModel {
   const pivot = Math.max(2, Math.min(Math.max(3, p75), Math.sqrt(max) * 1.6));
   const hubThreshold = Math.max(3, count > 0 ? (degrees[Math.floor((count - 1) * 0.82)] ?? 3) : 3);
 
-  const shapeOf = GRAPH_PALETTE.light.shapeOf;
+  // ⚠ **The VOCABULARY, not a shape map.** This used to read `shapeOf`, which
+  // happened to be keyed by every curated type — so deleting the shape channel
+  // would have silently broken an unrelated feature (the `Unrecognised type`
+  // badge) by making every type look recognised. `types` is the same key set and
+  // says what is actually being asked.
+  const vocabulary = GRAPH_PALETTE.light.types;
 
   const nodes = new Map<string, NodeMetrics>();
   const typeCount = new Map<string, number>();
@@ -123,7 +128,7 @@ export function buildGraphModel(graph: Graph): GraphModel {
     if (type) {
       untyped = false;
       typeCount.set(type, (typeCount.get(type) ?? 0) + 1);
-      if (!(type in shapeOf)) hasUnrecognisedTypes = true;
+      if (!(type in vocabulary)) hasUnrecognisedTypes = true;
     } else {
       untypedCount += 1;
     }

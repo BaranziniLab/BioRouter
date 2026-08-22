@@ -501,7 +501,18 @@ export function IngestPanel() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+      {/* ⚠ **`justify-start` and NOT `flex-1` on the children** — the gap this
+          leaves is deliberate and belongs at the BOTTOM, not the middle. R-06
+          stopped the rail scrolling at rest, which made its leftover space
+          visible for the first time: dropzone and Paste text at the top, the
+          action footer pinned at the bottom, and ~200px of nothing between them.
+          Distributing that space (`justify-between`, or growing the staged
+          list) would push the two staging affordances apart and read as two
+          unrelated groups. Keeping the group together at the top, with the slack
+          under it, is what makes the empty rail read as "nothing staged yet"
+          rather than as a layout accident — and it is where a staged list
+          actually grows into. */}
+      <div className="flex min-h-0 flex-1 flex-col justify-start gap-3 overflow-y-auto p-4">
         <Dropzone onFiles={onFiles} onPathPickRequested={() => void onPathPickRequested()} />
         <Button
           data-testid="knowledge-ingest-paste-text"

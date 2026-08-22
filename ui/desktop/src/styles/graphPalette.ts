@@ -22,11 +22,11 @@
  * will tell you if you did not.
  */
 import { GRAPH_PALETTE } from './themes.generated';
-import type { GraphPalette, NodeShape } from './themes.generated';
+import type { GraphPalette } from './themes.generated';
 
 export type GraphMode = 'light' | 'dark';
 
-export type { GraphCredibilityKey, GraphPalette, NodeShape } from './themes.generated';
+export type { GraphCredibilityKey, GraphPalette } from './themes.generated';
 export { GRAPH_PALETTE } from './themes.generated';
 
 /* ── the §5.2 solver ── */
@@ -182,11 +182,7 @@ export function hashedFill(type: string, mode: GraphMode): string {
   // contrast ratio. `solveHex` is retained above because the credibility ring
   // still uses it — a 1.6px stroke IS asked to carry contrast, where a fill is
   // not.
-  const hex = oklchToHex(
-    palette.fallbackLightness[(h >>> 9) & 3],
-    palette.fallbackChroma,
-    h % 360
-  );
+  const hex = oklchToHex(palette.fallbackLightness[(h >>> 9) & 3], palette.fallbackChroma, h % 360);
   hashedCache.set(key, hex);
   return hex;
 }
@@ -196,17 +192,6 @@ export function hashedFill(type: string, mode: GraphMode): string {
 /** The fill for a node type: curated when the vocabulary knows it, hashed otherwise. */
 export function typeFill(type: string, mode: GraphMode): string {
   return GRAPH_PALETTE[mode].types[type] ?? hashedFill(type, mode);
-}
-
-/**
- * The silhouette for a node type.
- *
- * Falls back to `circle`, which is also what every node in an OKF base draws:
- * there are no families there, and a shape channel that applies to everything
- * carries nothing.
- */
-export function typeShape(type: string, mode: GraphMode): NodeShape {
-  return GRAPH_PALETTE[mode].shapeOf[type] ?? 'circle';
 }
 
 /** The palette for a mode. */

@@ -75,7 +75,6 @@ export function GraphLegend({ model, mode, facets, onChange, variant = 'rail' }:
     const rows = Object.entries(palette.families)
       .map(([name, family]) => ({
         name,
-        shape: family.shape,
         members: family.members.filter((m) => present.has(m)),
       }))
       .filter((f) => f.members.length > 0);
@@ -144,9 +143,18 @@ export function GraphLegend({ model, mode, facets, onChange, variant = 'rail' }:
           : 'br-knowledge-detail flex min-h-0 flex-col overflow-y-auto border-l border-border-subtle bg-background-default'
       }
     >
+      {/* ⚠ **The rail must fit its own height, and measured it did not.** At a
+          1690x760 pane the rail held 856px of content in 544px, so
+          `Provenance & context` — the family a reader is most likely to be
+          looking up, because it is the one drawn hollow — sat below the fold by
+          default. Two changes, both cheap: the sections are denser (see the
+          `gap` values below), and `Evidence` opens CLOSED. Evidence is four
+          rows explaining a ring treatment, useful once; node types are the key
+          a reader returns to. Nothing is hidden — both disclose in their own
+          heading. */}
       <LegendSection title="Node types">
         {(families ?? []).map((family) => (
-          <div key={family.name} className="flex flex-col gap-1.5">
+          <div key={family.name} className="flex flex-col gap-1">
             <button
               type="button"
               onClick={() => toggleFamily(family.members)}
@@ -155,7 +163,7 @@ export function GraphLegend({ model, mode, facets, onChange, variant = 'rail' }:
             >
               {family.name}
             </button>
-            <div className="flex flex-wrap gap-1.5">{family.members.map(chip)}</div>
+            <div className="flex flex-wrap gap-1">{family.members.map(chip)}</div>
           </div>
         ))}
         {!families && (
@@ -169,7 +177,7 @@ export function GraphLegend({ model, mode, facets, onChange, variant = 'rail' }:
           swatches and was entirely inert, expanded named them but dropped the
           credibility key altogether. A legend that omits a channel the canvas
           paints is worse than one that is merely small. */}
-      <LegendSection title="Evidence">
+      <LegendSection title="Evidence" initiallyOpen={false}>
         <div className="flex flex-col gap-1.5">
           {CREDIBILITY_KEY.map((entry) => (
             <span key={entry.key} className="flex items-center gap-2">
@@ -192,11 +200,19 @@ export function GraphLegend({ model, mode, facets, onChange, variant = 'rail' }:
  * which it did — `ml-auto` resolved to 0 and the only way to collapse the
  * legend was to scroll to the end of the thing you were trying to collapse.
  */
-function LegendSection({ title, children }: { title: string; children: ReactNode }) {
-  const [open, setOpen] = useState(true);
+function LegendSection({
+  title,
+  children,
+  initiallyOpen = true,
+}: {
+  title: string;
+  children: ReactNode;
+  initiallyOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(initiallyOpen);
   return (
-    <section className="border-b border-border-subtle px-3 py-2.5 last:border-b-0">
-      <div className="mb-2 flex items-center gap-1">
+    <section className="border-b border-border-subtle px-3 py-2 last:border-b-0">
+      <div className="mb-1.5 flex items-center gap-1">
         <button
           type="button"
           className="flex min-w-0 flex-1 items-center justify-between gap-2 rounded-inner text-caps text-text-muted"
@@ -211,7 +227,7 @@ function LegendSection({ title, children }: { title: string; children: ReactNode
           )}
         </button>
       </div>
-      {open && <div className="flex flex-col gap-2.5">{children}</div>}
+      {open && <div className="flex flex-col gap-2">{children}</div>}
     </section>
   );
 }

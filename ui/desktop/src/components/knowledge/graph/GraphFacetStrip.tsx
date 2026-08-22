@@ -12,11 +12,11 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
-import { GRAPH_PALETTE, typeFill, typeShape } from '../../../styles/graphPalette';
+import { GRAPH_PALETTE, typeFill } from '../../../styles/graphPalette';
 import type { GraphMode } from '../../../styles/graphPalette';
-import { GraphShapeGlyph } from './GraphShapeGlyph';
-import { useShapeChannel } from './graphPreferences';
+import { NodeSwatch } from './NodeSwatch';
 import { GraphLegend } from './GraphLegend';
+import { isHollowType } from './nodeMark';
 import { toggle, UNTYPED_KEY } from './graphFacets';
 import type { FacetState } from './graphFacets';
 import type { GraphModel } from './graphModel';
@@ -60,7 +60,7 @@ export function GraphFacetStrip({ model, mode, facets, onChange, passing, total,
       label: t.type,
       count: t.count,
       fill: typeFill(t.type, mode),
-      shape: typeShape(t.type, mode),
+      hollow: isHollowType(t.type, mode),
     })),
     // Counted, not hardcoded to 0. On a legacy base every other row carried a
     // count and this one silently did not, which reads as "no such pages"
@@ -72,7 +72,6 @@ export function GraphFacetStrip({ model, mode, facets, onChange, passing, total,
             label: 'Untyped',
             count: model.untypedCount,
             fill: undefined,
-            shape: undefined,
           },
         ]
       : []),
@@ -394,7 +393,8 @@ interface Option {
   label: string;
   count: number;
   fill?: string;
-  shape?: ReturnType<typeof typeShape>;
+  /** Provenance & Context draws as an open ring, matching the canvas mark. */
+  hollow?: boolean;
   negated?: boolean;
 }
 
@@ -433,9 +433,6 @@ function FacetCombobox({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
-  // Same preference, same reason as the inspectors: a picker that draws a
-  // triangle for a node the canvas draws as a circle teaches the wrong mark.
-  const [shapeChannel] = useShapeChannel();
 
   const families = GRAPH_PALETTE[mode].families;
   const familyOf = useMemo(() => {
@@ -482,11 +479,7 @@ function FacetCombobox({
   const row = (o: Option) => (
     <CommandItem key={o.value} selected={selected.has(o.value)} onSelect={() => onToggle(o.value)}>
       {o.fill ? (
-        <GraphShapeGlyph
-          shape={shapeChannel ? (o.shape ?? 'circle') : 'circle'}
-          fill={o.fill}
-          className="br-swatch-ring"
-        />
+        <NodeSwatch fill={o.fill} hollow={o.hollow} className="br-swatch-ring" />
       ) : (
         <span aria-hidden="true" className="h-3 w-3 flex-none" />
       )}
@@ -558,15 +551,7 @@ function FacetCombobox({
               ? [...grouped.entries()].map(([family, rows]) => (
                   <CommandGroup
                     key={family}
-                    heading={
-                      <span className="flex items-center gap-2">
-                        <GraphShapeGlyph
-                          shape={shapeChannel ? (families[family]?.shape ?? 'circle') : 'circle'}
-                          className="text-text-muted"
-                        />
-                        {family}
-                      </span>
-                    }
+                    heading={<span className="flex items-center gap-2">{family}</span>}
                   >
                     {rows.map(row)}
                   </CommandGroup>

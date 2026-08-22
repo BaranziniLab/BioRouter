@@ -198,17 +198,6 @@ function KnowledgeViewInner() {
             <ReadableContent size="graph" className="px-8">
               <div className="flex h-row items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-2">
-                  {/* Below `--breakpoint-md` the workspace is a two-tab pair, and
-                    the pair lives HERE so the band still names the base. The
-                    `<Tabs>` primitive supplies role="tablist", the roving focus
-                    and ←/→/Home/End; the hand-rolled segmented pill this
-                    replaces is design system D-07 option B, whose own record
-                    reads "Delete B." */}
-                  <TabsList className="br-knowledge-tabs gap-4 border-b-0">
-                    <TabsTrigger value="digest">Sources</TabsTrigger>
-                    <TabsTrigger value="graph">Graph</TabsTrigger>
-                  </TabsList>
-
                   {primaryKb ? (
                     <>
                       {/* R-01: the base's NAME is the switcher. One control
@@ -250,6 +239,23 @@ function KnowledgeViewInner() {
                       No primary knowledge base
                     </span>
                   )}
+
+                  {/* ⚠ **AFTER the base, not before it.** The tabs used to open this row, so
+                    at the narrow step — the only step where they exist — the page's
+                    SUBJECT was the second thing read, behind a control that merely
+                    switches which half of it you are looking at. The band's job is to
+                    name the base; the pair lives here so the band still can.
+
+                    Below `--breakpoint-md` the workspace is a two-tab pair, and
+                    the pair lives HERE so the band still names the base. The
+                    `<Tabs>` primitive supplies role="tablist", the roving focus
+                    and ←/→/Home/End; the hand-rolled segmented pill this
+                    replaces is design system D-07 option B, whose own record
+                    reads "Delete B." */}
+                  <TabsList className="br-knowledge-tabs gap-4 border-b-0">
+                    <TabsTrigger value="digest">Sources</TabsTrigger>
+                    <TabsTrigger value="graph">Graph</TabsTrigger>
+                  </TabsList>
                 </div>
 
                 {/* Two visible actions against the app's ceiling of three, with
