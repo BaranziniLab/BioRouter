@@ -19,7 +19,7 @@ of driving and debugging the real desktop app live in
 shipped or were overtaken by later work are filed under
 [`docs/history/`](../history/README.md), not here.
 
-There are no Markdown files directly in this folder. All specifications sit in the five
+There are no Markdown files directly in this folder. All specifications sit in the six
 topic subfolders below, alongside two top-level rendered pages.
 
 ## Subfolders
@@ -43,6 +43,15 @@ topic subfolders below, alongside two top-level rendered pages.
   [the nested `KnowledgeProvider` blocker](chat-groups/knowledge-provider-nesting-blocker.md),
   a spike report proving that two nested providers clobber each other's active knowledge
   base; its prerequisite fix is still **not** made, so provider nesting remains blocked.
+- **[`composer-thinking-indicator/`](composer-thinking-indicator/README.md)** — the affordance
+  that says Biorouter is working on your turn. Holds the
+  [redesign of record](composer-thinking-indicator/thinking-indicator-redesign.md) — seven
+  measured findings on the current breathing dot (two indicators drawn identically but anchored
+  to different grids, an off-scale 1.8 s period, and two canonical specs in `design.md` that
+  were never built) and six candidate replacements — beside the
+  [studio](composer-thinking-indicator/thinking-indicator-studio.html), where every specimen
+  animates at 1:1 inside a real chat column. **Proposed**: the recommendation (A + D, with F to
+  follow) awaits sign-off and no implementation has started.
 - **[`theming/`](theming/README.md)** — the theme families. Holds the
   [theme system architecture](theming/theme-system-architecture.md), which fixes the one
   authored file per family and everything generated from it, plus the two token references it
