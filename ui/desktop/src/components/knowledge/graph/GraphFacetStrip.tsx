@@ -15,6 +15,7 @@ import {
 import { GRAPH_PALETTE, typeFill, typeShape } from '../../../styles/graphPalette';
 import type { GraphMode } from '../../../styles/graphPalette';
 import { GraphShapeGlyph } from './GraphShapeGlyph';
+import { useShapeChannel } from './graphPreferences';
 import { GraphLegend } from './GraphLegend';
 import { toggle, UNTYPED_KEY } from './graphFacets';
 import type { FacetState } from './graphFacets';
@@ -432,6 +433,9 @@ function FacetCombobox({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  // Same preference, same reason as the inspectors: a picker that draws a
+  // triangle for a node the canvas draws as a circle teaches the wrong mark.
+  const [shapeChannel] = useShapeChannel();
 
   const families = GRAPH_PALETTE[mode].families;
   const familyOf = useMemo(() => {
@@ -478,7 +482,11 @@ function FacetCombobox({
   const row = (o: Option) => (
     <CommandItem key={o.value} selected={selected.has(o.value)} onSelect={() => onToggle(o.value)}>
       {o.fill ? (
-        <GraphShapeGlyph shape={o.shape ?? 'circle'} fill={o.fill} className="br-swatch-ring" />
+        <GraphShapeGlyph
+          shape={shapeChannel ? (o.shape ?? 'circle') : 'circle'}
+          fill={o.fill}
+          className="br-swatch-ring"
+        />
       ) : (
         <span aria-hidden="true" className="h-3 w-3 flex-none" />
       )}
@@ -553,7 +561,7 @@ function FacetCombobox({
                     heading={
                       <span className="flex items-center gap-2">
                         <GraphShapeGlyph
-                          shape={families[family]?.shape ?? 'circle'}
+                          shape={shapeChannel ? (families[family]?.shape ?? 'circle') : 'circle'}
                           className="text-text-muted"
                         />
                         {family}

@@ -11,6 +11,7 @@ import { usePagePreview } from '../hooks/usePagePreview';
 import { GraphShapeGlyph } from './GraphShapeGlyph';
 import { CredibilityRing, TIER_LABEL } from './CredibilityRing';
 import { credibilityKey, fillFor, shapeFor } from './nodeMark';
+import { useShapeChannel } from './graphPreferences';
 import { frontmatterRows, splitFrontmatter, xrefHref } from './frontmatter';
 import type { FrontmatterRow } from './frontmatter';
 import { prettyLabel } from './labelText';
@@ -185,6 +186,11 @@ function xrefOrText(text: string) {
 }
 
 export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
+  // ⚠ **The same preference the canvas reads** (R-04). `nodeMark.ts` exists
+  // because two surfaces once disagreed about one node; threading the shape
+  // channel to only SOME readers recreates that exactly, in both directions —
+  // silhouettes here against circles on the canvas, or the reverse.
+  const [shapeChannel] = useShapeChannel();
   const { content, loading, error } = usePagePreview(kbId, node.path, previewSha);
   const parsed = useMemo(() => splitFrontmatter(content ?? ''), [content]);
   const rows = useMemo(
@@ -231,7 +237,7 @@ export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
               `node_type` through `GRAPH_PALETTE`, silhouette by family. A swatch
               that disagrees with the mark it describes is worse than none. */}
           <GraphShapeGlyph
-            shape={shapeFor(node, mode)}
+            shape={shapeFor(node, mode, shapeChannel)}
             fill={fillFor(node, mode)}
             size={14}
             className="br-swatch-ring mt-0.5 flex-shrink-0"
