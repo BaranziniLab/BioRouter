@@ -53,6 +53,7 @@
 
 pub mod appserver;
 pub mod bridge;
+pub mod codex_stream;
 pub mod discovery;
 pub mod effort;
 pub mod env;
