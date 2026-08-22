@@ -67,6 +67,7 @@ import {
 } from './dragGhostWindow';
 import { expandTilde } from './utils/pathUtils';
 import { friendlyArtifactFileError } from './utils/artifactFileErrors';
+import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
 import { isFilePathAllowedForPreview } from './utils/pathContainment';
 import { normalizeExternalHttpUrl } from './utils/externalUrl';
 import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
@@ -5385,17 +5386,10 @@ async function appMain() {
   });
 
   // Standalone previews are offline. Inline the small, fixed set of libraries
-  // emitted by Auto Visualiser before applying its network-denying CSP.
+  // emitted by Auto Visualiser before applying its network-denying CSP. The
+  // asset list, the tag patterns and the substitution itself live in
+  // `utils/artifactCdnAssets.ts` so the Rust side can assert against them.
   const artifactCdnAssetCache = new Map<string, Promise<string>>();
-  const artifactCdnAssets = [
-    'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js',
-    'https://cdn.jsdelivr.net/npm/d3-sankey@0.12/dist/d3-sankey.min.js',
-    'https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js',
-    'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js',
-    'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css',
-    'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js',
-  ];
-  const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
   const fetchArtifactCdnAsset = (url: string): Promise<string> => {
     let cached = artifactCdnAssetCache.get(url);
@@ -5411,32 +5405,10 @@ async function appMain() {
     return cached;
   };
 
-  const inlineKnownArtifactCdnAssets = async (rawHtml: string): Promise<string> => {
-    let html = rawHtml;
-    for (const url of artifactCdnAssets) {
-      if (!html.includes(url)) continue;
-      try {
-        const asset = await fetchArtifactCdnAsset(url);
-        // Replacement must be a function: minified bundles contain `$&`, `$'`,
-        // `$1`, `$$` sequences, which String.replace would expand as match
-        // references and corrupt the inlined script.
-        if (url.endsWith('.css')) {
-          html = html.replace(
-            new RegExp(`<link\\b[^>]*href=["']${escapeRegExp(url)}["'][^>]*>`, 'g'),
-            () => `<style>${asset}</style>`
-          );
-        } else {
-          html = html.replace(
-            new RegExp(`<script\\b[^>]*src=["']${escapeRegExp(url)}["'][^>]*>\\s*</script>`, 'g'),
-            () => `<script>${asset}</script>`
-          );
-        }
-      } catch (error) {
-        console.warn(`Could not inline artifact CDN asset ${url}:`, error);
-      }
-    }
-    return html;
-  };
+  const inlineKnownArtifactCdnAssets = (rawHtml: string): Promise<string> =>
+    inlineArtifactCdnAssets(rawHtml, fetchArtifactCdnAsset, (url, error) => {
+      console.warn(`Could not inline artifact CDN asset ${url}:`, error);
+    });
 
   type OpenArtifactPayload = {
     html: string;

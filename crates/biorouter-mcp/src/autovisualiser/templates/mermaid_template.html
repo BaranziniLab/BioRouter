@@ -44,31 +44,61 @@
         const mermaidCode = {{MERMAID_CODE}};
 
         BioRouterViz.autoResize();
-        BioRouterViz.guard(function () {
-            if (typeof mermaid === 'undefined') {
-                throw new Error('Mermaid library failed to load.');
-            }
-            mermaid.initialize({
-                startOnLoad: false,
-                securityLevel: 'strict',
-                theme: BioRouterViz.dark ? 'dark' : 'default',
-                flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
-                sequence: { useMaxWidth: true },
-                gantt: { useMaxWidth: true, axisFormat: '%Y-%m-%d' }
+
+        // The library tag above is parser-blocking in both asset modes (an
+        // inlined vendored copy offline, an inlined CDN copy after the desktop
+        // rewriter), so `mermaid` is normally already defined here. Waiting
+        // anyway costs one microtask and keeps this template correct for any
+        // deferred delivery — and, more usefully, it separates "the library
+        // never arrived" from "the diagram is invalid", which used to be
+        // reported with the same message.
+        function waitForMermaid(timeoutMs) {
+            if (typeof mermaid !== 'undefined') return Promise.resolve(mermaid);
+            return new Promise(function (resolve, reject) {
+                const started = Date.now();
+                const timer = setInterval(function () {
+                    if (typeof mermaid !== 'undefined') {
+                        clearInterval(timer);
+                        resolve(mermaid);
+                    } else if (Date.now() - started > timeoutMs) {
+                        clearInterval(timer);
+                        reject(new Error('Mermaid library failed to load.'));
+                    }
+                }, 25);
             });
-            mermaid
-                .render('biorouterMermaidSvg', mermaidCode)
-                .then(function (res) {
-                    document.getElementById('mermaidTarget').innerHTML = res.svg;
-                    if (res.bindFunctions) res.bindFunctions(document.getElementById('mermaidTarget'));
-                    BioRouterViz.reportSize();
-                })
-                .catch(function (err) {
+        }
+
+        BioRouterViz.guard(function () {
+            waitForMermaid(5000).then(
+                function (mermaidLib) {
+                    mermaidLib.initialize({
+                        startOnLoad: false,
+                        securityLevel: 'strict',
+                        theme: BioRouterViz.dark ? 'dark' : 'default',
+                        flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
+                        sequence: { useMaxWidth: true },
+                        gantt: { useMaxWidth: true, axisFormat: '%Y-%m-%d' }
+                    });
+                    return mermaidLib.render('biorouterMermaidSvg', mermaidCode)
+                        .then(function (res) {
+                            document.getElementById('mermaidTarget').innerHTML = res.svg;
+                            if (res.bindFunctions) res.bindFunctions(document.getElementById('mermaidTarget'));
+                            BioRouterViz.reportSize();
+                        })
+                        .catch(function (err) {
+                            BioRouterViz.showError(
+                                'The diagram syntax could not be rendered.',
+                                (err && err.message) ? err.message : err
+                            );
+                        });
+                },
+                function (err) {
                     BioRouterViz.showError(
-                        'The diagram syntax could not be rendered.',
+                        'The Mermaid library could not be loaded.',
                         (err && err.message) ? err.message : err
                     );
-                });
+                }
+            );
         });
     </script>
 </body>
