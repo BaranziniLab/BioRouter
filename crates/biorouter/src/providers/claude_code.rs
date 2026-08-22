@@ -1709,3 +1709,162 @@ mod streaming_tests {
         );
     }
 }
+
+/// Phase 5: cancellation on the streaming path.
+///
+/// On the blocking path the child is owned by the provider's own future, so a
+/// cancelled turn — which **drops** that future rather than unwinding it — drops
+/// the child and `kill_on_drop(true)` reaps it. Streaming breaks that chain: the
+/// child must be owned by a spawned reader task, and a spawned task outlives the
+/// stream feeding from it. `coding_agent::AbortOnDrop` is what restores it.
+///
+/// A leaked `claude` is not a tidiness problem. It holds the user's own
+/// subscription credential and keeps spending their quota on an answer nobody
+/// will ever read.
+#[cfg(all(test, unix))]
+mod cancellation_tests {
+    use super::*;
+    use futures::StreamExt;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A fake `claude` that streams one text delta and then hangs forever,
+    /// writing its own pid where the test can find it.
+    ///
+    /// Hanging is the point: it stands in for a child still working when the
+    /// user hits stop.
+    fn hanging_claude(pid_file: &std::path::Path) -> tempfile::NamedTempFile {
+        let frames = [
+            r#"{"type":"system","subtype":"init","apiKeySource":"none","session_id":"s"}"#,
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"working"}}}"#,
+        ];
+
+        let mut script = tempfile::NamedTempFile::new().expect("temp script");
+        writeln!(script, "#!/bin/sh").unwrap();
+        writeln!(script, "echo $$ > {}", pid_file.display()).unwrap();
+        for frame in frames {
+            writeln!(script, "echo '{frame}'").unwrap();
+        }
+        // Never exits on its own.
+        writeln!(script, "while true; do sleep 1; done").unwrap();
+        script.flush().unwrap();
+        let mut perms = std::fs::metadata(script.path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(script.path(), perms).unwrap();
+        script
+    }
+
+    fn alive(pid: i32) -> bool {
+        // Signal 0 tests for existence without delivering anything.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    async fn wait_for_exit(pid: i32) -> bool {
+        for _ in 0..100 {
+            if !alive(pid) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    /// Dropping the stream mid-turn kills the child.
+    #[tokio::test]
+    async fn dropping_a_live_stream_reaps_the_child() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pid_file = dir.path().join("pid");
+        let script = hanging_claude(&pid_file);
+
+        let provider = ClaudeCodeProvider {
+            command: script.path().to_path_buf(),
+            model: ModelConfig::new("claude-sonnet-4-6").unwrap(),
+            name: KIND.provider_id().to_string(),
+        };
+        let messages = vec![Message::user().with_text("hello")];
+
+        // NOT `pin_mut!`: that shadows the stream with a `Pin<&mut _>`, so a
+        // later `drop` would drop the *reference* and leave the stream itself
+        // alive until the end of the function — the test would then report a
+        // leak that is entirely its own doing. `stream()` already returns a
+        // `Pin<Box<_>>`, which is `Unpin`, so it can be polled and dropped
+        // directly.
+        let mut stream = provider.stream("SYS", &messages, &[]).await.expect("stream");
+
+        // Read until the first text arrives, so the child is definitely running
+        // and the turn is definitely mid-flight.
+        let mut saw_text = false;
+        while let Some(item) = stream.next().await {
+            let (message, _, _) = item.expect("no error before the drop");
+            if message.is_some_and(|m| {
+                m.content
+                    .iter()
+                    .any(|c| matches!(c, MessageContent::Text(_)))
+            }) {
+                saw_text = true;
+                break;
+            }
+        }
+        assert!(saw_text, "the fake child should have streamed some text");
+
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .expect("the child wrote its pid")
+            .trim()
+            .parse()
+            .expect("a numeric pid");
+        assert!(alive(pid), "the child is running while the turn is live");
+
+        // The cancellation itself: the consumer lets go of the stream.
+        drop(stream);
+
+        assert!(
+            wait_for_exit(pid).await,
+            "the child survived the stream being dropped — a cancelled turn has \
+             leaked a `claude` process that still holds the user's credential and \
+             is still spending their quota"
+        );
+    }
+
+    /// The same guarantee when the stream is never read at all.
+    ///
+    /// A turn can be cancelled before the first frame arrives, and the reader
+    /// task is already running by then — it is spawned inside `stream()`, before
+    /// the stream is returned.
+    #[tokio::test]
+    async fn dropping_an_unread_stream_reaps_the_child() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pid_file = dir.path().join("pid");
+        let script = hanging_claude(&pid_file);
+
+        let provider = ClaudeCodeProvider {
+            command: script.path().to_path_buf(),
+            model: ModelConfig::new("claude-sonnet-4-6").unwrap(),
+            name: KIND.provider_id().to_string(),
+        };
+        let messages = vec![Message::user().with_text("hello")];
+
+        let stream = provider.stream("SYS", &messages, &[]).await.expect("stream");
+
+        // Give the child long enough to start and record its pid.
+        let mut pid = None;
+        for _ in 0..100 {
+            if let Ok(text) = std::fs::read_to_string(&pid_file) {
+                if let Ok(parsed) = text.trim().parse::<i32>() {
+                    pid = Some(parsed);
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let pid = pid.expect("the child should have started and written its pid");
+
+        drop(stream);
+
+        assert!(
+            wait_for_exit(pid).await,
+            "a stream dropped before it was ever polled still has to reap its child"
+        );
+    }
+}
