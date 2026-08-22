@@ -252,7 +252,15 @@ function KnowledgeViewInner() {
                     and ←/→/Home/End; the hand-rolled segmented pill this
                     replaces is design system D-07 option B, whose own record
                     reads "Delete B." */}
-                  <TabsList className="br-knowledge-tabs gap-4 border-b-0">
+                  {/* ⚠ **`ms-2 border-s ps-3` is a GROUP BREAK, not decoration.**
+                    Measured at the 760px pane: the band separates every child by
+                    the same 8px, so the tabs began 8px after `38 links` and the
+                    row read as one run — "43 pages · 38 links Sources Graph" —
+                    which files a MODE SWITCHER among the base's attributes. The
+                    identity group describes the subject; the pair chooses which
+                    half of it you see. A rule plus a wider gap is the smallest
+                    thing that says those are two kinds of thing. */}
+                  <TabsList className="br-knowledge-tabs ms-2 gap-4 border-s border-b-0 border-border-subtle ps-3">
                     <TabsTrigger value="digest">Sources</TabsTrigger>
                     <TabsTrigger value="graph">Graph</TabsTrigger>
                   </TabsList>

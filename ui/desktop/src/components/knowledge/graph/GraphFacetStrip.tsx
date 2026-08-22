@@ -168,17 +168,28 @@ export function GraphFacetStrip({ model, mode, facets, onChange, passing, total,
           />
         </div>
 
+        {/* ⚠ **Only `Type` is core, and `Predicate` had to give up that slot.**
+            Measured at a 946px pane: search (200) + Type (76) + Predicate (105)
+            + More (78) + Legend (93) plus gaps is 576px in a 532px column, so
+            the row overflowed by 52px and clipped `Legend` mid-word. The cause
+            is a seam between two steps that each look right alone — 940px
+            WIDENS the sources rail, taking width from the centre column, while
+            the filter row sheds nothing until the full-filters step. Shedding the widest chip
+            at the same step the column narrows is what closes it, and `Type`
+            keeps the slot because node types are the facet the legend itself is
+            about. */}
         {typeFacet('br-facet-core')}
-        {predicateFacet('br-facet-core')}
+        {predicateFacet('br-facet-extra')}
         {sourceFacet('br-facet-extra')}
         {statusFacet('br-facet-extra')}
 
-        {/* 860–1059px: the two least-used fold away, keeping their counts. */}
+        {/* 860–1059px: the three least-used fold away, keeping their counts. */}
         <CollapsedFacets
           label="More"
           className="br-facet-more"
-          count={facets.sources.size + facets.statuses.size}
+          count={facets.predicates.size + facets.sources.size + facets.statuses.size}
         >
+          {predicateFacet('', 'knowledge-graph-facet-predicate-in-menu')}
           {sourceFacet('', 'knowledge-graph-facet-source-in-menu')}
           {statusFacet('', 'knowledge-graph-facet-status-in-menu')}
         </CollapsedFacets>
@@ -191,8 +202,14 @@ export function GraphFacetStrip({ model, mode, facets, onChange, passing, total,
             facets.types.size + facets.predicates.size + facets.sources.size + facets.statuses.size
           }
         >
-          {typeFacet('', 'knowledge-graph-facet-type-in-menu')}
-          {predicateFacet('', 'knowledge-graph-facet-predicate-in-menu')}
+          {/* ⚠ **`-in-all`, not `-in-menu`, for all four.** Both popovers are in
+              the DOM at every step — the ladder only toggles `display` — so a
+              suffix shared with the `More` menu means two elements answer to one
+              test id and `getByTestId` throws on a query that looks correct.
+              `predicate` had exactly that collision the moment it joined `More`.
+              The suffix names the popover, so every child of this one takes it. */}
+          {typeFacet('', 'knowledge-graph-facet-type-in-all')}
+          {predicateFacet('', 'knowledge-graph-facet-predicate-in-all')}
           {sourceFacet('', 'knowledge-graph-facet-source-in-all')}
           {statusFacet('', 'knowledge-graph-facet-status-in-all')}
         </CollapsedFacets>

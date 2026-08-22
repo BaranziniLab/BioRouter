@@ -511,15 +511,15 @@
      changes size is the pane, and at the app's own minimum window with the
      sidebar open the pane is 760px while the viewport is 1000. Every number is
      measured: 860 is where a 264px rail plus a usable canvas fits; 940 is where
-     a 246px legend card has a canvas to sit in; 1060 is where the full filter
-     row's measured 757px of content clears a 300px rail; 1400 is where a
+     a 246px legend card has a canvas to sit in; 1140 is where the full filter
+     row clears the rail beside it; 1400 is where a
      permanent 340px detail rail stops costing the canvas more than it returns.
      Declared here so the three consumers cannot drift, even though a
      `@container` rule cannot itself read a custom property in its condition —
      these are the documented source of the literals below. */
   --knowledge-pane-two-col: 860px;
   --knowledge-pane-legend-card: 940px;
-  --knowledge-pane-full-filters: 1060px;
+  --knowledge-pane-full-filters: 1140px;
   --knowledge-pane-three-col: 1400px;
   --knowledge-pane-short: 620px;
 
@@ -2558,7 +2558,17 @@
   }
 }
 
-@container br-knowledge-pane (min-width: 1060px) {
+/* ⚠ **This step promotes THREE chips at once, which is why it sits at 1140
+   and not at the 1060 a first measurement suggested.** `Predicate` moved into
+   `More` to stop the row clipping in the band below (see `GraphFacetStrip`), so
+   crossing this line now restores Predicate, Source AND Status together, plus
+   the readout. Swept in 10px steps across 720–1760: at 1060 the row overflowed
+   its column by 44px and did not clear until 1110. The lesson is the sweep, not
+   the number — both overflow seams this ladder has had were invisible at the
+   four canonical pane sizes and showed up only against every width in between,
+   because each one lives at a threshold where one step's promotion races
+   another step's narrowing. */
+@container br-knowledge-pane (min-width: 1140px) {
   .br-facet-more {
     display: none;
   }
