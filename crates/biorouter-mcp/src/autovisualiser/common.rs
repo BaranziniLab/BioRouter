@@ -171,6 +171,16 @@ const CDN_LEAFLET_JS: &str = "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/le
 const CDN_LEAFLET_CSS: &str = "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css";
 const CDN_MARKERCLUSTER_JS: &str =
     "https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js";
+// Mermaid must be the *classic* (non-module) bundle, not jsdelivr's `/+esm`
+// transform. Every desktop artifact is displayed under a `default-src 'none'`
+// CSP, so no remote URL is ever fetched by the page itself: the Electron main
+// process pre-fetches each URL below and splices the source into the document
+// as an inline `<script>` (`ui/desktop/src/utils/artifactCdnAssets.ts`). That
+// rewriter only recognises `<script src=…></script>`, and the tag it produces
+// is a classic script — so an ESM `import` would neither be rewritten nor run.
+// `dist/mermaid.min.js` is an esbuild IIFE that ends in
+// `globalThis["mermaid"] = …`, i.e. exactly the shape the vendored offline copy
+// has, which is what lets both modes reach the same runtime state.
 const CDN_MERMAID: &str = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js";
 
 /// Whether to reference libraries from a pinned CDN instead of inlining them.
@@ -295,7 +305,11 @@ pub fn asset_html(assets: &[Asset]) -> String {
     let mut out = String::new();
     for a in assets {
         match a {
-            Asset::D3 => out.push_str(&if cdn { script_src(CDN_D3) } else { script_inline(D3_MIN) }),
+            Asset::D3 => out.push_str(&if cdn {
+                script_src(CDN_D3)
+            } else {
+                script_inline(D3_MIN)
+            }),
             Asset::D3Sankey => out.push_str(&if cdn {
                 script_src(CDN_D3_SANKEY)
             } else {
@@ -320,10 +334,7 @@ pub fn asset_html(assets: &[Asset]) -> String {
                 }
             }
             Asset::Mermaid => out.push_str(&if cdn {
-                // Mermaid 11 ships as an ESM module on the CDN.
-                format!(
-                    "<script type=\"module\">import mermaid from '{CDN_MERMAID}/+esm';window.mermaid=mermaid;</script>\n"
-                )
+                script_src(CDN_MERMAID)
             } else {
                 script_inline(MERMAID_MIN)
             }),
