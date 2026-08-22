@@ -1,9 +1,8 @@
 // ui/desktop/src/components/knowledge/graph/GraphLegend.tsx
 import { useCallback, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ChevronDown, ChevronUp, X } from '../../icons/app-icons';
+import { ChevronDown, ChevronUp } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
-import { Button } from '../../ui/button';
 import { GRAPH_PALETTE, typeFill } from '../../../styles/graphPalette';
 import type { GraphCredibilityKey, GraphMode } from '../../../styles/graphPalette';
 import { isHollowType } from './nodeMark';
@@ -52,17 +51,16 @@ interface Props {
   facets: FacetState;
   onChange: (next: FacetState) => void;
   /**
-   * `rail` is the permanent right column at the widest step; `card` is the
-   * canvas-anchored overlay below it. Same content, same component — the
-   * container query decides which is visible, and there is deliberately not a
-   * second legend implementation for the narrow case.
+   * `rail` is the permanent right column at the widest step; `popover` is the
+   * same content inside the filter bar's `Legend` popover below it. Same
+   * component either way — there is deliberately not a second legend
+   * implementation for the narrow case, and deliberately no canvas overlay: a
+   * legend that covers the graph is the complaint this redesign exists to fix.
    */
-  variant?: 'rail' | 'card';
-  /** Dismiss the card. Only the card can be dismissed; the rail is a column. */
-  onDismiss?: () => void;
+  variant?: 'rail' | 'popover';
 }
 
-export function GraphLegend({ model, mode, facets, onChange, variant = 'rail', onDismiss }: Props) {
+export function GraphLegend({ model, mode, facets, onChange, variant = 'rail' }: Props) {
   const palette = GRAPH_PALETTE[mode];
 
   /**
@@ -141,15 +139,12 @@ export function GraphLegend({ model, mode, facets, onChange, variant = 'rail', o
     <div
       data-testid="knowledge-graph-legend"
       className={
-        variant === 'card'
-          ? 'br-knowledge-legend-card rounded-container border border-border-subtle bg-background-default'
+        variant === 'popover'
+          ? 'flex max-h-[26rem] flex-col overflow-y-auto'
           : 'br-knowledge-detail flex min-h-0 flex-col overflow-y-auto border-l border-border-subtle bg-background-default'
       }
     >
-      <LegendSection
-        title="Node types"
-        onDismiss={variant === 'card' ? onDismiss : undefined}
-      >
+      <LegendSection title="Node types">
         {(families ?? []).map((family) => (
           <div key={family.name} className="flex flex-col gap-1.5">
             <button
@@ -163,7 +158,9 @@ export function GraphLegend({ model, mode, facets, onChange, variant = 'rail', o
             <div className="flex flex-wrap gap-1.5">{family.members.map(chip)}</div>
           </div>
         ))}
-        {!families && <div className="flex flex-wrap gap-1.5">{flatTypes.map((t) => chip(t.type))}</div>}
+        {!families && (
+          <div className="flex flex-wrap gap-1.5">{flatTypes.map((t) => chip(t.type))}</div>
+        )}
         <ExtraRows model={model} mode={mode} facets={facets} onChange={onChange} />
       </LegendSection>
 
@@ -195,15 +192,7 @@ export function GraphLegend({ model, mode, facets, onChange, variant = 'rail', o
  * which it did — `ml-auto` resolved to 0 and the only way to collapse the
  * legend was to scroll to the end of the thing you were trying to collapse.
  */
-function LegendSection({
-  title,
-  children,
-  onDismiss,
-}: {
-  title: string;
-  children: ReactNode;
-  onDismiss?: () => void;
-}) {
+function LegendSection({ title, children }: { title: string; children: ReactNode }) {
   const [open, setOpen] = useState(true);
   return (
     <section className="border-b border-border-subtle px-3 py-2.5 last:border-b-0">
@@ -221,19 +210,6 @@ function LegendSection({
             <ChevronDown aria-hidden="true" className="h-icon-row w-icon-row shrink-0" />
           )}
         </button>
-        {onDismiss && (
-          <Button
-            type="button"
-            variant="ghost"
-            shape="round"
-            size="xs"
-            aria-label="Hide legend"
-            title="Hide legend"
-            onClick={onDismiss}
-          >
-            <X aria-hidden="true" />
-          </Button>
-        )}
       </div>
       {open && <div className="flex flex-col gap-2.5">{children}</div>}
     </section>
@@ -264,9 +240,7 @@ function ExtraRows({
           Referenced, no page yet
         </span>
       )}
-      {model.hasUnrecognisedTypes && (
-        <Badge tone="warning">Unrecognised type</Badge>
-      )}
+      {model.hasUnrecognisedTypes && <Badge tone="warning">Unrecognised type</Badge>}
       {model.untyped && (
         <Badge
           asChild
@@ -291,4 +265,3 @@ function ExtraRows({
     </div>
   );
 }
-

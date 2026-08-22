@@ -31,9 +31,7 @@ export function kbProfile(base: Pick<Manifest, 'format' | 'schema_version'>): Kb
 }
 
 /** The badge word for a base: `OKF`, `BioOKF`, or `Legacy` when it declares no profile. */
-export function kbFormatLabel(
-  base: Pick<Manifest, 'format' | 'schema_version'>
-): KbFormatLabel {
+export function kbFormatLabel(base: Pick<Manifest, 'format' | 'schema_version'>): KbFormatLabel {
   const profile = kbProfile(base);
   if (profile === null) return 'Legacy';
   return profile === 'biookf' ? 'BioOKF' : 'OKF';

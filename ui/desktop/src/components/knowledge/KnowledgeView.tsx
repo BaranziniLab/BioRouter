@@ -140,8 +140,18 @@ function KnowledgeViewInner() {
 
   return (
     <MainPanelLayout>
+      {/* ⚠ **THE CONTAINER IS HERE, NOT ON THE GRID** (R-08), and the two are
+          not interchangeable: `@container` styles apply to a container's
+          DESCENDANTS, never to the container element itself. An earlier draft
+          put `br-knowledge-pane` and `br-knowledge-body` on the same div, so
+          the grid could never restyle itself and every step silently produced
+          one column. It also has to sit ABOVE the header and subject bands —
+          the height step yields the header's description line and the two-column
+          step hides the Sources/Graph tabs, and neither is inside the
+          workspace. Measured in the browser; jsdom evaluates no container
+          queries at all. */}
       <div
-        className="relative flex min-w-0 flex-1 flex-col overflow-hidden"
+        className="br-knowledge-pane relative flex min-w-0 flex-1 flex-col overflow-hidden"
         data-search-scroll-area
       >
         {/* HEADER BAND — TITLE ONLY (R-01). The hairline is FULL-BLEED.
@@ -224,9 +234,7 @@ function KnowledgeViewInner() {
                       >
                         {kbFormatLabel(primaryKb)}
                       </Badge>
-                      {primaryKb.tier !== 'public' && (
-                        <PrivacyBadge tier={primaryKb.tier} dense />
-                      )}
+                      {primaryKb.tier !== 'public' && <PrivacyBadge tier={primaryKb.tier} dense />}
                       {graph && (
                         <span
                           data-testid="knowledge-graph-summary"
@@ -353,7 +361,7 @@ function KnowledgeViewInner() {
 
                    The ladder lives in `main.css` under `.br-knowledge-pane`;
                    the classes here only mark the parts. */
-                <div className="br-knowledge-pane br-knowledge-body min-h-0 flex-1 gap-4">
+                <div className="br-knowledge-body min-h-0 flex-1 gap-4">
                   <TabsContent
                     forceMount
                     value="digest"

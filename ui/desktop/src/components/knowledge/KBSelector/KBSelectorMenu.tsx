@@ -130,7 +130,9 @@ export function KBSelectorMenu({ onManage, onCreate, onClose }: Props) {
                   }}
                 >
                   <KbDot color={base.color} />
-                  <span data-row-name className="min-w-0 flex-1 truncate">{base.name}</span>
+                  <span data-row-name className="min-w-0 flex-1 truncate">
+                    {base.name}
+                  </span>
                   <Badge
                     uppercase
                     title={kbFormatLabel(base) === 'Legacy' ? LEGACY_FORMAT_TITLE : undefined}
@@ -154,11 +156,15 @@ export function KBSelectorMenu({ onManage, onCreate, onClose }: Props) {
         <CommandGroup>
           <CommandItem onSelect={onManage} data-testid="knowledge-kb-open-manager">
             <Settings className="h-icon-row w-icon-row shrink-0 text-text-muted" aria-hidden />
-            <span data-row-name className="min-w-0 flex-1 truncate">Manage bases…</span>
+            <span data-row-name className="min-w-0 flex-1 truncate">
+              Manage bases…
+            </span>
           </CommandItem>
           <CommandItem onSelect={onCreate} data-testid="knowledge-kb-open-create">
             <FolderPlus className="h-icon-row w-icon-row shrink-0 text-text-muted" aria-hidden />
-            <span data-row-name className="min-w-0 flex-1 truncate">Create knowledge base…</span>
+            <span data-row-name className="min-w-0 flex-1 truncate">
+              Create knowledge base…
+            </span>
           </CommandItem>
         </CommandGroup>
       </CommandList>

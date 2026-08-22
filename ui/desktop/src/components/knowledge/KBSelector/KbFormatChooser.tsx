@@ -175,9 +175,8 @@ export function KbFormatChooser({ open, onOpenChange, initialName = '', onCreate
             autoFocus
           />
           <p className="mt-1 text-supporting text-text-muted">
-            Will be created as{' '}
-            <span className="font-mono">knowledge/{id || '…'}/</span> — the final id may differ if
-            that name is taken.
+            Will be created as <span className="font-mono">knowledge/{id || '…'}/</span> — the final
+            id may differ if that name is taken.
           </p>
         </div>
 

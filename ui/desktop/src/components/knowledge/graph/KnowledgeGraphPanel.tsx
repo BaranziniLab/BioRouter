@@ -66,9 +66,6 @@ export function KnowledgeGraphPanel({
   // selecting either therefore clears the other rather than stacking.
   const [selectedEdge, setSelectedEdge] = useState<GraphEdge | null>(null);
   const [facets, setFacets] = useState<FacetState>(EMPTY_FACETS);
-  // The card is the only thing on this pane that covers the canvas, so hiding
-  // it is a real state (R-03). The rail is a column and is never hidden.
-  const [legendHidden, setLegendHidden] = useState(false);
   const mode = useResolvedTheme();
 
   const firstLoad = loading && !graph;
@@ -176,17 +173,6 @@ export function KnowledgeGraphPanel({
               />
             ) : null}
           </div>
-
-          {hasNodes && model && !legendHidden && (
-            <GraphLegend
-              variant="card"
-              model={model}
-              mode={mode}
-              facets={facets}
-              onChange={setFacets}
-              onDismiss={() => setLegendHidden(true)}
-            />
-          )}
 
           {selected && kbId && (
             <NodePreview

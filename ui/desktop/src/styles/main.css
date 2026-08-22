@@ -2518,7 +2518,8 @@
 .br-facet-more {
   display: none;
 }
-.br-facet-all {
+.br-facet-all,
+.br-facet-legend {
   display: inline-flex;
 }
 .br-knowledge-readout {
@@ -2555,9 +2556,6 @@
   .br-knowledge-body {
     grid-template-columns: var(--knowledge-rail-sources) minmax(0, 1fr);
   }
-  .br-knowledge-legend-card {
-    display: flex;
-  }
 }
 
 @container br-knowledge-pane (min-width: 1060px) {
@@ -2586,7 +2584,9 @@
     width: var(--knowledge-rail-detail);
     flex: none;
   }
-  .br-knowledge-legend-card {
+  /* The Legend control retires once the rail is permanent — there is nothing
+     left for it to open. */
+  .br-facet-legend {
     display: none;
   }
 }
@@ -2630,19 +2630,19 @@
   background: var(--background-accent);
 }
 
-/* The legend as a canvas-anchored card, between 940 and 1400 (R-03). An
-   explicit z-index because the canvas paints an absolutely-positioned <svg>
-   sibling, and the card must be unambiguously above it. */
-.br-knowledge-legend-card {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  z-index: 2;
-  width: 246px;
-  max-height: 74%;
-  flex-direction: column;
-  overflow-y: auto;
-}
+/* ⚠ **THERE IS NO CANVAS-ANCHORED LEGEND CARD, AND THAT IS DELIBERATE.**
+   An earlier revision floated the legend over the canvas between 940 and 1400,
+   BioOKF-style. Measured in the browser at a 946px pane it covered **44% of the
+   canvas width** and sat on top of the graph — which is the overlap complaint
+   this redesign exists to fix, reintroduced by the fix. A legend that hides the
+   thing it describes is worse than one you open on demand.
+
+   So: a real rail at >= 1400 where there is room for a column, and below that a
+   `Legend` control in the filter bar opening the SAME component in a popover.
+   Nothing ever overlaps the canvas, and the legend is dismissible at every size
+   because a popover is dismissible by construction. The control's own default
+   is declared with the other `.br-facet-*` defaults ABOVE the container blocks;
+   declaring it here, after them, is what let it survive into the rail step. */
 
 /* The Sources rail's summoned paste box (ui-spec §4.4).
 

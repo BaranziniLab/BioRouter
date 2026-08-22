@@ -15,6 +15,7 @@ import {
 import { GRAPH_PALETTE, typeFill, typeShape } from '../../../styles/graphPalette';
 import type { GraphMode } from '../../../styles/graphPalette';
 import { GraphShapeGlyph } from './GraphShapeGlyph';
+import { GraphLegend } from './GraphLegend';
 import { toggle, UNTYPED_KEY } from './graphFacets';
 import type { FacetState } from './graphFacets';
 import type { GraphModel } from './graphModel';
@@ -195,6 +196,16 @@ export function GraphFacetStrip({ model, mode, facets, onChange, passing, total,
           {sourceFacet('', 'knowledge-graph-facet-source-in-all')}
           {statusFacet('', 'knowledge-graph-facet-status-in-all')}
         </CollapsedFacets>
+
+        {/* ⚠ **The legend NEVER overlaps the canvas** (R-03). Below the widest
+            step there is no room for a rail, and an earlier revision floated a
+            card over the graph instead — measured at a 946px pane it covered
+            44% of the canvas and sat on the nodes, which is the overlap
+            complaint this redesign exists to fix, reintroduced by the fix. A
+            popover shows the same legend on demand, covers nothing when closed,
+            and is dismissible by construction. It retires once the rail is
+            permanent. */}
+        <LegendPopover model={model} mode={mode} facets={facets} onChange={onChange} />
       </div>
 
       {active && (
@@ -227,6 +238,48 @@ export function GraphFacetStrip({ model, mode, facets, onChange, passing, total,
         </div>
       )}
     </div>
+  );
+}
+
+/** The legend, reachable from the filter bar wherever the rail has no room. */
+function LegendPopover({
+  model,
+  mode,
+  facets,
+  onChange,
+}: {
+  model: GraphModel;
+  mode: GraphMode;
+  facets: FacetState;
+  onChange: (next: FacetState) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="br-facet br-facet-legend biorouter-focus-surface ml-auto inline-flex h-control-md flex-none items-center gap-2 rounded-element px-2.5 text-label transition-[color,background-color,border-color]"
+          aria-expanded={open}
+          data-testid="knowledge-graph-legend-trigger"
+        >
+          Legend
+          <ChevronDown
+            aria-hidden="true"
+            className={`h-icon-row w-icon-row shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+          />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 p-0">
+        <GraphLegend
+          variant="popover"
+          model={model}
+          mode={mode}
+          facets={facets}
+          onChange={onChange}
+        />
+      </PopoverContent>
+    </Popover>
   );
 }
 

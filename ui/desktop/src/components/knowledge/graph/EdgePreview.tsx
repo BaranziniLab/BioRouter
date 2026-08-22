@@ -144,7 +144,10 @@ export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose
         ) : (
           // An endpoint outside this bundle has no node and therefore no mark.
           // Drawing a default one would assert a type it does not have.
-          <span aria-hidden="true" className="h-2 w-2 flex-none rounded-full bg-background-medium" />
+          <span
+            aria-hidden="true"
+            className="h-2 w-2 flex-none rounded-full bg-background-medium"
+          />
         )}
         <span className="min-w-0 truncate text-body">{label(id)}</span>
       </>

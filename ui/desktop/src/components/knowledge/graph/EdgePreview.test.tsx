@@ -109,9 +109,9 @@ describe('EdgePreview', () => {
     const { container } = renderEdge(edge);
     const claim = within(screen.getByRole('region', { name: 'Claim' }));
     const paths = Array.from(
-      (claim.getByText('Metformin').closest('[class*="items-center"]') ?? container).querySelectorAll(
-        'svg path'
-      )
+      (
+        claim.getByText('Metformin').closest('[class*="items-center"]') ?? container
+      ).querySelectorAll('svg path')
     );
     // Not "a colour" — the CANVAS's colour and shape for Metformin, resolved
     // through the one function all three surfaces call.

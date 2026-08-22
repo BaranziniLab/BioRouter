@@ -22,7 +22,13 @@ describe('KbTierControl', () => {
     const user = userEvent.setup();
     render(
       <KbTierControl
-        kb={{ id: 'omop', name: 'OMOP Cohort', tier: 'private', pageCount: 214, rawSourceCount: 37 }}
+        kb={{
+          id: 'omop',
+          name: 'OMOP Cohort',
+          tier: 'private',
+          pageCount: 214,
+          rawSourceCount: 37,
+        }}
         onSetTier={onSetTier}
       />
     );
@@ -78,7 +84,10 @@ describe('KbTierControl', () => {
   it('says what it does not know rather than counting to zero', async () => {
     const user = userEvent.setup();
     render(
-      <KbTierControl kb={{ id: 'omop', name: 'OMOP Cohort', tier: 'private' }} onSetTier={onSetTier} />
+      <KbTierControl
+        kb={{ id: 'omop', name: 'OMOP Cohort', tier: 'private' }}
+        onSetTier={onSetTier}
+      />
     );
     await user.click(screen.getByRole('button', { name: /Make this knowledge base public/ }));
     expect(screen.queryByText(/0 pages/)).toBeNull();
@@ -88,7 +97,10 @@ describe('KbTierControl', () => {
   /** The chip itself, which is how the tier is visible without opening anything. */
   it('shows the tier on the base it is attached to', () => {
     const { rerender } = render(
-      <KbTierControl kb={{ id: 'omop', name: 'OMOP Cohort', tier: 'private' }} onSetTier={onSetTier} />
+      <KbTierControl
+        kb={{ id: 'omop', name: 'OMOP Cohort', tier: 'private' }}
+        onSetTier={onSetTier}
+      />
     );
     expect(screen.getByTestId('kb-tier-chip')).toHaveTextContent(/private/i);
     rerender(
