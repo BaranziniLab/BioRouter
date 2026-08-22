@@ -56,6 +56,13 @@ describe('a CDN-mode Mermaid figure in a real browser', () => {
 
   beforeAll(async () => {
     browser = await launchChromium();
+    if (!browser) {
+      // Say so out loud: a silently skipped browser test reads as a passing one.
+      console.warn(
+        'No Playwright Chromium build found — skipping the artifact CSP tests. ' +
+          'Run `npx playwright install chromium` to enable them.'
+      );
+    }
   }, 120_000);
 
   afterAll(async () => {
@@ -81,24 +88,25 @@ describe('a CDN-mode Mermaid figure in a real browser', () => {
       readFileSync(CDN_FIXTURE, 'utf-8'),
       fetchVendored
     );
-    expect(prepared).not.toContain('cdn.jsdelivr.net');
 
+    // The browser assertions come first deliberately: what this guards is "the
+    // library never becomes available in the renderer", so that is what a
+    // regression should report — not a string match on the document.
     const page = await open(prepared);
     try {
       await expect
         .poll(
           () => page.evaluate(() => typeof (window as unknown as Record<string, unknown>).mermaid),
-          {
-            timeout: 20_000,
-          }
+          { timeout: 15_000 }
         )
         .toBe('object');
-      await page.waitForSelector('#mermaidTarget svg', { timeout: 20_000 });
+      await page.waitForSelector('#mermaidTarget svg', { timeout: 15_000 });
       expect(await page.locator('#mermaidTarget svg').count()).toBe(1);
       expect(await page.locator('[role="alert"]').count()).toBe(0);
     } finally {
       await page.close();
     }
+    expect(prepared).not.toContain('cdn.jsdelivr.net');
   }, 60_000);
 
   it('fails when the library is emitted as an ESM import the rewriter cannot reach', async (ctx) => {

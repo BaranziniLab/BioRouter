@@ -66,14 +66,16 @@ fn html_of(result: &CallToolResult) -> String {
 
 /// The URL list the desktop rewriter iterates, read from its own source.
 fn desktop_asset_urls(module: &str) -> Vec<String> {
-    let start = module
-        .find("export const ARTIFACT_CDN_ASSETS = [")
-        .expect("ARTIFACT_CDN_ASSETS declaration");
-    let body = &module[start..];
-    let end = body.find("\n];").expect("end of ARTIFACT_CDN_ASSETS");
+    let body = module
+        .split_once("export const ARTIFACT_CDN_ASSETS = [")
+        .expect("ARTIFACT_CDN_ASSETS declaration")
+        .1
+        .split_once("\n];")
+        .expect("end of ARTIFACT_CDN_ASSETS")
+        .0;
     Regex::new(r"'(https://[^']+)'")
         .unwrap()
-        .captures_iter(&body[..end])
+        .captures_iter(body)
         .map(|c| c[1].to_string())
         .collect()
 }
@@ -85,13 +87,17 @@ fn desktop_asset_urls(module: &str) -> Vec<String> {
 /// Substituting the escaped URL and unescaping the literal's doubled backslashes
 /// yields the same pattern the renderer actually applies.
 fn rewriter_pattern(module: &str, function: &str, url: &str) -> Regex {
-    let start = module
-        .find(&format!("export const {function} = "))
-        .unwrap_or_else(|| panic!("{function} declaration"));
-    let body = &module[start..];
-    let open = body.find("new RegExp(`").expect("RegExp template") + "new RegExp(`".len();
-    let close = open + body[open..].find('`').expect("end of RegExp template");
-    let source = body[open..close]
+    let template = module
+        .split_once(&format!("export const {function} = "))
+        .unwrap_or_else(|| panic!("{function} declaration"))
+        .1
+        .split_once("new RegExp(`")
+        .expect("RegExp template")
+        .1
+        .split_once('`')
+        .expect("end of RegExp template")
+        .0;
+    let source = template
         .replace("${escapeRegExp(url)}", &regex::escape(url))
         .replace("\\\\", "\\");
     Regex::new(&source).unwrap_or_else(|e| panic!("{function} is not a valid pattern: {e}"))
