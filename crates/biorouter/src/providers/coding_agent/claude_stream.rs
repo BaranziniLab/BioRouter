@@ -52,6 +52,14 @@
 //! records which indices opened as `tool_use` and diverts every later frame that
 //! names one.
 //!
+//! Only `tool_use` is diverted, and only `tool_use` needs to be: a census of all
+//! 14 recorded cells finds exactly three content-block types on the wire (31
+//! `tool_use`, 29 `text`, 4 `thinking`), and the decoder mints a `ToolRequest`
+//! for `tool_use` alone. A future server-side block type (`server_tool_use`,
+//! `web_search_tool_result`) forwarded here would be ignored by the decoder
+//! rather than dispatched — it would show as a rise in nothing, which is why the
+//! unknown-*event* counter below exists to catch drift the type list cannot.
+//!
 //! # Rule 2: block indices are scoped to their message, and must be reset
 //!
 //! A turn contains several API messages, and each restarts its block numbering
@@ -149,6 +157,11 @@ pub(crate) enum RoutedFrame {
     /// Phase 3 turns these into provider-executed tool cards; phase 1 ignores
     /// them, which is why they are parked in a clearly-typed value rather than
     /// dropped on the floor.
+    ///
+    /// `#[allow(dead_code)]` on the *variant*: a phase-1 caller matches
+    /// `Tool(_)`, which makes the payload an unread field and, under the crate's
+    /// `-D warnings`, an error. Measured, not assumed.
+    #[allow(dead_code)]
     Tool(ToolBlockEvent),
     /// `system/init`, which reports how the child authenticated.
     Init {

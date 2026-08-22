@@ -41,9 +41,14 @@ use async_trait::async_trait;
 use rmcp::model::{Role, Tool};
 use serde_json::{json, Value};
 
-use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::base::{
+    ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderStreamItem,
+    ProviderUsage, Usage,
+};
 use super::coding_agent::appserver::{AppServer, Inbound};
-use super::coding_agent::{self, bridge, discovery, env as agent_env, transcript, CodingAgentKind};
+use super::coding_agent::{
+    self, bridge, codex_stream, discovery, env as agent_env, transcript, CodingAgentKind,
+};
 use super::errors::ProviderError;
 use crate::agents::effort::ReasoningEffort;
 use crate::config::search_path::SearchPaths;
@@ -400,17 +405,41 @@ impl CodexProvider {
     /// Elicitation is accepted because that is how an MCP tool call Biorouter
     /// itself is serving gets its go-ahead — and those run
     /// in Biorouter's dispatcher, behind Biorouter's gates.
+    /// ⚠ **Each of these five methods wants a DIFFERENT response shape**, and
+    /// they are not interchangeable. Every one of them used to be answered with
+    /// `{"decision": "denied"}`, and `denied` is not a valid value for any of
+    /// them — verified against `codex app-server generate-json-schema` (0.147.0):
+    ///
+    /// | Method | Response type | Refusal |
+    /// |---|---|---|
+    /// | `item/commandExecution/requestApproval` | `CommandExecutionApprovalDecision` | `"decline"` (`accept`/`acceptForSession`/`acceptWithExecpolicyAmendment`/`applyNetworkPolicyAmendment`/`decline`/`cancel`) |
+    /// | `item/fileChange/requestApproval` | `FileChangeApprovalDecision` | `"decline"` |
+    /// | `item/permissions/requestApproval` | **not a decision at all** — `{permissions, scope?, strictAutoReview?}` | an empty `GrantedPermissionProfile`: grant nothing |
+    /// | `execCommandApproval`, `applyPatchApproval` (legacy) | `ReviewDecision` | the *object* form `{"denied": {"rejection": …}}` (the bare string is `"abort"`, which also ends the turn) |
+    ///
+    /// `decline` rather than `cancel`, and `denied` rather than `abort`, on
+    /// purpose: both refuse the action while letting the turn continue, so the
+    /// child can say why it could not proceed instead of the turn dying silently.
     fn decide(method: &str) -> Value {
         match method {
             "mcpServer/elicitation/request" => json!({ "action": "accept", "content": {} }),
-            "item/commandExecution/requestApproval"
-            | "item/fileChange/requestApproval"
-            | "item/permissions/requestApproval"
-            | "applyPatchApproval"
-            | "execCommandApproval" => json!({ "decision": "denied" }),
+            "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+                json!({ "decision": "decline" })
+            }
+            // Granting no additional permissions IS the refusal here; there is no
+            // decision field to say no with.
+            "item/permissions/requestApproval" => json!({ "permissions": {} }),
+            "applyPatchApproval" | "execCommandApproval" => json!({
+                "decision": {
+                    "denied": {
+                        "rejection": "Biorouter runs the child read-only; tools run on \
+                                      Biorouter's side of the bridge instead."
+                    }
+                }
+            }),
             // An unrecognised request still has to be answered or the turn stalls
-            // forever. Refuse rather than guess.
-            _ => json!({ "decision": "denied" }),
+            // forever. Refuse rather than guess, in the commonest shape.
+            _ => json!({ "decision": "decline" }),
         }
     }
 
@@ -560,6 +589,165 @@ impl CodexProvider {
         outcome
     }
 
+    /// The streaming turn: handshake, thread, turn, then pump events out as they
+    /// arrive rather than folding them into one final answer.
+    ///
+    /// Structurally the same as [`Self::turn_on`] up to `turn/start`; from there
+    /// every notification goes through [`codex_stream::CodexDecoder`] and each
+    /// decoded event is sent on immediately.
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_turn(
+        server: &AppServer,
+        model: &ModelConfig,
+        system: &str,
+        prompt: &str,
+        bridge_url: Option<&str>,
+        tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+    ) -> Result<(), ProviderError> {
+        server
+            .request(
+                "initialize",
+                json!({
+                    "clientInfo": { "name": "biorouter", "version": env!("CARGO_PKG_VERSION") },
+                    "capabilities": { "experimentalApi": true }
+                }),
+            )
+            .await?;
+        server.notify("initialized", Value::Null).await?;
+
+        // Before `thread/start`, so a metered run is refused without sending the
+        // user's prompt anywhere or costing a token.
+        Self::assert_subscription(server).await?;
+
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| ".".to_string());
+        let thread = server
+            .request(
+                "thread/start",
+                Self::thread_params(system, &cwd, &model.model_name, bridge_url),
+            )
+            .await?;
+        let thread_id = thread
+            .get("thread")
+            .and_then(|t| t.get("id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ProviderError::RequestFailed(
+                    "codex app-server did not return a thread id".to_string(),
+                )
+            })?
+            .to_string();
+
+        let start = server.request(
+            "turn/start",
+            Self::turn_params(&thread_id, prompt, model.reasoning_effort, &model.model_name),
+        );
+        let pump = Self::stream_pump(server, &model.model_name, tx);
+
+        // The ceiling, inside the stream: the blocking path wraps this same join
+        // but that path is not reached here.
+        let (started, pumped) =
+            tokio::time::timeout(TURN_TIMEOUT, async { tokio::join!(start, pump) })
+                .await
+                .map_err(|_| {
+                    ProviderError::ExecutionError(format!(
+                        "the Codex turn did not finish within {}s and was stopped",
+                        TURN_TIMEOUT.as_secs()
+                    ))
+                })?;
+        started?;
+        pumped
+    }
+
+    /// Read notifications, decode them, and forward each decoded event.
+    async fn stream_pump(
+        server: &AppServer,
+        model_name: &str,
+        tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+    ) -> Result<(), ProviderError> {
+        let mut decoder = codex_stream::CodexDecoder::new();
+        let mut streamed_anything = false;
+
+        while let Some(message) = server.next_inbound().await {
+            match message {
+                Inbound::Request { id, method, .. } => {
+                    server.respond(&id, Self::decide(&method)).await?;
+                }
+                Inbound::Notification { method, params } => {
+                    for event in decoder.push(&method, &params) {
+                        match event {
+                            codex_stream::CodexEvent::TextDelta { item_id, text }
+                            | codex_stream::CodexEvent::TextComplete { item_id, text } => {
+                                streamed_anything = true;
+                                // The item id becomes the message id so every
+                                // chunk of one answer merges into a single row
+                                // instead of one row per token.
+                                let mut message = Message::new(
+                                    Role::Assistant,
+                                    chrono::Utc::now().timestamp(),
+                                    vec![MessageContent::text(text)],
+                                );
+                                message.id = Some(item_id);
+                                if tx.send(Ok((Some(message), None, None))).is_err() {
+                                    return Ok(());
+                                }
+                            }
+                            codex_stream::CodexEvent::ReasoningDelta { item_id, text } => {
+                                let mut message = Message::new(
+                                    Role::Assistant,
+                                    chrono::Utc::now().timestamp(),
+                                    // No signature: Codex does not sign its
+                                    // reasoning, and a blank one keeps this off
+                                    // the signed-turn persistence path.
+                                    vec![MessageContent::thinking(text, "")],
+                                );
+                                message.id = Some(item_id);
+                                if tx.send(Ok((Some(message), None, None))).is_err() {
+                                    return Ok(());
+                                }
+                            }
+                            codex_stream::CodexEvent::Terminal(terminal) => {
+                                if let Some(error) = terminal.error {
+                                    return Err(ProviderError::RequestFailed(format!(
+                                        "{error}{}",
+                                        unknown_model_hint(model_name)
+                                    )));
+                                }
+                                // The authoritative usage goes last, so it is the
+                                // snapshot the agent keeps.
+                                let usage = decoder
+                                    .usage()
+                                    .map(|u| u.usage.clone())
+                                    .unwrap_or_default();
+                                let mut usage = ProviderUsage::new(model_name.to_string(), usage);
+                                usage.provider = Some(KIND.provider_id().to_string());
+                                let _ = tx.send(Ok((None, Some(usage), None)));
+                                return Ok(());
+                            }
+                            // Parked for phases 3 and 4; notices are advisory and
+                            // never end a turn.
+                            codex_stream::CodexEvent::Tool(_)
+                            | codex_stream::CodexEvent::Usage(_)
+                            | codex_stream::CodexEvent::Notice { .. }
+                            | codex_stream::CodexEvent::Ignored => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        // stdout closed without a terminal frame.
+        if streamed_anything {
+            Ok(())
+        } else {
+            Err(ProviderError::RequestFailed(format!(
+                "the Codex app server exited before finishing the turn{}",
+                server.stderr_suffix().await
+            )))
+        }
+    }
+
     /// Read notifications until the turn ends, answering server requests as they
     /// arrive.
     async fn pump(server: &AppServer) -> Result<TurnOutcome, ProviderError> {
@@ -693,6 +881,85 @@ impl Provider for CodexProvider {
         );
         usage.provider = Some(KIND.provider_id().to_string());
         Ok((message, usage))
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+
+    /// Stream one turn: text appears as the model writes it.
+    ///
+    /// The app server already sends everything needed for this — the previous
+    /// implementation simply threw it away, keeping only the one `item/completed`
+    /// frame that arrives after the model has finished. [`codex_stream`] decodes
+    /// the delta notifications instead; this method owns the process, the
+    /// handshake and the pump.
+    ///
+    /// The same three rules as the Claude path apply, for the same reasons:
+    /// the bridge URL is read **here**, at construction, because the task-local
+    /// scope is gone once the stream is polled; the app server is owned by a task
+    /// the stream aborts on drop, so a cancelled turn cannot leave one running
+    /// with the user's credential; and the turn ceiling lives inside the stream,
+    /// because the blocking path's timeout wraps a join this path never reaches.
+    async fn stream(
+        &self,
+        system: &str,
+        messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        let prompt = transcript::flatten(messages).ok_or_else(|| {
+            ProviderError::RequestFailed("there is no user message for Codex to answer".to_string())
+        })?;
+
+        // Read INSIDE the scope, before the stream exists. `thread_params` needs
+        // it, and by the time the stream is polled `active_bridge_url()` is None.
+        let bridge_url = bridge::active_bridge_url();
+        let model_config = self.model.clone();
+        let command = self.app_server_command();
+        // Owned copies: the pump outlives this call's borrows.
+        let system = system.to_string();
+
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<Result<ProviderStreamItem, ProviderError>>();
+
+        let pump = tokio::spawn(async move {
+            let server = match AppServer::spawn(command).await {
+                Ok(server) => server,
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
+            };
+
+            let outcome = Self::stream_turn(
+                &server,
+                &model_config,
+                &system,
+                &prompt,
+                bridge_url.as_deref(),
+                &tx,
+            )
+            .await;
+
+            if let Err(e) = outcome {
+                let _ = tx.send(Err(e));
+            }
+
+            // Always reap: a leaked `codex app-server` is a live process holding
+            // the user's credential.
+            server.shutdown().await;
+        });
+
+        let guard = coding_agent::AbortOnDrop(pump.abort_handle());
+        let stream = async_stream::try_stream! {
+            let _guard = guard;
+            let mut rx = rx;
+            while let Some(item) = rx.recv().await {
+                yield item?;
+            }
+        };
+
+        Ok(Box::pin(stream))
     }
 
     /// Ask the CLI whether this provider can run at all. Spawns, so never call it
@@ -1121,23 +1388,60 @@ for line in sys.stdin:
 
     /// Every approval that would let the child act on the machine is refused;
     /// elicitation — how a Biorouter-served MCP tool call is cleared — is accepted.
+    ///
+    /// ⚠ This test used to assert `decision == "denied"` for all five methods.
+    /// That is not a valid value for **any** of them, so the refusals were being
+    /// sent in a shape the app server cannot parse, and the test agreed with the
+    /// bug rather than catching it. Each refusal below is now the one its own
+    /// response schema defines (`codex app-server generate-json-schema`, 0.147.0)
+    /// — which is three different shapes, not one.
     #[test]
     fn only_elicitation_is_accepted() {
         assert_eq!(
             CodexProvider::decide("mcpServer/elicitation/request")["action"],
             "accept"
         );
+
+        // `*ApprovalDecision`: a plain string. `decline` refuses the action and
+        // lets the turn continue; `cancel` would kill the turn.
         for refused in [
             "item/commandExecution/requestApproval",
             "item/fileChange/requestApproval",
-            "item/permissions/requestApproval",
-            "applyPatchApproval",
-            "execCommandApproval",
         ] {
             assert_eq!(
                 CodexProvider::decide(refused)["decision"],
-                "denied",
-                "{refused} must be refused: the child has no authority to act"
+                "decline",
+                "{refused} takes a *ApprovalDecision, whose refusal is `decline`"
+            );
+        }
+
+        // Not a decision at all: the response IS the permission grant, so
+        // granting nothing is how it is refused.
+        let permissions = CodexProvider::decide("item/permissions/requestApproval");
+        assert!(
+            permissions
+                .get("permissions")
+                .and_then(Value::as_object)
+                .is_some_and(serde_json::Map::is_empty),
+            "item/permissions/requestApproval takes {{permissions: GrantedPermissionProfile}} \
+             — an empty profile grants nothing, which is the refusal; a `decision` \
+             field here is not part of the schema at all (got {permissions})"
+        );
+
+        // Legacy `ReviewDecision`: the refusal that continues the turn is the
+        // OBJECT form. The bare string `denied` is not in the enum.
+        for legacy in ["applyPatchApproval", "execCommandApproval"] {
+            let answer = CodexProvider::decide(legacy);
+            assert!(
+                answer["decision"]["denied"]["rejection"].is_string(),
+                "{legacy} takes a ReviewDecision, whose continue-the-turn refusal \
+                 is {{denied: {{rejection}}}} (got {answer})"
+            );
+            assert!(
+                !answer["decision"].is_string(),
+                "{legacy} must not be answered with a bare string — `denied` is not \
+                 one of the enum's string forms (those are `approved`, \
+                 `approved_for_session`, `timed_out`, `abort`)"
             );
         }
     }
@@ -1312,5 +1616,179 @@ for line in sys.stdin:
         assert!(m.config_keys[0].required);
         assert!(!m.config_keys[0].secret);
         assert_eq!(m.config_keys[0].default.as_deref(), Some("codex"));
+    }
+}
+
+/// Phase 2 end-to-end: the Codex streaming path, driven by a fake `codex
+/// app-server` that emits the delta notifications a real one does.
+///
+/// The unit tests in `codex_stream` prove the decoder against recorded frames;
+/// these prove the wiring around it — the handshake, the pump, the message ids
+/// that make chunks merge into one row, and the usage attribution.
+#[cfg(all(test, unix))]
+mod streaming_tests {
+    use super::*;
+    use futures::StreamExt;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A stand-in for the `codex` binary. It ignores the `app-server` argument
+    /// and speaks just enough of the protocol to carry one streamed turn.
+    ///
+    /// `TOKEN_USAGE_FRAMES` is the interesting part: two snapshots, exactly as a
+    /// tool-using turn produces, so the test can prove the provider reports the
+    /// cumulative `total` and not the per-request `last`.
+    fn fake_codex() -> tempfile::NamedTempFile {
+        let script = r#"#!/usr/bin/env python3
+import sys, json
+
+def send(obj):
+    print(json.dumps(obj), flush=True)
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    m = json.loads(line)
+    method = m.get("method")
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":m["id"],"result":{"codexHome":"/tmp"}})
+    elif method == "account/read":
+        send({"jsonrpc":"2.0","id":m["id"],
+              "result":{"account":{"type":"chatgpt","planType":"pro"},
+                        "requiresOpenaiAuth":True}})
+    elif method == "thread/start":
+        send({"jsonrpc":"2.0","id":m["id"],"result":{"thread":{"id":"t-1"}}})
+    elif method == "turn/start":
+        send({"jsonrpc":"2.0","method":"item/started",
+              "params":{"threadId":"t-1","turnId":"turn-1",
+                        "item":{"id":"msg_1","type":"agentMessage","text":""}}})
+        for piece in ["Hello", ", ", "world"]:
+            send({"jsonrpc":"2.0","method":"item/agentMessage/delta",
+                  "params":{"threadId":"t-1","turnId":"turn-1",
+                            "itemId":"msg_1","delta":piece}})
+        send({"jsonrpc":"2.0","method":"item/completed",
+              "params":{"threadId":"t-1","turnId":"turn-1",
+                        "item":{"id":"msg_1","type":"agentMessage",
+                                "text":"Hello, world"}}})
+        # First model request.
+        send({"jsonrpc":"2.0","method":"thread/tokenUsage/updated",
+              "params":{"threadId":"t-1","tokenUsage":{
+                  "last":{"inputTokens":100,"cachedInputTokens":0,
+                          "outputTokens":10,"totalTokens":110},
+                  "total":{"inputTokens":100,"cachedInputTokens":0,
+                           "outputTokens":10,"totalTokens":110}}}})
+        # Second model request: `last` resets, `total` accumulates. Reading
+        # `last` here would undercount the turn by the first request.
+        send({"jsonrpc":"2.0","method":"thread/tokenUsage/updated",
+              "params":{"threadId":"t-1","tokenUsage":{
+                  "last":{"inputTokens":200,"cachedInputTokens":0,
+                          "outputTokens":20,"totalTokens":220},
+                  "total":{"inputTokens":300,"cachedInputTokens":0,
+                           "outputTokens":30,"totalTokens":330}}}})
+        send({"jsonrpc":"2.0","method":"turn/completed",
+              "params":{"threadId":"t-1","turn":{"id":"turn-1","status":"completed"}}})
+        send({"jsonrpc":"2.0","id":m["id"],"result":{}})
+"#;
+        let mut file = tempfile::NamedTempFile::new().expect("temp script");
+        file.write_all(script.as_bytes()).unwrap();
+        file.flush().unwrap();
+        let mut perms = std::fs::metadata(file.path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(file.path(), perms).unwrap();
+        file
+    }
+
+    fn provider_running(script: &tempfile::NamedTempFile) -> CodexProvider {
+        CodexProvider {
+            command: script.path().to_path_buf(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
+            name: KIND.provider_id().to_string(),
+        }
+    }
+
+    async fn drive() -> (Vec<Message>, Vec<ProviderUsage>) {
+        let script = fake_codex();
+        let provider = provider_running(&script);
+        let messages = vec![Message::user().with_text("hello")];
+
+        let stream = provider
+            .stream("SYS", &messages, &[])
+            .await
+            .expect("the stream should open");
+        futures::pin_mut!(stream);
+
+        let mut out_messages = Vec::new();
+        let mut usages = Vec::new();
+        while let Some(item) = stream.next().await {
+            let (message, usage, _) = item.expect("no item should error");
+            if let Some(message) = message {
+                out_messages.push(message);
+            }
+            if let Some(usage) = usage {
+                usages.push(usage);
+            }
+        }
+        (out_messages, usages)
+    }
+
+    /// Text arrives as it is written, and every chunk carries the same id so the
+    /// store merges them into one row instead of one row per token.
+    #[tokio::test]
+    async fn a_turn_streams_its_text_in_parts_under_one_message_id() {
+        let (messages, _) = drive().await;
+
+        assert!(
+            messages.len() > 1,
+            "the answer must arrive in parts (got {} message(s))",
+            messages.len()
+        );
+
+        let ids: std::collections::BTreeSet<_> =
+            messages.iter().filter_map(|m| m.id.clone()).collect();
+        assert_eq!(
+            ids.len(),
+            1,
+            "every chunk of one answer must share the item id as its message id, \
+             or persistence fragments into a row per delta (got {ids:?})"
+        );
+
+        let text: String = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|c| match c {
+                MessageContent::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            text, "Hello, world",
+            "the streamed pieces must reconstruct the answer exactly once — a \
+             completed frame that re-emitted the full text would double it"
+        );
+    }
+
+    /// The turn's usage is the cumulative `total` of the last snapshot.
+    ///
+    /// The fake sends two snapshots, as a turn that makes two model requests
+    /// does. Reading the final `last` (220) instead of the final `total` (330)
+    /// undercounts by the whole first request — silently, and by more the more
+    /// tools the turn used.
+    #[tokio::test]
+    async fn usage_is_the_cumulative_total_not_the_last_request() {
+        let (_, usages) = drive().await;
+
+        let last = usages.last().expect("a terminal usage item");
+        assert_eq!(
+            last.usage.total_tokens,
+            Some(330),
+            "usage must come from tokenUsage.total (330), not tokenUsage.last (220)"
+        );
+        assert_eq!(
+            last.provider.as_deref(),
+            Some(KIND.provider_id()),
+            "and must be attributed to this provider, or a subscription turn is \
+             priced as an API call"
+        );
     }
 }
