@@ -94,13 +94,39 @@ So the two are not duplicates. The transcript one is *intermittent and per-step*
 one is *continuous and turn-scoped*. They only look identical because they were drawn
 identically. The fix is not to remove one — it is to stop them pretending to be the same thing.
 
+## What replicating the composer changed
+
+The first pass sketched the composer rather than reproducing it. Drawing it from the
+source — `rounded-container` at `py-2.5 pr-3 pl-4`, a 54 px card, a 32×32
+`rounded-element` Send/Stop box, three rows 6 px apart, and the one ink column the
+differing row paddings exist to preserve (folder 236 px / placeholder 237 px /
+reasoning glyph 236 px) — changed two of the six directions and added one finding.
+
+**The composer already carries two accent signals during a turn.** The card's border is
+coral *at rest*, because the composer autofocuses; and Stop passes no `variant`, so it
+takes `default` — a solid accent square. The breathing dot is the third object in that
+box and the only one in neutral ink. The composer is not short of signals; it is short
+of *distinguishable* ones.
+
+That has two consequences:
+
+- **A had to change mechanism.** An accent arc travelling over an accent edge is
+  invisible. The working state now *modulates* the edge it already has: the whole
+  border drops to 32 % for the duration of the turn, and a full-strength segment
+  travels round it. Same hue, same 1 px, same border — the only variable is where the
+  ink is concentrated, which is the one thing focus never does. It still has to survive
+  sitting 12 px from the accent-filled Stop button.
+- **E got worse, not better.** An accent arc orbiting a solid accent square has almost
+  no contrast to work with; it would need a third colour, which is a new signal rather
+  than a reuse. The earlier mock drew Stop as a grey circle, which flattered the idea.
+
 ## The six directions
 
 Full specimens, with live motion and per-option CSS, are in the studio page. Summarised:
 
 | | Direction | Height | Kills the duplicate | Ends the two-grid clash | Keeps the label |
 |---|---|---|---|---|---|
-| **A** | **Live edge** — the composer's own 1 px border carries a slow travelling accent arc | 0 px | yes | n/a — nothing to align | no |
+| **A** | **Live edge** — the composer's own 1 px border dims to 32 % and a full-strength segment travels round it | 0 px | yes | n/a — nothing to align | no |
 | **B** | **Hairline sweep** — the row becomes a 1 px rule running the existing `.br-progress__fill--indeterminate` | ~30 px | yes | yes | yes |
 | **C** | **The mark is the clock** — the BR monogram's split navy/coral underline travels | ~34 px | yes | no | yes |
 | **D** | **Type carries it** — no dot; a slow light sweep across the label itself | ~26 px | yes | yes | yes |
@@ -115,10 +141,11 @@ Two carry blocking objections worth recording rather than rediscovering:
   gradients without a reason grounded in state." An animating logo is what that decision closed.
   The mark is also `<text>` in Inter measured at runtime with `getBBox`, so animating it means
   animating around a live measurement, untestable in jsdom.
-- **E collides with an existing animation.** Pressing Stop already fires a one-shot `animate-ping`
-  for `STOP_ACK_MS` = 450 ms to say "received" (`ChatInput.tsx:2524`), deliberately distinct from
-  looping pulses that mean "still working". An orbiting ring would sit on top of the
-  acknowledgement at the moment it has to read clearly.
+- **E collides twice.** Pressing Stop already fires a one-shot `animate-ping` for
+  `STOP_ACK_MS` = 450 ms to say "received" (`ChatInput.tsx:2524`), deliberately distinct from
+  looping pulses that mean "still working" — an orbiting ring sits on top of the
+  acknowledgement at the moment it has to read clearly. And the button is already
+  accent-filled, so the orbit has no contrast to work with.
 
 ## Recommendation
 

@@ -439,47 +439,131 @@ section > h2 {
   font-size: 12px; color: color-mix(in srgb, var(--text-default) 80%, transparent);
 }
 
-/* The composer card.
-   ChatInput.tsx:2193 → `relative flex min-w-0 flex-col rounded-container py-2.5 pr-3 pl-4`
-                      + `bg-background-default border border-border-subtle/60` */
-.card {
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE COMPOSER, REPLICATED
+   Every number below is read from the source, not eyeballed.
+
+   Shell   ChatInput.tsx:2105  flex flex-col gap-1.5            -> 6px between rows
+   Row 1   ChatInput.tsx:2150  justify-between gap-4 pl-3 pr-2.5
+   Row 2   ChatInput.tsx:2193  rounded-container py-2.5 pr-3 pl-4
+                               bg-background-default
+                               border border-border-subtle/60
+                               :has(textarea:focus) -> border-accent
+   Row 3   ChatInput.tsx:2711  items-center pr-2.5 pl-3.5
+                               left  gap-3.5   right ml-auto gap-1.5 pl-2
+
+   THE INK COLUMN is the invariant the rows exist to preserve: the folder glyph
+   (row 1, pl-3 + the chip's own 4px), the placeholder (the card's pl-4 + 1px
+   border, textarea at px-0) and the reasoning glyph (row 3, pl-3.5 + the chip's
+   2px) all land on ONE column. The row paddings differ precisely so the ink
+   does not. ChatInput.tsx:2140-2149 and :2700-2708 carry the measurement.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.composer { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+
+/* ── row 1 ─────────────────────────────────────────────────────────────── */
+.c-ctx {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding-left: 12px; padding-right: 10px;
+  min-width: 0;
+}
+.c-ctx-l { display: flex; align-items: center; min-width: 0; }
+.c-ctx-r { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
+
+/* every control in rows 1 and 3 is a 28px-high chip with its own hit area */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 4px;
+  border-radius: var(--radius-element);
+  color: var(--text-muted);
+  font-size: 12px; line-height: 16px;
+  white-space: nowrap;
+}
+.chip svg { flex-shrink: 0; display: block; }
+.chip .ct { font-variant-numeric: tabular-nums; }
+
+/* ── row 2: the card ───────────────────────────────────────────────────── */
+.c-card {
   position: relative;
-  display: flex; flex-direction: column;
-  border-radius: var(--radius-container);
-  padding: 10px 12px 10px 16px;
+  display: flex; flex-direction: column; min-width: 0;
+  border-radius: var(--radius-container);          /* 12px */
+  padding: 10px 12px 10px 16px;                    /* py-2.5 pr-3 pl-4 */
   background: var(--background-default);
   border: 1px solid color-mix(in srgb, var(--border-subtle) 60%, transparent);
   transition: border-color var(--dur-fast) var(--ease-out),
               background-color var(--dur-fast) var(--ease-out);
 }
-.card .line { display: flex; align-items: flex-end; gap: 10px; }
-.card .ta {
-  flex: 1; min-width: 0;
-  font-size: 14px; line-height: 20px;
-  color: var(--text-default);
-  padding: 6px 0;
-}
-.card .ta.ph { color: color-mix(in srgb, var(--text-muted) 75%, transparent); }
-.send {
-  flex-shrink: 0;
-  height: 32px; width: 32px; border-radius: 9999px;
-  background: var(--background-accent); color: var(--text-on-accent);
-  display: flex; align-items: center; justify-content: center;
-  border: 0;
-}
-.send.stop { background: var(--background-medium); color: var(--text-default); }
-.send svg { width: 14px; height: 14px; display: block; }
+/* The composer AUTOFOCUSES, so this is the resting appearance, not a state you
+   have to go looking for. ChatInput.tsx:2232-2240 / main.css:1859. */
+.c-card.focus { border-color: var(--border-accent); }
 
-/* the controls row under the card */
-.ctl {
-  display: flex; align-items: center; gap: 10px;
-  margin-top: 8px; padding: 0 2px;
-  font-size: 11.5px; color: var(--text-subtle);
+.c-line { display: flex; align-items: flex-end; gap: 10px; }
+.c-ta {
+  flex: 1; min-width: 0;
+  padding: 6px 0;                                   /* py-1.5, px-0 */
+  font-size: 14px; line-height: 20px;               /* text-body */
+  color: var(--text-default);
 }
-.ctl .chip {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 3px 7px; border-radius: 6px;
+.c-ta.ph { color: var(--text-muted); }
+
+/* Send and Stop are the SAME 32x32 rounded-element box and swap in place.
+   button.tsx:111 -> w-8 h-8 p-0 rounded-element (8px, NOT a circle). */
+.c-send {
+  flex-shrink: 0;
+  width: 32px; height: 32px; padding: 0;
+  border: 0; border-radius: var(--radius-element);
+  display: flex; align-items: center; justify-content: center;
 }
+/* variant="secondary" — what an empty composer shows */
+.c-send.rest { background: var(--background-medium); color: var(--text-default); }
+/* variant="default" — Stop takes no variant prop, so it is ACCENT-filled */
+.c-send.stop { background: var(--background-accent); color: var(--text-on-accent); }
+.c-send svg { width: 16px; height: 16px; display: block; }
+
+/* ── row 3 ─────────────────────────────────────────────────────────────── */
+.c-bar {
+  position: relative;
+  display: flex; align-items: center; min-width: 0;
+  padding-left: 14px; padding-right: 10px;          /* pl-3.5 pr-2.5 */
+}
+.c-bar-l { display: flex; flex: 1; min-width: 0; align-items: center; gap: 14px; }
+.c-bar-r { margin-left: auto; display: flex; flex-shrink: 0; align-items: center; gap: 6px; padding-left: 8px; }
+
+/* The rail's ONE separator: a 3px dot at 55% of the ink it separates.
+   TOOLBAR_DIVIDER_CLASS, ChatInput.tsx:207. */
+.c-dot {
+  width: 3px; height: 3px; flex-shrink: 0;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--text-muted) 55%, transparent);
+}
+
+/* Per-control ink and padding, read from each component's own trigger class.
+   DirSwitcher.tsx:175      h-7 px-1    text-text-default/70 text-supporting, icon 16 + mr-0.5
+   BottomMenuExtensionSelection.tsx:437  h-7 px-0.5  text-text-default/70 text-supporting, icon 16
+   BottomMenuReasoningEffort.tsx:94      h-7 px-0.5 gap-1.5  text-text-muted, EffortBars 17px
+   ModelsBottomBar.tsx:346               h-7 px-0.5 max-w-[220px] gap-0.5, Brain 18px
+   ContextWindowIndicator.tsx:372        h-control-sm px-1.5  text-text-muted, ring 16px
+   CostTracker.tsx:56                    h-7 px-0.5 font-mono text-supporting text-text-default/70 */
+.chip.dir    { padding: 0 4px; color: color-mix(in srgb, var(--text-default) 70%, transparent); gap: 2px; }
+.chip.cnt    { padding: 0 2px; color: color-mix(in srgb, var(--text-default) 70%, transparent); gap: 2px; }
+.chip.effort { padding: 0 2px; color: var(--text-muted); }
+.chip.model  { padding: 0 2px; color: color-mix(in srgb, var(--text-default) 70%, transparent); gap: 2px; max-width: 220px; }
+.chip.model .mn { overflow: hidden; text-overflow: ellipsis; }
+.chip.gauge  { padding: 0 6px; color: var(--text-muted); gap: 5px; }
+.chip.gauge .pct { font-family: var(--font-code); font-variant-numeric: tabular-nums; }
+.chip.cost   { padding: 0 2px; font-family: var(--font-code);
+               color: color-mix(in srgb, var(--text-default) 70%, transparent); }
+
+.chip.model .badge { color: var(--text-default); display: inline-flex; flex-shrink: 0; }
+.chip.model .badge.tier { margin-left: 4px; }   /* PrivacyBadge  ml-1   */
+.chip.model .badge.aff  { margin-left: 2px; }   /* AffiliationBadge ml-0.5 */
+.chip.gauge { gap: 0; }
+.chip.gauge .pct { margin-left: 6px; }          /* ml-1.5 */
+.chip.dir .dn { max-width: 112px; overflow: hidden; text-overflow: ellipsis; }
+
+/* Specimen E wraps the Stop button; the orbit rides just outside its 8px box. */
+.stopwrap { position: relative; display: flex; flex-shrink: 0; }
+.stopwrap .orbit { border-radius: var(--radius-element); }
 
 /* ── alignment grid overlay ──────────────────────────────────────────────── */
 
@@ -510,7 +594,16 @@ body.paused .rig *, body.paused .rig *::before, body.paused .rig *::after {
 
 @property --br-ang { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
 
-.card.edge::after {
+/* THE EDGE IS ALREADY CORAL, so the sweep cannot be "turn the edge accent".
+   The composer autofocuses, so `border-accent` is its RESTING appearance and an
+   accent arc travelling over an accent edge is invisible. The working state
+   therefore MODULATES the edge it already has: drop it to 32% while the turn
+   runs, and let a full-strength segment travel round it. Same hue, same 1px,
+   same border — the only variable is where the ink is concentrated, which is
+   the one thing focus never does. */
+.c-card.edge { border-color: color-mix(in srgb, var(--border-accent) 32%, transparent); }
+
+.c-card.edge::after {
   content: '';
   position: absolute; inset: -1px;
   border-radius: inherit;
@@ -640,7 +733,7 @@ body.paused .rig *, body.paused .rig *::before, body.paused .rig *::after {
 .stopwrap { position: relative; display: flex; flex-shrink: 0; }
 .stopwrap .orbit {
   position: absolute; inset: -3px;
-  border-radius: 9999px;
+  border-radius: var(--radius-element);
   border: 1.5px solid transparent;
   border-top-color: var(--border-accent);
   border-right-color: color-mix(in srgb, var(--border-accent) 35%, transparent);
@@ -652,11 +745,11 @@ body.paused .rig *, body.paused .rig *::before, body.paused .rig *::after {
    SPECIMEN F — THE COMPOSER RECEDES  (a modifier, not a standalone)
    ═══════════════════════════════════════════════════════════════════════════ */
 
-.card.recede {
+.c-card.recede {
   background: color-mix(in srgb, var(--background-muted) 55%, var(--background-default));
   border-color: color-mix(in srgb, var(--border-subtle) 35%, transparent);
 }
-.card.recede .ta.ph { color: color-mix(in srgb, var(--text-muted) 52%, transparent); }
+.c-card.recede .c-ta.ph { color: color-mix(in srgb, var(--text-muted) 52%, transparent); }
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SPEC BLOCKS
@@ -956,16 +1049,35 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
     </div>
     <div class="bay-body">
       <p class="bay-note">
-        Reproduced exactly: same spans, same keyframes, same 1.8&nbsp;s, same
-        <code class="inline-code">pl-2</code>. Turn the alignment grid on: the coral
-        rule is the 760&nbsp;px column edge, <span style="color:var(--pg-good);font-weight:600">green</span>
-        marks where the transcript pill starts (4&nbsp;px in) and
+        Every number here is read from the source, not eyeballed: the card is
+        <code class="inline-code">rounded-container</code> with
+        <code class="inline-code">py-2.5 pr-3 pl-4</code> and measures 54&nbsp;px;
+        Send/Stop is a 32&nbsp;×&nbsp;32 <code class="inline-code">rounded-element</code>
+        box (8&nbsp;px, not a circle); the three rows sit 6&nbsp;px apart; and the
+        folder glyph, the placeholder and the reasoning glyph all land on one ink
+        column at 236/237/236&nbsp;px, which is the invariant
+        <code class="inline-code">ChatInput.tsx</code> sets those three different row
+        paddings to preserve.
+      </p>
+      <p class="bay-note">
+        Drawing it properly surfaces something the sketch hid: <strong>during a turn
+        the composer already carries two accent signals</strong> — the card's border,
+        which is coral at rest because the composer autofocuses, and the Stop button,
+        which passes no <code class="inline-code">variant</code> and is therefore a
+        solid accent square. The breathing dot is the third thing in that box, and the
+        only one drawn in neutral ink. The composer is not short of signals. It is
+        short of <em>distinguishable</em> ones.
+      </p>
+      <p class="bay-note">
+        Turn the alignment grid on: the coral rule is the 760&nbsp;px column edge,
+        <span style="color:var(--pg-good);font-weight:600">green</span> marks where the
+        transcript pill starts (4&nbsp;px in) and
         <span style="color:var(--pg-bad);font-weight:600">red</span> marks where the
         composer pill starts (12&nbsp;px in). Two dots, one column, two anchors.
       </p>
 
       <div class="rig">
-        <div class="rig-label">Chat pane · bottom 200px · during a turn</div>
+        <div class="rig-label">CHAT PANE · BOTTOM 200PX · DURING A TURN</div>
         <div class="transcript"><div class="col">
           <p class="msg dim" style="margin:0">Checking the manifest before I touch the migration ladder.</p>
           <div class="toolline">
@@ -982,25 +1094,42 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
           </div>
         </div></div>
         <div class="bar"><div class="col">
-          <div class="statusrow"><span class="inner">
-            <span class="dot16"><span class="ring"></span><span class="glow"></span><span class="core"></span></span>
-            <span>Biorouter is working on it…</span>
-          </span></div>
-          <div class="card">
-            <div class="line">
-              <div class="ta ph">Ask anything, or press ⌘K</div>
-              <button class="send stop" aria-label="Stop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+          <div class="statusrow"><span class="inner"><span class="dot16"><span class="ring"></span><span class="glow"></span><span class="core"></span></span><span>Biorouter is working on it…</span></span></div>
+          <div class="composer">
+            <div class="c-ctx">
+              <div class="c-ctx-l"><span class="chip dir"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><circle cx="12" cy="13" r="1"/></svg><span class="dn">Desktop</span></span></div>
+              <div class="c-ctx-r">
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/></svg><span class="ct">4</span></span>
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></svg><span class="ct">29</span></span>
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg><span class="ct">2</span></span>
+              </div>
+            </div>
+            <div class="c-card focus">
+              <div class="c-line">
+                <div class="c-ta ph">⌘↑/⌘↓ to navigate messages</div>
+                <button class="c-send stop" aria-label="Stop response"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor"/></svg></button>
+              </div>
+            </div>
+            <div class="c-bar">
+              <div class="c-bar-l">
+                <span class="chip effort"><svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="9" width="2.6" height="5" rx="1" fill="currentColor" opacity="1"/><rect x="6.7" y="6" width="2.6" height="8" rx="1" fill="currentColor" opacity="1"/><rect x="11.9" y="3" width="2.6" height="11" rx="1" fill="currentColor" opacity="0.25"/></svg></span>
+                <span class="c-dot"></span>
+                <span class="chip model"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></svg><span class="mn">gpt-5.5-2026-04-24</span><span class="badge tier"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span><span class="badge aff"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 18v-7"/><path d="M11.12 2.198a2 2 0 0 1 1.76.006l7.866 3.847c.476.233.31.949-.22.949H3.474c-.53 0-.695-.716-.22-.949z"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="M3 22h18"/><path d="M6 18v-7"/></svg></span></span>
+              </div>
+              <div class="c-bar-r">
+                <span class="chip gauge"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.75" style="color:var(--border-subtle)"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-dasharray="50.265" stroke-dashoffset="0.503" transform="rotate(-90 12 12)"/></svg><span class="pct">99%</span></span>
+                <span class="chip cost">$0.15</span>
+              </div>
             </div>
           </div>
-          <div class="ctl"><span class="chip">Opus 5</span><span class="chip">Auto</span><span class="chip">3 extensions</span></div>
         </div></div>
       </div>
 
       <dl class="spec">
         <div><dt>Height cost</dt><dd>34px, appears on Send</dd></div>
         <div><dt>Period</dt><dd>1.8s ×2 · off-scale</dd></div>
-        <div><dt>Left offset</dt><dd>8px vs transcript</dd></div>
-        <div><dt>Shape class</dt><dd>circle — same as tool dot</dd></div>
+        <div><dt>Left offset</dt><dd>12px vs transcript's 4px</dd></div>
+        <div><dt>Accent already here</dt><dd>2 — card edge + Stop</dd></div>
       </dl>
     </div>
   </div>
@@ -1026,20 +1155,25 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
       <p class="bay-note">
         The composer already owns a 1&nbsp;px border that turns
         <code class="inline-code">--border-accent</code> on focus. While the agent
-        works, that same edge carries a slow travelling arc of the accent. Nothing is
-        added to the layout, so there is nothing to align and nothing to duplicate —
-        the composer <em>itself</em> is the indicator, which is precisely the “the
-        agent has the floor” reading the transcript dot cannot give.
+        works, that same edge carries a slow travelling arc. Nothing is added to the
+        layout, so there is nothing to align and nothing to duplicate — the composer
+        <em>itself</em> is the indicator, which is precisely the “the agent has the
+        floor” reading the transcript dot cannot give.
       </p>
       <p class="bay-note">
-        Focus and working stay distinguishable because they are different
-        <em>kinds</em> of signal: focus is a static colour change on the whole edge,
-        working is motion along it. That distinction survives both states being on at
-        once, which they usually are — the composer autofocuses.
+        <strong>Replicating the composer changed this specimen.</strong> The composer
+        autofocuses, so the coral edge is its <em>resting</em> appearance, not a state
+        you have to go looking for — and an accent arc travelling over an accent edge
+        is invisible. So the working state does not paint the edge accent; it
+        <em>modulates the accent edge it already has</em>: drop the whole border to
+        32&nbsp;% while the turn runs, and let a full-strength segment travel round it.
+        Same hue, same 1&nbsp;px, same border. The only variable is where the ink is
+        concentrated — which is the one thing focus never does, so the two states stay
+        legible even though both are on at once.
       </p>
 
       <div class="rig">
-        <div class="rig-label">A · the edge carries it</div>
+        <div class="rig-label">A · THE EDGE CARRIES IT</div>
         <div class="transcript"><div class="col">
           <p class="msg dim" style="margin:0">Checking the manifest before I touch the migration ladder.</p>
           <div class="trailing">
@@ -1051,13 +1185,34 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
           </div>
         </div></div>
         <div class="bar"><div class="col">
-          <div class="card edge">
-            <div class="line">
-              <div class="ta ph">Ask anything, or press ⌘K</div>
-              <button class="send stop" aria-label="Stop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+          
+          <div class="composer">
+            <div class="c-ctx">
+              <div class="c-ctx-l"><span class="chip dir"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><circle cx="12" cy="13" r="1"/></svg><span class="dn">Desktop</span></span></div>
+              <div class="c-ctx-r">
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/></svg><span class="ct">4</span></span>
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></svg><span class="ct">29</span></span>
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg><span class="ct">2</span></span>
+              </div>
+            </div>
+            <div class="c-card focus edge">
+              <div class="c-line">
+                <div class="c-ta ph">⌘↑/⌘↓ to navigate messages</div>
+                <button class="c-send stop" aria-label="Stop response"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor"/></svg></button>
+              </div>
+            </div>
+            <div class="c-bar">
+              <div class="c-bar-l">
+                <span class="chip effort"><svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="9" width="2.6" height="5" rx="1" fill="currentColor" opacity="1"/><rect x="6.7" y="6" width="2.6" height="8" rx="1" fill="currentColor" opacity="1"/><rect x="11.9" y="3" width="2.6" height="11" rx="1" fill="currentColor" opacity="0.25"/></svg></span>
+                <span class="c-dot"></span>
+                <span class="chip model"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></svg><span class="mn">gpt-5.5-2026-04-24</span><span class="badge tier"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span><span class="badge aff"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 18v-7"/><path d="M11.12 2.198a2 2 0 0 1 1.76.006l7.866 3.847c.476.233.31.949-.22.949H3.474c-.53 0-.695-.716-.22-.949z"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="M3 22h18"/><path d="M6 18v-7"/></svg></span></span>
+              </div>
+              <div class="c-bar-r">
+                <span class="chip gauge"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.75" style="color:var(--border-subtle)"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-dasharray="50.265" stroke-dashoffset="0.503" transform="rotate(-90 12 12)"/></svg><span class="pct">99%</span></span>
+                <span class="chip cost">$0.15</span>
+              </div>
             </div>
           </div>
-          <div class="ctl"><span class="chip">Opus 5</span><span class="chip">Auto</span><span class="chip">3 extensions</span></div>
         </div></div>
       </div>
 
@@ -1065,7 +1220,7 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
         <div><dt>Height cost</dt><dd>0px</dd></div>
         <div><dt>Period</dt><dd>2.4s · ambient tier</dd></div>
         <div><dt>New DOM</dt><dd>none — one ::after</dd></div>
-        <div><dt>Reduced motion</dt><dd>static accent edge</dd></div>
+        <div><dt>Reduced motion</dt><dd>edge holds at full accent</dd></div>
       </dl>
 
       <div class="verdict">
@@ -1078,7 +1233,8 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
         <div class="costs"><span class="h">Costs</span><ul>
           <li>Loses the “Biorouter is thinking…” prose unless paired with D.</li>
           <li>Needs <code>@property</code> for the angle — fine in Electron, but it is the one modern feature here.</li>
-          <li>A moving edge near a focus edge needs a real look in all three families before it ships.</li>
+          <li><strong>It shares the accent with the Stop button 12&nbsp;px away.</strong> Stop takes no <code>variant</code>, so it is <code>default</code> — a solid 32&nbsp;px accent square, on screen for exactly as long as the edge is moving. Two accent objects in one small box needs a real look before it ships.</li>
+          <li>The dimmed resting edge means the composer's border is lighter during a turn than at rest. Deliberate, but it is a change to the composer's appearance, not purely an addition.</li>
         </ul></div>
       </div>
 
@@ -1118,7 +1274,7 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
       </p>
 
       <div class="rig">
-        <div class="rig-label">B · a rule, not a dot</div>
+        <div class="rig-label">B · A RULE, NOT A DOT</div>
         <div class="transcript"><div class="col">
           <p class="msg dim" style="margin:0">Checking the manifest before I touch the migration ladder.</p>
           <div class="trailing">
@@ -1130,17 +1286,34 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
           </div>
         </div></div>
         <div class="bar"><div class="col">
-          <div class="statusrow flush"><div class="hairrow">
-            <div class="cap"><span>Biorouter is working on it…</span><span class="t">12s</span></div>
-            <div class="hair"><i></i></div>
-          </div></div>
-          <div class="card">
-            <div class="line">
-              <div class="ta ph">Ask anything, or press ⌘K</div>
-              <button class="send stop" aria-label="Stop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+          <div class="statusrow flush"><div class="hairrow"><div class="cap"><span>Biorouter is working on it…</span><span class="t">12s</span></div><div class="hair"><i></i></div></div></div>
+          <div class="composer">
+            <div class="c-ctx">
+              <div class="c-ctx-l"><span class="chip dir"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><circle cx="12" cy="13" r="1"/></svg><span class="dn">Desktop</span></span></div>
+              <div class="c-ctx-r">
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/></svg><span class="ct">4</span></span>
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></svg><span class="ct">29</span></span>
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg><span class="ct">2</span></span>
+              </div>
+            </div>
+            <div class="c-card focus">
+              <div class="c-line">
+                <div class="c-ta ph">⌘↑/⌘↓ to navigate messages</div>
+                <button class="c-send stop" aria-label="Stop response"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor"/></svg></button>
+              </div>
+            </div>
+            <div class="c-bar">
+              <div class="c-bar-l">
+                <span class="chip effort"><svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="9" width="2.6" height="5" rx="1" fill="currentColor" opacity="1"/><rect x="6.7" y="6" width="2.6" height="8" rx="1" fill="currentColor" opacity="1"/><rect x="11.9" y="3" width="2.6" height="11" rx="1" fill="currentColor" opacity="0.25"/></svg></span>
+                <span class="c-dot"></span>
+                <span class="chip model"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></svg><span class="mn">gpt-5.5-2026-04-24</span><span class="badge tier"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span><span class="badge aff"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 18v-7"/><path d="M11.12 2.198a2 2 0 0 1 1.76.006l7.866 3.847c.476.233.31.949-.22.949H3.474c-.53 0-.695-.716-.22-.949z"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="M3 22h18"/><path d="M6 18v-7"/></svg></span></span>
+              </div>
+              <div class="c-bar-r">
+                <span class="chip gauge"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.75" style="color:var(--border-subtle)"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-dasharray="50.265" stroke-dashoffset="0.503" transform="rotate(-90 12 12)"/></svg><span class="pct">99%</span></span>
+                <span class="chip cost">$0.15</span>
+              </div>
             </div>
           </div>
-          <div class="ctl"><span class="chip">Opus 5</span><span class="chip">Auto</span><span class="chip">3 extensions</span></div>
         </div></div>
       </div>
 
@@ -1185,7 +1358,7 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
       </p>
 
       <div class="rig">
-        <div class="rig-label">C · the split underline travels</div>
+        <div class="rig-label">C · THE SPLIT UNDERLINE TRAVELS</div>
         <div class="transcript"><div class="col">
           <p class="msg dim" style="margin:0">Checking the manifest before I touch the migration ladder.</p>
           <div class="trailing">
@@ -1197,18 +1370,34 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
           </div>
         </div></div>
         <div class="bar"><div class="col">
-          <div class="statusrow"><span class="inner" style="gap:9px">
-            <span class="mark"><span class="letters">B<em>R</em></span><span class="ul"></span></span>
-            <span style="color:var(--text-muted)">Biorouter is working on it…</span>
-            <span class="elapsed" style="color:color-mix(in srgb, var(--text-muted) 62%, transparent);font-variant-numeric:tabular-nums">· 12s</span>
-          </span></div>
-          <div class="card">
-            <div class="line">
-              <div class="ta ph">Ask anything, or press ⌘K</div>
-              <button class="send stop" aria-label="Stop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+          <div class="statusrow"><span class="inner" style="gap:9px"><span class="mark"><span class="letters">B<em>R</em></span><span class="ul"></span></span><span style="color:var(--text-muted)">Biorouter is working on it…</span><span class="elapsed-t">· 12s</span></span></div>
+          <div class="composer">
+            <div class="c-ctx">
+              <div class="c-ctx-l"><span class="chip dir"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><circle cx="12" cy="13" r="1"/></svg><span class="dn">Desktop</span></span></div>
+              <div class="c-ctx-r">
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/></svg><span class="ct">4</span></span>
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></svg><span class="ct">29</span></span>
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg><span class="ct">2</span></span>
+              </div>
+            </div>
+            <div class="c-card focus">
+              <div class="c-line">
+                <div class="c-ta ph">⌘↑/⌘↓ to navigate messages</div>
+                <button class="c-send stop" aria-label="Stop response"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor"/></svg></button>
+              </div>
+            </div>
+            <div class="c-bar">
+              <div class="c-bar-l">
+                <span class="chip effort"><svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="9" width="2.6" height="5" rx="1" fill="currentColor" opacity="1"/><rect x="6.7" y="6" width="2.6" height="8" rx="1" fill="currentColor" opacity="1"/><rect x="11.9" y="3" width="2.6" height="11" rx="1" fill="currentColor" opacity="0.25"/></svg></span>
+                <span class="c-dot"></span>
+                <span class="chip model"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></svg><span class="mn">gpt-5.5-2026-04-24</span><span class="badge tier"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span><span class="badge aff"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 18v-7"/><path d="M11.12 2.198a2 2 0 0 1 1.76.006l7.866 3.847c.476.233.31.949-.22.949H3.474c-.53 0-.695-.716-.22-.949z"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="M3 22h18"/><path d="M6 18v-7"/></svg></span></span>
+              </div>
+              <div class="c-bar-r">
+                <span class="chip gauge"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.75" style="color:var(--border-subtle)"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-dasharray="50.265" stroke-dashoffset="0.503" transform="rotate(-90 12 12)"/></svg><span class="pct">99%</span></span>
+                <span class="chip cost">$0.15</span>
+              </div>
             </div>
           </div>
-          <div class="ctl"><span class="chip">Opus 5</span><span class="chip">Auto</span><span class="chip">3 extensions</span></div>
         </div></div>
       </div>
 
@@ -1258,7 +1447,7 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
       </p>
 
       <div class="rig">
-        <div class="rig-label">D · no dot at all</div>
+        <div class="rig-label">D · NO DOT AT ALL</div>
         <div class="transcript"><div class="col">
           <p class="msg dim" style="margin:0">Checking the manifest before I touch the migration ladder.</p>
           <div class="trailing">
@@ -1270,17 +1459,34 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
           </div>
         </div></div>
         <div class="bar"><div class="col">
-          <div class="statusrow"><span class="inner" style="gap:7px">
-            <span class="saying">Biorouter is working on it…</span>
-            <span class="elapsed-t">· 12s</span>
-          </span></div>
-          <div class="card">
-            <div class="line">
-              <div class="ta ph">Ask anything, or press ⌘K</div>
-              <button class="send stop" aria-label="Stop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+          <div class="statusrow"><span class="inner" style="gap:7px"><span class="saying">Biorouter is working on it…</span><span class="elapsed-t">· 12s</span></span></div>
+          <div class="composer">
+            <div class="c-ctx">
+              <div class="c-ctx-l"><span class="chip dir"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><circle cx="12" cy="13" r="1"/></svg><span class="dn">Desktop</span></span></div>
+              <div class="c-ctx-r">
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/></svg><span class="ct">4</span></span>
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></svg><span class="ct">29</span></span>
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg><span class="ct">2</span></span>
+              </div>
+            </div>
+            <div class="c-card focus">
+              <div class="c-line">
+                <div class="c-ta ph">⌘↑/⌘↓ to navigate messages</div>
+                <button class="c-send stop" aria-label="Stop response"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor"/></svg></button>
+              </div>
+            </div>
+            <div class="c-bar">
+              <div class="c-bar-l">
+                <span class="chip effort"><svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="9" width="2.6" height="5" rx="1" fill="currentColor" opacity="1"/><rect x="6.7" y="6" width="2.6" height="8" rx="1" fill="currentColor" opacity="1"/><rect x="11.9" y="3" width="2.6" height="11" rx="1" fill="currentColor" opacity="0.25"/></svg></span>
+                <span class="c-dot"></span>
+                <span class="chip model"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></svg><span class="mn">gpt-5.5-2026-04-24</span><span class="badge tier"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span><span class="badge aff"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 18v-7"/><path d="M11.12 2.198a2 2 0 0 1 1.76.006l7.866 3.847c.476.233.31.949-.22.949H3.474c-.53 0-.695-.716-.22-.949z"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="M3 22h18"/><path d="M6 18v-7"/></svg></span></span>
+              </div>
+              <div class="c-bar-r">
+                <span class="chip gauge"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.75" style="color:var(--border-subtle)"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-dasharray="50.265" stroke-dashoffset="0.503" transform="rotate(-90 12 12)"/></svg><span class="pct">99%</span></span>
+                <span class="chip cost">$0.15</span>
+              </div>
             </div>
           </div>
-          <div class="ctl"><span class="chip">Opus 5</span><span class="chip">Auto</span><span class="chip">3 extensions</span></div>
         </div></div>
       </div>
 
@@ -1325,7 +1531,7 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
       </p>
 
       <div class="rig">
-        <div class="rig-label">E · Stop carries it — no status row</div>
+        <div class="rig-label">E · STOP CARRIES IT — NO STATUS ROW</div>
         <div class="transcript"><div class="col">
           <p class="msg dim" style="margin:0">Checking the manifest before I touch the migration ladder.</p>
           <div class="trailing">
@@ -1337,16 +1543,34 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
           </div>
         </div></div>
         <div class="bar"><div class="col">
-          <div class="card">
-            <div class="line">
-              <div class="ta ph">Ask anything, or press ⌘K</div>
-              <span class="stopwrap">
-                <span class="orbit"></span>
-                <button class="send stop" aria-label="Stop this turn"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
-              </span>
+          
+          <div class="composer">
+            <div class="c-ctx">
+              <div class="c-ctx-l"><span class="chip dir"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><circle cx="12" cy="13" r="1"/></svg><span class="dn">Desktop</span></span></div>
+              <div class="c-ctx-r">
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/></svg><span class="ct">4</span></span>
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></svg><span class="ct">29</span></span>
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg><span class="ct">2</span></span>
+              </div>
+            </div>
+            <div class="c-card focus">
+              <div class="c-line">
+                <div class="c-ta ph">⌘↑/⌘↓ to navigate messages</div>
+                <span class="stopwrap"><span class="orbit"></span><button class="c-send stop" aria-label="Stop this turn"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor"/></svg></button></span>
+              </div>
+            </div>
+            <div class="c-bar">
+              <div class="c-bar-l">
+                <span class="chip effort"><svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="9" width="2.6" height="5" rx="1" fill="currentColor" opacity="1"/><rect x="6.7" y="6" width="2.6" height="8" rx="1" fill="currentColor" opacity="1"/><rect x="11.9" y="3" width="2.6" height="11" rx="1" fill="currentColor" opacity="0.25"/></svg></span>
+                <span class="c-dot"></span>
+                <span class="chip model"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></svg><span class="mn">gpt-5.5-2026-04-24</span><span class="badge tier"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span><span class="badge aff"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 18v-7"/><path d="M11.12 2.198a2 2 0 0 1 1.76.006l7.866 3.847c.476.233.31.949-.22.949H3.474c-.53 0-.695-.716-.22-.949z"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="M3 22h18"/><path d="M6 18v-7"/></svg></span></span>
+              </div>
+              <div class="c-bar-r">
+                <span class="chip gauge"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.75" style="color:var(--border-subtle)"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-dasharray="50.265" stroke-dashoffset="0.503" transform="rotate(-90 12 12)"/></svg><span class="pct">99%</span></span>
+                <span class="chip cost">$0.15</span>
+              </div>
             </div>
           </div>
-          <div class="ctl"><span class="chip">Opus 5</span><span class="chip">Auto</span><span class="chip">3 extensions</span></div>
         </div></div>
       </div>
 
@@ -1364,7 +1588,8 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
           <li>Makes Stop more discoverable — today it is a quiet grey square.</li>
         </ul></div>
         <div class="costs"><span class="h">Costs</span><ul>
-          <li><strong>The Stop button already owns a ring.</strong> Pressing it fires a one-shot <code>animate-ping</code> for <code>STOP_ACK_MS</code> = 450&nbsp;ms to say “received” (<code>ChatInput.tsx:2524</code>, <code>useStopAcknowledgement.ts</code>) — deliberately distinct from looping pulses that mean “still working”. An orbiting ring would land on top of the acknowledgement at the exact moment it has to read clearly. This is the specimen's blocking problem, not a polish note.</li>
+          <li><strong>The Stop button already owns a ring.</strong> Pressing it fires a one-shot <code>animate-ping</code> for <code>STOP_ACK_MS</code> = 450&nbsp;ms to say “received” (<code>ChatInput.tsx:2524</code>) — deliberately distinct from looping pulses that mean “still working”. An orbiting ring lands on top of the acknowledgement at the exact moment it has to read clearly.</li>
+          <li><strong>And the button is already accent-filled.</strong> Stop passes no <code>variant</code>, so it takes <code>default</code> — <code>bg-background-accent</code>. An accent arc orbiting a solid accent square has almost no contrast to work with; it would have to be drawn in a third colour, which is a new signal rather than a reuse. Replicating the composer is what surfaced this — the earlier mock drew Stop as a grey circle, which flattered the idea.</li>
           <li>Loses the label and the per-message thinking text outright. That is real information, not decoration.</li>
           <li>An orbiting arc is the most conventional spinner in the set — it says “loading”, not “Biorouter is reasoning”.</li>
         </ul></div>
@@ -1392,7 +1617,7 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
       </p>
 
       <div class="rig">
-        <div class="rig-label">F · shown over D — recede + type</div>
+        <div class="rig-label">F · SHOWN OVER D — RECEDE + TYPE</div>
         <div class="transcript"><div class="col">
           <p class="msg dim" style="margin:0">Checking the manifest before I touch the migration ladder.</p>
           <div class="trailing">
@@ -1404,17 +1629,34 @@ footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--pg-hai
           </div>
         </div></div>
         <div class="bar"><div class="col">
-          <div class="statusrow"><span class="inner" style="gap:7px">
-            <span class="saying">Biorouter is working on it…</span>
-            <span class="elapsed-t">· 12s</span>
-          </span></div>
-          <div class="card recede">
-            <div class="line">
-              <div class="ta ph">Biorouter has the floor — type to queue a message</div>
-              <button class="send stop" aria-label="Stop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+          <div class="statusrow"><span class="inner" style="gap:7px"><span class="saying">Biorouter is working on it…</span><span class="elapsed-t">· 12s</span></span></div>
+          <div class="composer">
+            <div class="c-ctx">
+              <div class="c-ctx-l"><span class="chip dir"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><circle cx="12" cy="13" r="1"/></svg><span class="dn">Desktop</span></span></div>
+              <div class="c-ctx-r">
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/></svg><span class="ct">4</span></span>
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></svg><span class="ct">29</span></span>
+                <span class="chip cnt"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg><span class="ct">2</span></span>
+              </div>
+            </div>
+            <div class="c-card focus recede">
+              <div class="c-line">
+                <div class="c-ta ph">⌘↑/⌘↓ to navigate messages</div>
+                <button class="c-send stop" aria-label="Stop response"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor"/></svg></button>
+              </div>
+            </div>
+            <div class="c-bar">
+              <div class="c-bar-l">
+                <span class="chip effort"><svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="9" width="2.6" height="5" rx="1" fill="currentColor" opacity="1"/><rect x="6.7" y="6" width="2.6" height="8" rx="1" fill="currentColor" opacity="1"/><rect x="11.9" y="3" width="2.6" height="11" rx="1" fill="currentColor" opacity="0.25"/></svg></span>
+                <span class="c-dot"></span>
+                <span class="chip model"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></svg><span class="mn">gpt-5.5-2026-04-24</span><span class="badge tier"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span><span class="badge aff"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 18v-7"/><path d="M11.12 2.198a2 2 0 0 1 1.76.006l7.866 3.847c.476.233.31.949-.22.949H3.474c-.53 0-.695-.716-.22-.949z"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="M3 22h18"/><path d="M6 18v-7"/></svg></span></span>
+              </div>
+              <div class="c-bar-r">
+                <span class="chip gauge"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.75" style="color:var(--border-subtle)"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-dasharray="50.265" stroke-dashoffset="0.503" transform="rotate(-90 12 12)"/></svg><span class="pct">99%</span></span>
+                <span class="chip cost">$0.15</span>
+              </div>
             </div>
           </div>
-          <div class="ctl"><span class="chip">Opus 5</span><span class="chip">Auto</span><span class="chip">3 extensions</span></div>
         </div></div>
       </div>
 
