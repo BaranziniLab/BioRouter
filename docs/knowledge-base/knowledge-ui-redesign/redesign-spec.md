@@ -150,14 +150,20 @@ control appears in the filter bar to bring it back. The card is opaque `--backgr
 **Cost.** 340px of canvas at the widest step, bought back at every step below it and paid for
 outright by deleting the 36px bottom dock and the floating inspector.
 
-### R-04 — Every node is a circle; the redundant channel is rebuilt, not deleted
+### R-04 — Every node is a circle; the redundant channel is a spoken one
 
-**Measured, and this is the hard one.** Seven silhouettes carry the *family*; fill lightness carries
-the member. Cross-family colour distance under simulated dichromacy bottoms out at **ΔE00 0.00**
-(dark tritanopia, `Phenotype`/`Food`) and **0.30** (light tritanopia). Shape is the only redundant,
-monochrome-safe channel the section ships: §5.12's `aria-live` alternative **was never built**.
-Three assertions in `graphPalette.test.ts:303-370` guard the shape assignment, and the legend and
-facet glyphs read `families[].shape` from the same generated source.
+> **Amended after implementation.** This record originally kept the seven family silhouettes alive
+> behind an opt-in preference (part 3 below), and said in terms that the design *should not ship
+> without it*. The operator withdrew that hedge — "don't worry about anyone with colour vision
+> deficiency, they can just hover over it and read the actual text" — and directed that every
+> mention of node shape be removed from the codebase. That is recorded here rather than quietly
+> rewritten, because the reasoning that follows only holds because of what replaced it.
+
+**Measured, and this was the hard one.** Seven silhouettes carried the *family*; fill lightness
+carries the member. Cross-family colour distance under simulated dichromacy bottoms out at
+**ΔE00 0.00** (dark tritanopia, `Phenotype`/`Food`) and **0.30** (light tritanopia). At the time this
+was written, shape was the only redundant, monochrome-safe channel the section shipped, because
+§5.12's `aria-live` alternative had never been built.
 
 **Ruling.** Draw every node as a circle, and rebuild the redundant channel in three parts:
 
@@ -170,15 +176,39 @@ facet glyphs read `families[].shape` from the same generated source.
    must agree or the legend teaches the wrong thing.
 2. **Labels become the identification channel**, always on and haloed (`paint-order: stroke`, 3px
    ground-coloured). This is why BioOKF's all-circle canvas is readable.
-3. **`Distinguish types by shape` — an opt-in preference, default off**, restoring the seven
-   silhouettes, beside the app's other accessibility settings.
+3. ~~**`Distinguish types by shape` — an opt-in preference, default off**, restoring the seven
+   silhouettes.~~ **Withdrawn.** See below.
 
-**Cost, stated plainly.** The default canvas now separates 7 families by hue and lightness alone, and
-ΔE00 0.00 still stands — a viewer with tritanopia sees `Phenotype` and `Food` as one colour and one
-shape, told apart only by label, legend hover and inspector. That is a real regression against the
-current default, taken deliberately, mitigated by 1–3 and reversible by one preference. **It should
-not ship without part 3**, and building §5.12's `aria-live` alternative alongside would close the gap
-properly.
+**What replaced part 3, and why the trade improved.** This record's own closing sentence read
+"building §5.12's `aria-live` alternative alongside would close the gap properly". §5.12 is now
+built — one tab stop, cone traversal, a degree-ordered `Tab` walk, and a live region that speaks
+`Multiple sclerosis, Disease, Clinical` on every focus change. So the gap part 3 hedged against is
+closed by the mechanism this record named as the proper closure, not left open.
+
+It is worth being precise about *who* each option served, because the two are not
+interchangeable and the replacement is the broader of the two. A silhouette is a **visual**
+redundancy: it served a sighted viewer with dichromacy and nobody else, and only while the mark was
+large enough to resolve — at a 7px radius, seven silhouettes are a demanding discrimination even
+with full colour vision. A spoken `<name>, <type>, <family>` serves a blind reader, a screen-reader
+user, and a viewer with dichromacy alike, and it does not degrade with mark size. The channel that
+remains is the one that covers strictly more people.
+
+**Cost, stated plainly and without hedging it away.** Two costs are real and are accepted, not
+mitigated. First, the default canvas separates 7 families by hue and lightness alone, and ΔE00 0.00
+still stands: a viewer with tritanopia sees `Phenotype` and `Food` as one colour, told apart by
+label, hover, legend and inspector. Second, those four remaining routes are all *deliberate* acts —
+you must point at the node to learn what it is — where a silhouette was passive and told you at a
+glance. The operator's ruling is that pointing is an acceptable cost; this record's job is to make
+sure the cost is written down rather than argued away.
+
+**What the removal touched.** `NODE_SHAPES` and all seven `shape:` keys left `themes/graph.mjs`;
+`shapeOf` left the palette generator; `typeShape`/`NodeShape` left `styles/graphPalette.ts`; and
+`nodeShapes.ts`, `GraphShapeGlyph.tsx` and `graphPreferences.ts` were deleted outright.
+`GraphShapeGlyph` needed care rather than deletion — it drew the silhouette *and* filled it with the
+type's palette hex, so removing it wholesale would have taken the colour with it and turned the
+legend, the facet rows and both inspectors monochrome in the same edit. `NodeSwatch.tsx` replaces it
+and keeps the fill. `graphModel.ts` had been deriving its type vocabulary from `shapeOf`'s key set,
+which is the kind of load-bearing use a grep for "shape" finds only if you read what it feeds.
 
 ### R-05 — Lift the fill band; let the ring carry the contrast
 
@@ -319,7 +349,7 @@ off `@container … (max-height: …)`. Knowledge gets the same on both axes.
 | **Narrow** | < 860px | One column, Sources/Graph tabs, one `Filters` control beside a full-width search. Legend and inspector become sheets. **This is the step the app minimum lands in, and it is why the minimum fits.** |
 | **Two-column** | ≥ 860px | Sources 264 │ canvas. Facets condense (R-09). |
 | **+ legend card** | ≥ 940px | Sources 300 │ canvas, legend as a canvas-anchored card. |
-| **Full filter row** | ≥ 1060px | All four facets and the `Showing N of M` readout. |
+| **Full filter row** | ≥ 1140px | All four facets and the `Showing N of M` readout. |
 | **Three-column** | ≥ 1400px | Sources 320 │ canvas │ rail 340. The legend becomes a permanent rail; the card retires. |
 
 | Height step | Pane height | Behaviour |
@@ -329,7 +359,7 @@ off `@container … (max-height: …)`. Knowledge gets the same on both axes.
 **Every breakpoint is measured, and two moved during the studio build because the first values did not
 survive measurement:**
 
-- **940 for the card, 1060 for the filter row — two constraints, two numbers.** The first draft
+- **940 for the card, 1140 for the filter row — two constraints, two numbers.** The first draft
   bundled both at 1024. The card is a 246px overlay needing only a canvas to sit in; the full filter
   row needs **757px of centre column** (196 search + 1 divider + 90 + 92 + 78 + 75 facets + 149
   readout, plus gaps and padding). With a 300px rail that puts its floor at a 1057px pane — so at
@@ -352,7 +382,7 @@ strip's content measured 769px inside a 550px box"*.
 
 | Pane | State | Row |
 | --- | --- | --- |
-| ≥ 1060px | **Full** | search 196 · Type · Predicate · Source · Status · `Showing N of M` · `Clear` |
+| ≥ 1140px | **Full** | search 196 · Type · Predicate · Source · Status · `Showing N of M` · `Clear` |
 | 860–1059px | **Condensed** | search 172 · Type · Predicate · **More (2)** · `Clear` as an icon |
 | < 860px | **Compact** | search takes the remaining width · **Filters (3)** · `Clear` as an icon |
 
@@ -436,7 +466,7 @@ tailwind-merge, `theme-contract.mjs`); `knowledgeTokens.test.ts` fails first if 
 | `--dock-height` | 36px | unchanged; the legend dock that used it is deleted |
 | `--knowledge-filter-height` | — | **48px** (new) |
 | `--knowledge-subject-height` | — | **48px** (new; replaces the `h-row` 40px band) |
-| pane breakpoints | — | **860 / 940 / 1060 / 1400** + a 620px height step (new) |
+| pane breakpoints | — | **860 / 940 / 1140 / 1400** + a 620px height step (new) |
 | `--measure-graph` | `clamp(1440px, 96%, 2200px)` | unchanged |
 
 **The Sources rail is the one width that steps.** 264 at the two-column step, 300 from 940, 320 from
@@ -481,10 +511,10 @@ a different object from one that is 20% of a 1626px pane.
 | `graph/GraphLegend.tsx` | Rewritten as the rail's legend occupant, plus the dismissible card form (R-03). |
 | `graph/KnowledgeGraphPanel.tsx` | Bottom dock deleted; right rail added; rail ⇄ card ⇄ sheet by step; the `Legend` restore control. |
 | `graph/NodePreview.tsx`, `EdgePreview.tsx` | Become rail occupants rather than bare dialogs. |
-| `graph/nodeShapes.ts` | Reduced to circle + hollow + dashed; the 7-silhouette path retained behind the R-04 preference. |
+| `graph/nodeShapes.ts` | **Deleted.** Circle + hollow + dashed is all that remains, and it lives in `graph/nodeMark.ts`. |
 | `graph/ForceGraphCanvas.tsx` | `NODE_RING_ALPHA` 0.5 → 0.85; hollow ring 1.7px; dot field in `onRenderFramePre`; always-on haloed labels; negated/provenance edge treatments. |
 | `graph/CredibilityRing.tsx` | Ring weights re-checked against the thinned hollow mark. |
-| `themes/graph.mjs` | `PRIMARY_RUNGS`/`PROVENANCE_RUNGS` → `PRIMARY_L`/`PROVENANCE_L`; `shape` retained for the preference. |
+| `themes/graph.mjs` | `PRIMARY_RUNGS`/`PROVENANCE_RUNGS` → `PRIMARY_L`/`PROVENANCE_L`; `NODE_SHAPES` and all seven `shape:` keys removed. |
 | `scripts/lib/graph-palette.mjs` | The second copy of the solver — **edit both**; `graphPalette.test.ts` sweeps them for byte-identity. |
 | `IngestPanel/Dropzone.tsx` | 330px → ~132px. |
 | `IngestPanel/StagedList.tsx` | "Nothing staged" empty state deleted. |
@@ -518,7 +548,7 @@ change. A `container-type: size` element needs a definite height or the query ne
 |---|---|
 | Legend layout, KB-selector placement | **Nothing. Zero tests.** |
 | Facet strip | One brittle class-string assertion |
-| Node shape channel | **Hard** — 3–4 assertions in `graphPalette.test.ts`. The two *component* tests that look like they pin it are self-referential and would pass if every node became a circle. |
+| Node shape channel | **Resolved by removal** (R-04, amended). The prediction held exactly: the two *component* tests were self-referential and stayed green through the deletion, so only the `graphPalette.test.ts` assertions ever had to be touched. A test that would pass if the thing it names disappeared is not a guard. |
 | Ingest rail | A mechanism test whose subject is a CSS class name plus the sticky-footer measurement |
 | Section geometry | `knowledgeTokens.test.ts` (14 tests) across four registries per token |
 | Palette correctness | `graphPalette.test.ts` (42), `check-contrast.mjs` (332 assertions) |
@@ -558,15 +588,20 @@ listed stands.
 | §3.1, §3.2 | The KB selector and *Manage bases* leave the title row; the subject band becomes the switcher. | R-01 |
 | §4.6 | Facets become boxed controls on `--radius-element` with a 1.5px edge, a transparent ground and a solid accent fill when engaged — **not** `Button variant="secondary"`. In a 48px bar. | R-02 |
 | §4.5, §4.7, §3.1 | The legend leaves the bottom dock for a right rail; the dock is deleted; the card form is dismissible. | R-03 |
-| §5.3.1 | The seven-silhouette shape channel becomes an opt-in preference; the default canvas is all circles with a two-state structural channel at a 1.7px hollow ring. | R-04 |
+| §5.3.1 | The seven-silhouette shape channel is **removed outright**; the canvas is all circles with a two-state structural channel at a 1.7px hollow ring, and §5.12's live region carries the redundancy. | R-04 (amended) |
 | §5.2, §5.3 | Fill lightness is solved to an OKLab band, not contrast rungs; ring alpha 0.5 → 0.85. §5.3's pinned tables are re-solved. | R-05 |
 | §4.8 | The inspectors become rail occupants and stop being bare `role="dialog"` panels with no portal, scrim or focus trap. | R-03, R-10 |
 | §4.6 | **New:** the filter row degrades by a fixed priority order into `More` and then `Filters`; it never wraps and never scrolls. | R-09 |
 | §3.4, §3.5 | The responsive ladder is specified in full, in both axes, and **as `@container` queries on the pane rather than media queries on the viewport** — the defect that makes the section worst at the app's own minimum window. | R-08 |
 | §6.3 | The DOM palette swatch moves to `--radius-inner` with a solid fill; the hollow variant thins to 1.5px to match the canvas mark. | R-02, R-04 |
 
-§5.12's `aria-live` text alternative remains **unbuilt** and becomes materially more important under
-R-04. It is named here as a dependency, not amended.
+§5.12's `aria-live` text alternative is now **built**, and R-04's amendment made it the section's
+*only* redundant channel rather than a second one. It is also the fix for a plain WCAG 2.1.1 failure
+at Level A that predates this redesign: the canvas §3.5 calls "the reason the view exists" had no tab
+stop, no focus model and no traversal, so the primary content of the section could not be reached
+without a mouse. §5.7 then made edges selectable and defined that purely in pointer terms, widening
+the gap. The pure half lives in `graph/graphKeyboard.ts` with 18 tests; the DOM half is in
+`ForceGraphCanvas.tsx`.
 
 ---
 
@@ -583,7 +618,7 @@ already strong — composited, **10.88:1** against the light ground. The constan
 value that actually ships and documented as load-bearing. The fill lightening stands on its own and
 is *better* justified than the document claimed.
 
-### 10.2 The light end is capped at 0.78, and a first pass broke the shape channel
+### 10.2 The light end is capped at 0.78, and a first pass broke the (then-live) shape channel
 
 R-05's proposed band (primary 0.745–0.580, provenance 0.780–0.584) failed on measurement twice:
 
@@ -597,17 +632,26 @@ R-05's proposed band (primary 0.745–0.580, provenance 0.780–0.584) failed on
   0.80 band had **13** — and **no assignment of the seven shapes can cover 13**, which would have
   silently voided the shape channel R-04 keeps as its accessibility escape hatch.
 
-The shipped band caps the light end at **0.78**, leaves 11 pairs below 3.0, and those 11 *are*
-covered. A sweep found 36 bands where a valid shape assignment exists; this is the lightest of them.
+The shipped band caps the light end at **0.78**, and leaves 11 pairs below 3.0. A sweep found 36
+bands where a valid shape assignment exists; this is the lightest of them.
+
+> **The cap stands; its stated reason no longer does.** R-04's amendment deleted the shape channel,
+> so "13 collapsed pairs cannot be covered by seven shapes" is no longer an argument for anything —
+> nothing covers any of them now. **0.78 is still the right cap**, on the other half of the finding:
+> above ~0.80 the sRGB gamut clips chroma and cross-family pairs collapse toward one pale tint, which
+> degrades the palette for *every* viewer rather than only for dichromats. The comment in
+> `themes/graph.mjs` was rewritten to say so, because a constant defended by a reason that has been
+> deleted is a constant the next person will feel free to move.
+
 **Lightening past 0.78 breaks the guard in `graphPalette.test.ts`, and the right response is to come
 back to `themes/graph.mjs`, not to relax the guard.**
 
-### 10.3 Four families swapped silhouettes
+### 10.3 Four families swapped silhouettes — since superseded
 
-Genomic `square`→`rounded-square`, Clinical `rounded-square`→`square`, Exposome `pentagon`→`circle`,
-Physical `circle`→`pentagon`. Not churn: the set of pairs that collapse under dichromacy changed with
-the palette, so the set the shape channel must carry changed with it. This is the minimal-change
-permutation that leaves no collapsed pair on a "weak" shape pair.
+~~Genomic `square`→`rounded-square`, Clinical `rounded-square`→`square`, Exposome `pentagon`→`circle`,
+Physical `circle`→`pentagon`.~~ The permutation was real work and is recorded because it explains a
+diff, but R-04's amendment deleted the shape channel entirely and with it this assignment. Kept as
+history; **do not restore it from here.**
 
 ### 10.4 Measured palette movement
 
@@ -616,7 +660,7 @@ permutation that leaves no collapsed pair on a "weak" shape pair.
 | Light-mode contrast, median | 5.00:1 | **2.67:1** |
 | Light-mode contrast, max | 12.01:1 | **8.53:1** |
 | Within-family min ΔE00, all vision types | 5.54 | **4.28** |
-| Family pairs below ΔE00 3.0 | 7 of 21 | 11 of 21, all shape-covered |
+| Family pairs below ΔE00 3.0 | 7 of 21 | 11 of 21 (uncovered — see 10.2 and R-04) |
 
 ### 10.5 The canvas-anchored legend card was built, then deleted
 
@@ -648,11 +692,15 @@ Sources panel's display — React's tab state owns it there.
 
 ## 9. Open questions
 
-1. **R-04's trade — accept, or soften?** Options: (a) ship as specified with the opt-in preference;
-   (b) keep circles but let *hollow vs solid* carry more, e.g. four structural classes; (c) build
-   §5.12's `aria-live` alternative first. This document specifies (a) and recommends (c) alongside.
-2. **Does the `More` popover earn its keep?** R-09 gives it a 200px band of pane width and nothing
-   else. The alternative jumps straight from the full row to `Filters`.
+1. **R-04's trade — resolved by the operator.** Neither (a) nor (b): the shape channel was removed
+   outright and (c) — §5.12's live region — was built in its place. See R-04's amendment for the
+   ruling, what replaced it, and the two costs that were accepted rather than mitigated.
+2. **Does the `More` popover earn its keep? — resolved, and by more than it was asked.** The
+   question assumed a 200px band holding two facets. Measurement widened both: it now spans 860 to
+   1140 and holds three, because `Predicate` had to leave the always-visible row to stop the filter
+   bar clipping (§10.7). A control that carries three facets across a 280px band is no longer
+   marginal, and the alternative — jumping straight from the full row to `Filters` — would now
+   discard `Type` at 1139px, which is the facet the legend beside it is about.
 3. **Should the Sources rail's stepped width be one token or three?** `knowledgeTokens.test.ts`
    asserts each token is declared exactly once in `:root`, so a stepped value needs that assertion
    re-read before it is written.
@@ -663,6 +711,60 @@ Sources panel's display — React's tab state owns it there.
 6. **Scope — resolved.** All ten records shipped together on
    `design/knowledge-ui-redesign`. R-08 turned out to be the one with a user-visible bug behind it
    rather than a preference, which is why it was built first.
+
+---
+
+## 11. As built, second pass — what a width sweep found
+
+§10.6 recorded three container-query defects jsdom cannot see. The follow-up pass found two more,
+and the method is the finding.
+
+### 11.1 Sweep the range, not the four canonical sizes
+
+Both remaining defects lived exactly **at** a threshold, where one step's promotion races another
+step's narrowing — so a pane either side of the line renders correctly and the four sizes this
+document illustrates all pass:
+
+- **946px pane** — the filter row overflowed its column by 52px and clipped `Legend` mid-word.
+  940px widens the Sources rail, taking width *from* the centre column, while the filter row shed
+  nothing until the full-filters step. Fixed by folding `Predicate` — the widest chip at 105px —
+  into `More`. `Type` keeps the always-visible slot, because node types are the facet the legend
+  beside it is about.
+- **1060px pane** — with three chips now restored at once instead of two, the full-filters step
+  overflowed by 44px *at its own threshold* and did not clear until 1110. The threshold moved to
+  **1140**.
+
+The instrument that found them drives the pane through every width from 720 to 1800 in 5px steps and
+reads `scrollWidth - clientWidth` on the filter row, both pane axes and the legend rail. 217 widths,
+zero overflow. **A four-size check is a sample; a sweep is a measurement** — and the two defects it
+caught had both survived a green suite and a visual pass at all four canonical sizes.
+
+`styles/knowledgeLadder.test.ts` guards what remains guardable in jsdom, which is less than it
+looks: jsdom has no layout engine and does not evaluate `@container` at all, so it renders every
+step simultaneously and measures nothing. The test therefore pins each threshold token to the
+literal its query obeys — they exist separately because a `@container` condition cannot read a
+custom property, and the token half is inert, so drift between them is silent — pins the core slot
+to `Type` alone, and asserts every folded facet is reachable inside `More`.
+
+### 11.2 A shared primitive's role height was wrong for one dense surface
+
+The legend rail held 597px of content in 486px, so `Provenance & Context` — the family a reader is
+most likely to look up, because it is the one drawn hollow — sat below the fold by default. 28 types
+in a 339px rail wrap to 12 rows, and at the chip role's shared 24px those rows alone are 336px.
+
+The chips are now `h-5` **in this one surface**, with `badge.tsx` unchanged for everyone else. The
+role height is right for a chip you hunt for in a filter bar and wrong for a dense key you read as a
+block, and this is the only surface that lists every type at once. Measured 0px overflow at
+1690x760 with all seven families and the Evidence heading visible.
+
+### 11.3 The empty middle was a layout artefact with a functional fix
+
+The Sources rail packs its children at the top and pins the digest footer at the bottom, so an
+unstaged rail showed a tall hole between them — a box of nothing inside a bordered card. The **drop
+target** now absorbs that slack, which makes it largest exactly when you have nothing staged and are
+about to drop something, shrinking back toward a 114px floor as staged rows claim the space. The
+fixed 330px it replaced was too tall at every pane size; that floor is what stops this returning
+through the same door.
 
 ---
 
