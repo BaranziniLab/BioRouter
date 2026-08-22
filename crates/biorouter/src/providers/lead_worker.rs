@@ -4,7 +4,9 @@ use std::ops::Deref;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use super::base::{LeadWorkerProviderTrait, Provider, ProviderMetadata, ProviderUsage};
+use super::base::{
+    LeadWorkerProviderTrait, MessageStream, Provider, ProviderMetadata, ProviderUsage,
+};
 use super::errors::ProviderError;
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
@@ -390,6 +392,36 @@ impl Provider for LeadWorkerProvider {
     /// reports the filesystem as read-only. The trade is not close.
     fn uses_tool_bridge(&self) -> bool {
         self.lead_provider.uses_tool_bridge() || self.worker_provider.uses_tool_bridge()
+    }
+
+    /// Streaming is forwarded, or a lead/worker pair silently loses it.
+    ///
+    /// `Provider`'s defaults are `supports_streaming() == false` and a `stream()`
+    /// that returns `NotImplemented`. A wrapper that does not override them
+    /// therefore reports "cannot stream" no matter what it wraps, and the agent
+    /// takes the blocking branch — so pairing two streaming providers would
+    /// silently turn streaming off, with nothing failing to say so.
+    ///
+    /// **Both halves must agree.** The answer is `&&`, not `||`, because this is
+    /// answered once per turn while the *active* provider can change between
+    /// turns: claiming support because the lead has it would send a turn served
+    /// by a non-streaming worker down `stream()`, straight into the trait's
+    /// `NotImplemented`.
+    fn supports_streaming(&self) -> bool {
+        self.lead_provider.supports_streaming() && self.worker_provider.supports_streaming()
+    }
+
+    async fn stream(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        // The same provider this turn's `complete_with_model` would have used,
+        // chosen by the same rule, so the two paths cannot diverge.
+        let provider = self.get_active_provider().await;
+        super::base::set_current_model(&provider.get_model_config().model_name);
+        provider.stream(system, messages, tools).await
     }
 
     fn get_model_config(&self) -> ModelConfig {
@@ -814,5 +846,95 @@ mod tests {
                 ))
             }
         }
+    }
+
+    /// A provider whose streaming support is whatever the test says it is.
+    struct StreamingCapability {
+        streams: bool,
+        model: ModelConfig,
+    }
+
+    #[async_trait]
+    impl Provider for StreamingCapability {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::empty()
+        }
+        fn get_name(&self) -> &str {
+            "capability"
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            self.model.clone()
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            Ok((
+                Message::assistant().with_text("done"),
+                ProviderUsage::new("m".to_string(), Usage::default()),
+            ))
+        }
+        fn supports_streaming(&self) -> bool {
+            self.streams
+        }
+        async fn stream(
+            &self,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            Ok(crate::providers::base::stream_from_single_message(
+                Message::assistant().with_text("streamed"),
+                ProviderUsage::new("m".to_string(), Usage::default()),
+            ))
+        }
+    }
+
+    fn capability(streams: bool) -> Arc<dyn Provider> {
+        Arc::new(StreamingCapability {
+            streams,
+            model: ModelConfig::new("m").unwrap(),
+        })
+    }
+
+    /// Pairing two streaming providers must keep streaming.
+    ///
+    /// Without an override the trait default (`false`) stands and the agent
+    /// silently takes the blocking branch — the coding-agent providers would
+    /// appear not to stream, with nothing failing to explain why.
+    #[tokio::test]
+    async fn a_pair_of_streaming_providers_still_streams() {
+        let pair = LeadWorkerProvider::new(capability(true), capability(true), Some(1));
+        assert!(
+            pair.supports_streaming(),
+            "a lead/worker pair must forward the capability it wraps"
+        );
+
+        let stream = pair.stream("SYS", &[], &[]).await;
+        assert!(stream.is_ok(), "and stream() must reach the active provider");
+    }
+
+    /// If either half cannot stream, the pair must not claim it can.
+    ///
+    /// The answer is `&&`, not `||`: this is answered once per turn while the
+    /// active provider changes between turns, so claiming support because the
+    /// lead has it would send a worker-served turn into the trait's
+    /// `NotImplemented`.
+    #[tokio::test]
+    async fn a_pair_with_one_blocking_half_does_not_claim_streaming() {
+        let lead_only = LeadWorkerProvider::new(capability(true), capability(false), Some(1));
+        assert!(
+            !lead_only.supports_streaming(),
+            "a worker that cannot stream would hit NotImplemented on its turn"
+        );
+
+        let worker_only = LeadWorkerProvider::new(capability(false), capability(true), Some(1));
+        assert!(
+            !worker_only.supports_streaming(),
+            "and symmetrically for a non-streaming lead"
+        );
     }
 }

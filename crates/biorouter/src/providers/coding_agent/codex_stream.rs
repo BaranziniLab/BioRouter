@@ -690,10 +690,31 @@ impl CodexDecoder {
         let status = match status {
             Some("failed") => CodexTurnStatus::Failed,
             Some("interrupted") => CodexTurnStatus::Interrupted,
+            Some("completed") => CodexTurnStatus::Completed,
             // No status at all is the older success shape, not an unknown.
-            _ => CodexTurnStatus::Completed,
+            None => CodexTurnStatus::Completed,
+            // ⚠ An unrecognised status is NOT success. The v2 enum is
+            // completed|interrupted|failed|inProgress, so a bare `_ =>
+            // Completed` already swallowed `inProgress`, and would swallow any
+            // value a future Codex adds (`cancelled`, `moderated`, `expired`) —
+            // fail-open on exactly the vendor drift this module exists to catch.
+            // Reported as a failure naming the value, so an unknown state is
+            // visible instead of being presented to the user as a finished turn.
+            Some(_) => CodexTurnStatus::Failed,
         };
+        let unknown_status = matches!(status, CodexTurnStatus::Failed)
+            .then(|| str_at(params, &["turn", "status"]).or_else(|| str_at(params, &["status"])))
+            .flatten()
+            .filter(|s| *s != "failed")
+            .map(str::to_string);
         let error = (status == CodexTurnStatus::Failed).then(|| {
+            if let Some(unknown) = &unknown_status {
+                return format!(
+                    "the Codex turn ended with an unrecognised status `{unknown}` — \
+                     this build of Biorouter does not know whether that means the \
+                     turn succeeded"
+                );
+            }
             error_message(params.get("turn").and_then(|t| t.get("error")))
                 .or_else(|| error_message(params.get("error")))
                 // A failure with no message of its own is usually explained by
@@ -1193,6 +1214,46 @@ mod tests {
     }
 
     /// A clean completion is terminal without an error.
+    /// An unrecognised turn status must NOT be reported as success.
+    ///
+    /// The v2 enum is completed|interrupted|failed|inProgress, and a catch-all
+    /// mapping to `Completed` swallowed `inProgress` already — as well as any
+    /// value a future Codex adds. That is fail-open on precisely the vendor
+    /// drift this module exists to detect: the user would be shown a turn that
+    /// ended, with no indication that Biorouter did not understand how.
+    #[test]
+    fn an_unrecognised_turn_status_is_not_treated_as_success() {
+        for unknown in ["inProgress", "cancelled", "moderated"] {
+            let mut decoder = CodexDecoder::new();
+            let events = decoder.push(
+                "turn/completed",
+                &serde_json::json!({
+                    "threadId": "t-1",
+                    "turn": { "id": "turn-1", "status": unknown }
+                }),
+            );
+            let terminal = events
+                .iter()
+                .find_map(|e| match e {
+                    CodexEvent::Terminal(t) => Some(t),
+                    _ => None,
+                })
+                .expect("a terminal event");
+            assert_eq!(
+                terminal.status,
+                CodexTurnStatus::Failed,
+                "`{unknown}` is not a status this build understands, so it must \
+                 not be presented as a completed turn"
+            );
+            let message = terminal.error.as_deref().unwrap_or_default();
+            assert!(
+                message.contains(unknown),
+                "the failure must name the status Biorouter did not understand, \
+                 so the drift is diagnosable (got {message:?})"
+            );
+        }
+    }
+
     #[test]
     fn a_clean_turn_completed_is_terminal_without_an_error() {
         let mut d = CodexDecoder::new();
