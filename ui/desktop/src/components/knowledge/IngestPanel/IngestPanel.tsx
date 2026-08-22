@@ -58,25 +58,6 @@ export function IngestPanel() {
   const footerRef = useRef<HTMLDivElement>(null);
 
   /**
-   * Bring the paste box into view when it opens, clear of the pinned footer.
-   *
-   * ⚠ **Without this, "Paste text" read as a dead button.** The box mounts at
-   * the END of the rail's one scroll container, below the fold at ordinary
-   * window heights (measured: y=790 in an 887px window), and the footer is
-   * `sticky bottom-0` — so it paints over exactly the region the box lands in.
-   * The user clicked, nothing appeared to happen, and the textarea *and* its
-   * Stage button were reachable only by scrolling the rail to its end by hand.
-   *
-   * `scroll-margin-bottom` is what keeps the footer off it, and it is measured
-   * rather than guessed: the footer holds the model picker, the primary button
-   * and a helper line that comes and goes, so its height is a runtime fact.
-   * Written straight onto the node in a layout effect, before the scroll — a
-   * state round-trip would scroll against the previous frame's inset.
-   *
-   * `behavior` honours `prefers-reduced-motion`, and `scrollIntoView` is
-   * feature-detected because jsdom does not implement it.
-   */
-  /**
    * The digest log belongs to the base it ran against.
    *
    * Keyed on `primaryKbId` rather than on `dispatchKbId`, so the log clears the
@@ -89,13 +70,25 @@ export function IngestPanel() {
     resetStream();
   }, [primaryKbId, resetStream]);
 
+  /**
+   * Bring the paste box into view when it opens.
+   *
+   * ⚠ **The footer-inset measurement this effect used to carry is GONE**, and
+   * its absence is the point. The box mounts at the end of the scroller, and
+   * the footer used to be `sticky bottom-0` inside that same scroller — so it
+   * painted over exactly the region the box landed in, "Paste text" read as a
+   * dead button, and the cure was a runtime-measured `scroll-margin-bottom`
+   * written straight onto the node. R-06 made the footer a flex SIBLING of the
+   * scroller, so there is nothing left to be clear of. A scroll is still worth
+   * doing: the box can be below the fold on its own merits.
+   *
+   * `behavior` honours `prefers-reduced-motion`, and `scrollIntoView` is
+   * feature-detected because jsdom does not implement it.
+   */
   useLayoutEffect(() => {
     if (!showPasteBox) return;
     const box = pasteBoxRef.current;
-    if (!box) return;
-    const footer = footerRef.current?.getBoundingClientRect().height ?? 0;
-    box.style.setProperty('--br-ingest-footer-inset', `${Math.ceil(footer) + 12}px`);
-    if (typeof box.scrollIntoView !== 'function') return;
+    if (!box || typeof box.scrollIntoView !== 'function') return;
     const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false;
     box.scrollIntoView({ block: 'end', behavior: reduced ? 'auto' : 'smooth' });
   }, [showPasteBox]);
@@ -507,8 +500,8 @@ export function IngestPanel() {
   const failed = items.filter((item) => item.status === 'error');
 
   return (
-    <div className="flex flex-col">
-      <div className="flex flex-col gap-4 p-4">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
         <Dropzone onFiles={onFiles} onPathPickRequested={() => void onPathPickRequested()} />
         <Button
           data-testid="knowledge-ingest-paste-text"
@@ -529,11 +522,13 @@ export function IngestPanel() {
         />
 
         {showPasteBox && (
-          // `br-ingest-summoned` carries the scroll margin the effect above
+          // (the `br-ingest-summoned` scroll-margin hook is retired with the
+          // sticky footer that made it necessary — see the effect above)
+          // legacy note: `br-ingest-summoned` carried the scroll margin
           // fills in. AUTHORED CSS, never an arbitrary utility: a freshly
           // written class can silently fail to generate under
           // `BIOROUTER_NO_HMR`, and this one is the whole fix.
-          <div ref={pasteBoxRef} className="br-ingest-summoned">
+          <div ref={pasteBoxRef}>
             <PasteTextBox
               onCancel={() => setShowPasteBox(false)}
               onStage={(text, title, urls) => {
@@ -593,14 +588,16 @@ export function IngestPanel() {
         )}
       </div>
 
-      {/* Pinned. `sticky` rather than a sibling of the scroll box because the
-          rail owns one scroll container and the footer belongs to this panel;
-          it is the last child, so it paints above the body without a z-index —
-          and an off-scale z-index is exactly the value class that soft-locked
-          this app once already. */}
+      {/* ⚠ **A SIBLING, NOT `sticky`** (R-06). It was `sticky bottom-0` inside
+          the rail's scroll container, so it painted over the body by DOM order
+          and occluded 109–149px of it — which is how the summoned paste box
+          came to mount underneath it and read as a dead button. As a flex
+          sibling of the scroller it occupies its own space and can occlude
+          nothing, which is why the runtime footer-inset measurement this file
+          used to carry is gone. */}
       <div
         ref={footerRef}
-        className="sticky bottom-0 flex flex-col gap-2 border-t border-border-subtle bg-background-default p-4"
+        className="flex flex-none flex-col gap-2 border-t border-border-subtle bg-background-default p-4"
       >
         <IngestModelPicker
           value={model}

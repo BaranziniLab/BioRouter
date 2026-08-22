@@ -12,8 +12,8 @@ interface Props {
  * The Sources rail — the left column of the Knowledge workspace (ui-spec §4.4).
  *
  * A flat pane: `--radius-container`, one hairline, `box-shadow: none`. It owns
- * the `h-row` header strip and the single scroll container; the ingest panel
- * owns its own pinned footer inside it.
+ * the `h-row` header strip; the ingest panel owns the scroller and, beside it
+ * rather than inside it, the action footer.
  *
  * Body order is the specified one — tier control, then dropzone, paste, warnings,
  * staged list, digest progress. The **tier control comes first** and lives here
@@ -30,9 +30,17 @@ export function SourcesRail({ kb, className = '' }: Props) {
       <div className="flex h-row flex-none items-center justify-between gap-2 border-b border-border-subtle px-3">
         <h2 className="text-caps text-text-muted">Sources</h2>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      {/* ⚠ **THE RAIL NO LONGER OWNS ONE SCROLL CONTAINER** (R-06). It did, and
+          the ingest panel pinned its footer `sticky bottom-0` inside it — so the
+          footer painted OVER the body by DOM order and occluded 109–149px of the
+          scroll region. That already bit the paste box, which mounted at y=790
+          in an 887px window underneath the pinned strip and read as a dead
+          button, and was patched with a runtime-measured `scroll-margin-bottom`.
+          The footer is now a flex SIBLING of the scroller: it cannot occlude
+          anything, and the workaround is deleted rather than maintained. */}
+      <div className="flex min-h-0 flex-1 flex-col">
         {kb && (
-          <div className="px-4 pt-4">
+          <div className="flex-none px-4 pt-4">
             <KbTierPanel kb={kb} />
           </div>
         )}

@@ -433,7 +433,20 @@ describe('IngestPanel with an unresolvable knowledge base', () => {
  * scrolled to, and it asks with a scroll margin that clears the footer.
  */
 describe('IngestPanel paste box visibility', () => {
-  it('scrolls the summoned box into view, clear of the pinned footer', () => {
+  /**
+   * ⚠ **THE FOOTER-INSET HALF OF THIS TEST IS GONE, AND ITS ABSENCE IS THE
+   * FIX** (R-06). It asserted that a runtime-measured
+   * `--br-ingest-footer-inset` was written onto the summoned box, because the
+   * footer was `sticky bottom-0` inside the rail's one scroll container and
+   * painted over exactly the region the box landed in. The footer is now a flex
+   * SIBLING of the scroller and occludes nothing, so the property, the class
+   * hook and the measurement are all deleted rather than kept working.
+   *
+   * The scroll itself still earns a test: the box can be below the fold on its
+   * own merits, and `block: 'end'` is still the right edge to bring up because
+   * that is where its Stage button sits.
+   */
+  it('scrolls the summoned box into view', () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(Element.prototype, 'scrollIntoView', {
       configurable: true,
@@ -445,16 +458,23 @@ describe('IngestPanel paste box visibility', () => {
     fireEvent.click(screen.getByTestId('knowledge-ingest-paste-text'));
 
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
-    // `end`, not `start`: the box's BOTTOM edge is the one the footer covers,
-    // and it is the edge the Stage button sits on.
     expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'end' }));
+  });
 
-    const box = screen.getByPlaceholderText(/Paste knowledge/i).closest('.br-ingest-summoned');
-    expect(box).not.toBeNull();
-    // Measured from the footer rather than guessed. jsdom reports 0 height for
-    // everything, so the value here is only the +12px gutter — the assertion is
-    // that the property is SET, on the element the authored rule matches.
-    expect((box as HTMLElement).style.getPropertyValue('--br-ingest-footer-inset')).toMatch(/px$/);
+  /**
+   * The footer must not be able to occlude the body again. jsdom has no layout,
+   * so this is STRUCTURAL: `sticky` inside the scroller is the shape of the
+   * bug, and a sibling is the shape of the fix.
+   */
+  it('keeps the action footer out of the scroller rather than sticky inside it', () => {
+    render(<IngestPanel />);
+    const cta = screen.getByTestId('knowledge-digest-button');
+    const footer = cta.closest('div.border-t');
+    expect(footer).not.toBeNull();
+    expect(footer!.className).not.toContain('sticky');
+    expect(footer!.className).toContain('flex-none');
+    // …and it is not inside the element that scrolls.
+    expect(footer!.closest('.overflow-y-auto')).toBeNull();
   });
 
   it('puts the caret in the textarea without scrolling it back under the footer', () => {
