@@ -42,12 +42,13 @@ use rmcp::model::{Role, Tool};
 use serde_json::{json, Value};
 
 use super::base::{
-    ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderStreamItem,
-    ProviderUsage, Usage,
+    ConfigKey, MessageStream, ModelInfo, PendingToolCall, Provider, ProviderMetadata,
+    ProviderStreamItem, ProviderUsage, Usage,
 };
 use super::coding_agent::appserver::{AppServer, Inbound};
 use super::coding_agent::{
-    self, bridge, codex_stream, discovery, env as agent_env, transcript, CodingAgentKind,
+    self, bridge, codex_stream, discovery, env as agent_env, mirror, transcript,
+    CodingAgentKind,
 };
 use super::errors::ProviderError;
 use crate::agents::effort::ReasoningEffort;
@@ -725,10 +726,14 @@ impl CodexProvider {
                                 let _ = tx.send(Ok((None, Some(usage), None)));
                                 return Ok(());
                             }
-                            // Parked for phases 3 and 4; notices are advisory and
-                            // never end a turn.
-                            codex_stream::CodexEvent::Tool(_)
-                            | codex_stream::CodexEvent::Usage(_)
+                            codex_stream::CodexEvent::Tool(event) => {
+                                if !emit_codex_tool_event(*event, tx) {
+                                    return Ok(());
+                                }
+                            }
+                            // Usage is read from the decoder at the terminal
+                            // frame; notices are advisory and never end a turn.
+                            codex_stream::CodexEvent::Usage(_)
                             | codex_stream::CodexEvent::Notice { .. }
                             | codex_stream::CodexEvent::Ignored => {}
                         }
@@ -772,6 +777,114 @@ impl CodexProvider {
             ));
         }
         Ok(outcome)
+    }
+}
+
+/// The MCP server name Biorouter serves over the tool bridge.
+///
+/// A call from any *other* server is one the user configured in their own
+/// `~/.codex/config.toml`, which `thread_params` merges in rather than replacing.
+/// Those run inside the child and never reach Biorouter's gates, so they are
+/// attributed to the child, not to the bridge.
+const BRIDGE_SERVER: &str = "biorouter";
+
+/// How a Codex tool item is presented: the name on the card, the arguments to
+/// expand, and who actually ran it.
+fn codex_tool_identity(kind: &codex_stream::CodexToolKind) -> (String, Value, mirror::Execution) {
+    match kind {
+        codex_stream::CodexToolKind::McpToolCall { server, tool } => {
+            if server == BRIDGE_SERVER {
+                // Biorouter's own tool coming back around: it ran on Biorouter's
+                // side, behind every gate.
+                (
+                    mirror::display_tool_name(tool).to_string(),
+                    Value::Null,
+                    mirror::Execution::Bridged,
+                )
+            } else {
+                (
+                    format!("{server}__{tool}"),
+                    Value::Null,
+                    mirror::Execution::Child,
+                )
+            }
+        }
+        // Codex's built-ins cannot be switched off — only the read-only sandbox
+        // constrains them (see `thread_params`). They are shown because hiding
+        // what the child did would be worse, and marked `Child` because
+        // Biorouter neither approved nor executed them.
+        codex_stream::CodexToolKind::CommandExecution { command, cwd } => (
+            "exec".to_string(),
+            json!({ "command": command, "cwd": cwd }),
+            mirror::Execution::Child,
+        ),
+        codex_stream::CodexToolKind::FileChange { changes } => (
+            "apply_patch".to_string(),
+            json!({ "changes": changes }),
+            mirror::Execution::Child,
+        ),
+    }
+}
+
+/// Turn one decoded tool item into what the GUI draws.
+///
+/// `item/started` raises the skeleton card; `item/completed` mints the marked
+/// request/response pair that settles it. The pairing id is the Codex item id,
+/// which both halves carry.
+fn emit_codex_tool_event(
+    event: codex_stream::CodexToolEvent,
+    tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+) -> bool {
+    let (name, base_args, exec) = codex_tool_identity(&event.kind);
+
+    match event.lifecycle {
+        codex_stream::CodexItemLifecycle::Started => tx
+            .send(Ok((
+                None,
+                None,
+                Some(PendingToolCall {
+                    id: event.id,
+                    name,
+                    partial_args: None,
+                }),
+            )))
+            .is_ok(),
+        codex_stream::CodexItemLifecycle::Completed => {
+            // The completed frame carries the real arguments for an MCP call;
+            // for the built-ins the identity above already holds them.
+            let arguments = event.arguments.clone().unwrap_or(base_args);
+            let request = mirror::request_message(&event.id, &name, arguments, exec);
+            if tx.send(Ok((Some(request), None, None))).is_err() {
+                return false;
+            }
+
+            // A call is a failure if it said so, if it exited non-zero, or if an
+            // approval was declined — the last of which is not in the generated
+            // status enum but does appear on the wire.
+            let declined = event.status.as_deref() == Some("declined");
+            let failed = event.status.as_deref() == Some("failed");
+            let bad_exit = event.exit_code.is_some_and(|code| code != 0);
+            let is_error = event.error.is_some() || failed || bad_exit || declined;
+
+            let body = if let Some(error) = &event.error {
+                vec![rmcp::model::Content::text(error.clone())]
+            } else if let Some(output) = &event.aggregated_output {
+                vec![rmcp::model::Content::text(output.clone())]
+            } else if declined {
+                vec![rmcp::model::Content::text(
+                    "Biorouter declined this request: the child runs read-only, \
+                     and tools run on Biorouter's side of the bridge instead."
+                        .to_string(),
+                )]
+            } else if let Some(result) = &event.result {
+                mirror::content_from_value(result)
+            } else {
+                Vec::new()
+            };
+
+            let response = mirror::response_message(&event.id, body, is_error, exec);
+            tx.send(Ok((Some(response), None, None))).is_ok()
+        }
     }
 }
 
@@ -1671,6 +1784,30 @@ for line in sys.stdin:
               "params":{"threadId":"t-1","turnId":"turn-1",
                         "item":{"id":"msg_1","type":"agentMessage",
                                 "text":"Hello, world"}}})
+        # A bridged call: Biorouter's own tool, coming back over the bridge.
+        send({"jsonrpc":"2.0","method":"item/started",
+              "params":{"threadId":"t-1","turnId":"turn-1",
+                        "item":{"id":"call_1","type":"mcpToolCall",
+                                "server":"biorouter",
+                                "tool":"mcp__biorouter__developer__shell",
+                                "status":"inProgress"}}})
+        send({"jsonrpc":"2.0","method":"item/completed",
+              "params":{"threadId":"t-1","turnId":"turn-1",
+                        "item":{"id":"call_1","type":"mcpToolCall",
+                                "server":"biorouter",
+                                "tool":"mcp__biorouter__developer__shell",
+                                "status":"completed",
+                                "arguments":{"command":"ls"},
+                                "result":"a.txt"}}})
+        # A built-in the child ran itself, inside its sandbox, and that failed.
+        send({"jsonrpc":"2.0","method":"item/completed",
+              "params":{"threadId":"t-1","turnId":"turn-1",
+                        "item":{"id":"exec_1","type":"commandExecution",
+                                "command":"/bin/bash -lc \'rm x\'",
+                                "cwd":"/tmp",
+                                "status":"failed",
+                                "aggregatedOutput":"rm: x: No such file",
+                                "exitCode":1}}})
         # First model request.
         send({"jsonrpc":"2.0","method":"thread/tokenUsage/updated",
               "params":{"threadId":"t-1","tokenUsage":{
@@ -1790,5 +1927,108 @@ for line in sys.stdin:
             "and must be attributed to this provider, or a subscription turn is \
              priced as an API call"
         );
+    }
+    /// Only the assistant's prose is text; the tool traffic is cards.
+    fn tool_pairs(
+        messages: &[Message],
+    ) -> (
+        Vec<(String, String, Option<mirror::Execution>)>,
+        Vec<(String, bool)>,
+    ) {
+        let mut requests = Vec::new();
+        let mut responses = Vec::new();
+        for message in messages {
+            for content in &message.content {
+                match content {
+                    MessageContent::ToolRequest(r) => {
+                        let name = r
+                            .tool_call
+                            .as_ref()
+                            .map(|c| c.name.to_string())
+                            .unwrap_or_default();
+                        requests.push((r.id.clone(), name, mirror::request_execution(r)));
+                    }
+                    MessageContent::ToolResponse(r) => {
+                        let is_error = r
+                            .tool_result
+                            .as_ref()
+                            .ok()
+                            .and_then(|v| v.is_error)
+                            .unwrap_or(false);
+                        responses.push((r.id.clone(), is_error));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        (requests, responses)
+    }
+
+    /// A bridged call is shown under the name the user knows and marked as
+    /// having run behind Biorouter's gates.
+    #[tokio::test]
+    async fn a_bridged_call_is_mirrored_as_a_gated_card() {
+        let (messages, _) = drive().await;
+        let (requests, responses) = tool_pairs(&messages);
+
+        let call = requests
+            .iter()
+            .find(|(id, _, _)| id == "call_1")
+            .expect("the bridged call must appear as a card");
+        assert_eq!(
+            call.1, "developer__shell",
+            "the card shows the Biorouter tool name, not the child's MCP spelling"
+        );
+        assert_eq!(
+            call.2,
+            Some(mirror::Execution::Bridged),
+            "a call over the bridge ran behind Biorouter's inspectors and gates, \
+             and must say so"
+        );
+        assert!(
+            responses.iter().any(|(id, err)| id == "call_1" && !err),
+            "and it succeeded, so its card settles green"
+        );
+    }
+
+    /// A built-in the child ran itself is shown too — and marked `Child`, because
+    /// Biorouter neither approved nor executed it. Hiding it would be worse than
+    /// showing it; claiming Biorouter vetted it would be false.
+    #[tokio::test]
+    async fn a_child_executed_builtin_is_mirrored_and_attributed_to_the_child() {
+        let (messages, _) = drive().await;
+        let (requests, responses) = tool_pairs(&messages);
+
+        let exec = requests
+            .iter()
+            .find(|(id, _, _)| id == "exec_1")
+            .expect("the child's own command must still be visible");
+        assert_eq!(exec.1, "exec");
+        assert_eq!(
+            exec.2,
+            Some(mirror::Execution::Child),
+            "a sandboxed built-in never passed Biorouter's gates and must not be \
+             presented as though it had"
+        );
+        assert!(
+            responses.iter().any(|(id, err)| id == "exec_1" && *err),
+            "it exited non-zero, so its card must be red"
+        );
+    }
+
+    /// Nothing mirrored may be dispatchable: every mirrored request carries the
+    /// marker, or the agent loop would run it again.
+    #[tokio::test]
+    async fn every_mirrored_request_is_marked() {
+        let (messages, _) = drive().await;
+        let (requests, _) = tool_pairs(&messages);
+
+        assert!(!requests.is_empty(), "the turn made tool calls");
+        for (id, name, exec) in &requests {
+            assert!(
+                exec.is_some(),
+                "request {id} ({name}) is unmarked and the loop would execute it"
+            );
+        }
     }
 }
