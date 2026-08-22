@@ -573,6 +573,14 @@ where
 /// the two paths cost the same.
 #[derive(Default)]
 struct PendingArgs {
+    /// The display name, remembered from `content_block_start`.
+    ///
+    /// Carried on EVERY preview, not just the first. The shared Anthropic
+    /// decoder does the same (`formats/anthropic.rs` repeats `name.clone()` on
+    /// each throttled update), and a consumer that renders each notification as
+    /// a line — the CLI does, as `[tool] <name> …` — prints a blank one without
+    /// it. Measured against a live turn: three `[tool]  …` lines with no name.
+    name: String,
     text: String,
     /// Length at the last emit, for the size trigger.
     emitted_len: usize,
@@ -629,13 +637,20 @@ fn emit_tool_event(
 
     match event {
         claude_stream::ToolBlockEvent::Opened { id, name, .. } => {
-            partial_args.insert(id.clone(), PendingArgs::default());
+            let display = mirror::display_tool_name(&name).to_string();
+            partial_args.insert(
+                id.clone(),
+                PendingArgs {
+                    name: display.clone(),
+                    ..PendingArgs::default()
+                },
+            );
             send((
                 None,
                 None,
                 Some(PendingToolCall {
                     id,
-                    name: mirror::display_tool_name(&name).to_string(),
+                    name: display,
                     partial_args: None,
                 }),
             ))
@@ -646,16 +661,14 @@ fn emit_tool_event(
             let buffered = partial_args.entry(id.clone()).or_default();
             buffered.text.push_str(&partial_json);
             // Throttled, never per delta — see `PendingArgs`.
+            let name = buffered.name.clone();
             match buffered.take_due_snapshot() {
                 Some(snapshot) => send((
                     None,
                     None,
                     Some(PendingToolCall {
                         id,
-                        // The name is already on the card from `Opened`; the
-                        // store keys on the id, so repeating it is what keeps
-                        // the card stable while its arguments grow.
-                        name: String::new(),
+                        name,
                         partial_args: Some(snapshot),
                     }),
                 )),
@@ -1632,6 +1645,32 @@ mod pending_args_tests {
             bytes < 100_000,
             "the accumulated snapshots totalled {bytes} bytes for a 2000-byte \
              argument — that is the quadratic blow-up the throttle exists to stop"
+        );
+    }
+
+    /// Every preview carries the tool's name, not just the first.
+    ///
+    /// The GUI keys its card on the call id and ignores the name on updates, so
+    /// this looks free to omit — and the first implementation did omit it. The
+    /// CLI renders each notification as its own line (`[tool] <name> …`), so a
+    /// live turn printed three `[tool]  …` lines with a blank where the tool
+    /// name belongs. The shared Anthropic decoder repeats the name on every
+    /// throttled update; this keeps the two paths rendering identically.
+    #[test]
+    fn every_preview_carries_the_tool_name() {
+        let mut args = PendingArgs {
+            name: "developer__shell".to_string(),
+            ..PendingArgs::default()
+        };
+        args.text.push_str("{\"command\":");
+        assert!(
+            args.take_due_snapshot().is_some(),
+            "the first preview fires"
+        );
+        assert_eq!(
+            args.name, "developer__shell",
+            "the name must survive to every later preview, or a line-oriented \
+             consumer prints a blank where the tool name belongs"
         );
     }
 
