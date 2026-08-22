@@ -93,8 +93,13 @@ impl Execution {
     /// Parse the wire value. An unrecognised value is `None`, which the loop
     /// treats as "not mirrored" — the fail-safe direction is to dispatch nothing
     /// only when we positively recognise the marker.
+    ///
+    /// Named `from_wire` rather than `from_str` so it is not mistaken for
+    /// `std::str::FromStr`, whose contract this deliberately does not follow: an
+    /// unknown value here is a `None` the caller treats as "not mirrored", not a
+    /// parse error.
     #[must_use]
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn from_wire(value: &str) -> Option<Self> {
         match value {
             "bridged" => Some(Execution::Bridged),
             "child" => Some(Execution::Child),
@@ -114,7 +119,7 @@ fn read(metadata: Option<&ProviderMetadata>) -> Option<Execution> {
     metadata
         .and_then(|m| m.get(PROVIDER_EXECUTED_KEY))
         .and_then(serde_json::Value::as_str)
-        .and_then(Execution::from_str)
+        .and_then(Execution::from_wire)
 }
 
 /// Stamp a request the child already made.
@@ -351,9 +356,9 @@ mod tests {
     fn the_wire_values_are_stable() {
         assert_eq!(Execution::Bridged.as_str(), "bridged");
         assert_eq!(Execution::Child.as_str(), "child");
-        assert_eq!(Execution::from_str("bridged"), Some(Execution::Bridged));
-        assert_eq!(Execution::from_str("child"), Some(Execution::Child));
-        assert_eq!(Execution::from_str("Bridged"), None);
+        assert_eq!(Execution::from_wire("bridged"), Some(Execution::Bridged));
+        assert_eq!(Execution::from_wire("child"), Some(Execution::Child));
+        assert_eq!(Execution::from_wire("Bridged"), None);
     }
 }
 
@@ -558,10 +563,12 @@ pub fn content_from_value(value: &serde_json::Value) -> Vec<rmcp::model::Content
         serde_json::Value::String(text) => vec![rmcp::model::Content::text(text.clone())],
         serde_json::Value::Array(blocks) => blocks
             .iter()
-            .map(|block| match block.get("text").and_then(serde_json::Value::as_str) {
-                Some(text) => rmcp::model::Content::text(text.to_string()),
-                None => rmcp::model::Content::text(block.to_string()),
-            })
+            .map(
+                |block| match block.get("text").and_then(serde_json::Value::as_str) {
+                    Some(text) => rmcp::model::Content::text(text.to_string()),
+                    None => rmcp::model::Content::text(block.to_string()),
+                },
+            )
             .collect(),
         other => vec![rmcp::model::Content::text(other.to_string())],
     }

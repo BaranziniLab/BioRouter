@@ -47,8 +47,7 @@ use super::base::{
 };
 use super::coding_agent::appserver::{AppServer, Inbound};
 use super::coding_agent::{
-    self, bridge, codex_stream, discovery, env as agent_env, mirror, transcript,
-    CodingAgentKind,
+    self, bridge, codex_stream, discovery, env as agent_env, mirror, transcript, CodingAgentKind,
 };
 use super::errors::ProviderError;
 use crate::agents::effort::ReasoningEffort;
@@ -642,7 +641,12 @@ impl CodexProvider {
 
         let start = server.request(
             "turn/start",
-            Self::turn_params(&thread_id, prompt, model.reasoning_effort, &model.model_name),
+            Self::turn_params(
+                &thread_id,
+                prompt,
+                model.reasoning_effort,
+                &model.model_name,
+            ),
         );
         let pump = Self::stream_pump(server, &model.model_name, tx);
 
@@ -717,10 +721,7 @@ impl CodexProvider {
                                 }
                                 // The authoritative usage goes last, so it is the
                                 // snapshot the agent keeps.
-                                let usage = decoder
-                                    .usage()
-                                    .map(|u| u.usage.clone())
-                                    .unwrap_or_default();
+                                let usage = decoder.usage().map(|u| u.usage).unwrap_or_default();
                                 let mut usage = ProviderUsage::new(model_name.to_string(), usage);
                                 usage.provider = Some(KIND.provider_id().to_string());
                                 let _ = tx.send(Ok((None, Some(usage), None)));
@@ -1928,13 +1929,21 @@ for line in sys.stdin:
              priced as an API call"
         );
     }
+    /// One tool card as the assertions care about it.
+    struct Card {
+        id: String,
+        name: String,
+        execution: Option<mirror::Execution>,
+    }
+
+    /// One settled result: the call id and whether it failed.
+    struct Settled {
+        id: String,
+        failed: bool,
+    }
+
     /// Only the assistant's prose is text; the tool traffic is cards.
-    fn tool_pairs(
-        messages: &[Message],
-    ) -> (
-        Vec<(String, String, Option<mirror::Execution>)>,
-        Vec<(String, bool)>,
-    ) {
+    fn tool_pairs(messages: &[Message]) -> (Vec<Card>, Vec<Settled>) {
         let mut requests = Vec::new();
         let mut responses = Vec::new();
         for message in messages {
@@ -1946,7 +1955,11 @@ for line in sys.stdin:
                             .as_ref()
                             .map(|c| c.name.to_string())
                             .unwrap_or_default();
-                        requests.push((r.id.clone(), name, mirror::request_execution(r)));
+                        requests.push(Card {
+                            id: r.id.clone(),
+                            name,
+                            execution: mirror::request_execution(r),
+                        });
                     }
                     MessageContent::ToolResponse(r) => {
                         let is_error = r
@@ -1955,7 +1968,10 @@ for line in sys.stdin:
                             .ok()
                             .and_then(|v| v.is_error)
                             .unwrap_or(false);
-                        responses.push((r.id.clone(), is_error));
+                        responses.push(Settled {
+                            id: r.id.clone(),
+                            failed: is_error,
+                        });
                     }
                     _ => {}
                 }
@@ -1973,20 +1989,20 @@ for line in sys.stdin:
 
         let call = requests
             .iter()
-            .find(|(id, _, _)| id == "call_1")
+            .find(|c| c.id == "call_1")
             .expect("the bridged call must appear as a card");
         assert_eq!(
-            call.1, "developer__shell",
+            call.name, "developer__shell",
             "the card shows the Biorouter tool name, not the child's MCP spelling"
         );
         assert_eq!(
-            call.2,
+            call.execution,
             Some(mirror::Execution::Bridged),
             "a call over the bridge ran behind Biorouter's inspectors and gates, \
              and must say so"
         );
         assert!(
-            responses.iter().any(|(id, err)| id == "call_1" && !err),
+            responses.iter().any(|r| r.id == "call_1" && !r.failed),
             "and it succeeded, so its card settles green"
         );
     }
@@ -2001,17 +2017,17 @@ for line in sys.stdin:
 
         let exec = requests
             .iter()
-            .find(|(id, _, _)| id == "exec_1")
+            .find(|c| c.id == "exec_1")
             .expect("the child's own command must still be visible");
-        assert_eq!(exec.1, "exec");
+        assert_eq!(exec.name, "exec");
         assert_eq!(
-            exec.2,
+            exec.execution,
             Some(mirror::Execution::Child),
             "a sandboxed built-in never passed Biorouter's gates and must not be \
              presented as though it had"
         );
         assert!(
-            responses.iter().any(|(id, err)| id == "exec_1" && *err),
+            responses.iter().any(|r| r.id == "exec_1" && r.failed),
             "it exited non-zero, so its card must be red"
         );
     }
@@ -2024,10 +2040,12 @@ for line in sys.stdin:
         let (requests, _) = tool_pairs(&messages);
 
         assert!(!requests.is_empty(), "the turn made tool calls");
-        for (id, name, exec) in &requests {
+        for card in &requests {
             assert!(
-                exec.is_some(),
-                "request {id} ({name}) is unmarked and the loop would execute it"
+                card.execution.is_some(),
+                "request {} ({}) is unmarked and the loop would execute it",
+                card.id,
+                card.name
             );
         }
     }

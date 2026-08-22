@@ -158,7 +158,10 @@ fn a_mirrored_turn_has_the_same_shape_as_an_api_provider_turn() {
         "a coding-agent turn must reach the GUI in the same shape as an API \
          provider's — same card, same tool name, same settled state"
     );
-    assert_eq!(mirrored.cards, vec![("developer__shell".to_string(), false)]);
+    assert_eq!(
+        mirrored.cards,
+        vec![("developer__shell".to_string(), false)]
+    );
     assert!(mirrored.every_card_settles);
 }
 

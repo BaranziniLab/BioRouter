@@ -2,8 +2,9 @@
 
 > **What this is.** The mechanism behind the two subscription-billed providers — what each one
 > spawns, where each vendor's credential lives and who reads it, how the CLI is located without
-> spawning anything, how a BioRouter conversation becomes one prompt, and how usage is accounted
-> for a turn that billed no tokens.
+> spawning anything, how a BioRouter conversation becomes one prompt, how a turn streams and its
+> tool calls are mirrored into the transcript, and how usage is accounted for a turn that billed no
+> tokens.
 > **Status:** Current.
 > **Audience:** developers working on the provider layer, and maintainers verifying the
 > integration.
@@ -113,16 +114,22 @@ route. The SDK would also be worse here: it directs third-party developers to AP
 authentication under Anthropic's Commercial Terms, and the npm package ships nothing but the same
 binary anyway.
 
-One turn is one `claude -p` invocation. Every argument is fixed except the output format, and the
+One turn is one `claude -p` invocation. Every argument the builder produces is fixed except the
+output format — the streaming path appends `--include-partial-messages` and `--verbose` afterwards
+and changes nothing else — and the
 prompt goes on **stdin**, never in `argv` — a flattened conversation can exceed the platform's
 argv limit. The full argument list and the security reasoning for four of the flags are on
 [what the child agent may not do](child-agent-isolation.md).
 
-The result is read from `--output-format json`: BioRouter scans the emitted lines for the
+There are two output formats, and the ordinary chat path takes the streaming one.
+`--output-format json` gives one result object per turn: BioRouter scans the emitted lines for the
 `system`/`init` frame (which carries `apiKeySource`), any `system`/`api_retry` frame (which
 carries an error category), and the `result` object (which carries the answer text and the
-authoritative usage). stderr is drained **concurrently** with stdout, so the CLI's own
-diagnostic survives a failure and a chatty child cannot deadlock on a full pipe.
+authoritative usage). `--output-format stream-json`, with `--include-partial-messages` and
+`--verbose`, gives the same information as a stream of framed events — see
+[a turn streams](#a-turn-streams-and-its-tool-calls-are-mirrored) below. In both cases stderr is
+drained **concurrently** with stdout, so the CLI's own diagnostic survives a failure and a chatty
+child cannot deadlock on a full pipe.
 
 ### Codex: `codex app-server`
 
@@ -159,6 +166,45 @@ vendors' terms target, so BioRouter says who it is.
 `app-server` also exposes `account/read`, `account/rateLimits/read` and `model/list`, and its
 whole protocol can be regenerated with `codex app-server generate-json-schema --out DIR` rather
 than reverse-engineered.
+
+## A turn streams, and its tool calls are mirrored
+
+Both providers implement `Provider::stream()` and report `supports_streaming() == true`
+(`crates/biorouter/src/providers/claude_code.rs:764,794`,
+`crates/biorouter/src/providers/codex.rs:999,1017`), so the agent takes the streaming branch. What
+the user sees is what an API provider gives: markdown appearing as the model writes it, and a tool
+card for every call the child makes — visible the moment it is made, resolving to success or
+failure, expandable to its arguments and its result.
+
+**Text and thinking.** Claude Code's `stream_event` frames wrap raw Anthropic Messages-API events,
+so `coding_agent/claude_stream.rs` unwraps them and feeds the decoder the Anthropic provider already
+uses. Codex's `item/agentMessage/delta` and `item/reasoning/*` notifications are decoded by
+`coding_agent/codex_stream.rs`. Every chunk of one answer carries a stable message id, which is what
+merges the chunks into a single row instead of one row per token.
+
+**Tool calls: the mirror.** Neither child's calls can be dispatched by the agent loop, because the
+child already ran them — a bridged call executed on BioRouter's side of
+[the tool bridge](tool-bridge.md), behind the inspectors, permission mode, `.biorouterignore`, vault
+and privacy Gate C, before the frame describing it ever reached this crate. So the provider *mirrors*
+the call instead: it mints an already-resolved `ToolRequest` / `ToolResponse` message pair, of
+exactly the kind every API provider produces, which the existing tool-card components render with no
+frontend change.
+
+Each half of the pair carries a marker — the reserved `biorouterProviderExecuted` key in the
+per-tool provider metadata, valued `bridged` or `child`
+(`crates/biorouter/src/providers/coding_agent/mirror.rs:63`). The agent loop honours it by
+persisting and yielding the message and dispatching nothing
+(`crates/biorouter/src/agents/agent.rs:7182-7202`). Without the marker the loop would dispatch the
+mirrored request — a second, real execution of a call that already ran, because
+`categorize_tool_requests` filters on message content and never reads metadata. The full reasoning,
+the `bridged`/`child` distinction and the remaining gaps are on
+[the tool bridge](tool-bridge.md#the-mirror-how-a-bridged-call-becomes-a-visible-card).
+
+⚠ **The bridge URL is read at construction time, never from a poll.** `Agent::reply` scopes the URL
+around the call that *builds* the stream, not around consuming it, so both `stream()`
+implementations read the URL and spawn the child before returning the stream. The same applies to
+the turn ceiling: the blocking path's 30-minute timeout wraps an await the streaming path never
+reaches, so each `stream()` carries its own deadline (`claude_code.rs:891-902`, `codex.rs:649-659`).
 
 ## The conversation becomes one prompt
 
@@ -338,8 +384,10 @@ could be forgotten from.
   measurements behind them.
 - [Compliance: vendor terms, BAA and PHI](compliance.md) — why the credential handling above is
   the compliance boundary, and why both providers are `Public`.
-- [Performance, limits and known gaps](performance-and-limits.md) — latency, prompt overhead and
-  the absence of streaming.
+- [Performance, limits and known gaps](performance-and-limits.md) — latency, prompt overhead, and
+  what the streaming path does and does not cover.
+- [Streaming and tool-call parity](streaming-and-tool-call-parity.md) — the design record behind the
+  streaming path and the mirror, and what was deliberately deferred.
 - [Model provider integration references](../README.md) — the parent folder and the API-key
   provider references.
 - [Subagents](../../agent-loop/subagents.md) — the delegation mechanism the section above

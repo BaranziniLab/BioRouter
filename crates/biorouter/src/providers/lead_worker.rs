@@ -914,7 +914,10 @@ mod tests {
         );
 
         let stream = pair.stream("SYS", &[], &[]).await;
-        assert!(stream.is_ok(), "and stream() must reach the active provider");
+        assert!(
+            stream.is_ok(),
+            "and stream() must reach the active provider"
+        );
     }
 
     /// If either half cannot stream, the pair must not claim it can.

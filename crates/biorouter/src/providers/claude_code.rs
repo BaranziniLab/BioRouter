@@ -633,6 +633,174 @@ fn emit_tool_event(
     }
 }
 
+/// Everything the stdout pump owns for the length of one turn.
+///
+/// A struct rather than six positional arguments because every one of these
+/// is load-bearing for a *different* reason, and a positional list invites
+/// dropping one: the child must be owned here so aborting the task reaps it,
+/// and the bridge config file must be owned here because dropping the
+/// `NamedTempFile` deletes the MCP configuration out from under a child that
+/// is still starting.
+struct PumpInputs {
+    child: tokio::process::Child,
+    bridge_config: Option<tempfile::NamedTempFile>,
+    stdout: tokio::process::ChildStdout,
+    stderr_task: tokio::task::JoinHandle<String>,
+    model_name: String,
+    out_tx: tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+}
+
+/// Read the child's stdout to the end of the turn, emitting stream items.
+///
+/// Owns the child, so aborting this task drops it and `kill_on_drop(true)`
+/// reaps it — which is how a cancelled turn stops a `claude` that would
+/// otherwise keep spending the user's own subscription quota.
+async fn pump_claude_stdout(inputs: PumpInputs) {
+    let PumpInputs {
+        child,
+        bridge_config,
+        stdout,
+        stderr_task,
+        model_name,
+        out_tx,
+    } = inputs;
+    let (line_tx, line_rx) = tokio::sync::mpsc::unbounded_channel::<anyhow::Result<String>>();
+    // Moved in so they live exactly as long as the read loop: the child
+    // (rule 2) and the bridge config file, whose deletion on drop would
+    // pull the MCP configuration out from under a child that is still
+    // starting.
+    let _bridge_config = bridge_config;
+    let mut child = child;
+    let mut router = claude_stream::ClaudeStreamRouter::new();
+    let mut lines = BufReader::new(stdout).lines();
+    let mut decoded = Box::pin(
+        crate::providers::formats::anthropic::response_to_streaming_message(
+            tokio_stream::wrappers::UnboundedReceiverStream::new(line_rx),
+        ),
+    );
+    // Partial arguments per in-flight call, so the skeleton card can show
+    // them arriving.
+    let mut partial_args: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    let deadline = tokio::time::Instant::now() + TURN_TIMEOUT;
+    let mut terminal: Option<Result<ProviderUsage, ProviderError>> = None;
+
+    loop {
+        let next = tokio::time::timeout_at(deadline, lines.next_line()).await;
+        let line = match next {
+            // Rule 3: the ceiling, inside the stream.
+            Err(_) => {
+                let _ = child.start_kill();
+                terminal = Some(Err(ProviderError::ExecutionError(format!(
+                    "`claude` did not finish within {}s and was stopped",
+                    TURN_TIMEOUT.as_secs()
+                ))));
+                break;
+            }
+            Ok(Ok(Some(line))) => line,
+            Ok(Ok(None)) => break,
+            Ok(Err(e)) => {
+                terminal = Some(Err(ProviderError::ExecutionError(format!(
+                    "reading `claude` output failed: {e}"
+                ))));
+                break;
+            }
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        match router.push_line(&line) {
+            claude_stream::RoutedFrame::AnthropicEvent(data) => {
+                if line_tx.send(Ok(data)).is_err() {
+                    break;
+                }
+                if !drain_ready(&mut decoded, &out_tx) {
+                    break;
+                }
+            }
+            claude_stream::RoutedFrame::Tool(event) => {
+                // Order first: everything the decoder already produced
+                // belongs before this card.
+                if !drain_ready(&mut decoded, &out_tx) {
+                    break;
+                }
+                if !emit_tool_event(event, &mut partial_args, &out_tx) {
+                    break;
+                }
+            }
+            claude_stream::RoutedFrame::Init { api_key_source } => {
+                // The subscription refusal, run at the same point the
+                // blocking path runs it: before any answer is shown.
+                if let Err(e) =
+                    ClaudeCodeProvider::assert_subscription_auth(api_key_source.as_deref())
+                {
+                    let _ = child.start_kill();
+                    terminal = Some(Err(e));
+                    break;
+                }
+            }
+            claude_stream::RoutedFrame::Terminal(frame) => {
+                terminal = Some(match frame.error {
+                    Some(err) => Err(ClaudeCodeProvider::classify(
+                        err.category.as_deref(),
+                        err.detail,
+                    )),
+                    None => {
+                        let mut usage = ProviderUsage::new(model_name.clone(), frame.usage);
+                        usage.provider = Some(KIND.provider_id().to_string());
+                        Ok(usage)
+                    }
+                });
+                break;
+            }
+            claude_stream::RoutedFrame::Ignored => {}
+        }
+    }
+
+    // Closing the line channel ends the decoder stream; draining it to
+    // completion is what flushes any text still buffered inside it.
+    drop(line_tx);
+    while let Some(item) = futures::StreamExt::next(&mut decoded).await {
+        let item = item.map_err(|e| ProviderError::RequestFailed(e.to_string()));
+        if out_tx.send(item).is_err() {
+            return;
+        }
+    }
+
+    // The authoritative usage (and any failure) goes last, so it is the
+    // snapshot the agent keeps.
+    let terminal = resolve_terminal(terminal, stderr_task).await;
+    let _ = out_tx.send(terminal.map(|usage| (None, Some(usage), None)));
+}
+
+/// Settle what the turn ended as, once the child's stdout has closed.
+///
+/// Split out so the pump stays under the per-function line budget the repo
+/// enforces (`scripts/clippy-lint.sh` runs a `too_many_lines` baseline, and the
+/// fix for growing past it is to extract rather than to widen the baseline).
+async fn resolve_terminal(
+    terminal: Option<Result<ProviderUsage, ProviderError>>,
+    stderr_task: tokio::task::JoinHandle<String>,
+) -> Result<ProviderUsage, ProviderError> {
+    match terminal {
+        Some(terminal) => terminal,
+        // stdout closed without a `result` frame. stderr is the only explanation
+        // a silent child leaves behind, so it is worth waiting for here — and
+        // only here, because on every other path it would just delay the answer.
+        None => {
+            let detail = stderr_task.await.unwrap_or_default();
+            let detail = detail.trim();
+            Err(ProviderError::RequestFailed(if detail.is_empty() {
+                "`claude` produced no result".to_string()
+            } else {
+                format!("`claude` produced no result: {detail}")
+            }))
+        }
+    }
+}
+
 /// `Ok(None)` means this turn has no bridge — a CLI process with no HTTP server, or
 /// an agent that did not establish one. The child then runs with no tools at all,
 /// which is the correct degradation rather than an error.
@@ -867,132 +1035,19 @@ impl Provider for ClaudeCodeProvider {
         // item, which is what keeps the two in step.
         let (out_tx, out_rx) =
             tokio::sync::mpsc::unbounded_channel::<Result<ProviderStreamItem, ProviderError>>();
-        let (line_tx, line_rx) = tokio::sync::mpsc::unbounded_channel::<anyhow::Result<String>>();
 
-        let reader = tokio::spawn(async move {
-            // Moved in so they live exactly as long as the read loop: the child
-            // (rule 2) and the bridge config file, whose deletion on drop would
-            // pull the MCP configuration out from under a child that is still
-            // starting.
-            let _bridge_config = bridge_config;
-            let mut child = child;
-            let mut router = claude_stream::ClaudeStreamRouter::new();
-            let mut lines = BufReader::new(stdout).lines();
-            let mut decoded = Box::pin(
-                crate::providers::formats::anthropic::response_to_streaming_message(
-                    tokio_stream::wrappers::UnboundedReceiverStream::new(line_rx),
-                ),
-            );
-            // Partial arguments per in-flight call, so the skeleton card can show
-            // them arriving.
-            let mut partial_args: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
-
-            let deadline = tokio::time::Instant::now() + TURN_TIMEOUT;
-            let mut terminal: Option<Result<ProviderUsage, ProviderError>> = None;
-
-            loop {
-                let next = tokio::time::timeout_at(deadline, lines.next_line()).await;
-                let line = match next {
-                    // Rule 3: the ceiling, inside the stream.
-                    Err(_) => {
-                        let _ = child.start_kill();
-                        terminal = Some(Err(ProviderError::ExecutionError(format!(
-                            "`claude` did not finish within {}s and was stopped",
-                            TURN_TIMEOUT.as_secs()
-                        ))));
-                        break;
-                    }
-                    Ok(Ok(Some(line))) => line,
-                    Ok(Ok(None)) => break,
-                    Ok(Err(e)) => {
-                        terminal = Some(Err(ProviderError::ExecutionError(format!(
-                            "reading `claude` output failed: {e}"
-                        ))));
-                        break;
-                    }
-                };
-                if line.trim().is_empty() {
-                    continue;
-                }
-
-                match router.push_line(&line) {
-                    claude_stream::RoutedFrame::AnthropicEvent(data) => {
-                        if line_tx.send(Ok(data)).is_err() {
-                            break;
-                        }
-                        if !drain_ready(&mut decoded, &out_tx) {
-                            break;
-                        }
-                    }
-                    claude_stream::RoutedFrame::Tool(event) => {
-                        // Order first: everything the decoder already produced
-                        // belongs before this card.
-                        if !drain_ready(&mut decoded, &out_tx) {
-                            break;
-                        }
-                        if !emit_tool_event(event, &mut partial_args, &out_tx) {
-                            break;
-                        }
-                    }
-                    claude_stream::RoutedFrame::Init { api_key_source } => {
-                        // The subscription refusal, run at the same point the
-                        // blocking path runs it: before any answer is shown.
-                        if let Err(e) =
-                            ClaudeCodeProvider::assert_subscription_auth(api_key_source.as_deref())
-                        {
-                            let _ = child.start_kill();
-                            terminal = Some(Err(e));
-                            break;
-                        }
-                    }
-                    claude_stream::RoutedFrame::Terminal(frame) => {
-                        terminal = Some(match frame.error {
-                            Some(err) => Err(ClaudeCodeProvider::classify(
-                                err.category.as_deref(),
-                                err.detail,
-                            )),
-                            None => {
-                                let mut usage = ProviderUsage::new(model_name.clone(), frame.usage);
-                                usage.provider = Some(KIND.provider_id().to_string());
-                                Ok(usage)
-                            }
-                        });
-                        break;
-                    }
-                    claude_stream::RoutedFrame::Ignored => {}
-                }
-            }
-
-            // Closing the line channel ends the decoder stream; draining it to
-            // completion is what flushes any text still buffered inside it.
-            drop(line_tx);
-            while let Some(item) = futures::StreamExt::next(&mut decoded).await {
-                let item = item.map_err(|e| ProviderError::RequestFailed(e.to_string()));
-                if out_tx.send(item).is_err() {
-                    return;
-                }
-            }
-
-            let terminal = match terminal {
-                Some(terminal) => terminal,
-                // stdout closed without a `result` frame. stderr is the only
-                // explanation a silent child leaves behind, so it is worth
-                // waiting for here and nowhere else.
-                None => {
-                    let detail = stderr_task.await.unwrap_or_default();
-                    let detail = detail.trim();
-                    Err(ProviderError::RequestFailed(if detail.is_empty() {
-                        "`claude` produced no result".to_string()
-                    } else {
-                        format!("`claude` produced no result: {detail}")
-                    }))
-                }
-            };
-            // The authoritative usage (and any failure) goes last, so it is the
-            // snapshot the agent keeps.
-            let _ = out_tx.send(terminal.map(|usage| (None, Some(usage), None)));
-        });
+        // The reader is a free function rather than an inline closure: this
+        // generator is on `Agent::reply`'s poll path, where frame size is a
+        // real constraint (issue #87), and a 120-line closure body would sit
+        // in it.
+        let reader = tokio::spawn(pump_claude_stdout(PumpInputs {
+            child,
+            bridge_config,
+            stdout,
+            stderr_task,
+            model_name,
+            out_tx,
+        }));
 
         let guard = coding_agent::AbortOnDrop(reader.abort_handle());
         let stream = async_stream::try_stream! {
@@ -1476,7 +1531,11 @@ mod streaming_tests {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/coding_agent/claude")
             .join(format!("{cell}.ndjson"));
-        assert!(fixture.exists(), "missing fixture cell: {}", fixture.display());
+        assert!(
+            fixture.exists(),
+            "missing fixture cell: {}",
+            fixture.display()
+        );
 
         let mut script = tempfile::NamedTempFile::new().expect("temp script");
         writeln!(script, "#!/bin/sh").unwrap();
@@ -1609,8 +1668,7 @@ mod streaming_tests {
              per-token cost for a run that billed a subscription"
         );
         assert!(
-            last.usage.input_tokens.unwrap_or(0) > 0
-                || last.usage.output_tokens.unwrap_or(0) > 0,
+            last.usage.input_tokens.unwrap_or(0) > 0 || last.usage.output_tokens.unwrap_or(0) > 0,
             "the terminal frame carries real token counts"
         );
     }
@@ -1791,7 +1849,10 @@ mod cancellation_tests {
         // leak that is entirely its own doing. `stream()` already returns a
         // `Pin<Box<_>>`, which is `Unpin`, so it can be polled and dropped
         // directly.
-        let mut stream = provider.stream("SYS", &messages, &[]).await.expect("stream");
+        let mut stream = provider
+            .stream("SYS", &messages, &[])
+            .await
+            .expect("stream");
 
         // Read until the first text arrives, so the child is definitely running
         // and the turn is definitely mid-flight.
@@ -1845,7 +1906,10 @@ mod cancellation_tests {
         };
         let messages = vec![Message::user().with_text("hello")];
 
-        let stream = provider.stream("SYS", &messages, &[]).await.expect("stream");
+        let stream = provider
+            .stream("SYS", &messages, &[])
+            .await
+            .expect("stream");
 
         // Give the child long enough to start and record its pid.
         let mut pid = None;

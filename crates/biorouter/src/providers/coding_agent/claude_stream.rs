@@ -1393,14 +1393,14 @@ mod tests {
             ("turn-tools", 1, 1),
             ("turn-tool-error", 1, 1),
         ];
-    
+
         for (cell, min_forwarded, min_tool) in expectations {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/coding_agent/claude")
                 .join(format!("{cell}.ndjson"));
             let body = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-    
+
             let mut router = ClaudeStreamRouter::new();
             let (mut forwarded, mut tool_events) = (0usize, 0usize);
             for line in body.lines().filter(|l| !l.trim().is_empty()) {
@@ -1410,7 +1410,7 @@ mod tests {
                     _ => {}
                 }
             }
-    
+
             assert_eq!(
                 router.unhandled(),
                 0,
@@ -1431,7 +1431,7 @@ mod tests {
             );
         }
     }
-    
+
     /// **The invariant that keeps the whole design safe**, asserted directly on the
     /// recorded frames: not one `tool_use` event may reach the Anthropic decoder.
     ///
@@ -1441,12 +1441,17 @@ mod tests {
     /// and marked; this is the other half of that guarantee.
     #[test]
     fn no_tool_use_event_reaches_the_text_decoder_in_any_recorded_cell() {
-        for cell in ["turn-text", "turn-thinking", "turn-tools", "turn-tool-error"] {
+        for cell in [
+            "turn-text",
+            "turn-thinking",
+            "turn-tools",
+            "turn-tool-error",
+        ] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/coding_agent/claude")
                 .join(format!("{cell}.ndjson"));
             let body = std::fs::read_to_string(&path).expect("fixture");
-    
+
             let mut router = ClaudeStreamRouter::new();
             for line in body.lines().filter(|l| !l.trim().is_empty()) {
                 if let RoutedFrame::AnthropicEvent(data) = router.push_line(line) {

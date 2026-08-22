@@ -18,8 +18,11 @@ still fires.
 
 ## Claude Code: the arguments, and which ones are load-bearing
 
-Every invocation is `claude -p` with the following. Only the output format varies between call
-paths, and a unit test pins that it is the only axis that varies.
+Every invocation is `claude -p` with the following. The **argument builder** varies on exactly one
+axis — the output format — and a unit test pins that
+(`the_output_format_is_the_only_axis_that_varies`,
+`crates/biorouter/src/providers/claude_code.rs:1250-1267`). The streaming path then appends two more
+flags after the builder has run; see below.
 
 | Argument | Purpose | Security-relevant |
 | --- | --- | --- |
@@ -31,7 +34,9 @@ paths, and a unit test pins that it is the only axis that varies.
 | `--permission-mode bypassPermissions` | Only alongside `--mcp-config`; see [the tool bridge](tool-bridge.md#transport-loopback-http-and-the-url-is-the-credential). | — |
 | `--system-prompt <prompt>` | Replace Claude Code's default prompt with BioRouter's. | — |
 | `--no-session-persistence` | Do not write the CLI's own session files. | — |
-| `--output-format json` | One result object per turn (`stream-json` on the streaming path). | — |
+| `--output-format json` \| `stream-json` | One result object per turn on the blocking path; framed events on the streaming path. | — |
+| `--include-partial-messages` | Streaming path only. Turns the `stream_event` frames on. | — |
+| `--verbose` | Streaming path only. Required by the CLI alongside `stream-json` under `--print`. | — |
 | `--model <id>` | The model chosen in BioRouter. | — |
 
 ### `--setting-sources ""` — without it, a `-p` run executes the working directory's hooks
@@ -107,6 +112,24 @@ call** and BioRouter's measured **1,527**.
 transcript on disk would be governed by none of BioRouter's controls — not compaction, not message
 editing, not `.biorouterignore`-driven redaction.
 
+### The streaming path adds two flags and removes none
+
+The streaming invocation is the same argument list with `--output-format stream-json` and two
+additions, appended in `ClaudeCodeProvider::stream`
+(`crates/biorouter/src/providers/claude_code.rs:815-823`):
+
+- **`--include-partial-messages`** is what makes the path live at all. Without it, `stream-json`
+  still emits only whole messages, and the turn would arrive in one piece exactly as the blocking
+  path's does. With it, the CLI wraps raw Anthropic Messages-API events in a `stream_event`
+  envelope, which is what BioRouter decodes.
+- **`--verbose`** is required by the CLI alongside `stream-json` under `--print`; it is a
+  format precondition, not a logging preference.
+
+Neither is security-relevant on its own, and that is the point worth stating: **every isolation flag
+above is present unchanged on the streaming path**. `--setting-sources ""`, `--strict-mcp-config`,
+`--tools ""` and the absence of `--bare` are properties of the shared builder that both paths call,
+so a streamed turn is isolated exactly as a blocking one is.
+
 ## Codex: the thread parameters
 
 Codex is configured at `thread/start` rather than by flags. Four values are decisions rather than
@@ -154,7 +177,10 @@ Isolation is not a sandbox, and this section is the honest statement of the boun
   rather than replacing it — so every MCP server the user has declared there is loaded into the
   child as well, and its tools run outside BioRouter's inspectors, permission mode,
   `.biorouterignore` and vault. Measured against codex 0.147.0 with a canary server in a scratch
-  `CODEX_HOME`. The intended fix is to give the child a scratch `CODEX_HOME` holding only its auth
+  `CODEX_HOME`. Since the mirror landed the gap is at least *visible*: such a call now appears in
+  the transcript as a tool card marked `child`, meaning it passed none of BioRouter's gates
+  (`crates/biorouter/src/providers/codex.rs:793-826`). Visibility is not enforcement — the call has
+  already happened by the time the card is drawn. The intended fix is to give the child a scratch `CODEX_HOME` holding only its auth
   file; that needs a live signed-in Codex to validate, because a scratch home that loses the
   credential breaks the provider outright. Until it lands, **treat a Codex child as having whatever
   reach the user's own MCP configuration grants it**, and prefer Claude Code where that matters.

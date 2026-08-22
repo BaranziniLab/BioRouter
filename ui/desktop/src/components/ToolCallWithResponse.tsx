@@ -162,6 +162,61 @@ function normalizeExecutedCalls(value: unknown): ExecutedToolCall[] {
   });
 }
 
+/**
+ * The reserved per-tool provider-metadata key a coding-agent provider stamps on
+ * a **mirrored** tool call — one the child agent already executed, replayed into
+ * the transcript so the ordinary card can draw it.
+ *
+ * ⚠ Must match `mirror::PROVIDER_EXECUTED_KEY` in
+ * `crates/biorouter/src/providers/coding_agent/mirror.rs`. It rides
+ * `ToolRequest.metadata` / `ToolResponse.metadata`, which are already part of
+ * the serialized schema, so nothing here needs a generated type.
+ */
+const PROVIDER_EXECUTED_KEY = 'biorouterProviderExecuted';
+
+/**
+ * Who ran a mirrored call, and therefore which guarantees hold.
+ *
+ * `bridged` — it crossed Biorouter's tool bridge and passed its inspectors,
+ * permission mode, `.biorouterignore`, vault and privacy Gate C. Identical in
+ * every way to a call an API provider made, so it MUST render identically: no
+ * badge, no extra chrome.
+ *
+ * `child` — it ran inside the child agent's own sandbox (Codex's
+ * `exec`/`apply_patch`, or an MCP server configured in the user's own
+ * `~/.codex/config.toml`) and passed NONE of those gates. That is the one
+ * honest difference in this feature, and the card says so.
+ */
+export type ProviderExecution = 'bridged' | 'child';
+
+/**
+ * Read the mirror marker off a request/response pair.
+ *
+ * Both halves are stamped, so a row read on its own carries its own provenance;
+ * the request is preferred only because it is always present. An unrecognised
+ * value is `null` — same fail-safe direction the backend takes: we only claim a
+ * provenance we positively recognise.
+ */
+export function providerExecutionOf(
+  toolRequest?: Pick<ToolRequestMessageContent, 'metadata'>,
+  toolResponse?: Pick<ToolResponseMessageContent, 'metadata'>
+): ProviderExecution | null {
+  for (const carrier of [toolRequest, toolResponse]) {
+    const value = carrier?.metadata?.[PROVIDER_EXECUTED_KEY];
+    if (value === 'child' || value === 'bridged') return value;
+  }
+  return null;
+}
+
+/**
+ * The full sentence behind the row's short label. Kept out of the visible row
+ * because D-17 says a tool call is a LINE, not a card — the row states the fact,
+ * the tooltip explains it.
+ */
+const CHILD_EXECUTED_TITLE =
+  "This tool ran inside the coding agent's own sandbox. Biorouter's inspectors, " +
+  'permission mode, .biorouterignore and privacy gates did not apply to it.';
+
 function normalizedToolResultValue(toolResult: unknown): Record<string, unknown> | null {
   const result = recordOf(toolResult);
   if (!result) return null;
@@ -417,6 +472,7 @@ function ToolCallWithResponseContent({
             sessionId,
             toolCall,
             toolResponse,
+            providerExecution: providerExecutionOf(toolRequest, toolResponse),
             notifications,
             isStreamingMessage,
             turnActive,
@@ -554,6 +610,13 @@ interface ToolCallViewProps {
    */
   isStreamingMessage?: boolean;
   turnActive?: boolean;
+  /**
+   * Set only for a MIRRORED call — one a coding-agent provider replayed after
+   * its child had already run it. `null` for every ordinary provider, and
+   * `'bridged'` renders exactly as `null` does by design (see
+   * {@link ProviderExecution}).
+   */
+  providerExecution?: ProviderExecution | null;
   onOpenArtifact?: (artifact: ArtifactSource) => void;
   workingDir?: string;
 }
@@ -838,6 +901,7 @@ function ToolCallView({
   toolResponse,
   notifications,
   turnActive = false,
+  providerExecution = null,
   onOpenArtifact,
   workingDir,
 }: ToolCallViewProps) {
@@ -1008,6 +1072,22 @@ function ToolCallView({
             )}
           >
             · {liveDetail}
+          </span>
+        )}
+        {/* The ONE deliberate visual difference in the whole mirror feature. A
+            `child` call ran in the coding agent's own sandbox and passed none of
+            Biorouter's gates, and a person reading a command row is entitled to
+            know that. Quiet by design — muted text in the row's own type, no
+            badge, no colour, no outline (D-17: a tool call is a line, not a
+            card) — because it states a provenance, not a failure. `bridged`
+            passed every gate an API provider's call passes, so it renders with
+            nothing here at all. */}
+        {providerExecution === 'child' && (
+          <span
+            className="shrink-0 whitespace-nowrap pl-1 text-text-muted/70"
+            title={CHILD_EXECUTED_TITLE}
+          >
+            · not gated by Biorouter
           </span>
         )}
       </span>

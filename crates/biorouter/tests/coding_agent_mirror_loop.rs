@@ -33,9 +33,7 @@ use biorouter::config::permission::PermissionManager;
 use biorouter::config::BioRouterMode;
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::model::ModelConfig;
-use biorouter::providers::base::{
-    MessageStream, Provider, ProviderMetadata, ProviderUsage, Usage,
-};
+use biorouter::providers::base::{MessageStream, Provider, ProviderMetadata, ProviderUsage, Usage};
 use biorouter::providers::coding_agent::mirror::{self, Execution};
 use biorouter::providers::errors::ProviderError;
 use biorouter::session::session_manager::SessionType;

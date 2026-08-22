@@ -7,8 +7,14 @@
 > provider is selected. Grounded in a read of this tree, of get-bb/bb (commit `3f86b7c`,
 > 2026-08-21, which already streams both vendors on subscriptions), and of the vendors' own
 > wire protocols (Claude Code 2.1.235/2.1.238, Codex CLI 0.147.0/0.149.0).
-> **Status:** Proposed. Nothing here is implemented; every "today" claim is cited to a line
-> in this worktree.
+> **Status:** Partly implemented. Phases 0–4 have shipped — both providers stream, and the
+> child's tool calls are mirrored into the transcript as marked message pairs; phases 5–7
+> are in progress. See [what shipped](#what-shipped) immediately below. This page is kept as
+> the **design record**: every "today" claim in the analysis sections describes the tree
+> *before* this work, and is retained for the reasoning rather than as a description of the
+> running system. For the running system read
+> [how it works](how-it-works.md#a-turn-streams-and-its-tool-calls-are-mirrored) and
+> [the tool bridge](tool-bridge.md#the-mirror-how-a-bridged-call-becomes-a-visible-card).
 > **Audience:** developers working on the coding-agent providers.
 
 bb proves the premise: the same consumer subscriptions, the same CLIs, live streaming. The
@@ -16,6 +22,56 @@ gap is entirely on BioRouter's side, and it is two independent gaps — the prov
 ask the CLIs for streaming output (and discard the streamed frames the CLIs send anyway),
 and a bridged tool call executes on a path that emits nothing the agent loop, the session
 store, or the GUI ever sees.
+
+## What shipped
+
+Option A — the mirror — was built. Phases 0–4 are on the branch; everything below this
+section is the analysis and the plan as written before that work, preserved unchanged.
+
+**Done:**
+
+- **Recorded fixtures** for both vendors, under
+  `crates/biorouter/tests/fixtures/coding_agent/`, with their own README. Every decoder rule
+  is tested against real vendor frames rather than against a fake's idea of them.
+- **`ClaudeCodeProvider::stream()`** (`claude_code.rs:794`), invoking the CLI with
+  `stream-json --include-partial-messages --verbose` and routing frames through
+  `coding_agent/claude_stream.rs`, which diverts every `tool_use` content-block event away
+  from the reused Anthropic decoder before it can mint an unmarked, dispatchable
+  `ToolRequest`.
+- **`CodexProvider::stream()`** (`codex.rs:1017`) over the push-based
+  `coding_agent/codex_stream.rs` decoder, replacing the `absorb` fold. The protocol fixes
+  found by this research landed with it: approvals answered in shapes the schema defines
+  (`"decline"`, not the invalid `"denied"`, `codex.rs:424-445`), and usage read from
+  `thread/tokenUsage/updated` with `turn/completed.usage` kept as the fallback.
+- **The mirror marker** (`coding_agent/mirror.rs`): the reserved `biorouterProviderExecuted`
+  key in the existing per-tool provider metadata, with `bridged` and `child` values, the
+  pair builders, and the fail-safe "any mirrored content suppresses dispatch" predicate.
+- **The agent loop's one new branch** (`agent.rs:7182-7202`): a message carrying mirrored
+  content is persisted and yielded, never dispatched.
+- **Codex child-executed built-ins** are mirrored too, marked `child`
+  (`codex.rs:789-826`) — `exec`, `apply_patch`, and any MCP server from the user's own
+  `~/.codex/config.toml`.
+- **In-stream turn ceilings** in both providers (`claude_code.rs:891-902`,
+  `codex.rs:649-659`), because the blocking path's timeouts wrap awaits the streaming path
+  never reaches.
+- **Lead/worker forwarding** (`lead_worker.rs:410-412`): the pair streams only when both
+  halves do.
+- **No schema change was needed.** `metadata` was already a free-form object on
+  `ToolRequest` and `ToolResponse` in the generated OpenAPI schema, so the marker rides the
+  existing serialized shape and no client regeneration was required.
+
+**Not done, and deliberately so:**
+
+- **Interactive approval of a bridged call.** `needs_approval` is still refused rather than
+  parked (`bridge.rs:336`); the refusal is now a visible red card instead of silence. Option
+  B remains the design if this is ever wanted.
+- **A GUI label separating `bridged` from `child` cards.** The marker is persisted, but no
+  component reads it yet, so a Codex `exec` card looks like any other card. This is phase 4's
+  one visual change and it has not landed.
+- **Cooperative interrupt.** Cancellation is still the hard backstop — dropping the stream
+  aborts the reader, which drops the child, which `kill_on_drop(true)` reaps. Codex's
+  `turn/interrupt` is not wired (phase 5).
+- **The parity gate in CI** and the browser sweep (phases 6 and 7's remaining items).
 
 ## Summary
 
@@ -65,7 +121,7 @@ store, or the GUI ever sees.
   *child-executed* cards without having passed BioRouter's permission or privacy gates,
   because they never did (an existing, documented gap, now visible instead of silent).
 
-## Why there is no streaming today
+## Why there was no streaming, before this work
 
 The chain has four links, each cited:
 
@@ -108,7 +164,7 @@ before returning the stream** — never from a poll — while the `BridgeLease` 
 stream consumption because `Agent::reply` binds it as a loop-body local before the scope
 (`agent.rs:7049-7069`).
 
-### Today: Claude Code
+### Before: Claude Code
 
 ```text
 Agent::reply                    ClaudeCodeProvider              claude -p child            tool_bridge route (other task)
@@ -126,7 +182,7 @@ Agent::reply                    ClaudeCodeProvider              claude -p child 
   | stream_from_single_message → one item; text appears all at once |                          |
 ```
 
-### Today: Codex
+### Before: Codex
 
 ```text
 Agent::reply                    CodexProvider                   codex app-server           tool_bridge route
@@ -141,7 +197,7 @@ Agent::reply                    CodexProvider                   codex app-server
   |<- ONE (Message[joined text], usage) (:684-688)                  |                          |
 ```
 
-## Why tool calls are invisible today
+## Why tool calls were invisible, before this work
 
 **The bridge executes the child's call inside the provider call and emits nothing.** A
 bridged `tools/call` arrives on an axum handler that deliberately takes no `AppState`
@@ -820,11 +876,11 @@ the loop-guard machinery — benign today, worth a glance in review.
   plan replaces, including the flattening and usage arithmetic.
 - [Installing and signing in](installing-and-signing-in.md) — the setup states the
   streaming path inherits unchanged.
-- [The tool bridge](tool-bridge.md) — the relay whose calls the mirror design makes
-  visible; its footer's streaming claim is corrected by phase 7.
+- [The tool bridge](tool-bridge.md) — the relay whose calls the mirror makes visible, and
+  the current description of the marker, the two execution kinds and the remaining gaps.
 - [What the child agent may not do](child-agent-isolation.md) — the isolation flags the
   streaming invocation must carry verbatim.
 - [Compliance: vendor terms, BAA and PHI](compliance.md) — why both providers stay
   `ProviderTier::Public` regardless of streaming.
-- [Performance, limits and known gaps](performance-and-limits.md) — the "no streaming yet"
-  section this plan retires.
+- [Performance, limits and known gaps](performance-and-limits.md) — what the shipped
+  streaming path costs, and the limits it does not remove.

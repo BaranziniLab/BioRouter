@@ -3,8 +3,9 @@
 > **What this is.** How BioRouter's own extensions — SPOKE, UCSF OMOP, knowledge, Auto Visualiser,
 > any marketplace plugin — reach a child coding agent while BioRouter still executes them behind
 > its inspectors, permission mode, `.biorouterignore`, vault and privacy gates. Why MCP is the only
-> channel that can do this, why the capability travels in the URL rather than a header, and why a
-> call needing human approval is refused rather than parked.
+> channel that can do this, why the capability travels in the URL rather than a header, how a
+> bridged call becomes a visible tool card without being executed twice, and why a call needing
+> human approval is refused rather than parked.
 > **Status:** Current.
 > **Audience:** developers working on the coding-agent providers, the extension layer, or the
 > daemon's routes.
@@ -111,6 +112,76 @@ matters: a JSON-RPC error is a transport failure the child may retry or treat as
 whereas `isError` is a result the model reads and can act on. It is how the model learns to ask the
 user instead of retrying.
 
+## The mirror: how a bridged call becomes a visible card
+
+For a long time a bridged call was completely invisible. It ran on a different task from the turn
+that issued the grant, nothing on that path yielded an agent event or persisted a message, and the
+GUI showed a spinner and then an answer — with no record that a tool had run at all.
+
+The mirror closes that. As the child's stream reports each call, the provider mints an ordinary
+**`ToolRequest` / `ToolResponse` message pair** carrying the call id, the tool name with the
+`mcp__biorouter__` prefix stripped, the arguments and the result. Those are the same message types
+every API provider produces, so the existing tool cards render them with no frontend change: a
+skeleton the moment the tool's name is known, then a loading card, then a green or red card that
+expands to the exact arguments and output. The pair persists like any other tool traffic, so
+reopening the session shows the same cards, and the transcript flattener carries it into the next
+turn's prompt as `[called tool: …]` / `[tool result: …]` — which is what stops the child re-running
+lookups it has already done.
+
+A failed call is recorded as a **successful transport carrying `isError: true`**, not as a
+transport-level error. That is the shape the card reads to colour itself, and it keeps the failure
+text readable in the card body instead of collapsing it to an error string
+(`crates/biorouter/src/providers/coding_agent/mirror.rs:417-450`).
+
+### Why the pair carries a marker
+
+Each mirrored `ToolRequest` and `ToolResponse` carries a reserved key,
+`biorouterProviderExecuted`, in the per-tool provider metadata the types already had
+(`mirror.rs:63`). Its value is `bridged` for a call that ran on BioRouter's side of the bridge, and
+`child` for one that ran inside the child's own sandbox.
+
+The marker is not decoration. **An unmarked `ToolRequest` in a turn's response is dispatched by the
+agent loop**, and `categorize_tool_requests` filters on message content only — it never reads
+metadata. So a mirrored pair without the marker is either a `Tool '…' not found` error row (with the
+bridge prefix intact) or a genuine **second execution** of a call the bridge already ran. A shell
+command run twice is not a display glitch. The loop's one new branch asks
+`mirror::contains_provider_executed` and, for a message carrying any mirrored content, persists and
+yields it while dispatching nothing (`crates/biorouter/src/agents/agent.rs:7182-7202`).
+
+Two design choices are worth knowing before touching this:
+
+- **The predicate is "any", not "all".** A message that somehow mixed marked and unmarked content
+  dispatches nothing at all. The worst case is then a card whose tool did not run — visible, and a
+  decoder bug — rather than a command that ran twice, which is invisible and unrecoverable.
+- **The marker is deliberately *not* a `MessageProvenance` variant.** That type is BR-71's
+  security-purposed cross-session stamp, whose presence already means something specific to merge
+  boundaries and the subagent surfaces, and whose unknown kinds degrade to `None`. Overloading a
+  security signal with a display one would also lose the stamp silently on an older reader. The
+  metadata home needed no schema change: `metadata` was already a free-form object on both types in
+  the generated OpenAPI schema, so no client regeneration was required.
+
+### `bridged` and `child` are different guarantees
+
+| Marker | What ran, and under what | Where it comes from |
+| --- | --- | --- |
+| `bridged` | A BioRouter tool, executed by BioRouter's dispatcher behind every gate in the table above. | Claude Code's `tool_use`/`tool_result` frames; Codex `mcpToolCall` items whose server is `biorouter`. |
+| `child` | Something the child ran itself, under **none** of BioRouter's gates: Codex's `exec`/`apply_patch` inside its read-only sandbox, and any MCP server the user configured in their own `~/.codex/config.toml`. | Codex `commandExecution` / `fileChange` items, and `mcpToolCall` items from any other server (`crates/biorouter/src/providers/codex.rs:789-826`). |
+
+Showing a `child` call is a deliberate honesty choice: it happened whether or not BioRouter drew it,
+and hiding it would be worse. It is not an endorsement, and the distinction is real rather than
+cosmetic. ⚠ **The GUI does not yet draw a label separating the two** — the marker rides in the
+persisted metadata, but a card reading `exec` looks like any other card today. Until that label
+lands, read `exec` and `apply_patch` cards on a Codex turn as child-executed.
+
+### What the mirror does not fix
+
+A call routed to `needs_approval` is still refused rather than prompting, exactly as described
+above. What changed is only the reporting: the refusal now shows as a red card naming the tool,
+instead of vanishing into a turn that quietly did less than the user thought. Interactive approval
+of a bridged call would require parking the child's HTTP request until a human answers, which is a
+separate design and deliberately deferred — see
+[streaming and tool-call parity](streaming-and-tool-call-parity.md).
+
 ## Transport: loopback HTTP, and the URL is the credential
 
 The bridge is an HTTP endpoint on the daemon — `POST /tool_bridge/{nonce}` — rather than a spawned
@@ -182,16 +253,21 @@ trait has no session in scope — `complete_with_model` receives a system prompt
 and nothing else — so `Agent::reply` scopes the URL around the call it makes into the provider.
 
 The scope wraps the awaited call that *builds* the response, not the consumption of what that call
-returns. A `stream()` implementation may therefore read the URL (it runs inside the scope, and is
-where the child would be spawned); a poll of the returned stream may not, because by then the scope
-is gone. The lease itself is not the constraint — `Agent::reply` binds it before the scope and it
-lives to the end of that loop iteration, which outlasts stream consumption.
+returns. A `stream()` implementation therefore reads the URL and spawns the child inside the scope,
+**before returning the stream**; a poll of the returned stream may not read it, because by then the
+scope is gone. Both providers do exactly that, and each says so in its own `stream()` header
+(`crates/biorouter/src/providers/coding_agent/bridge.rs:625`,
+`crates/biorouter/src/providers/claude_code.rs:770-777`). The lease itself is not the constraint —
+`Agent::reply` binds it before the scope and it lives to the end of that loop iteration, which
+outlasts stream consumption.
 
 ## Where the code is
 
 | Concern | File |
 | --- | --- |
 | Grants, leases, the nonce, the task-local | [`crates/biorouter/src/providers/coding_agent/bridge.rs`](../../../crates/biorouter/src/providers/coding_agent/bridge.rs) |
+| The mirror marker, and the request/response pair builders | [`crates/biorouter/src/providers/coding_agent/mirror.rs`](../../../crates/biorouter/src/providers/coding_agent/mirror.rs) |
+| The loop branch that persists a mirrored pair without dispatching it | [`crates/biorouter/src/agents/agent.rs`](../../../crates/biorouter/src/agents/agent.rs) |
 | The HTTP/JSON-RPC endpoint | [`crates/biorouter-server/src/routes/tool_bridge.rs`](../../../crates/biorouter-server/src/routes/tool_bridge.rs) |
 | Handing the URL to Claude Code | [`crates/biorouter/src/providers/claude_code.rs`](../../../crates/biorouter/src/providers/claude_code.rs) |
 | Handing the URL to Codex | [`crates/biorouter/src/providers/codex.rs`](../../../crates/biorouter/src/providers/codex.rs) |
@@ -211,4 +287,6 @@ accepts them, so it is not reachable yet.
   grant samples once.
 - [Extensions](../../extensions/README.md) — the tools that become available to a child for free.
 - [Performance, limits and known gaps](performance-and-limits.md) — what a large tool surface costs
-  in prompt tokens, and why there is no streaming.
+  in prompt tokens, and what the streaming path does and does not cover.
+- [Streaming and tool-call parity](streaming-and-tool-call-parity.md) — the design record behind the
+  mirror, including the two alternatives that were rejected.

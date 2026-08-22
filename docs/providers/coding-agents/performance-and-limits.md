@@ -1,8 +1,9 @@
 # Performance, limits and known gaps
 
 > **What this is.** What these two providers cost in latency and prompt tokens, measured rather than
-> estimated; why conversation history is flattened into one prompt each turn; why there is no
-> streaming yet; and the failure modes worth recognising before diagnosing them as something else.
+> estimated; why conversation history is flattened into one prompt each turn; what the streaming path
+> does and does not cover; and the failure modes worth recognising before diagnosing them as
+> something else.
 > **Status:** Current. The figures below are single-machine measurements taken during
 > implementation, quoted so a later change can be compared against something; re-measure before
 > treating any of them as a budget.
@@ -92,25 +93,54 @@ Two details of the flattening are worth knowing when output looks odd:
   transcript instead of answering it. Tool traffic is included as text, capped at 4,000 characters
   per result, so one huge SQL or shell result cannot evict the actual conversation.
 
-## There is no streaming yet
+## Streaming: what is live, and what it does not change
 
-Both providers are non-streaming: the answer appears when the turn completes. `supports_streaming()`
-returns false, so the agent takes the blocking branch.
+Both providers stream. Each overrides `supports_streaming()` to return true
+(`crates/biorouter/src/providers/claude_code.rs:764`, `crates/biorouter/src/providers/codex.rs:999`)
+and implements `stream()` (`claude_code.rs:794`, `codex.rs:1017`), so the agent takes the streaming
+branch and text appears as the model writes it rather than when the child exits. Tool calls stream
+with it: each one the child makes is mirrored into the transcript as an ordinary tool card the
+moment it is made, and resolves to success or failure in place — see
+[the mirror](tool-bridge.md#the-mirror-how-a-bridged-call-becomes-a-visible-card).
 
-This is unfinished work rather than a structural obstacle, and an earlier version of this page
-overstated the difficulty by blaming the bridge. It does not: `Agent::reply` binds the bridge lease
-before the task-local scope and it lives to the end of that loop iteration, which outlasts stream
-consumption, and a `stream()` implementation runs *inside* the scope — so it can read the URL and
-spawn the child exactly as `complete()` does. The one real rule is that the URL must be captured at
-construction time, never read from inside a poll.
+The two providers differ only in what they decode:
 
-What is genuinely left is the parsing. For Claude Code most of it already exists: the CLI's
-`--output-format stream-json` emits raw Anthropic frames inside a `stream_event` envelope, so
-unwrapping the envelope and feeding `providers::formats::anthropic::response_to_streaming_message`
-reuses the decoder the Anthropic provider already uses — and the argument builder already takes the
-output format as its only varying axis. For Codex the equivalent is the `item/agentMessage/delta`
-and `item/reasoning/textDelta` notifications the app server already sends and the provider currently
-ignores. Cancellation would want wiring at the same time.
+- **Claude Code** is invoked with `--output-format stream-json` plus `--include-partial-messages`
+  and `--verbose` (`claude_code.rs:815-823`). The CLI then emits raw Anthropic Messages events
+  wrapped in a `stream_event` envelope, and `coding_agent/claude_stream.rs` unwraps them into the
+  same `providers::formats::anthropic` decoder the Anthropic provider uses — for text and thinking
+  only, because that decoder would otherwise mint tool requests the agent loop would dispatch a
+  second time.
+- **Codex** decodes the `item/agentMessage/delta`, `item/reasoning/*` and tool-item notifications
+  the app server was already sending and the old fold discarded (`coding_agent/codex_stream.rs`).
+
+What streaming does **not** change:
+
+- **The process launch is still there.** Streaming removes the wait for the whole turn, not the
+  ~3.5 s cold start before the first token can exist. Short turns still feel disproportionately
+  slow.
+- **The turn ceiling moved rather than went away.** The blocking path's 30-minute timeout wraps an
+  await the streaming path never reaches, so each `stream()` carries the same ceiling inside itself
+  (`claude_code.rs:891-902`, `codex.rs:649-659`). A wedged child is still reaped at 30 minutes.
+- **A lead/worker pair streams only if both halves do.** `LeadWorkerProvider` forwards
+  `supports_streaming()` as the **conjunction** of the two providers
+  (`crates/biorouter/src/providers/lead_worker.rs:410-412`), so pairing a coding agent with a
+  non-streaming provider gives a blocking turn.
+
+Two limits remain, and both are honest gaps rather than oversights:
+
+- **A bridged call needing human approval is still refused, not parked**
+  (`crates/biorouter/src/providers/coding_agent/bridge.rs:336`). The refusal is now visible as a
+  red card naming the tool instead of vanishing, which is an improvement in reporting and not in
+  capability.
+- **Codex's own sandboxed built-ins are shown, and they passed none of BioRouter's gates.** They
+  carry a `child` execution marker in the mirrored pair's metadata, but the GUI does not yet draw a
+  label distinguishing them from a bridged call — a card reading `exec` is a command Codex ran
+  inside its read-only sandbox.
+
+Cancellation is still the hard backstop rather than a cooperative one: dropping the provider stream
+aborts the reader task, which drops the child, which `kill_on_drop(true)` reaps. Codex's
+`turn/interrupt` is not wired.
 
 ## Failure modes worth recognising
 
@@ -128,8 +158,10 @@ ignores. Cancellation would want wiring at the same time.
 
 - [How the coding-agent providers work](how-it-works.md) — the mechanism these costs come from,
   including the flattening and the usage arithmetic.
-- [The tool bridge](tool-bridge.md) — the grant lifetime that currently prevents streaming, and what
-  a large tool surface buys.
+- [The tool bridge](tool-bridge.md) — the grant lifetime and the construction-time rule a `stream()`
+  obeys, the mirror that makes bridged calls visible, and what a large tool surface buys.
+- [Streaming and tool-call parity](streaming-and-tool-call-parity.md) — the design record behind the
+  streaming path, including what shipped and what was deliberately deferred.
 - [What the child agent may not do](child-agent-isolation.md) — the flags behind the prompt saving.
 - [Installing and signing in](installing-and-signing-in.md) — the setup-side failure modes in the
   table above.
