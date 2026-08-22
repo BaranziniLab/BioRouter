@@ -131,7 +131,6 @@ fn api_provider_turn(tool: &str, failed: bool) -> Vec<Message> {
 /// mirror is exercised.
 #[cfg(unix)]
 async fn mirrored_turn_from_fixture(cell: &str) -> Vec<Message> {
-    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
 
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -139,17 +138,23 @@ async fn mirrored_turn_from_fixture(cell: &str) -> Vec<Message> {
         .join(format!("{cell}.ndjson"));
     assert!(fixture.exists(), "missing fixture: {}", fixture.display());
 
-    let mut script = tempfile::NamedTempFile::new().expect("temp script");
-    writeln!(script, "#!/bin/sh").unwrap();
-    writeln!(script, "cat {}", fixture.display()).unwrap();
-    writeln!(script, "cat > /dev/null").unwrap();
-    script.flush().unwrap();
-    let mut perms = std::fs::metadata(script.path()).unwrap().permissions();
+    // ⚠ `fs::write` into a directory, never a `NamedTempFile`: the latter keeps
+    // the file open read-write, and Linux refuses to `exec` a file open for
+    // writing (`ETXTBSY` / "Text file busy"). macOS allows it, so this fails
+    // only on the Linux CI job.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let script = dir.path().join("fake-claude");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\ncat {}\ncat > /dev/null\n", fixture.display()),
+    )
+    .expect("write the fake CLI");
+    let mut perms = std::fs::metadata(&script).unwrap().permissions();
     perms.set_mode(0o755);
-    std::fs::set_permissions(script.path(), perms).unwrap();
+    std::fs::set_permissions(&script, perms).unwrap();
 
     let provider = biorouter::providers::claude_code::ClaudeCodeProvider::for_tests(
-        script.path().to_path_buf(),
+        script.clone(),
         "claude-sonnet-4-6",
     );
 

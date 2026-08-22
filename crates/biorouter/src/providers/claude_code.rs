@@ -1668,15 +1668,44 @@ mod pending_args_tests {
 mod streaming_tests {
     use super::*;
     use futures::StreamExt;
-    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+
+    /// A written, executable stand-in for a vendor CLI.
+    ///
+    /// ⚠ **Written with `fs::write` into a directory, never a `NamedTempFile`.**
+    /// A `NamedTempFile` holds the file open read-write for as long as it lives,
+    /// and Linux refuses to `exec` a file that any process has open for
+    /// writing — `ETXTBSY`, surfaced as `Text file busy (os error 26)`. macOS
+    /// permits it, so the bug is invisible locally and fails the whole Linux
+    /// test job. `fs::write` closes the handle before it returns; the `TempDir`
+    /// is kept only so the directory outlives the child.
+    struct FakeCli {
+        _dir: tempfile::TempDir,
+        path: std::path::PathBuf,
+    }
+
+    impl FakeCli {
+        fn new(body: &str) -> Self {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = dir.path().join("fake-cli");
+            std::fs::write(&path, body).expect("write the fake CLI");
+            let mut perms = std::fs::metadata(&path).expect("stat").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).expect("chmod");
+            Self { _dir: dir, path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
 
     /// A stand-in for the `claude` binary that prints one fixture cell and exits.
     ///
     /// It ignores its arguments and its stdin, which is exactly what makes it a
     /// replay: the frames are fixed, so any difference in what the provider
     /// produces is the provider's doing.
-    fn fake_claude(cell: &str) -> tempfile::NamedTempFile {
+    fn fake_claude(cell: &str) -> FakeCli {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/coding_agent/claude")
             .join(format!("{cell}.ndjson"));
@@ -1686,20 +1715,15 @@ mod streaming_tests {
             fixture.display()
         );
 
-        let mut script = tempfile::NamedTempFile::new().expect("temp script");
-        writeln!(script, "#!/bin/sh").unwrap();
-        // `cat` the fixture, then drain stdin so the prompt writer never sees a
-        // broken pipe before it finishes.
-        writeln!(script, "cat {}", fixture.display()).unwrap();
-        writeln!(script, "cat > /dev/null").unwrap();
-        script.flush().unwrap();
-        let mut perms = std::fs::metadata(script.path()).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(script.path(), perms).unwrap();
-        script
+        FakeCli::new(&format!(
+            // `cat` the fixture, then drain stdin so the prompt writer never
+            // sees a broken pipe before it finishes.
+            "#!/bin/sh\ncat {}\ncat > /dev/null\n",
+            fixture.display()
+        ))
     }
 
-    fn provider_running(script: &tempfile::NamedTempFile) -> ClaudeCodeProvider {
+    fn provider_running(script: &FakeCli) -> ClaudeCodeProvider {
         ClaudeCodeProvider {
             command: script.path().to_path_buf(),
             model: ModelConfig::new("claude-sonnet-4-6").unwrap(),
@@ -1932,15 +1956,44 @@ mod streaming_tests {
 mod cancellation_tests {
     use super::*;
     use futures::StreamExt;
-    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+
+    /// A written, executable stand-in for a vendor CLI.
+    ///
+    /// ⚠ **Written with `fs::write` into a directory, never a `NamedTempFile`.**
+    /// A `NamedTempFile` holds the file open read-write for as long as it lives,
+    /// and Linux refuses to `exec` a file that any process has open for
+    /// writing — `ETXTBSY`, surfaced as `Text file busy (os error 26)`. macOS
+    /// permits it, so the bug is invisible locally and fails the whole Linux
+    /// test job. `fs::write` closes the handle before it returns; the `TempDir`
+    /// is kept only so the directory outlives the child.
+    struct FakeCli {
+        _dir: tempfile::TempDir,
+        path: std::path::PathBuf,
+    }
+
+    impl FakeCli {
+        fn new(body: &str) -> Self {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = dir.path().join("fake-cli");
+            std::fs::write(&path, body).expect("write the fake CLI");
+            let mut perms = std::fs::metadata(&path).expect("stat").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).expect("chmod");
+            Self { _dir: dir, path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
 
     /// A fake `claude` that streams one text delta and then hangs forever,
     /// writing its own pid where the test can find it.
     ///
     /// Hanging is the point: it stands in for a child still working when the
     /// user hits stop.
-    fn hanging_claude(pid_file: &std::path::Path) -> tempfile::NamedTempFile {
+    fn hanging_claude(pid_file: &std::path::Path) -> FakeCli {
         let frames = [
             r#"{"type":"system","subtype":"init","apiKeySource":"none","session_id":"s"}"#,
             r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}}"#,
@@ -1948,19 +2001,14 @@ mod cancellation_tests {
             r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"working"}}}"#,
         ];
 
-        let mut script = tempfile::NamedTempFile::new().expect("temp script");
-        writeln!(script, "#!/bin/sh").unwrap();
-        writeln!(script, "echo $$ > {}", pid_file.display()).unwrap();
+        let mut body = String::from("#!/bin/sh\n");
+        body.push_str(&format!("echo $$ > {}\n", pid_file.display()));
         for frame in frames {
-            writeln!(script, "echo '{frame}'").unwrap();
+            body.push_str(&format!("echo '{frame}'\n"));
         }
         // Never exits on its own.
-        writeln!(script, "while true; do sleep 1; done").unwrap();
-        script.flush().unwrap();
-        let mut perms = std::fs::metadata(script.path()).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(script.path(), perms).unwrap();
-        script
+        body.push_str("while true; do sleep 1; done\n");
+        FakeCli::new(&body)
     }
 
     fn alive(pid: i32) -> bool {

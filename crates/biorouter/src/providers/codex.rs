@@ -1758,8 +1758,37 @@ for line in sys.stdin:
 mod streaming_tests {
     use super::*;
     use futures::StreamExt;
-    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+
+    /// A written, executable stand-in for a vendor CLI.
+    ///
+    /// ⚠ **Written with `fs::write` into a directory, never a `NamedTempFile`.**
+    /// A `NamedTempFile` holds the file open read-write for as long as it lives,
+    /// and Linux refuses to `exec` a file that any process has open for
+    /// writing — `ETXTBSY`, surfaced as `Text file busy (os error 26)`. macOS
+    /// permits it, so the bug is invisible locally and fails the whole Linux
+    /// test job. `fs::write` closes the handle before it returns; the `TempDir`
+    /// is kept only so the directory outlives the child.
+    struct FakeCli {
+        _dir: tempfile::TempDir,
+        path: std::path::PathBuf,
+    }
+
+    impl FakeCli {
+        fn new(body: &str) -> Self {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = dir.path().join("fake-cli");
+            std::fs::write(&path, body).expect("write the fake CLI");
+            let mut perms = std::fs::metadata(&path).expect("stat").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).expect("chmod");
+            Self { _dir: dir, path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
 
     /// A stand-in for the `codex` binary. It ignores the `app-server` argument
     /// and speaks just enough of the protocol to carry one streamed turn.
@@ -1767,7 +1796,7 @@ mod streaming_tests {
     /// `TOKEN_USAGE_FRAMES` is the interesting part: two snapshots, exactly as a
     /// tool-using turn produces, so the test can prove the provider reports the
     /// cumulative `total` and not the per-request `last`.
-    fn fake_codex() -> tempfile::NamedTempFile {
+    fn fake_codex() -> FakeCli {
         let script = r#"#!/usr/bin/env python3
 import sys, json
 
@@ -1843,16 +1872,10 @@ for line in sys.stdin:
               "params":{"threadId":"t-1","turn":{"id":"turn-1","status":"completed"}}})
         send({"jsonrpc":"2.0","id":m["id"],"result":{}})
 "#;
-        let mut file = tempfile::NamedTempFile::new().expect("temp script");
-        file.write_all(script.as_bytes()).unwrap();
-        file.flush().unwrap();
-        let mut perms = std::fs::metadata(file.path()).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(file.path(), perms).unwrap();
-        file
+        FakeCli::new(script)
     }
 
-    fn provider_running(script: &tempfile::NamedTempFile) -> CodexProvider {
+    fn provider_running(script: &FakeCli) -> CodexProvider {
         CodexProvider {
             command: script.path().to_path_buf(),
             model: ModelConfig::new("gpt-5.5").unwrap(),
@@ -2088,12 +2111,41 @@ for line in sys.stdin:
 mod cancellation_tests {
     use super::*;
     use futures::StreamExt;
-    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+
+    /// A written, executable stand-in for a vendor CLI.
+    ///
+    /// ⚠ **Written with `fs::write` into a directory, never a `NamedTempFile`.**
+    /// A `NamedTempFile` holds the file open read-write for as long as it lives,
+    /// and Linux refuses to `exec` a file that any process has open for
+    /// writing — `ETXTBSY`, surfaced as `Text file busy (os error 26)`. macOS
+    /// permits it, so the bug is invisible locally and fails the whole Linux
+    /// test job. `fs::write` closes the handle before it returns; the `TempDir`
+    /// is kept only so the directory outlives the child.
+    struct FakeCli {
+        _dir: tempfile::TempDir,
+        path: std::path::PathBuf,
+    }
+
+    impl FakeCli {
+        fn new(body: &str) -> Self {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = dir.path().join("fake-cli");
+            std::fs::write(&path, body).expect("write the fake CLI");
+            let mut perms = std::fs::metadata(&path).expect("stat").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).expect("chmod");
+            Self { _dir: dir, path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
 
     /// A fake `codex` that completes the handshake, streams one delta, then
     /// hangs — a child still working when the user hits stop.
-    fn hanging_codex(pid_file: &std::path::Path) -> tempfile::NamedTempFile {
+    fn hanging_codex(pid_file: &std::path::Path) -> FakeCli {
         let script = format!(
             r#"#!/usr/bin/env python3
 import sys, json, os
@@ -2129,13 +2181,7 @@ for line in sys.stdin:
             pid = pid_file.display(),
         );
 
-        let mut file = tempfile::NamedTempFile::new().expect("temp script");
-        file.write_all(script.as_bytes()).unwrap();
-        file.flush().unwrap();
-        let mut perms = std::fs::metadata(file.path()).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(file.path(), perms).unwrap();
-        file
+        FakeCli::new(&script)
     }
 
     fn alive(pid: i32) -> bool {
