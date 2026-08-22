@@ -736,9 +736,25 @@ rendered inline in chat (sandboxed iframe via `@mcp-ui` + the `/mcp-ui-proxy`).
 - **Assets:** libraries (D3, Chart.js, Leaflet, Mermaid) are inlined by default
   for offline use. `BIOROUTER_AUTOVIS_CDN=1` switches to pinned CDN tags, which
   shrinks the persisted/reloaded blob from megabytes to a few KB (recommended if
-  large Mermaid diagrams fail to re-render on chat reopen).
+  large Mermaid diagrams fail to re-render on chat reopen), **and is the desktop
+  default** (`ui/desktop/src/biorouterd.ts`).
   `BIOROUTER_AUTOVIS_DEBUG=1` (or debug builds) dumps generated HTML to the app
   cache dir (`<cache>/autovisualiser/<name>-<pid>.html`).
+  - ⚠ **CDN mode does not mean the figure fetches anything.** Every artifact is
+    displayed under `default-src 'none'`, so a remote reference is dead on
+    arrival; what makes CDN mode work is the Electron main process pre-fetching
+    each URL and splicing the source in as an inline `<script>` before the CSP
+    applies (`ui/desktop/src/utils/artifactCdnAssets.ts`). Two invariants follow,
+    and Mermaid shipped violating **both** — its URL was absent from the desktop
+    list, and it was emitted as `<script type="module">import … '/+esm'</script>`,
+    a shape the `<script src=…>` rewriter can never match: (1) every URL the tools
+    emit in CDN mode is in `ARTIFACT_CDN_ASSETS`; (2) each is emitted as a
+    `src=`/`href=` tag referencing a **classic** (non-ESM) build, because the
+    replacement produces a classic script. Both are asserted from Rust, against
+    the real desktop source, in
+    `crates/biorouter-mcp/tests/autovis_cdn_desktop_contract.rs` — the only place
+    that can see both halves. Full write-up:
+    [`docs/desktop-ui/artifact-cdn-assets.md`](docs/desktop-ui/artifact-cdn-assets.md).
 - **Tests:** `cargo test -p biorouter-mcp --lib autovisualiser` (happy paths,
   edge cases, escaping, lenient enum parsing).
 
