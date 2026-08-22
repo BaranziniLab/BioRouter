@@ -2574,12 +2574,17 @@
 
 @container br-knowledge-pane (min-width: 1400px) {
   .br-knowledge-body {
-    grid-template-columns:
-      320px minmax(0, 1fr)
-      var(--knowledge-rail-detail);
+    grid-template-columns: 320px minmax(0, 1fr);
   }
+  /* The detail rail sits INSIDE the graph pane rather than as a third grid
+     column, so the facet state it reads stays local to `KnowledgeGraphPanel`.
+     `container-type: size` is on the workspace, so a descendant still answers
+     to the pane's width — the query works either way, and this way there is no
+     state to lift. */
   .br-knowledge-detail {
     display: flex;
+    width: var(--knowledge-rail-detail);
+    flex: none;
   }
   .br-knowledge-legend-card {
     display: none;

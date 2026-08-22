@@ -28,11 +28,14 @@ interface Props {
 }
 
 /**
- * The graph pane (ui-spec §4.5).
+ * The graph pane (ui-spec §4.5, amended by redesign R-03).
  *
- * Three stacked regions, no gutter between them: the facet strip, the canvas,
- * and the legend dock. The canvas is the content — no card, no shadow, no inner
- * padding — and the pane's own border is the only edge.
+ * ⚠ **THE BOTTOM LEGEND DOCK IS GONE.** It was a real flex sibling, so it did
+ * not float over the canvas — it TOOK 36px from it, permanently, to show a row
+ * that scrolled sideways and was entirely inert. The legend is now the right
+ * rail at the widest step and a dismissible canvas-anchored card below it, both
+ * rendered by one `GraphLegend`; the container query in `main.css` decides
+ * which. The canvas keeps the height the dock used to spend.
  *
  * ⚠ **The model is built HERE, once per graph, and passed down.** All three
  * regions read the same derived counts, and DR-9 is explicit that the label
@@ -63,6 +66,9 @@ export function KnowledgeGraphPanel({
   // selecting either therefore clears the other rather than stacking.
   const [selectedEdge, setSelectedEdge] = useState<GraphEdge | null>(null);
   const [facets, setFacets] = useState<FacetState>(EMPTY_FACETS);
+  // The card is the only thing on this pane that covers the canvas, so hiding
+  // it is a real state (R-03). The rail is a column and is never hidden.
+  const [legendHidden, setLegendHidden] = useState(false);
   const mode = useResolvedTheme();
 
   const firstLoad = loading && !graph;
@@ -72,10 +78,7 @@ export function KnowledgeGraphPanel({
   // The edge inspector draws each endpoint's real mark, so it needs the NODE
   // rather than the model's `NodeMetrics` (which carries `type` but no `kind`).
   // Built here, once per graph, for the same reason the model is.
-  const nodesById = useMemo(
-    () => new Map((graph?.nodes ?? []).map((n) => [n.id, n])),
-    [graph]
-  );
+  const nodesById = useMemo(() => new Map((graph?.nodes ?? []).map((n) => [n.id, n])), [graph]);
   const facetResult = useMemo(() => (graph ? applyFacets(graph, facets) : null), [graph, facets]);
   const active = facetsActive(facets);
 
@@ -102,103 +105,124 @@ export function KnowledgeGraphPanel({
         />
       )}
 
-      <div className="relative min-h-0 flex-1 overflow-hidden bg-background-muted">
-        {/* Two absolutely-stacked opacity layers, never a swap: loading out at
+      {/* canvas + detail rail. The rail only exists at the widest step; below
+          it the same legend renders as the dismissible card inside the canvas. */}
+      <div className="flex min-h-0 flex-1">
+        <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background-muted">
+          {/* Two absolutely-stacked opacity layers, never a swap: loading out at
             `--dur-fast`, content in at `--dur-med`. */}
-        <div
-          role="status"
-          className={`br-knowledge-fade-out absolute inset-0 flex items-center justify-center gap-2 ${
-            firstLoad ? 'opacity-100' : 'pointer-events-none opacity-0'
-          }`}
-        >
-          {firstLoad && (
-            <>
-              <LoaderCircle
-                aria-hidden="true"
-                className="h-icon-row w-icon-row animate-spin text-text-muted"
-              />
-              <span className="text-secondary text-text-muted">Loading graph</span>
-            </>
-          )}
-        </div>
+          <div
+            role="status"
+            className={`br-knowledge-fade-out absolute inset-0 flex items-center justify-center gap-2 ${
+              firstLoad ? 'opacity-100' : 'pointer-events-none opacity-0'
+            }`}
+          >
+            {firstLoad && (
+              <>
+                <LoaderCircle
+                  aria-hidden="true"
+                  className="h-icon-row w-icon-row animate-spin text-text-muted"
+                />
+                <span className="text-secondary text-text-muted">Loading graph</span>
+              </>
+            )}
+          </div>
 
-        {/* `flex` so an `EmptyState` (which centres itself only within its own
+          {/* `flex` so an `EmptyState` (which centres itself only within its own
             box) is centred in the CANVAS, and so the canvas child still gets the
             full height it measures against. */}
-        <div
-          className={`br-knowledge-fade-in absolute inset-0 flex ${
-            firstLoad ? 'opacity-0' : 'opacity-100'
-          }`}
-        >
-          {error ? (
-            <EmptyState
-              className="m-auto"
-              icon={AlertCircle}
-              title="Could not load the graph"
-              description={error}
-              actions={
-                <Button variant="secondary" onClick={onRefresh}>
-                  Try again
-                </Button>
-              }
-            />
-          ) : graph && !hasNodes ? (
-            <EmptyState
-              className="m-auto"
-              icon={Sparkles}
-              title="Nothing digested yet"
-              description="Stage a source in the Sources rail and press Digest."
-            />
-          ) : hasNodes && model ? (
-            <ForceGraphCanvas
-              graph={graph}
+          <div
+            className={`br-knowledge-fade-in absolute inset-0 flex ${
+              firstLoad ? 'opacity-0' : 'opacity-100'
+            }`}
+          >
+            {error ? (
+              <EmptyState
+                className="m-auto"
+                icon={AlertCircle}
+                title="Could not load the graph"
+                description={error}
+                actions={
+                  <Button variant="secondary" onClick={onRefresh}>
+                    Try again
+                  </Button>
+                }
+              />
+            ) : graph && !hasNodes ? (
+              <EmptyState
+                className="m-auto"
+                icon={Sparkles}
+                title="Nothing digested yet"
+                description="Stage a source in the Sources rail and press Digest."
+              />
+            ) : hasNodes && model ? (
+              <ForceGraphCanvas
+                graph={graph}
+                model={model}
+                facets={facets}
+                passing={facetResult?.nodes ?? null}
+                selectedId={selected?.id ?? null}
+                hoveredId={hoveredId}
+                onHover={setHoveredId}
+                onNodeClick={(n) => {
+                  setSelectedEdge(null);
+                  setSelected(n);
+                }}
+                onLinkClick={(e) => {
+                  setSelected(null);
+                  setSelectedEdge(e);
+                }}
+                visibleSet={null}
+              />
+            ) : null}
+          </div>
+
+          {hasNodes && model && !legendHidden && (
+            <GraphLegend
+              variant="card"
               model={model}
+              mode={mode}
               facets={facets}
-              passing={facetResult?.nodes ?? null}
-              selectedId={selected?.id ?? null}
-              hoveredId={hoveredId}
-              onHover={setHoveredId}
-              onNodeClick={(n) => {
+              onChange={setFacets}
+              onDismiss={() => setLegendHidden(true)}
+            />
+          )}
+
+          {selected && kbId && (
+            <NodePreview
+              kbId={kbId}
+              node={selected}
+              mode={mode}
+              previewSha={previewSha}
+              onClose={() => setSelected(null)}
+            />
+          )}
+
+          {selectedEdge && model && (
+            <EdgePreview
+              edge={selectedEdge}
+              model={model}
+              nodeById={(id) => nodesById.get(id)}
+              mode={mode}
+              onSelectNode={(n) => {
                 setSelectedEdge(null);
                 setSelected(n);
               }}
-              onLinkClick={(e) => {
-                setSelected(null);
-                setSelectedEdge(e);
-              }}
-              visibleSet={null}
+              onClose={() => setSelectedEdge(null)}
             />
-          ) : null}
+          )}
         </div>
 
-        {selected && kbId && (
-          <NodePreview
-            kbId={kbId}
-            node={selected}
-            mode={mode}
-            previewSha={previewSha}
-            onClose={() => setSelected(null)}
-          />
-        )}
-
-        {selectedEdge && model && (
-          <EdgePreview
-            edge={selectedEdge}
+        {hasNodes && model && (
+          <GraphLegend
+            variant="rail"
             model={model}
-            nodeById={(id) => nodesById.get(id)}
             mode={mode}
-            onSelectNode={(n) => {
-              setSelectedEdge(null);
-              setSelected(n);
-            }}
-            onClose={() => setSelectedEdge(null)}
+            facets={facets}
+            onChange={setFacets}
           />
         )}
       </div>
-
-      {hasNodes && model && (
-        <GraphLegend model={model} mode={mode} facets={facets} onChange={setFacets} />
-      )}
     </div>
   );
 }

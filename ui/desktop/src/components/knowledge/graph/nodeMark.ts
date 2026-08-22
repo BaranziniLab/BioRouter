@@ -73,9 +73,19 @@ const HOLLOW_FAMILY = 'Provenance & context';
  * `hashedFill` makes for not giving OKF nodes a marker.
  */
 export function isHollow(n: GraphNode, mode: GraphMode): boolean {
-  if (!n.node_type) return false;
+  return !!n.node_type && isHollowType(n.node_type, mode);
+}
+
+/**
+ * The same question for a bare type string, which is what the LEGEND has.
+ *
+ * The legend must draw the hollow variant for exactly the types the canvas
+ * draws hollow — a key that disagrees with the mark teaches the wrong thing,
+ * which is the whole reason this module exists.
+ */
+export function isHollowType(type: string, mode: GraphMode): boolean {
   const family = GRAPH_PALETTE[mode].families[HOLLOW_FAMILY];
-  return !!family && family.members.includes(n.node_type);
+  return !!family && family.members.includes(type);
 }
 
 /**
