@@ -648,8 +648,26 @@ impl CodexDecoder {
         let Some(total) = token_usage.get("total") else {
             return vec![CodexEvent::Ignored];
         };
+        let mut usage = parse_breakdown(total);
+
+        // ⚠ The two figures answer different questions, and `Usage` needs both.
+        //
+        // The billed buckets (input/output/cache) are cumulative over the turn's
+        // model requests, so they come from `total`. But `total_tokens` is the
+        // live CONTEXT-OCCUPANCY gauge, and context does not accumulate across
+        // requests — it is whatever the last request carried. In the recorded
+        // four-request turn `total.totalTokens` is 79,676 while the context at
+        // the end is 20,023, so using the cumulative figure would inflate the
+        // gauge by roughly one whole context per tool call and show a session
+        // with plenty of headroom as nearly full.
+        if let Some(last) = token_usage.get("last") {
+            if let Some(context) = parse_breakdown(last).total_tokens {
+                usage.total_tokens = Some(context);
+            }
+        }
+
         let snapshot = CodexUsage {
-            usage: parse_breakdown(total),
+            usage,
             source: UsageSource::ThreadTokenUsage,
             context_window: i64_at(token_usage, &["modelContextWindow"]).map(|v| v as i32),
         };
@@ -1106,16 +1124,25 @@ mod tests {
         assert_eq!(snapshot.source, UsageSource::ThreadTokenUsage);
 
         let usage = &snapshot.usage;
-        // `total.totalTokens` = 39660. `last.totalTokens` = 19893.
+        // `total.totalTokens` = 39660 (cumulative over the turn's model
+        // requests). `last.totalTokens` = 19893 (the context the last request
+        // carried). The two answer different questions and this snapshot needs
+        // both: the billed buckets are cumulative, the occupancy gauge is not.
         assert_eq!(
             usage.total_tokens,
-            Some(39660),
-            "the turn's occupancy is the cumulative total"
-        );
-        assert_ne!(
-            usage.total_tokens,
             Some(19893),
-            "19893 is `last`, the cost of ONE model request; a turn with tools makes several"
+            "total_tokens is the live context gauge, so it tracks `last` — using \
+             the cumulative figure would inflate it by a whole context per tool \
+             call and show a roomy session as nearly full"
+        );
+        // The other half of the split: the BILLED buckets stay cumulative.
+        // `total.outputTokens` is 173; `last.outputTokens` is 88. Reading `last`
+        // here would undercount the turn by every earlier model request.
+        assert_eq!(
+            usage.output_tokens,
+            Some(173),
+            "the billed buckets come from `total` — 88 would be one request's \
+             output, not the turn's"
         );
         // Disjoint buckets: 39487 input is cache-inclusive, 38400 of it cached.
         assert_eq!(usage.input_tokens, Some(39487 - 38400));
@@ -1130,7 +1157,15 @@ mod tests {
             d.usage().map(|u| u.source),
             Some(UsageSource::ThreadTokenUsage)
         );
-        assert_eq!(d.usage().and_then(|u| u.usage.total_tokens), Some(39660));
+        // `total_tokens` is context occupancy, so it tracks `last` (19,893),
+        // while the billed buckets below come from the cumulative `total`.
+        assert_eq!(d.usage().and_then(|u| u.usage.total_tokens), Some(19893));
+        assert_eq!(
+            d.usage().and_then(|u| u.usage.output_tokens),
+            Some(173),
+            "the billed buckets stay cumulative — 173 is total.outputTokens, not \
+             last.outputTokens (88)"
+        );
     }
 
     /// (c) The fallback. With no `thread/tokenUsage/updated` at all, the
@@ -1474,9 +1509,117 @@ mod tests {
 
         assert_eq!(d.text(), vec![COMMENTARY_TEXT.to_string(), "2".to_string()]);
         assert_eq!(d.item_phase(answer), Some("final_answer"));
-        assert_eq!(d.usage().and_then(|u| u.usage.total_tokens), Some(39660));
+        // `total_tokens` is context occupancy, so it tracks `last` (19,893),
+        // while the billed buckets below come from the cumulative `total`.
+        assert_eq!(d.usage().and_then(|u| u.usage.total_tokens), Some(19893));
+        assert_eq!(
+            d.usage().and_then(|u| u.usage.output_tokens),
+            Some(173),
+            "the billed buckets stay cumulative — 173 is total.outputTokens, not \
+             last.outputTokens (88)"
+        );
         assert_eq!(d.reconciled(), 2);
         assert_eq!(d.drifted(), 0);
         assert!(d.finished());
+    }
+
+    /// Replay the **recorded** Codex cells through the decoder.
+    ///
+    /// Until this existed the decoder was tested only against hand-written
+    /// `json!` frames — i.e. against this file's own idea of the protocol — and
+    /// the four committed Codex fixtures were read by nothing at all. A decoder
+    /// that agrees with its author but not with the vendor passes every such
+    /// test.
+    #[test]
+    fn recorded_cells_decode_without_unhandled_drift() {
+        for (cell, expect_text, expect_terminal) in [
+            ("turn-text", true, true),
+            ("turn-tools", true, true),
+            ("turn-failed", false, true),
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/coding_agent/codex")
+                .join(format!("{cell}.ndjson"));
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+
+            let mut decoder = CodexDecoder::new();
+            let (mut text, mut terminal, mut tools) = (0usize, 0usize, 0usize);
+
+            for line in body.lines().filter(|l| !l.trim().is_empty()) {
+                let frame: Value = serde_json::from_str(line).expect("a vendor frame");
+                // JSON-RPC responses carry no method; only notifications drive
+                // the decoder.
+                let Some(method) = frame.get("method").and_then(Value::as_str) else {
+                    continue;
+                };
+                let params = frame.get("params").cloned().unwrap_or(Value::Null);
+                for event in decoder.push(method, &params) {
+                    match event {
+                        CodexEvent::TextDelta { .. } | CodexEvent::TextComplete { .. } => text += 1,
+                        CodexEvent::Terminal(_) => terminal += 1,
+                        CodexEvent::Tool(_) => tools += 1,
+                        _ => {}
+                    }
+                }
+                // Stop at the first terminal, exactly as the provider's pump
+                // does. Some recorded cells hold more than one turn, and
+                // replaying past the end of the first would measure something
+                // production never sees.
+                if terminal > 0 {
+                    break;
+                }
+            }
+
+            assert_eq!(
+                terminal,
+                usize::from(expect_terminal),
+                "{cell}: expected exactly one terminal event; a turn that never \
+                 terminates leaves the consumer's stream hanging"
+            );
+            if expect_text {
+                assert!(text > 0, "{cell}: the answer must reach the consumer");
+            }
+            if cell == "turn-tools" {
+                assert!(
+                    tools > 0,
+                    "turn-tools records real commandExecution items; decoding \
+                     none means the cards would never appear"
+                );
+            }
+        }
+    }
+
+    /// The recorded two-request usage cell, decoded end to end.
+    ///
+    /// This is the cell that exists specifically for the total-vs-last trap, and
+    /// it was previously read by no test.
+    #[test]
+    fn the_recorded_usage_cell_splits_billed_from_occupancy() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/coding_agent/codex/turn-usage-two-requests.ndjson");
+        let body = std::fs::read_to_string(&path).expect("fixture");
+
+        let mut decoder = CodexDecoder::new();
+        for line in body.lines().filter(|l| !l.trim().is_empty()) {
+            let frame: Value = serde_json::from_str(line).expect("a vendor frame");
+            let Some(method) = frame.get("method").and_then(Value::as_str) else {
+                continue;
+            };
+            let params = frame.get("params").cloned().unwrap_or(Value::Null);
+            decoder.push(method, &params);
+        }
+
+        let usage = decoder
+            .usage()
+            .expect("the cell carries four usage updates");
+        assert_eq!(usage.source, UsageSource::ThreadTokenUsage);
+        // The last snapshot in the cell: total 79676, last 20023.
+        assert_eq!(
+            usage.usage.total_tokens,
+            Some(20023),
+            "occupancy is the last request's context, not the turn's cumulative \
+             total — the cumulative figure would read as an almost-full window"
+        );
     }
 }

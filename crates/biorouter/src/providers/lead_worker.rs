@@ -17,6 +17,12 @@ use rmcp::model::{Content, RawContent};
 
 /// A provider that switches between a lead model and a worker model based on turn count
 /// and can fallback to lead model on consecutive failures
+///
+/// `Clone` shares state rather than copying it: every field is either an `Arc`
+/// or a `Copy` scalar, so a clone observes and updates the *same* turn counter
+/// and fallback flags. That is what lets the streaming path keep the rotation
+/// accounting — see `stream`.
+#[derive(Clone)]
 pub struct LeadWorkerProvider {
     lead_provider: Arc<dyn Provider>,
     worker_provider: Arc<dyn Provider>,
@@ -411,6 +417,21 @@ impl Provider for LeadWorkerProvider {
         self.lead_provider.supports_streaming() && self.worker_provider.supports_streaming()
     }
 
+    /// Stream from the active provider **and keep the rotation accounting**.
+    ///
+    /// ⚠ The accounting is the whole difficulty here, and omitting it silently
+    /// disables the feature. `turn_count` is incremented in exactly one place —
+    /// [`Self::handle_completion_result`] — which used to be reached only from
+    /// `complete_with_model`. A `stream()` that just forwarded would leave
+    /// `turn_count` at 0 forever, so `count < self.lead_turns` would always hold
+    /// and **the worker model would never be used**; task-failure detection and
+    /// the fallback-to-lead behaviour would never run either. Nothing would
+    /// fail — the pair would simply, quietly, stop being a lead/worker pair.
+    ///
+    /// So the returned stream accumulates what it forwards and settles the turn
+    /// when it ends, exactly as the blocking path settles it when the call
+    /// returns. `self` is cloned into the stream, and the clone shares the same
+    /// `Arc` counters, so it is the same accounting and not a copy of it.
     async fn stream(
         &self,
         system: &str,
@@ -421,7 +442,57 @@ impl Provider for LeadWorkerProvider {
         // chosen by the same rule, so the two paths cannot diverge.
         let provider = self.get_active_provider().await;
         super::base::set_current_model(&provider.get_model_config().model_name);
-        provider.stream(system, messages, tools).await
+
+        let inner = provider.stream(system, messages, tools).await?;
+        let accounting = self.clone();
+
+        let stream = async_stream::try_stream! {
+            let mut content: Vec<MessageContent> = Vec::new();
+            let mut usage: Option<ProviderUsage> = None;
+            futures::pin_mut!(inner);
+
+            while let Some(item) = futures::StreamExt::next(&mut inner).await {
+                match item {
+                    Ok((message, item_usage, pending)) => {
+                        if let Some(message) = &message {
+                            content.extend(message.content.iter().cloned());
+                        }
+                        if let Some(item_usage) = &item_usage {
+                            usage = Some(item_usage.clone());
+                        }
+                        yield (message, item_usage, pending);
+                    }
+                    Err(e) => {
+                        // A technical failure. The blocking path deliberately
+                        // does not count these — they are infrastructure
+                        // problems, not evidence about the model's ability — so
+                        // neither does this one.
+                        accounting
+                            .handle_completion_result(&Err(ProviderError::RequestFailed(
+                                e.to_string(),
+                            )))
+                            .await;
+                        Err(e)?;
+                        return;
+                    }
+                }
+            }
+
+            // The turn completed. Settle it with what was actually produced, so
+            // task-failure detection sees the same evidence it would have seen
+            // on the blocking path.
+            let message = Message::new(
+                rmcp::model::Role::Assistant,
+                chrono::Utc::now().timestamp(),
+                content,
+            );
+            let usage = usage.unwrap_or_else(|| {
+                ProviderUsage::new(provider.get_model_config().model_name, Default::default())
+            });
+            accounting.handle_completion_result(&Ok((message, usage))).await;
+        };
+
+        Ok(Box::pin(stream))
     }
 
     fn get_model_config(&self) -> ModelConfig {
@@ -917,6 +988,53 @@ mod tests {
         assert!(
             stream.is_ok(),
             "and stream() must reach the active provider"
+        );
+    }
+
+    /// **The turn must still rotate on the streaming path.**
+    ///
+    /// This is the assertion the first version of `stream()` failed. It
+    /// forwarded the active provider's stream and nothing else, so
+    /// `handle_completion_result` — the only place `turn_count` is incremented —
+    /// was never reached. `turn_count` stayed 0, `count < lead_turns` stayed
+    /// true, and the worker model was never used again. Nothing errored; the
+    /// pair just quietly stopped being a lead/worker pair.
+    ///
+    /// `stream.is_ok()` cannot catch that, which is exactly why this test drains
+    /// the stream and then asks who would serve the next turn.
+    #[tokio::test]
+    async fn streaming_a_turn_advances_the_rotation() {
+        let pair = LeadWorkerProvider::new(capability(true), capability(true), Some(1));
+        assert_eq!(pair.get_turn_count().await, 0);
+
+        // One streamed turn, drained to completion — the settle happens when the
+        // stream ends, not when it is created.
+        let stream = pair.stream("SYS", &[], &[]).await.expect("stream");
+        futures::pin_mut!(stream);
+        while futures::StreamExt::next(&mut stream).await.is_some() {}
+
+        assert_eq!(
+            pair.get_turn_count().await,
+            1,
+            "a streamed turn must advance the rotation, or the pair uses the lead \
+             model forever and the worker is never reached"
+        );
+    }
+
+    /// Draining only part of a stream must not settle the turn twice, and
+    /// abandoning one must not advance it at all.
+    #[tokio::test]
+    async fn an_abandoned_stream_does_not_advance_the_rotation() {
+        let pair = LeadWorkerProvider::new(capability(true), capability(true), Some(1));
+
+        let stream = pair.stream("SYS", &[], &[]).await.expect("stream");
+        drop(stream);
+
+        assert_eq!(
+            pair.get_turn_count().await,
+            0,
+            "a turn the user cancelled before it produced anything is not a turn \
+             the model took"
         );
     }
 

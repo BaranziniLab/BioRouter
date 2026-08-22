@@ -743,15 +743,24 @@ impl CodexProvider {
             }
         }
 
-        // stdout closed without a terminal frame.
-        if streamed_anything {
-            Ok(())
+        // stdout closed without a terminal frame. This is a failure whether or
+        // not text arrived: a turn that streamed half an answer and then lost
+        // its app server has NOT completed, and returning `Ok` here would show
+        // the user a truncated answer as though it were the whole one. The
+        // Claude path errors in the same situation for the same reason.
+        let detail = decoder
+            .pending_failure()
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("the app server exited{}", ""));
+        let partial = if streamed_anything {
+            " after a partial answer"
         } else {
-            Err(ProviderError::RequestFailed(format!(
-                "the Codex app server exited before finishing the turn{}",
-                server.stderr_suffix().await
-            )))
-        }
+            ""
+        };
+        Err(ProviderError::RequestFailed(format!(
+            "the Codex app server exited before finishing the turn{partial}: {detail}{}",
+            server.stderr_suffix().await
+        )))
     }
 
     /// Read notifications until the turn ends, answering server requests as they
@@ -815,7 +824,13 @@ fn codex_tool_identity(kind: &codex_stream::CodexToolKind) -> (String, Value, mi
         // what the child did would be worse, and marked `Child` because
         // Biorouter neither approved nor executed them.
         codex_stream::CodexToolKind::CommandExecution { command, cwd } => (
-            "exec".to_string(),
+            // `exec_command`, not `exec`: the GUI's row summariser recognises
+            // `shell` / `exec_command` / anything containing `command` and shows
+            // the command itself, and falls back to a bare "Ran Exec with
+            // command, cwd" for anything else. This is the most
+            // safety-relevant card the feature produces, so the command has to
+            // be legible in the collapsed row rather than one expansion away.
+            "exec_command".to_string(),
             json!({ "command": command, "cwd": cwd }),
             mirror::Execution::Child,
         ),
@@ -1917,10 +1932,21 @@ for line in sys.stdin:
         let (_, usages) = drive().await;
 
         let last = usages.last().expect("a terminal usage item");
+        // The billed output is cumulative over the turn's two model requests
+        // (10 + 20 = 30), from `total`. Reading `last` would report 20 and
+        // undercount the turn by its first request.
+        assert_eq!(
+            last.usage.output_tokens,
+            Some(30),
+            "billed tokens come from tokenUsage.total, not tokenUsage.last"
+        );
+        // `total_tokens` is the live context gauge, which does NOT accumulate:
+        // it is whatever the last request carried (220), not the sum (330).
         assert_eq!(
             last.usage.total_tokens,
-            Some(330),
-            "usage must come from tokenUsage.total (330), not tokenUsage.last (220)"
+            Some(220),
+            "context occupancy is the last request's total, or the gauge inflates \
+             by a whole context per tool call"
         );
         assert_eq!(
             last.provider.as_deref(),
@@ -2019,7 +2045,7 @@ for line in sys.stdin:
             .iter()
             .find(|c| c.id == "exec_1")
             .expect("the child's own command must still be visible");
-        assert_eq!(exec.name, "exec");
+        assert_eq!(exec.name, "exec_command");
         assert_eq!(
             exec.execution,
             Some(mirror::Execution::Child),

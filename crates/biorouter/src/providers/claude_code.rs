@@ -170,6 +170,22 @@ impl ClaudeCodeProvider {
         })
     }
 
+    /// Construct a provider pointed at an arbitrary binary, for tests.
+    ///
+    /// Exists so an integration test can drive the real `stream()` against a
+    /// fake `claude` that replays recorded frames — the only way to test the
+    /// whole chain (argv construction, spawn, routing, decoding, mirroring)
+    /// rather than its pieces. `from_env` cannot serve that purpose: it resolves
+    /// the user's actual CLI.
+    #[doc(hidden)]
+    pub fn for_tests(command: PathBuf, model: &str) -> Self {
+        Self {
+            command,
+            model: ModelConfig::new(model).expect("a valid test model"),
+            name: KIND.provider_id().to_string(),
+        }
+    }
+
     /// The arguments shared by every invocation.
     ///
     /// `output_format` is the only axis that varies: `json` for a single blocking
@@ -544,6 +560,49 @@ where
     true
 }
 
+/// Accumulated arguments for one in-flight tool call, plus the throttle that
+/// decides when the growing preview is worth another frame.
+///
+/// ⚠ **Never emit one of these per delta.** Anthropic sends an
+/// `input_json_delta` every few tokens, and each notification carries the whole
+/// argument string accumulated so far — so a per-delta emit is quadratic in the
+/// argument size. A bridged `text_editor` write of a 60 KB file would push tens
+/// of megabytes through an unbounded channel and out over SSE, to redraw a
+/// preview the card truncates anyway. The shared Anthropic decoder throttles for
+/// exactly this reason (`formats/anthropic.rs`), and this mirrors its policy so
+/// the two paths cost the same.
+#[derive(Default)]
+struct PendingArgs {
+    text: String,
+    /// Length at the last emit, for the size trigger.
+    emitted_len: usize,
+    /// When the last emit happened, for the time trigger. `None` until the
+    /// first, so the first delta always produces a preview.
+    emitted_at: Option<std::time::Instant>,
+}
+
+impl PendingArgs {
+    /// The snapshot to send now, or `None` if it is too soon.
+    fn take_due_snapshot(&mut self) -> Option<String> {
+        let due_by_size = self.text.len().saturating_sub(self.emitted_len) >= PENDING_ARGS_CHARS;
+        let due_by_time = self
+            .emitted_at
+            .map(|t| t.elapsed() >= PENDING_ARGS_INTERVAL)
+            .unwrap_or(true);
+        if !due_by_size && !due_by_time {
+            return None;
+        }
+        self.emitted_len = self.text.len();
+        self.emitted_at = Some(std::time::Instant::now());
+        Some(self.text.clone())
+    }
+}
+
+/// Minimum wall-clock gap between two partial-argument previews for one call.
+const PENDING_ARGS_INTERVAL: Duration = Duration::from_millis(200);
+/// …or this many newly accumulated characters, whichever comes first.
+const PENDING_ARGS_CHARS: usize = 200;
+
 /// Turn one diverted `tool_use` event into what the GUI draws.
 ///
 /// The lifecycle mirrors an API provider's exactly, which is the point — the
@@ -563,14 +622,14 @@ where
 /// what stops the agent loop dispatching it a second time.
 fn emit_tool_event(
     event: claude_stream::ToolBlockEvent,
-    partial_args: &mut std::collections::HashMap<String, String>,
+    partial_args: &mut std::collections::HashMap<String, PendingArgs>,
     out: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
 ) -> bool {
     let send = |item: ProviderStreamItem| out.send(Ok(item)).is_ok();
 
     match event {
         claude_stream::ToolBlockEvent::Opened { id, name, .. } => {
-            partial_args.insert(id.clone(), String::new());
+            partial_args.insert(id.clone(), PendingArgs::default());
             send((
                 None,
                 None,
@@ -585,20 +644,23 @@ fn emit_tool_event(
             id, partial_json, ..
         } => {
             let buffered = partial_args.entry(id.clone()).or_default();
-            buffered.push_str(&partial_json);
-            let snapshot = buffered.clone();
-            send((
-                None,
-                None,
-                Some(PendingToolCall {
-                    id,
-                    // The name is already on the card from `Opened`; the store
-                    // keys on the id, so repeating it is what keeps the card
-                    // stable while its arguments grow.
-                    name: String::new(),
-                    partial_args: Some(snapshot),
-                }),
-            ))
+            buffered.text.push_str(&partial_json);
+            // Throttled, never per delta — see `PendingArgs`.
+            match buffered.take_due_snapshot() {
+                Some(snapshot) => send((
+                    None,
+                    None,
+                    Some(PendingToolCall {
+                        id,
+                        // The name is already on the card from `Opened`; the
+                        // store keys on the id, so repeating it is what keeps
+                        // the card stable while its arguments grow.
+                        name: String::new(),
+                        partial_args: Some(snapshot),
+                    }),
+                )),
+                None => true,
+            }
         }
         claude_stream::ToolBlockEvent::Closed { .. } => true,
         claude_stream::ToolBlockEvent::Call { calls, .. } => {
@@ -678,9 +740,10 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
             tokio_stream::wrappers::UnboundedReceiverStream::new(line_rx),
         ),
     );
-    // Partial arguments per in-flight call, so the skeleton card can show
-    // them arriving.
-    let mut partial_args: std::collections::HashMap<String, String> =
+    // Partial arguments per in-flight call, so the skeleton card can show them
+    // arriving — with the throttle that makes showing them affordable. See
+    // `PendingArgs`.
+    let mut partial_args: std::collections::HashMap<String, PendingArgs> =
         std::collections::HashMap::new();
 
     let deadline = tokio::time::Instant::now() + TURN_TIMEOUT;
@@ -750,6 +813,21 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
                     None => {
                         let mut usage = ProviderUsage::new(model_name.clone(), frame.usage);
                         usage.provider = Some(KIND.provider_id().to_string());
+                        // ⚠ The terminal frame OWNS the finish reason, and says
+                        // so explicitly rather than leaving it `None`.
+                        //
+                        // The child's turn is many API requests, and each one's
+                        // `message_delta` carries its own `stop_reason` which the
+                        // reused Anthropic decoder maps and reports. A `max_tokens`
+                        // on any INNER request would map to `"length"`, and because
+                        // the agent only overwrites `last_finish_reason` when the
+                        // new one is `Some`, a `None` here would let that inner
+                        // value survive to the end of the turn — where the loop
+                        // treats `"length"` as a truncated answer and runs ANOTHER
+                        // whole child turn to continue it, on the user's own
+                        // subscription quota. The child already handled its own
+                        // continuation; the turn ended when this frame arrived.
+                        usage.finish_reason = Some("stop".to_string());
                         Ok(usage)
                     }
                 });
@@ -1515,6 +1593,77 @@ mod tests {
 /// reused Anthropic decoder, and the terminal usage — so it is the one that
 /// would catch a regression anywhere along it. The frames are the real ones
 /// captured in `tests/fixtures/coding_agent/claude/`, not idealised.
+/// The pending-argument throttle, tested directly.
+///
+/// Worth its own test because the failure it prevents is invisible in a small
+/// fixture: every recorded tool call has tiny arguments, so an unthrottled
+/// implementation looks perfectly fine against the corpus and only misbehaves in
+/// production, on the large `text_editor` writes a coding agent actually makes.
+#[cfg(test)]
+mod pending_args_tests {
+    use super::PendingArgs;
+
+    /// A long argument stream must not produce a frame per delta.
+    ///
+    /// The arithmetic is the point: each notification carries the WHOLE string
+    /// accumulated so far, so N frames over an N-chunk argument is quadratic in
+    /// bytes. 2000 one-character deltas unthrottled would be 2000 frames and
+    /// ~2 MB of snapshots; throttled by size it is ~10 frames.
+    #[test]
+    fn a_long_argument_stream_is_not_one_frame_per_delta() {
+        let mut args = PendingArgs::default();
+        let mut frames = 0usize;
+        let mut bytes = 0usize;
+
+        for _ in 0..2000 {
+            args.text.push('x');
+            if let Some(snapshot) = args.take_due_snapshot() {
+                frames += 1;
+                bytes += snapshot.len();
+            }
+        }
+
+        assert!(
+            frames <= 25,
+            "2000 deltas produced {frames} preview frames; the throttle is not \
+             working and one tool call becomes hundreds of SSE frames"
+        );
+        assert!(
+            bytes < 100_000,
+            "the accumulated snapshots totalled {bytes} bytes for a 2000-byte \
+             argument — that is the quadratic blow-up the throttle exists to stop"
+        );
+    }
+
+    /// The first delta always previews, so the card fills in immediately rather
+    /// than staying empty for the throttle interval.
+    #[test]
+    fn the_first_delta_always_previews() {
+        let mut args = PendingArgs::default();
+        args.text.push_str("{\"command\":");
+        assert!(
+            args.take_due_snapshot().is_some(),
+            "the first preview must not wait"
+        );
+    }
+
+    /// A snapshot is the whole argument so far, not just the new part — the card
+    /// renders it as a preview of the arguments, not as a delta to append.
+    #[test]
+    fn a_snapshot_is_cumulative() {
+        let mut args = PendingArgs::default();
+        args.text.push_str("abc");
+        assert_eq!(args.take_due_snapshot().as_deref(), Some("abc"));
+
+        args.text.push_str(&"d".repeat(super::PENDING_ARGS_CHARS));
+        let second = args.take_due_snapshot().expect("size trigger");
+        assert!(
+            second.starts_with("abc"),
+            "the preview must carry everything so far (got {second:.20}…)"
+        );
+    }
+}
+
 #[cfg(all(test, unix))]
 mod streaming_tests {
     use super::*;

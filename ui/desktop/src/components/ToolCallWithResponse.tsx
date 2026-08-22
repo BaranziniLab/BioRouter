@@ -193,19 +193,28 @@ export type ProviderExecution = 'bridged' | 'child';
  * Read the mirror marker off a request/response pair.
  *
  * Both halves are stamped, so a row read on its own carries its own provenance;
- * the request is preferred only because it is always present. An unrecognised
- * value is `null` — same fail-safe direction the backend takes: we only claim a
- * provenance we positively recognise.
+ * Both halves are stamped, so a row read on its own carries its own provenance.
+ * An unrecognised value is `null` — the same fail-safe direction the backend
+ * takes: we only claim a provenance we positively recognise.
+ *
+ * ⚠ **If the two halves disagree, `child` wins.** This is a safety label, so the
+ * fail-safe direction is to under-claim: saying "BioRouter gated this" about a
+ * call it never inspected is the one thing this label must never do, whereas an
+ * unnecessary "not gated" note is merely noise. Today's decoders stamp one
+ * execution kind on both halves, so a disagreement means something is already
+ * wrong — which is exactly when the cautious reading matters.
  */
 export function providerExecutionOf(
   toolRequest?: Pick<ToolRequestMessageContent, 'metadata'>,
   toolResponse?: Pick<ToolResponseMessageContent, 'metadata'>
 ): ProviderExecution | null {
+  let seen: ProviderExecution | null = null;
   for (const carrier of [toolRequest, toolResponse]) {
     const value = carrier?.metadata?.[PROVIDER_EXECUTED_KEY];
-    if (value === 'child' || value === 'bridged') return value;
+    if (value === 'child') return 'child';
+    if (value === 'bridged') seen = 'bridged';
   }
-  return null;
+  return seen;
 }
 
 /**
