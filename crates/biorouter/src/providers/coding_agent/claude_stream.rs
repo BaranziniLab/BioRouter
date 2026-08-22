@@ -426,27 +426,17 @@ impl ClaudeStreamRouter {
     /// therefore the only place an index can be marked for diversion.
     fn route_block_start(&mut self, event: &Value) -> RoutedFrame {
         let index = block_index(event);
-        let block = event.get("content_block");
-        let block_type = block
-            .and_then(|b| b.get("type"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if block_type != "tool_use" {
+        let Some(block) = event.get("content_block") else {
+            return self.forward(event);
+        };
+        if type_field(block) != "tool_use" {
             return self.forward(event);
         }
         // Even a malformed tool block must be diverted — reaching the decoder is
         // what causes the double execution, and an id-less block would still
         // arrive there as a `ToolRequest`.
-        let id = block
-            .and_then(|b| b.get("id"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let name = block
-            .and_then(|b| b.get("name"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let id = string_field(block, "id");
+        let name = string_field(block, "name");
         self.tool_indices.insert(index, id.clone());
         self.divert(ToolBlockEvent::Opened { index, id, name })
     }
@@ -458,21 +448,15 @@ impl ClaudeStreamRouter {
         if let Some(id) = self.tool_indices.get(&index).cloned() {
             let partial_json = event
                 .get("delta")
-                .and_then(|d| d.get("partial_json"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
+                .map(|d| string_field(d, "partial_json"))
+                .unwrap_or_default();
             return self.divert(ToolBlockEvent::ArgsDelta {
                 index,
                 id,
                 partial_json,
             });
         }
-        let delta_type = event
-            .get("delta")
-            .and_then(|d| d.get("type"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let delta_type = event.get("delta").map(type_field).unwrap_or_default();
         if delta_type == "signature_delta" {
             return RoutedFrame::Ignored;
         }
@@ -503,17 +487,12 @@ impl ClaudeStreamRouter {
             // because attributing it to this turn would be wrong.
             return RoutedFrame::Ignored;
         }
-        let Some(blocks) = frame
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(Value::as_array)
-        else {
-            // `content` is a plain string on a post-compaction continuation.
+        let Some(blocks) = content_blocks(frame) else {
             return RoutedFrame::Ignored;
         };
         let calls: Vec<ToolUseBlock> = blocks
             .iter()
-            .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+            .filter(|b| type_field(b) == "tool_use")
             .map(|b| ToolUseBlock {
                 id: string_field(b, "id"),
                 name: string_field(b, "name"),
@@ -521,21 +500,12 @@ impl ClaudeStreamRouter {
             })
             .collect();
         if !calls.is_empty() {
-            let message_id = frame
-                .get("message")
-                .and_then(|m| m.get("id"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            let message_id = frame.get("message").and_then(|m| opt_string(m, "id"));
             return self.divert(ToolBlockEvent::Call { message_id, calls });
         }
         let text_like = blocks
             .iter()
-            .filter(|b| {
-                matches!(
-                    b.get("type").and_then(Value::as_str),
-                    Some("text" | "thinking" | "redacted_thinking")
-                )
-            })
+            .filter(|b| matches!(type_field(b), "text" | "thinking" | "redacted_thinking"))
             .count();
         if self.saw_block_delta {
             self.dropped_duplicate_blocks += text_like;
@@ -550,16 +520,12 @@ impl ClaudeStreamRouter {
         if is_subagent(frame) {
             return RoutedFrame::Ignored;
         }
-        let Some(blocks) = frame
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(Value::as_array)
-        else {
+        let Some(blocks) = content_blocks(frame) else {
             return RoutedFrame::Ignored;
         };
         let results: Vec<ToolResultBlock> = blocks
             .iter()
-            .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+            .filter(|b| type_field(b) == "tool_result")
             .map(|b| ToolResultBlock {
                 tool_use_id: string_field(b, "tool_use_id"),
                 content: b.get("content").cloned().unwrap_or(Value::Null),
@@ -578,18 +544,12 @@ impl ClaudeStreamRouter {
     fn route_system(&mut self, frame: &Value) -> RoutedFrame {
         match frame.get("subtype").and_then(Value::as_str) {
             Some("init") => {
-                let api_key_source = frame
-                    .get("apiKeySource")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
+                let api_key_source = opt_string(frame, "apiKeySource");
                 self.api_key_source.clone_from(&api_key_source);
                 RoutedFrame::Init { api_key_source }
             }
             Some("api_retry") => {
-                self.retry_category = frame
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
+                self.retry_category = opt_string(frame, "error");
                 RoutedFrame::Ignored
             }
             Some(other) if KNOWN_SYSTEM_SUBTYPES.contains(&other) => RoutedFrame::Ignored,
@@ -603,29 +563,13 @@ impl ClaudeStreamRouter {
     /// The terminal `result` frame.
     fn route_result(&mut self, frame: &Value) -> RoutedFrame {
         let terminal = TerminalFrame {
-            final_text: frame
-                .get("result")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            final_text: string_field(frame, "result"),
             usage: parse_usage(frame.get("usage")),
             error: classify_result(frame, self.retry_category.as_deref()),
-            subtype: frame
-                .get("subtype")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            terminal_reason: frame
-                .get("terminal_reason")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            api_error_status: frame
-                .get("api_error_status")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            stop_reason: frame
-                .get("stop_reason")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            subtype: opt_string(frame, "subtype"),
+            terminal_reason: opt_string(frame, "terminal_reason"),
+            api_error_status: opt_string(frame, "api_error_status"),
+            stop_reason: opt_string(frame, "stop_reason"),
         };
         RoutedFrame::Terminal(terminal)
     }
@@ -706,13 +650,34 @@ fn is_subagent(frame: &Value) -> bool {
         .is_some_and(|v| !v.is_null())
 }
 
-/// Read a string field, defaulting to empty rather than dropping the block.
-fn string_field(value: &Value, key: &str) -> String {
+/// The `type` of a content block or a delta, or `""` when it has none.
+fn type_field(value: &Value) -> &str {
     value
-        .get(key)
+        .get("type")
         .and_then(Value::as_str)
         .unwrap_or_default()
-        .to_string()
+}
+
+/// The `message.content` array of an `assistant` or `user` frame.
+///
+/// `None` when `content` is not an array — which happens on the post-compaction
+/// continuation frame, the one place in the protocol where `content` is a plain
+/// string (`system/compact_boundary` precedes it).
+fn content_blocks(frame: &Value) -> Option<&Vec<Value>> {
+    frame
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+}
+
+/// Read an optional string field.
+fn opt_string(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+/// Read a string field, defaulting to empty rather than dropping the block.
+fn string_field(value: &Value, key: &str) -> String {
+    opt_string(value, key).unwrap_or_default()
 }
 
 /// Decide whether a terminal frame reports a failure, and under what category.
@@ -773,10 +738,11 @@ fn parse_usage(usage: Option<&Value>) -> Usage {
     let Some(u) = usage else {
         return Usage::default();
     };
-    let get = |k: &str| {
-        u.get(k)
-            .and_then(Value::as_i64)
-            .map(|v| i32::try_from(v).unwrap_or(i32::MAX))
+    let get = |k: &str| -> Option<i32> {
+        let raw = u.get(k).and_then(Value::as_i64)?;
+        // Saturating rather than wrapping: a bogus count must not turn into a
+        // negative token figure that the usage ledger then sums.
+        Some(i32::try_from(raw).unwrap_or(i32::MAX))
     };
 
     let input = get("input_tokens");
@@ -936,6 +902,19 @@ mod tests {
         Some(event["type"].as_str().unwrap_or_default().to_string())
     }
 
+    /// The content-block index a diverted per-block tool event names, or `None`
+    /// for anything that is not one.
+    fn diverted_index(routed: &RoutedFrame) -> Option<u64> {
+        match routed {
+            RoutedFrame::Tool(
+                ToolBlockEvent::Opened { index, .. }
+                | ToolBlockEvent::ArgsDelta { index, .. }
+                | ToolBlockEvent::Closed { index, .. },
+            ) => Some(*index),
+            _ => None,
+        }
+    }
+
     /// Push a whole recorded turn through one router.
     fn route_all(lines: &[&str]) -> (ClaudeStreamRouter, Vec<RoutedFrame>) {
         let mut router = ClaudeStreamRouter::new();
@@ -964,12 +943,14 @@ mod tests {
             RESULT_SUCCESS,
         ]);
 
-        assert!(
-            matches!(&routed[0], RoutedFrame::Init { api_key_source } if api_key_source.as_deref() == Some("none")),
-            "system/init must surface apiKeySource so the caller can run the \
-             subscription refusal: {:?}",
-            routed[0]
-        );
+        let RoutedFrame::Init { api_key_source } = &routed[0] else {
+            panic!(
+                "system/init must surface apiKeySource so the caller can run the \
+                 subscription refusal: {:?}",
+                routed[0]
+            );
+        };
+        assert_eq!(api_key_source.as_deref(), Some("none"));
         let forwarded: Vec<String> = routed.iter().filter_map(forwarded_event_type).collect();
         assert_eq!(
             forwarded,
@@ -984,7 +965,10 @@ mod tests {
         );
 
         let RoutedFrame::Terminal(terminal) = routed.last().expect("no frames routed") else {
-            panic!("the result frame must route to Terminal: {:?}", routed.last());
+            panic!(
+                "the result frame must route to Terminal: {:?}",
+                routed.last()
+            );
         };
         assert_eq!(terminal.final_text, "done");
         assert!(terminal.error.is_none(), "a completed turn is not an error");
@@ -1150,18 +1134,9 @@ mod tests {
             "signature_delta is dropped so the signed-turn persistence branch \
              never engages for a provider whose history is flattened to text"
         );
-        assert!(matches!(
-            routed[6],
-            RoutedFrame::Tool(ToolBlockEvent::Opened { index: 1, .. })
-        ));
-        assert!(matches!(
-            routed[7],
-            RoutedFrame::Tool(ToolBlockEvent::ArgsDelta { index: 1, .. })
-        ));
-        assert!(matches!(
-            routed[8],
-            RoutedFrame::Tool(ToolBlockEvent::Closed { index: 1, .. })
-        ));
+        assert_eq!(diverted_index(&routed[6]), Some(1), "the tool block opens");
+        assert_eq!(diverted_index(&routed[7]), Some(1), "its args delta");
+        assert_eq!(diverted_index(&routed[8]), Some(1), "its stop");
         assert_eq!(router.unhandled(), 0);
     }
 

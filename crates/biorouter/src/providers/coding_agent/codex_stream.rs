@@ -84,7 +84,13 @@ pub enum CodexEvent {
     },
     /// A tool-ish item opened or closed. Parked for phases 3/4 — see
     /// [`CodexToolEvent`].
-    Tool(CodexToolEvent),
+    ///
+    /// Boxed because it is by far the largest payload here (a command's
+    /// aggregated output plus two `Value`s) and text deltas are the hot path:
+    /// unboxed, every one-token `TextDelta` in the vector would carry the tool
+    /// variant's footprint. Also what `clippy::large_enum_variant` asks for, and
+    /// this crate lints with `-D warnings`.
+    Tool(Box<CodexToolEvent>),
     /// A token-usage snapshot. **Replaces** any previous snapshot; it is
     /// cumulative, not incremental. See [`UsageSource`].
     Usage(CodexUsage),
@@ -529,13 +535,21 @@ impl CodexDecoder {
             // surface cannot silently swallow the answer.
             "agentMessage" | "agent_message" => self.agent_message_item(item, lifecycle),
             "mcpToolCall" | "mcp_tool_call" => tool_event(item, lifecycle, mcp_kind(item))
-                .map_or_else(|| vec![CodexEvent::Ignored], |e| vec![CodexEvent::Tool(e)]),
+                .map_or_else(
+                    || vec![CodexEvent::Ignored],
+                    |e| vec![CodexEvent::Tool(Box::new(e))],
+                ),
             "commandExecution" | "command_execution" => {
-                tool_event(item, lifecycle, command_kind(item))
-                    .map_or_else(|| vec![CodexEvent::Ignored], |e| vec![CodexEvent::Tool(e)])
+                tool_event(item, lifecycle, command_kind(item)).map_or_else(
+                    || vec![CodexEvent::Ignored],
+                    |e| vec![CodexEvent::Tool(Box::new(e))],
+                )
             }
             "fileChange" | "file_change" => tool_event(item, lifecycle, file_change_kind(item))
-                .map_or_else(|| vec![CodexEvent::Ignored], |e| vec![CodexEvent::Tool(e)]),
+                .map_or_else(
+                    || vec![CodexEvent::Ignored],
+                    |e| vec![CodexEvent::Tool(Box::new(e))],
+                ),
             // `userMessage` is Codex echoing the prompt back; `reasoning` items
             // close carrying only encrypted content in every recorded run. Both
             // are understood and deliberately dropped, so neither counts as

@@ -74,9 +74,12 @@ use rmcp::model::{Role, Tool};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::base::{
+    ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage,
+};
 use super::coding_agent::{
-    self, bridge, discovery, effort, env as agent_env, transcript, CodingAgentKind,
+    self, bridge, claude_stream, discovery, effort, env as agent_env, transcript,
+    CodingAgentKind,
 };
 use super::errors::ProviderError;
 use crate::config::search_path::SearchPaths;
@@ -635,6 +638,236 @@ impl Provider for ClaudeCodeProvider {
         self.parse_result_object(&model_config.model_name, &lines, &stderr, status)
     }
 
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+
+    /// Stream one turn: the answer appears as the model writes it.
+    ///
+    /// # The three rules this obeys, each learned the hard way
+    ///
+    /// 1. **The bridge URL is read HERE, at construction — never from a poll.**
+    ///    `Agent::reply` runs the call that builds this stream inside
+    ///    `ACTIVE_BRIDGE_URL.scope(...)`, and that scope is gone by the time the
+    ///    returned stream is polled. `bridge_mcp_config()` reads the URL, so it
+    ///    must be called before the stream is returned — as must the spawn, since
+    ///    the child needs the file. See `coding_agent::bridge`'s module header.
+    /// 2. **The child is owned by a task the stream aborts on drop.** Cancelling
+    ///    a turn drops the provider stream rather than unwinding it, and a
+    ///    detached `claude` would keep burning the user's own subscription quota
+    ///    on an answer nobody will read. `AbortOnDrop` aborts the reader, which
+    ///    drops the child, which `kill_on_drop(true)` then reaps.
+    /// 3. **The turn ceiling lives inside the stream.** The blocking path's
+    ///    ceiling wraps `child.wait()` in `run`, which this path never calls, and
+    ///    the agent loop's cancellation check only fires *between* stream items —
+    ///    so without a deadline here a wedged child would hang the session
+    ///    forever with user cancel as the only escape.
+    ///
+    /// Text and thinking are decoded by the Anthropic decoder the API provider
+    /// already uses; `claude_stream` diverts every `tool_use` event away from it
+    /// first, because that decoder would otherwise mint unmarked `ToolRequest`s
+    /// the agent loop would dispatch — a second execution of a call the child
+    /// already ran. See `claude_stream`'s module header.
+    async fn stream(
+        &self,
+        system: &str,
+        messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        let prompt = transcript::flatten(messages).ok_or_else(|| {
+            ProviderError::RequestFailed(
+                "there is no user message for `claude` to answer".to_string(),
+            )
+        })?;
+
+        // Rule 1. Both of these read state that only exists inside the scope this
+        // call is running in.
+        let bridge_config = bridge_mcp_config()?;
+        let model_config = self.model.clone();
+        let model_name = model_config.model_name.clone();
+
+        let mut cmd = self.command_for(
+            &model_config,
+            system,
+            "stream-json",
+            bridge_config.as_ref().map(|f| f.path()),
+        );
+        // `--include-partial-messages` is what turns the `stream_event` frames on
+        // at all; without it `stream-json` still emits only whole messages and
+        // this path would be no more live than the blocking one. `--verbose` is
+        // required by the CLI alongside `stream-json` under `--print`.
+        cmd.arg("--include-partial-messages");
+        cmd.arg("--verbose");
+        cmd.kill_on_drop(true);
+
+        let mut child = cmd.spawn().map_err(|e| {
+            ProviderError::ExecutionError(format!(
+                "could not start `{}`: {e}",
+                self.command.display()
+            ))
+        })?;
+
+        // The prompt goes on stdin, never in argv: a flattened conversation can
+        // exceed the platform's argv limit.
+        if let Some(mut stdin) = child.stdin.take() {
+            let bytes = prompt.into_bytes();
+            tokio::spawn(async move {
+                let _ = stdin.write_all(&bytes).await;
+                let _ = stdin.shutdown().await;
+            });
+        }
+
+        let stdout = child.stdout.take().ok_or_else(|| {
+            ProviderError::ExecutionError("could not capture claude stdout".into())
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            ProviderError::ExecutionError("could not capture claude stderr".into())
+        })?;
+
+        // Drained concurrently, exactly as the blocking path does: a child that
+        // writes more than the pipe buffer to stderr and is never read deadlocks.
+        let stderr_task = tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            let mut out = String::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                out.push_str(&line);
+                out.push('\n');
+            }
+            out
+        });
+
+        let (line_tx, line_rx) = tokio::sync::mpsc::unbounded_channel::<anyhow::Result<String>>();
+        let (terminal_tx, terminal_rx) =
+            tokio::sync::oneshot::channel::<Result<ProviderUsage, ProviderError>>();
+
+        let reader = tokio::spawn(async move {
+            // Moved in so they live exactly as long as the read loop: the child
+            // (rule 2) and the bridge config file, whose deletion on drop would
+            // pull the MCP configuration out from under a child that is still
+            // starting.
+            let _bridge_config = bridge_config;
+            let mut child = child;
+            let mut router = claude_stream::ClaudeStreamRouter::new();
+            let mut lines = BufReader::new(stdout).lines();
+
+            let deadline = tokio::time::Instant::now() + TURN_TIMEOUT;
+            let mut terminal: Option<Result<ProviderUsage, ProviderError>> = None;
+
+            loop {
+                let next = tokio::time::timeout_at(deadline, lines.next_line()).await;
+                let line = match next {
+                    // Rule 3: the ceiling, inside the stream.
+                    Err(_) => {
+                        let _ = child.start_kill();
+                        terminal = Some(Err(ProviderError::ExecutionError(format!(
+                            "`claude` did not finish within {}s and was stopped",
+                            TURN_TIMEOUT.as_secs()
+                        ))));
+                        break;
+                    }
+                    Ok(Ok(Some(line))) => line,
+                    Ok(Ok(None)) => break,
+                    Ok(Err(e)) => {
+                        terminal = Some(Err(ProviderError::ExecutionError(format!(
+                            "reading `claude` output failed: {e}"
+                        ))));
+                        break;
+                    }
+                };
+                if line.trim().is_empty() {
+                    continue;
+                }
+
+                match router.push_line(&line) {
+                    claude_stream::RoutedFrame::AnthropicEvent(data) => {
+                        if line_tx.send(Ok(data)).is_err() {
+                            // The consumer dropped the stream; stop reading and
+                            // let the child be reaped.
+                            break;
+                        }
+                    }
+                    claude_stream::RoutedFrame::Init { api_key_source } => {
+                        // The subscription refusal, run at the same point the
+                        // blocking path runs it: before any answer is shown.
+                        if let Err(e) =
+                            ClaudeCodeProvider::assert_subscription_auth(api_key_source.as_deref())
+                        {
+                            let _ = child.start_kill();
+                            terminal = Some(Err(e));
+                            break;
+                        }
+                    }
+                    claude_stream::RoutedFrame::Terminal(frame) => {
+                        terminal = Some(match frame.error {
+                            Some(err) => Err(ClaudeCodeProvider::classify(
+                                err.category.as_deref(),
+                                err.detail,
+                            )),
+                            None => {
+                                let mut usage = ProviderUsage::new(model_name.clone(), frame.usage);
+                                usage.provider = Some(KIND.provider_id().to_string());
+                                Ok(usage)
+                            }
+                        });
+                        break;
+                    }
+                    // Phase 1 routes tool events correctly and ignores them; phase
+                    // 3 turns them into provider-executed cards.
+                    claude_stream::RoutedFrame::Tool(_) | claude_stream::RoutedFrame::Ignored => {}
+                }
+            }
+
+            // Closing the line channel ends the decoder stream, which is what
+            // moves the consumer on to the terminal result.
+            drop(line_tx);
+
+            let terminal = match terminal {
+                Some(terminal) => terminal,
+                // stdout closed without a `result` frame. stderr is the only
+                // explanation a silent child leaves behind, so it is worth
+                // waiting for here and nowhere else.
+                None => {
+                    let detail = stderr_task.await.unwrap_or_default();
+                    let detail = detail.trim();
+                    Err(ProviderError::RequestFailed(if detail.is_empty() {
+                        "`claude` produced no result".to_string()
+                    } else {
+                        format!("`claude` produced no result: {detail}")
+                    }))
+                }
+            };
+            let _ = terminal_tx.send(terminal);
+        });
+
+        let guard = coding_agent::AbortOnDrop(reader.abort_handle());
+        let inner = crate::providers::formats::anthropic::response_to_streaming_message(
+            tokio_stream::wrappers::UnboundedReceiverStream::new(line_rx),
+        );
+
+        let stream = async_stream::try_stream! {
+            // Held for the stream's whole life: dropping the stream aborts the
+            // reader, which drops the child, which `kill_on_drop` reaps.
+            let _guard = guard;
+            futures::pin_mut!(inner);
+            while let Some(item) = futures::StreamExt::next(&mut inner).await {
+                let item = item.map_err(|e| ProviderError::RequestFailed(e.to_string()))?;
+                yield item;
+            }
+            // The authoritative usage (and any failure) arrives last, so it wins
+            // over any partial snapshot the decoder produced — the agent keeps the
+            // last usage it sees.
+            match terminal_rx.await {
+                Ok(Ok(usage)) => yield (None, Some(usage), None),
+                Ok(Err(e)) => Err(e)?,
+                // The reader was aborted (a cancelled turn): end quietly, keeping
+                // whatever text already reached the transcript.
+                Err(_) => {}
+            }
+        };
+
+        Ok(Box::pin(stream))
+    }
+
     /// Ask the CLI's credential store whether this provider can run at all.
     ///
     /// Spawns, so it must never be called from `from_env` — see
@@ -1076,5 +1309,186 @@ mod tests {
             use std::os::windows::process::ExitStatusExt;
             std::process::ExitStatus::from_raw(0)
         }
+    }
+}
+
+/// Phase 1 end-to-end: the streaming path driven by a fake `claude` that replays
+/// **recorded vendor frames**.
+///
+/// This is the only test that exercises the whole chain the user actually sees —
+/// argv construction through `command_for`, the spawn, the line router, the
+/// reused Anthropic decoder, and the terminal usage — so it is the one that
+/// would catch a regression anywhere along it. The frames are the real ones
+/// captured in `tests/fixtures/coding_agent/claude/`, not idealised.
+#[cfg(all(test, unix))]
+mod streaming_tests {
+    use super::*;
+    use futures::StreamExt;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A stand-in for the `claude` binary that prints one fixture cell and exits.
+    ///
+    /// It ignores its arguments and its stdin, which is exactly what makes it a
+    /// replay: the frames are fixed, so any difference in what the provider
+    /// produces is the provider's doing.
+    fn fake_claude(cell: &str) -> tempfile::NamedTempFile {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/coding_agent/claude")
+            .join(format!("{cell}.ndjson"));
+        assert!(fixture.exists(), "missing fixture cell: {}", fixture.display());
+
+        let mut script = tempfile::NamedTempFile::new().expect("temp script");
+        writeln!(script, "#!/bin/sh").unwrap();
+        // `cat` the fixture, then drain stdin so the prompt writer never sees a
+        // broken pipe before it finishes.
+        writeln!(script, "cat {}", fixture.display()).unwrap();
+        writeln!(script, "cat > /dev/null").unwrap();
+        script.flush().unwrap();
+        let mut perms = std::fs::metadata(script.path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(script.path(), perms).unwrap();
+        script
+    }
+
+    fn provider_running(script: &tempfile::NamedTempFile) -> ClaudeCodeProvider {
+        ClaudeCodeProvider {
+            command: script.path().to_path_buf(),
+            model: ModelConfig::new("claude-sonnet-4-6").unwrap(),
+            name: KIND.provider_id().to_string(),
+        }
+    }
+
+    /// Everything the stream produced, flattened for assertions.
+    struct Streamed {
+        texts: Vec<String>,
+        usages: Vec<ProviderUsage>,
+        tool_requests: usize,
+        pendings: usize,
+    }
+
+    async fn drive(cell: &str) -> Result<Streamed, ProviderError> {
+        let script = fake_claude(cell);
+        let provider = provider_running(&script);
+        let messages = vec![Message::user().with_text("hello")];
+
+        let stream = provider.stream("SYS", &messages, &[]).await?;
+        futures::pin_mut!(stream);
+
+        let mut out = Streamed {
+            texts: Vec::new(),
+            usages: Vec::new(),
+            tool_requests: 0,
+            pendings: 0,
+        };
+        while let Some(item) = stream.next().await {
+            let (message, usage, pending) = item?;
+            if let Some(message) = message {
+                for content in &message.content {
+                    match content {
+                        MessageContent::Text(t) => out.texts.push(t.text.clone()),
+                        MessageContent::ToolRequest(_) => out.tool_requests += 1,
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(usage) = usage {
+                out.usages.push(usage);
+            }
+            if pending.is_some() {
+                out.pendings += 1;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Text arrives in pieces, and the pieces are the answer.
+    ///
+    /// More than one text item is the whole point: one item would mean the
+    /// answer still appears all at once, which is the behaviour this phase
+    /// exists to remove.
+    #[tokio::test]
+    async fn a_recorded_text_turn_streams_its_answer_in_parts() {
+        let streamed = drive("turn-text").await.expect("stream");
+
+        assert!(
+            streamed.texts.len() > 1,
+            "the answer must arrive in parts, not as one final blob (got {:?})",
+            streamed.texts
+        );
+        let joined: String = streamed.texts.concat();
+        assert!(
+            !joined.trim().is_empty(),
+            "the streamed parts must reconstruct the answer"
+        );
+        assert_eq!(
+            streamed.tool_requests, 0,
+            "a text turn mints no tool requests"
+        );
+    }
+
+    /// The terminal `result` frame is the authoritative usage, and it must be
+    /// attributed to this provider — without the provider field the usage row is
+    /// priced by model name and a subscription turn is billed as if it were an
+    /// API call.
+    #[tokio::test]
+    async fn the_terminal_usage_is_attributed_to_the_provider() {
+        let streamed = drive("turn-text").await.expect("stream");
+
+        let last = streamed.usages.last().expect("a terminal usage item");
+        assert_eq!(
+            last.provider.as_deref(),
+            Some(KIND.provider_id()),
+            "the last usage must carry the provider id, or pricing invents a \
+             per-token cost for a run that billed a subscription"
+        );
+        assert!(
+            last.usage.input_tokens.unwrap_or(0) > 0
+                || last.usage.output_tokens.unwrap_or(0) > 0,
+            "the terminal frame carries real token counts"
+        );
+    }
+
+    /// **The phase-1 contract.** A turn in which the child called a tool must
+    /// still yield ZERO `ToolRequest`s.
+    ///
+    /// The tool call is real and already executed by the child over the bridge;
+    /// what must not happen is the Anthropic decoder minting an unmarked
+    /// `ToolRequest` from the `tool_use` block, because the agent loop would
+    /// dispatch it — running the call a second time. Phase 3 surfaces these as
+    /// *marked* pairs; until then they are diverted and dropped.
+    #[tokio::test]
+    async fn a_recorded_tool_turn_yields_no_dispatchable_tool_requests() {
+        let streamed = drive("turn-tools").await.expect("stream");
+
+        assert_eq!(
+            streamed.tool_requests, 0,
+            "a tool_use block must never reach the Anthropic decoder: it would \
+             mint an unmarked ToolRequest and the loop would execute the call again"
+        );
+        assert_eq!(
+            streamed.pendings, 0,
+            "and no decoder-minted pending card either — phase 3 owns tool display"
+        );
+        assert!(
+            !streamed.texts.concat().trim().is_empty(),
+            "the turn's prose still streams"
+        );
+    }
+
+    /// A failed turn must surface as an error rather than as an empty success.
+    #[tokio::test]
+    async fn a_recorded_auth_failure_becomes_an_error() {
+        let result = drive("auth-failure").await;
+        let err = result.err().expect(
+            "an auth failure must fail the stream — the recorded frame carries \
+             is_error:true with subtype:\"success\", so classifying on subtype \
+             would report this turn as fine",
+        );
+        let rendered = format!("{err}");
+        assert!(
+            !rendered.is_empty(),
+            "the failure must carry a message the user can act on"
+        );
     }
 }

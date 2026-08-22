@@ -53,6 +53,7 @@
 
 pub mod appserver;
 pub mod bridge;
+pub mod claude_stream;
 pub mod codex_stream;
 pub mod discovery;
 pub mod effort;
@@ -66,6 +67,28 @@ pub use discovery::{
 };
 
 use super::errors::ProviderError;
+
+/// Aborts a spawned task when dropped — the streaming path's equivalent of
+/// `kill_on_drop`.
+///
+/// On the blocking path the child process is owned by the provider's own future,
+/// so cancelling a turn (which **drops** that future rather than unwinding it)
+/// drops the child, and `kill_on_drop(true)` reaps it. The streaming path breaks
+/// that chain: the child has to be owned by a spawned reader task, and a spawned
+/// task outlives the stream that was feeding from it. Without this guard a
+/// cancelled turn would leave `claude` or `codex app-server` running detached —
+/// holding the user's own subscription credential and burning their quota on an
+/// answer nobody will read.
+///
+/// Held inside the returned stream, so the abort fires exactly when the consumer
+/// lets go of it.
+pub struct AbortOnDrop(pub tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 /// Turn a missing-or-unusable CLI into the error the user should act on.
 ///
