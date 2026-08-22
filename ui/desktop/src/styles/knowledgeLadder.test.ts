@@ -82,6 +82,39 @@ describe('the Knowledge pane ladder', () => {
     expect(core).toEqual(['type']);
   });
 
+  /**
+   * ⚠ **The rail REPLACES the chip; it must not join it.** At the three-column
+   * step the legend is a permanent rail, so the `Legend` control has nothing
+   * left to open — and a chip that survives beside its own replacement both
+   * lies and costs the filter row ~93px it no longer has. The companion
+   * artifact has exactly this bug from an inline `display` that outlives the
+   * state it was set for, which is why this is pinned in the app: measured
+   * across 37 pane widths from 1380 to 1560, the shipped chip carries no inline
+   * style at any width and flips to `none` at exactly 1400 as the rail appears.
+   */
+  it('retires the Legend chip at the step where the rail becomes permanent', () => {
+    const threeCol = CSS.slice(
+      CSS.indexOf('@container br-knowledge-pane (min-width: 1400px)')
+    ).slice(0, 1200);
+    expect(threeCol).toMatch(/\.br-facet-legend\s*\{\s*display:\s*none/);
+    expect(threeCol).toMatch(/\.br-knowledge-detail\s*\{[^}]*display:\s*flex/);
+  });
+
+  /**
+   * ⚠ **Source order is the whole mechanism, and it has failed twice.** These
+   * defaults and the `@container` blocks that override them have no specificity
+   * relationship to fall back on — a default declared AFTER a container block
+   * silently wins inside it, and the symptom is a facet appearing at the wrong
+   * step rather than any error. Both regressions were found by eye in a browser.
+   */
+  it('declares the facet defaults before the first container block', () => {
+    const firstDefault = CSS.indexOf('.br-facet-core,');
+    const firstContainer = CSS.indexOf('@container br-knowledge-pane');
+    expect(firstDefault).toBeGreaterThan(-1);
+    expect(firstContainer).toBeGreaterThan(-1);
+    expect(firstDefault).toBeLessThan(firstContainer);
+  });
+
   it('offers every folded facet inside the More menu', () => {
     const extra = [...STRIP.matchAll(/(\w+)Facet\('br-facet-extra'\)/g)].map((m) => m[1]);
     expect(extra.sort()).toEqual(['predicate', 'source', 'status']);
