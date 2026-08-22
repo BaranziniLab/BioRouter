@@ -61,6 +61,7 @@ use crate::privacy::refusal::PrivacyRefusal;
 use crate::privacy::{ProviderTier, SessionClassification};
 use crate::providers::base::Provider;
 use crate::providers::coding_agent::bridge as coding_agent_bridge;
+use crate::providers::coding_agent::mirror;
 use crate::providers::errors::ProviderError;
 use crate::scheduler_trait::SchedulerTrait;
 use crate::security::security_inspector::SecurityInspector;
@@ -7177,6 +7178,29 @@ impl Agent {
                                 // `id: null` while the store minted a uid nobody
                                 // was ever told.
                                 let response = named(response);
+
+                                // The mirror path (coding-agent providers). The
+                                // child ALREADY executed these calls — over the
+                                // tool bridge, behind the same inspectors,
+                                // permission mode, `.biorouterignore`, vault and
+                                // privacy Gate C that a dispatch here would apply.
+                                // So this message is a *record*, not a request:
+                                // persist it, show it, and dispatch nothing.
+                                //
+                                // Without this branch `categorize_tools` below
+                                // would dispatch the pair a second time — a real
+                                // second execution of a shell command, not a
+                                // display glitch — because `categorize_tool_requests`
+                                // filters on content only and never reads metadata.
+                                // The predicate is deliberately "carries ANY
+                                // mirrored content"; see `coding_agent::mirror`.
+                                if mirror::contains_provider_executed(&response) {
+                                    yield AgentEvent::Message(response.clone());
+                                    tokio::task::yield_now().await;
+                                    messages_to_add.push(response);
+                                    continue;
+                                }
+
                                 let ToolCategorizeResult {
                                     frontend_requests,
                                     // BR-19: `mut` — a PreToolUse hook may rewrite a
