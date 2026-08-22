@@ -356,3 +356,257 @@ mod tests {
         assert_eq!(Execution::from_str("Bridged"), None);
     }
 }
+
+/// The name a bridged tool has inside the child.
+///
+/// The MCP server Biorouter serves over the bridge is called `biorouter`
+/// (`claude_code::bridge_mcp_config`, `codex::thread_params`), and both vendors
+/// namespace an MCP tool as `mcp__<server>__<tool>`. The card must show the name
+/// the user knows — `developer__shell`, not `mcp__biorouter__developer__shell` —
+/// and it is also the name every other provider's card shows for the same tool.
+const BRIDGE_TOOL_PREFIX: &str = "mcp__biorouter__";
+
+/// Strip the child-side MCP namespacing from a bridged tool name.
+///
+/// A name without the prefix is returned unchanged: that is a tool the child ran
+/// itself (Codex's `exec`), and inventing a prefix for it would misattribute it.
+#[must_use]
+pub fn display_tool_name(name: &str) -> &str {
+    name.strip_prefix(BRIDGE_TOOL_PREFIX).unwrap_or(name)
+}
+
+/// Build the assistant message that records a call the child already made.
+///
+/// The message id is left unset: the loop names it, and the provider's own
+/// streaming message id belongs to the *text* rows, where re-using it is what
+/// merges chunks into one row. Sharing it here would fold the tool card into the
+/// prose row.
+#[must_use]
+pub fn request_message(
+    call_id: &str,
+    tool_name: &str,
+    arguments: serde_json::Value,
+    exec: Execution,
+) -> Message {
+    let arguments = match arguments {
+        serde_json::Value::Object(map) => Some(map),
+        // A tool called with no arguments, or with a non-object body the vendor
+        // let through. Neither is worth dropping the card for.
+        _ => None,
+    };
+    let mut request = ToolRequest {
+        id: call_id.to_string(),
+        tool_call: Ok(rmcp::model::CallToolRequestParams {
+            name: display_tool_name(tool_name).to_string().into(),
+            arguments,
+            meta: None,
+            task: None,
+        }),
+        metadata: None,
+        tool_meta: None,
+    };
+    mark_request(&mut request, exec);
+
+    Message::new(
+        rmcp::model::Role::Assistant,
+        chrono::Utc::now().timestamp(),
+        vec![MessageContent::ToolRequest(request)],
+    )
+}
+
+/// Build the user message carrying the result the child got back.
+///
+/// A failed call is recorded as a **successful transport carrying
+/// `is_error: true`**, not as a transport error. That is the shape the GUI reads
+/// (`ToolCallWithResponse::getToolResultError` checks `isError` on the value as
+/// well as a transport-level `status: "error"`), and it is also the shape the
+/// vendor used — Claude puts `is_error` on the `tool_result` block itself. It
+/// keeps the failure text visible in the card body instead of collapsing it to
+/// an error string.
+#[must_use]
+pub fn response_message(
+    call_id: &str,
+    content: Vec<rmcp::model::Content>,
+    is_error: bool,
+    exec: Execution,
+) -> Message {
+    let result = if is_error {
+        rmcp::model::CallToolResult::error(content)
+    } else {
+        rmcp::model::CallToolResult::success(content)
+    };
+    let mut response = ToolResponse {
+        id: call_id.to_string(),
+        tool_result: Ok(result),
+        metadata: None,
+    };
+    mark_response(&mut response, exec);
+
+    Message::new(
+        rmcp::model::Role::User,
+        chrono::Utc::now().timestamp(),
+        vec![MessageContent::ToolResponse(response)],
+    )
+}
+
+#[cfg(test)]
+mod builder_tests {
+    use super::*;
+
+    #[test]
+    fn a_bridged_tool_shows_the_name_the_user_knows() {
+        assert_eq!(
+            display_tool_name("mcp__biorouter__developer__shell"),
+            "developer__shell"
+        );
+        // A child-executed tool has no bridge prefix and keeps its own name.
+        assert_eq!(display_tool_name("exec"), "exec");
+    }
+
+    #[test]
+    fn a_request_message_is_marked_and_carries_its_arguments() {
+        let message = request_message(
+            "toolu_1",
+            "mcp__biorouter__developer__shell",
+            serde_json::json!({ "command": "ls" }),
+            Execution::Bridged,
+        );
+
+        assert!(contains_provider_executed(&message));
+        let MessageContent::ToolRequest(request) = &message.content[0] else {
+            panic!("expected a tool request");
+        };
+        let call = request.tool_call.as_ref().expect("a well-formed call");
+        assert_eq!(call.name.as_ref(), "developer__shell");
+        assert_eq!(
+            call.arguments
+                .as_ref()
+                .and_then(|a| a.get("command"))
+                .and_then(|v| v.as_str()),
+            Some("ls")
+        );
+    }
+
+    /// The pairing the GUI needs: same id on both halves, request on the
+    /// assistant row, response on the user row — exactly as an API provider's
+    /// dispatched pair looks.
+    #[test]
+    fn a_pair_shares_its_id_across_the_two_roles() {
+        let request = request_message(
+            "toolu_7",
+            "mcp__biorouter__developer__shell",
+            serde_json::json!({}),
+            Execution::Bridged,
+        );
+        let response = response_message(
+            "toolu_7",
+            vec![rmcp::model::Content::text("ok")],
+            false,
+            Execution::Bridged,
+        );
+
+        assert_eq!(request.role, rmcp::model::Role::Assistant);
+        assert_eq!(response.role, rmcp::model::Role::User);
+
+        let MessageContent::ToolRequest(req) = &request.content[0] else {
+            panic!("expected a tool request");
+        };
+        let MessageContent::ToolResponse(resp) = &response.content[0] else {
+            panic!("expected a tool response");
+        };
+        assert_eq!(req.id, resp.id, "the card pairs on this id");
+    }
+
+    /// A failed call must reach the GUI as `isError` on the value, because that
+    /// is what turns the card red while keeping the failure text readable.
+    #[test]
+    fn a_failed_call_is_recorded_as_is_error_not_as_a_transport_error() {
+        let response = response_message(
+            "toolu_2",
+            vec![rmcp::model::Content::text("No such file or directory")],
+            true,
+            Execution::Bridged,
+        );
+
+        let MessageContent::ToolResponse(resp) = &response.content[0] else {
+            panic!("expected a tool response");
+        };
+        let result = resp
+            .tool_result
+            .as_ref()
+            .expect("the transport succeeded; the tool did not");
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "the GUI reads isError on the value to colour the card"
+        );
+        assert!(contains_provider_executed(&response));
+    }
+}
+
+/// Turn a vendor's tool-result body into MCP content blocks.
+///
+/// Both vendors are loose about this field: Claude's `tool_result.content` is
+/// either a plain string or an array of content blocks, and Codex's item results
+/// vary by item type. Anything that is not recognisably a text block is
+/// preserved as its JSON rather than dropped — a card showing an unexpected
+/// shape is debuggable, a card showing nothing is not.
+#[must_use]
+pub fn content_from_value(value: &serde_json::Value) -> Vec<rmcp::model::Content> {
+    match value {
+        serde_json::Value::Null => Vec::new(),
+        serde_json::Value::String(text) => vec![rmcp::model::Content::text(text.clone())],
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .map(|block| match block.get("text").and_then(serde_json::Value::as_str) {
+                Some(text) => rmcp::model::Content::text(text.to_string()),
+                None => rmcp::model::Content::text(block.to_string()),
+            })
+            .collect(),
+        other => vec![rmcp::model::Content::text(other.to_string())],
+    }
+}
+
+#[cfg(test)]
+mod content_tests {
+    use super::*;
+
+    fn texts(content: &[rmcp::model::Content]) -> Vec<String> {
+        content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_plain_string_body_becomes_one_text_block() {
+        let content = content_from_value(&serde_json::json!("a.txt\nb.txt"));
+        assert_eq!(texts(&content), vec!["a.txt\nb.txt".to_string()]);
+    }
+
+    #[test]
+    fn an_array_of_text_blocks_keeps_each_block() {
+        let content = content_from_value(&serde_json::json!([
+            { "type": "text", "text": "first" },
+            { "type": "text", "text": "second" },
+        ]));
+        assert_eq!(
+            texts(&content),
+            vec!["first".to_string(), "second".to_string()]
+        );
+    }
+
+    /// An unexpected block is preserved as JSON rather than silently dropped:
+    /// the user can see what the tool actually returned.
+    #[test]
+    fn an_unrecognised_block_is_preserved_as_json() {
+        let content = content_from_value(&serde_json::json!([{ "type": "image", "id": 7 }]));
+        assert_eq!(content.len(), 1);
+        assert!(texts(&content)[0].contains("image"));
+    }
+
+    #[test]
+    fn a_null_body_produces_no_content_rather_than_the_word_null() {
+        assert!(content_from_value(&serde_json::Value::Null).is_empty());
+    }
+}

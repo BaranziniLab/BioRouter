@@ -75,10 +75,11 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::base::{
-    ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage,
+    ConfigKey, MessageStream, ModelInfo, PendingToolCall, Provider, ProviderMetadata,
+    ProviderStreamItem, ProviderUsage, Usage,
 };
 use super::coding_agent::{
-    self, bridge, claude_stream, discovery, effort, env as agent_env, transcript,
+    self, bridge, claude_stream, discovery, effort, env as agent_env, mirror, transcript,
     CodingAgentKind,
 };
 use super::errors::ProviderError;
@@ -510,6 +511,128 @@ impl ClaudeCodeProvider {
 /// accepts both: the URL carries the turn's capability nonce, and argv is readable
 /// by any process running as the same user. `NamedTempFile` creates it 0600.
 ///
+/// Forward whatever the Anthropic decoder can produce **without waiting**.
+///
+/// Called immediately before a tool card is emitted, so the prose that preceded
+/// the call is already in the transcript when the card lands. `now_or_never`
+/// rather than `await` is the whole point: the decoder's stream only ends when
+/// its input channel closes, so awaiting it here would deadlock the reader
+/// against a child that has not finished the turn. An item the decoder is not
+/// ready to yield is simply picked up at the next flush point, which delays it
+/// but cannot reorder it.
+///
+/// Returns `false` once the consumer has dropped the stream, which is the
+/// reader's signal to stop and let the child be reaped.
+fn drain_ready<S>(
+    decoded: &mut std::pin::Pin<Box<S>>,
+    out: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+) -> bool
+where
+    S: futures::Stream<Item = anyhow::Result<ProviderStreamItem>>,
+{
+    use futures::FutureExt;
+    while let Some(ready) = futures::StreamExt::next(decoded).now_or_never() {
+        let Some(item) = ready else {
+            // The decoder ended; nothing further will come from it.
+            return true;
+        };
+        let item = item.map_err(|e| ProviderError::RequestFailed(e.to_string()));
+        if out.send(item).is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Turn one diverted `tool_use` event into what the GUI draws.
+///
+/// The lifecycle mirrors an API provider's exactly, which is the point — the
+/// same `ToolCallWithResponse` card, the same status progression:
+///
+/// * `Opened` → a `PendingToolCall`, so the skeleton card appears the moment the
+///   tool's name is known, before its arguments have finished arriving;
+/// * `ArgsDelta` → the same pending card with the arguments so far;
+/// * `Call` → the authoritative **marked** `ToolRequest`, which replaces the
+///   skeleton (the store matches on the call id) and shows the card as running;
+/// * `Result` → the **marked** `ToolResponse`, which settles the card green or
+///   red and fills in what the tool returned.
+///
+/// Every message minted here is marked [`mirror::Execution::Bridged`]: the call
+/// reached Biorouter over the tool bridge and ran behind its inspectors,
+/// permission mode, `.biorouterignore`, vault and privacy Gate C. The mark is
+/// what stops the agent loop dispatching it a second time.
+fn emit_tool_event(
+    event: claude_stream::ToolBlockEvent,
+    partial_args: &mut std::collections::HashMap<String, String>,
+    out: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+) -> bool {
+    let send = |item: ProviderStreamItem| out.send(Ok(item)).is_ok();
+
+    match event {
+        claude_stream::ToolBlockEvent::Opened { id, name, .. } => {
+            partial_args.insert(id.clone(), String::new());
+            send((
+                None,
+                None,
+                Some(PendingToolCall {
+                    id,
+                    name: mirror::display_tool_name(&name).to_string(),
+                    partial_args: None,
+                }),
+            ))
+        }
+        claude_stream::ToolBlockEvent::ArgsDelta {
+            id, partial_json, ..
+        } => {
+            let buffered = partial_args.entry(id.clone()).or_default();
+            buffered.push_str(&partial_json);
+            let snapshot = buffered.clone();
+            send((
+                None,
+                None,
+                Some(PendingToolCall {
+                    id,
+                    // The name is already on the card from `Opened`; the store
+                    // keys on the id, so repeating it is what keeps the card
+                    // stable while its arguments grow.
+                    name: String::new(),
+                    partial_args: Some(snapshot),
+                }),
+            ))
+        }
+        claude_stream::ToolBlockEvent::Closed { .. } => true,
+        claude_stream::ToolBlockEvent::Call { calls, .. } => {
+            for call in calls {
+                partial_args.remove(&call.id);
+                let message = mirror::request_message(
+                    &call.id,
+                    &call.name,
+                    call.input,
+                    mirror::Execution::Bridged,
+                );
+                if !send((Some(message), None, None)) {
+                    return false;
+                }
+            }
+            true
+        }
+        claude_stream::ToolBlockEvent::Result { results } => {
+            for result in results {
+                let message = mirror::response_message(
+                    &result.tool_use_id,
+                    mirror::content_from_value(&result.content),
+                    result.is_error,
+                    mirror::Execution::Bridged,
+                );
+                if !send((Some(message), None, None)) {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+}
+
 /// `Ok(None)` means this turn has no bridge — a CLI process with no HTTP server, or
 /// an agent that did not establish one. The child then runs with no tools at all,
 /// which is the correct degradation rather than an error.
@@ -736,9 +859,15 @@ impl Provider for ClaudeCodeProvider {
             out
         });
 
+        // ONE ordered output channel. The Anthropic decoder lives inside the
+        // reader rather than wrapping it, because tool cards and prose have to
+        // interleave in wire order: a card that jumped ahead of the sentence
+        // introducing it would read as a different turn. The reader flushes
+        // whatever the decoder has ready immediately before emitting a tool
+        // item, which is what keeps the two in step.
+        let (out_tx, out_rx) =
+            tokio::sync::mpsc::unbounded_channel::<Result<ProviderStreamItem, ProviderError>>();
         let (line_tx, line_rx) = tokio::sync::mpsc::unbounded_channel::<anyhow::Result<String>>();
-        let (terminal_tx, terminal_rx) =
-            tokio::sync::oneshot::channel::<Result<ProviderUsage, ProviderError>>();
 
         let reader = tokio::spawn(async move {
             // Moved in so they live exactly as long as the read loop: the child
@@ -749,6 +878,15 @@ impl Provider for ClaudeCodeProvider {
             let mut child = child;
             let mut router = claude_stream::ClaudeStreamRouter::new();
             let mut lines = BufReader::new(stdout).lines();
+            let mut decoded = Box::pin(
+                crate::providers::formats::anthropic::response_to_streaming_message(
+                    tokio_stream::wrappers::UnboundedReceiverStream::new(line_rx),
+                ),
+            );
+            // Partial arguments per in-flight call, so the skeleton card can show
+            // them arriving.
+            let mut partial_args: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
 
             let deadline = tokio::time::Instant::now() + TURN_TIMEOUT;
             let mut terminal: Option<Result<ProviderUsage, ProviderError>> = None;
@@ -781,8 +919,19 @@ impl Provider for ClaudeCodeProvider {
                 match router.push_line(&line) {
                     claude_stream::RoutedFrame::AnthropicEvent(data) => {
                         if line_tx.send(Ok(data)).is_err() {
-                            // The consumer dropped the stream; stop reading and
-                            // let the child be reaped.
+                            break;
+                        }
+                        if !drain_ready(&mut decoded, &out_tx) {
+                            break;
+                        }
+                    }
+                    claude_stream::RoutedFrame::Tool(event) => {
+                        // Order first: everything the decoder already produced
+                        // belongs before this card.
+                        if !drain_ready(&mut decoded, &out_tx) {
+                            break;
+                        }
+                        if !emit_tool_event(event, &mut partial_args, &out_tx) {
                             break;
                         }
                     }
@@ -811,15 +960,19 @@ impl Provider for ClaudeCodeProvider {
                         });
                         break;
                     }
-                    // Phase 1 routes tool events correctly and ignores them; phase
-                    // 3 turns them into provider-executed cards.
-                    claude_stream::RoutedFrame::Tool(_) | claude_stream::RoutedFrame::Ignored => {}
+                    claude_stream::RoutedFrame::Ignored => {}
                 }
             }
 
-            // Closing the line channel ends the decoder stream, which is what
-            // moves the consumer on to the terminal result.
+            // Closing the line channel ends the decoder stream; draining it to
+            // completion is what flushes any text still buffered inside it.
             drop(line_tx);
+            while let Some(item) = futures::StreamExt::next(&mut decoded).await {
+                let item = item.map_err(|e| ProviderError::RequestFailed(e.to_string()));
+                if out_tx.send(item).is_err() {
+                    return;
+                }
+            }
 
             let terminal = match terminal {
                 Some(terminal) => terminal,
@@ -836,32 +989,19 @@ impl Provider for ClaudeCodeProvider {
                     }))
                 }
             };
-            let _ = terminal_tx.send(terminal);
+            // The authoritative usage (and any failure) goes last, so it is the
+            // snapshot the agent keeps.
+            let _ = out_tx.send(terminal.map(|usage| (None, Some(usage), None)));
         });
 
         let guard = coding_agent::AbortOnDrop(reader.abort_handle());
-        let inner = crate::providers::formats::anthropic::response_to_streaming_message(
-            tokio_stream::wrappers::UnboundedReceiverStream::new(line_rx),
-        );
-
         let stream = async_stream::try_stream! {
             // Held for the stream's whole life: dropping the stream aborts the
             // reader, which drops the child, which `kill_on_drop` reaps.
             let _guard = guard;
-            futures::pin_mut!(inner);
-            while let Some(item) = futures::StreamExt::next(&mut inner).await {
-                let item = item.map_err(|e| ProviderError::RequestFailed(e.to_string()))?;
-                yield item;
-            }
-            // The authoritative usage (and any failure) arrives last, so it wins
-            // over any partial snapshot the decoder produced — the agent keeps the
-            // last usage it sees.
-            match terminal_rx.await {
-                Ok(Ok(usage)) => yield (None, Some(usage), None),
-                Ok(Err(e)) => Err(e)?,
-                // The reader was aborted (a cancelled turn): end quietly, keeping
-                // whatever text already reached the transcript.
-                Err(_) => {}
+            let mut out_rx = out_rx;
+            while let Some(item) = out_rx.recv().await {
+                yield item?;
             }
         };
 
@@ -1364,7 +1504,13 @@ mod streaming_tests {
         texts: Vec<String>,
         usages: Vec<ProviderUsage>,
         tool_requests: usize,
+        /// Requests carrying the provider-executed marker. Anything counted in
+        /// `tool_requests` but missing here would be dispatched by the loop.
+        marked_requests: Vec<String>,
+        /// `(call id, is_error)` for each mirrored response.
+        responses: Vec<(String, bool)>,
         pendings: usize,
+        pending_names: Vec<String>,
     }
 
     async fn drive(cell: &str) -> Result<Streamed, ProviderError> {
@@ -1379,7 +1525,10 @@ mod streaming_tests {
             texts: Vec::new(),
             usages: Vec::new(),
             tool_requests: 0,
+            marked_requests: Vec::new(),
+            responses: Vec::new(),
             pendings: 0,
+            pending_names: Vec::new(),
         };
         while let Some(item) = stream.next().await {
             let (message, usage, pending) = item?;
@@ -1387,7 +1536,21 @@ mod streaming_tests {
                 for content in &message.content {
                     match content {
                         MessageContent::Text(t) => out.texts.push(t.text.clone()),
-                        MessageContent::ToolRequest(_) => out.tool_requests += 1,
+                        MessageContent::ToolRequest(r) => {
+                            out.tool_requests += 1;
+                            if mirror::request_execution(r).is_some() {
+                                out.marked_requests.push(r.id.clone());
+                            }
+                        }
+                        MessageContent::ToolResponse(r) => {
+                            let is_error = r
+                                .tool_result
+                                .as_ref()
+                                .ok()
+                                .and_then(|v| v.is_error)
+                                .unwrap_or(false);
+                            out.responses.push((r.id.clone(), is_error));
+                        }
                         _ => {}
                     }
                 }
@@ -1395,8 +1558,11 @@ mod streaming_tests {
             if let Some(usage) = usage {
                 out.usages.push(usage);
             }
-            if pending.is_some() {
+            if let Some(pending) = pending {
                 out.pendings += 1;
+                if !pending.name.is_empty() {
+                    out.pending_names.push(pending.name);
+                }
             }
         }
         Ok(out)
@@ -1449,30 +1615,81 @@ mod streaming_tests {
         );
     }
 
-    /// **The phase-1 contract.** A turn in which the child called a tool must
-    /// still yield ZERO `ToolRequest`s.
+    /// **The parity contract.** Every tool call the child made appears as a
+    /// card, and every one of them is marked as already executed.
     ///
-    /// The tool call is real and already executed by the child over the bridge;
-    /// what must not happen is the Anthropic decoder minting an unmarked
-    /// `ToolRequest` from the `tool_use` block, because the agent loop would
-    /// dispatch it — running the call a second time. Phase 3 surfaces these as
-    /// *marked* pairs; until then they are diverted and dropped.
+    /// Both halves matter and they pull in opposite directions. Zero cards would
+    /// mean the user still cannot see what the agent did — the thing this work
+    /// exists to fix. An *unmarked* card would mean the agent loop dispatches the
+    /// call a second time, actually re-running it. So the assertion is not
+    /// "requests exist" but "requests exist AND every one carries the marker".
     #[tokio::test]
-    async fn a_recorded_tool_turn_yields_no_dispatchable_tool_requests() {
+    async fn a_recorded_tool_turn_mirrors_every_call_as_a_marked_card() {
         let streamed = drive("turn-tools").await.expect("stream");
 
-        assert_eq!(
-            streamed.tool_requests, 0,
-            "a tool_use block must never reach the Anthropic decoder: it would \
-             mint an unmarked ToolRequest and the loop would execute the call again"
+        assert!(
+            streamed.tool_requests > 0,
+            "the child's tool calls must be visible as cards"
         );
         assert_eq!(
-            streamed.pendings, 0,
-            "and no decoder-minted pending card either — phase 3 owns tool display"
+            streamed.marked_requests.len(),
+            streamed.tool_requests,
+            "every mirrored request must carry the provider-executed marker, or \
+             the loop will run the call again (marked: {:?}, total: {})",
+            streamed.marked_requests,
+            streamed.tool_requests
+        );
+
+        // The skeleton card: the name is known at content_block_start, before the
+        // arguments have finished arriving.
+        assert!(
+            streamed.pendings > 0,
+            "a pending card must appear as soon as the tool's name is known"
         );
         assert!(
+            streamed
+                .pending_names
+                .iter()
+                .all(|n| !n.starts_with("mcp__biorouter__")),
+            "the card shows the tool name the user knows, not the child's \
+             MCP-namespaced spelling (got {:?})",
+            streamed.pending_names
+        );
+
+        // Every card resolves: an unpaired request would leave the card spinning
+        // for the rest of the session.
+        for id in &streamed.marked_requests {
+            assert!(
+                streamed.responses.iter().any(|(rid, _)| rid == id),
+                "request {id} has no matching response; its card would never settle \
+                 (responses: {:?})",
+                streamed.responses
+            );
+        }
+
+        assert!(
             !streamed.texts.concat().trim().is_empty(),
-            "the turn's prose still streams"
+            "the turn's prose still streams alongside the cards"
+        );
+    }
+
+    /// A tool the child ran that FAILED must reach the card as a failure.
+    ///
+    /// This is the half that a happy-path fixture cannot prove: `is_error` lives
+    /// on the `tool_result` block, and losing it would paint a failed call green.
+    #[tokio::test]
+    async fn a_failed_tool_call_is_mirrored_as_a_failure() {
+        let streamed = drive("turn-tool-error").await.expect("stream");
+
+        assert!(
+            streamed.tool_requests > 0,
+            "the failing call must still be shown"
+        );
+        assert!(
+            streamed.responses.iter().any(|(_, is_error)| *is_error),
+            "the failure must survive as is_error on the result, which is what \
+             turns the card red (responses: {:?})",
+            streamed.responses
         );
     }
 
