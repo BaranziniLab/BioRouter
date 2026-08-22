@@ -2050,3 +2050,131 @@ for line in sys.stdin:
         }
     }
 }
+
+/// Phase 5: cancellation on the Codex streaming path.
+///
+/// The Codex pump owns the `AppServer`, and `AppServer::spawn` sets
+/// `kill_on_drop(true)` before spawning (`coding_agent/appserver.rs`). So an
+/// aborted pump drops the server, which drops the child, which is reaped —
+/// which matters because the pump's own `server.shutdown()` never runs on an
+/// abort. This proves that chain rather than asserting it from the code.
+#[cfg(all(test, unix))]
+mod cancellation_tests {
+    use super::*;
+    use futures::StreamExt;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A fake `codex` that completes the handshake, streams one delta, then
+    /// hangs — a child still working when the user hits stop.
+    fn hanging_codex(pid_file: &std::path::Path) -> tempfile::NamedTempFile {
+        let script = format!(
+            r#"#!/usr/bin/env python3
+import sys, json, os
+
+with open("{pid}", "w") as f:
+    f.write(str(os.getpid()))
+
+def send(obj):
+    print(json.dumps(obj), flush=True)
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    m = json.loads(line)
+    method = m.get("method")
+    if method == "initialize":
+        send({{"jsonrpc":"2.0","id":m["id"],"result":{{"codexHome":"/tmp"}}}})
+    elif method == "account/read":
+        send({{"jsonrpc":"2.0","id":m["id"],
+              "result":{{"account":{{"type":"chatgpt","planType":"pro"}},
+                        "requiresOpenaiAuth":True}}}})
+    elif method == "thread/start":
+        send({{"jsonrpc":"2.0","id":m["id"],"result":{{"thread":{{"id":"t-1"}}}}}})
+    elif method == "turn/start":
+        send({{"jsonrpc":"2.0","method":"item/agentMessage/delta",
+              "params":{{"threadId":"t-1","turnId":"turn-1",
+                        "itemId":"msg_1","delta":"working"}}}})
+        # No terminal frame: the turn never ends on its own.
+        while True:
+            pass
+"#,
+            pid = pid_file.display(),
+        );
+
+        let mut file = tempfile::NamedTempFile::new().expect("temp script");
+        file.write_all(script.as_bytes()).unwrap();
+        file.flush().unwrap();
+        let mut perms = std::fs::metadata(file.path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(file.path(), perms).unwrap();
+        file
+    }
+
+    fn alive(pid: i32) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// Dropping the stream mid-turn reaps the app server.
+    #[tokio::test]
+    async fn dropping_a_live_stream_reaps_the_app_server() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pid_file = dir.path().join("pid");
+        let script = hanging_codex(&pid_file);
+
+        let provider = CodexProvider {
+            command: script.path().to_path_buf(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
+            name: KIND.provider_id().to_string(),
+        };
+        let messages = vec![Message::user().with_text("hello")];
+
+        // Not `pin_mut!`: that shadows the stream with a `Pin<&mut _>`, so
+        // dropping it would drop a reference and leave the stream itself alive —
+        // the test would then report a leak of its own making. `stream()`
+        // returns a `Pin<Box<_>>`, which is `Unpin`.
+        let mut stream = provider
+            .stream("SYS", &messages, &[])
+            .await
+            .expect("stream");
+
+        // Read until the first text arrives, so the child is definitely running.
+        let mut saw_text = false;
+        while let Some(item) = stream.next().await {
+            let (message, _, _) = item.expect("no error before the drop");
+            if message.is_some() {
+                saw_text = true;
+                break;
+            }
+        }
+        assert!(
+            saw_text,
+            "the fake app server should have streamed some text"
+        );
+
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .expect("the child wrote its pid")
+            .trim()
+            .parse()
+            .expect("a numeric pid");
+        assert!(alive(pid), "the app server runs while the turn is live");
+
+        drop(stream);
+
+        let mut reaped = false;
+        for _ in 0..100 {
+            if !alive(pid) {
+                reaped = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            reaped,
+            "the app server survived the stream being dropped. The pump's own \
+             server.shutdown() never runs on an abort, so this relies entirely \
+             on AppServer::spawn setting kill_on_drop(true) before spawning"
+        );
+    }
+}
