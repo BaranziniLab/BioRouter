@@ -67,16 +67,32 @@ what lets both asset modes reach an identical runtime state.
 - **A report (`render_dashboard`) is a separate case.** It always inlines, ignoring the
   flag, because its library tags live inside base64 panel blobs the rewriter cannot
   reach. Guarded by `crates/biorouter-mcp/tests/autovis_dashboard_cdn.rs`.
-- **Not every display surface is the same.** The in-chat artifact panel hosts the
-  figure's `srcdoc` inside the renderer document, whose CSP allows inline scripts. The
-  standalone "open in window / in browser" path wraps it in a second document carrying
-  `ARTIFACT_WRAPPER_CSP` instead — and a `srcdoc` document inherits its parent's policy.
-  ⚠ **That wrapper policy has no `script-src`, so `default-src 'none'` applies to
-  scripts and *nothing* in the figure runs there** — measured 2026-08-22 with both a
-  Mermaid figure and a Chart.js figure: `window.mermaid` and `window.Chart` both
-  `undefined`, no error card, because the figure's own error handler is a script too.
-  This is unrelated to the CDN mechanism above and affects every figure type; it is
-  **not fixed** as of this writing.
+- **Not every display surface is the same, and the second one has its own policy.** The
+  in-chat artifact panel hosts the figure's `srcdoc` inside the renderer document. The
+  standalone surfaces — the artifact window, "open in browser", and the headless
+  renderer's `blob:` tab — wrap it in a second document carrying
+  `ARTIFACT_WRAPPER_CSP`, and **a `srcdoc` document inherits its parent's policy list
+  and enforces both**. So the guest's effective policy there is the *intersection*, and
+  a wrapper grant that is absent is a guest grant that is revoked. That is why
+  `ARTIFACT_WRAPPER_CSP` is derived from the figure policy rather than written beside
+  it, differing only in `frame-src`; see the comment on it in
+  [`artifactSecurity.ts`](../../ui/desktop/src/utils/artifactSecurity.ts) and the drift
+  guard in `artifactSecurity.test.ts`.
+
+  ⚠ **Tightening the wrapper does not constrain the figure, it breaks it.** Until
+  2026-08-22 the wrapper carried a hand-written
+  `default-src 'none'; style-src 'unsafe-inline'; frame-src 'self'`, and *nothing* in
+  any artifact ran on those three surfaces — not the chart runtime, and not the
+  figure's own error handler, so every figure was an empty card with no message.
+  Adding `script-src` alone is **not** the fix: measured in Chromium, that restores
+  scripts and leaves `data:` images blocked, so a figure that embeds its own assets
+  stays broken in a way that reads as a different bug. The containment that matters is
+  the guest's own identical policy plus the sandbox attribute (no `allow-same-origin`,
+  no `allow-top-navigation`).
+
+- **A map shows no tiles in either surface, by design.** `img-src data: blob:` names no
+  remote scheme, so Leaflet's tiles never load in an artifact; markers and vector
+  layers do. That is the offline guarantee working, not a rendering failure.
 
 ## Related documentation
 

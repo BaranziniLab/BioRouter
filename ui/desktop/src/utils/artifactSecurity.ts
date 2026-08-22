@@ -1,4 +1,12 @@
-export const ARTIFACT_BROWSER_CSP = [
+/**
+ * The policy an Auto Visualiser figure (or any generated artifact) runs under.
+ *
+ * `default-src 'none'` with a handful of explicit grants: inline scripts and
+ * `blob:` workers so the chart runtime executes, `data:`/`blob:` images, fonts
+ * and media so a figure can embed its own assets — and nothing that reaches the
+ * network, navigates, submits, or nests a frame.
+ */
+const ARTIFACT_POLICY = [
   "default-src 'none'",
   "script-src 'unsafe-inline' 'unsafe-eval' blob:",
   "style-src 'unsafe-inline'",
@@ -12,13 +20,37 @@ export const ARTIFACT_BROWSER_CSP = [
   "form-action 'none'",
   "base-uri 'none'",
   "object-src 'none'",
-].join('; ');
+];
 
-export const ARTIFACT_WRAPPER_CSP = [
-  "default-src 'none'",
-  "style-src 'unsafe-inline'",
-  "frame-src 'self'",
-].join('; ');
+export const ARTIFACT_BROWSER_CSP = ARTIFACT_POLICY.join('; ');
+
+/**
+ * The policy for the standalone wrapper page — the artifact window, the
+ * open-in-browser file, and the headless renderer's blob: tab — which holds the
+ * figure in a `srcdoc` iframe.
+ *
+ * ⚠ **It must grant everything `ARTIFACT_BROWSER_CSP` grants, and it is derived
+ * rather than written for exactly that reason.** A `srcdoc` document inherits
+ * its parent's policy list and enforces *both*, so the guest's effective policy
+ * is the intersection. A hand-written wrapper policy of
+ * `default-src 'none'; style-src 'unsafe-inline'; frame-src 'self'` — which is
+ * what this used to be — therefore did not "tighten the wrapper": it silently
+ * governed the figure, and **no script in any artifact ran** on those three
+ * surfaces. Not the chart runtime, and not the figure's own error handler, so
+ * the failure was an empty card with no message.
+ *
+ * Tightening this does not constrain the guest, it breaks it. The guest is
+ * contained by its own identical policy plus the sandbox attribute in
+ * {@link wrapArtifactForBrowser} (no `allow-same-origin`, so it cannot script
+ * this page; no `allow-top-navigation`), and this page contributes no script of
+ * its own — its only variable content is the escaped `srcdoc`.
+ *
+ * The single deliberate difference is `frame-src`: the wrapper exists to embed
+ * one frame, while a figure may embed none.
+ */
+export const ARTIFACT_WRAPPER_CSP = ARTIFACT_POLICY.map((directive) =>
+  directive === "frame-src 'none'" ? "frame-src 'self'" : directive
+).join('; ');
 
 export function injectArtifactBrowserCsp(html: string): string {
   const meta = `<meta http-equiv="Content-Security-Policy" content="${ARTIFACT_BROWSER_CSP}">`;
