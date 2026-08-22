@@ -57,12 +57,7 @@ import { NODE_RING_ALPHA } from '../components/knowledge/graph/graphStyle';
 function composite(fg: string, bg: string, alpha: number): string {
   const ch = (hex: string, i: number) => parseInt(hex.slice(i, i + 2), 16);
   const mix = (i: number) => Math.round(alpha * ch(fg, i) + (1 - alpha) * ch(bg, i));
-  return (
-    '#' +
-    [1, 3, 5]
-      .map((i) => mix(i).toString(16).padStart(2, '0'))
-      .join('')
-  );
+  return '#' + [1, 3, 5].map((i) => mix(i).toString(16).padStart(2, '0')).join('');
 }
 import { deltaE00, deltaE00Lab, simulateCvd } from '../../scripts/lib/theme-tokens.mjs';
 import type { Dichromacy, Lab } from '../../scripts/lib/theme-tokens.mjs';

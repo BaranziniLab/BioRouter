@@ -20,9 +20,9 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { ModalShell } from '../../ModalShell';
 import BuiltInBadge from '../../ui/BuiltInBadge';
@@ -255,7 +255,15 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
           </div>
         }
       >
-        <div className="border-b border-border-subtle px-4 pb-3 pt-3">
+        {/* ⚠ **Pinned** (R-07). Search and the two create paths lived in the
+            scrolling body, so at the app's own minimum 600px window height —
+            where the 85vh cap leaves about 245px of list, six rows, three with
+            the rename card open — they scrolled away exactly when a long list
+            made them useful. `sticky top-0` is right HERE and wrong for the
+            ingest rail's footer: this is the FIRST thing in the scroll order, so
+            content passes under it and stays reachable, where a pinned footer
+            covered the region new content mounted into. */}
+        <div className="sticky top-0 z-10 border-b border-border-subtle bg-background-default px-4 pb-3 pt-3">
           <div className="relative">
             <Search
               className="pointer-events-none absolute left-2 top-1/2 h-icon-row w-icon-row -translate-y-1/2 text-text-muted"
@@ -375,14 +383,13 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                 return (
                   <div
                     key={base.id}
-                    // `tint-selected tint-interactive`, NOT `bg-background-medium`:
-                    // `.biorouter-list-row:hover` is declared unlayered and repaints
-                    // at 42% of that same token, which is LIGHTER than the opaque
-                    // fill — so the primary row visibly un-highlighted under the
-                    // pointer. The paired tints exist at (0,2,1) for this collision.
-                    className={`biorouter-list-row flex items-center gap-3 px-3 ${
-                      isPrimary ? 'tint-selected tint-interactive' : ''
-                    }`}
+                    // ⚠ **No row tint for primary** (R-07). Primary was drawn
+                    // TWICE — a `PRIMARY` badge and a `tint-selected` row fill —
+                    // and of the two the badge is the one to keep: D-15 makes
+                    // focus a SURFACE shift, so a row-wide tint is exactly what
+                    // the legend's `asChild` comment exists to avoid, competing
+                    // with the focus surface of every control inside the row.
+                    className="biorouter-list-row flex items-center gap-3 px-3"
                   >
                     <button
                       type="button"
@@ -431,10 +438,10 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                             {kbFormatLabel(base)}
                           </Badge>
                           {base.tier !== 'public' && <PrivacyBadge tier={base.tier} />}
-                          {hidden && <Badge uppercase>Not in this chat</Badge>}
-                        </div>
-                        <div className="truncate text-supporting font-mono text-text-muted">
-                          {base.id}
+                          {/* ⚠ **No `Not in this chat` badge** (R-07). The switch
+                              at the end of this row already states membership,
+                              and drawing the same fact twice is what made a
+                              40px row carry 12 visual objects. */}
                         </div>
                       </div>
                       {isPrimary && (
@@ -454,40 +461,18 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                         variant="mono"
                         aria-label={`Include ${base.name} in this chat`}
                       />
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            shape="round"
-                            onClick={() => void handleExport(base)}
-                            disabled={isBusy}
-                            aria-label={`Export ${base.name} as .brkb`}
-                          >
-                            <Download aria-hidden="true" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Export as .brkb</TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            shape="round"
-                            onClick={() => startRename(base)}
-                            disabled={isBusy}
-                            aria-label={`Rename ${base.name}`}
-                          >
-                            <Pencil aria-hidden="true" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Rename knowledge base</TooltipContent>
-                      </Tooltip>
-                      {/* A destructive control never sits visible in a hover
-                          cluster (ROWS-3). It also stops being drawn in danger ink
-                          with a `hover:text-text-danger/80` that LOWERED contrast
-                          on hover. */}
+                      {/* ⚠ **ONE overflow control, not three** (R-07). Export,
+                          rename and ⋯ reserved a fixed 160px cluster at the end
+                          of every row before the name column got anything —
+                          40 for the switch, three 32px buttons and three 8px
+                          gaps — on a 582px row. Export and rename are not
+                          frequent enough to each own a permanent target, so
+                          they join the menu that was already there and the
+                          reclaimed width carries what the row could never show:
+                          how big the base is and when it last changed. */}
+                      <span className="shrink-0 font-mono text-supporting tabular-nums text-text-muted">
+                        {base.id}
+                      </span>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button
@@ -501,6 +486,17 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
+                          <DropdownMenuItem onSelect={() => void handleExport(base)}>
+                            <Download aria-hidden="true" />
+                            Export as .brkb
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onSelect={() => startRename(base)}>
+                            <Pencil aria-hidden="true" />
+                            Rename knowledge base
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          {/* A destructive control never sits visible in a hover
+                              cluster (ROWS-3), and stays behind the separator. */}
                           <DropdownMenuItem
                             variant="destructive"
                             onSelect={() => setBaseToDelete(base)}
