@@ -146,7 +146,23 @@ export function GraphLegend({ model, mode, facets, onChange, variant = 'rail' }:
       data-testid="knowledge-graph-legend"
       className={
         variant === 'popover'
-          ? 'flex max-h-[26rem] flex-col overflow-y-auto'
+          ? // ⚠ **The cap is what Radix MEASURED, not a guess.** A flat
+            // `max-h-[26rem]` clipped `Provenance & Context` mid-list at a 792px
+            // viewport with 100px of room still free below the popover — the
+            // same "below the fold by default" defect the rail had, on the
+            // surface that replaces the rail at every step under 1400px.
+            // `--radix-popover-content-available-height` is the distance to the
+            // collision boundary, so the list grows into whatever the viewport
+            // actually offers and still scrolls when it genuinely cannot fit.
+            // The `26rem` stays as the fallback for the render before Radix has
+            // measured, where the variable is undefined.
+            //
+            // ⚠ **The `-2px` is `PopoverContent`'s own border, and without it the
+            // card sits exactly 2px off-screen.** Radix reports the height
+            // available to the CONTENT box; this cap is on a child, so the
+            // wrapper's 1px top and bottom border are spent twice. Measured, not
+            // padded for luck — 522px of content in a 521.5px cap.
+            'flex max-h-[calc(var(--radix-popover-content-available-height,26rem)-2px)] flex-col overflow-y-auto'
           : 'br-knowledge-detail flex min-h-0 flex-col overflow-y-auto border-l border-border-subtle bg-background-default'
       }
     >
