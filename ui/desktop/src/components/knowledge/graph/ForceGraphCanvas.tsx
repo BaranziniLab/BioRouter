@@ -9,9 +9,11 @@ import { withAlpha } from './graphStyle';
 import { useCanvasTheme } from './useCanvasTheme';
 import type { CanvasTheme } from './useCanvasTheme';
 import { pathForShape } from './nodeShapes';
+import { NODE_RING_ALPHA } from './graphStyle';
 // The mark — fill and silhouette — is shared with the inspector, so the two
 // surfaces cannot disagree about the same node. See `nodeMark.ts`.
-import { credibilityKey, fillFor, shapeFor } from './nodeMark';
+import { credibilityKey, fillFor, isHollow, shapeFor } from './nodeMark';
+import { useShapeChannel } from './graphPreferences';
 import { edgePredicate, isNegated, readablePredicate } from './graphModel';
 import type { GraphModel, NodeMetrics } from './graphModel';
 import { EMPTY_FACETS, facetsActive } from './graphFacets';
@@ -178,6 +180,11 @@ export function ForceGraphCanvas({
 }: Props) {
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
   const [containerRef, size] = useSize();
+
+  // R-04: every node is a circle unless the user has switched the shape channel
+  // back on. Read here rather than inside the painter because the painter is a
+  // plain function called `nodes x 60` times a second, not a component.
+  const [shapeChannel] = useShapeChannel();
 
   // §5.11's four 0×0 probes. Non-inherited values (mono family, danger, muted,
   // border) cannot be read off the container, and there is deliberately no
@@ -414,7 +421,7 @@ export function ForceGraphCanvas({
     }
 
     ctx.beginPath();
-    pathForShape(ctx, shapeFor(n, t.mode), n.x, n.y, r, screenDiameter);
+    pathForShape(ctx, shapeFor(n, t.mode, shapeChannel), n.x, n.y, r, screenDiameter);
 
     if (m.external) {
       // A referenced entity with no page yet. Hollow and dashed, in ink — it
@@ -432,6 +439,25 @@ export function ForceGraphCanvas({
       return;
     }
 
+    if (isHollow(n, t.mode)) {
+      // Provenance & Context: an open ring rather than a filled disc (R-04).
+      // The ground fill is not decoration — it occludes the edges that pass
+      // beneath, so the ring reads as a mark rather than as a hole with lines
+      // through it.
+      //
+      // 1.7px, not the 2.6 the first draft used: at 2.6 on a 7px radius the
+      // stroke ate most of the mark and it read as a donut instead of a circle
+      // that happens to be open. The legend swatch is thinned to match — the
+      // key and the mark have to agree or the legend teaches the wrong thing.
+      ctx.fillStyle = t.ground;
+      ctx.fill();
+      ctx.lineWidth = Math.max(1.7, density.nodeStrokeWidth * 1.55) / globalScale;
+      ctx.strokeStyle = withAlpha(fill, isFocus ? 1 : density.nodeStrokeAlpha);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      return;
+    }
+
     ctx.fillStyle = fill;
     ctx.fill();
 
@@ -443,7 +469,7 @@ export function ForceGraphCanvas({
       const sw = isFocus
         ? Math.max(1.1, density.nodeStrokeWidth) / globalScale
         : density.nodeStrokeWidth / globalScale;
-      const sa = isFocus ? 0.92 : 0.92 * density.nodeStrokeAlpha;
+      const sa = isFocus ? NODE_RING_ALPHA : NODE_RING_ALPHA * density.nodeStrokeAlpha;
       if (sw > 0.05 / globalScale && sa > 0.03 && screenDiameter > 1.2) {
         ctx.lineWidth = sw;
         ctx.strokeStyle = withAlpha(t.ink, sa);

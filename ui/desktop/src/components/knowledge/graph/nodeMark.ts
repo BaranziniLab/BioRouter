@@ -1,6 +1,6 @@
 // ui/desktop/src/components/knowledge/graph/nodeMark.ts
 import type { GraphNode } from '../../../api/types.gen';
-import { hashedFill, typeFill, typeShape } from '../../../styles/graphPalette';
+import { GRAPH_PALETTE, hashedFill, typeFill, typeShape } from '../../../styles/graphPalette';
 import type { GraphCredibilityKey, GraphMode, NodeShape } from '../../../styles/graphPalette';
 import { showsCredibility } from './graphModel';
 
@@ -33,12 +33,49 @@ export function fillFor(n: GraphNode, mode: GraphMode): string {
 /**
  * The silhouette for a node.
  *
+ * ⚠ **Every node is a circle unless the shape channel is switched on** (R-04).
+ * The seven silhouettes are still generated, still assigned per family, and
+ * still drawn by the legend and the facet rows when the preference is on — what
+ * changed is the default, not the vocabulary. Passing `shapeChannel` explicitly
+ * rather than reading the preference in here is deliberate: this module is the
+ * one place three surfaces agree about a node's mark, and a hook call would
+ * make it unusable from the canvas painter, which is not a component.
+ *
  * A typed node takes its family's shape; an untyped one takes the circle, which
  * is also what every node in an OKF base draws — there are no families there,
  * and a shape channel that applies to everything carries nothing.
  */
-export function shapeFor(n: GraphNode, mode: GraphMode): NodeShape {
+export function shapeFor(n: GraphNode, mode: GraphMode, shapeChannel = false): NodeShape {
+  if (!shapeChannel) return 'circle';
   return n.node_type ? typeShape(n.node_type, mode) : 'circle';
+}
+
+/**
+ * The name of the family whose members are drawn HOLLOW.
+ *
+ * ⚠ **This is the redundant channel that survives the all-circle default**, and
+ * it is keyed to the vocabulary's own top-level division rather than invented:
+ * BioOKF splits its 28 types into 20 Biomedical Entities — the science — and 8
+ * Provenance & Context types, which are where the science came from. Drawing
+ * the second group as open rings says exactly that, stays a circle, and
+ * survives monochrome, which is more than hue can claim here.
+ *
+ * Matched by NAME against the generated palette rather than by a hardcoded list
+ * of eight type strings, so a vocabulary change moves this with it.
+ */
+const HOLLOW_FAMILY = 'Provenance & context';
+
+/**
+ * Whether a node is drawn as an open ring rather than a filled disc.
+ *
+ * Untyped nodes are never hollow: in a legacy base every page would be, and a
+ * marker that applies to every node carries nothing — the same argument
+ * `hashedFill` makes for not giving OKF nodes a marker.
+ */
+export function isHollow(n: GraphNode, mode: GraphMode): boolean {
+  if (!n.node_type) return false;
+  const family = GRAPH_PALETTE[mode].families[HOLLOW_FAMILY];
+  return !!family && family.members.includes(n.node_type);
 }
 
 /**

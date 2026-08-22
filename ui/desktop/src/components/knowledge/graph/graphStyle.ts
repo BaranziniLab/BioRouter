@@ -142,8 +142,23 @@ export function resolveGraphTheme(
   };
 }
 
-/// The node outline alpha, when nothing in the density ladder is fading it.
-export const NODE_RING_ALPHA = 0.5;
+/**
+ * The node outline alpha, when nothing in the density ladder is fading it.
+ *
+ * ⚠ **This constant was DEAD and its value was a lie.** It read `0.5` while the
+ * painter hardcoded `0.92` in two places, so the number a reader would have
+ * trusted was never the number on screen. It is now the single source and set
+ * to the value that actually ships.
+ *
+ * ⚠ **The ring is what frees the fill, so this is load-bearing** (R-05).
+ * Composited over the light ground, ink at 0.92 measures **10.88:1** — that
+ * ring, not the fill, is what satisfies WCAG 1.4.11 for the graphical object's
+ * boundary. It is precisely because the boundary carries the contrast that the
+ * 28 fills could move off text-contrast rungs onto a light lightness band.
+ * Lowering this without re-solving the fills would take the legibility away
+ * from both channels at once.
+ */
+export const NODE_RING_ALPHA = 0.92;
 
 /**
  * `color` with `alpha` substituted, for a canvas.

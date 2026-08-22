@@ -46,7 +46,10 @@
  * ground — which is what satisfies WCAG 1.4.11 for the graphical object's
  * boundary and therefore frees the fill.
  *
- * The band below is the result: median L 0.690, range 0.580–0.780.
+ * The band below is the result. Measured against the light ground, the 28
+ * fills run 1.62–9.52:1 with a MEDIAN of 2.39:1, against the old palette's
+ * 3.50–12.01:1 and median 5.00:1 — and zero fills at or beyond 7:1 among the
+ * twenty biological types.
  *
  * ⚠ WITHIN-FAMILY SEPARATION SURVIVES BY CONSTRUCTION, and that is measured
  * rather than hoped for. The step between adjacent members is 0.055 L against
@@ -55,10 +58,24 @@
  * 5.54 to 4.80, against a guard floor of 3.0. `graphPalette.test.ts` re-measures
  * it; do not take this comment as the guarantee.
  *
- * ⚠ CROSS-family separation under dichromacy is NOT repaired by this and never
- * was: it bottoms out at ΔE00 0.00 with 28 marks on one surviving opponent
- * axis. That is what the shape channel existed for, and R-04's all-circle
- * canvas is an explicit, recorded trade — see the redesign spec.
+ * ⚠ **THE LIGHT END IS CAPPED AT 0.78, AND THE CAP IS THE HARD-WON PART.** A
+ * lighter band is not free: above ~0.80 the sRGB gamut clips chroma sharply, so
+ * every family's lightest member desaturates towards the same pale tint and
+ * CROSS-family pairs start collapsing under simulated dichromacy. Measured over
+ * the 21 family pairs:
+ *
+ *     old contrast-rung palette   7 of 21 pairs below ΔE00 3.0
+ *     a 0.80–0.50 / 0.84–0.48 band   13 of 21   <- and NO assignment of the
+ *                                                  seven shapes can cover 13
+ *     this band (0.78 cap)          11 of 21   <- coverable, and covered
+ *
+ * Cross-family separation was never carried by colour — it bottoms out at ΔE00
+ * 0.24 here and 0.00 in the old palette — it is carried by the SHAPE channel,
+ * and the shape channel only works if every sub-3.0 pair lands on a shape pair
+ * that is not "weak". A parametric sweep over both spans found 36 bands where
+ * such an assignment exists; this is the lightest of them. Lightening past 0.78
+ * breaks the guard in `graphPalette.test.ts` that checks exactly this, and the
+ * right response to that failure is to come back here, not to relax the guard.
  *
  * DARK IS SOLVED SEPARATELY AND ASCENDS. On a dark ground the readable band
  * sits above the ground rather than below it, so member 0 is the DARKEST and
@@ -66,22 +83,37 @@
  * re-audited on its own.
  */
 export const PRIMARY_L = {
-  light: [0.745, 0.69, 0.635, 0.58],
-  dark: [0.64, 0.695, 0.75, 0.805],
+  light: [0.78, 0.6933, 0.6067, 0.52],
+  dark: [0.52, 0.6067, 0.6933, 0.78],
 };
 
 /**
- * The eight-member Provenance ladder, at a tighter step because it has twice
- * the members in a comparable band.
+ * The eight-member Provenance ladder — the WIDEST span in the palette, and the
+ * reason is arithmetic rather than taste.
  *
- * The old ladder's accessibility fix is preserved in kind: members sit at even
- * lightness intervals at chroma 0.030, where dichromacy leaves lightness as the
- * only surviving channel, so an even ladder is what keeps them apart at all.
- * Measured within-family minimum: ΔE00 4.80 light.
+ * ⚠ **THIS SPAN IS A MEASURED FLOOR, NOT A PREFERENCE.** At chroma 0.030 —
+ * where dichromacy leaves lightness as very nearly the only surviving channel —
+ * eight members need roughly 0.36 of OKLab L between them to hold ΔE00 3.0
+ * apart under simulated protanopia, deuteranopia and tritanopia. A first draft
+ * of this redesign used 0.780–0.584 to keep the whole palette light, and it
+ * measured 2.11 (dark/protan, `Population`/`GeographicLocation`) and 2.71
+ * (light/tritan, `Dataset`/`Agent`) — both below the floor the guard asserts.
+ * A parametric sweep over span and chroma found no combination that keeps eight
+ * members separable in a narrow band; raising chroma to 0.045 bought only 0.5
+ * ΔE00 and collided with the fallback's own chroma argument. The span stays.
+ *
+ * ⚠ **This is the one family whose darker tail costs nothing**, which is what
+ * makes the trade acceptable rather than merely necessary: R-04 draws
+ * Provenance & Context as HOLLOW rings, so these values are used as a STROKE
+ * rather than as a fill — and a stroke is exactly where more contrast helps.
+ * The twenty biological types, which are what a reader actually looks at, stay
+ * in the light band.
+ *
+ * Measured within-family minimum across all four vision types: ΔE00 4.28.
  */
 export const PROVENANCE_L = {
-  light: [0.78, 0.752, 0.724, 0.696, 0.668, 0.64, 0.612, 0.584],
-  dark: [0.6, 0.629, 0.657, 0.686, 0.714, 0.743, 0.771, 0.8],
+  light: [0.78, 0.7257, 0.6714, 0.6171, 0.5629, 0.5086, 0.4543, 0.4],
+  dark: [0.4, 0.4543, 0.5086, 0.5629, 0.6171, 0.6714, 0.7257, 0.78],
 };
 
 /**
@@ -104,6 +136,15 @@ export const PROVENANCE_L = {
  * honest about cross-family colour distance under dichromacy (measured minimum
  * 0.00 — no palette of 28 marks can do better on one surviving opponent axis).
  *
+ * ⚠ THE SHAPE ASSIGNMENT MOVED WITH THE PALETTE, AND HAD TO. Four families
+ * swapped silhouettes when the fills moved onto the lightness band (Genomic
+ * square→rounded-square, Clinical rounded-square→square, Exposome
+ * pentagon→circle, Physical circle→pentagon). That is not churn: the set of
+ * family pairs that collapse under simulated dichromacy changed, so the set of
+ * pairs the shape channel has to carry changed with it. The assignment below is
+ * the minimal-change permutation that leaves no collapsed pair on a "weak"
+ * shape pair.
+ *
  * ⚠ THE SHAPE ASSIGNMENT IS MEASURED, NOT CHOSEN BY TASTE. Every family pair
  * whose colour distance falls below ΔE00 3.0 under any simulated vision type
  * lands on a shape pair that is at least moderately distinct, and all four
@@ -116,7 +157,7 @@ export const PROVENANCE_L = {
 export const FAMILIES = [
   {
     name: 'Genomic',
-    shape: 'square',
+    shape: 'rounded-square',
     anchorHue: 288,
     chroma: 0.135,
     spread: 30,
@@ -143,7 +184,7 @@ export const FAMILIES = [
   },
   {
     name: 'Clinical',
-    shape: 'rounded-square',
+    shape: 'square',
     anchorHue: 18,
     chroma: 0.145,
     spread: 34,
@@ -152,7 +193,7 @@ export const FAMILIES = [
   },
   {
     name: 'Exposome',
-    shape: 'pentagon',
+    shape: 'circle',
     anchorHue: 78,
     chroma: 0.12,
     spread: 24,
@@ -161,7 +202,7 @@ export const FAMILIES = [
   },
   {
     name: 'Physical',
-    shape: 'circle',
+    shape: 'pentagon',
     anchorHue: 250,
     chroma: 0.09,
     spread: 26,
