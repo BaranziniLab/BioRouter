@@ -5,7 +5,9 @@
 > seven pop-up surfaces, and a responsive ladder built on container queries. It amends
 > [`../okf-migration/ui-spec.md`](../okf-migration/ui-spec.md), the binding spec the current UI was
 > built from, in eight named places.
-> **Status:** **Proposed. Nothing in this folder is implemented.**
+> **Status:** **Implemented** on `design/knowledge-ui-redesign`. §10 of the specification records
+> the six places where measurement changed the design during the build; those corrections are
+> authoritative over the records above them.
 > **Audience:** Contributors working on the Knowledge subsystem and on the desktop design system.
 
 Read the specification first, then open the studio beside it — the studio draws every surface the
@@ -16,7 +18,7 @@ about a decision can be settled by looking at it rather than by imagining it.
 
 | Document | What it covers |
 |---|---|
-| [Redesign specification](redesign-spec.md) | The ten decision records (`R-01`…`R-10`), the measurements each rests on, the file-by-file change map, the verification plan, the eight amendments to the OKF migration UI spec, and the open questions that gate implementation. |
+| [Redesign specification](redesign-spec.md) | The ten decision records (`R-01`…`R-10`), the measurements each rests on, the file-by-file change map, the verification plan, the eight amendments to the OKF migration UI spec, and — in §10 — the six places where measurement changed the design during the build. |
 | [Redesign studio](knowledge-redesign-studio.html) | The rendered companion; open it in a browser, no server needed. It renders **one page markup at four real pane sizes** (760, 946, 1040, 1626 px) laid out by the very container queries the spec calls for; a **live pop-up demo** where six of the seven surfaces open on click; a live SVG of the all-circle canvas; the old and new palettes side by side; and before/after pairs for the filter bar, the legend, the sources rail and the manager. Has its own light/dark toggle. |
 
 ## The three findings worth knowing first

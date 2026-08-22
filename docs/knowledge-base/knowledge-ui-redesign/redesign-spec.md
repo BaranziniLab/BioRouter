@@ -6,9 +6,10 @@
 > ladder built on container queries. It amends
 > [`../okf-migration/ui-spec.md`](../okf-migration/ui-spec.md) — the binding spec the current UI was
 > built from — in eight named places and leaves the rest of it standing.
-> **Status:** **Proposed. Nothing here is implemented, and nothing here may be implemented until the
-> open questions in §9 are answered.** Measurements were taken 2026-08-21/22 against the tree at
-> `7ac2de4b`; re-measure rather than trusting a number that has since moved.
+> **Status:** **IMPLEMENTED on `design/knowledge-ui-redesign`.** All ten records are built and
+> verified; §10 records the six places where measurement changed the design after this document was
+> written, and those corrections are authoritative over the text above them. Measurements were taken
+> 2026-08-21/22 against `7ac2de4b`; re-measure rather than trusting a number that has since moved.
 > **Audience:** Contributors working on the Knowledge subsystem and on the desktop design system.
 
 The companion mockup is [`knowledge-redesign-studio.html`](knowledge-redesign-studio.html) — open it
@@ -569,6 +570,82 @@ R-04. It is named here as a dependency, not amended.
 
 ---
 
+## 10. As built — where measurement changed the design
+
+Six claims in this document did not survive contact with a browser or a test run. They are corrected
+here rather than edited away above, because each records something worth knowing.
+
+### 10.1 `NODE_RING_ALPHA` was dead, and R-05's headline number was wrong
+
+R-05 says "ring alpha 0.50 → 0.85". **The constant read `0.5` and the painter hardcoded `0.92` in two
+places**, so the number a reader would have trusted was never the number on screen. The ring was
+already strong — composited, **10.88:1** against the light ground. The constant is now wired to the
+value that actually ships and documented as load-bearing. The fill lightening stands on its own and
+is *better* justified than the document claimed.
+
+### 10.2 The light end is capped at 0.78, and a first pass broke the shape channel
+
+R-05's proposed band (primary 0.745–0.580, provenance 0.780–0.584) failed on measurement twice:
+
+- **Within-family separation fell below the ΔE00 3.0 floor** — 2.11 at dark/protan
+  (`Population`/`GeographicLocation`), 2.71 at light/tritan (`Dataset`/`Agent`). Eight members at
+  chroma 0.030 need roughly 0.36 of OKLab L between them; a parametric sweep over span and chroma
+  found no narrow band that works.
+- Widening to 0.80–0.50 fixed that and broke something worse. **Above ~0.80 the sRGB gamut clips
+  chroma**, so every family's lightest member desaturates toward the same pale tint and *cross*-family
+  pairs collapse. Measured over the 21 family pairs: the old palette had **7 below ΔE00 3.0**, the
+  0.80 band had **13** — and **no assignment of the seven shapes can cover 13**, which would have
+  silently voided the shape channel R-04 keeps as its accessibility escape hatch.
+
+The shipped band caps the light end at **0.78**, leaves 11 pairs below 3.0, and those 11 *are*
+covered. A sweep found 36 bands where a valid shape assignment exists; this is the lightest of them.
+**Lightening past 0.78 breaks the guard in `graphPalette.test.ts`, and the right response is to come
+back to `themes/graph.mjs`, not to relax the guard.**
+
+### 10.3 Four families swapped silhouettes
+
+Genomic `square`→`rounded-square`, Clinical `rounded-square`→`square`, Exposome `pentagon`→`circle`,
+Physical `circle`→`pentagon`. Not churn: the set of pairs that collapse under dichromacy changed with
+the palette, so the set the shape channel must carry changed with it. This is the minimal-change
+permutation that leaves no collapsed pair on a "weak" shape pair.
+
+### 10.4 Measured palette movement
+
+| | Old | Shipped |
+|---|---|---|
+| Light-mode contrast, median | 5.00:1 | **2.67:1** |
+| Light-mode contrast, max | 12.01:1 | **8.53:1** |
+| Within-family min ΔE00, all vision types | 5.54 | **4.28** |
+| Family pairs below ΔE00 3.0 | 7 of 21 | 11 of 21, all shape-covered |
+
+### 10.5 The canvas-anchored legend card was built, then deleted
+
+R-03 specified a BioOKF-style card floating over the canvas between 940 and 1400px. It was
+implemented, then measured at a 946px pane: **it covered 44% of the canvas width and sat on the
+nodes** — the overlap complaint this redesign exists to fix, reintroduced by the fix. It is replaced
+by a `Legend` control in the filter bar opening the same component in a popover. **Nothing overlaps
+the canvas at any size**, and the legend is dismissible by construction rather than by a bespoke
+hide/restore pair.
+
+### 10.6 Three container-query defects jsdom cannot see
+
+All three were found in the browser and none would fail a component test:
+
+1. **A container cannot query itself.** `br-knowledge-pane` and `br-knowledge-body` were on the same
+   element, so the grid could never restyle itself and every step silently produced one column. The
+   container also had to be hoisted *above* the header and subject bands, because the height step
+   yields the header's description and the two-column step hides the tabs.
+2. **Source order decides, twice.** A `display` default declared *after* the `@container` blocks wins
+   at equal specificity — once for `.br-facet-core` leaking into the narrow step, once for
+   `.br-facet-legend` surviving into the rail step.
+3. **`min-height: 0` on the body grid's children**, or a tall rail pushes the row past the pane.
+
+**The unlayered-vs-Tailwind interaction is the trap to remember.** The authored ladder beats
+Tailwind's `.hidden` regardless of specificity, so the narrow step must say *nothing* about the
+Sources panel's display — React's tab state owns it there.
+
+---
+
 ## 9. Open questions
 
 1. **R-04's trade — accept, or soften?** Options: (a) ship as specified with the opt-in preference;
@@ -583,11 +660,9 @@ R-04. It is named here as a dependency, not amended.
    re-derive.
 5. **Dark mode for the graph is unreferenced by BioOKF**, which has none. The proposed ladder is
    solved for light; dark needs its own targets and audit.
-6. **Scope.** Ten records across seventeen files. Slice A (R-01, R-02, R-06, R-07, R-09, R-10 —
-   shell, filter controls and overflow, sources rail, dialogs and pop-up mechanisms) depends on
-   nothing and could land alone; Slice B (R-03, R-04, R-05, R-08 — legend rail, circles, palette,
-   the container-query ladder) is larger and riskier. **R-08 is the one with a user-visible bug
-   behind it rather than a preference**, which argues for pulling it forward.
+6. **Scope — resolved.** All ten records shipped together on
+   `design/knowledge-ui-redesign`. R-08 turned out to be the one with a user-visible bug behind it
+   rather than a preference, which is why it was built first.
 
 ---
 
