@@ -98,6 +98,12 @@ source text. Each sits beside the Markdown companion that explains it.
   runtime rather than any visual surface.
 - [UI overhaul, July 2026](../history/ui-overhaul-2026-07/README.md) — the two shipped
   view-level redesigns, Home and Knowledge, archived out of `ui-overhaul/` once signed off.
+- [Knowledge UI redesign](../knowledge-base/knowledge-ui-redesign/README.md) — a
+  view-level redesign with its own rendered studio, filed under `knowledge-base/` rather
+  than here because it amends that subsystem's binding UI spec and has to be read beside
+  it. Carries the one design decision in the tree that reaches back into a generated
+  palette — node fills solved to a lightness band instead of to WCAG text-contrast rungs
+  — and the first use of `@container` queries on the width axis.
 - [The agent loop](../agent-loop/README.md) — the reasoning loop's own documentation, where
   the guardrail designs behind the runtime live.
 - [Chat groups: design judgement and reduced plan](../history/chat-groups/design-judgement-and-plan.md)

@@ -1,0 +1,1391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Knowledge Redesign Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" />
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   Knowledge Redesign Studio — drawn in BioRouter's own Parchment tokens.
+   Every colour is the resolved value from ui/desktop/src/styles/main.css,
+   measured 2026-08-21. Nothing here invents a palette.
+
+   The four page frames in §01 are ONE markup template rendered into four
+   containers of different widths, laid out entirely by @container queries —
+   so the studio demonstrates the mechanism it specifies rather than drawing
+   four pictures of it.
+   ══════════════════════════════════════════════════════════════════════════ */
+:root {
+  --bg-default:#ffffff; --bg-muted:#f4f4f2; --bg-medium:#ecece9; --bg-strong:#dcdcd8;
+  --border-subtle:#e4e4e0; --border-strong:#d2d2cd;
+  --border-emphasized:rgba(42,37,32,0.24);
+  --text-default:#2a2520; --text-muted:#635c54; --text-subtle:#6e6760;
+  --accent:#b85a32; --accent-ink:#ffffff;
+  --accent-soft:rgba(184,90,50,0.10); --accent-line:rgba(184,90,50,0.34);
+  --danger:#b3261e;
+  --shadow-popover:0px 8px 24px 0px rgba(31,30,28,0.11),0px 0px 1px 0px rgba(31,30,28,0.16);
+  --shadow-modal:0px 22px 60px -18px rgba(31,30,28,0.22),0px 0px 0px 1px rgba(31,30,28,0.05);
+  --scrim:rgba(31,30,28,0.28);
+  --graph-ground:#f4f4f2; --graph-ink:#1f242c; --graph-ring:rgba(31,36,44,0.85);
+  --graph-dot:rgba(31,36,44,0.045); --graph-edge:rgba(28,33,40,0.20);
+  --graph-halo:rgba(244,244,242,0.92);
+  /* the app's semantic radius ladder — nothing here is rounder than a card */
+  --r-inner:4px; --r-element:8px; --r-container:12px;
+  --sans:'Figtree',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg-default:#1b1b19; --bg-muted:#232320; --bg-medium:#2c2c29; --bg-strong:#3a3a36;
+    --border-subtle:#302f2c; --border-strong:#3e3d39;
+    --border-emphasized:rgba(244,240,230,0.24);
+    --text-default:#f4f0e6; --text-muted:#b0a892; --text-subtle:#9c937b;
+    --accent:#e8895f; --accent-ink:#241309;
+    --accent-soft:rgba(232,137,95,0.14); --accent-line:rgba(232,137,95,0.38);
+    --danger:#f07575;
+    --shadow-popover:0px 8px 24px 0px rgba(0,0,0,0.4),0px 0px 1px 0px rgba(0,0,0,0.5);
+    --shadow-modal:0px 22px 64px -16px rgba(0,0,0,0.62),0px 0px 0px 1px rgba(255,255,255,0.055);
+    --scrim:rgba(0,0,0,0.52);
+    --graph-ground:#232320; --graph-ink:#f4f0e6; --graph-ring:rgba(244,240,230,0.85);
+    --graph-dot:rgba(244,240,230,0.055); --graph-edge:rgba(244,240,230,0.22);
+    --graph-halo:rgba(35,35,32,0.92);
+  }
+}
+:root[data-theme="dark"] {
+  --bg-default:#1b1b19; --bg-muted:#232320; --bg-medium:#2c2c29; --bg-strong:#3a3a36;
+  --border-subtle:#302f2c; --border-strong:#3e3d39;
+  --border-emphasized:rgba(244,240,230,0.24);
+  --text-default:#f4f0e6; --text-muted:#b0a892; --text-subtle:#9c937b;
+  --accent:#e8895f; --accent-ink:#241309;
+  --accent-soft:rgba(232,137,95,0.14); --accent-line:rgba(232,137,95,0.38);
+  --danger:#f07575;
+  --shadow-popover:0px 8px 24px 0px rgba(0,0,0,0.4),0px 0px 1px 0px rgba(0,0,0,0.5);
+  --shadow-modal:0px 22px 64px -16px rgba(0,0,0,0.62),0px 0px 0px 1px rgba(255,255,255,0.055);
+  --scrim:rgba(0,0,0,0.52);
+  --graph-ground:#232320; --graph-ink:#f4f0e6; --graph-ring:rgba(244,240,230,0.85);
+  --graph-dot:rgba(244,240,230,0.055); --graph-edge:rgba(244,240,230,0.22);
+  --graph-halo:rgba(35,35,32,0.92);
+}
+
+*,*::before,*::after{box-sizing:border-box;}
+html{-webkit-text-size-adjust:100%;}
+body{
+  margin:0; background:var(--bg-muted); color:var(--text-default);
+  font-family:var(--sans); font-size:15px; line-height:1.6;
+  letter-spacing:-0.006em; -webkit-font-smoothing:antialiased;
+}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:var(--r-inner);}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
+button{font:inherit;color:inherit;background:none;border:none;padding:0;cursor:pointer;}
+
+.page{max-width:1400px;margin:0 auto;padding:0 28px 96px;}
+.shell{display:grid;grid-template-columns:196px minmax(0,1fr);gap:44px;align-items:start;}
+@media (max-width:1080px){.shell{grid-template-columns:minmax(0,1fr);gap:0;} .index{display:none;}}
+
+/* ── masthead ───────────────────────────────────────────────────────────── */
+.masthead{padding:64px 0 30px;border-bottom:1px solid var(--border-subtle);margin-bottom:40px;}
+.eyebrow{
+  font-family:var(--mono);font-size:11px;font-weight:500;text-transform:uppercase;
+  letter-spacing:0.1em;color:var(--text-muted);display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+}
+.eyebrow::before{content:"";width:26px;height:3px;background:var(--accent);flex:none;}
+h1{font-size:clamp(34px,4.6vw,52px);line-height:1.06;font-weight:700;letter-spacing:-0.028em;
+  margin:20px 0 0;text-wrap:balance;max-width:19ch;}
+.dek{font-size:17px;line-height:1.62;color:var(--text-muted);max-width:64ch;margin:16px 0 0;}
+.metarow{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px;align-items:center;}
+
+/* ── atoms ──────────────────────────────────────────────────────────────── */
+.tag{font-family:var(--mono);font-size:10.5px;font-weight:500;text-transform:uppercase;
+  letter-spacing:0.07em;padding:4px 9px;border-radius:var(--r-inner);
+  border:1px solid var(--border-subtle);background:var(--bg-default);color:var(--text-muted);
+  white-space:nowrap;}
+.tag.hot{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent);}
+.caps{font-family:var(--mono);font-size:10.5px;font-weight:500;text-transform:uppercase;
+  letter-spacing:0.09em;color:var(--text-muted);}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums;}
+code{font-family:var(--mono);font-size:0.88em;background:var(--bg-medium);
+  padding:1.5px 5px;border-radius:var(--r-inner);color:var(--text-default);}
+
+.index{position:sticky;top:28px;padding-top:8px;}
+.index .caps{display:block;margin-bottom:12px;}
+.index ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:1px;}
+.index a{display:flex;gap:9px;text-decoration:none;color:var(--text-muted);font-size:13px;
+  padding:6px 9px;border-radius:var(--r-inner);line-height:1.35;}
+.index a:hover{background:var(--bg-medium);color:var(--text-default);}
+.index a b{font-family:var(--mono);font-weight:500;font-size:11px;color:var(--text-subtle);
+  padding-top:2px;flex:none;}
+.themebtn{margin-top:20px;width:100%;font-size:12.5px;font-weight:500;padding:8px 10px;
+  border-radius:var(--r-element);border:1.5px solid var(--border-subtle);
+  background:var(--bg-default);color:var(--text-muted);text-align:left;}
+.themebtn:hover{border-color:var(--border-strong);color:var(--text-default);}
+
+section{padding-top:12px;margin-bottom:64px;scroll-margin-top:24px;}
+.shead{display:flex;gap:14px;align-items:baseline;margin-bottom:8px;}
+.shead .n{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--accent);
+  letter-spacing:0.04em;flex:none;padding-top:3px;}
+h2{font-size:26px;font-weight:600;letter-spacing:-0.018em;margin:0;line-height:1.2;text-wrap:balance;}
+.sdek{color:var(--text-muted);font-size:14.5px;max-width:70ch;margin:0 0 22px 26px;line-height:1.6;}
+h3{font-size:15px;font-weight:600;letter-spacing:-0.008em;margin:30px 0 12px;}
+
+.frame{border:1px solid var(--border-subtle);border-radius:var(--r-container);
+  background:var(--bg-default);overflow:hidden;}
+.frame-cap{display:flex;align-items:center;gap:10px;justify-content:space-between;
+  padding:9px 14px;border-bottom:1px solid var(--border-subtle);background:var(--bg-muted);flex-wrap:wrap;}
+.frame-cap .t{font-size:12.5px;font-weight:600;letter-spacing:-0.005em;}
+.pair{display:grid;grid-template-columns:1fr;gap:18px;align-items:start;}
+@media (min-width:900px){.pair{grid-template-columns:1fr 1fr;}}
+.badge-before,.badge-after{font-family:var(--mono);font-size:10px;font-weight:600;
+  text-transform:uppercase;letter-spacing:0.09em;padding:3px 8px;border-radius:var(--r-inner);}
+.badge-before{background:var(--bg-strong);color:var(--text-muted);}
+.badge-after{background:var(--accent);color:var(--accent-ink);}
+
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--border-subtle);vertical-align:top;}
+th{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;
+  color:var(--text-subtle);font-weight:500;background:var(--bg-muted);}
+tbody tr:last-child td{border-bottom:none;}
+td.n,th.n{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;}
+.good{color:var(--accent);font-weight:600;}
+.scroller{overflow-x:auto;}
+.note{font-size:12.5px;color:var(--text-muted);line-height:1.55;background:var(--bg-muted);
+  border:1px solid var(--border-subtle);border-left:3px solid var(--accent);
+  border-radius:var(--r-element);padding:11px 14px;margin:16px 0 0;}
+.note b{color:var(--text-default);font-weight:600;}
+ul.tight{margin:10px 0 0;padding-left:19px;display:flex;flex-direction:column;gap:6px;
+  font-size:13.5px;color:var(--text-muted);}
+ul.tight b{color:var(--text-default);font-weight:600;}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE PAGE MOCKUP — one template, laid out by @container queries on .kbpane
+   ══════════════════════════════════════════════════════════════════════════ */
+.kbpane{
+  container-name:kbpane; container-type:size;
+  background:var(--bg-default); color:var(--text-default);
+  font-size:13px; display:flex; flex-direction:column; overflow:hidden;
+  border:1px solid var(--border-strong);
+}
+.kb-drag{height:20px;flex:none;display:flex;align-items:center;gap:6px;padding:0 12px;
+  border-bottom:1px dashed var(--border-subtle);}
+.kb-drag i{width:8px;height:8px;border-radius:50%;background:var(--bg-strong);display:block;}
+.kb-hdr{padding:18px 20px 14px;border-bottom:1px solid var(--border-subtle);flex:none;}
+.kb-hdr h4{margin:0;font-size:20px;font-weight:600;letter-spacing:-0.016em;}
+.kb-hdr p{margin:2px 0 0;font-size:12px;color:var(--text-muted);}
+
+/* subject bar */
+.kb-subj{height:48px;flex:none;display:flex;align-items:center;gap:8px;padding:0 20px;
+  border-bottom:1px solid var(--border-subtle);min-width:0;}
+.kb-switch{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 9px;
+  border-radius:var(--r-element);border:1.5px solid transparent;min-width:0;}
+.kb-switch:hover{background:var(--bg-medium);border-color:var(--border-subtle);}
+.kb-dot{width:10px;height:10px;border-radius:var(--r-inner);background:#8f79d4;flex:none;
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,0.22);}
+.kb-name{font-weight:600;font-size:14px;letter-spacing:-0.008em;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;}
+.kb-badge{font-family:var(--mono);font-size:9.5px;font-weight:600;text-transform:uppercase;
+  letter-spacing:0.07em;padding:3px 7px;border-radius:var(--r-inner);
+  background:var(--bg-medium);color:var(--text-muted);flex:none;white-space:nowrap;}
+.kb-count{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums;
+  color:var(--text-subtle);flex:none;white-space:nowrap;}
+.kb-acts{margin-left:auto;display:flex;gap:2px;flex:none;}
+.kb-ico{width:30px;height:30px;border-radius:var(--r-element);display:grid;place-items:center;
+  color:var(--text-muted);}
+.kb-ico:hover{background:var(--bg-medium);color:var(--text-default);}
+
+/* tabs — square, underlined; shown only in the one-column step */
+.kb-tabs{display:none;flex:none;gap:0;padding:0 20px;border-bottom:1px solid var(--border-subtle);}
+.kb-tab{height:38px;padding:0 14px;font-size:13px;font-weight:500;color:var(--text-muted);
+  border-bottom:2px solid transparent;margin-bottom:-1px;}
+.kb-tab[aria-selected="true"]{color:var(--text-default);border-bottom-color:var(--accent);font-weight:600;}
+
+/* body grid */
+.kb-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);}
+
+/* sources rail */
+.kb-src{display:none;flex-direction:column;min-width:0;overflow:hidden;border-right:1px solid var(--border-subtle);}
+.kb-src-h{height:36px;flex:none;display:flex;align-items:center;padding:0 14px;
+  border-bottom:1px solid var(--border-subtle);}
+.kb-src-b{flex:1;min-height:0;padding:14px;display:flex;flex-direction:column;gap:12px;overflow-y:auto;}
+.kb-drop{border:1.5px dashed var(--border-strong);border-radius:var(--r-element);
+  padding:16px 12px;text-align:center;background:var(--bg-muted);}
+.kb-drop .med{width:30px;height:30px;border-radius:var(--r-inner);background:var(--bg-default);
+  border:1.5px solid var(--border-subtle);display:grid;place-items:center;margin:0 auto 8px;color:var(--text-muted);}
+.kb-drop .p{font-size:12.5px;font-weight:600;}
+.kb-drop .s{font-size:11.5px;color:var(--text-muted);margin-top:2px;}
+.kb-ghost{display:flex;align-items:center;justify-content:center;gap:7px;height:32px;
+  border-radius:var(--r-element);border:1.5px solid var(--border-subtle);
+  background:var(--bg-default);font-size:12.5px;color:var(--text-muted);flex:none;}
+.kb-staged{display:flex;flex-direction:column;gap:5px;}
+.kb-srow{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:var(--r-element);
+  border:1px solid var(--border-subtle);background:var(--bg-default);font-size:12px;}
+.kb-srow .fx{font-family:var(--mono);font-size:9px;font-weight:600;padding:2px 5px;
+  border-radius:2px;background:var(--bg-medium);color:var(--text-muted);flex:none;}
+.kb-srow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.kb-srow .sz{font-family:var(--mono);font-size:10px;color:var(--text-subtle);flex:none;}
+.kb-src-f{flex:none;border-top:1px solid var(--border-subtle);padding:12px 14px;
+  display:flex;flex-direction:column;gap:8px;}
+.kb-sel{display:flex;align-items:center;gap:8px;height:32px;padding:0 10px;
+  border-radius:var(--r-element);border:1.5px solid var(--border-subtle);
+  background:var(--bg-default);font-size:12.5px;color:var(--text-muted);}
+.kb-sel .v{color:var(--text-default);flex:1;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;}
+.kb-cta{height:36px;border-radius:var(--r-element);background:var(--accent);color:var(--accent-ink);
+  display:grid;place-items:center;font-size:13px;font-weight:600;}
+
+/* centre */
+.kb-centre{display:flex;flex-direction:column;min-width:0;overflow:hidden;}
+
+/* ── the filter bar, and its three overflow states ──────────────────────── */
+.kb-filt{height:48px;flex:none;display:flex;align-items:center;gap:8px;padding:8px 14px;
+  border-bottom:1px solid var(--border-subtle);min-width:0;}
+.kb-search{display:flex;align-items:center;gap:7px;height:32px;padding:0 10px;
+  border-radius:var(--r-element);border:1.5px solid var(--border-emphasized);
+  background:var(--bg-default);color:var(--text-subtle);font-size:12.5px;min-width:0;}
+.kb-search .lbl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.kb-vr{width:1px;height:22px;background:var(--border-subtle);flex:none;}
+
+/* A FILTER IS A SQUARE BOXED CONTROL, NOT A BUTTON AND NOT A PILL.
+   4px radius (one step below the 8px every button uses), a 1.5px edge, a
+   solid accent fill when engaged, and a real 12px caret. */
+.kb-f{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 8px 0 11px;flex:none;
+  border-radius:var(--r-element);border:1.5px solid var(--border-subtle);
+  background:var(--bg-default);color:var(--text-default);font-size:12.5px;font-weight:500;
+  white-space:nowrap;}
+.kb-f:hover{border-color:var(--border-strong);background:var(--bg-muted);}
+.kb-f .cnt{font-family:var(--mono);font-size:10.5px;font-weight:600;padding:1px 5px;
+  border-radius:var(--r-inner);background:var(--bg-medium);color:var(--text-muted);
+  font-variant-numeric:tabular-nums;}
+.kb-f svg{width:13px;height:13px;flex:none;opacity:0.9;}
+/* Belt and braces for the same failure: any inline SVG in the pane that
+   somehow ships unsized is clamped rather than painting at 300x150. */
+.kbpane svg:not(.kb-graph){max-width:16px;max-height:16px;flex:none;}
+.kb-f.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);}
+.kb-f.on .cnt{background:rgba(255,255,255,0.22);color:var(--accent-ink);}
+.kb-f.on svg{opacity:1;}
+.kb-more{display:none;}
+.kb-filters-one{display:none;}
+.kb-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex:none;}
+.kb-right .n{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums;
+  color:var(--text-muted);white-space:nowrap;}
+.kb-right .clr{font-size:12px;font-weight:500;color:var(--accent);white-space:nowrap;}
+.kb-right .clr-ico{display:none;width:30px;height:30px;border-radius:var(--r-element);
+  place-items:center;color:var(--accent);border:1.5px solid var(--accent-line);}
+
+/* canvas */
+.kb-canvas{flex:1;min-height:0;position:relative;background:var(--graph-ground);}
+/* ⚠ Scope this to the graph itself, never to `.kb-canvas svg`. The legend card
+   is a CHILD of the canvas, so a descendant selector also matches every caret
+   icon inside it — which is how an earlier revision came to render the entire
+   graph into a 13px disclosure arrow and produce what looked exactly like a
+   legend z-index bug. Selector scope, not stacking order, was the defect. */
+svg.kb-graph{position:absolute;inset:0;width:100%;height:100%;z-index:0;}
+.kb-zoom{position:absolute;right:12px;bottom:12px;display:flex;flex-direction:column;
+  border:1.5px solid var(--border-subtle);border-radius:var(--r-element);overflow:hidden;
+  background:var(--bg-default);box-shadow:var(--shadow-popover);}
+.kb-zoom i{width:28px;height:28px;display:grid;place-items:center;font-style:normal;
+  font-size:13px;color:var(--text-muted);border-bottom:1px solid var(--border-subtle);}
+.kb-zoom i:last-child{border-bottom:none;}
+
+/* legend — the rail, and its card alter ego */
+.kb-lrail{display:none;flex-direction:column;min-width:0;border-left:1px solid var(--border-subtle);
+  overflow:hidden;}
+/* An explicit stacking order, because the pane carries `transform: scale()` and
+   a transformed subtree composites its positioned descendants on their own
+   layers — paint order alone is not a guarantee there. */
+.kb-lcard{display:none;position:absolute;left:12px;bottom:12px;width:246px;max-height:74%;
+  z-index:2;background:var(--bg-default);border:1.5px solid var(--border-subtle);
+  border-radius:var(--r-container);box-shadow:var(--shadow-popover);overflow:hidden;
+  flex-direction:column;}
+.kb-zoom{z-index:2;}
+.kb-lcard[hidden]{display:none!important;}
+.kb-lhide{width:22px;height:22px;border-radius:var(--r-inner);display:grid;place-items:center;
+  color:var(--text-subtle);font-size:12px;line-height:1;flex:none;}
+.kb-lhide:hover{background:var(--bg-medium);color:var(--text-default);}
+.kb-legendbtn{display:none;}
+.kb-lsec{border-bottom:1px solid var(--border-subtle);padding:11px 13px;}
+.kb-lsec:last-child{border-bottom:none;}
+.kb-lsec-h{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px;}
+.kb-fam{margin-bottom:10px;}
+.kb-fam:last-child{margin-bottom:0;}
+.kb-fam-n{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:0.08em;
+  color:var(--text-subtle);margin-bottom:5px;}
+.kb-sw{display:flex;flex-wrap:wrap;gap:4px;}
+/* SQUARE swatches with solid fill — the legend key, not a bullet list */
+.kb-swi{display:inline-flex;align-items:center;gap:6px;padding:3px 7px;border-radius:var(--r-inner);
+  border:1px solid var(--border-subtle);background:var(--bg-default);
+  font-size:11.5px;color:var(--text-default);}
+.kb-swi:hover{background:var(--bg-muted);border-color:var(--border-strong);}
+.kb-swi b{width:10px;height:10px;border-radius:var(--r-inner);flex:none;box-shadow:inset 0 0 0 1px rgba(0,0,0,0.26);}
+/* Thinned: 2.5px on a 10px swatch left a 5px hole and read as a ring rather
+   than a mark. 1.5px matches the canvas's thinned hollow node — the key and
+   the mark have to agree or the legend teaches the wrong thing. */
+.kb-swi.hollow b{background:transparent!important;box-shadow:inset 0 0 0 1.5px currentColor;}
+.kb-swi .k{font-family:var(--mono);font-size:9.5px;color:var(--text-subtle);
+  font-variant-numeric:tabular-nums;}
+.kb-pred{display:flex;flex-direction:column;gap:5px;}
+.kb-pr{display:flex;align-items:center;gap:8px;font-size:11.5px;}
+.kb-pr .ln{width:24px;height:0;border-top:1.5px solid var(--graph-edge);flex:none;}
+.kb-pr .ln.dash{border-top-style:dashed;}
+.kb-pr .ln.neg{border-top-color:var(--danger);border-top-style:dashed;}
+.kb-pr .lb{font-family:var(--mono);font-size:10.5px;color:var(--text-muted);}
+.kb-pr .lb.neg{color:var(--danger);text-decoration:line-through;}
+
+/* ── @container ladder — keyed on the PANE, never on the viewport ─────────
+   ⚠ ORDER IS THE MECHANISM. Every rule below sits at the same specificity, so
+   the ONLY thing separating a step from its neighbour is source order. The
+   narrow defaults must therefore be declared BEFORE the @container blocks —
+   with them after, `.kb-f.core{display:inline-flex}` leaked into the 760px
+   step and both the three core chips and the single `Filters` control painted
+   at once. Measured, not theorised. */
+
+/* the narrow step (< 860px): one column, tabs, ONE Filters control */
+.kb-filt .kb-search{flex:1;}
+.kb-f.core,.kb-f.extra,.kb-more{display:none;}
+.kb-filters-one{display:inline-flex;}
+.kb-tabs{display:flex;}
+.kb-right .n,.kb-right .clr{display:none;}
+.kb-right .clr-ico{display:grid;}
+
+@container kbpane (min-width: 860px) {
+  .kb-tabs{display:none;}
+  .kb-body{grid-template-columns:264px minmax(0,1fr);}
+  .kb-src{display:flex;}
+  .kb-filters-one{display:none;}
+  .kb-f.core{display:inline-flex;}
+  .kb-more{display:inline-flex;}
+  .kb-filt .kb-search{flex:none;width:172px;}
+}
+/* The legend card and the full filter row are TWO constraints, not one, and
+   bundling them under a single breakpoint was wrong. The card is a 246px
+   overlay and only needs a canvas wide enough to host it. The filter row needs
+   a measured 757px of centre column — so with a 300px Sources rail it cannot
+   appear below a 1057px pane. Both numbers are measured, not chosen. */
+@container kbpane (min-width: 940px) {
+  .kb-body{grid-template-columns:300px minmax(0,1fr);}
+  .kb-lcard{display:flex;}
+}
+@container kbpane (min-width: 1060px) {
+  .kb-more{display:none;}
+  .kb-f.extra{display:inline-flex;}
+  .kb-filt .kb-search{width:196px;}
+  .kb-right .n,.kb-right .clr{display:inline;}
+  .kb-right .clr-ico{display:none;}
+}
+@container kbpane (min-width: 1400px) {
+  .kb-body{grid-template-columns:320px minmax(0,1fr) 340px;}
+  .kb-lrail{display:flex;}
+  .kb-lcard{display:none;}
+}
+
+/* A grid item's default `min-height:auto` lets a tall child push the row past
+   the pane. Without this the 1626px frame ran 59px taller than its own box. */
+.kb-body > *{min-height:0;min-width:0;}
+.kb-lrail,.kb-lcard{overflow-y:auto;}
+
+/* the HEIGHT step: below 620px of pane the header band yields its prose,
+   because a 600px window is 568px of pane and the canvas needs it. */
+@container kbpane (max-height: 620px) {
+  .kb-hdr{padding:12px 20px 10px;}
+  .kb-hdr h4{font-size:17px;}
+  .kb-hdr p{display:none;}
+}
+
+/* ── §01 size gallery ───────────────────────────────────────────────────── */
+.sizes{display:grid;gap:20px;grid-template-columns:1fr;}
+@media (min-width:1000px){.sizes{grid-template-columns:1fr 1fr;}}
+.sizecard{border:1px solid var(--border-subtle);border-radius:var(--r-container);
+  background:var(--bg-default);overflow:hidden;}
+.sizecard-h{padding:11px 14px;border-bottom:1px solid var(--border-subtle);background:var(--bg-muted);
+  display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
+.sizecard-h .w{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--accent);
+  letter-spacing:0.04em;}
+.sizecard-h .t{font-size:12.5px;font-weight:600;}
+.sizecard-h .s{font-family:var(--mono);font-size:10.5px;color:var(--text-subtle);margin-left:auto;}
+.stage{position:relative;overflow:hidden;background:var(--bg-muted);padding:14px;}
+.stage .holder{position:relative;}
+.stage .kbpane{position:absolute;top:0;left:0;transform-origin:top left;}
+.sizecard .cap{padding:11px 14px;border-top:1px solid var(--border-subtle);
+  font-size:12px;color:var(--text-muted);line-height:1.5;}
+.sizecard .cap b{color:var(--text-default);font-weight:600;}
+
+/* ── §07 pop-up demo ────────────────────────────────────────────────────── */
+.popdemo{border:1px solid var(--border-subtle);border-radius:var(--r-container);overflow:hidden;
+  background:var(--bg-default);}
+.popbar{display:flex;flex-wrap:wrap;gap:6px;padding:12px 14px;border-bottom:1px solid var(--border-subtle);
+  background:var(--bg-muted);}
+.popbtn{height:30px;padding:0 11px;border-radius:var(--r-inner);border:1.5px solid var(--border-subtle);
+  background:var(--bg-default);font-size:12.5px;font-weight:500;color:var(--text-default);}
+.popbtn:hover{border-color:var(--border-strong);background:var(--bg-medium);}
+.popbtn[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);}
+.popstage{position:relative;height:496px;background:var(--graph-ground);overflow:hidden;}
+.popstage .scrim{position:absolute;inset:0;background:var(--scrim);opacity:0;pointer-events:none;
+  transition:opacity var(--d,140ms) ease;}
+.popstage.modal .scrim{opacity:1;}
+.pop{position:absolute;display:none;flex-direction:column;background:var(--bg-default);
+  border:1px solid var(--border-subtle);border-radius:var(--r-container);
+  box-shadow:var(--shadow-popover);overflow:hidden;}
+.pop.show{display:flex;}
+.pop.is-modal{box-shadow:var(--shadow-modal);}
+.pop-h{padding:13px 15px;border-bottom:1px solid var(--border-subtle);flex:none;}
+.pop-h .t{font-size:14px;font-weight:600;letter-spacing:-0.008em;}
+.pop-h .s{font-size:11.5px;color:var(--text-muted);margin-top:2px;line-height:1.45;}
+.pop-field{display:flex;align-items:center;gap:8px;height:32px;margin:11px 13px 0;padding:0 10px;
+  border-radius:var(--r-element);border:1.5px solid var(--border-emphasized);
+  background:var(--bg-default);color:var(--text-subtle);font-size:12.5px;flex:none;}
+.pop-list{padding:8px;display:flex;flex-direction:column;gap:1px;overflow:auto;min-height:0;}
+.pop-grp{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:0.08em;
+  color:var(--text-subtle);padding:9px 8px 4px;}
+.pop-item{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:var(--r-inner);
+  font-size:12.5px;}
+.pop-item:hover{background:var(--bg-muted);}
+.pop-item.sel{background:var(--accent);color:var(--accent-ink);}
+.pop-item.sel .ct,.pop-item.sel .sub{color:var(--accent-ink);opacity:0.82;}
+/* `.swq` is the square palette swatch, used in every pop-up AND in the
+   manager rows — so it is a standalone class, not a descendant rule. It was
+   scoped to `.pop-item` and the manager's rows painted no colour at all. */
+b.swq{width:10px;height:10px;border-radius:var(--r-inner);flex:none;display:inline-block;
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,0.26);}
+.pop-item .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.pop-item .ct{font-family:var(--mono);font-size:10.5px;color:var(--text-subtle);
+  font-variant-numeric:tabular-nums;flex:none;}
+.pop-item .sub{font-family:var(--mono);font-size:10px;color:var(--text-subtle);flex:none;}
+.pop-item .chk{width:14px;height:14px;border-radius:var(--r-inner);border:1.5px solid var(--border-strong);flex:none;}
+.pop-item.sel .chk{background:var(--accent-ink);border-color:var(--accent-ink);}
+.pop-f{padding:9px 13px;border-top:1px solid var(--border-subtle);display:flex;
+  align-items:center;gap:8px;flex:none;background:var(--bg-muted);}
+.pop-f .hint{font-size:11.5px;color:var(--text-muted);}
+.pop-f .btn{margin-left:auto;height:30px;padding:0 12px;border-radius:var(--r-element);
+  border:1.5px solid var(--border-subtle);background:var(--bg-default);font-size:12.5px;font-weight:500;}
+.pop-f .btn.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);}
+.pop-menu{padding:6px;display:flex;flex-direction:column;gap:1px;}
+.pop-menu .mi{display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:var(--r-inner);
+  font-size:12.5px;}
+.pop-menu .mi:hover{background:var(--bg-muted);}
+.pop-menu .mi.danger{color:var(--danger);}
+.pop-menu .sep{height:1px;background:var(--border-subtle);margin:5px 2px;}
+.krow{display:flex;align-items:center;gap:9px;min-height:40px;padding:0 11px;
+  border-radius:var(--r-element);font-size:12.5px;}
+.krow:hover{background:var(--bg-muted);}
+.krow .nm{font-weight:600;white-space:nowrap;}
+.krow .meta{margin-left:auto;font-family:var(--mono);font-size:10.5px;
+  font-variant-numeric:tabular-nums;color:var(--text-subtle);white-space:nowrap;}
+/* THE SWITCH IS THE APP'S, NOT AN INVENTION. `ui/switch.tsx`: a 40x24 track,
+   `rounded-full`, `border-2 border-transparent`, `bg-background-strong` →
+   `bg-background-accent`; a `rounded-full` thumb on `--text-on-accent` that
+   GROWS 16 → 20px as it travels 16px. The source calls that growth "the one
+   micro-delight the system allows itself", so it is reproduced rather than
+   approximated. An earlier revision drew a squared toggle; that was wrong, and
+   it is why this comment exists. */
+.sw2{width:40px;height:24px;border-radius:9999px;background:var(--bg-strong);
+  position:relative;flex:none;transition:background-color 140ms ease;}
+.sw2.on{background:var(--accent);}
+.sw2::after{content:"";position:absolute;top:4px;left:4px;width:16px;height:16px;
+  border-radius:9999px;background:#fff;
+  transition:all 140ms cubic-bezier(0.24,1,0.4,1);}
+.sw2.on::after{top:2px;left:18px;width:20px;height:20px;}
+.insp-kv{display:grid;grid-template-columns:92px 1fr;gap:7px;padding:5px 8px;
+  background:var(--bg-muted);border-radius:var(--r-inner);align-items:start;}
+.insp-kv .k{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;
+  letter-spacing:0.05em;color:var(--text-subtle);padding-top:2px;}
+.insp-kv .v{font-size:12px;}
+.pop-body{padding:12px 13px;display:flex;flex-direction:column;gap:7px;overflow:auto;min-height:0;}
+.pop-sec{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:0.08em;
+  color:var(--text-subtle);margin-top:5px;}
+.dist{display:grid;grid-template-columns:96px 1fr 26px;gap:8px;align-items:center;font-size:11.5px;}
+.dist .dl{font-family:var(--mono);font-size:10.5px;color:var(--text-muted);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dist .db{height:8px;border-radius:2px;background:var(--bg-medium);overflow:hidden;}
+.dist .db i{display:block;height:100%;background:var(--accent);border-radius:2px;}
+.dist .dv{font-family:var(--mono);font-size:10px;color:var(--text-subtle);text-align:right;
+  font-variant-numeric:tabular-nums;}
+
+.foot{border-top:1px solid var(--border-subtle);margin-top:20px;padding-top:22px;
+  font-size:12.5px;color:var(--text-subtle);display:flex;flex-wrap:wrap;gap:8px 18px;}
+</style>
+</head>
+<body>
+
+<div class="page">
+
+<header class="masthead">
+  <div class="eyebrow">Design study <span>·</span> Knowledge section <span>·</span> Rev 2 — 2026-08-22</div>
+  <h1>One subject, one canvas, two rails.</h1>
+  <p class="dek">
+    The Knowledge section names its knowledge base twice, fences the canvas between two 36-pixel
+    control strips, floats its inspector over the very thing it describes, and solves its node
+    colours to text-contrast ratios so they come out nearly black. It also responds to the
+    <em>window</em> when the thing that changes size is the <em>pane</em> — which is why it breaks
+    first at BioRouter's own minimum window. This is the proposal to fix all of it.
+  </p>
+  <div class="metarow">
+    <span class="tag hot">Proposed — nothing implemented</span>
+    <span class="tag">10 decision records</span>
+    <span class="tag">Pane floor 760 px</span>
+    <span class="tag">Container queries, not media queries</span>
+  </div>
+</header>
+
+<div class="shell">
+
+  <nav class="index" aria-label="Sections">
+    <span class="caps">Contents</span>
+    <ol>
+      <li><a href="#sizes"><b>01</b><span>Every size</span></a></li>
+      <li><a href="#shell"><b>02</b><span>The shell</span></a></li>
+      <li><a href="#filters"><b>03</b><span>The filter bar</span></a></li>
+      <li><a href="#popups"><b>04</b><span>Pop-ups</span></a></li>
+      <li><a href="#canvas"><b>05</b><span>The canvas</span></a></li>
+      <li><a href="#palette"><b>06</b><span>The palette</span></a></li>
+      <li><a href="#legend"><b>07</b><span>The legend</span></a></li>
+      <li><a href="#sources"><b>08</b><span>The sources rail</span></a></li>
+    </ol>
+    <button class="themebtn" id="tt" type="button">◐&nbsp; Switch theme</button>
+  </nav>
+
+  <main>
+
+  <!-- ═══ 01 SIZES ═══ -->
+  <section id="sizes">
+    <div class="shead"><span class="n">01</span><h2>Every size</h2></div>
+    <p class="sdek">
+      All four frames below are <b>the same markup</b>, rendered into containers of four different
+      widths and laid out entirely by <code>@container</code> queries. Nothing is drawn twice, and
+      nothing is a wireframe — if a step works here it works because the CSS made it work.
+    </p>
+
+    <h3>What the pane is actually given</h3>
+    <div class="frame scroller" style="margin-bottom:22px">
+      <table>
+        <thead><tr>
+          <th>Case</th><th class="n">Window (content)</th><th class="n">Sidebar</th>
+          <th class="n">Pane</th><th>Viewport <code>md:</code> ≥ 930?</th>
+        </tr></thead>
+        <tbody>
+          <tr><td><b>App minimum, sidebar open</b></td><td class="n">1000 × 600</td><td class="n">240</td>
+              <td class="n good">760 × 568</td><td>fires — <b style="color:var(--danger)">two columns into 760 px</b></td></tr>
+          <tr><td>App minimum, sidebar collapsed</td><td class="n">1000 × 600</td><td class="n">54</td>
+              <td class="n">946 × 568</td><td>fires</td></tr>
+          <tr><td>Default window, sidebar open</td><td class="n">1000 × 1000</td><td class="n">240</td>
+              <td class="n">760 × 968</td><td>fires</td></tr>
+          <tr><td>1280 window, sidebar open</td><td class="n">1280 × 800</td><td class="n">240</td>
+              <td class="n">1040 × 768</td><td>fires</td></tr>
+          <tr><td>1680 window, sidebar collapsed</td><td class="n">1680 × 1050</td><td class="n">54</td>
+              <td class="n">1626 × 1018</td><td>fires</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note" style="margin-bottom:22px">
+      <b>The bug this table exposes.</b> <code>minWidth: 1000</code> is derived in
+      <code>main.ts</code> as 240&nbsp;px of sidebar plus the 760&nbsp;px reading column — so at the
+      app's own minimum with the sidebar open, the Knowledge pane is <b>760&nbsp;px</b>. But the
+      section's one breakpoint, <code>md:</code> at 930&nbsp;px, is a <b>viewport</b> media query. The
+      viewport is 1000&nbsp;px, so it fires and lays out two columns; the 300&nbsp;px Sources rail
+      then leaves <b>444&nbsp;px</b> for a graph pane whose filter strip needs about 681. The section
+      is at its most broken at the smallest size the app will let you make.
+      <b>Every step below is therefore a container query on the pane, not a media query on the window.</b>
+    </div>
+
+    <div class="sizes" id="sizeGallery"></div>
+  </section>
+
+  <!-- ═══ 02 SHELL ═══ -->
+  <section id="shell">
+    <div class="shead"><span class="n">02</span><h2>The shell</h2></div>
+    <p class="sdek">
+      Three bands become two. The base is identified once, in a 48-pixel subject bar whose name
+      <em>is</em> the switcher — so the page header carries the title and nothing clickable at all.
+      Below 620&nbsp;px of pane height the header sheds its description line, which is the difference
+      between a usable and an unusable canvas at a 600-pixel window.
+    </p>
+    <div class="note" style="margin-top:0">
+      <b>On the brief's premise.</b> The selector never rendered <em>above</em> the banner — it is the
+      second child of the header's title row, co-linear with the <code>h1</code>, and the built bundle
+      agrees with the source. The real defect it points at is worse than misplacement: the base was
+      identified <b>twice, 40&nbsp;px apart</b>. Deleting the header cluster and promoting the subject
+      band to switcher removes the duplicate rather than relocating it.
+    </div>
+  </section>
+
+  <!-- ═══ 03 FILTERS ═══ -->
+  <section id="filters">
+    <div class="shead"><span class="n">03</span><h2>The filter bar</h2></div>
+    <p class="sdek">
+      The filters read as buttons because they <em>are</em> buttons — the same component and variant
+      as “Manage bases”, sharing the input's exact 8-pixel radius, in a 36-pixel strip with zero
+      vertical padding. A selected filter never changes its own fill. And there is no answer at all
+      for what happens when they stop fitting.
+    </p>
+
+    <h3>A filter is a boxed control, not a button and not a pill</h3>
+    <div class="pair">
+      <div class="frame">
+        <div class="frame-cap"><span class="t">36&nbsp;px, no padding, 8&nbsp;px radius on both</span><span class="badge-before">Before</span></div>
+        <div style="height:36px;display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--bg-default)">
+          <span style="display:flex;align-items:center;gap:6px;height:32px;padding:0 10px;width:168px;
+            border-radius:8px;border:1px solid var(--border-emphasized);background:var(--bg-default);
+            color:var(--text-subtle);font-size:12.5px">Filter by name or type</span>
+          <span style="height:28px;display:inline-flex;align-items:center;padding:0 10px;border-radius:8px;
+            background:var(--bg-medium);font-size:12.5px">Type</span>
+          <span style="height:28px;display:inline-flex;align-items:center;padding:0 10px;border-radius:8px;
+            background:var(--bg-medium);font-size:12.5px">Predicate</span>
+          <span style="height:28px;display:inline-flex;align-items:center;padding:0 10px;border-radius:8px;
+            background:var(--bg-medium);font-size:12.5px">Source</span>
+          <span style="height:28px;display:inline-flex;align-items:center;padding:0 10px;border-radius:8px;
+            background:var(--bg-medium);font-size:12.5px">Status</span>
+        </div>
+        <ul class="tight" style="padding:12px 14px 14px 32px;border-top:1px solid var(--border-subtle);margin:0">
+          <li><b>2&nbsp;px</b> of air above and below a 32&nbsp;px input</li>
+          <li>Input and filters share <b>the same 8&nbsp;px radius</b></li>
+          <li>Selected state is <b>an appended badge only</b>; the fill never changes</li>
+          <li><b>No overflow behaviour.</b> They just stop fitting.</li>
+        </ul>
+      </div>
+
+      <div class="frame">
+        <div class="frame-cap"><span class="t">48&nbsp;px bar, element radius, 1.5&nbsp;px edge, solid when on</span><span class="badge-after">After</span></div>
+        <div class="kb-filt" style="border-bottom:1px solid var(--border-subtle);height:48px">
+          <span class="kb-search" style="width:168px;flex:none"><span class="lbl">Filter by name or type</span></span>
+          <span class="kb-vr"></span>
+          <span class="kb-f on">Type <span class="cnt">2</span><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
+          <span class="kb-f">Predicate<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
+          <span class="kb-f">Source<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
+        </div>
+        <ul class="tight" style="padding:12px 14px 14px 32px;margin:0">
+          <li><b><code>--radius-element</code> (8&nbsp;px)</b> — the same step as every button, input, select and tab. A filter is not differentiated by being a different shape from the rest of the app</li>
+          <li><b>1.5&nbsp;px edge</b> on a <b>transparent</b> ground, against the app's 1&nbsp;px hairlines: it reads as a field that holds a value, where a secondary button is a filled slab with no edge at all</li>
+          <li>Engaged is a <b>solid accent fill</b>, not a tint — visible at a glance across a 1600&nbsp;px bar</li>
+          <li>A real <b>13&nbsp;px stroked caret</b>, not a 9&nbsp;px text glyph</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>When the row stops fitting</h3>
+    <p class="sdek" style="margin-left:0">
+      Three states, chosen by pane width, in a fixed priority order. Nothing ever wraps to a second
+      line — a filter bar that grows steals canvas — and nothing ever scrolls sideways, which is the
+      failure the legend already demonstrates.
+    </p>
+    <div class="frame">
+      <div class="frame-cap"><span class="t">The overflow ladder — search is never sacrificed</span><span class="badge-after">After</span></div>
+      <div style="padding:16px;display:flex;flex-direction:column;gap:14px;background:var(--bg-default)">
+        <div>
+          <div class="caps" style="margin-bottom:6px">Pane ≥ 1060 — full</div>
+          <div style="width:100%;border:1px solid var(--border-subtle);border-radius:var(--r-element);overflow:hidden">
+            <div class="kb-filt" style="height:48px;border:none">
+              <span class="kb-search" style="width:196px;flex:none"><span class="lbl">Filter by name or type</span></span>
+              <span class="kb-vr"></span>
+              <span class="kb-f on">Type <span class="cnt">2</span><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
+              <span class="kb-f">Predicate<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
+              <span class="kb-f">Source<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
+              <span class="kb-f">Status<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
+              <span class="kb-right"><span class="n" style="display:inline">Showing 96 of 210</span><span class="clr" style="display:inline">Clear</span></span>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="caps" style="margin-bottom:6px">Pane 860 – 1059 — condensed: the two least-used fold into <b style="color:var(--text-default)">More</b>, the count becomes an icon</div>
+          <div style="width:640px;max-width:100%;border:1px solid var(--border-subtle);border-radius:var(--r-element);overflow:hidden">
+            <div class="kb-filt" style="height:48px;border:none">
+              <span class="kb-search" style="width:172px;flex:none"><span class="lbl">Filter by name or type</span></span>
+              <span class="kb-vr"></span>
+              <span class="kb-f on">Type <span class="cnt">2</span><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
+              <span class="kb-f">Predicate<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
+              <span class="kb-f">More <span class="cnt">2</span><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
+              <span class="kb-right"><span class="clr-ico" style="display:grid" title="Clear filters">✕</span></span>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="caps" style="margin-bottom:6px">Pane &lt; 860 — compact: one control, total count, search takes the rest</div>
+          <div style="width:400px;max-width:100%;border:1px solid var(--border-subtle);border-radius:var(--r-element);overflow:hidden">
+            <div class="kb-filt" style="height:48px;border:none">
+              <span class="kb-search" style="flex:1"><span class="lbl">Filter…</span></span>
+              <span class="kb-f on">Filters <span class="cnt">3</span><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
+              <span class="kb-right"><span class="clr-ico" style="display:grid" title="Clear filters">✕</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="note">
+      <b>The priority order is a decision, not an accident.</b> Search collapses last because it is
+      the only control that can reach a node whose type the user does not yet know. <code>Type</code>
+      survives longest of the four because it is the one facet every base has — <code>Predicate</code>
+      and <code>Source</code> are empty on a legacy base, and <code>Status</code> only ever holds four
+      values. What folds into <b>More</b> carries its own count, so nothing is hidden silently: a
+      filter you cannot see is still reported by the number on the control that swallowed it.
+    </div>
+  </section>
+
+  <!-- ═══ 04 POP-UPS ═══ -->
+  <section id="popups">
+    <div class="shead"><span class="n">04</span><h2>Pop-ups</h2></div>
+    <p class="sdek">
+      Seven surfaces open over this page and they are built on four different mechanisms — two of
+      them, the node and edge inspectors, are bare absolutely-positioned <code>role="dialog"</code>
+      panels with <b>no portal, no scrim and no focus trap</b>. Six of the seven are live below:
+      click a control to open one. The seventh, the Lint and Change-log pair, is an unchanged
+      <code>Sheet</code> and is covered in the table rather than the demo.
+    </p>
+
+    <div class="popdemo">
+      <div class="popbar" id="popbar">
+        <button class="popbtn" data-pop="switcher" aria-pressed="false">Base switcher</button>
+        <button class="popbtn" data-pop="facet" aria-pressed="false">Type filter</button>
+        <button class="popbtn" data-pop="more" aria-pressed="false">More filters</button>
+        <button class="popbtn" data-pop="menu" aria-pressed="false">Actions ⋯</button>
+        <button class="popbtn" data-pop="node" aria-pressed="false">Node inspector</button>
+        <button class="popbtn" data-pop="manager" aria-pressed="false">Manage bases</button>
+        <button class="popbtn" data-pop="none" aria-pressed="false">Close all</button>
+      </div>
+      <div class="popstage" id="popstage">
+        <div class="scrim"></div>
+
+        <!-- base switcher -->
+        <div class="pop" data-pop="switcher" style="top:16px;left:20px;width:300px;max-height:420px">
+          <div class="pop-field"><span>Search knowledge bases</span></div>
+          <div class="pop-list">
+            <div class="pop-grp">In this chat</div>
+            <div class="pop-item sel"><b class="swq" style="background:#8f79d4"></b><span class="nm">e-cigarette</span><span class="sub">BioOKF</span><span class="ct">210</span></div>
+            <div class="pop-item"><b class="swq" style="background:#8c7e90"></b><span class="nm">Soul</span><span class="sub">Legacy</span><span class="ct">142</span></div>
+            <div class="pop-grp">Not in this chat</div>
+            <div class="pop-item"><b class="swq" style="background:#59c2a9"></b><span class="nm">Lipid metabolism</span><span class="sub">BioOKF</span><span class="ct">204</span></div>
+            <div class="pop-item"><b class="swq" style="background:#e09c54"></b><span class="nm">Pharmacogenomics</span><span class="sub">OKF</span><span class="ct">142</span></div>
+          </div>
+          <div class="pop-f"><span class="hint">↑↓ to move · ⏎ to switch</span><span class="btn">Manage bases</span></div>
+        </div>
+
+        <!-- facet -->
+        <div class="pop" data-pop="facet" style="top:16px;left:250px;width:268px;max-height:400px">
+          <div class="pop-field"><span>Search types</span></div>
+          <div class="pop-list">
+            <div class="pop-grp">Genomic</div>
+            <div class="pop-item sel"><span class="chk"></span><b class="swq" style="background:#91a6ff"></b><span class="nm">Gene</span><span class="ct">41</span></div>
+            <div class="pop-item sel"><span class="chk"></span><b class="swq" style="background:#908fec"></b><span class="nm">Variant</span><span class="ct">18</span></div>
+            <div class="pop-item"><span class="chk"></span><b class="swq" style="background:#8f79d4"></b><span class="nm">SequenceFeature</span><span class="ct">6</span></div>
+            <div class="pop-grp">Clinical</div>
+            <div class="pop-item"><span class="chk"></span><b class="swq" style="background:#f582a7"></b><span class="nm">Disease</span><span class="ct">27</span></div>
+            <div class="pop-item"><span class="chk"></span><b class="swq" style="background:#e67183"></b><span class="nm">Phenotype</span><span class="ct">22</span></div>
+            <div class="pop-grp">Provenance &amp; context</div>
+            <div class="pop-item"><span class="chk"></span><b class="swq hollowq" style="box-shadow:inset 0 0 0 1.5px #8ca1ae"></b><span class="nm">Publication</span><span class="ct">19</span></div>
+          </div>
+          <div class="pop-f"><span class="hint">2 selected</span><span class="btn">Clear</span></div>
+        </div>
+
+        <!-- more filters -->
+        <div class="pop" data-pop="more" style="top:16px;left:430px;width:256px">
+          <div class="pop-h"><div class="t">More filters</div><div class="s">The two that folded away at this width. Each keeps its own count.</div></div>
+          <div class="pop-menu">
+            <div class="mi"><span style="flex:1">Source</span><span class="ct" style="font-family:var(--mono);font-size:10.5px;color:var(--text-subtle)">1</span><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6.5 4 10.5 8 6.5 12"/></svg></div>
+            <div class="mi"><span style="flex:1">Status</span><span class="ct" style="font-family:var(--mono);font-size:10.5px;color:var(--text-subtle)">—</span><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6.5 4 10.5 8 6.5 12"/></svg></div>
+          </div>
+        </div>
+
+        <!-- actions menu -->
+        <div class="pop" data-pop="menu" style="top:16px;right:20px;width:238px">
+          <div class="pop-menu">
+            <div class="mi">Export as .brkb</div>
+            <div class="mi">Change log</div>
+            <div class="mi">Open folder</div>
+            <div class="sep"></div>
+            <div class="mi danger">Delete knowledge base</div>
+          </div>
+        </div>
+
+        <!-- node inspector -->
+        <div class="pop" data-pop="node" style="top:16px;right:20px;width:340px;bottom:16px">
+          <div class="pop-h" style="display:flex;align-items:flex-start;gap:10px">
+            <b class="swq" style="width:14px;height:14px;border-radius:3px;background:#91a6ff;margin-top:3px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.26)"></b>
+            <div style="flex:1;min-width:0">
+              <div class="t">IL6</div>
+              <div class="s">Gene · cytokine — a pleiotropic cytokine and central driver of the acute-phase response.</div>
+            </div>
+            <span style="color:var(--text-subtle)">✕</span>
+          </div>
+          <div class="pop-body">
+            <div class="insp-kv"><span class="k">identifier</span><span class="v">IL6</span></div>
+            <div class="insp-kv"><span class="k">xref</span><span class="v" style="font-family:var(--mono);font-size:11px">HGNC:6018 · UniProt:P05231</span></div>
+            <div class="insp-kv"><span class="k">status</span><span class="v">stable</span></div>
+            <div class="pop-sec">Edges by predicate</div>
+            <div class="dist"><span class="dl">associated_with</span><span class="db"><i style="width:100%"></i></span><span class="dv">4</span></div>
+            <div class="dist"><span class="dl">regulates</span><span class="db"><i style="width:75%"></i></span><span class="dv">3</span></div>
+            <div class="dist"><span class="dl">participates_in</span><span class="db"><i style="width:50%"></i></span><span class="dv">2</span></div>
+            <div class="dist"><span class="dl">located_in</span><span class="db"><i style="width:25%"></i></span><span class="dv">1</span></div>
+          </div>
+          <div class="pop-f"><span class="hint">In the rail at ≥1400&nbsp;px</span><span class="btn">Open page</span></div>
+        </div>
+
+        <!-- manager -->
+        <div class="pop is-modal" data-pop="manager"
+             style="top:24px;left:50%;transform:translateX(-50%);width:640px;bottom:24px">
+          <div class="pop-h">
+            <div class="t">Knowledge bases</div>
+            <div class="s">Which bases this chat uses, and which one a knowledge write lands in when none is named.</div>
+          </div>
+          <div class="pop-field" style="margin-bottom:0"><span>Search knowledge bases</span></div>
+          <div style="display:flex;gap:8px;padding:11px 13px 0">
+            <span class="btn" style="height:30px;padding:0 12px;border-radius:var(--r-element);
+              background:var(--accent);color:var(--accent-ink);font-size:12.5px;font-weight:600;
+              display:inline-flex;align-items:center">Create knowledge base</span>
+            <span class="btn" style="height:30px;padding:0 12px;border-radius:var(--r-element);
+              border:1.5px solid var(--border-subtle);font-size:12.5px;font-weight:500;
+              display:inline-flex;align-items:center">Import .brkb</span>
+          </div>
+          <div class="pop-list" style="padding:11px 8px">
+            <div class="krow">
+              <b class="swq" style="background:#8c7e90"></b><span class="nm">Soul</span>
+              <span class="kb-badge">Built-in</span><span class="kb-badge">Legacy</span>
+              <span class="meta">142 pages · 6d ago</span><span class="sw2" style="margin-left:10px"></span>
+            </div>
+            <div class="krow">
+              <b class="swq" style="background:#8f79d4"></b><span class="nm">e-cigarette</span>
+              <span class="kb-badge">BioOKF</span><span class="kb-badge">Private</span>
+              <span class="kb-badge" style="background:var(--accent);color:var(--accent-ink)">Primary</span>
+              <span class="meta">210 pages · just now</span><span class="sw2 on" style="margin-left:10px"></span>
+            </div>
+            <div class="krow">
+              <b class="swq" style="background:#59c2a9"></b><span class="nm">Lipid metabolism</span>
+              <span class="kb-badge">BioOKF</span>
+              <span class="meta">204 pages · 2d ago</span><span class="sw2" style="margin-left:10px"></span>
+            </div>
+          </div>
+          <div class="pop-f">
+            <span class="hint">The switch decides membership; the name decides the primary.</span>
+            <span class="btn pri">Done</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <h3>What changes, and why</h3>
+    <div class="frame scroller">
+      <table>
+        <thead><tr><th>Surface</th><th>Today</th><th>Proposed</th></tr></thead>
+        <tbody>
+          <tr><td>Base switcher</td><td>Popover on a header-row trigger</td><td>Same popover, anchored to the subject bar instead. Gains a <b>Manage bases</b> footer, which becomes its only route.</td></tr>
+          <tr><td>Type / Predicate / Source</td><td>Popover + searchable command list</td><td>Unchanged in mechanism. Rows gain a real <b>square checkbox</b> so multi-select is legible before you click, and the swatch is square to match the legend.</td></tr>
+          <tr><td>More filters</td><td>—</td><td><b>New.</b> Only exists between 860 and 1059&nbsp;px. Lists the folded facets with their counts and opens each one's own popover.</td></tr>
+          <tr><td>Actions ⋯</td><td>Dropdown menu</td><td>Unchanged. Destructive action stays behind the separator.</td></tr>
+          <tr><td>Node / edge inspector</td><td><b class="good">Bare <code>role="dialog"</code> over the canvas — no portal, no scrim, no focus trap</b></td><td>Becomes the right rail's second occupant at ≥1400&nbsp;px, a canvas-anchored card between 940 and 1399, and a sheet below that. Never a bare dialog.</td></tr>
+          <tr><td>Manage bases</td><td><code>ModalShell size="lg"</code>, 582&nbsp;px</td><td>640&nbsp;px. Search and Create pinned outside the scroller; duplicate encodings removed; three icon buttons collapse to one ⋯.</td></tr>
+          <tr><td>Lint / Change log</td><td><code>Sheet</code>, 340&nbsp;px</td><td>Unchanged, plus the <code>pr-14</code> header gutter both currently lose — which in Lint costs 8&nbsp;px of real overlap between the ✕ and <b>Check again</b>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <b>One rule covers all seven.</b> A surface that returns a value to the page is a
+      <b>popover</b> anchored to the control that opened it; a surface that is a task is a
+      <b>modal</b> with a scrim; a surface that describes the current selection is <b>the rail</b>, or
+      the rail's fallback at narrower panes. The inspectors are the only ones that break the rule
+      today, and they break it in the direction that costs a focus trap.
+    </div>
+  </section>
+
+  <!-- ═══ 05 CANVAS ═══ -->
+  <section id="canvas">
+    <div class="shead"><span class="n">05</span><h2>The canvas</h2></div>
+    <p class="sdek">
+      Every node is a circle. The twenty Biomedical Entity types are drawn solid, the eight
+      Provenance &amp; Context types hollow, and a referenced-but-unwritten node keeps BioOKF's dashed
+      ring — so a channel that survives monochrome still exists, without a second silhouette anywhere.
+      Labels are always on and haloed, which is what makes an all-circle canvas readable.
+    </p>
+    <div class="frame">
+      <div class="frame-cap">
+        <span class="t">Proposed marks — solid entity, hollow provenance, dashed external</span>
+        <span class="badge-after">After</span>
+      </div>
+      <div class="kb-canvas" style="height:440px;position:relative">
+        <svg viewBox="0 0 900 440" preserveAspectRatio="xMidYMid meet" id="cv-big"
+             aria-label="Proposed knowledge graph rendering"></svg>
+      </div>
+    </div>
+    <div class="note">
+      <b>The trade, stated plainly.</b> The seven silhouettes carried node <em>family</em> because
+      cross-family colour distance under simulated dichromacy bottoms out at <span class="num">ΔE00
+      0.00</span>. Removing them means a viewer with tritanopia sees <code>Phenotype</code> and
+      <code>Food</code> as one colour and one shape, told apart only by the label, the legend hover
+      and the inspector. That is a real regression, taken deliberately, and it should not ship
+      without the <b>“Distinguish types by shape”</b> preference that restores them.
+    </div>
+  </section>
+
+  <!-- ═══ 06 PALETTE ═══ -->
+  <section id="palette">
+    <div class="shead"><span class="n">06</span><h2>The palette</h2></div>
+    <p class="sdek">
+      The fills read dark for an identifiable reason: they are solved to hit WCAG contrast ratios
+      against the ground — rungs of 3.5, 4.5, 5.8 and 7.3, and a Provenance ladder running to 12.0.
+      Those are <em>text</em> rungs applied to a <em>mark</em>. BioOKF instead puts a near-black
+      hairline around every circle and lets the fill be pretty. The fix is two numbers.
+    </p>
+    <div class="pair">
+      <div class="frame">
+        <div class="frame-cap"><span class="t">Today — solved to contrast rungs</span><span class="badge-before">Before</span></div>
+        <div style="padding:14px;display:flex;flex-direction:column;gap:11px" id="palOld"></div>
+      </div>
+      <div class="frame">
+        <div class="frame-cap"><span class="t">Proposed — solved to a lightness band</span><span class="badge-after">After</span></div>
+        <div style="padding:14px;display:flex;flex-direction:column;gap:11px" id="palNew"></div>
+      </div>
+    </div>
+
+    <div class="frame scroller" style="margin-top:18px">
+      <table>
+        <thead><tr><th>Quantity</th><th class="n">Today</th><th class="n">BioOKF</th><th class="n">Proposed</th></tr></thead>
+        <tbody>
+          <tr><td>Fill lightness, OKLab&nbsp;L — median</td><td class="n">0.531</td><td class="n">0.648</td><td class="n good">0.690</td></tr>
+          <tr><td>Fill lightness — range</td><td class="n">0.312 – 0.624</td><td class="n">0.537 – 0.890</td><td class="n good">0.580 – 0.780</td></tr>
+          <tr><td>Fills at ≥&nbsp;7:1 (near-black)</td><td class="n">7 of 28</td><td class="n">0 of 12</td><td class="n good">0 of 28</td></tr>
+          <tr><td>Node ring alpha</td><td class="n">0.50</td><td class="n">0.92</td><td class="n good">0.85</td></tr>
+          <tr><td>Ring contrast vs ground</td><td class="n">≈ 5:1</td><td class="n">17.68:1</td><td class="n good">9.02:1</td></tr>
+          <tr><td>Within-family separation, min ΔE00</td><td class="n">5.54</td><td class="n">—</td><td class="n good">4.80</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      <b>Verified, not asserted.</b> The step between adjacent members stays at 0.055&nbsp;L against
+      today's 0.050–0.059, so within-family separation survives by construction — measured with a
+      real CIEDE2000 across all seven families, the minimum lands at <span class="num">4.80</span>
+      against a guard floor of <span class="num">3.0</span>. <b>The ground does not move:</b>
+      <code>check-contrast.mjs</code> asserts a six-scope <code>--background-muted</code> identity,
+      and the single shared graph palette exists precisely because that identity holds.
+    </div>
+  </section>
+
+  <!-- ═══ 07 LEGEND ═══ -->
+  <section id="legend">
+    <div class="shead"><span class="n">07</span><h2>The legend</h2></div>
+    <p class="sdek">
+      Today's legend is a 36-pixel strip that scrolls sideways, and its two states show
+      <em>disjoint</em> information: collapsed is inert — no buttons at all — and shows 28 unlabelled
+      swatches; expanded is interactive but drops the evidence key entirely, and its collapse control
+      sits at the far end of whichever scroller is active. It appears in §01 as a rail at
+      1626&nbsp;px, a card at 1040, and a chip below that.
+    </p>
+    <div class="pair">
+      <div class="frame">
+        <div class="frame-cap"><span class="t">Bottom dock — one scrolling row</span><span class="badge-before">Before</span></div>
+        <div>
+          <div style="height:72px;background:var(--graph-ground);border-bottom:1px solid var(--border-subtle)"></div>
+          <div style="height:36px;display:flex;align-items:center;gap:16px;padding:0 12px;overflow:hidden;
+            white-space:nowrap;position:relative;background:var(--bg-default)">
+            <span class="caps" style="flex:none">◻ Genomic</span>
+            <span style="display:flex;gap:3px;flex:none">
+              <b style="width:8px;height:8px;border-radius:50%;background:#6a7cd4;display:block"></b>
+              <b style="width:8px;height:8px;border-radius:50%;background:#6965be;display:block"></b>
+              <b style="width:8px;height:8px;border-radius:50%;background:#6750a7;display:block"></b></span>
+            <span class="caps" style="flex:none">◇ Molecular</span>
+            <span style="display:flex;gap:3px;flex:none">
+              <b style="width:8px;height:8px;border-radius:50%;background:#1d927a;display:block"></b>
+              <b style="width:8px;height:8px;border-radius:50%;background:#006a6d;display:block"></b></span>
+            <span class="caps" style="flex:none">△ Anatomy</span>
+            <span style="display:flex;gap:3px;flex:none">
+              <b style="width:8px;height:8px;border-radius:50%;background:#608d44;display:block"></b>
+              <b style="width:8px;height:8px;border-radius:50%;background:#006d48;display:block"></b></span>
+            <span class="caps" style="flex:none">▢ Clinical</span>
+            <span style="position:absolute;right:0;top:0;bottom:0;width:70px;
+              background:linear-gradient(90deg,transparent,var(--bg-default) 72%)"></span>
+          </div>
+        </div>
+        <div style="padding:11px 14px;font-size:12px;color:var(--text-muted);border-top:1px solid var(--border-subtle)">
+          Inert. 28 swatches, no names. <b style="color:var(--danger)">Expand sits past the right edge.</b>
+        </div>
+      </div>
+      <div class="frame">
+        <div class="frame-cap"><span class="t">Rail — grouped, bounded, interactive</span><span class="badge-after">After</span></div>
+        <div style="display:flex;background:var(--bg-default)">
+          <div style="flex:1;background:var(--graph-ground);min-height:212px"></div>
+          <aside class="kb-lrail" style="display:flex;width:216px;flex:none">
+            <div class="kb-lsec">
+              <div class="kb-lsec-h"><span class="caps">Node types</span>
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--text-subtle)"><path d="M4 6.5 8 10.5 12 6.5"/></svg></div>
+              <div class="kb-fam"><div class="kb-fam-n">Genomic</div><div class="kb-sw">
+                <span class="kb-swi"><b style="background:#91a6ff"></b>Gene<span class="k">41</span></span>
+                <span class="kb-swi"><b style="background:#908fec"></b>Variant<span class="k">18</span></span></div></div>
+              <div class="kb-fam"><div class="kb-fam-n">Clinical</div><div class="kb-sw">
+                <span class="kb-swi"><b style="background:#f582a7"></b>Disease<span class="k">27</span></span>
+                <span class="kb-swi"><b style="background:#e67183"></b>Phenotype<span class="k">22</span></span></div></div>
+              <div class="kb-fam"><div class="kb-fam-n">Provenance — hollow</div><div class="kb-sw">
+                <span class="kb-swi hollow" style="color:#8ca1ae"><b></b>Publication<span class="k">19</span></span></div></div>
+            </div>
+            <div class="kb-lsec"><div class="kb-lsec-h"><span class="caps">Links</span>
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--text-subtle)"><path d="M4 6.5 8 10.5 12 6.5"/></svg></div>
+              <div class="kb-pred">
+                <div class="kb-pr"><span class="ln"></span><span class="lb">treats</span></div>
+                <div class="kb-pr"><span class="ln neg"></span><span class="lb neg">not_prevents</span></div>
+              </div></div>
+          </aside>
+        </div>
+        <div style="padding:11px 14px;font-size:12px;color:var(--text-muted);border-top:1px solid var(--border-subtle)">
+          Every chip filters; hover dims non-members. <b>Each section's disclosure sits in its own heading.</b>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      <b>Square swatches against circular marks.</b> The swatch is a 10&nbsp;px square with solid fill
+      because it is a <em>key</em>, not a picture of the mark — the same choice BioOKF makes, where
+      the canvas draws circles and the legend draws rounded squares. What the swatch must carry is
+      the fill and the solid/hollow distinction, and a square carries both at 10&nbsp;px more legibly
+      than a disc does.
+    </div>
+  </section>
+
+  <!-- ═══ 08 SOURCES ═══ -->
+  <section id="sources">
+    <div class="shead"><span class="n">08</span><h2>The sources rail</h2></div>
+    <p class="sdek">
+      Rebuilt in real Chrome against the repo's own stylesheet at the true 300-pixel width: the
+      resting empty state is <span class="num">899&nbsp;px</span> tall in a
+      <span class="num">745&nbsp;px</span> viewport at the app's default window. It scrolls by
+      154&nbsp;px before the user has done anything at all.
+    </p>
+    <div class="frame scroller">
+      <table>
+        <thead><tr><th>Block</th><th class="n">Height</th><th>What it is, and what happens to it</th></tr></thead>
+        <tbody>
+          <tr><td>Dropzone</td><td class="n">330 px</td>
+            <td>260&nbsp;px is decoration and prose — a 48&nbsp;px medallion, two paragraphs of 251 characters wrapping to 3 and 4 lines, and a 10-chip extension row wrapping to 3 rows. <b class="good">→ ~132&nbsp;px</b>; the extension list moves behind an ⓘ.</td></tr>
+          <tr><td>“Nothing staged” empty state</td><td class="n">236 px</td>
+            <td><em>Larger than a five-item staged list at 232&nbsp;px.</em> The rail is at its tallest when it has the least to say. <b class="good">→ deleted</b>.</td></tr>
+          <tr><td>Sticky footer</td><td class="n">109–149 px</td>
+            <td>Occludes the scroll region and paints over content by DOM order — the defect that already bit the paste box. <b class="good">→ a grid-row sibling</b>; the workaround is deleted, not maintained.</td></tr>
+          <tr><td>Tier control</td><td class="n">40 px</td>
+            <td>Draws privacy a second time. <b class="good">→ folds into the subject bar's privacy badge.</b></td></tr>
+          <tr><td><b>Resting total</b></td><td class="n"><b>899 px</b></td>
+            <td><b class="good">→ ≈ 465 px in a 745 px viewport. The rail stops scrolling.</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      Every one of these is a <b>removal</b>. Nothing was made smaller by cramming, and the rail did
+      not need to get wider — it needed to stop saying the same thing twice and stop decorating an
+      empty state at 236&nbsp;px.
+    </div>
+  </section>
+
+  <div class="foot">
+    <span>Companion to <code>redesign-spec.md</code></span><span>·</span>
+    <span>Amends <code>docs/knowledge-base/okf-migration/ui-spec.md</code></span><span>·</span>
+    <span>Reference: <code>github.com/Broccolito/BioOKF</code></span><span>·</span>
+    <span>Measured against <span class="num">7ac2de4b</span></span>
+  </div>
+
+  </main>
+</div>
+</div>
+
+<script>
+(function () {
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  /* ⚠ ALWAYS size an inline SVG. Without width/height it falls back to the
+     replaced-element default of 300×150 — which is exactly what painted a
+     giant chevron over three of the four size frames. */
+  function caretAt(n) {
+    return '<svg width="' + n + '" height="' + n + '" viewBox="0 0 16 16" fill="none" ' +
+           'stroke="currentColor" stroke-width="2.2" stroke-linecap="round" ' +
+           'stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg>';
+  }
+  var caret = caretAt(13);        /* filter chips + section disclosures */
+  var caretLg = caretAt(15);      /* the subject-bar switcher: the primary control */
+
+  /* ── ONE page template, rendered into every size ───────────────────────── */
+  function mockup() {
+    return '' +
+    '<div class="kb-drag"><i></i><i></i><i></i></div>' +
+    '<div class="kb-hdr"><h4>Knowledge</h4><p>Personal knowledge bases Biorouter builds and maintains for you.</p></div>' +
+    '<div class="kb-subj">' +
+      '<span class="kb-switch"><span class="kb-dot"></span><span class="kb-name">e-cigarette</span>' + caret + '</span>' +
+      '<span class="kb-badge">BioOKF</span><span class="kb-badge">Private</span>' +
+      '<span class="kb-count">210 pages · 480 links</span>' +
+      '<span class="kb-acts"><span class="kb-ico">◫</span><span class="kb-ico">↻</span><span class="kb-ico">⋯</span></span>' +
+    '</div>' +
+    '<div class="kb-tabs" role="tablist"><button class="kb-tab" role="tab" aria-selected="false">Sources</button>' +
+      '<button class="kb-tab" role="tab" aria-selected="true">Graph</button></div>' +
+    '<div class="kb-body">' +
+      '<aside class="kb-src">' +
+        '<div class="kb-src-h"><span class="caps">Sources</span></div>' +
+        '<div class="kb-src-b">' +
+          '<div class="kb-drop"><div class="med">⬆</div><div class="p">Drop files, or choose…</div>' +
+            '<div class="s">PDF, Office, web pages, folders</div></div>' +
+          '<div class="kb-ghost">Paste text</div>' +
+          '<div class="kb-staged">' +
+            '<div class="kb-srow"><span class="fx">PDF</span><span class="nm">nicotine-aerosol-2024.pdf</span><span class="sz">2.4 MB</span></div>' +
+            '<div class="kb-srow"><span class="fx">CSV</span><span class="nm">juul-cohort-outcomes.csv</span><span class="sz">88 KB</span></div>' +
+            '<div class="kb-srow"><span class="fx">URL</span><span class="nm">who.int/tobacco/e-cigs</span><span class="sz">—</span></div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="kb-src-f"><div class="kb-sel"><span class="v">Versa API Azure / gpt-5.5</span>' + caret + '</div>' +
+          '<div class="kb-cta">Digest 3 sources</div></div>' +
+      '</aside>' +
+      '<div class="kb-centre">' +
+        '<div class="kb-filt">' +
+          '<span class="kb-search"><span class="lbl">Filter by name or type</span></span>' +
+          '<span class="kb-vr"></span>' +
+          '<span class="kb-f core on">Type <span class="cnt">2</span>' + caret + '</span>' +
+          '<span class="kb-f core">Predicate' + caret + '</span>' +
+          '<span class="kb-f extra">Source' + caret + '</span>' +
+          '<span class="kb-f extra">Status' + caret + '</span>' +
+          '<span class="kb-f kb-more">More <span class="cnt">2</span>' + caret + '</span>' +
+          '<span class="kb-f kb-filters-one on">Filters <span class="cnt">3</span>' + caret + '</span>' +
+          '<span class="kb-f kb-legendbtn">Legend' + caret + '</span>' +
+          '<span class="kb-right"><span class="n">Showing 96 of 210</span><span class="clr">Clear</span>' +
+            '<span class="clr-ico">✕</span></span>' +
+        '</div>' +
+        '<div class="kb-canvas"><svg class="kb-graph" preserveAspectRatio="xMidYMid slice"></svg>' +
+          legendCard() +
+          '<div class="kb-zoom"><i>+</i><i>−</i><i>⤢</i></div></div>' +
+      '</div>' +
+      legendRail() +
+    '</div>';
+  }
+
+  function famBlock(name, rows) {
+    return '<div class="kb-fam"><div class="kb-fam-n">' + name + '</div><div class="kb-sw">' +
+      rows.map(function (r) {
+        return r[2]
+          ? '<span class="kb-swi hollow" style="color:' + r[1] + '"><b></b>' + r[0] + '<span class="k">' + r[3] + '</span></span>'
+          : '<span class="kb-swi"><b style="background:' + r[1] + '"></b>' + r[0] + '<span class="k">' + r[3] + '</span></span>';
+      }).join('') + '</div></div>';
+  }
+  function legendInner(dismissible) {
+    var head = dismissible
+      ? '<div class="kb-lsec-h"><span class="caps">Node types</span>' +
+        '<span style="display:flex;align-items:center;gap:2px">' + caret +
+        '<button class="kb-lhide" type="button" aria-label="Hide legend">\u2715</button></span></div>'
+      : '<div class="kb-lsec-h"><span class="caps">Node types</span>' + caret + '</div>';
+    return '<div class="kb-lsec">' + head +
+      famBlock('Genomic', [['Gene','#91a6ff',0,41],['Variant','#908fec',0,18]]) +
+      famBlock('Molecular &amp; process', [['Molecule','#59c2a9',0,34],['Pathway','#139ea1',0,12]]) +
+      famBlock('Clinical', [['Disease','#f582a7',0,27],['Phenotype','#e67183',0,22]]) +
+      famBlock('Provenance — hollow', [['Publication','#8ca1ae',1,19]]) +
+      '</div>' +
+      '<div class="kb-lsec"><div class="kb-lsec-h"><span class="caps">Links</span>' + caret + '</div>' +
+      '<div class="kb-pred">' +
+      '<div class="kb-pr"><span class="ln"></span><span class="lb">associated_with</span></div>' +
+      '<div class="kb-pr"><span class="ln dash"></span><span class="lb">reported_in</span></div>' +
+      '<div class="kb-pr"><span class="ln neg"></span><span class="lb neg">not_prevents</span></div>' +
+      '</div></div>';
+  }
+  function legendRail() { return '<aside class="kb-lrail">' + legendInner(false) + '</aside>'; }
+  /* The card carries its own dismiss, in its own header — the direct fix for a
+     collapse control that today sits at the far end of whichever scroller is
+     active. Hiding it is a real state: the card is the only thing on this pane
+     that covers the canvas, so a user working in the bottom-left corner must be
+     able to move it out of the way and bring it back. */
+  function legendCard() { return '<div class="kb-lcard">' + legendInner(true) + '</div>'; }
+
+  /* ── graph ─────────────────────────────────────────────────────────────── */
+  var NODES = [
+    { l:'IL6', c:'#91a6ff', x:430, y:230, r:13 },
+    { l:'IL6R', c:'#91a6ff', x:300, y:180, r:8 },
+    { l:'STAT3', c:'#91a6ff', x:336, y:318, r:8 },
+    { l:'rs1800795', c:'#908fec', x:236, y:286, r:7 },
+    { l:'CYP2A6', c:'#8f79d4', x:214, y:132, r:7 },
+    { l:'IL-6 signaling', c:'#139ea1', x:570, y:158, r:9 },
+    { l:'CRP', c:'#59c2a9', x:470, y:352, r:8 },
+    { l:'nicotine', c:'#59c2a9', x:690, y:236, r:10 },
+    { l:'acrolein', c:'#39b0a5', x:742, y:132, r:7 },
+    { l:'lung epithelium', c:'#8cbd71', x:378, y:396, r:8 },
+    { l:'hepatocyte', c:'#66af72', x:518, y:420, r:7 },
+    { l:'COPD', c:'#f582a7', x:600, y:330, r:12 },
+    { l:'EVALI', c:'#f582a7', x:786, y:348, r:9 },
+    { l:'chronic cough', c:'#e67183', x:700, y:404, r:8 },
+    { l:'FEV1 decline', c:'#d4625f', x:820, y:250, r:8 },
+    { l:'e-cigarette use', c:'#e09c54', x:560, y:62, r:12 },
+    { l:'flavourings', c:'#c49139', x:414, y:84, r:7 },
+    { l:'Lapidus 2021', c:'#8ca1ae', x:660, y:462, r:7, hollow:1 },
+    { l:'PATH wave 6', c:'#8b95a8', x:158, y:212, r:7, hollow:1 },
+    { l:'SOCS3', c:'#c9cdd4', x:836, y:150, r:6, ext:1 }
+  ];
+  var E = [[0,1],[0,2],[0,5],[0,6],[3,0],[4,3],[9,0],[10,6],[5,2],[0,11],[11,13],[11,14],
+           [7,0],[7,11],[8,7],[15,7],[15,16],[15,12],[12,13],[16,9],[7,14],[19,0]];
+  var EP = [[0,17],[15,18],[11,17]];
+  var EN = [[15,14]];
+
+  function css(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+
+  function render(svg, k) {
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    svg.setAttribute('viewBox', '0 0 ' + Math.round(900*k) + ' ' + Math.round(440*k));
+    var ring=css('--graph-ring'), edge=css('--graph-edge'), dot=css('--graph-dot');
+    var halo=css('--graph-halo'), ink=css('--text-default'), danger=css('--danger');
+    var ground=css('--graph-ground');
+    var uid = 'p' + Math.round(k*1000) + (svg.dataset.uid || '');
+
+    var defs=document.createElementNS(SVGNS,'defs');
+    defs.innerHTML='<pattern id="'+uid+'" width="34" height="34" patternUnits="userSpaceOnUse">'+
+      '<circle cx="1" cy="1" r="1" fill="'+dot+'"/></pattern>';
+    svg.appendChild(defs);
+    var bg=document.createElementNS(SVGNS,'rect');
+    bg.setAttribute('width','100%'); bg.setAttribute('height','100%');
+    bg.setAttribute('fill','url(#'+uid+')'); svg.appendChild(bg);
+
+    function line(a,b,kind){
+      var n1=NODES[a], n2=NODES[b];
+      var l=document.createElementNS(SVGNS,'line');
+      l.setAttribute('x1',n1.x*k); l.setAttribute('y1',n1.y*k);
+      l.setAttribute('x2',n2.x*k); l.setAttribute('y2',n2.y*k);
+      if(kind==='neg'){ l.setAttribute('stroke',danger); l.setAttribute('stroke-width',1.4*k);
+        l.setAttribute('stroke-dasharray',(4*k)+' '+(3*k)); l.setAttribute('stroke-opacity','0.75'); }
+      else if(kind==='prov'){ l.setAttribute('stroke',edge); l.setAttribute('stroke-width',0.9*k);
+        l.setAttribute('stroke-dasharray',(2*k)+' '+(3*k)); l.setAttribute('stroke-opacity','0.7'); }
+      else { l.setAttribute('stroke',edge); l.setAttribute('stroke-width',1.15*k); }
+      svg.appendChild(l);
+    }
+    E.forEach(function(e){line(e[0],e[1],'pos');});
+    EP.forEach(function(e){line(e[0],e[1],'prov');});
+    EN.forEach(function(e){line(e[0],e[1],'neg');});
+
+    NODES.forEach(function(n){
+      var g=document.createElementNS(SVGNS,'g');
+      var c=document.createElementNS(SVGNS,'circle');
+      c.setAttribute('cx',n.x*k); c.setAttribute('cy',n.y*k); c.setAttribute('r',n.r*k);
+      c.setAttribute('stroke-width',1.15*k);
+      if(n.hollow){ c.setAttribute('fill',ground); c.setAttribute('stroke',n.c);
+        /* Thinned from 2.6. At 2.6 on a 7px radius the ring ate most of the mark
+           and read as a donut; 1.7 keeps it a circle that happens to be open. */
+        c.setAttribute('stroke-width',1.7*k); }
+      else if(n.ext){ c.setAttribute('fill',n.c); c.setAttribute('stroke',ring);
+        c.setAttribute('stroke-dasharray',(2*k)+' '+(2*k)); c.setAttribute('stroke-opacity','0.55'); }
+      else { c.setAttribute('fill',n.c); c.setAttribute('stroke',ring); }
+      g.appendChild(c);
+      var t=document.createElementNS(SVGNS,'text');
+      t.setAttribute('x',(n.x+n.r)*k+6*k); t.setAttribute('y',n.y*k+4*k);
+      t.setAttribute('font-size',11.5*k); t.setAttribute('font-family',"'Figtree',system-ui,sans-serif");
+      t.setAttribute('fill',ink); t.setAttribute('paint-order','stroke');
+      t.setAttribute('stroke',halo); t.setAttribute('stroke-width',3*k);
+      t.setAttribute('stroke-linejoin','round'); t.textContent=n.l;
+      g.appendChild(t); svg.appendChild(g);
+    });
+  }
+
+  /* ── §01 gallery ───────────────────────────────────────────────────────── */
+  var SIZES = [
+    { w:760,  h:568,  tag:'760 × 568', title:'App minimum, sidebar open',
+      sub:'window 1000 × 600', cap:'The floor. <b>One column with Sources/Graph tabs</b>, one <b>Filters</b> control beside a full-width search, and the header sheds its description line to the height step. Nothing overflows and nothing scrolls sideways.' },
+    { w:946,  h:568,  tag:'946 × 568', title:'App minimum, sidebar collapsed',
+      sub:'window 1000 × 600', cap:'Collapsing the sidebar buys the two-column step: a <b>264 px Sources rail</b> beside the canvas, with the two least-used facets folded into <b>More</b>.' },
+    { w:1040, h:768,  tag:'1040 × 768', title:'Narrower panel',
+      sub:'window 1280 × 800, sidebar open', cap:'Two columns plus the legend as a <b>canvas-anchored card</b>, in the corner BioOKF puts it in. The filter row is still condensed here: four facets need a measured <b>757 px</b> of centre column and this pane yields 738, so <b>Source</b> and <b>Status</b> stay folded into <b>More</b>.' },
+    { w:1626, h:700,  tag:'1626 × 700', title:'Wider panel',
+      sub:'window 1680 × 1050, sidebar collapsed', cap:'The full three-column step: <b>Sources 320 │ canvas │ rail 340</b>. The legend becomes a permanent rail and the card retires.' }
+  ];
+
+  var gal = document.getElementById('sizeGallery');
+  SIZES.forEach(function (s, i) {
+    var card = document.createElement('div');
+    card.className = 'sizecard';
+    card.innerHTML =
+      '<div class="sizecard-h"><span class="w">' + s.tag + '</span><span class="t">' + s.title +
+        '</span><span class="s">' + s.sub + '</span></div>' +
+      '<div class="stage"><div class="holder"><div class="kbpane" style="width:' + s.w +
+        'px;height:' + s.h + 'px"></div></div></div>' +
+      '<div class="cap">' + s.cap + '</div>';
+    gal.appendChild(card);
+    var pane = card.querySelector('.kbpane');
+    pane.innerHTML = mockup();
+    pane.querySelector('svg.kb-graph').dataset.uid = 'g' + i;
+  });
+
+  document.addEventListener('click', function (e) {
+    var hide = e.target.closest('.kb-lhide');
+    if (hide) {
+      var pane = hide.closest('.kbpane');
+      pane.querySelector('.kb-lcard').hidden = true;
+      pane.querySelector('.kb-legendbtn').style.display = 'inline-flex';
+      return;
+    }
+    var show = e.target.closest('.kb-legendbtn');
+    if (show) {
+      var pane2 = show.closest('.kbpane');
+      pane2.querySelector('.kb-lcard').hidden = false;
+      show.style.display = 'none';
+    }
+  });
+
+  function fit() {
+    document.querySelectorAll('.sizecard .stage').forEach(function (stage) {
+      var holder = stage.querySelector('.holder');
+      var pane = stage.querySelector('.kbpane');
+      var avail = stage.clientWidth - 28; /* .stage padding */
+      var k = Math.min(1, avail / pane.offsetWidth);
+      pane.style.transform = 'scale(' + k + ')';
+      holder.style.height = Math.round(pane.offsetHeight * k) + 'px';
+      holder.style.width = Math.round(pane.offsetWidth * k) + 'px';
+    });
+  }
+
+  /* ── palette strips ────────────────────────────────────────────────────── */
+  var OLD = [['Genomic',['#6a7cd4','#6965be','#6750a7','#643d90']],
+             ['Molecular & process',['#1d927a','#007d75','#006a6d','#005963']],
+             ['Clinical',['#cb5d82','#ba4a5e','#a73939','#942b0f']],
+             ['Provenance & context',['#738679','#556d72','#4a5263','#433847','#3c2b34']]];
+  var NEW = [['Genomic',['#91a6ff','#908fec','#8f79d4','#8b64bb']],
+             ['Molecular & process',['#59c2a9','#39b0a5','#139ea1','#008a9a']],
+             ['Clinical',['#f582a7','#e67183','#d4625f','#c0543a']],
+             ['Provenance & context',['#a9bdaf','#91abb0','#8b95a8','#8c7e90','#897580']]];
+  function paint(el, data) {
+    el.innerHTML = data.map(function (f) {
+      return '<div><div class="kb-fam-n">' + f[0] + '</div><div style="display:flex;gap:4px">' +
+        f[1].map(function (h) {
+          return '<span style="flex:1;height:32px;border-radius:var(--r-inner);background:' + h +
+                 ';box-shadow:inset 0 0 0 1.5px var(--graph-ring)"></span>';
+        }).join('') + '</div></div>';
+    }).join('');
+  }
+  paint(document.getElementById('palOld'), OLD);
+  paint(document.getElementById('palNew'), NEW);
+
+  /* ── pop-up demo ───────────────────────────────────────────────────────── */
+  var stage = document.getElementById('popstage');
+  document.getElementById('popbar').addEventListener('click', function (e) {
+    var btn = e.target.closest('.popbtn');
+    if (!btn) return;
+    var want = btn.dataset.pop;
+    stage.querySelectorAll('.pop').forEach(function (p) { p.classList.remove('show'); });
+    document.querySelectorAll('.popbtn').forEach(function (b) { b.setAttribute('aria-pressed', 'false'); });
+    stage.classList.remove('modal');
+    if (want === 'none') return;
+    var target = stage.querySelector('.pop[data-pop="' + want + '"]');
+    if (target) {
+      target.classList.add('show');
+      btn.setAttribute('aria-pressed', 'true');
+      if (target.classList.contains('is-modal')) stage.classList.add('modal');
+    }
+  });
+  document.querySelector('.popbtn[data-pop="switcher"]').click();
+
+  /* ── theme ─────────────────────────────────────────────────────────────── */
+  function drawAll() {
+    var big = document.getElementById('cv-big');
+    if (big) render(big, 1);
+    document.querySelectorAll('svg.kb-graph').forEach(function (s) { render(s, 0.62); });
+  }
+  document.getElementById('tt').addEventListener('click', function () {
+    var el = document.documentElement, now = el.getAttribute('data-theme');
+    if (!now) now = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    el.setAttribute('data-theme', now === 'dark' ? 'light' : 'dark');
+  });
+
+  /* The canvas resolves ink, ground and halo ONCE at paint time — exactly like
+     the real ForceGraphCanvas, which cannot parse var(--…) either. Repaint on
+     BOTH signals or a label keeps one theme's ink over the other theme's halo. */
+  var mq = window.matchMedia('(prefers-color-scheme: dark)');
+  if (mq.addEventListener) mq.addEventListener('change', drawAll);
+  new MutationObserver(drawAll).observe(document.documentElement,
+    { attributes: true, attributeFilter: ['data-theme'] });
+
+  drawAll(); fit();
+  window.addEventListener('resize', fit);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { fit(); drawAll(); });
+})();
+</script>
+
+</body>
+</html>

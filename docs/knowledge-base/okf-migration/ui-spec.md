@@ -11,6 +11,20 @@
 > `types.gen.ts` until `just generate-openapi && npm run generate-api` has run. Nothing in Slice B or C
 > may be started against hand-written JSON.
 > **Audience:** Contributors working on the Knowledge subsystem and on the desktop design system.
+>
+> ⚠ **A redesign amends eight sections of this document, and you should read it before acting on any
+> of them.** [`../knowledge-ui-redesign/redesign-spec.md`](../knowledge-ui-redesign/redesign-spec.md)
+> targets §3.1/§3.2 (the KB selector leaves the title row), §4.5/§4.7/§3.1 (the legend leaves the
+> bottom dock for a dismissible right rail), §4.6 (facets become boxed controls, not secondary
+> buttons, plus a priority-order overflow ladder), §4.8 (the inspectors stop being bare
+> `role="dialog"` panels), §5.2/§5.3 (fills are solved to a lightness band, not to contrast rungs),
+> §5.3.1 (the seven-silhouette shape channel becomes an opt-in preference and the default canvas is
+> all circles), §6.3 (the DOM swatch moves to `--radius-inner`) and §3.4/§3.5 (the responsive ladder).
+>
+> ⚠ **§3.4/§3.5 is a bug report, not a preference.** `md:` is a **viewport** media query, but the
+> thing that changes size is the **pane**. At the app's own minimum window (`minWidth: 1000`, derived
+> in `main.ts` as 240px sidebar + 760px column) with the sidebar open, the pane is **760px** while the
+> viewport is 1000 — so the breakpoint fires and lays two columns into a space that cannot hold them.
 
 The Knowledge section is the one place in BioRouter where the app draws a *data* surface — a canvas
 of typed nodes and edges — rather than chrome around prose. That is why it drifted: the graph subtree
