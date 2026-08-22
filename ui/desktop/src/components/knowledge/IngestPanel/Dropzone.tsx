@@ -109,7 +109,18 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
           if (dragCounterRef.current === 0) setDragging(false);
         }}
         onDrop={onDrop}
-        className={`relative cursor-pointer rounded-container border px-4 py-4 text-center transition-colors ${dragging ? 'border-border-strong bg-background-medium' : 'border-border-subtle bg-background-muted tint-interactive'}`}
+        /* ⚠ **`flex-1` here is what closes the rail's empty middle, and it is a
+           FUNCTIONAL fix rather than a cosmetic one.** The body packs its
+           children at the top and the digest footer is pinned at the bottom, so
+           an unstaged rail showed a tall hole between them — a box of nothing
+           inside a bordered card. Letting the DROP TARGET absorb that slack
+           means the target is largest exactly when you have nothing staged and
+           are about to drop something, and shrinks back toward its floor as
+           staged rows claim the space. `min-h` is that floor, and it is the
+           114px this box measured before it could grow — the fixed 330px it
+           replaced was too tall at every pane size, which is a different bug
+           and must not come back through this door. */
+        className={`relative flex min-h-[7.125rem] flex-1 cursor-pointer flex-col justify-center rounded-container border px-4 py-4 text-center transition-colors ${dragging ? 'border-border-strong bg-background-medium' : 'border-border-subtle bg-background-muted tint-interactive'}`}
       >
         <input
           data-testid="knowledge-ingest-file-input"

@@ -110,7 +110,14 @@ export function GraphLegend({ model, mode, facets, onChange, variant = 'rail' }:
       // The pressed state is a translucent tint, never `tone="accent"`: the
       // focus fill has to read THROUGH it, and an opaque accent tone would
       // reintroduce the very problem `asChild` exists to solve.
-      className={facets.types.has(type) ? 'tint-selected tint-interactive' : undefined}
+      // ⚠ **`h-5` overrides the chip role's 24px, and only here.** 28 types in
+      // a 339px rail wrap to 12 rows; at the shared height those rows alone are
+      // 336px of a 486px column, which is what put `Provenance & context` below
+      // the fold. The role height is right for a chip you hunt for in a filter
+      // bar and wrong for a dense key you read as a block — this is the one
+      // surface that lists every type at once. `badge.tsx` keeps its 24px for
+      // everyone else; nothing shared moves.
+      className={`h-5 ${facets.types.has(type) ? 'tint-selected tint-interactive' : ''}`}
     >
       <button type="button" aria-pressed={facets.types.has(type)} onClick={() => toggleType(type)}>
         {/* ⚠ **The swatch must agree with the MARK.** Provenance & Context is
@@ -154,11 +161,11 @@ export function GraphLegend({ model, mode, facets, onChange, variant = 'rail' }:
           heading. */}
       <LegendSection title="Node types">
         {(families ?? []).map((family) => (
-          <div key={family.name} className="flex flex-col gap-1">
+          <div key={family.name} className="flex flex-col gap-0.5">
             <button
               type="button"
               onClick={() => toggleFamily(family.members)}
-              className="flex items-center gap-2 self-start rounded-inner text-caps text-text-muted"
+              className="flex items-center gap-2 self-start rounded-inner text-caps leading-none text-text-muted"
               title={`Filter by every ${family.name} type`}
             >
               {family.name}
@@ -211,8 +218,8 @@ function LegendSection({
 }) {
   const [open, setOpen] = useState(initiallyOpen);
   return (
-    <section className="border-b border-border-subtle px-3 py-2 last:border-b-0">
-      <div className="mb-1.5 flex items-center gap-1">
+    <section className="border-b border-border-subtle px-3 py-1.5 last:border-b-0">
+      <div className="mb-1 flex items-center gap-1">
         <button
           type="button"
           className="flex min-w-0 flex-1 items-center justify-between gap-2 rounded-inner text-caps text-text-muted"
@@ -227,7 +234,7 @@ function LegendSection({
           )}
         </button>
       </div>
-      {open && <div className="flex flex-col gap-2">{children}</div>}
+      {open && <div className="flex flex-col gap-1.5">{children}</div>}
     </section>
   );
 }

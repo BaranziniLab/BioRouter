@@ -1,14 +1,23 @@
 // ui/desktop/src/components/knowledge/graph/ForceGraphCanvas.tsx
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import ForceGraph2D, { ForceGraphMethods } from 'react-force-graph-2d';
 import { forceX, forceY } from 'd3-force';
 import type { Graph, GraphEdge, GraphNode } from '../../../api/types.gen';
-import { GRAPH_PALETTE } from '../../../styles/graphPalette';
+import { familyOfType, GRAPH_PALETTE } from '../../../styles/graphPalette';
 import type { GraphCredibilityKey } from '../../../styles/graphPalette';
 import { withAlpha } from './graphStyle';
 import { useCanvasTheme } from './useCanvasTheme';
 import type { CanvasTheme } from './useCanvasTheme';
 import { NODE_RING_ALPHA } from './graphStyle';
+import { graphFitPadding, NODE_REL_SIZE } from './graphFit';
+import {
+  announce,
+  highestDegree,
+  nextNodeInDirection,
+  stepThrough,
+  tabOrder,
+} from './graphKeyboard';
+import type { Direction } from './graphKeyboard';
 // The mark — fill and silhouette — is shared with the inspector, so the two
 // surfaces cannot disagree about the same node. See `nodeMark.ts`.
 import { credibilityKey, fillFor, isHollow } from './nodeMark';
@@ -179,6 +188,11 @@ export function ForceGraphCanvas({
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
   const [containerRef, size] = useSize();
 
+  // §5.12. `null` means the canvas has focus but no node is picked yet.
+  const [keyboardFocusId, setKeyboardFocusId] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState('');
+  const hintId = useId();
+
   // §5.11's four 0×0 probes. Non-inherited values (mono family, danger, muted,
   // border) cannot be read off the container, and there is deliberately no
   // danger *constant* — the status hues are per family, so a shared literal
@@ -196,7 +210,12 @@ export function ForceGraphCanvas({
 
   const [hoveredEdge, setHoveredEdge] = useState<number | null>(null);
 
-  const focusId = selectedId ?? hoveredId;
+  // ⚠ **ONE fold-in point** (§5.12). `focusId` already drives six behaviours —
+  // the neighbour dimming, the focus halo, the label priority ladder, the
+  // incident-edge emphasis and both visibility culls — so keyboard focus enters
+  // HERE and inherits all of them. Adding parallel `keyboardFocusId` checks at
+  // those six sites is how the two focus notions drift apart.
+  const focusId = keyboardFocusId ?? selectedId ?? hoveredId;
   const filtering = facetsActive(facets) && passing != null;
 
   // Convert API graph → force-graph data. react-force-graph mutates nodes
@@ -296,14 +315,19 @@ export function ForceGraphCanvas({
     fgWithForce.d3Force('x', forceX(0).strength(0.07));
     fgWithForce.d3Force('y', forceY(0).strength(0.07));
 
-    const compact = size.width < 560 || size.height < 430;
+    // The largest radius the painter will actually draw, which is what
+    // force-graph's own fit box does NOT account for — see `graphFit.ts`.
+    let maxRadius = NODE_REL_SIZE;
+    for (const m of model.nodes.values()) {
+      if (m.radius > maxRadius) maxRadius = m.radius;
+    }
+
     const timeout = window.setTimeout(() => {
-      const fitPadding = compact ? 72 : Math.max(112, Math.min(size.width, size.height) * 0.16);
-      fg.zoomToFit?.(500, fitPadding);
+      fg.zoomToFit?.(500, graphFitPadding(size.width, size.height, maxRadius));
     }, 900);
 
     return () => window.clearTimeout(timeout);
-  }, [graph, size.height, size.width]);
+  }, [graph, model, size.height, size.width]);
 
   /**
    * The pre-frame pass: visible rect, density, grid.
@@ -735,6 +759,98 @@ export function ForceGraphCanvas({
     return inRect(raw as PositionedNode, rect);
   };
 
+  /**
+   * §5.12's key model.
+   *
+   * ⚠ **Traversal runs over the CURRENT FILTER SET, not what is on screen.**
+   * `passing` is the facet result; the viewport cull is deliberately not
+   * consulted, because moving to an off-screen node and centring it is the
+   * point. (The cull disables itself whenever anything is focused anyway, so a
+   * focused canvas already paints every node.)
+   *
+   * ⚠ **Positions are read live off the force-graph data.** react-force-graph
+   * mutates the node objects in `data.nodes` with `x`/`y` as the simulation
+   * runs, so this is the settled layout rather than a stale copy — but a node
+   * can be missing coordinates on the very first frames, hence the guard.
+   */
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      const positioned = data.nodes.filter(
+        (n) =>
+          typeof n.x === 'number' &&
+          typeof n.y === 'number' &&
+          (!filtering || passing?.has(n.id) !== false)
+      ) as (PositionedNode & { x: number; y: number })[];
+      if (positioned.length === 0) return;
+
+      const degreeOf = (id: string) => model.nodes.get(id)?.degree ?? 0;
+      const focus = keyboardFocusId
+        ? (positioned.find((n) => n.id === keyboardFocusId) ?? null)
+        : null;
+
+      const land = (node: (typeof positioned)[number] | null) => {
+        if (!node) return;
+        e.preventDefault();
+        setKeyboardFocusId(node.id);
+        const m = model.nodes.get(node.id);
+        setAnnouncement(
+          announce({
+            identifier: node.identifier,
+            label: m?.display ?? node.label,
+            nodeType: node.node_type,
+            family: node.node_type ? familyOfType(node.node_type, theme.mode) : null,
+          })
+        );
+        // Bring it into view without changing the zoom the user chose.
+        fgRef.current?.centerAt?.(node.x, node.y, 400);
+      };
+
+      switch (e.key) {
+        case 'ArrowUp':
+        case 'ArrowDown':
+        case 'ArrowLeft':
+        case 'ArrowRight': {
+          const direction = e.key.slice(5).toLowerCase() as Direction;
+          // With nothing focused yet, an arrow enters at the biggest hub rather
+          // than doing nothing — the same node Home picks.
+          land(focus ? nextNodeInDirection(focus, positioned, direction) : highestDegree(positioned, degreeOf));
+          return;
+        }
+        case 'Tab': {
+          const order = tabOrder(positioned, degreeOf);
+          land(stepThrough(order, keyboardFocusId, e.shiftKey ? -1 : 1));
+          return;
+        }
+        case 'Enter':
+        case ' ': {
+          if (!focus) return;
+          e.preventDefault();
+          onNodeClick(focus);
+          return;
+        }
+        case 'Home': {
+          e.preventDefault();
+          const top = highestDegree(positioned, degreeOf);
+          land(top);
+          fgRef.current?.zoomToFit?.(400, graphFitPadding(size.width, size.height, NODE_REL_SIZE));
+          return;
+        }
+        case 'Escape': {
+          // §5.12: clear the focus first; a SECOND press closes the inspector.
+          // Handled in that order so one press never does both.
+          if (keyboardFocusId) {
+            e.preventDefault();
+            setKeyboardFocusId(null);
+            setAnnouncement('');
+          }
+          return;
+        }
+        default:
+      }
+    },
+    [data.nodes, filtering, passing, model, keyboardFocusId, onNodeClick, theme.mode, size.width, size.height]
+  );
+
   const linkVisibility = (raw: unknown): boolean => {
     const rect = rectRef.current;
     if (!rect || focusId) return true;
@@ -746,8 +862,32 @@ export function ForceGraphCanvas({
     <div
       data-testid="knowledge-graph-canvas"
       ref={containerRef}
-      className="relative h-full w-full overflow-hidden"
+      // ⚠ **§5.12: ONE tab stop, and the canvas had none.** It is the primary
+      // content of the section and was reachable only with a pointer, which is
+      // WCAG 2.1.1 at Level A. `application` rather than `img` or `group`
+      // because the arrow keys are ours: a screen reader must pass them through
+      // rather than use them to move its own virtual cursor.
+      tabIndex={0}
+      role="application"
+      aria-label="Knowledge graph"
+      aria-describedby={hintId}
+      onKeyDown={onKeyDown}
+      onBlur={() => setKeyboardFocusId(null)}
+      className="relative h-full w-full overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-border-accent focus-visible:ring-inset"
     >
+      {/* ⚠ **NOT `aria-hidden`, unlike the four probes below.** This is the
+          channel that replaced the node shape encoding: colour is now the only
+          visual encoding on the canvas and it does not survive dichromacy, so
+          this announcement is what carries the type. `atomic` because the three
+          parts are one statement rather than three updates. */}
+      <span className="sr-only" aria-live="polite" aria-atomic="true">
+        {announcement}
+      </span>
+      <span id={hintId} className="sr-only">
+        Arrow keys move between nodes. Tab steps through them by connection
+        count. Enter opens the focused node. Home returns to the most connected
+        node. Escape clears the focus.
+      </span>
       {/*
         §5.11's four probes. Zero-sized, `aria-hidden`, and each carrying exactly
         one existing utility — a canvas cannot read a custom property, and these
@@ -785,7 +925,9 @@ export function ForceGraphCanvas({
         // 5.6 world units is the base radius the §5.9 thresholds were calibrated
         // against, so force-graph's shadow-canvas hit circles track the fills and
         // every zoom threshold transfers 1:1 with no recalibration.
-        nodeRelSize={5.6}
+        // Shared with `graphFit.ts`: the fit padding compensates for exactly the
+        // gap between this value and the radius the painter draws.
+        nodeRelSize={NODE_REL_SIZE}
         backgroundColor="transparent"
         onNodeHover={(n: unknown) => onHover((n as GraphNode | null)?.id ?? null)}
         onNodeClick={(n: unknown) => onNodeClick(n as GraphNode)}

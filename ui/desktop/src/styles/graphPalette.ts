@@ -194,6 +194,32 @@ export function typeFill(type: string, mode: GraphMode): string {
   return GRAPH_PALETTE[mode].types[type] ?? hashedFill(type, mode);
 }
 
+/**
+ * The family a curated type belongs to, or `null`.
+ *
+ * ⚠ **This inversion was hand-built in `GraphFacetStrip` and is now needed by a
+ * second reader** — §5.12's `aria-live` announcement, which reads
+ * `<identifier>, <node_type>, <family>`. A third private copy is how the
+ * announcement and the picker come to disagree about which family a type is in.
+ *
+ * `null` for an unrecognised type and for every node in a legacy or plain-OKF
+ * base, which has no families at all — the caller drops the part rather than
+ * announcing an empty one.
+ */
+const familyIndex: Partial<Record<GraphMode, Map<string, string>>> = {};
+
+export function familyOfType(type: string, mode: GraphMode): string | null {
+  let index = familyIndex[mode];
+  if (!index) {
+    index = new Map<string, string>();
+    for (const [name, family] of Object.entries(GRAPH_PALETTE[mode].families)) {
+      for (const member of family.members) index.set(member, name);
+    }
+    familyIndex[mode] = index;
+  }
+  return index.get(type) ?? null;
+}
+
 /** The palette for a mode. */
 export const paletteFor = (mode: GraphMode): GraphPalette => GRAPH_PALETTE[mode];
 
