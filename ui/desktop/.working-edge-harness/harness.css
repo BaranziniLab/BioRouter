@@ -1,0 +1,5 @@
+@import '../src/styles/main.css';
+/* The explicit glob matters: a bare directory under-scans and the utilities the
+   probes use never generate. */
+@source '../src/**/*.{ts,tsx,html}';
+@source './index.html';
