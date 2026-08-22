@@ -13,6 +13,20 @@ interface Props {
   onManage: () => void;
   /** Open the manager dialog with the create form unfolded. */
   onCreate: () => void;
+  /**
+   * How the trigger presents itself.
+   *
+   * `field` (the default) is the Select-shaped control described below: a
+   * full-width bordered box, for a form or a rail where it sits among other
+   * fields.
+   *
+   * `subject` is the Knowledge section's subject bar (R-01), where this control
+   * IS the page's statement of what it is about. A bordered field there would
+   * read as one input among several and compete with the `h1` directly above
+   * it; the name is set in the band's own label type and the chrome appears on
+   * hover, so the row reads as an identity that happens to be actionable.
+   */
+  variant?: 'field' | 'subject';
 }
 
 /**
@@ -37,7 +51,13 @@ interface Props {
  * `gap-2` and not `gap-2.5`: 10px is off the 4px grid. `text-label` and not
  * `text-label font-semibold`: 14/600 is not a step in the type scale.
  */
-export function KBSelectorTrigger({ open: openProp, onOpenChange, onManage, onCreate }: Props) {
+export function KBSelectorTrigger({
+  open: openProp,
+  onOpenChange,
+  onManage,
+  onCreate,
+  variant = 'field',
+}: Props) {
   const { primaryKb, visibleBases } = useKnowledge();
   const [openInternal, setOpenInternal] = useState(false);
 
@@ -59,10 +79,19 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange, onManage, onCr
           data-testid="knowledge-kb-selector-trigger"
           aria-label="Knowledge base"
           aria-expanded={open}
-          className="biorouter-focus-surface flex h-control-md w-full items-center gap-2 rounded-element border border-border-emphasized bg-background-default px-3 text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30"
+          className={
+            variant === 'subject'
+              ? // Borderless at rest, content-sized, with the band's own label
+                // type. `min-w-0` so a long base name truncates rather than
+                // pushing the badges and counts out of the row.
+                'biorouter-focus-surface flex h-control-md min-w-0 max-w-[22rem] items-center gap-2 rounded-element border border-transparent px-2 text-label transition-[color,background-color,border-color,box-shadow] hover:border-border-subtle hover:bg-background-medium'
+              : 'biorouter-focus-surface flex h-control-md w-full items-center gap-2 rounded-element border border-border-emphasized bg-background-default px-3 text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30'
+          }
         >
           <KbDot color={primaryKb?.color} />
-          <span className="min-w-0 flex-1 truncate text-left">
+          <span
+            className={`min-w-0 flex-1 truncate text-left${variant === 'subject' ? ' font-medium' : ''}`}
+          >
             {primaryKb?.name ?? 'No primary knowledge base'}
           </span>
           {otherBaseCount > 0 && (

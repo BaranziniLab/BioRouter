@@ -35,7 +35,6 @@ import { LintDrawer } from './lint/LintDrawer';
 import { useKnowledge } from './KnowledgeContext';
 import { useKnowledgeGraph } from './hooks/useKnowledgeGraph';
 import { useKnowledgeBases } from './hooks/useKnowledgeBases';
-import { KbDot } from './KbDot';
 import { kbFormatLabel, LEGACY_FORMAT_TITLE } from './kbFormat';
 import { Badge } from '../ui/badge';
 
@@ -145,26 +144,25 @@ function KnowledgeViewInner() {
         className="relative flex min-w-0 flex-1 flex-col overflow-hidden"
         data-search-scroll-area
       >
-        {/* HEADER BAND. The hairline is FULL-BLEED, not capped to the measure. */}
+        {/* HEADER BAND — TITLE ONLY (R-01). The hairline is FULL-BLEED.
+
+            ⚠ **The selector and `Manage bases` used to live on this row**, and
+            deleting them is the fix rather than a simplification. They were not
+            "above the banner" as reported — they were the second child of this
+            title row, co-linear with the `h1`. The real defect was that the base
+            was identified TWICE, 40px apart: once here and again in the subject
+            band below, which already draws the dot, the name, the format badge,
+            the privacy badge and the counts. One subject, stated once.
+
+            Base selection now lives in the subject band, whose name IS the
+            switcher; `Manage bases` moved into that picker's own footer. */}
         <div className="flex-shrink-0 border-b border-border-subtle">
           <ReadableContent size="graph" className="px-8 pb-6 pt-12">
-            <div className="mb-1 flex items-center justify-between gap-4">
-              <h1 className="text-title">Knowledge</h1>
-              <div className="flex shrink-0 items-center gap-2">
-                <div className="w-64">
-                  <KBSelectorTrigger
-                    open={pickerOpen}
-                    onOpenChange={setPickerOpen}
-                    onManage={() => openManager(false)}
-                    onCreate={() => openManager(true)}
-                  />
-                </div>
-                <Button variant="secondary" onClick={() => openManager(false)}>
-                  Manage bases
-                </Button>
-              </div>
-            </div>
-            <p className="text-secondary text-text-muted">
+            <h1 className="mb-1 text-title">Knowledge</h1>
+            {/* Yields below 620px of PANE height (R-08). At the app's 600px
+                minimum window the pane is 568px, so this is the default state
+                there rather than an edge case. */}
+            <p className="br-knowledge-subtitle text-secondary text-text-muted">
               Personal knowledge bases Biorouter builds and maintains for you.
             </p>
           </ReadableContent>
@@ -196,17 +194,23 @@ function KnowledgeViewInner() {
                     and ←/→/Home/End; the hand-rolled segmented pill this
                     replaces is design system D-07 option B, whose own record
                     reads "Delete B." */}
-                  <TabsList className="gap-4 border-b-0 md:hidden">
+                  <TabsList className="br-knowledge-tabs gap-4 border-b-0">
                     <TabsTrigger value="digest">Sources</TabsTrigger>
                     <TabsTrigger value="graph">Graph</TabsTrigger>
                   </TabsList>
 
                   {primaryKb ? (
                     <>
-                      <KbDot color={primaryKb.color} />
-                      <span className="truncate text-label text-text-default">
-                        {primaryKb.name}
-                      </span>
+                      {/* R-01: the base's NAME is the switcher. One control
+                          carrying the dot, the name and a caret — the trigger
+                          renders them itself. */}
+                      <KBSelectorTrigger
+                        variant="subject"
+                        open={pickerOpen}
+                        onOpenChange={setPickerOpen}
+                        onManage={() => openManager(false)}
+                        onCreate={() => openManager(true)}
+                      />
                       {/* `schema_version` is folded in, not just `format`: the
                           field is `serde(default)` on the daemon so a legacy
                           manifest reads `okf`, and a badge written against it
@@ -337,12 +341,24 @@ function KnowledgeViewInner() {
                   actions={<Button onClick={() => setPickerOpen(true)}>Choose a base</Button>}
                 />
               ) : (
-                <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 md:grid-cols-[var(--knowledge-rail-sources)_minmax(0,1fr)]">
+                /* ⚠ **CONTAINER queries, not media queries** (R-08). The section
+                   shipped with one `md:` breakpoint at 930px, and it tests the
+                   VIEWPORT while the thing that changes size is this PANE.
+                   `main.ts` derives `minWidth: 1000` as 240px of sidebar plus a
+                   760px column, so at the app's own minimum window with the
+                   sidebar open the viewport is 1000 — `md:` fires — while the
+                   pane is 760, and the 300px Sources rail leaves 444px for a
+                   filter strip whose content measures 757px. The section was at
+                   its most broken at the smallest size the app allows.
+
+                   The ladder lives in `main.css` under `.br-knowledge-pane`;
+                   the classes here only mark the parts. */
+                <div className="br-knowledge-pane br-knowledge-body min-h-0 flex-1 gap-4">
                   <TabsContent
                     forceMount
                     value="digest"
                     data-testid="knowledge-digest-panel"
-                    className={`${compactView === 'digest' ? 'flex' : 'hidden'} mt-0 min-h-0 flex-col md:flex`}
+                    className={`br-knowledge-sources ${compactView === 'digest' ? 'flex' : 'hidden'} mt-0 min-h-0 flex-col`}
                   >
                     <SourcesRail
                       className="flex-1"
@@ -358,7 +374,7 @@ function KnowledgeViewInner() {
                     forceMount
                     value="graph"
                     data-testid="knowledge-graph-panel"
-                    className={`${compactView === 'graph' ? 'flex' : 'hidden'} mt-0 min-h-0 min-w-0 md:flex`}
+                    className={`br-knowledge-graph ${compactView === 'graph' ? 'flex' : 'hidden'} mt-0 min-h-0 min-w-0`}
                   >
                     <KnowledgeGraphPanel
                       kbId={primaryKbId}

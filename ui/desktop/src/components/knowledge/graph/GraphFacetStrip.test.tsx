@@ -1,9 +1,10 @@
-import { render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { Graph, GraphNode } from '../../../api/types.gen';
 import { GraphFacetStrip } from './GraphFacetStrip';
 import { EMPTY_FACETS } from './graphFacets';
+import type { FacetState } from './graphFacets';
 import { buildGraphModel } from './graphModel';
 
 function node(id: string, extra: Partial<GraphNode> = {}): GraphNode {
@@ -25,13 +26,13 @@ const typed: Graph = {
 
 const legacy: Graph = { nodes: [node('x'), node('y')], edges: [] };
 
-function renderStrip(graph: Graph, active = false) {
+function renderStrip(graph: Graph, active = false, facets: FacetState = EMPTY_FACETS) {
   const model = buildGraphModel(graph);
   return render(
     <GraphFacetStrip
       model={model}
       mode="light"
-      facets={EMPTY_FACETS}
+      facets={facets}
       onChange={vi.fn()}
       passing={active ? 2 : graph.nodes.length}
       total={graph.nodes.length}
@@ -42,28 +43,73 @@ function renderStrip(graph: Graph, active = false) {
 
 describe('GraphFacetStrip', () => {
   /**
-   * The readout and its undo are the only evidence a filter did anything, and
-   * with one facet active the strip's content measured 769px inside a 550px
-   * box — so both were off the right edge, with no scrollbar affordance to say
-   * they were there. Nothing in jsdom can measure that, so the assertion is
-   * STRUCTURAL: they must not live inside the scroller at all.
+   * ⚠ **THIS TEST INVERTED, AND THE INVERSION IS R-09.**
+   *
+   * It used to assert that the readout and its undo sat OUTSIDE a horizontal
+   * scroller while the pickers sat inside it — a fix for the measured failure
+   * where one active facet put 769px of content in a 550px box and pushed both
+   * off the right edge. That fix cured the symptom and left the pickers
+   * themselves scrolling out of sight.
+   *
+   * There is now no scroller at all: the row degrades by priority into `More`
+   * and then `Filters`, so every control stays reachable at every width. The
+   * assertion is therefore that NOTHING in the strip scrolls sideways, which is
+   * strictly stronger than the old one. Nothing in jsdom can measure overflow,
+   * so this stays STRUCTURAL — the container-query steps themselves need a real
+   * browser (see `.knowledge-harness`).
    */
-  it('keeps the readout and Clear filters outside the horizontal scroller', () => {
+  it('never scrolls sideways: no element in the strip is a horizontal scroller', () => {
     renderStrip(typed, true);
     const strip = screen.getByTestId('knowledge-graph-facets');
 
+    expect(strip.querySelector('.overflow-x-auto')).toBeNull();
+    expect(strip.className).not.toContain('overflow-x-auto');
+
+    // The readout and its undo are still present and still in the strip.
     const readout = screen.getByText(/Showing 2 of 6/);
     const clear = screen.getByRole('button', { name: 'Clear filters' });
+    for (const el of [readout, clear]) expect(strip.contains(el)).toBe(true);
+  });
 
-    for (const el of [readout, clear]) {
-      expect(strip.contains(el)).toBe(true);
-      expect(el.closest('.overflow-x-auto')).toBeNull();
-    }
+  /**
+   * The collapsed controls exist at every width in the DOM — the container
+   * queries decide which is VISIBLE — and each reports the count of what it
+   * swallowed, so a filter the user cannot see is still reported.
+   */
+  it('offers a collapsed control for every step of the ladder', () => {
+    renderStrip(typed, true);
+    const more = screen.getByTestId('knowledge-graph-facet-more-collapsed');
+    const all = screen.getByTestId('knowledge-graph-facet-filters-collapsed');
+    expect(more.className).toContain('br-facet-more');
+    expect(all.className).toContain('br-facet-all');
 
-    // …and the pickers, which ARE re-reachable by scrolling, stay inside it.
-    expect(
-      screen.getByTestId('knowledge-graph-facet-type').closest('.overflow-x-auto')
-    ).not.toBeNull();
+    // The inline facets carry their ladder step, so the CSS can fold them.
+    expect(screen.getByTestId('knowledge-graph-facet-type').className).toContain('br-facet-core');
+    expect(screen.getByTestId('knowledge-graph-facet-source').className).toContain(
+      'br-facet-extra'
+    );
+  });
+
+  /**
+   * A filter is not a button, and after R-02 it is not one in the DOM either:
+   * `data-engaged` is what `.br-facet` keys its solid accent fill off, and it
+   * has to flip when a facet is actually engaged or the fill is decoration.
+   */
+  it('marks an engaged facet so the fill can change, not just a badge', () => {
+    // The strip is controlled, so this asserts the MAPPING from facet state to
+    // the attribute rather than driving it through a click — which with a
+    // `vi.fn()` onChange could never flip anything.
+    renderStrip(typed);
+    expect(screen.getByTestId('knowledge-graph-facet-type').getAttribute('data-engaged')).toBe(
+      'false'
+    );
+
+    cleanup();
+    renderStrip(typed, false, { ...EMPTY_FACETS, types: new Set(['Gene']) });
+    const engaged = screen.getByTestId('knowledge-graph-facet-type');
+    expect(engaged.getAttribute('data-engaged')).toBe('true');
+    // …and the count rides on the control that is engaged.
+    expect(within(engaged).getByText('1')).toBeInTheDocument();
   });
 
   it('says nothing about a filter until one is active', () => {

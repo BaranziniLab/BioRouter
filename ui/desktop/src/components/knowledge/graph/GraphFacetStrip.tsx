@@ -1,7 +1,7 @@
 // ui/desktop/src/components/knowledge/graph/GraphFacetStrip.tsx
 import { useMemo, useState } from 'react';
-import { Search } from '../../icons/app-icons';
-import { Badge } from '../../ui/badge';
+import type { ReactNode } from 'react';
+import { ChevronDown, Search, X } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '../../ui/command';
@@ -49,20 +49,108 @@ interface Props {
 }
 
 export function GraphFacetStrip({ model, mode, facets, onChange, passing, total, active }: Props) {
+  // Computed once and rendered TWICE — inline in the row, and again inside the
+  // collapsed `More`/`Filters` menu (R-09). Deriving them at each call site
+  // would be two sources of truth for one facet's options.
+  const typeOptions: Option[] = [
+    ...model.typeCounts.map((t) => ({
+      value: t.type,
+      label: t.type,
+      count: t.count,
+      fill: typeFill(t.type, mode),
+      shape: typeShape(t.type, mode),
+    })),
+    // Counted, not hardcoded to 0. On a legacy base every other row carried a
+    // count and this one silently did not, which reads as "no such pages"
+    // rather than "the whole base".
+    ...(model.untypedCount > 0 || model.typeCounts.length === 0
+      ? [
+          {
+            value: UNTYPED_KEY,
+            label: 'Untyped',
+            count: model.untypedCount,
+            fill: undefined,
+            shape: undefined,
+          },
+        ]
+      : []),
+  ];
+  const predicateOptions: Option[] = model.predicateCounts.map((p) => ({
+    value: p.predicate,
+    label: p.predicate.replace(/^not_/, 'not ').replace(/_/g, ' '),
+    count: p.count,
+    negated: p.predicate.startsWith('not_'),
+  }));
+  const sourceOptions: Option[] = model.sourceOptions.map((sr) => ({
+    value: sr.id,
+    label: sr.label,
+    count: sr.count,
+  }));
+
+  const typeFacet = (extraClass: string, testId?: string) => (
+    <FacetCombobox
+      label="Type"
+      options={typeOptions}
+      selected={facets.types}
+      onToggle={(v) => onChange({ ...facets, types: toggle(facets.types, v) })}
+      mode={mode}
+      extraClass={extraClass}
+      testId={testId}
+    />
+  );
+  const predicateFacet = (extraClass: string, testId?: string) => (
+    <FacetCombobox
+      label="Predicate"
+      mono
+      options={predicateOptions}
+      selected={facets.predicates}
+      onToggle={(v) => onChange({ ...facets, predicates: toggle(facets.predicates, v) })}
+      mode={mode}
+      extraClass={extraClass}
+      testId={testId}
+    />
+  );
+  const sourceFacet = (extraClass: string, testId?: string) => (
+    <FacetCombobox
+      label="Source"
+      options={sourceOptions}
+      selected={facets.sources}
+      onToggle={(v) => onChange({ ...facets, sources: toggle(facets.sources, v) })}
+      mode={mode}
+      extraClass={extraClass}
+      testId={testId}
+    />
+  );
+  const statusFacet = (extraClass: string, testId?: string) => (
+    <StatusFacet facets={facets} onChange={onChange} extraClass={extraClass} testId={testId} />
+  );
+
   return (
     <div
       data-testid="knowledge-graph-facets"
-      className="br-graph-dock flex flex-none items-center gap-2 border-b border-border-subtle bg-background-default px-3"
+      className="flex h-knowledge-filter-height flex-none items-center gap-2 border-b border-border-subtle bg-background-default px-4 py-2"
     >
-      {/* ⚠ **Only the CONTROLS scroll; the readout does not.** The strip used to
-          be one `overflow-x-auto` row, so with a single facet active its 769px
-          of content sat in a 550px box and the two things the filter produced —
-          `Showing N of M`, and the only control that undoes it — were pushed off
-          the right edge, with no scrollbar affordance to say so. The user got a
-          graph that had visibly changed, no statement of what it now showed, and
-          no way back. Feedback and its undo are pinned outside the scroller;
-          the pickers, which are re-reachable by scrolling, are inside it. */}
-      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
+      {/* ⚠ **NOTHING SCROLLS AND NOTHING WRAPS** (R-09). This row used to be an
+          `overflow-x-auto` scroller, and the failure it produced is on record:
+          with one facet active its 769px of content sat in a 550px box, so the
+          two things the filter produced — `Showing N of M` and the only control
+          that undoes it — were pushed off the right edge with no scrollbar
+          affordance to say so. Pinning the readout outside the scroller fixed
+          the symptom; it left the pickers themselves scrolling out of sight.
+
+          They now DEGRADE BY PRIORITY instead, in three container-driven steps
+          (see `.br-facet-*` in main.css). Search collapses last, because it is
+          the only control that can reach a node whose type the user does not
+          yet know. `Type` outlives the other three, because it is the one facet
+          every base has — `Predicate` and `Source` are empty on a legacy base
+          and `Status` only ever holds four values. What folds away carries its
+          own count on the control that swallowed it, so a filter you cannot see
+          is still reported; and `Clear` never leaves the row.
+
+          Wrapping to a second line was rejected: it would take 48px from the
+          canvas permanently, on exactly the pane sizes with the least canvas to
+          give. */}
+      <div className="flex min-w-0 flex-1 items-center gap-2">
         <div className="relative flex-none">
           <Search
             aria-hidden="true"
@@ -79,96 +167,50 @@ export function GraphFacetStrip({ model, mode, facets, onChange, passing, total,
           />
         </div>
 
-        <FacetCombobox
-          label="Type"
-          // A node with no type is a real state (DR-28), so it gets its own row
-          // rather than being unselectable. `Untyped` is the whole legacy base.
-          options={[
-            ...model.typeCounts.map((t) => ({
-              value: t.type,
-              label: t.type,
-              count: t.count,
-              fill: typeFill(t.type, mode),
-              shape: typeShape(t.type, mode),
-            })),
-            // Counted, not hardcoded to 0. On a legacy base every other row
-            // carried a count and this one silently did not, which reads as "no
-            // such pages" rather than "the whole base".
-            ...(model.untypedCount > 0 || model.typeCounts.length === 0
-              ? [
-                  {
-                    value: UNTYPED_KEY,
-                    label: 'Untyped',
-                    count: model.untypedCount,
-                    fill: undefined,
-                    shape: undefined,
-                  },
-                ]
-              : []),
-          ]}
-          selected={facets.types}
-          onToggle={(v) => onChange({ ...facets, types: toggle(facets.types, v) })}
-          mode={mode}
-        />
+        {typeFacet('br-facet-core')}
+        {predicateFacet('br-facet-core')}
+        {sourceFacet('br-facet-extra')}
+        {statusFacet('br-facet-extra')}
 
-        <FacetCombobox
-          label="Predicate"
-          mono
-          options={model.predicateCounts.map((p) => ({
-            value: p.predicate,
-            label: p.predicate.replace(/^not_/, 'not ').replace(/_/g, ' '),
-            count: p.count,
-            negated: p.predicate.startsWith('not_'),
-          }))}
-          selected={facets.predicates}
-          onToggle={(v) => onChange({ ...facets, predicates: toggle(facets.predicates, v) })}
-          mode={mode}
-        />
+        {/* 860–1059px: the two least-used fold away, keeping their counts. */}
+        <CollapsedFacets
+          label="More"
+          className="br-facet-more"
+          count={facets.sources.size + facets.statuses.size}
+        >
+          {sourceFacet('', 'knowledge-graph-facet-source-in-menu')}
+          {statusFacet('', 'knowledge-graph-facet-status-in-menu')}
+        </CollapsedFacets>
 
-        <FacetCombobox
-          label="Source"
-          options={model.sourceOptions.map((s) => ({
-            value: s.id,
-            label: s.label,
-            count: s.count,
-          }))}
-          selected={facets.sources}
-          onToggle={(v) => onChange({ ...facets, sources: toggle(facets.sources, v) })}
-          mode={mode}
-        />
-
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button type="button" variant="secondary" size="sm" className="flex-none">
-              Status
-              {facets.statuses.size > 0 && <Badge tone="accent">{facets.statuses.size}</Badge>}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start">
-            {STATUSES.map((s) => (
-              <DropdownMenuCheckboxItem
-                key={s}
-                checked={facets.statuses.has(s)}
-                onCheckedChange={() =>
-                  onChange({ ...facets, statuses: toggle(facets.statuses, s) })
-                }
-              >
-                {s}
-              </DropdownMenuCheckboxItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {/* Below 860px: one control, and the search takes the rest of the row. */}
+        <CollapsedFacets
+          label="Filters"
+          className="br-facet-all"
+          count={
+            facets.types.size + facets.predicates.size + facets.sources.size + facets.statuses.size
+          }
+        >
+          {typeFacet('', 'knowledge-graph-facet-type-in-menu')}
+          {predicateFacet('', 'knowledge-graph-facet-predicate-in-menu')}
+          {sourceFacet('', 'knowledge-graph-facet-source-in-all')}
+          {statusFacet('', 'knowledge-graph-facet-status-in-all')}
+        </CollapsedFacets>
       </div>
 
       {active && (
         <div className="flex flex-none items-center gap-2">
-          <span className="whitespace-nowrap font-mono text-supporting tabular-nums text-text-muted">
+          {/* The count yields before the control that undoes the filter does:
+              knowing HOW MANY are hidden is useful, being able to get them back
+              is essential. */}
+          <span className="br-knowledge-readout whitespace-nowrap font-mono text-supporting tabular-nums text-text-muted">
             Showing {passing} of {total}
           </span>
           <Button
             type="button"
             variant="ghost"
             size="sm"
+            aria-label="Clear filters"
+            title={`Clear filters — showing ${passing} of ${total}`}
             onClick={() =>
               onChange({
                 search: '',
@@ -179,11 +221,117 @@ export function GraphFacetStrip({ model, mode, facets, onChange, passing, total,
               })
             }
           >
-            Clear filters
+            <X aria-hidden="true" />
+            <span className="br-knowledge-readout">Clear filters</span>
           </Button>
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * `Status` — the one facet with a fixed vocabulary, so it needs no search box
+ * and takes a plain menu rather than the searchable picker.
+ *
+ * Extracted so it can be rendered inline in the row AND inside the collapsed
+ * `More`/`Filters` menu from one definition (R-09).
+ */
+function StatusFacet({
+  facets,
+  onChange,
+  extraClass = '',
+  testId,
+}: {
+  facets: FacetState;
+  onChange: (next: FacetState) => void;
+  extraClass?: string;
+  testId?: string;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={`br-facet biorouter-focus-surface inline-flex h-control-md flex-none items-center gap-2 rounded-element px-2.5 text-label transition-[color,background-color,border-color] ${extraClass}`}
+          data-engaged={facets.statuses.size > 0 ? 'true' : 'false'}
+          data-testid={testId ?? 'knowledge-graph-facet-status'}
+        >
+          Status
+          {facets.statuses.size > 0 && (
+            <span className="rounded-inner bg-background-inverse/15 px-1.5 font-mono text-supporting tabular-nums">
+              {facets.statuses.size}
+            </span>
+          )}
+          <ChevronDown aria-hidden="true" className="h-icon-row w-icon-row shrink-0" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start">
+        {STATUSES.map((st) => (
+          <DropdownMenuCheckboxItem
+            key={st}
+            checked={facets.statuses.has(st)}
+            onCheckedChange={() => onChange({ ...facets, statuses: toggle(facets.statuses, st) })}
+          >
+            {st}
+          </DropdownMenuCheckboxItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * The collapsed form of two or more facets (R-09).
+ *
+ * ⚠ **It renders the REAL pickers, not a copy of them.** The alternative — a
+ * bespoke list reproducing the counts, the family grouping and the
+ * multi-select — is the kind of second implementation that drifts from the
+ * first the moment a facet gains a field. Nesting the same `FacetCombobox`
+ * inside a popover costs one Radix layer and keeps exactly one picker in the
+ * codebase.
+ *
+ * The count on the trigger is the SUM of what folded away, so a filter the user
+ * cannot see is still reported by the control that swallowed it.
+ */
+function CollapsedFacets({
+  label,
+  className,
+  count,
+  children,
+}: {
+  label: string;
+  className: string;
+  count: number;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={`br-facet biorouter-focus-surface inline-flex h-control-md flex-none items-center gap-2 rounded-element px-2.5 text-label transition-[color,background-color,border-color] ${className}`}
+          data-engaged={count > 0 ? 'true' : 'false'}
+          aria-expanded={open}
+          data-testid={`knowledge-graph-facet-${label.toLowerCase()}-collapsed`}
+        >
+          {label}
+          {count > 0 && (
+            <span className="rounded-inner bg-background-inverse/15 px-1.5 font-mono text-supporting tabular-nums">
+              {count}
+            </span>
+          )}
+          <ChevronDown
+            aria-hidden="true"
+            className={`h-icon-row w-icon-row shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+          />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="flex w-56 flex-col items-stretch gap-1 p-2">
+        {children}
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -210,6 +358,8 @@ function FacetCombobox({
   onToggle,
   mono = false,
   mode,
+  extraClass = '',
+  testId,
 }: {
   label: string;
   options: Option[];
@@ -217,6 +367,15 @@ function FacetCombobox({
   onToggle: (value: string) => void;
   mono?: boolean;
   mode: GraphMode;
+  /** Which step of R-09's ladder this facet belongs to (`.br-facet-core` etc). */
+  extraClass?: string;
+  /**
+   * Overridden when the same facet is rendered a second time inside the
+   * collapsed `More`/`Filters` menu, so the two instances never share a test id
+   * — `getByTestId` throws on a duplicate, and a silently ambiguous query is
+   * worse than a loud one.
+   */
+  testId?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -292,16 +451,38 @@ function FacetCombobox({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button
+        {/* ⚠ **NOT a `Button`, and that is the fix** (R-02). These were
+            `<Button variant="secondary" size="sm">` — the same component and
+            variant as `Manage bases` — sharing the search `Input`'s exact 8px
+            radius, so a field and a toggle were indistinguishable in the same
+            row. A filter is differentiated by EDGE AND GROUND, not by shape: it
+            keeps `--radius-element` like every button, input and tab in the
+            app, and takes a 1.5px border on a transparent fill so it reads as a
+            field that holds a value where a secondary button is a filled slab
+            with no edge at all. Engaged is a solid accent fill rather than a
+            tint — across a 1600px bar a tint is a guess.
+
+            An earlier revision made these pills (`--radius-full`) and a later
+            one made them 4px; both introduced a shape the app uses nowhere
+            else. `.br-facet` in main.css carries the resting/engaged pair. */}
+        <button
           type="button"
-          variant="secondary"
-          size="sm"
-          className="flex-none"
-          data-testid={`knowledge-graph-facet-${label.toLowerCase()}`}
+          className={`br-facet biorouter-focus-surface inline-flex h-control-md flex-none items-center gap-2 rounded-element px-2.5 text-label transition-[color,background-color,border-color] ${extraClass}`}
+          data-engaged={selected.size > 0 ? 'true' : 'false'}
+          aria-expanded={open}
+          data-testid={testId ?? `knowledge-graph-facet-${label.toLowerCase()}`}
         >
           {label}
-          {selected.size > 0 && <Badge tone="accent">{selected.size}</Badge>}
-        </Button>
+          {selected.size > 0 && (
+            <span className="rounded-inner bg-background-inverse/15 px-1.5 font-mono text-supporting tabular-nums">
+              {selected.size}
+            </span>
+          )}
+          <ChevronDown
+            aria-hidden="true"
+            className={`h-icon-row w-icon-row shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+          />
+        </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-64 p-0">
         <Command

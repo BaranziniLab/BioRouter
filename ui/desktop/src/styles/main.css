@@ -2496,7 +2496,14 @@
   min-width: 0;
   min-height: 0;
 }
-.br-knowledge-sources,
+/* ⚠ THE SOURCES PANEL'S NARROW VISIBILITY IS REACT'S, NOT THIS FILE'S. Below
+   the two-column step the Sources/Graph tab pair decides which panel shows, and
+   `KnowledgeView` writes `flex`/`hidden` for that. These rules are UNLAYERED and
+   Tailwind's utilities are in `@layer utilities`, so anything declared here
+   beats `.hidden` regardless of specificity — a `display` value in the narrow
+   default would therefore override the tab and pin one panel on screen. So the
+   narrow step says nothing about these two, and the container steps below
+   FORCE both visible once there is room for both. */
 .br-knowledge-detail {
   display: none;
 }
@@ -2525,7 +2532,10 @@
   .br-knowledge-body {
     grid-template-columns: 264px minmax(0, 1fr);
   }
-  .br-knowledge-sources {
+  /* Both panels, side by side — this is where the container overrides the tab
+     state, because the tabs themselves are hidden at this step. */
+  .br-knowledge-sources,
+  .br-knowledge-graph {
     display: flex;
   }
   .br-facet-all {
