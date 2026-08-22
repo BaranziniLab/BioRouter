@@ -295,7 +295,7 @@ ${strMap(p.credibility, 6)}
 ${arcMap(p.ringArcs, 6)}
     },
     fallbackChroma: ${p.fallbackChroma},
-    fallbackRungs: [${p.fallbackRungs.join(', ')}],
+    fallbackLightness: [${p.fallbackLightness.join(', ')}],
     ground: '${p.ground}',
   },`;
 };
@@ -423,7 +423,8 @@ export type GraphPalette = {
   /** DR-11: the fixed chroma every hashed fallback colour takes. */
   fallbackChroma: number;
   /** DR-11: the four rungs a hashed fallback selects between. */
-  fallbackRungs: [number, number, number, number];
+  /** R-05: the fallback's four OKLab lightnesses, not contrast rungs. */
+  fallbackLightness: [number, number, number, number];
   /**
    * The surface every ratio above was solved against — the resolved
    * \`--background-muted\`, which is what the graph pane paints.

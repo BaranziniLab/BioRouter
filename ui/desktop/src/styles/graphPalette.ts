@@ -178,12 +178,14 @@ export function hashedFill(type: string, mode: GraphMode): string {
   if (cached !== undefined) return cached;
   const palette = GRAPH_PALETTE[mode];
   const h = fnv1a(type);
-  const hex = solveHex(
-    h % 360,
+  // R-05: placed at a lightness like every curated fill, not solved to a
+  // contrast ratio. `solveHex` is retained above because the credibility ring
+  // still uses it — a 1.6px stroke IS asked to carry contrast, where a fill is
+  // not.
+  const hex = oklchToHex(
+    palette.fallbackLightness[(h >>> 9) & 3],
     palette.fallbackChroma,
-    palette.fallbackRungs[(h >>> 9) & 3],
-    palette.ground,
-    mode
+    h % 360
   );
   hashedCache.set(key, hex);
   return hex;

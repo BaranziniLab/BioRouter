@@ -28,41 +28,71 @@
  */
 
 /**
- * The contrast rung ladder for families of 2–4 members, by member index.
+ * THE FILL LADDERS ARE LIGHTNESS, NOT CONTRAST (redesign R-05).
  *
- * A rung is a WCAG 2.x contrast ratio against the graph ground. The solver
- * finds the OKLab lightness that hits it, so "how dark" is a derived property
- * instead of an accident — which is the whole reason BioOKF Studio's 28
- * hand-picked hexes were not reused (nine of them fall below 3:1 even on the
- * near-white ground they were picked against).
+ * ⚠ THIS REPLACED A CONTRAST-RUNG LADDER, AND THE REASON IS THE WHOLE FIX. The
+ * fills used to be solved to WCAG ratios against the ground — rungs of 3.5,
+ * 4.5, 5.8 and 7.3, with a Provenance ladder running to 12.0:1. Those are TEXT
+ * rungs applied to a MARK. Measured against the light ground, they put the 28
+ * fills at a median OKLab L of 0.531 with seven of them at or beyond 7:1, and
+ * `Other` at 12.01:1 — very nearly black. The canvas read as a field of dark
+ * dots because the FILL was being asked to carry contrast that belongs to the
+ * node's boundary.
+ *
+ * BioOKF's graph is lighter for a measurable reason: it puts a near-black
+ * hairline around every circle (17.68:1 against its ground) and lets the fill
+ * be a light mid-tone (median L 0.648). This palette does the same. The node
+ * ring moved from alpha 0.50 to 0.85 — composited, 9.02:1 against the light
+ * ground — which is what satisfies WCAG 1.4.11 for the graphical object's
+ * boundary and therefore frees the fill.
+ *
+ * The band below is the result: median L 0.690, range 0.580–0.780.
+ *
+ * ⚠ WITHIN-FAMILY SEPARATION SURVIVES BY CONSTRUCTION, and that is measured
+ * rather than hoped for. The step between adjacent members is 0.055 L against
+ * the old ladder's 0.050–0.059, and the hues, chromas and spreads are
+ * untouched — so the CIEDE2000 minimum across all seven families moves from
+ * 5.54 to 4.80, against a guard floor of 3.0. `graphPalette.test.ts` re-measures
+ * it; do not take this comment as the guarantee.
+ *
+ * ⚠ CROSS-family separation under dichromacy is NOT repaired by this and never
+ * was: it bottoms out at ΔE00 0.00 with 28 marks on one surviving opponent
+ * axis. That is what the shape channel existed for, and R-04's all-circle
+ * canvas is an explicit, recorded trade — see the redesign spec.
+ *
+ * DARK IS SOLVED SEPARATELY AND ASCENDS. On a dark ground the readable band
+ * sits above the ground rather than below it, so member 0 is the DARKEST and
+ * the ladder climbs. It is not the light ladder inverted, and it must be
+ * re-audited on its own.
  */
-export const PRIMARY_RUNGS = [3.5, 4.5, 5.8, 7.3];
+export const PRIMARY_L = {
+  light: [0.745, 0.69, 0.635, 0.58],
+  dark: [0.64, 0.695, 0.75, 0.805],
+};
 
 /**
- * The eight-member Provenance ladder — monotone and geometric, spanning the
- * same 3.50 floor to a 12.00 ceiling that still sits below the canvas label
- * ink (13.4–15.1:1).
+ * The eight-member Provenance ladder, at a tighter step because it has twice
+ * the members in a comparable band.
  *
- * ⚠ AUTHORED AT TWO DECIMALS ON PURPOSE, not recomputed from
- * `3.50 * (12.00 / 3.50) ** (i / 7)`. The full-precision values differ from
- * these in the third decimal (i=3 is 5.93483, i=6 is 10.06349), and because the
- * solver rounds to 8 bits before taking the ratio, that difference moves two
- * rungs by one 8-bit step: `Agent` solves to #4d606c instead of #4e606c and
- * `Concept` to #433747 instead of #433847. Measured, not theorised — the
- * remaining 26 fills are identical either way. §5.3's table is the pinned
- * output of THESE numbers.
- *
- * This ladder is the accessibility fix of the revision, and the only palette
- * parameter that moved: the draft interleaved two four-rung ladders here, which
- * at chroma 0.030 (where dichromacy leaves lightness as the only surviving
- * channel) put members at neighbouring lightness with no hue left to separate
- * them — a within-family minimum of ΔE00 1.82. This ladder measures 3.55.
+ * The old ladder's accessibility fix is preserved in kind: members sit at even
+ * lightness intervals at chroma 0.030, where dichromacy leaves lightness as the
+ * only surviving channel, so an even ladder is what keeps them apart at all.
+ * Measured within-family minimum: ΔE00 4.80 light.
  */
-export const PROVENANCE_RUNGS = [3.5, 4.17, 4.98, 5.93, 7.08, 8.44, 10.06, 12.0];
+export const PROVENANCE_L = {
+  light: [0.78, 0.752, 0.724, 0.696, 0.668, 0.64, 0.612, 0.584],
+  dark: [0.6, 0.629, 0.657, 0.686, 0.714, 0.743, 0.771, 0.8],
+};
 
 /**
  * The seven families: an anchor hue, a chroma, a hue spread, a SHAPE, and the
  * member types in ladder order.
+ *
+ * ⚠ `shape` IS STILL DECLARED, AND IS NOT DEAD. The default canvas draws every
+ * node as a circle (R-04), but the seven silhouettes remain the payload of the
+ * `Distinguish types by shape` accessibility preference — which is what makes
+ * the all-circle default a reversible trade rather than a deletion. Removing
+ * `shape` here removes the user's way back.
  *
  * Working space is OKLCH — perceptually uniform, so a fixed chroma reads as an
  * equal amount of colour across hues and a spread reads as an equal amount of
@@ -176,7 +206,17 @@ export const FAMILIES = [
  * it, never the rung arithmetic.
  */
 export const FALLBACK_CHROMA = 0.055;
-export const FALLBACK_RUNGS = [3.9, 4.95, 6.2, 7.9];
+/**
+ * The fallback's own lightness ladder, offset a half-step from the curated one
+ * so a hashed colour cannot land exactly on a curated fill's lightness. Do NOT
+ * read that offset as a guarantee of separation — the guarantee is the measured
+ * ΔE00 floor in `graphPalette.test.ts`, which re-measures after any change
+ * here, and the chroma gap (0.055 against Provenance's 0.030).
+ */
+export const FALLBACK_L = {
+  light: [0.7625, 0.7075, 0.6525, 0.5975],
+  dark: [0.6175, 0.6725, 0.7275, 0.7825],
+};
 
 /**
  * The credibility ring — DR-9b. Seven rows, hue and chroma stated so the ring
