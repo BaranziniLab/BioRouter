@@ -346,7 +346,7 @@ describe('(c) the colour-vision audit', () => {
       for (const [a, b] of PAIRS) {
         if (FAMILY_OF[a] !== FAMILY_OF[b]) continue;
         const d = deltaE00(see(types[a], vision), see(types[b], vision));
-        const why = `${mode}/${vision} ${a} vs ${b} (same shape, so colour is all there is)`;
+        const why = `${mode}/${vision} ${a} vs ${b} (same family, so colour is all there is)`;
         expect(d, why).toBeGreaterThanOrEqual(3.0);
       }
     }
@@ -437,7 +437,10 @@ describe('(c) the colour-vision audit', () => {
    * light and 0.00 dark — and it is the condition the original analysis did not
    * tabulate at all. It is asserted as a MEASUREMENT rather than a floor,
    * because there is no floor to hold: two marks can be identical under
-   * tritanopia and the shape channel is the answer, not a different palette.
+   * tritanopia and no palette fixes that. The shape channel used to be the
+   * answer here; it was deleted, and the answer is now §5.12's live region —
+   * a spoken `<name>, <type>, <family>`, which is text rather than a second
+   * visual encoding and so cannot collapse the way two hues can.
    *
    * The value of pinning it is that it stops a future edit quietly claiming to
    * have "fixed" cross-family separation under dichromacy, which is not

@@ -18,8 +18,9 @@
 > bottom dock for a dismissible right rail), §4.6 (facets become boxed controls, not secondary
 > buttons, plus a priority-order overflow ladder), §4.8 (the inspectors stop being bare
 > `role="dialog"` panels), §5.2/§5.3 (fills are solved to a lightness band, not to contrast rungs),
-> §5.3.1 (the seven-silhouette shape channel becomes an opt-in preference and the default canvas is
-> all circles), §6.3 (the DOM swatch moves to `--radius-inner`) and §3.4/§3.5 (the responsive ladder).
+> §5.3.1 (the seven-silhouette shape channel is **removed outright** — every node is a circle; the
+> opt-in preference that record first proposed was withdrawn and the channel deleted from the
+> codebase), §6.3 (the DOM swatch moves to `--radius-inner`) and §3.4/§3.5 (the responsive ladder).
 >
 > ⚠ **§3.4/§3.5 is a bug report, not a preference.** `md:` is a **viewport** media query, but the
 > thing that changes size is the **pane**. At the app's own minimum window (`minWidth: 1000`, derived
@@ -67,16 +68,35 @@ as a fill behind text, never as a chrome tint, never as an interaction state. Th
 because a knowledge base is dense; the chrome around it stays silent so the density reads as
 information rather than noise.
 
-**No encoding on the canvas is carried by colour alone.** This is the correction the accessibility
-review forced, and it is the largest change between this version and the draft. A node's **shape**
-says which of the seven families it belongs to; its **fill lightness** says which member of that
-family it is; its ring's **arc count** says how well-sourced it is; a **dash** says the link is
-negated, a **dot** pattern says it was synthesized, a **taper** says which way the claim points.
-Every one of those survives monochrome. Hue rides along on top of each of them as the fast channel
-for trichromatic vision, and carries nothing on its own. §5.3 gives the measurements that forced this:
-under simulated protanopia the previous palette put `BiologicalFunction` and `Concept` at ΔE00 **0.35**
-— the same colour — and under simulated tritanopia it put `Phenotype` and `Food` at **0.00**, while
-the draft's guard tested normal trichromacy only and passed green.
+**Type is carried by colour; the redundant channel for it is spoken, not drawn.** This is where the
+accessibility review's correction ended up after R-04 was amended, and it is the largest change
+between this version and the draft. Every node is a circle (§5.3.1), so **fill is the only *visual*
+type channel** — the earlier claim that "no encoding on the canvas is carried by colour alone" no
+longer holds in the sense it was written. What discharges SC 1.4.1 instead is §5.12's
+`aria-live="polite"` region, which speaks `<identifier>, <node_type>, <family>` on every focus
+change, backed by the haloed labels §5.8 places. ⚠ **Labels are not "always on"** — §5.8's priority
+ladder still leaves roughly 82% of nodes unlabelled at fit scale, which is why the live region and
+not the label is what the argument rests on.
+
+Everything that is *not* type still carries a monochrome-safe encoding, and those must not be
+described as gone: a **solid disc versus a hollow ring** separates the 20 Biomedical Entity types
+from the 8 Provenance & Context ones; a **dashed ring** marks an external node; a ring's **arc
+count** says how well-sourced a source is; a **dash** says the link is negated, a **dot** pattern
+says it was synthesized, a **taper** says which way the claim points. Hue rides along on top of each
+of those as the fast channel for trichromatic vision and carries nothing on its own.
+
+⚠ **The residual cost is real, and it was accepted rather than mitigated.** §5.3 gives the
+measurements: under simulated protanopia the draft palette put `BiologicalFunction` and `Concept` at
+ΔE00 **0.35** — the same colour — and under simulated tritanopia this palette still puts `Phenotype`
+and `Food` at **0.00** in dark mode, a floor no palette of 28 marks can raise on one surviving
+opponent axis. (The draft's guard tested normal trichromacy only and passed green, which is how the
+draft shipped without noticing.) Those two types are now told apart by label, hover, legend and
+inspector — all **deliberate** acts, where the silhouette that used to carry family was passive and
+told you at a glance. What was bought in exchange is breadth: a spoken announcement serves a blind
+reader and a screen-reader user as well as a viewer with dichromacy, and it does not degrade with
+mark size, where a silhouette served only the last group and only while the mark was large enough to
+resolve. The ruling and its amendment are
+[R-04](../knowledge-ui-redesign/redesign-spec.md).
 
 ---
 
@@ -130,8 +150,8 @@ not an observation about it.
 
 | Slice | Name | Blocked on | Contents |
 | --- | --- | --- | --- |
-| **A** | *Native, and honest* | **Nothing.** Lands immediately, in parallel with Stages 2–6. | §3 shell entire (the measure, the full-bleed hairlines, the grid, the three new tokens, the `--dock-height` comment); §4.1 trigger chrome + the anchored searchable picker; §4.2 manager on `ModalShell size="lg"`; §4.4 all five ingest states **including the determinate `Progress`**; §4.10 change log; §4.11 tier control; §4.12 all nine `EmptyState`s and both loading behaviours; §4.5's gradient deletion; §5.11's `useCanvasTheme` extension and the single shared resolver; §5.6 node geometry and the shape channel's *geometry* (every node drawn as a circle until types arrive); §5.7's resolved-ink edge web and alpha ladder (on today's untyped edges: no taper meaning, no negation case); §5.8 label pass, memoisation and the `wrapLabel` deletion; §5.9 density and culling; §5.12's keyboard model; the `Badge` `asChild` primitive change; the browser harness and the Rust fixture dump. |
-| **B** | *Shows typed structure* | **Stage 6.** Not startable until `types.gen.ts` carries §2.1. | §5.2–§5.3 the palette, the seven family shapes and the CVD audit; §6.1 the generator and §6.4 the split guards; §5.4 the hashed OKF fallback; §5.5 the credibility ring; §4.6 facets; §4.7 the interactive legend; §4.8 node inspector including frontmatter rows; §5.7's negated and synthesized cases; §4.3 the format chooser (also needs Stage 3's format-on-create). |
+| **A** | *Native, and honest* | **Nothing.** Lands immediately, in parallel with Stages 2–6. | §3 shell entire (the measure, the full-bleed hairlines, the grid, the three new tokens, the `--dock-height` comment); §4.1 trigger chrome + the anchored searchable picker; §4.2 manager on `ModalShell size="lg"`; §4.4 all five ingest states **including the determinate `Progress`**; §4.10 change log; §4.11 tier control; §4.12 all nine `EmptyState`s and both loading behaviours; §4.5's gradient deletion; §5.11's `useCanvasTheme` extension and the single shared resolver; §5.6 node geometry, which is now the *whole* mark story — every node is a circle in every mode, not "until types arrive" (§5.3.1's shape channel was removed, not deferred); §5.7's resolved-ink edge web and alpha ladder (on today's untyped edges: no taper meaning, no negation case); §5.8 label pass, memoisation and the `wrapLabel` deletion; §5.9 density and culling; §5.12's keyboard model (**built** — `graph/graphKeyboard.ts` + the DOM half in `ForceGraphCanvas.tsx`); the `Badge` `asChild` primitive change; the browser harness and the Rust fixture dump. |
+| **B** | *Shows typed structure* | **Stage 6.** Not startable until `types.gen.ts` carries §2.1. | §5.2–§5.3 the palette and the CVD audit (**not** the seven family shapes — R-04 deleted that channel; the hollow Provenance & Context ring in §5.3.1 is what remains of it); §6.1 the generator and §6.4 the split guards; §5.4 the hashed OKF fallback; §5.5 the credibility ring; §4.6 facets; §4.7 the interactive legend; §4.8 node inspector including frontmatter rows; §5.7's negated and synthesized cases; §4.3 the format chooser (also needs Stage 3's format-on-create). |
 | **C** | *Deferred, with reasons recorded* | Named routes that do not exist. | §4.9 lint, entire — **cut**, per §2.3. §4.8's edge inspector beyond head + headline + `primary_source`: land the minimal panel in Slice B behind `onLinkClick`, defer the provenance triplet, publications, stats and qualifiers until a real base exercises them. §5.10's seeded component layout: the force-parameter table and `containNode` are the value and stay in Slice A; the BFS/ring/golden-angle initialiser is ~300 lines buying "the first paint already looks like a graph" and is severable. |
 
 **The browser harness and the Rust fixture dump are not severable.** They gate Slice A as hard as
@@ -318,9 +338,10 @@ The app's yield ladder applies in this order and nothing may reorder it:
 2. The **detail rail** yields its column first and becomes an overlay — it is the least-often-open pane.
 3. The **sources rail** yields next, becoming the `Sources` tab.
 4. The **canvas never yields.** It is the reason the view exists.
-5. The facet strip scrolls horizontally between 930px and 1280px; below `--breakpoint-md` its four
-   facet buttons collapse into one `Filters` button opening a single menu with four sections. They
-   never wrap to a second row.
+5. The facet strip **degrades by priority — it neither wraps nor scrolls** (R-09, superseding this
+   step's original "scrolls horizontally between 930px and 1280px"). Three container-query states on
+   the pane: full at ≥ 1140px, condensed to `Type` + `More (3)` at 860–1139px, and one
+   `Filters (3)` control below 860px. §4.6 carries the detail.
 
 ---
 
@@ -598,18 +619,31 @@ one dimming mechanism, never a second.
 | Control | Spec |
 | --- | --- |
 | Search | `<Input>` at its own 32px, `w-[200px]`, leading 16px `Search` icon, `placeholder="Filter by name or type"`. Matches `identifier`, `node_type` and `subtype`, case-insensitively, as a substring — so `Disease` selects a class and `IL6` selects a node without a mode switch. Live on every keystroke, no debounce, no submit. |
-| Type | `<Button variant="secondary" size="sm">` + `Badge` count when active. Opens the §4.0 combobox (`w-64`): `CommandItem` rows carrying an 8px palette swatch **inside its family's shape glyph**, the type name, and a `font-mono tabular-nums` count. **BioOKF:** grouped by the seven families under `CommandGroup` headings, each heading carrying the family's shape glyph at 12px. **OKF:** flat, sorted by count descending. |
+| Type | `<Button variant="secondary" size="sm">` + `Badge` count when active. Opens the §4.0 combobox (`w-64`): `CommandItem` rows carrying an 8px `NodeSwatch` in the type's palette fill — **hollow for the eight Provenance & Context types, exactly as the canvas draws them** — the type name, and a `font-mono tabular-nums` count. **BioOKF:** grouped by the seven families under `CommandGroup` headings; the heading is the family **name** and nothing else, because there is no per-family glyph to carry (R-04). **OKF:** flat, sorted by count descending. |
 | Predicate | Same shape. Rows are `font-mono` (a predicate is a machine token). A negated predicate is listed **immediately after its positive when the positive is present in the graph, and in its own alphabetical position otherwise** — the draft's rule was undefined for the common case where only the negation occurs. Negations render in `--text-danger` with `line-through` and spell the word out (`not prevents`). |
 | Source | Same shape. Rows are the source nodes present (`Publication`, `Study`, `Dataset`), plus a synthetic `No primary source` entry. **Selecting one keeps every edge whose `primary_source` resolves to it, and every node incident to such an edge.** The draft said "nodes and edges whose `primary_source` resolves to it"; a node has no `primary_source` in the §2.1 contract, only an edge does, so the node half is defined by incidence or it is not defined at all. |
 | Status | Fixed set, no search, so a plain `DropdownMenu`: `draft`, `stable`, `deprecated`, `stale`, `retracted`. |
 | Clear | `<Button variant="ghost" size="sm">Clear filters</Button>`, present only when something is active, preceded by `text-supporting text-text-muted font-mono tabular-nums` reading `Showing 18 of 42`. |
 
-Below `--breakpoint-md` the four facet buttons collapse into a single `Filters` button whose menu
-carries all four as sections. Between 930px and 1280px the strip scrolls. They never wrap.
+> **Superseded by R-09.** This paragraph read: *"Below `--breakpoint-md` the four facet buttons
+> collapse into a single `Filters` button whose menu carries all four as sections. Between 930px and
+> 1280px the strip scrolls. They never wrap."* The strip **never scrolls** now — that is the exact
+> failure the legend dock already demonstrated, and the control it hides first is `Clear`, the only
+> one that undoes invisible state. The shipped ladder is a container query on the *pane*, not a
+> viewport media query, in three states: **≥ 1140px full** (all four facets plus the `Showing N of M`
+> readout), **860–1139px condensed** (`Type` + **`More (3)`** — `Predicate`, `Source` **and**
+> `Status` all fold, and crossing 1140 therefore restores three chips at once), **< 860px compact**
+> (a single `Filters (3)` control). ⚠ **The full-row step is 1140, not the 1060 a first measurement
+> suggested** (`--knowledge-pane-full-filters` in `main.css`): swept in 10px steps across 720–1760,
+> at 1060 the row overflowed its column by 44px and did not clear until 1110. See R-09 in
+> [`../knowledge-ui-redesign/redesign-spec.md`](../knowledge-ui-redesign/redesign-spec.md).
 
-**Status is deliberately not a canvas channel.** The canvas already carries four encodings (shape =
-family, fill lightness = type within family, ring arcs = credibility, dash/dot/taper = negated /
-synthesized / direction). A fifth is not readable at a 6px node, and the alternatives all collide: a
+**Status is deliberately not a canvas channel.** The canvas already carries three encodings (fill =
+type, ring arcs = credibility, dash/dot/taper = negated / synthesized / direction), plus the
+two-state solid/hollow split that separates Biomedical Entities from Provenance & Context. It was
+four before R-04 deleted the family shape channel; losing one did not create room for another, and
+the argument is unchanged. A further encoding is not readable at a 6px node, and the alternatives all
+collide: a
 tinted fill fights the dim system, a dashed ring is already taken. Status lives in the facet and in
 the inspector badge, and a status the user has filtered out simply dims. `retracted` keeps its
 existing `!` badge because a retraction is a fact, not a lifecycle state.
@@ -618,11 +652,11 @@ existing `!` badge because a retraction is a fact, not a lifecycle state.
 
 **Slice B.** Collapsed (default) — one horizontally scrolling row:
 
-- Per family: the family's **shape glyph** at 12px in `--text-muted`, then the family name in
-  `text-caps text-text-muted`, then a run of 8px `rounded-full` swatches (`gap-1`), separated from the
-  next family by `gap-4`. The glyph beside the name is what teaches the shape channel; the per-type
-  swatches stay circles at the section's one 8px diameter, because the mapping being taught is
-  *family → shape*, not *type → shape*.
+- Per family: the family name in `text-caps text-text-muted`, then a run of 8px swatches (`gap-1`),
+  separated from the next family by `gap-4`. **There is no per-family glyph** — R-04 removed the
+  shape channel, so a family is a heading over a run of colours and nothing more. The swatches are
+  drawn solid or hollow exactly as the canvas draws the mark (`NodeSwatch`, hollow for the eight
+  Provenance & Context types): a key that disagrees with the mark teaches the wrong thing.
 - Then a `w-px h-4 bg-border-subtle` separator, then the credibility key: four 10px rings drawn
   exactly as the canvas draws them (§5.5) — four arcs, one arc, dashed, and solid-with-`!` —
   labelled `Well sourced`, `Weakly sourced`, `Not academic`, `Retracted`.
@@ -636,7 +670,7 @@ existing `!` badge because a retraction is a fact, not a lifecycle state.
   `biorouter:knowledge-legend-expanded` inside a try/catch, default `false`.
 
 Expanded — the dock grows to `max-h-[40%]` and becomes the chip grid: per family, a `text-caps`
-header carrying the shape glyph, then `flex flex-wrap gap-2` of `<Badge variant="chip"
+header carrying the family name, then `flex flex-wrap gap-2` of `<Badge variant="chip"
 tone="neutral">` entries, each an 8px swatch plus the type name. `gap-2` (8px), not the draft's
 `gap-1.5`: design system §3.3 is "six steps, nothing between them" and P8 is "you spend from them;
 you don't invent new values" — the same rule this document uses to reject `gap-2.5` on the trigger.
@@ -659,11 +693,13 @@ directly. This is P4 — "if a surface needs a variant, the variant lives in the
 one file, in Slice A. The pressed state is **`tint-selected tint-interactive`**, not `tone="accent"`,
 because the tints are translucent and the focus fill reads through them; an opaque accent tone would
 reintroduce the same problem it was meant to solve. Family headers toggle the whole family. Swatches
-and shape glyphs carry `aria-hidden` — the name is the accessible label, never the shape or the
-colour alone. The current legend is inert, which is the most obvious missing affordance in the
-section.
+carry `aria-hidden` — the name is the accessible label, never the colour alone, and after R-04 the
+name is the *only* alternative the legend offers, which is why §5.12's live region and not this
+legend is what discharges SC 1.4.1. The current legend is inert, which is the most obvious missing
+affordance in the section.
 
-In OKF mode there are no families: every node takes the hashed fallback and the **circle**, the
+In OKF mode there are no families — every node takes the hashed fallback, and since every node is a
+circle in every mode there is no mark difference to lose. The
 legend lists the types actually present sorted by count descending, capped at 24 with a `+N more`
 that opens the Type facet. Two extra rows appear in both modes when the graph contains them:
 `External` (a hollow dashed 8px ring in `--text-muted` at 45%, labelled *Referenced, no page yet*)
@@ -711,7 +747,8 @@ read as "this design adds nothing"; this is the one runtime dependency it adds.
 
 #### Node inspector — body order
 
-1. **Identity.** 8px type dot in the node's family shape (palette fill) · `text-subheading`
+1. **Identity.** 8px `NodeSwatch` — a circle in the type's palette fill, hollow for Provenance &
+   Context, the same mark the canvas paints · `text-subheading`
    `identifier` · sub-line with `<Badge>` `node_type` · `subtype` in `text-supporting
    text-text-muted` · status badge (`draft`→`tone="warning"`, `stable`→ nothing,
    `deprecated`→`tone="neutral"` with `line-through`) · a `tone="warning"` `Stale` badge when
@@ -736,7 +773,7 @@ read as "this design adds nothing"; this is the one runtime dependency it adds.
    header is `--text-danger` with `line-through`. Under it a `.biorouter-list-shell` of rows, each a
    button that selects that edge:
 
-   `[→ or ⇄] · [8px object type dot in its family shape] · object identifier (truncate) · [ext Badge] · [stat]`
+   `[→ or ⇄] · [8px object-type NodeSwatch] · object identifier (truncate) · [ext Badge] · [stat]`
 
    The stat is one right-aligned `font-mono tabular-nums text-supporting` value — the first of
    `effect_size`, `sensitivity`, `frequency`, `direction`, `unit` present in `quantitative`. One
@@ -760,7 +797,7 @@ Slice C** and is not built until a real base exercises it.
    `<Badge tone="danger" uppercase>Negative edge</Badge>` when `negated`.
    Sub-line: `directed` / `symmetric` / `synthesized from primary_source`.
 2. **Headline — the edge as a sentence.** Three stacked rows at 340px (a single line would truncate
-   both endpoints): subject row (8px shaped dot + identifier, a button that selects that node),
+   both endpoints): subject row (8px `NodeSwatch` + identifier, a button that selects that node),
    predicate row (`<Badge variant="chip">` in `font-mono`; `tone="danger"` with `line-through` when
    negated, with the arrow glyph), object row (same as subject).
 3. **Provenance triplet** — three labelled rows, not a two-column grid: `knowledge_level`,
@@ -919,17 +956,21 @@ different last bit, the **table is corrected from the measurement**, never the o
 Working space is OKLCH — perceptually uniform, so a fixed chroma reads as an equal amount of colour
 across hues and a hue spread reads as an equal amount of rotation.
 
-**Step 1 — family anchor hue `H0`, chroma `C`, spread `S`, and shape.**
+**Step 1 — family anchor hue `H0`, chroma `C`, spread `S`.**
 
-| Family | Shape | `H0` (OKLCH°) | `C` | Spread `S`(°) | Rungs | Members, in order |
-| --- | --- | --- | --- | --- | --- | --- |
-| Genomic | square | 288 | 0.135 | 30 | primary | Gene, Variant, SequenceFeature, Structure |
-| Molecular & process | diamond | 192 | 0.105 | 34 | primary | Molecule, MolecularClass, BiologicalPathway, BiologicalFunction |
-| Anatomy & organism | triangle | 148 | 0.115 | 26 | primary | Anatomy, CellType, Organism |
-| Clinical | rounded-square | 18 | 0.145 | 34 | primary | Disease, Phenotype, BiomedicalMeasure, MethodOrProcedure |
-| Exposome | pentagon | 78 | 0.120 | 24 | primary | Exposure, SocialFactor, Food |
-| Physical | circle | 250 | 0.090 | 26 | primary | Device, MaterialSample |
-| Provenance & context | hexagon | 250 | 0.030 | 190 | **provenance** | Publication, Study, Dataset, Agent, Population, GeographicLocation, Concept, Other |
+> **A `Shape` column stood here.** It carried one silhouette per family and it is gone with the
+> channel (§5.3.1, R-04). `themes/graph.mjs` no longer holds a `shape:` key on any family row, so a
+> table with the column would specify a field the authoring file does not have.
+
+| Family | `H0` (OKLCH°) | `C` | Spread `S`(°) | Rungs | Members, in order |
+| --- | --- | --- | --- | --- | --- |
+| Genomic | 288 | 0.135 | 30 | primary | Gene, Variant, SequenceFeature, Structure |
+| Molecular & process | 192 | 0.105 | 34 | primary | Molecule, MolecularClass, BiologicalPathway, BiologicalFunction |
+| Anatomy & organism | 148 | 0.115 | 26 | primary | Anatomy, CellType, Organism |
+| Clinical | 18 | 0.145 | 34 | primary | Disease, Phenotype, BiomedicalMeasure, MethodOrProcedure |
+| Exposome | 78 | 0.120 | 24 | primary | Exposure, SocialFactor, Food |
+| Physical | 250 | 0.090 | 26 | primary | Device, MaterialSample |
+| Provenance & context | 250 | 0.030 | 190 | **provenance** | Publication, Study, Dataset, Agent, Population, GeographicLocation, Concept, Other |
 
 **Step 2 — hue within the family**, distributed evenly across the spread:
 
@@ -981,98 +1022,98 @@ on `#f4f4f2`, and all 28 are unusable on `#232320`. The rule above keeps what is
 about that palette — the family hue grouping — and makes contrast a derived property instead of an
 accident.
 
-### 5.3 The 28-type palette, its shapes, and the colour-vision audit
+### 5.3 The 28-type palette and the colour-vision audit
 
 Contrast is against the graph's own ground. Measured with WCAG 2.x relative-luminance arithmetic
 identical to `scripts/lib/theme-tokens.mjs::luminance` / `contrast`. Rows marked **★** are the eight
 that moved when the Provenance ladder was re-solved; every other row is unchanged from the draft and
 was independently reproduced by two reviewers.
 
-| Type | Shape | hue | C | rung | Light | vs `#f4f4f2` | Dark | vs `#232320` |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Gene | square | 273.0 | 0.135 | 3.50 | `#6a7cd4` | 3.50 | `#5f70c8` | 3.48 |
-| Variant | square | 283.0 | 0.135 | 4.50 | `#6965be` | 4.53 | `#817fdb` | 4.50 |
-| SequenceFeature | square | 293.0 | 0.135 | 5.80 | `#6750a7` | 5.81 | `#a48fec` | 5.79 |
-| Structure | square | 303.0 | 0.135 | 7.30 | `#643d90` | 7.30 | `#c69efb` | 7.27 |
-| Molecule | diamond | 175.0 | 0.105 | 3.50 | `#1d927a` | 3.50 | `#00866f` | 3.48 |
-| MolecularClass | diamond | 186.3 | 0.105 | 4.50 | `#007d75` | 4.55 | `#13998f` | 4.49 |
-| BiologicalPathway | diamond | 197.7 | 0.105 | 5.80 | `#006a6d` | 5.81 | `#2fadb0` | 5.80 |
-| BiologicalFunction | diamond | 209.0 | 0.105 | 7.30 | `#005963` | 7.31 | `#4cbfd1` | 7.26 |
-| Anatomy | triangle | 135.0 | 0.115 | 3.50 | `#608d44` | 3.54 | `#558239` | 3.48 |
-| CellType | triangle | 148.0 | 0.115 | 4.50 | `#367e45` | 4.51 | `#50985d` | 4.49 |
-| Organism | triangle | 161.0 | 0.115 | 5.80 | `#006d48` | 5.81 | `#4dae81` | 5.77 |
-| Disease | rounded-square | 1.0 | 0.145 | 3.50 | `#cb5d82` | 3.51 | `#bf5177` | 3.50 |
-| Phenotype | rounded-square | 12.3 | 0.145 | 4.50 | `#ba4a5e` | 4.51 | `#d76476` | 4.48 |
-| BiomedicalMeasure | rounded-square | 23.7 | 0.145 | 5.80 | `#a73939` | 5.80 | `#ef7a76` | 5.79 |
-| MethodOrProcedure | rounded-square | 35.0 | 0.145 | 7.30 | `#942b0f` | 7.30 | `#ff9379` | 7.28 |
-| Exposure | pentagon | 66.0 | 0.120 | 3.50 | `#b47327` | 3.52 | `#a86817` | 3.49 |
-| SocialFactor | pentagon | 78.0 | 0.120 | 4.50 | `#966700` | 4.50 | `#b18023` | 4.49 |
-| Food | pentagon | 90.0 | 0.120 | 5.80 | `#755c00` | 5.80 | `#ba9938` | 5.78 |
-| Device | circle | 237.0 | 0.090 | 3.50 | `#4788b0` | 3.52 | `#3b7da4` | 3.49 |
-| MaterialSample | circle | 263.0 | 0.090 | 4.50 | `#546fa5` | 4.55 | `#6d89c0` | 4.49 |
-| Publication | hexagon | 155.0 | 0.030 | 3.50 | `#738679` | 3.52 | `#697b6e` | 3.50 |
-| ★ Study | hexagon | 182.1 | 0.030 | 4.17 | `#617a76` | 4.19 | `#6f8884` | 4.15 |
-| ★ Dataset | hexagon | 209.3 | 0.030 | 4.98 | `#556d72` | 5.00 | `#7c959a` | 4.97 |
-| ★ Agent | hexagon | 236.4 | 0.030 | 5.93 | `#4e606c` | 5.93 | `#8da1af` | 5.89 |
-| ★ Population | hexagon | 263.6 | 0.030 | 7.08 | `#4a5263` | 7.12 | `#a4aec2` | 7.06 |
-| ★ GeographicLocation | hexagon | 290.7 | 0.030 | 8.44 | `#474557` | 8.45 | `#bebbd1` | 8.42 |
-| ★ Concept | hexagon | 317.9 | 0.030 | 10.06 | `#433847` | 10.06 | `#d8cadc` | 10.06 |
-| ★ Other | hexagon | 345.0 | 0.030 | 12.00 | `#3c2b34` | 12.01 | `#f2dae7` | 11.97 |
+| Type | hue | C | rung | Light | vs `#f4f4f2` | Dark | vs `#232320` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Gene | 273.0 | 0.135 | 3.50 | `#6a7cd4` | 3.50 | `#5f70c8` | 3.48 |
+| Variant | 283.0 | 0.135 | 4.50 | `#6965be` | 4.53 | `#817fdb` | 4.50 |
+| SequenceFeature | 293.0 | 0.135 | 5.80 | `#6750a7` | 5.81 | `#a48fec` | 5.79 |
+| Structure | 303.0 | 0.135 | 7.30 | `#643d90` | 7.30 | `#c69efb` | 7.27 |
+| Molecule | 175.0 | 0.105 | 3.50 | `#1d927a` | 3.50 | `#00866f` | 3.48 |
+| MolecularClass | 186.3 | 0.105 | 4.50 | `#007d75` | 4.55 | `#13998f` | 4.49 |
+| BiologicalPathway | 197.7 | 0.105 | 5.80 | `#006a6d` | 5.81 | `#2fadb0` | 5.80 |
+| BiologicalFunction | 209.0 | 0.105 | 7.30 | `#005963` | 7.31 | `#4cbfd1` | 7.26 |
+| Anatomy | 135.0 | 0.115 | 3.50 | `#608d44` | 3.54 | `#558239` | 3.48 |
+| CellType | 148.0 | 0.115 | 4.50 | `#367e45` | 4.51 | `#50985d` | 4.49 |
+| Organism | 161.0 | 0.115 | 5.80 | `#006d48` | 5.81 | `#4dae81` | 5.77 |
+| Disease | 1.0 | 0.145 | 3.50 | `#cb5d82` | 3.51 | `#bf5177` | 3.50 |
+| Phenotype | 12.3 | 0.145 | 4.50 | `#ba4a5e` | 4.51 | `#d76476` | 4.48 |
+| BiomedicalMeasure | 23.7 | 0.145 | 5.80 | `#a73939` | 5.80 | `#ef7a76` | 5.79 |
+| MethodOrProcedure | 35.0 | 0.145 | 7.30 | `#942b0f` | 7.30 | `#ff9379` | 7.28 |
+| Exposure | 66.0 | 0.120 | 3.50 | `#b47327` | 3.52 | `#a86817` | 3.49 |
+| SocialFactor | 78.0 | 0.120 | 4.50 | `#966700` | 4.50 | `#b18023` | 4.49 |
+| Food | 90.0 | 0.120 | 5.80 | `#755c00` | 5.80 | `#ba9938` | 5.78 |
+| Device | 237.0 | 0.090 | 3.50 | `#4788b0` | 3.52 | `#3b7da4` | 3.49 |
+| MaterialSample | 263.0 | 0.090 | 4.50 | `#546fa5` | 4.55 | `#6d89c0` | 4.49 |
+| Publication | 155.0 | 0.030 | 3.50 | `#738679` | 3.52 | `#697b6e` | 3.50 |
+| ★ Study | 182.1 | 0.030 | 4.17 | `#617a76` | 4.19 | `#6f8884` | 4.15 |
+| ★ Dataset | 209.3 | 0.030 | 4.98 | `#556d72` | 5.00 | `#7c959a` | 4.97 |
+| ★ Agent | 236.4 | 0.030 | 5.93 | `#4e606c` | 5.93 | `#8da1af` | 5.89 |
+| ★ Population | 263.6 | 0.030 | 7.08 | `#4a5263` | 7.12 | `#a4aec2` | 7.06 |
+| ★ GeographicLocation | 290.7 | 0.030 | 8.44 | `#474557` | 8.45 | `#bebbd1` | 8.42 |
+| ★ Concept | 317.9 | 0.030 | 10.06 | `#433847` | 10.06 | `#d8cadc` | 10.06 |
+| ★ Other | 345.0 | 0.030 | 12.00 | `#3c2b34` | 12.01 | `#f2dae7` | 11.97 |
 
 **The ladder inverts between modes by construction.** In light a higher rung is a darker colour
 (`Structure` is the darkest violet); in dark a higher rung is a lighter one (`Structure` is the palest
 violet). Same rung index, same relative position within the family, opposite direction — which is what
 keeps a family readable in both modes without a second authored table.
 
-#### 5.3.1 The shape channel
+#### 5.3.1 The mark: every node is a circle
 
-**Shape carries family; lightness carries the member within a family.** This is the redundant
-non-colour channel WCAG 1.4.1 requires and the draft had none of. It is one `ctx.beginPath()` branch
-in the node painter.
+> **Superseded.** This subsection defined a **seven-silhouette shape channel** — one shape per
+> family, an assignment justified by a measured confusability table, and four drawing rules. The
+> channel was **removed outright**; see
+> [R-04, as amended](../knowledge-ui-redesign/redesign-spec.md). The operator's ruling was that a
+> viewer who cannot separate two hues can hover, read the label, or open the inspector, and directed
+> that node shape leave the codebase. The confusability table is not reproduced here: it graded 21
+> shape pairs against a channel that no longer exists, and a live table would read as binding.
 
-Seven shapes for seven families, because seven is about the discriminable limit for a silhouette at
-this size — not 28, which would need shape to do the whole job and could not.
+**Every node is a circle, in every format and at every zoom.** There is no family silhouette, no
+per-family path generator, and no preference that restores one.
 
-**The assignment is measured, not chosen by taste.** Some family pairs collapse badly under simulated
-dichromacy and some do not, and some shape pairs are far easier to confuse at 10px than others — the
-"round-ish" set {circle, hexagon, pentagon, rounded-square} is mutually confusable, while triangle,
-square and diamond are unmistakable against everything. The assignment above is the one that makes
-**every family pair whose colour distance falls below ΔE00 3.0 under any simulated vision type land
-on a shape pair that is at least moderately distinct**, and pushes all four mutually-confusable
-round-ish pairings onto family pairs that are ≥ 6.84 apart in colour:
+**What replaced it** is §5.12's keyboard model and its `aria-live="polite"` region, which speaks
+`<identifier>, <node_type>, <family>` on every focus change (`Multiple sclerosis, Disease, Clinical`),
+backed by §5.8's haloed labels. That is a **text** alternative rather than a second visual one,
+and it is the broader of the two: a silhouette served a sighted viewer with dichromacy and nobody
+else, and only while the mark was large enough to resolve — at a 7px radius, seven silhouettes are a
+demanding discrimination even with full colour vision.
 
-| Family pair | min ΔE00 over both modes × 4 vision types | Shape pair | Distinctness |
-| --- | --- | --- | --- |
-| Clinical ↔ Exposome | **0.00** | rounded-square / pentagon | moderate |
-| Anatomy & organism ↔ Physical | **0.30** | triangle / circle | strong |
-| Molecular & process ↔ Physical | **0.37** | diamond / circle | moderate |
-| Molecular & process ↔ Provenance & context | **0.97** | diamond / hexagon | moderate |
-| Anatomy & organism ↔ Clinical | 1.49 | triangle / rounded-square | strong |
-| Molecular & process ↔ Anatomy & organism | 1.55 | diamond / triangle | strong |
-| Genomic ↔ Physical | 2.66 | square / circle | moderate |
-| Genomic ↔ Anatomy & organism | 3.13 | square / triangle | strong |
-| *… 9 further pairs, all ≥ 3.25 …* | | | |
-| **the four weakest shape pairings, shown together:** | | | |
-| Physical ↔ Provenance & context | 6.84 | circle / hexagon | weak |
-| Clinical ↔ Physical | 11.62 | rounded-square / circle | weak |
-| Genomic ↔ Clinical | 16.24 | square / rounded-square | weak |
-| Exposome ↔ Provenance & context | 16.76 | pentagon / hexagon | weak |
+**What the canvas still draws structurally**, all of it monochrome-safe and none of it type:
 
-Rules that come with the channel:
+- **Solid disc versus hollow ring.** The 20 **Biomedical Entity** types paint as filled circles; the
+  8 **Provenance & Context** types paint as open rings. That is BioOKF's own top-level division — the
+  science, versus where the science came from — so the distinction is semantic rather than invented.
+  The ring is **1.7**, floored (`ForceGraphCanvas.tsx`: `max(1.7, nodeStrokeWidth * 1.55) /
+  globalScale`); the hollow/solid decision itself is `nodeMark.ts`'s `isHollow` / `isHollowType`,
+  matched by family **name** against the generated palette rather than by a hardcoded list of eight
+  type strings, so a vocabulary change moves it. At the 2.6 a first draft used, the ring ate most of
+  a 7px mark and read as a donut. The DOM key is thinned to a **1.5px inset** on a 10px swatch to
+  match, because a key that disagrees with the mark teaches the wrong thing.
+- **External nodes** — a referenced entity with no page yet, not a type — are hollow with a **dashed**
+  ring (§5.6). External is a state, not a type.
+- **Retracted** keeps its existing treatment: a solid ring plus the `!` badge (§5.5).
+- **Untyped nodes are never hollow**, and neither are OKF nodes on the hashed fallback. In a legacy
+  base every page would be hollow, and a marker that applies to every node in the base carries
+  nothing — the same argument `hashedFill` makes for not giving OKF nodes a marker at all.
 
-- **The shape is drawn at the node's radius as a circumradius**, so a triangle and a circle of the
-  same `r` occupy the same hit circle. force-graph's shadow canvas paints plain arcs at
-  `nodeRelSize`, so hit areas stay circular for every shape — slightly generous for a triangle, which
-  is the right direction.
-- **Below `r * globalScale >= 3.0` every node paints as a circle.** A polygon under 6px across is
-  anti-aliased into a disc anyway and the path cost is wasted. Below that zoom the canvas is a
-  *density map*, not a type map, and identification is by label and inspector. This is the same
-  regime in which §5.5 suppresses credibility, and it is one LOD story, not two.
-- **External nodes keep their family shape** and are hollow (§5.6). External is a state, not a type.
-- **In OKF mode every node is a circle**, because every node takes the hashed fallback and there are
-  no families. A shape channel that applies to everything carries nothing.
-- **The legend teaches the mapping once per family** (§4.7), with the glyph beside the family name.
-  Per-type swatches stay 8px circles.
+⚠ **The solid/hollow split is a two-state channel, not a replacement for seven.** It says *entity or
+provenance*; it does not say which family, and nothing on the canvas does. Type identification is
+fill, label, hover, legend and inspector — plus the live region for a non-visual reader.
+
+⚠ **Do not reintroduce shape by the back door.** `nodeShapes.ts`, `GraphShapeGlyph.tsx` and
+`graphPreferences.ts` were deleted; `NODE_SHAPES` and all seven `shape:` keys left
+`themes/graph.mjs`; `shapeOf` left the palette generator; and `typeShape` / `NodeShape` left
+`styles/graphPalette.ts`. `GraphShapeGlyph` was replaced by `NodeSwatch.tsx` rather than simply
+removed — it drew the silhouette **and** filled it with the type's palette hex, so deleting it
+wholesale would have taken the colour with it and turned the legend, the facet rows and both
+inspectors monochrome in the same edit.
 
 #### 5.3.2 Colour-vision audit
 
@@ -1097,10 +1138,15 @@ Two things this table says plainly. **Cross-family colour distance under dichrom
 by any palette** — 28 marks cannot be mutually separated on one surviving opponent axis, and chasing
 it is what would have forced the whole palette darker for no gain. **And tritanopia is the worst case
 here, not the red-green deficiencies** — 0.30 light and 0.00 dark, a fact the committee's own
-analysis did not surface because it tabulated protan and deutan only. Both are the argument for the
-shape channel rather than against the palette.
+analysis did not surface because it tabulated protan and deutan only. Both were originally the
+argument for the shape channel rather than against the palette; with that channel removed (R-04)
+they are the argument for §5.12's spoken announcement, and they stand as the **accepted cost** the
+top of this document states plainly: `Phenotype` and `Food` are one colour under dark tritanopia and
+are told apart by label, hover, legend and inspector.
 
-**Within-family minima — the pairs where colour is the sole channel**, because shape is identical:
+**Within-family minima — the pairs where colour is the sole channel.** This was always true within a
+family, because every member shared one silhouette; since R-04 it is true of every pair on the
+canvas, and this table is simply the tightest half of that:
 
 | Family | l/norm | l/deut | l/prot | l/trit | d/norm | d/deut | d/prot | d/trit |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1119,17 +1165,26 @@ The draft's floor was **1.82**.
 
 Two floors, because the palette has two kinds of pair:
 
-- **Within-family pairs — the same shape, so colour is the only channel: ΔE00 ≥ 3.0 under normal
-  trichromacy and under each of the three simulated deficiencies, in both modes.** Measured worst
-  case 3.55, so the assertion holds with 0.55 of headroom.
+- **Within-family pairs: ΔE00 ≥ 3.0 under normal trichromacy and under each of the three simulated
+  deficiencies, in both modes.** Measured worst case 3.55, so the assertion holds with 0.55 of
+  headroom. **This guard is live and must not be removed.** It is the one CVD floor that survived
+  R-04: `graphPalette.test.ts` still asserts ≥ 3.0 for every same-family pair × 4 vision types × 2
+  modes, and the redesign re-measures the worst case at **4.28** after R-05 lifted the fill band.
 - **Normal trichromacy over all 378 pairs: ΔE00 ≥ 5.0**, unchanged from the draft. Measured 5.54 /
   5.65, so this survives the re-solve.
-- **Cross-family pairs under simulated deficiency are measured and reported, and asserted only to
-  differ in shape.** Asserting a colour floor there would be a lie: the measured minimum is 0.00 and
-  no palette of 28 marks can do better on one axis. The structural assertion — that every
-  cross-family pair carries a shape difference, and that the shape assignment still satisfies
-  §5.3.1's below-3.0 rule — is the one that can actually fail if someone edits the family table, and
-  is therefore the one worth having.
+- **Cross-family pairs under simulated deficiency are measured and *reported*, and asserted to no
+  floor at all.** Asserting a colour floor there would be a lie: the measured minimum is 0.00 and no
+  palette of 28 marks can do better on one axis.
+
+  > **Superseded.** This bullet used to add a *structural* assertion in place of the colour floor —
+  > that every cross-family pair differs in `shape`, and that the shape assignment still satisfies
+  > §5.3.1's below-3.0 rule — and called it "the one worth having". R-04 deleted the shape channel,
+  > so all three shape-coverage tests were deleted with it and **no assertion stands in that slot**.
+  > What survives is a report over all 21 family pairs plus a deliberately loose sanity bound
+  > (`worst < 3.0`, `worst >= 0`) that catches the palette being rebuilt into something wildly
+  > different without pretending cross-family separation exists. ⚠ **Deleting the tests did not
+  > delete the measurement**: the collapse is still real, it is still reported on every CI run, and
+  > the redundant channel that answers it is text (§5.12), not another visual encoding.
 
 **Why 3.0 and not 5.0 within a family.** ΔE00 ≈ 1.0 is the classic just-noticeable difference under
 ideal conditions — large uniform patches, side by side, controlled viewing. None of those hold for a
@@ -1139,7 +1194,8 @@ distinguishable lightness levels between contrast 3.50 and 12.00 give ~3.5 at be
 the extremes into the label ink. 3.0 is set at roughly three times the ideal-condition JND, which is
 the point where the difference is reliably suprathreshold for two marks a user is comparing — i.e. it
 is a floor that guarantees "not the same colour", which is all this design asks colour to do. It does
-not guarantee "identifiable in isolation"; the shape, the label and the inspector carry that. Say
+not guarantee "identifiable in isolation"; the label, the inspector and §5.12's announcement carry
+that — the shape channel used to appear in this list and no longer does (R-04). Say
 that plainly in the guard's comment, because a floor whose meaning is overstated is worse than a
 lower one.
 
@@ -1275,9 +1331,9 @@ are exactly the members of the Provenance family that §4.6's Source facet lists
 ring now agree by construction. A source with no tier keeps the neutral separation ring — absence of
 a verdict is not a verdict.
 
-**Geometry — an orbit ring, not an outline.** Two concentric strokes; the orbit ring is a **circle**
-regardless of the node's family shape, because a circular annulus around a hexagon still reads as a
-ring and the alternative is seven ring path generators.
+**Geometry — an orbit ring, not an outline.** Two concentric circles. This used to be a compromise —
+a circular annulus around a hexagon still reads as a ring, and the alternative was seven ring path
+generators — and since R-04 it is simply what the mark is: a circle inside a circle.
 
 | Stroke | Radius | Width |
 | --- | --- | --- |
@@ -1420,7 +1476,9 @@ radius       = external ? clamp(4.5 + 1.4 * centrality, 4.5, 6.2)
 hub          = !external && deg >= hubThreshold
 ```
 
-`radius` is the **circumradius** of the family shape (§5.3.1). Non-finite radius falls back to
+`radius` is the node's **radius** — every node is a circle (§5.3.1), so there is no circumradius/
+inradius distinction left to make and force-graph's shadow-canvas hit circle is the mark exactly
+rather than a generous approximation of it. Non-finite radius falls back to
 `external ? 5 : hub ? 10 : 6`. All radii are **world** units and scale with zoom.
 
 **Why the percentile replaces top-N.** Top-N is size-blind: on a 12-node base it makes half the graph
@@ -1443,7 +1501,7 @@ createRadialGradient(x, y, r, x, y, r + 13 / globalScale)
 filled over arc(x, y, r + 13 / globalScale)
 ```
 
-**Neutral ring** (every node not showing an orbit ring), drawn on the family shape's own path:
+**Neutral ring** (every node not showing an orbit ring), drawn on the fill's own circular path:
 
 ```text
 sw = isFocus ? max(1.1, densityStrokeWidth) / globalScale : densityStrokeWidth / globalScale
@@ -1464,8 +1522,8 @@ drawn only if sw > 0.05 / globalScale && sa > 0.03 && r * globalScale > 1.2
 Two dim levels replace `DIMMED_OPACITY = 0.22`, because "not related to what I am looking at" and
 "does not match my filter" are different states and one constant cannot say both.
 
-**External nodes** — a referenced entity with no page yet, *not* a type — keep their family shape and
-are hollow: fill = resolved ground, ring = resolved ink at 0.45, width `1.0 / globalScale`, dash
+**External nodes** — a referenced entity with no page yet, *not* a type — are a hollow **dashed**
+circle: fill = resolved ground, ring = resolved ink at 0.45, width `1.0 / globalScale`, dash
 `[2.5, 2] / globalScale`. No orbit ring, no glow, never labelled below priority 4, and **no palette
 entry**. This is the deviation from `EXTERNAL_COL = '#D7DBE1'`, a fill that measures ≈1.2:1 on the
 light ground and is simply not visible. A hollow dashed marker says *placeholder* better than a pale
@@ -1590,7 +1648,10 @@ label alpha: 0.3 when a node is focused and this node is neither the focus nor a
 Sort candidates by priority **descending**, then place greedily. The sort is the whole point: a hub's
 label beats a leaf's for the same square of canvas.
 
-> **The label is not the type channel, and this ladder is why the shape channel exists.** `pr = 1`
+> **The label is not the type channel, and this ladder used to be the argument for the shape
+> channel.** ⚠ **The measurement stands; the conclusion is superseded** — R-04 deleted the shape
+> channel, so at fit scale the unlabelled majority now carries *colour and nothing else*, which is
+> precisely the residual cost §1 records rather than a gap this section can close. `pr = 1`
 > fires only at `globalScale ≥ 1.55`. Hubs are the top ~18% by degree and `zoomToFit` caps at
 > 1.75/2.15/2.55/3.1 but takes the *computed* fit, which for a few-hundred-node graph is far below
 > 1.55. So at the view's default state roughly **82% of nodes carry no label**, and for those nodes
@@ -1879,15 +1940,25 @@ ground — resolves. That is exactly the line DR-10 draws.
 
 ### 5.12 Keyboard model for the canvas
 
+**This is built.** The pure half is `graph/graphKeyboard.ts` (`nextNodeInDirection`, `tabOrder`,
+`stepThrough`, `announce`, `highestDegree`), covered by 18 tests in `graphKeyboard.test.ts`; the DOM
+half is in `ForceGraphCanvas.tsx`, and it has been verified in a real browser. Everything below is
+present-tense behaviour, not a proposal.
+
 The draft gave the canvas no keyboard access at all: no tab stop, no focus model, no traversal, no
 selection. §5.7 then *added* a capability — edges become selectable — and defined it purely in pointer
 terms, while §3.5 declares the canvas "the reason the view exists" and the one pane that never yields.
-The primary content of the section would have been reachable only with a pointer, which is WCAG 2.1.1
-at Level A.
+The primary content of the section was reachable only with a pointer, which is WCAG 2.1.1 at Level A.
+
+⚠ **This section is now load-bearing for a second reason.** R-04 deleted the node shape channel, so
+colour is the only *visual* type encoding left; the `aria-live` region below is the redundant channel
+that replaces it, and it is the broader substitute — it serves a blind reader and a screen-reader
+user as well as a viewer with dichromacy. Weakening it is not a keyboard regression, it is a
+colour-vision one.
 
 | Key | Behaviour |
 | --- | --- |
-| `Tab` | The canvas is a single tab stop (`tabindex=0`, `role="application"`, `aria-label="Knowledge graph"`). |
+| `Tab` | The canvas is a single tab stop (`tabIndex={0}`, `role="application"`, `aria-label="Knowledge graph"`), with a `focus-visible` inset ring in `--border-accent`. |
 | `Arrow` keys | Move the focused node within the **current filter set**, in the arrow's direction, choosing the nearest candidate within a ±60° cone and falling back to the nearest node in that half-plane. |
 | `Tab` / `Shift+Tab` *inside* the canvas | Step through the visible set in **descending degree** order — hubs first, which is the same priority the label ladder uses. |
 | `Enter` / `Space` | Open the inspector on the focused node. |
@@ -1899,10 +1970,18 @@ and "Referenced by" row a real button that selects the edge or the node at the o
 inspector *is* the keyboard surface for edges and no per-edge canvas focus is needed. That is also
 why §5.7's 8px pointer tolerance is a pointer concern only.
 
-**An `aria-live="polite"` region announces the focused node** as `<identifier>, <node_type>,
-<family>` — for example `IL6, Gene, Genomic`. This is the text alternative that makes the type
-encoding non-visual as well as non-colour, and it is what closes SC 1.4.1 rather than the legend,
-which is a colour key and therefore still requires discriminating the hue to use.
+**An `sr-only` `aria-live="polite"` region announces the focused node** as `<identifier>,
+<node_type>, <family>` — for example `Multiple sclerosis, Disease, Clinical`. It is `aria-atomic`,
+because the three parts are one sentence. This is the text alternative that makes the type encoding
+non-visual as well as non-colour, and — with the shape channel gone — it is what closes SC 1.4.1,
+rather than the legend, which is a colour key and therefore still requires discriminating the hue to
+use.
+
+⚠ **Both optional parts really are optional.** `identifier` is nullable on the API type, so the
+display label is the fallback; and a legacy or plain-OKF base has no families at all, so the family
+part is *dropped* rather than announced as "undefined". `announce()` in `graphKeyboard.ts` owns that,
+and `familyOfType` (§6.1) is where the family comes from — the same inverted index the Type facet
+uses, so the two can never disagree.
 
 ---
 
@@ -1911,7 +1990,8 @@ which is a colour key and therefore still requires discriminating the hue to use
 ### 6.1 The graph palette — generated, never hand-written
 
 **Authoring file (new): `ui/desktop/themes/graph.mjs`.** It holds ~50 numbers — the seven family rows
-(anchor hue, chroma, spread, shape name, ordered type list), the two rung ladders, the fallback
+(anchor hue, chroma, spread, ordered type list — **no `shape:` key; `NODE_SHAPES` and all seven of
+them were deleted with the channel, R-04**), the two rung ladders, the fallback
 chroma and rungs, and the seven credibility rows. It holds **no hex values and no ground**. It sits
 beside `themes/*.theme.mjs` but is not a theme (it has no family id); the generator imports it
 directly.
@@ -1920,17 +2000,13 @@ directly.
 `GENERATED_THEMES[family]`, because §5.1 proves one pair serves all three families:
 
 ```ts
-export type NodeShape = 'circle' | 'square' | 'rounded-square' | 'diamond'
-                      | 'triangle' | 'pentagon' | 'hexagon';
-
 export type GraphPalette = {
   types: Record<string, string>;                              // the 28, keyed by OKF type name
-  families: Record<string, { shape: NodeShape; members: string[] }>;
-  shapeOf: Record<string, NodeShape>;                         // type name -> shape, precomputed
+  families: Record<string, { members: string[] }>;            // members only — R-04 removed `shape`
   credibility: Record<CredibilityTier | 'retracted', string>; // the 7 ring hues
   ringArcs: Record<CredibilityTier | 'retracted', number | 'dashed' | 'solid'>;
   fallbackChroma: number;                                     // 0.055
-  fallbackRungs: [number, number, number, number];            // [3.90, 4.95, 6.20, 7.90]
+  fallbackLightness: [number, number, number, number];        // light [0.7625, 0.7075, 0.6525, 0.5975]
   ground: string;                                             // RESOLVED from --background-muted (§5.1)
 };
 
@@ -1947,11 +2023,19 @@ need. **This design adds zero *theme* tokens** — no family authors anything ne
 that keeps a fourth family cheap. (It does add three structural tokens, §6.2, and one runtime
 dependency, §4.8.)
 
-**Consumption.** `graphStyle.ts` exports `typeFill(type, mode)` reading
-`GRAPH_PALETTE[mode].types[type] ?? hashedFill(type, mode)` and `typeShape(type, mode)` reading
-`GRAPH_PALETTE[mode].shapeOf[type] ?? 'circle'`. `mode` comes from `useResolvedTheme()`, threaded
-through the same `useCanvasTheme` hook that carries ink and ground — one theme-plumbing path, never
-two.
+**Consumption.** `styles/graphPalette.ts` is the read side. It exports `typeFill(type, mode)` reading
+`GRAPH_PALETTE[mode].types[type] ?? hashedFill(type, mode)`, and — since R-04 — `familyOfType(type,
+mode)` in place of the deleted `typeShape`, returning the family name or `null` off a memoised
+inverted index built once per mode. **There is no `typeShape` and no `NodeShape`**; the two readers
+that need the mark are `nodeMark.ts` (`fillFor` / `isHollow` / `credibilityKey`, for the canvas) and
+`NodeSwatch.tsx` (for the DOM), and neither asks for a silhouette.
+
+⚠ **`familyOfType` exists because the inversion had a second reader.** It was hand-built inside
+`GraphFacetStrip`, and §5.12's announcement needs the same map; a third private copy is how the
+announcement and the picker come to disagree about which family a type is in.
+
+`mode` comes from `useResolvedTheme()`, threaded through the same `useCanvasTheme` hook that carries
+ink and ground — one theme-plumbing path, never two.
 
 **`credColors.ts` is deleted.** `nodeFill()` is what DR-9b replaces; `kindColor` is a five-entry
 pre-OKF map with no place in a 28-type world; `retractedColor` moves into
@@ -2055,7 +2139,7 @@ the same category of consumer.
 | `scripts/generate-themes.mjs` | The `--background-muted` six-scope identity assertion (§5.1), run before emitting `GRAPH_PALETTE`, dying with the stated message; and resolving the ground pair into `GraphPalette.ground`. |
 | `scripts/lib/theme-tokens.mjs` | `deltaE00(hexA, hexB)` — CIEDE2000, Sharma–Wu–Dalal, on CIELAB D65 — and `simulateCvd(hex, 'protan' \| 'deutan' \| 'tritan')` — Viénot/Brettel–Mollon 1999 in linear-light sRGB. **One implementation each**, beside `contrast` and `blend`, for the reason that module exists at all. |
 | `scripts/check-contrast.mjs` | Keeps only what is a **CSS fact**: the `--background-muted` six-scope identity, now also asserted from the stylesheet side. |
-| **`src/styles/graphPalette.test.ts` (new, beside `codeTheme.test.ts`)** | Everything that reads `GRAPH_PALETTE`: (a) 56 type-contrast assertions at `min = 3.0` against `GRAPH_PALETTE[mode].ground`; (b) 14 ring assertions at `min = 3.0`; (c) the CVD audit — all 378 pairs × 4 vision types × 2 modes, asserting **within-family ΔE00 ≥ 3.0** and **normal-trichromacy ΔE00 ≥ 5.0**, and asserting that every cross-family pair differs in `shape`; (d) **exact-string assertions** that the generated hexes equal the tables in §5.3 and §5.5; (e) the eight §5.4 hash vectors. |
+| **`src/styles/graphPalette.test.ts` (new, beside `codeTheme.test.ts`)** | Everything that reads `GRAPH_PALETTE`: (a) 56 type-contrast assertions at `min = 3.0` against `GRAPH_PALETTE[mode].ground`; (b) 14 ring assertions at `min = 3.0`; (c) the CVD audit — all 378 pairs × 4 vision types × 2 modes, asserting **within-family ΔE00 ≥ 3.0** and **normal-trichromacy ΔE00 ≥ 5.0**, and *reporting* all 21 cross-family minima with no floor (the three shape-coverage assertions that stood here were deleted with the channel — R-04); (d) **exact-string assertions** that the generated hexes equal the tables in §5.3 and §5.5; (e) the eight §5.4 hash vectors. |
 | `npm run themes -- --check` | Already wired into `lint:check`; fails CI if `GRAPH_PALETTE` is stale relative to `themes/graph.mjs`. |
 
 **Two honesty clauses about what the guards do and do not prove:**
@@ -2121,7 +2205,8 @@ one number in this document that is a judgement rather than a measurement, and i
 | `graph/KnowledgeGraphPanel.tsx` (198) | rewrite | §4.5 | A | — |
 | `graph/ForceGraphCanvas.tsx` (327) | **replace** | §5.4–§5.12 | A, then B | see §7.4 |
 | `graph/graphStyle.ts` (120) | rewrite | §5.11, §6.1 | A | `graphStyle.test.ts` — 4 cases become 1 parameterised table over 7 fields |
-| `graph/nodeShapes.ts` | **new** | §5.3.1 | A (geometry) / B (assignment) | — |
+| `graph/nodeShapes.ts` | ~~new~~ **deleted** — R-04 removed the shape channel; the mark lives in `graph/nodeMark.ts` (fill + solid/hollow) and `graph/NodeSwatch.tsx` (the DOM key) | §5.3.1 | — | `nodeMark.test.ts` |
+| `graph/graphKeyboard.ts` | **new** — the pure half of §5.12 (cone traversal, degree-ordered walk, `announce`) | §5.12 | A | `graphKeyboard.test.ts` (18) |
 | `graph/layout.ts` | **new** | §5.10 | A (forces) / C (seeding) | — |
 | `graph/labelText.ts` (109) | edit — delete `wrapLabel` | §5.8 | A | `labelText.test.ts` — 3 cases deleted with it |
 | `graph/credColors.ts` | **delete** | §6.1 | B | — |
@@ -2166,7 +2251,8 @@ one number in this document that is a judgement rather than a measurement, and i
 concentric ring packing, hub selection via a four-term affinity score, golden-angle member spirals, a
 hard post-tick `containNode` clamp with velocity clamping and NaN re-seeding, per-link distance and
 strength accessors, a 16-row × 4-band force table, viewport culling in `onRenderFramePre`, a
-density/LOD model, seven node shape paths, an arc-segmented credibility ring, an entirely new label
+density/LOD model, a two-state solid/hollow circular mark (**not** seven shape paths — R-04 removed
+them), an arc-segmented credibility ring, an entirely new label
 pass in `onRenderFramePost` with priority sorting and greedy AABB packing and two-level memoisation,
 five edge render cases including a filled tapered quadrilateral and lane-canonicalised curvature, and
 a keyboard focus model.
@@ -2229,10 +2315,15 @@ then the canvas.
 - **Pick a format when you create a knowledge base.** OKF (permissive, the default) or BioOKF (the
   strict biomedical profile), each with guidance on when to pick it — and a plain warning that the
   choice cannot be changed yet.
-- **The graph shows what things are, and not only by colour.** A node's *shape* says which of seven
-  families it belongs to and its *shade* says which type within that family; the ring around a source
-  says how well-sourced it is by how many arcs it has. Arbitrary types in an OKF base get a stable
-  colour of their own that never changes between sessions.
+- **The graph shows what things are.** Every page is a circle, and its *colour* says which type it
+  is — related types sit in one hue family, so genes look like genes and diseases look like diseases.
+  Pages that are *evidence* rather than science — publications, studies, datasets — are drawn as open
+  rings instead of filled dots, and a page that is only referenced and not yet written is a dashed
+  ring. The ring around a source says how well-sourced it is by how many arcs it has. Arbitrary types
+  in an OKF base get a stable colour of their own that never changes between sessions.
+- **If two colours look the same to you, the graph will tell you in words.** Hover or focus a page
+  and its name, type and family are announced and shown; the legend and the inspector name every
+  type. Colour is the fast channel, never the only one.
 - **Links carry meaning.** A tapered line shows which way a claim points; a dashed red line with a
   struck-through label is a negation; a faint dotted line is provenance the system derived rather than
   something you asserted. Hovering a link names its predicate.
@@ -2332,18 +2423,19 @@ jsdom has no canvas 2D context, no layout, no viewport, does not run Tailwind an
 | --- | --- |
 | `scripts/check-contrast.mjs` (Node, no browser) | The `--background-muted` identity across all six family × mode scopes. That and nothing else from this document — it reads only `main.css`. |
 | `scripts/generate-themes.mjs` | The same identity from the generator side, before emitting; the resolved ground pair. |
-| `src/styles/graphPalette.test.ts` (Vitest, over the generated TS module) | The 56 type-contrast assertions, the 14 ring assertions, the CVD audit over 378 pairs × 4 vision types × 2 modes, the cross-family shape assertion, the exact-hex pins, and the eight hash vectors. |
+| `src/styles/graphPalette.test.ts` (Vitest, over the generated TS module) | The 56 type-contrast assertions, the 14 ring assertions, the CVD audit over 378 pairs × 4 vision types × 2 modes (within-family floor asserted, cross-family collapse reported only — the shape assertions went with the channel, R-04), the exact-hex pins, and the eight hash vectors. |
 | `scripts/lib/__fixtures__/ciede2000-sharma.json` | That `deltaE00` is CIEDE2000 at all. Without it the audit above can pass vacuously. |
 | `npm run themes -- --check` | `GRAPH_PALETTE` is not stale relative to `themes/graph.mjs`. |
-| Vitest (jsdom) — **pure functions only** | `fnv1a`; the density formulas over a table of `(visibleNodes, visibleEdges, globalScale)`; the AABB overlap predicate; the label priority ladder over a focus/hover/hub/neighbour/zoom matrix; the `w100 * fs / 100` width scaling; `prettyLabel`; the facet predicate (OR-within, AND-across); the arrow-key candidate selection in §5.12. Each is deliberately free of React and the DOM, for the reason `utils/messageClamp.ts` records: a threshold you can only exercise by rendering a component is one nobody re-tests. |
+| Vitest (jsdom) — **pure functions only** | `fnv1a`; the density formulas over a table of `(visibleNodes, visibleEdges, globalScale)`; the AABB overlap predicate; the label priority ladder over a focus/hover/hub/neighbour/zoom matrix; the `w100 * fs / 100` width scaling; `prettyLabel`; the facet predicate (OR-within, AND-across); **and all of §5.12's pure half — `graphKeyboard.test.ts` exists and holds 18 tests** over cone traversal, the half-plane fallback, the degree-ordered `Tab` walk, `Home`, and the `announce()` string with each optional part missing. Each is deliberately free of React and the DOM, for the reason `utils/messageClamp.ts` records: a threshold you can only exercise by rendering a component is one nobody re-tests — and `ForceGraphCanvas` cannot be rendered in jsdom at all, because force-graph calls `canvas.getContext('2d')`. |
 | **Browser harness** (new, on the `.artifact-harness` pattern: a plain Vite page mounting the real `ForceGraphCanvas` and the real panes against fixture graphs) | Everything else, enumerated below. |
 
 ### 10.1 What jsdom cannot see — the explicit list
 
 **Canvas** (no 2D context, no layout, `getComputedStyle` returns nothing usable):
 
-- Every paint behaviour in §5.3.1 and §5.5–§5.10: the seven shape silhouettes at three zooms and their
-  degradation to circles below `r × globalScale = 3.0`; the orbit ring and its 1px gap just above and
+- Every paint behaviour in §5.3.1 and §5.5–§5.10: the solid-versus-hollow mark at three zooms —
+  whether a 1.7-unit ring still reads as an open circle rather than a donut or a filled dot at the
+  small end; the external node's dashed ring; the orbit ring and its 1px gap just above and
   just below `r × globalScale = 3.5`; **whether four arcs are countable at the LOD boundary**, which
   §5.5.1 explicitly declines to assert; the tapered quad reading directionally at full density fade;
   the `not_` dash plus struck-through label; the `[1,4]` synthesized dot pattern reading as distinct
@@ -2371,9 +2463,16 @@ jsdom has no canvas 2D context, no layout, no viewport, does not run Tailwind an
 
 **Colour-vision simulation** is *not* on this list. It is arithmetic over generated hexes and belongs
 in `graphPalette.test.ts`, where it runs on every CI job rather than in a harness someone has to
-remember to open. But **the shape channel is** — that seven silhouettes are actually distinguishable
-at the sizes §5.6 produces is a perceptual claim, and the harness is where it gets checked, on all
-three families, light and dark, with contrast **measured** in the running app rather than asserted.
+remember to open.
+
+> **Superseded.** This paragraph continued: *"But **the shape channel is** — that seven silhouettes
+> are actually distinguishable at the sizes §5.6 produces is a perceptual claim, and the harness is
+> where it gets checked."* R-04 removed the channel, so there is no such claim left to check. What
+> takes its place in the harness is narrower and still perceptual: that the **1.7-unit hollow ring**
+> reads as an open circle at the radii §5.6 produces — neither a donut nor a filled dot — and that
+> the **1.5px legend swatch** agrees with it, on all three families, light and dark, with contrast
+> **measured** in the running app rather than asserted. The type-level claim that silhouettes used to
+> answer is now answered by §5.12's live region, which is asserted where it lives.
 
 ### 10.2 Fixtures
 

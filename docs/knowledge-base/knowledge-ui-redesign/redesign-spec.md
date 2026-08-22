@@ -174,8 +174,17 @@ was written, shape was the only redundant, monochrome-safe channel the section s
    **The hollow ring is 1.7px, not 2.6.** At 2.6 on a 7px radius the ring ate most of the mark and
    read as a donut. **The legend swatch is thinned to 1.5px inset to match** — the key and the mark
    must agree or the legend teaches the wrong thing.
-2. **Labels become the identification channel**, always on and haloed (`paint-order: stroke`, 3px
+2. **Labels become the identification channel**, haloed (`paint-order: stroke`, 3px
    ground-coloured). This is why BioOKF's all-circle canvas is readable.
+   ⚠ **"Always on" is what this record specified and NOT what shipped**, and the difference is
+   load-bearing rather than cosmetic. `ForceGraphCanvas.tsx:555` gates an ordinary node's label on
+   `globalScale >= 1.55`; below that only the selected, hovered, hub and focus-neighbour nodes are
+   labelled and every other node takes `continue`. At rest the 43-node fixture paints **four**
+   labels. So at fit scale — the state the canvas is in when you arrive — roughly nine nodes in ten
+   carry colour and nothing else, and the reader must zoom or point to identify them. This is the
+   single biggest reason the accessibility argument below rests on §5.12's live region rather than
+   on this clause: had labels really been always-on, the residual cost would be much smaller than
+   it is.
 3. ~~**`Distinguish types by shape` — an opt-in preference, default off**, restoring the seven
    silhouettes.~~ **Withdrawn.** See below.
 
@@ -361,9 +370,16 @@ survive measurement:**
 
 - **940 for the card, 1140 for the filter row — two constraints, two numbers.** The first draft
   bundled both at 1024. The card is a 246px overlay needing only a canvas to sit in; the full filter
-  row needs **757px of centre column** (196 search + 1 divider + 90 + 92 + 78 + 75 facets + 149
-  readout, plus gaps and padding). With a 300px rail that puts its floor at a 1057px pane — so at
-  1040, a very common window, four facets **overflowed by 19px**.
+  row needs a whole centre column of its own. With a 300px rail, a first measurement put its floor at
+  a 1057px pane — so at 1040, a very common window, four facets **overflowed by 19px** — and the
+  step was set at 1060.
+  ⚠ **1060 was still too low, and §11.1 records why the first measurement could not see it.** Two
+  later corrections raised the requirement: `Predicate` folded into `More` to stop the row clipping
+  in the band below, so crossing this line now restores *three* chips at once rather than two. Swept
+  in 5px steps, the row overflowed its column by **44px at 1060** and did not clear until **1110**.
+  The shipped step is **1140**. The general lesson is in §11.1: a threshold derived from a
+  content-width sum is a floor for one composition, and it silently stops being one the moment the
+  composition changes.
 - **Source order is the mechanism, and it bit once.** Every rule sits at the same specificity, so the
   narrow defaults must be declared *before* the `@container` blocks. Declared after,
   `.kb-f.core { display: inline-flex }` leaked into the 760px step and the pane painted both the core
@@ -383,7 +399,7 @@ strip's content measured 769px inside a 550px box"*.
 | Pane | State | Row |
 | --- | --- | --- |
 | ≥ 1140px | **Full** | search 196 · Type · Predicate · Source · Status · `Showing N of M` · `Clear` |
-| 860–1059px | **Condensed** | search 172 · Type · Predicate · **More (2)** · `Clear` as an icon |
+| 860–1139px | **Condensed** | search 172 · Type · **More (3)** · `Clear` as an icon |
 | < 860px | **Compact** | search takes the remaining width · **Filters (3)** · `Clear` as an icon |
 
 **Why nothing wraps.** A two-line filter bar takes 48px from the canvas permanently, on the pane
@@ -415,7 +431,7 @@ still reported by the number on the control that swallowed it**, and `Clear` nev
 | --- | --- |
 | Base switcher | Anchors to the subject bar. Gains a `Manage bases` footer, its only route. |
 | Type / Predicate / Source | Mechanism unchanged. Rows gain a real **checkbox** so multi-select is legible before the first click. |
-| `More` | **New**, only between 860 and 1059px. Lists the folded facets with their counts. |
+| `More` | **New**, only between 860 and 1139px. Lists the three folded facets (`Predicate`, `Source`, `Status`) with their counts, each opening its own popover. |
 | Actions ⋯ | Unchanged; destructive stays behind the separator. |
 | Node / edge inspector | Stops being a bare dialog. Rail → card → sheet by pane width. |
 | Manage bases | R-07 in full, at 640px. |

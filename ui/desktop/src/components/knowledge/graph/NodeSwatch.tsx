@@ -50,10 +50,17 @@ export function NodeSwatch({
         flex: 'none',
         borderRadius: '9999px',
         display: 'inline-block',
-        // The hollow ring is 1.5px here against the canvas's 1.7 world units —
-        // the canvas value is in graph space and scales with zoom, this one is
-        // in CSS pixels at a 10px swatch. Both read as "a circle that happens
-        // to be open" rather than as a donut.
+        // 1.5px here against the canvas's ~1.7. ⚠ **Both numbers are SCREEN
+        // pixels — the canvas one is not in world units, whatever its
+        // neighbourhood suggests.** `ForceGraphCanvas` sets
+        // `lineWidth = max(1.7, …) / globalScale` inside a world-space
+        // transform, and that division exists precisely so the rendered stroke
+        // stays ~1.7 device px at every zoom rather than scaling with it. An
+        // earlier version of this comment had it backwards, which is worse than
+        // saying nothing: it invites someone to "fix" the division and get a
+        // ring that thickens as you zoom in. The two differ only because this
+        // swatch is 10px and the mark is not; both read as a circle that
+        // happens to be open rather than as a donut.
         background: hollow ? 'transparent' : fill,
         boxShadow: hollow ? `inset 0 0 0 1.5px ${fill}` : undefined,
       }}

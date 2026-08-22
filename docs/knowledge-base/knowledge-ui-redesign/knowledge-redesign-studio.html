@@ -337,7 +337,7 @@ svg.kb-graph{position:absolute;inset:0;width:100%;height:100%;z-index:0;}
    the ONLY thing separating a step from its neighbour is source order. The
    narrow defaults must therefore be declared BEFORE the @container blocks —
    with them after, `.kb-f.core{display:inline-flex}` leaked into the 760px
-   step and both the three core chips and the single `Filters` control painted
+   step and both the core chips and the single `Filters` control painted
    at once. Measured, not theorised. */
 
 /* the narrow step (< 860px): one column, tabs, ONE Filters control */
@@ -360,13 +360,30 @@ svg.kb-graph{position:absolute;inset:0;width:100%;height:100%;z-index:0;}
 /* The legend card and the full filter row are TWO constraints, not one, and
    bundling them under a single breakpoint was wrong. The card is a 246px
    overlay and only needs a canvas wide enough to host it. The filter row needs
-   a measured 757px of centre column — so with a 300px Sources rail it cannot
-   appear below a 1057px pane. Both numbers are measured, not chosen. */
+   a measured 810px of centre column — so with a 300px Sources rail it cannot
+   appear below a 1110px pane, and this step therefore sits at 1140. Both
+   numbers are measured, not chosen.
+   ⚠ BOTH of this ladder's overflow seams lived exactly AT a threshold, which
+   is why sweeping the pane in 5px steps from 720 to 1800 found them and
+   checking the four canonical sizes did not — a pane either side of the line
+   renders correctly. At 946 the 940 step widens the Sources rail, taking width
+   FROM the centre column, while the filter row shed nothing until the full
+   step: the row overflowed its column by 52px and clipped `Legend` mid-word.
+   Folding `Predicate` into `More` fixed that and moved the seam here, because
+   the full step then restored THREE chips at once instead of two — plus 24px
+   of search width and the `Showing … / Clear` text — so at 1060 it overflowed
+   by 44px at its own threshold and did not clear until 1110. Hence 1140. */
 @container kbpane (min-width: 940px) {
   .kb-body{grid-template-columns:300px minmax(0,1fr);}
   .kb-lcard{display:flex;}
+  /* The `Legend` chip exists ONLY to reopen a dismissed card, so it is bound to
+     the pane's dismissed state — an attribute CSS can see — and never to an
+     inline style on the chip. An inline `display` outranks every rule below and
+     would strand the chip in the 1400 step, where the card it reopens no longer
+     exists. Specificity is (0,2,0) here so the 1400 rule can match it. */
+  [data-legend-off] .kb-legendbtn{display:inline-flex;}
 }
-@container kbpane (min-width: 1060px) {
+@container kbpane (min-width: 1140px) {
   .kb-more{display:none;}
   .kb-f.extra{display:inline-flex;}
   .kb-filt .kb-search{width:196px;}
@@ -377,6 +394,19 @@ svg.kb-graph{position:absolute;inset:0;width:100%;height:100%;z-index:0;}
   .kb-body{grid-template-columns:320px minmax(0,1fr) 340px;}
   .kb-lrail{display:flex;}
   .kb-lcard{display:none;}
+  /* The legend is a permanent rail here, so the chip that reopened the card
+     retires with it — matching the shipped rule of the same name. (0,2,0) to
+     beat the 940 step's dismissed-state rule, which it must OUTRANK and not
+     merely follow: order only separates rules of EQUAL specificity. */
+  [data-legend-off] .kb-legendbtn{display:none;}
+  /* This step takes 340px of legend rail and 20px of Sources rail out of the
+     centre column, which drops from 1098px at a 1399 pane to 743 at 1405 — the
+     same widen-a-rail-and-squeeze-the-centre move that produced the 946 seam.
+     Search absorbs it rather than the row overflowing: it may shrink from its
+     196px basis, never past a 150px floor. Measured, the worst case is 175px at
+     a 1405 pane and it is back to a full 196 by 1450 — search is still never
+     sacrificed, it lends 21px at the seam and takes them straight back. */
+  .kb-filt .kb-search{width:auto;flex:0 1 196px;min-width:150px;}
 }
 
 /* A grid item's default `min-height:auto` lets a tall child push the row past
@@ -672,7 +702,7 @@ b.swq{width:10px;height:10px;border-radius:var(--r-inner);flex:none;display:inli
       <div class="frame-cap"><span class="t">The overflow ladder — search is never sacrificed</span><span class="badge-after">After</span></div>
       <div style="padding:16px;display:flex;flex-direction:column;gap:14px;background:var(--bg-default)">
         <div>
-          <div class="caps" style="margin-bottom:6px">Pane ≥ 1060 — full</div>
+          <div class="caps" style="margin-bottom:6px">Pane ≥ 1140 — full</div>
           <div style="width:100%;border:1px solid var(--border-subtle);border-radius:var(--r-element);overflow:hidden">
             <div class="kb-filt" style="height:48px;border:none">
               <span class="kb-search" style="width:196px;flex:none"><span class="lbl">Filter by name or type</span></span>
@@ -686,14 +716,13 @@ b.swq{width:10px;height:10px;border-radius:var(--r-inner);flex:none;display:inli
           </div>
         </div>
         <div>
-          <div class="caps" style="margin-bottom:6px">Pane 860 – 1059 — condensed: the two least-used fold into <b style="color:var(--text-default)">More</b>, the count becomes an icon</div>
+          <div class="caps" style="margin-bottom:6px">Pane 860 – 1139 — condensed: the three least-used fold into <b style="color:var(--text-default)">More</b>, the count becomes an icon</div>
           <div style="width:640px;max-width:100%;border:1px solid var(--border-subtle);border-radius:var(--r-element);overflow:hidden">
             <div class="kb-filt" style="height:48px;border:none">
               <span class="kb-search" style="width:172px;flex:none"><span class="lbl">Filter by name or type</span></span>
               <span class="kb-vr"></span>
               <span class="kb-f on">Type <span class="cnt">2</span><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
-              <span class="kb-f">Predicate<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
-              <span class="kb-f">More <span class="cnt">2</span><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
+              <span class="kb-f">More <span class="cnt">3</span><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg></span>
               <span class="kb-right"><span class="clr-ico" style="display:grid" title="Clear filters">✕</span></span>
             </div>
           </div>
@@ -712,11 +741,23 @@ b.swq{width:10px;height:10px;border-radius:var(--r-inner);flex:none;display:inli
     </div>
 
     <div class="note">
+      <b>What this page can and cannot prove.</b> The mockup's filter row is about
+      <span class="num">60&nbsp;px</span> narrower than the shipped component, so it clears the old
+      1060 threshold that the real row overflowed by <span class="num">44&nbsp;px</span>. The
+      <span class="num">810&nbsp;px</span> and <span class="num">1110&nbsp;px</span> figures therefore
+      describe the shipped row, measured there; this page illustrates the ladder they produced, and is
+      not independent evidence for them.
+    </div>
+
+    <div class="note">
       <b>The priority order is a decision, not an accident.</b> Search collapses last because it is
       the only control that can reach a node whose type the user does not yet know. <code>Type</code>
-      survives longest of the four because it is the one facet every base has — <code>Predicate</code>
+      keeps the one always-visible slot because it is the facet every base has — <code>Predicate</code>
       and <code>Source</code> are empty on a legacy base, and <code>Status</code> only ever holds four
-      values. What folds into <b>More</b> carries its own count, so nothing is hidden silently: a
+      values — and because it is the facet the legend beside it is <em>about</em>. <code>Predicate</code>
+      is the first of the rest to go for a reason that is pure arithmetic: at <span class="num">105&nbsp;px</span>
+      it was the widest chip in the row, so surrendering it bought the most width per facet given up.
+      What folds into <b>More</b> carries its own count, so nothing is hidden silently: a
       filter you cannot see is still reported by the number on the control that swallowed it.
     </div>
   </section>
@@ -778,8 +819,9 @@ b.swq{width:10px;height:10px;border-radius:var(--r-inner);flex:none;display:inli
 
         <!-- more filters -->
         <div class="pop" data-pop="more" style="top:16px;left:430px;width:256px">
-          <div class="pop-h"><div class="t">More filters</div><div class="s">The two that folded away at this width. Each keeps its own count.</div></div>
+          <div class="pop-h"><div class="t">More filters</div><div class="s">The three that folded away at this width. Each keeps its own count.</div></div>
           <div class="pop-menu">
+            <div class="mi"><span style="flex:1">Predicate</span><span class="ct" style="font-family:var(--mono);font-size:10.5px;color:var(--text-subtle)">—</span><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6.5 4 10.5 8 6.5 12"/></svg></div>
             <div class="mi"><span style="flex:1">Source</span><span class="ct" style="font-family:var(--mono);font-size:10.5px;color:var(--text-subtle)">1</span><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6.5 4 10.5 8 6.5 12"/></svg></div>
             <div class="mi"><span style="flex:1">Status</span><span class="ct" style="font-family:var(--mono);font-size:10.5px;color:var(--text-subtle)">—</span><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6.5 4 10.5 8 6.5 12"/></svg></div>
           </div>
@@ -868,7 +910,7 @@ b.swq{width:10px;height:10px;border-radius:var(--r-inner);flex:none;display:inli
         <tbody>
           <tr><td>Base switcher</td><td>Popover on a header-row trigger</td><td>Same popover, anchored to the subject bar instead. Gains a <b>Manage bases</b> footer, which becomes its only route.</td></tr>
           <tr><td>Type / Predicate / Source</td><td>Popover + searchable command list</td><td>Unchanged in mechanism. Rows gain a real <b>square checkbox</b> so multi-select is legible before you click, and the swatch is square to match the legend.</td></tr>
-          <tr><td>More filters</td><td>—</td><td><b>New.</b> Only exists between 860 and 1059&nbsp;px. Lists the folded facets with their counts and opens each one's own popover.</td></tr>
+          <tr><td>More filters</td><td>—</td><td><b>New.</b> Only exists between 860 and 1139&nbsp;px. Lists the folded facets with their counts and opens each one's own popover.</td></tr>
           <tr><td>Actions ⋯</td><td>Dropdown menu</td><td>Unchanged. Destructive action stays behind the separator.</td></tr>
           <tr><td>Node / edge inspector</td><td><b class="good">Bare <code>role="dialog"</code> over the canvas — no portal, no scrim, no focus trap</b></td><td>Becomes the right rail's second occupant at ≥1400&nbsp;px, a canvas-anchored card between 940 and 1399, and a sheet below that. Never a bare dialog.</td></tr>
           <tr><td>Manage bases</td><td><code>ModalShell size="lg"</code>, 582&nbsp;px</td><td>640&nbsp;px. Search and Create pinned outside the scroller; duplicate encodings removed; three icon buttons collapse to one ⋯.</td></tr>
@@ -908,10 +950,22 @@ b.swq{width:10px;height:10px;border-radius:var(--r-inner);flex:none;display:inli
     <div class="note">
       <b>The trade, stated plainly.</b> The seven silhouettes carried node <em>family</em> because
       cross-family colour distance under simulated dichromacy bottoms out at <span class="num">ΔE00
-      0.00</span>. Removing them means a viewer with tritanopia sees <code>Phenotype</code> and
-      <code>Food</code> as one colour and one shape, told apart only by the label, the legend hover
-      and the inspector. That is a real regression, taken deliberately, and it should not ship
-      without the <b>“Distinguish types by shape”</b> preference that restores them.
+      0.00</span>. They are gone, and the opt-in preference that would have restored them was
+      withdrawn rather than built. What carries the redundancy instead is the graph's keyboard model
+      (spec §5.12), which <em>is</em> built: the canvas is one tab stop with arrow-key traversal and
+      an <code>aria-live</code> region that speaks <span class="num">Multiple sclerosis, Disease,
+      Clinical</span> — identifier, type, family — on every focus change.
+      That is a wider channel, not a consolation. A silhouette is a <em>visual</em> redundancy: it
+      served a sighted viewer with dichromacy and nobody else, and only while the mark was large
+      enough to resolve. A spoken label serves a blind reader and a screen-reader user too, and it
+      does not degrade with mark size.
+      The residual cost is real and stays stated: cross-family distance still bottoms out at
+      <span class="num">ΔE00 0.00</span>, so a viewer with tritanopia sees <code>Phenotype</code> and
+      <code>Food</code> as one colour and one shape, told apart only by the label, hover, the legend
+      and the inspector — and all four are <em>deliberate acts</em>, where a silhouette was passive.
+      One structural channel does survive monochrome: the twenty Biomedical Entity types are solid
+      discs, the eight Provenance &amp; Context types hollow rings at <span class="num">1.7&nbsp;px</span>,
+      and an external node keeps its dashed ring.
     </div>
   </section>
 
@@ -1128,10 +1182,10 @@ b.swq{width:10px;height:10px;border-radius:var(--r-inner);flex:none;display:inli
           '<span class="kb-search"><span class="lbl">Filter by name or type</span></span>' +
           '<span class="kb-vr"></span>' +
           '<span class="kb-f core on">Type <span class="cnt">2</span>' + caret + '</span>' +
-          '<span class="kb-f core">Predicate' + caret + '</span>' +
+          '<span class="kb-f extra">Predicate' + caret + '</span>' +
           '<span class="kb-f extra">Source' + caret + '</span>' +
           '<span class="kb-f extra">Status' + caret + '</span>' +
-          '<span class="kb-f kb-more">More <span class="cnt">2</span>' + caret + '</span>' +
+          '<span class="kb-f kb-more">More <span class="cnt">3</span>' + caret + '</span>' +
           '<span class="kb-f kb-filters-one on">Filters <span class="cnt">3</span>' + caret + '</span>' +
           '<span class="kb-f kb-legendbtn">Legend' + caret + '</span>' +
           '<span class="kb-right"><span class="n">Showing 96 of 210</span><span class="clr">Clear</span>' +
@@ -1270,9 +1324,9 @@ b.swq{width:10px;height:10px;border-radius:var(--r-inner);flex:none;display:inli
     { w:760,  h:568,  tag:'760 × 568', title:'App minimum, sidebar open',
       sub:'window 1000 × 600', cap:'The floor. <b>One column with Sources/Graph tabs</b>, one <b>Filters</b> control beside a full-width search, and the header sheds its description line to the height step. Nothing overflows and nothing scrolls sideways.' },
     { w:946,  h:568,  tag:'946 × 568', title:'App minimum, sidebar collapsed',
-      sub:'window 1000 × 600', cap:'Collapsing the sidebar buys the two-column step: a <b>264 px Sources rail</b> beside the canvas, with the two least-used facets folded into <b>More</b>.' },
+      sub:'window 1000 × 600', cap:'Collapsing the sidebar buys the two-column step, and at 946 the rail has already taken its <b>300 px</b> width — which is exactly why the filter row is condensed here, with the three least-used facets folded into <b>More</b>.' },
     { w:1040, h:768,  tag:'1040 × 768', title:'Narrower panel',
-      sub:'window 1280 × 800, sidebar open', cap:'Two columns plus the legend as a <b>canvas-anchored card</b>, in the corner BioOKF puts it in. The filter row is still condensed here: four facets need a measured <b>757 px</b> of centre column and this pane yields 738, so <b>Source</b> and <b>Status</b> stay folded into <b>More</b>.' },
+      sub:'window 1280 × 800, sidebar open', cap:'Two columns plus the legend as a <b>canvas-anchored card</b>, in the corner BioOKF puts it in. The filter row is still condensed here: the full row needs a measured <b>810 px</b> of centre column and this pane yields 738, so <b>Predicate</b>, <b>Source</b> and <b>Status</b> stay folded into <b>More</b>.' },
     { w:1626, h:700,  tag:'1626 × 700', title:'Wider panel',
       sub:'window 1680 × 1050, sidebar collapsed', cap:'The full three-column step: <b>Sources 320 │ canvas │ rail 340</b>. The legend becomes a permanent rail and the card retires.' }
   ];
@@ -1294,18 +1348,22 @@ b.swq{width:10px;height:10px;border-radius:var(--r-inner);flex:none;display:inli
   });
 
   document.addEventListener('click', function (e) {
+    /* Dismissal is PANE state, never an inline style on the chip. An inline
+       `display` outranks the @container ladder, so the old version left a
+       `Legend` chip in the row at ≥1400 — where the rail has replaced the card
+       and the chip opens nothing — overflowing the row by up to 98px. */
     var hide = e.target.closest('.kb-lhide');
     if (hide) {
       var pane = hide.closest('.kbpane');
       pane.querySelector('.kb-lcard').hidden = true;
-      pane.querySelector('.kb-legendbtn').style.display = 'inline-flex';
+      pane.dataset.legendOff = '';
       return;
     }
     var show = e.target.closest('.kb-legendbtn');
     if (show) {
       var pane2 = show.closest('.kbpane');
       pane2.querySelector('.kb-lcard').hidden = false;
-      show.style.display = 'none';
+      delete pane2.dataset.legendOff;
     }
   });
 
