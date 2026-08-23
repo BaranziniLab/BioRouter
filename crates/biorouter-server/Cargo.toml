@@ -18,7 +18,7 @@ async-trait = "0.1.89"
 axum = { version = "0.8.1", features = ["ws", "macros", "multipart"] }
 tokio = { workspace = true }
 chrono = "0.4"
-tower-http = { version = "0.5", features = ["cors", "compression-gzip"] }
+tower-http = { version = "0.5", features = ["cors", "compression-gzip", "fs"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 futures = { workspace = true }

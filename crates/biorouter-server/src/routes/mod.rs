@@ -131,6 +131,7 @@ pub mod tool_bridge;
 pub mod tunnel;
 pub mod usage;
 pub mod utils;
+pub mod web_ui;
 pub mod workflow;
 pub mod workflow_utils;
 pub mod workspace;
