@@ -8,6 +8,7 @@ import type {
 import { useThemeFamily, type ThemeFamily } from '../../contexts/ThemeContext';
 import { cn } from '../../utils';
 import type { ArtifactFilePreview } from './artifactTypes';
+import { DOCUMENT_FIDELITY_NOTES } from '../../utils/formatSupport';
 import { sandboxedSurface } from './artifactUtils';
 
 type DocumentFile = Extract<ArtifactFilePreview, { kind: 'document' }>;
@@ -512,10 +513,34 @@ function PowerPointPreview({ file }: Pick<DocumentPreviewProps, 'file'>) {
 }
 
 export default function DocumentPreview({ file, resolvedTheme, isResizing }: DocumentPreviewProps) {
-  if (file.format === 'pdf') return <PdfPreview file={file} isResizing={isResizing} />;
-  if (file.format === 'docx') return <WordPreview file={file} />;
-  if (file.format === 'xlsx') {
-    return <SpreadsheetPreview file={file} resolvedTheme={resolvedTheme} isResizing={isResizing} />;
-  }
-  return <PowerPointPreview file={file} />;
+  const body =
+    file.format === 'pdf' ? (
+      <PdfPreview file={file} isResizing={isResizing} />
+    ) : file.format === 'docx' ? (
+      <WordPreview file={file} />
+    ) : file.format === 'xlsx' ? (
+      <SpreadsheetPreview file={file} resolvedTheme={resolvedTheme} isResizing={isResizing} />
+    ) : (
+      <PowerPointPreview file={file} />
+    );
+
+  // Every non-commercial renderer for these formats has the same blind spots.
+  // Naming them in the UI is cheaper than a researcher concluding the file is
+  // corrupt because a deck's animations or a document's table of contents did
+  // not survive. It is one muted line, not a banner — the document is the point.
+  const fidelity = DOCUMENT_FIDELITY_NOTES[file.format];
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1">{body}</div>
+      {fidelity && file.format !== 'pdf' && (
+        <p
+          data-testid="document-fidelity-note"
+          className="flex-none border-t border-border-subtle bg-background-default px-3 py-1.5 text-supporting text-text-subtle"
+        >
+          {fidelity}
+        </p>
+      )}
+    </div>
+  );
 }

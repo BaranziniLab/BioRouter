@@ -14,6 +14,7 @@ import { useTheme, useThemeFamily } from '../../contexts/ThemeContext';
 import { CODE_FONT_FAMILY, codeThemesByFamily } from '../../styles/codeTheme';
 import { cn } from '../../utils';
 import { injectArtifactBrowserCsp } from '../../utils/artifactSecurity';
+import { describeUnsupportedFormat } from '../../utils/formatSupport';
 import { isImageExtension, isNativelyDecodableImage } from '../../utils/imageFormats';
 import {
   isTabCycleEvent,
@@ -982,20 +983,31 @@ function ArtifactPreviewBody({
   if (file.kind === 'binary') {
     // Text-decodable files already fall through to the plain-text preview below
     // (see isTextArtifact in the main process). Reaching here means the bytes are
-    // genuinely binary (or the file is too large), so there is nothing to show —
-    // tell the user plainly and offer to open it in its default app.
+    // genuinely binary (or the file is too large), so there is nothing to show.
+    //
+    // Where we know *which* format this is and why we decline it, say so. One
+    // generic sentence for a .doc, a .heic and a .key leaves the user unable to
+    // tell whether their file is broken, the app is broken, or the format was
+    // never supported.
+    const unsupported = describeUnsupportedFormat(extensionFromPath(file.path));
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-body text-text-muted">
         <File className="h-8 w-8" aria-hidden="true" />
         <div className="text-label text-text-default">{basenameFromPath(file.path)}</div>
         <div>
-          {file.mimeType} · {formatBytes(file.size)}
+          {unsupported ? `${unsupported.label} · ` : `${file.mimeType} · `}
+          {formatBytes(file.size)}
         </div>
         {/* `leading-relaxed` deliberately overrides the inherited text-body
             line-height for this wrapped paragraph. */}
         <p className="max-w-xs leading-relaxed">
-          This file can’t be previewed here. Open it in the app your system uses for this file type.
+          {unsupported
+            ? unsupported.reason
+            : 'This file can’t be previewed here. Open it in the app your system uses for this file type.'}
         </p>
+        {unsupported?.suggestion && (
+          <p className="max-w-xs leading-relaxed text-text-subtle">{unsupported.suggestion}</p>
+        )}
         <button
           type="button"
           onClick={() => window.electron.openDirectoryInExplorer(file.path)}
