@@ -141,32 +141,70 @@ smoke_cli_packages() {
   log "CLI-only DEB/RPM version and terminal entry points passed"
 }
 
-smoke_headless() {
-  local tarball="$ROOT/dist/biorouter-headless-linux-x64.tar.gz"
-  require_file "$tarball"
+smoke_serve() {
+  # Replaces the retired tarball's smoke test, which asserted only that the
+  # served page contained "<!doctype html>" -- true of a completely
+  # non-functional app. This drives the real thing: install the CLI package,
+  # run `biorouter serve`, and check the browser contract end to end.
+  local deb="$ROOT/dist/cli/biorouter-cli_${VERSION}_amd64.deb"
+  require_file "$deb"
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
-    -v "$tarball":/pkg/biorouter-headless.tar.gz:ro debian:bookworm-slim bash -euxc '
+    -v "$deb":/pkg/biorouter-cli.deb:ro debian:bookworm-slim bash -euxc '
       apt-get update -qq
-      apt-get install -y -qq curl ca-certificates xvfb xauth >/dev/null
-      mkdir -p /app
-      tar -xzf /pkg/biorouter-headless.tar.gz -C /app
-      install=/app/headless-linux-x64
-      "$install/bin/biorouter" --version | grep -q "$VERSION"
-      "$install/bin/biorouterd" --version | grep -q "$VERSION"
-      "$install/bin/biorouter-headless" --version | grep -q "$VERSION"
-      HOME=/tmp/biorouter-home "$install/bin/biorouter-headless" serve \
-        --no-spawn --host 127.0.0.1 --port 18080 --web-dir "$install/web" >/tmp/headless.log 2>&1 &
+      apt-get install -y -qq /pkg/biorouter-cli.deb curl >/dev/null
+      # The interface ships at the FHS location, because <exe dir>/../web from
+      # /usr/bin would be /usr/web.
+      test -s /usr/share/biorouter/web/index.html
+      export HOME=/tmp/biorouter-home
+      biorouter serve --host 127.0.0.1 --port 18080 --token smoketoken \
+        >/tmp/serve.log 2>&1 &
       pid=$!
-      for _ in $(seq 1 30); do
-        curl -fsS http://127.0.0.1:18080/headless/health >/tmp/health.json && break
+      for _ in $(seq 1 60); do
+        curl -fsS -o /dev/null "http://127.0.0.1:18080/?t=smoketoken" && break
         sleep 1
       done
+
+      # The document is gated. A bare GET must NOT hand out the shell -- it
+      # carries the daemon secret.
+      code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18080/)
+      test "$code" = "401"
+
+      # The token is exchanged for a session cookie, once.
+      curl -s -o /dev/null -D /tmp/h "http://127.0.0.1:18080/?t=smoketoken"
+      grep -qi "^HTTP/1.1 303" /tmp/h
+      grep -qi "set-cookie: biorouter_session=" /tmp/h
+      grep -qi "HttpOnly" /tmp/h
+      grep -qi "SameSite=Strict" /tmp/h
+
+      # And a wrong one is refused, so the gate is a gate.
+      code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/?t=wrong")
+      test "$code" = "401"
+
+      # With the cookie the shell arrives, carrying the runtime configuration
+      # the renderer reads. apiBaseUrl must be ABSENT: empty is falsy there and
+      # would send the browser to a hardcoded 127.0.0.1:3000.
+      curl -fsS -b "biorouter_session=smoketoken" http://127.0.0.1:18080/ >/tmp/shell.html
+      grep -q "__BIOROUTER_HEADLESS_CONFIG__" /tmp/shell.html
+      grep -q "\"secretKey\":\"[0-9a-f]\{64\}\"" /tmp/shell.html
+      ! grep -q "apiBaseUrl" /tmp/shell.html
+
+      # The bundle really is served, and it is the ROOT-BASE build.
+      grep -q "src=\"/assets/" /tmp/shell.html
+      asset=$(grep -o "/assets/index-[A-Za-z0-9_-]*\.js" /tmp/shell.html | head -1)
+      curl -fsS -o /dev/null "http://127.0.0.1:18080$asset"
+
+      # The API is on the same origin, still behind its own header, and the
+      # interface endpoints are no longer unauthenticated.
+      secret=$(grep -o "\"secretKey\":\"[0-9a-f]*\"" /tmp/shell.html | cut -d\" -f4)
+      code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18080/headless/health)
+      test "$code" = "401"
+      curl -fsS -H "X-Secret-Key: $secret" http://127.0.0.1:18080/headless/health >/tmp/health.json
       grep -q "\"status\":\"ok\"" /tmp/health.json
-      curl -fsS http://127.0.0.1:18080/ | grep -qi "<!doctype html>"
+
       kill "$pid"
       wait "$pid" || true
     '
-  log "headless tarball binaries, health endpoint, and web app passed"
+  log "biorouter serve: token exchange, gated shell, root-base bundle, and authenticated endpoints passed"
 }
 
 case "$TARGET" in
@@ -176,7 +214,7 @@ case "$TARGET" in
     smoke_deb
     smoke_rpm
     smoke_cli_packages
-    smoke_headless
+    smoke_serve
     log "all locally executable release artifacts passed"
     ;;
   mac)
@@ -186,6 +224,6 @@ case "$TARGET" in
   deb) smoke_deb ;;
   rpm) smoke_rpm ;;
   cli) smoke_cli_packages ;;
-  headless) smoke_headless ;;
+  serve) smoke_serve ;;
   *) die "unknown smoke target: $TARGET" ;;
 esac

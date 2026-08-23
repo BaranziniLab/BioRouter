@@ -245,24 +245,18 @@
           <td><span class="install-code">sudo dnf install ./*.rpm</span></td>
           <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.3/biorouter-cli-1.88.3-1.x86_64.rpm">↓ .rpm</a></td>
         </tr>
-        <tr data-row="linux-headless">
-          <td><div class="platform-os">Linux (headless web) <small>x64</small></div></td>
-          <td><code class="file-name">biorouter-headless-linux-x64.tar.gz</code></td>
-          <td><span class="install-code">Extract, follow the headless setup guide</span></td>
-          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.3/biorouter-headless-linux-x64.tar.gz">↓ .tar.gz</a></td>
-        </tr>
       </tbody>
     </table>
     <p class="note" style="margin-top:16px;">
       <strong>The <code>biorouter</code> CLI ships with every desktop download.</strong>
       After installing the app, accept the “Install Biorouter CLI” prompt (or run
       <code>biorouter setup-path</code>) to call <code>biorouter</code> from any terminal.
-      The two <strong>CLI-only</strong> Linux packages install just the headless
-      binaries (<code>biorouter</code> + the <code>biorouterd</code> server) to
+      The two <strong>CLI-only</strong> Linux packages install just
+      <code>biorouter</code> and the <code>biorouterd</code> server to
       <code>/usr/bin</code> with no desktop GUI. They work well on servers, HPC nodes, and
       containers. Run <code>biorouter doctor</code> after install to check optional
-      prerequisites. The <strong>headless web</strong> tarball adds the browser UI
-      and <code>biorouter-headless</code> launcher for remote or containerized use.
+      prerequisites. Every install — desktop or CLI-only — can also be reached from a
+      web browser: run <code>biorouter serve</code> and open the URL it prints.
     </p>
   </div>
 
@@ -372,7 +366,6 @@
     'linux-rpm':     /^biorouter-[0-9].*x86_64\.rpm$/i,
     'linux-cli-deb': /^biorouter-cli_.*amd64\.deb$/i,
     'linux-cli-rpm': /^biorouter-cli-.*x86_64\.rpm$/i,
-    'linux-headless': /^biorouter-headless-linux-x64\.tar\.gz$/i,
   };
 
   const OS_TO_ROW = {
