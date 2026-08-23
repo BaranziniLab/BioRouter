@@ -123,6 +123,16 @@ import {
   wrapArtifactForBrowser,
 } from './utils/artifactSecurity';
 import { readGitArtifactTree } from './utils/artifactGit';
+import {
+  controlEmbeddedBrowser,
+  createEmbeddedBrowser,
+  destroyEmbeddedBrowser,
+  destroyEmbeddedBrowsersForWindow,
+  navigateEmbeddedBrowser,
+  setEmbeddedBrowserBounds,
+  setEmbeddedBrowserVisible,
+  type EmbeddedBrowserBounds,
+} from './utils/embeddedBrowser';
 import { IMAGE_BLOB_URL_THRESHOLD_BYTES, IMAGE_MIME_TYPES } from './utils/imageFormats';
 import { recordExtensionProvenance } from './utils/extensionProvenance';
 import { fetchRegistryWithLastGood } from './utils/registryCache';
@@ -1533,6 +1543,10 @@ const createChat = async (
     // A closed window stops being a merge target on the very next pointermove
     // (design §6), and cannot be left holding a caret nobody will clear.
     forgetWindowFromTabDrag(windowId, 'window closed');
+
+    // Embedded browser views are children of this window's contentView, not of
+    // the React tree, so nothing in the renderer unmounts them.
+    destroyEmbeddedBrowsersForWindow(mainWindow);
 
     // Clean up pending initial message
     pendingInitialMessages.delete(windowId);
@@ -2959,6 +2973,53 @@ ipcMain.handle('read-file', async (_event, filePath) => {
     }
     return { file: '', filePath: expandedPath, error, found: false };
   }
+});
+
+
+// ── Embedded browser (the artifact panel's live web view) ────────────────────
+//
+// Every handler resolves the owning window from the *event sender* rather than
+// taking a window id from the renderer, so one window can never drive another's
+// view. The view id is renderer-supplied but is only ever used as a map key.
+ipcMain.handle(
+  'embedded-browser:create',
+  (event, payload: { viewId: string; url: string }) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window || typeof payload?.viewId !== 'string') return null;
+    return createEmbeddedBrowser(window, payload.viewId, payload.url, (state) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('embedded-browser:state', { viewId: payload.viewId, state });
+      }
+    });
+  }
+);
+
+ipcMain.handle(
+  'embedded-browser:set-bounds',
+  (_event, payload: { viewId: string; bounds: EmbeddedBrowserBounds }) => {
+    setEmbeddedBrowserBounds(payload.viewId, payload.bounds);
+  }
+);
+
+ipcMain.handle(
+  'embedded-browser:set-visible',
+  (_event, payload: { viewId: string; visible: boolean }) => {
+    setEmbeddedBrowserVisible(payload.viewId, payload.visible);
+  }
+);
+
+ipcMain.handle('embedded-browser:navigate', (_event, payload: { viewId: string; url: string }) =>
+  navigateEmbeddedBrowser(payload.viewId, payload.url)
+);
+
+ipcMain.handle(
+  'embedded-browser:control',
+  (_event, payload: { viewId: string; action: 'back' | 'forward' | 'reload' | 'stop' }) =>
+    controlEmbeddedBrowser(payload.viewId, payload.action)
+);
+
+ipcMain.handle('embedded-browser:destroy', (_event, payload: { viewId: string }) => {
+  destroyEmbeddedBrowser(payload.viewId);
 });
 
 ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {

@@ -70,3 +70,25 @@ export function isAllowedRendererPermission(
     isAppOrigin(requestingUrl, appUrl)
   );
 }
+
+/**
+ * Whether the embedded browser may navigate to this URL at all.
+ *
+ * Lives here rather than in `embeddedBrowser.ts` for the same reason as its
+ * siblings: this file imports nothing from Electron, so the policy is testable
+ * on its own. `file:` and `data:` are refused outright, and so is any URL
+ * carrying credentials — a visible host that is not the host contacted is a
+ * phishing primitive, not a convenience.
+ */
+export function isNavigableEmbeddedUrl(candidate: string): boolean {
+  try {
+    const url = new URL(candidate);
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      url.username === '' &&
+      url.password === ''
+    );
+  } catch {
+    return false;
+  }
+}

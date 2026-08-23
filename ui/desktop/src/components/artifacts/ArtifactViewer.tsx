@@ -50,6 +50,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import DocumentPreview from './DocumentPreview';
+import WebPagePreview from './WebPagePreview';
 import NotebookPreview from './NotebookPreview';
 import type {
   ArtifactFileEntry,
@@ -293,6 +294,17 @@ export default function ArtifactViewer({
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
   const lastRenderErrorKeyRef = useRef<string | null>(null);
   const trustedFrameRef = useRef<HTMLIFrameElement | null>(null);
+  /**
+   * URLs the user has explicitly chosen to browse inside the panel.
+   *
+   * Kept as *opt-in state* rather than a property of the artifact, because that
+   * is what makes agent-initiated navigation impossible: an `externalUrl`
+   * artifact can arrive from an MCP resource link with no transcript card and
+   * auto-open, so the live view has to be reachable only through a click that a
+   * person made. Scoped to this panel instance and deliberately not persisted —
+   * reopening a session should not silently start loading pages.
+   */
+  const [browsingUrls, setBrowsingUrls] = useState<ReadonlySet<string>>(() => new Set());
   const pendingNavigationKeyRef = useRef<string | null>(null);
   const draggedTabIdRef = useRef<string | null>(null);
   const tabPointerGestureRef = useRef<{
@@ -831,6 +843,10 @@ export default function ArtifactViewer({
           isResizing={isResizing}
           trustedFrameRef={trustedFrameRef}
           onOpenArtifactInTab={openArtifactInTab}
+          isBrowsingUrl={
+            activeArtifact.kind === 'externalUrl' && browsingUrls.has(activeArtifact.url)
+          }
+          onStartBrowsing={(url) => setBrowsingUrls((current) => new Set(current).add(url))}
         />
       </div>
     </aside>
@@ -875,6 +891,8 @@ function ArtifactPreviewBody({
   isResizing,
   trustedFrameRef,
   onOpenArtifactInTab,
+  isBrowsingUrl,
+  onStartBrowsing,
 }: {
   preview: PreviewState;
   artifact: ArtifactSource;
@@ -882,6 +900,9 @@ function ArtifactPreviewBody({
   isResizing: boolean;
   trustedFrameRef: React.RefObject<HTMLIFrameElement | null>;
   onOpenArtifactInTab: (artifact: ArtifactSource) => void;
+  /** The user has clicked "Open here" for this URL in this tab. */
+  isBrowsingUrl: boolean;
+  onStartBrowsing?: (url: string) => void;
 }) {
   if (preview.kind === 'loading') {
     return (
@@ -914,22 +935,54 @@ function ArtifactPreviewBody({
   }
 
   if (preview.kind === 'externalUrl') {
+    // Live pages open **only** on a deliberate click, never automatically.
+    //
+    // This card is the whole boundary between "the user browsed somewhere" and
+    // "something else navigated the user's app". An MCP resource link with an
+    // http(s) URI already becomes an artifact with no transcript card and can
+    // auto-open; if that path rendered a live view directly, any extension
+    // could make an arbitrary site load and execute here. One click is cheap
+    // for the user and structurally impossible for the agent.
+    if (isBrowsingUrl) {
+      return (
+        <WebPagePreview
+          key={preview.url}
+          url={preview.url}
+          // The native view has no shared z-index with the DOM, so it has to be
+          // hidden while the resize shield is up or it paints straight over it.
+          isSuspended={isResizing}
+          onOpenExternal={(url) => void window.electron.openExternal(url)}
+        />
+      );
+    }
+
     return (
       <div className="flex h-full items-center justify-center bg-background-medium p-6">
         <div className="w-full max-w-lg rounded-container border border-border-subtle bg-background-default p-5 text-center shadow-popover">
           <Globe className="mx-auto mb-3 h-6 w-6 text-text-muted" aria-hidden="true" />
-          <div className="text-label text-text-default">External preview</div>
+          <div className="text-label text-text-default">External page</div>
           <div className="mt-1 break-all text-supporting text-text-muted">{preview.url}</div>
-          {/* A button inside the card: one step down the ladder from its
+          {/* Buttons inside the card: one step down the ladder from its
               `rounded-container` host. */}
-          <button
-            type="button"
-            onClick={() => void window.electron.openExternal(preview.url)}
-            className="mt-4 inline-flex h-8 items-center gap-2 rounded-element border border-border-subtle bg-background-default px-3 text-label text-text-default transition-colors hover:bg-overlay-hover"
-          >
-            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-            Open in default browser
-          </button>
+          <div className="mt-4 flex items-center justify-center gap-2">
+            <button
+              type="button"
+              data-testid="artifact-open-here"
+              onClick={() => onStartBrowsing?.(preview.url)}
+              className="inline-flex h-8 items-center gap-2 rounded-element border border-border-subtle bg-background-default px-3 text-label text-text-default transition-colors hover:bg-overlay-hover"
+            >
+              <Globe className="h-3.5 w-3.5" aria-hidden="true" />
+              Open here
+            </button>
+            <button
+              type="button"
+              onClick={() => void window.electron.openExternal(preview.url)}
+              className="inline-flex h-8 items-center gap-2 rounded-element border border-border-subtle bg-background-default px-3 text-label text-text-default transition-colors hover:bg-overlay-hover"
+            >
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              Open in default browser
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -1349,6 +1402,9 @@ function DirectoryTreePreview({
             isResizing={isResizing}
             trustedFrameRef={selectedFrameRef}
             onOpenArtifactInTab={onOpenArtifactInTab}
+            // A directory tree only ever selects files, never URLs, so there is
+            // no live page to be browsing here.
+            isBrowsingUrl={false}
           />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
