@@ -133,7 +133,6 @@ function installElectronMock() {
     value: {
       prepareArtifactHtml: vi.fn(async ({ html }: { html: string }) => ({ html })),
       readArtifactFile: vi.fn(async () => ({ kind: 'error', found: false, error: 'not used' })),
-      openArtifactWindow: vi.fn(),
       openArtifactInBrowser: vi.fn(),
       openDirectoryInExplorer: vi.fn(),
       openExternal: vi.fn(),
