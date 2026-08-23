@@ -56,7 +56,8 @@ const XREF_RESOLVERS: Partial<Record<string, (accession: string) => string>> = {
   pmcid: (a) => `https://www.ncbi.nlm.nih.gov/pmc/articles/${encodeURIComponent(a)}/`,
   arxiv: (a) => `https://arxiv.org/abs/${encodeURIComponent(a)}`,
   uniprotkb: (a) => `https://www.uniprot.org/uniprotkb/${encodeURIComponent(a)}`,
-  hgnc: (a) => `https://www.genenames.org/data/gene-symbol-report/#!/hgnc_id/HGNC:${encodeURIComponent(a)}`,
+  hgnc: (a) =>
+    `https://www.genenames.org/data/gene-symbol-report/#!/hgnc_id/HGNC:${encodeURIComponent(a)}`,
   mondo: (a) => `https://purl.obolibrary.org/obo/MONDO_${encodeURIComponent(a)}`,
   hp: (a) => `https://hpo.jax.org/app/browse/term/HP:${encodeURIComponent(a)}`,
   hpo: (a) => `https://hpo.jax.org/app/browse/term/HP:${encodeURIComponent(a)}`,

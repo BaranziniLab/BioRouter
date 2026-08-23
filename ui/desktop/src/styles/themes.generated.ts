@@ -401,23 +401,6 @@ export const THEME_FAMILY_IDS = Object.keys(GENERATED_THEMES) as ThemeFamilyId[]
 /* ── the knowledge-graph palette ── */
 
 /**
- * The seven family silhouettes. SHAPE CARRIES FAMILY; lightness carries the
- * member within a family — the redundant non-colour channel WCAG 1.4.1 asks
- * for, and the reason this palette can be honest that cross-family colour
- * distance under dichromacy bottoms out at ΔE00 0.00. Seven, because seven is
- * about the discriminable limit for a silhouette at 10px; 28 would need shape
- * to do the whole job and could not.
- */
-export type NodeShape =
-  | 'circle'
-  | 'square'
-  | 'rounded-square'
-  | 'diamond'
-  | 'triangle'
-  | 'pentagon'
-  | 'hexagon';
-
-/**
  * The credibility ring's keys: the six `CredibilityTier` values plus
  * `retracted`, which is a FLAG rather than a tier — a retracted source takes
  * the retracted colour and the continuous ring whatever its tier says, because
@@ -439,10 +422,8 @@ export type GraphCredibilityKey =
 export type GraphPalette = {
   /** The 28 curated fills, keyed by OKF type name. */
   types: Record<string, string>;
-  /** Family name -> its silhouette and its members, in ladder order. */
-  families: Record<string, { shape: NodeShape; members: string[] }>;
-  /** Type name -> silhouette, precomputed so the node painter does no lookup walk. */
-  shapeOf: Record<string, NodeShape>;
+  /** Family name -> its members, in ladder order. */
+  families: Record<string, { members: string[] }>;
   /** The seven ring hues. */
   credibility: Record<GraphCredibilityKey, string>;
   /**
@@ -457,7 +438,8 @@ export type GraphPalette = {
   /** DR-11: the fixed chroma every hashed fallback colour takes. */
   fallbackChroma: number;
   /** DR-11: the four rungs a hashed fallback selects between. */
-  fallbackRungs: [number, number, number, number];
+  /** R-05: the fallback's four OKLab lightnesses, not contrast rungs. */
+  fallbackLightness: [number, number, number, number];
   /**
    * The surface every ratio above was solved against — the resolved
    * `--background-muted`, which is what the graph pane paints.
@@ -496,50 +478,45 @@ export type GraphPalette = {
 export const GRAPH_PALETTE: { light: GraphPalette; dark: GraphPalette } = {
   light: {
     types: {
-      Gene: '#6a7cd4',
-      Variant: '#6965be',
-      SequenceFeature: '#6750a7',
-      Structure: '#643d90',
-      Molecule: '#1d927a',
-      MolecularClass: '#007d75',
-      BiologicalPathway: '#006a6d',
-      BiologicalFunction: '#005963',
-      Anatomy: '#608d44',
-      CellType: '#367e45',
-      Organism: '#006d48',
-      Disease: '#cb5d82',
-      Phenotype: '#ba4a5e',
-      BiomedicalMeasure: '#a73939',
-      MethodOrProcedure: '#942b0f',
-      Exposure: '#b47327',
-      SocialFactor: '#966700',
-      Food: '#755c00',
-      Device: '#4788b0',
-      MaterialSample: '#546fa5',
-      Publication: '#738679',
-      Study: '#617a76',
-      Dataset: '#556d72',
-      Agent: '#4e606c',
-      Population: '#4a5263',
-      GeographicLocation: '#474557',
-      Concept: '#433847',
-      Other: '#3c2b34',
+      Gene: '#a0b2ff',
+      Variant: '#9190ed',
+      SequenceFeature: '#8670cb',
+      Structure: '#7952a8',
+      Molecule: '#65cdb3',
+      MolecularClass: '#3ab1a6',
+      BiologicalPathway: '#009598',
+      BiologicalFunction: '#007785',
+      Anatomy: '#97c87c',
+      CellType: '#67b073',
+      Organism: '#32976b',
+      Disease: '#ff8fb2',
+      Phenotype: '#e77284',
+      BiomedicalMeasure: '#ca5957',
+      MethodOrProcedure: '#ac4228',
+      Exposure: '#eba75f',
+      SocialFactor: '#c5923a',
+      Food: '#9e7e10',
+      Device: '#7ec0ea',
+      MaterialSample: '#7f9cd5',
+      Publication: '#a9bdaf',
+      Study: '#93ada8',
+      Dataset: '#819ba0',
+      Agent: '#758895',
+      Population: '#6c7688',
+      GeographicLocation: '#656376',
+      Concept: '#5e5162',
+      Other: '#54414b',
     },
     families: {
-      Genomic: { shape: 'square', members: ['Gene', 'Variant', 'SequenceFeature', 'Structure'] },
+      Genomic: { members: ['Gene', 'Variant', 'SequenceFeature', 'Structure'] },
       'Molecular & process': {
-        shape: 'diamond',
         members: ['Molecule', 'MolecularClass', 'BiologicalPathway', 'BiologicalFunction'],
       },
-      'Anatomy & organism': { shape: 'triangle', members: ['Anatomy', 'CellType', 'Organism'] },
-      Clinical: {
-        shape: 'rounded-square',
-        members: ['Disease', 'Phenotype', 'BiomedicalMeasure', 'MethodOrProcedure'],
-      },
-      Exposome: { shape: 'pentagon', members: ['Exposure', 'SocialFactor', 'Food'] },
-      Physical: { shape: 'circle', members: ['Device', 'MaterialSample'] },
+      'Anatomy & organism': { members: ['Anatomy', 'CellType', 'Organism'] },
+      Clinical: { members: ['Disease', 'Phenotype', 'BiomedicalMeasure', 'MethodOrProcedure'] },
+      Exposome: { members: ['Exposure', 'SocialFactor', 'Food'] },
+      Physical: { members: ['Device', 'MaterialSample'] },
       'Provenance & context': {
-        shape: 'hexagon',
         members: [
           'Publication',
           'Study',
@@ -551,36 +528,6 @@ export const GRAPH_PALETTE: { light: GraphPalette; dark: GraphPalette } = {
           'Other',
         ],
       },
-    },
-    shapeOf: {
-      Gene: 'square',
-      Variant: 'square',
-      SequenceFeature: 'square',
-      Structure: 'square',
-      Molecule: 'diamond',
-      MolecularClass: 'diamond',
-      BiologicalPathway: 'diamond',
-      BiologicalFunction: 'diamond',
-      Anatomy: 'triangle',
-      CellType: 'triangle',
-      Organism: 'triangle',
-      Disease: 'rounded-square',
-      Phenotype: 'rounded-square',
-      BiomedicalMeasure: 'rounded-square',
-      MethodOrProcedure: 'rounded-square',
-      Exposure: 'pentagon',
-      SocialFactor: 'pentagon',
-      Food: 'pentagon',
-      Device: 'circle',
-      MaterialSample: 'circle',
-      Publication: 'hexagon',
-      Study: 'hexagon',
-      Dataset: 'hexagon',
-      Agent: 'hexagon',
-      Population: 'hexagon',
-      GeographicLocation: 'hexagon',
-      Concept: 'hexagon',
-      Other: 'hexagon',
     },
     credibility: {
       peer_reviewed: '#1c619f',
@@ -601,55 +548,50 @@ export const GRAPH_PALETTE: { light: GraphPalette; dark: GraphPalette } = {
       retracted: 'solid',
     },
     fallbackChroma: 0.055,
-    fallbackRungs: [3.9, 4.95, 6.2, 7.9],
+    fallbackLightness: [0.7625, 0.7075, 0.6525, 0.5975],
     ground: '#f4f4f2',
   },
   dark: {
     types: {
-      Gene: '#5f70c8',
-      Variant: '#817fdb',
-      SequenceFeature: '#a48fec',
-      Structure: '#c69efb',
-      Molecule: '#00866f',
-      MolecularClass: '#13998f',
-      BiologicalPathway: '#2fadb0',
-      BiologicalFunction: '#4cbfd1',
-      Anatomy: '#558239',
-      CellType: '#50985d',
-      Organism: '#4dae81',
-      Disease: '#bf5177',
-      Phenotype: '#d76476',
-      BiomedicalMeasure: '#ef7a76',
-      MethodOrProcedure: '#ff9379',
-      Exposure: '#a86817',
-      SocialFactor: '#b18023',
-      Food: '#ba9938',
-      Device: '#3b7da4',
-      MaterialSample: '#6d89c0',
-      Publication: '#697b6e',
-      Study: '#6f8884',
-      Dataset: '#7c959a',
-      Agent: '#8da1af',
-      Population: '#a4aec2',
-      GeographicLocation: '#bebbd1',
-      Concept: '#d8cadc',
-      Other: '#f2dae7',
+      Gene: '#5060b6',
+      Variant: '#7875d0',
+      SequenceFeature: '#a08be8',
+      Structure: '#c9a1fe',
+      Molecule: '#007b66',
+      MolecularClass: '#08968c',
+      BiologicalPathway: '#34b0b3',
+      BiologicalFunction: '#58cadb',
+      Anatomy: '#4a772e',
+      CellType: '#4d955a',
+      Organism: '#51b285',
+      Disease: '#a83d64',
+      Phenotype: '#c9586a',
+      BiomedicalMeasure: '#e87470',
+      MethodOrProcedure: '#ff977d',
+      Exposure: '#955900',
+      SocialFactor: '#a97816',
+      Food: '#b99837',
+      Device: '#2d7096',
+      MaterialSample: '#6582b8',
+      Publication: '#3b4d41',
+      Study: '#445c58',
+      Dataset: '#526b6f',
+      Agent: '#657885',
+      Population: '#7c8698',
+      GeographicLocation: '#9593a7',
+      Concept: '#aea1b3',
+      Other: '#c6b0bc',
     },
     families: {
-      Genomic: { shape: 'square', members: ['Gene', 'Variant', 'SequenceFeature', 'Structure'] },
+      Genomic: { members: ['Gene', 'Variant', 'SequenceFeature', 'Structure'] },
       'Molecular & process': {
-        shape: 'diamond',
         members: ['Molecule', 'MolecularClass', 'BiologicalPathway', 'BiologicalFunction'],
       },
-      'Anatomy & organism': { shape: 'triangle', members: ['Anatomy', 'CellType', 'Organism'] },
-      Clinical: {
-        shape: 'rounded-square',
-        members: ['Disease', 'Phenotype', 'BiomedicalMeasure', 'MethodOrProcedure'],
-      },
-      Exposome: { shape: 'pentagon', members: ['Exposure', 'SocialFactor', 'Food'] },
-      Physical: { shape: 'circle', members: ['Device', 'MaterialSample'] },
+      'Anatomy & organism': { members: ['Anatomy', 'CellType', 'Organism'] },
+      Clinical: { members: ['Disease', 'Phenotype', 'BiomedicalMeasure', 'MethodOrProcedure'] },
+      Exposome: { members: ['Exposure', 'SocialFactor', 'Food'] },
+      Physical: { members: ['Device', 'MaterialSample'] },
       'Provenance & context': {
-        shape: 'hexagon',
         members: [
           'Publication',
           'Study',
@@ -661,36 +603,6 @@ export const GRAPH_PALETTE: { light: GraphPalette; dark: GraphPalette } = {
           'Other',
         ],
       },
-    },
-    shapeOf: {
-      Gene: 'square',
-      Variant: 'square',
-      SequenceFeature: 'square',
-      Structure: 'square',
-      Molecule: 'diamond',
-      MolecularClass: 'diamond',
-      BiologicalPathway: 'diamond',
-      BiologicalFunction: 'diamond',
-      Anatomy: 'triangle',
-      CellType: 'triangle',
-      Organism: 'triangle',
-      Disease: 'rounded-square',
-      Phenotype: 'rounded-square',
-      BiomedicalMeasure: 'rounded-square',
-      MethodOrProcedure: 'rounded-square',
-      Exposure: 'pentagon',
-      SocialFactor: 'pentagon',
-      Food: 'pentagon',
-      Device: 'circle',
-      MaterialSample: 'circle',
-      Publication: 'hexagon',
-      Study: 'hexagon',
-      Dataset: 'hexagon',
-      Agent: 'hexagon',
-      Population: 'hexagon',
-      GeographicLocation: 'hexagon',
-      Concept: 'hexagon',
-      Other: 'hexagon',
     },
     credibility: {
       peer_reviewed: '#5fa1e4',
@@ -711,7 +623,7 @@ export const GRAPH_PALETTE: { light: GraphPalette; dark: GraphPalette } = {
       retracted: 'solid',
     },
     fallbackChroma: 0.055,
-    fallbackRungs: [3.9, 4.95, 6.2, 7.9],
+    fallbackLightness: [0.6175, 0.6725, 0.7275, 0.7825],
     ground: '#232320',
   },
 };

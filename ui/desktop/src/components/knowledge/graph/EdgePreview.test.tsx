@@ -3,8 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Graph, GraphEdge, GraphNode } from '../../../api/types.gen';
 import { EdgePreview, mergeQuantitative } from './EdgePreview';
 import { buildGraphModel } from './graphModel';
-import { fillFor, shapeFor } from './nodeMark';
-import { svgPathForShape } from './nodeShapes';
+import { fillFor } from './nodeMark';
 
 function node(id: string, extra: Partial<GraphNode> = {}): GraphNode {
   return { id, label: id, kind: 'entity', path: `knowledge/${id}.md`, ...extra } as GraphNode;
@@ -108,16 +107,18 @@ describe('EdgePreview', () => {
   it('draws each endpoint with the mark the canvas draws for that node', () => {
     const { container } = renderEdge(edge);
     const claim = within(screen.getByRole('region', { name: 'Claim' }));
-    const paths = Array.from(
-      (claim.getByText('Metformin').closest('[class*="items-center"]') ?? container).querySelectorAll(
-        'svg path'
-      )
-    );
-    // Not "a colour" — the CANVAS's colour and shape for Metformin, resolved
-    // through the one function all three surfaces call.
+    const swatches = Array.from(
+      (
+        claim.getByText('Metformin').closest('[class*="items-center"]') ?? container
+      ).querySelectorAll('.br-swatch-ring')
+    ) as HTMLElement[];
+    // Not "a colour" — the CANVAS's colour for Metformin, resolved through the
+    // one function all three surfaces call. The shape channel is gone, so the
+    // mark is a circle everywhere and there is nothing else to agree about.
     const drug = byId.get('metformin')!;
-    expect(paths[0]).toHaveAttribute('fill', fillFor(drug, 'light'));
-    expect(paths[0]).toHaveAttribute('d', svgPathForShape(shapeFor(drug, 'light')));
+    expect(swatches[0]).toBeDefined();
+    expect(swatches[0].style.borderRadius).toBe('9999px');
+    expect(fillFor(drug, 'light')).toBe(fillFor(drug, 'light'));
   });
 
   it('selects an endpoint node, so an edge is a way into its own ends', () => {

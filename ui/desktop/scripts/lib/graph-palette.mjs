@@ -127,39 +127,29 @@ export const memberHue = (anchorHue, spread, i, n) =>
  * caller's to resolve and the solver's to measure against.
  */
 export function buildGraphPalette(spec, ground, mode) {
-  const {
-    FAMILIES,
-    PRIMARY_RUNGS,
-    PROVENANCE_RUNGS,
-    FALLBACK_CHROMA,
-    FALLBACK_RUNGS,
-    CREDIBILITY,
-    NODE_SHAPES,
-  } = spec;
+  const { FAMILIES, PRIMARY_L, PROVENANCE_L, FALLBACK_CHROMA, FALLBACK_L, CREDIBILITY } = spec;
 
   const types = {};
   const families = {};
-  const shapeOf = {};
 
   for (const family of FAMILIES) {
-    const rungs = family.ladder === 'provenance' ? PROVENANCE_RUNGS : PRIMARY_RUNGS;
-    if (family.members.length > rungs.length) {
+    const ladder = (family.ladder === 'provenance' ? PROVENANCE_L : PRIMARY_L)[mode];
+    if (family.members.length > ladder.length) {
       throw new Error(
         `graph palette: family "${family.name}" has ${family.members.length} members but its ` +
-          `"${family.ladder}" ladder has only ${rungs.length} rungs`
+          `"${family.ladder}" ${mode} ladder has only ${ladder.length} rungs`
       );
     }
-    if (!NODE_SHAPES.includes(family.shape)) {
-      throw new Error(`graph palette: family "${family.name}" has unknown shape "${family.shape}"`);
-    }
-    families[family.name] = { shape: family.shape, members: [...family.members] };
+    families[family.name] = { members: [...family.members] };
     family.members.forEach((type, i) => {
       if (type in types) {
         throw new Error(`graph palette: type "${type}" is declared in more than one family`);
       }
       const hue = memberHue(family.anchorHue, family.spread, i, family.members.length);
-      types[type] = solveHex(hue, family.chroma, rungs[i], ground, mode);
-      shapeOf[type] = family.shape;
+      // R-05: the fill is placed at a LIGHTNESS, not solved to a contrast
+      // ratio. `oklchToHex` already reduces chroma until the colour fits sRGB,
+      // so this is the whole solve — there is nothing left to search for.
+      types[type] = oklchToHex(ladder[i], family.chroma, hue);
     });
   }
 
@@ -173,11 +163,10 @@ export function buildGraphPalette(spec, ground, mode) {
   return {
     types,
     families,
-    shapeOf,
     credibility,
     ringArcs,
     fallbackChroma: FALLBACK_CHROMA,
-    fallbackRungs: [...FALLBACK_RUNGS],
+    fallbackLightness: [...FALLBACK_L[mode]],
     ground,
   };
 }

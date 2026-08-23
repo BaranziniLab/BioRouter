@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
-import { FileStack, FolderTree, Upload } from '../../icons/app-icons';
-import { Badge } from '../../ui/badge';
+import { FileStack, FolderTree, Info, Upload } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import {
   Dialog,
   DialogContent,
@@ -109,7 +109,18 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
           if (dragCounterRef.current === 0) setDragging(false);
         }}
         onDrop={onDrop}
-        className={`relative cursor-pointer rounded-container border px-4 py-5 text-center transition-colors ${dragging ? 'border-border-strong bg-background-medium' : 'border-border-subtle bg-background-muted tint-interactive'}`}
+        /* ⚠ **`flex-1` here is what closes the rail's empty middle, and it is a
+           FUNCTIONAL fix rather than a cosmetic one.** The body packs its
+           children at the top and the digest footer is pinned at the bottom, so
+           an unstaged rail showed a tall hole between them — a box of nothing
+           inside a bordered card. Letting the DROP TARGET absorb that slack
+           means the target is largest exactly when you have nothing staged and
+           are about to drop something, and shrinks back toward its floor as
+           staged rows claim the space. `min-h` is that floor, and it is the
+           114px this box measured before it could grow — the fixed 330px it
+           replaced was too tall at every pane size, which is a different bug
+           and must not come back through this door. */
+        className={`relative flex min-h-[7.125rem] flex-1 cursor-pointer flex-col justify-center rounded-container border px-4 py-4 text-center transition-colors ${dragging ? 'border-border-strong bg-background-medium' : 'border-border-subtle bg-background-muted tint-interactive'}`}
       >
         <input
           data-testid="knowledge-ingest-file-input"
@@ -132,39 +143,43 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
             primitive draws `h-6 w-6` while `--icon-banner` says 20px, and that
             disagreement is a design-system item rather than something this
             surface silently picks a side of. */}
+        {/* ⚠ **330px → ~132px** (R-06), and every pixel of it came off
+            decoration rather than function. Measured in Chrome at the rail's
+            true 300px width, the dropzone was 330px tall of which 260px was a
+            48px medallion, two paragraphs totalling 251 characters wrapping to
+            three and four lines, and a ten-chip extension row wrapping to three
+            rows — in a rail whose resting content already ran 899px inside a
+            745px viewport. What survives is the affordance; what moved behind
+            the ⓘ is the reference material, which a user needs once and then
+            never again. */}
         <div
-          className={`mx-auto flex h-12 w-12 items-center justify-center rounded-container border border-border-subtle transition-colors ${dragging ? 'bg-background-strong text-text-default' : 'bg-background-muted text-text-muted'}`}
+          className={`mx-auto flex h-8 w-8 items-center justify-center rounded-element border border-border-subtle transition-colors ${dragging ? 'bg-background-strong text-text-default' : 'bg-background-muted text-text-muted'}`}
         >
-          <Upload className="h-6 w-6" aria-hidden="true" />
+          <Upload className="h-4 w-4" aria-hidden="true" />
         </div>
         <div className="mt-2 text-label">Drag and drop to stage</div>
-        <div className="mt-1 text-supporting text-text-muted">
-          Drop readable files directly, or click to choose files, folders, and archives for backend
-          staging.
-        </div>
-        <div className="mt-3 flex flex-wrap justify-center gap-2">
-          {[
-            '.pdf',
-            '.pptx',
-            '.xlsx',
-            '.docx',
-            '.csv',
-            '.md',
-            '.html',
-            '.txt',
-            'folders',
-            'archives',
-            // A file extension in a chip is CHROME naming a thing, not data to
-            // be read character by character, so it takes the app's text face
-            // rather than the mono one (TYPE-11 / D-33).
-          ].map((label) => (
-            <Badge key={label}>{label}</Badge>
-          ))}
-        </div>
-        <div className="mt-2 text-supporting text-text-muted">
-          Readable contents are staged file by file. Binaries are skipped, and{' '}
-          <span className="text-text-default">Import from .brkb</span> stays in the knowledge base
-          menu for full knowledge-base archives.
+        <div className="mt-1 flex items-center justify-center gap-1 text-supporting text-text-muted">
+          <span>PDF, Office, web pages, folders</span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                tabIndex={0}
+                role="button"
+                aria-label="Which files can be staged"
+                className="biorouter-focus-surface rounded-inner px-0.5 text-text-subtle"
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                <Info className="h-icon-row w-icon-row" aria-hidden="true" />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[17rem]">
+              Readable files are staged one by one: .pdf, .pptx, .xlsx, .docx, .csv, .md, .html,
+              .txt, plus folders and archives, which are unpacked in the backend. Binaries are
+              skipped. <span className="text-text-default">Import from .brkb</span> stays in the
+              knowledge-base menu for full knowledge-base archives.
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
 

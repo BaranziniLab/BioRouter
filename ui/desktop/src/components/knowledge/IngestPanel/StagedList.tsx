@@ -1,7 +1,6 @@
-import { ClipboardList, FileText, Globe, Inbox, X } from '../../icons/app-icons';
+import { ClipboardList, FileText, Globe, X } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
-import { EmptyState } from '../../ui/empty-state';
 import type { StagedSource } from '../hooks/useStagedSources';
 
 interface Props {
@@ -24,16 +23,13 @@ interface Props {
  */
 export function StagedList({ items, onRemove, onClear }: Props) {
   if (items.length === 0) {
-    // No action: the dropzone and Paste text are directly above this, so an
-    // action here would be a second button pointing at the first.
-    return (
-      <EmptyState
-        compact
-        icon={Inbox}
-        title="Nothing staged"
-        description="Drop files above, paste text, or choose a folder."
-      />
-    );
+    // ⚠ **NOTHING, and that is the fix** (R-06). This was an `EmptyState`
+    // reading "Nothing staged / Drop files above, paste text, or choose a
+    // folder" — measured at **236px** in the 300px rail, which is LARGER than a
+    // five-item staged list at 232px. The rail was at its tallest when it had
+    // the least to say, and the text pointed at the dropzone sitting directly
+    // above it. An empty list is nothing; its neighbour already says what to do.
+    return null;
   }
 
   return (

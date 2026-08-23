@@ -5,7 +5,12 @@ declare module 'react-force-graph-2d' {
   // imperative methods they use (e.g. `ForceGraphMethods & { zoomToFit(): void }`),
   // so the base only needs to denote "some object" — `object` is the type
   // `@typescript-eslint/no-empty-object-type` recommends over an empty interface.
-  export type ForceGraphMethods = object;
+  export type ForceGraphMethods = {
+    /** Pan so `(x, y)` is centred, over `ms`. §5.12 uses it to follow keyboard focus. */
+    centerAt?: (x?: number, y?: number, ms?: number) => void;
+    /** Fit the whole graph, over `ms`, leaving `padding` screen px on every side. */
+    zoomToFit?: (ms?: number, padding?: number) => void;
+  };
 
   /**
    * The subset of force-graph's surface this app uses.

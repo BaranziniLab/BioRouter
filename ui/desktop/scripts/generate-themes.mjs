@@ -270,7 +270,7 @@ const familyMap = (o, indent) =>
   Object.entries(o)
     .map(
       ([name, f]) =>
-        `${' '.repeat(indent)}'${name}': { shape: '${f.shape}', members: [${f.members
+        `${' '.repeat(indent)}'${name}': { members: [${f.members
           .map((m) => `'${m}'`)
           .join(', ')}] },`
     )
@@ -285,9 +285,6 @@ ${strMap(p.types, 6)}
     families: {
 ${familyMap(p.families, 6)}
     },
-    shapeOf: {
-${strMap(p.shapeOf, 6)}
-    },
     credibility: {
 ${strMap(p.credibility, 6)}
     },
@@ -295,7 +292,7 @@ ${strMap(p.credibility, 6)}
 ${arcMap(p.ringArcs, 6)}
     },
     fallbackChroma: ${p.fallbackChroma},
-    fallbackRungs: [${p.fallbackRungs.join(', ')}],
+    fallbackLightness: [${p.fallbackLightness.join(', ')}],
     ground: '${p.ground}',
   },`;
 };
@@ -380,15 +377,6 @@ export const THEME_FAMILY_IDS = Object.keys(GENERATED_THEMES) as ThemeFamilyId[]
 
 /* ── the knowledge-graph palette ── */
 
-/**
- * The seven family silhouettes. SHAPE CARRIES FAMILY; lightness carries the
- * member within a family — the redundant non-colour channel WCAG 1.4.1 asks
- * for, and the reason this palette can be honest that cross-family colour
- * distance under dichromacy bottoms out at ΔE00 0.00. Seven, because seven is
- * about the discriminable limit for a silhouette at 10px; 28 would need shape
- * to do the whole job and could not.
- */
-export type NodeShape = ${union(graphSpec.NODE_SHAPES)};
 
 /**
  * The credibility ring's keys: the six \`CredibilityTier\` values plus
@@ -405,10 +393,8 @@ export type GraphCredibilityKey = ${union(graphSpec.CREDIBILITY.map((c) => c.tie
 export type GraphPalette = {
   /** The 28 curated fills, keyed by OKF type name. */
   types: Record<string, string>;
-  /** Family name -> its silhouette and its members, in ladder order. */
-  families: Record<string, { shape: NodeShape; members: string[] }>;
-  /** Type name -> silhouette, precomputed so the node painter does no lookup walk. */
-  shapeOf: Record<string, NodeShape>;
+  /** Family name -> its members, in ladder order. */
+  families: Record<string, { members: string[] }>;
   /** The seven ring hues. */
   credibility: Record<GraphCredibilityKey, string>;
   /**
@@ -423,7 +409,8 @@ export type GraphPalette = {
   /** DR-11: the fixed chroma every hashed fallback colour takes. */
   fallbackChroma: number;
   /** DR-11: the four rungs a hashed fallback selects between. */
-  fallbackRungs: [number, number, number, number];
+  /** R-05: the fallback's four OKLab lightnesses, not contrast rungs. */
+  fallbackLightness: [number, number, number, number];
   /**
    * The surface every ratio above was solved against — the resolved
    * \`--background-muted\`, which is what the graph pane paints.

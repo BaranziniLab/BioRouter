@@ -180,7 +180,7 @@ describe('withAlpha', () => {
   });
 
   it('handles a palette hex, which is where every node fill comes from', () => {
-    expect(withAlpha(GRAPH_PALETTE.light.types.Gene, 1)).toBe('rgba(106, 124, 212, 1)');
+    expect(withAlpha(GRAPH_PALETTE.light.types.Gene, 1)).toBe('rgba(160, 178, 255, 1)');
   });
 
   it('returns an unrecognised colour unchanged rather than mangling it', () => {

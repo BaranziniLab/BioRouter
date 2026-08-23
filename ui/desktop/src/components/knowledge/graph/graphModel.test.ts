@@ -158,7 +158,11 @@ describe('buildGraphModel', () => {
 
   it('counts types and predicates, and reports an unrecognised type', () => {
     const g = graph(
-      [node('a', { node_type: 'Gene' }), node('b', { node_type: 'Gene' }), node('c', { node_type: 'Klingon' })],
+      [
+        node('a', { node_type: 'Gene' }),
+        node('b', { node_type: 'Gene' }),
+        node('c', { node_type: 'Klingon' }),
+      ],
       [edge('a', 'b', { predicate: 'treats' }), edge('a', 'c', { relation: 'is_a' })]
     );
     const m = buildGraphModel(g);
@@ -183,9 +187,7 @@ describe('buildGraphModel', () => {
     expect(legacy.untyped).toBe(true);
     expect(legacy.untypedCount).toBe(2);
 
-    const mixed = buildGraphModel(
-      graph([node('a', { node_type: 'Gene' }), node('b'), node('c')])
-    );
+    const mixed = buildGraphModel(graph([node('a', { node_type: 'Gene' }), node('b'), node('c')]));
     expect(mixed.untyped).toBe(false);
     expect(mixed.untypedCount).toBe(2);
 

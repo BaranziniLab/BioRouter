@@ -5,8 +5,8 @@ import type { GraphEdge, GraphNode, QuantitativeValue } from '../../../api/types
 import type { GraphMode } from '../../../styles/graphPalette';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
-import { GraphShapeGlyph } from './GraphShapeGlyph';
-import { fillFor, shapeFor } from './nodeMark';
+import { fillFor, isHollow } from './nodeMark';
+import { NodeSwatch } from './NodeSwatch';
 import { xrefHref } from './frontmatter';
 import { isNegated, readablePredicate } from './graphModel';
 import type { GraphModel } from './graphModel';
@@ -135,16 +135,19 @@ export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose
     const body = (
       <>
         {node ? (
-          <GraphShapeGlyph
-            shape={shapeFor(node, mode)}
+          <NodeSwatch
             fill={fillFor(node, mode)}
+            hollow={isHollow(node, mode)}
             size={8}
             className="br-swatch-ring flex-none"
           />
         ) : (
           // An endpoint outside this bundle has no node and therefore no mark.
           // Drawing a default one would assert a type it does not have.
-          <span aria-hidden="true" className="h-2 w-2 flex-none rounded-full bg-background-medium" />
+          <span
+            aria-hidden="true"
+            className="h-2 w-2 flex-none rounded-full bg-background-medium"
+          />
         )}
         <span className="min-w-0 truncate text-body">{label(id)}</span>
       </>

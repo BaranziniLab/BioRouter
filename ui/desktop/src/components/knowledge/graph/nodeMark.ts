@@ -1,7 +1,7 @@
 // ui/desktop/src/components/knowledge/graph/nodeMark.ts
 import type { GraphNode } from '../../../api/types.gen';
-import { hashedFill, typeFill, typeShape } from '../../../styles/graphPalette';
-import type { GraphCredibilityKey, GraphMode, NodeShape } from '../../../styles/graphPalette';
+import { GRAPH_PALETTE, hashedFill, typeFill } from '../../../styles/graphPalette';
+import type { GraphCredibilityKey, GraphMode } from '../../../styles/graphPalette';
 import { showsCredibility } from './graphModel';
 
 /**
@@ -31,14 +31,41 @@ export function fillFor(n: GraphNode, mode: GraphMode): string {
 }
 
 /**
- * The silhouette for a node.
+ * The name of the family whose members are drawn HOLLOW.
  *
- * A typed node takes its family's shape; an untyped one takes the circle, which
- * is also what every node in an OKF base draws — there are no families there,
- * and a shape channel that applies to everything carries nothing.
+ * ⚠ **This is the redundant channel that survives the all-circle default**, and
+ * it is keyed to the vocabulary's own top-level division rather than invented:
+ * BioOKF splits its 28 types into 20 Biomedical Entities — the science — and 8
+ * Provenance & Context types, which are where the science came from. Drawing
+ * the second group as open rings says exactly that, stays a circle, and
+ * survives monochrome, which is more than hue can claim here.
+ *
+ * Matched by NAME against the generated palette rather than by a hardcoded list
+ * of eight type strings, so a vocabulary change moves this with it.
  */
-export function shapeFor(n: GraphNode, mode: GraphMode): NodeShape {
-  return n.node_type ? typeShape(n.node_type, mode) : 'circle';
+const HOLLOW_FAMILY = 'Provenance & context';
+
+/**
+ * Whether a node is drawn as an open ring rather than a filled disc.
+ *
+ * Untyped nodes are never hollow: in a legacy base every page would be, and a
+ * marker that applies to every node carries nothing — the same argument
+ * `hashedFill` makes for not giving OKF nodes a marker.
+ */
+export function isHollow(n: GraphNode, mode: GraphMode): boolean {
+  return !!n.node_type && isHollowType(n.node_type, mode);
+}
+
+/**
+ * The same question for a bare type string, which is what the LEGEND has.
+ *
+ * The legend must draw the hollow variant for exactly the types the canvas
+ * draws hollow — a key that disagrees with the mark teaches the wrong thing,
+ * which is the whole reason this module exists.
+ */
+export function isHollowType(type: string, mode: GraphMode): boolean {
+  const family = GRAPH_PALETTE[mode].families[HOLLOW_FAMILY];
+  return !!family && family.members.includes(type);
 }
 
 /**

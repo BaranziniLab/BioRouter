@@ -280,6 +280,13 @@ export const STRUCTURAL_TOKENS = [
   'measure-graph',
   'knowledge-rail-sources',
   'knowledge-rail-detail',
+  'knowledge-subject-height',
+  'knowledge-filter-height',
+  'knowledge-pane-two-col',
+  'knowledge-pane-legend-card',
+  'knowledge-pane-full-filters',
+  'knowledge-pane-three-col',
+  'knowledge-pane-short',
 ];
 
 /** Validate one mode of a theme definition. Returns an array of problems. */

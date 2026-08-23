@@ -123,4 +123,35 @@ describe('KBManagerDialog', () => {
     expect(screen.queryByLabelText('Delete Alpha')).toBeNull();
     expect(screen.getByLabelText('More actions for Alpha')).toBeInTheDocument();
   });
+
+  /**
+   * R-07. A row packed 5 focusable controls and up to 12 visual objects into a
+   * 40 x 582px box, reserving a fixed 160px cluster at its end — a 40px switch,
+   * three 32px icon buttons and three 8px gaps — before the name column got
+   * anything. Export and rename join the menu that was already there.
+   */
+  it('reserves ONE overflow control per row, not three icon buttons', () => {
+    open();
+    const row = screen.getByRole('option', { name: /Alpha/ }).closest('.biorouter-list-row')!;
+    expect(within(row as HTMLElement).queryByLabelText(/Export Alpha/)).toBeNull();
+    expect(within(row as HTMLElement).queryByLabelText(/Rename Alpha/)).toBeNull();
+    // The switch and the one overflow are what remain.
+    expect(within(row as HTMLElement).getByRole('switch')).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByLabelText('More actions for Alpha')).toBeInTheDocument();
+  });
+
+  /**
+   * Two facts were each drawn twice: membership as a switch AND a
+   * "Not in this chat" badge, primary as a `PRIMARY` badge AND a row-wide
+   * `tint-selected` fill. The badge survives and the tint does not — D-15 makes
+   * focus a SURFACE shift, so a row tint competes with the focus surface of
+   * every control inside the row.
+   */
+  it('states membership and primary exactly once each', () => {
+    open();
+    expect(screen.queryByText('Not in this chat')).toBeNull();
+    const primary = screen.getByRole('option', { selected: true }).closest('.biorouter-list-row')!;
+    expect(within(primary as HTMLElement).getByText(/Primary/i)).toBeInTheDocument();
+    expect((primary as HTMLElement).className).not.toContain('tint-selected');
+  });
 });

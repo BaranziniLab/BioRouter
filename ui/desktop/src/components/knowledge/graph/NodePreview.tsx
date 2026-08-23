@@ -8,9 +8,9 @@ import { Badge } from '../../ui/badge';
 import type { BadgeTone } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { usePagePreview } from '../hooks/usePagePreview';
-import { GraphShapeGlyph } from './GraphShapeGlyph';
 import { CredibilityRing, TIER_LABEL } from './CredibilityRing';
-import { credibilityKey, fillFor, shapeFor } from './nodeMark';
+import { credibilityKey, fillFor, isHollow } from './nodeMark';
+import { NodeSwatch } from './NodeSwatch';
 import { frontmatterRows, splitFrontmatter, xrefHref } from './frontmatter';
 import type { FrontmatterRow } from './frontmatter';
 import { prettyLabel } from './labelText';
@@ -227,14 +227,15 @@ export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
     >
       <div className="flex items-start justify-between gap-2 border-b border-border-subtle bg-background-muted px-4 py-3">
         <div className="flex min-w-0 items-start gap-2">
-          {/* The SAME mark the canvas paints, from the same function — fill by
-              `node_type` through `GRAPH_PALETTE`, silhouette by family. A swatch
-              that disagrees with the mark it describes is worse than none. */}
-          <GraphShapeGlyph
-            shape={shapeFor(node, mode)}
+          {/* The SAME mark the canvas paints, from the same functions — fill by
+              `node_type` through `GRAPH_PALETTE`, solid or hollow by family. A
+              swatch that disagrees with the mark it describes is worse than
+              none. */}
+          <NodeSwatch
             fill={fillFor(node, mode)}
-            size={14}
-            className="br-swatch-ring mt-0.5 flex-shrink-0"
+            hollow={isHollow(node, mode)}
+            size={12}
+            className="br-swatch-ring mt-1 flex-shrink-0"
           />
           <div className="flex min-w-0 flex-col gap-1">
             <div className="truncate text-label">{nodeTitle(node)}</div>

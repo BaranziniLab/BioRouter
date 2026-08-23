@@ -495,6 +495,34 @@
   --knowledge-rail-sources: 300px;
   --knowledge-rail-detail: 340px;
 
+  /* The Knowledge section's two in-page bands (redesign R-02, R-08). Both are
+     48px and NEITHER is `--chrome-height`: that 44px value is shared by the
+     three chrome bands that meet at one continuous top edge and move together
+     or not at all, and both of these sit inside the page. They are separate
+     tokens rather than one because they answer to different arguments — the
+     subject bar is sized by its switcher, the filter bar by a 32px control plus
+     real padding-block, which the 36px `--dock-height` it replaces did not
+     have (it left 2px of air above and below a 32px input). */
+  --knowledge-subject-height: 48px;
+  --knowledge-filter-height: 48px;
+
+  /* The pane ladder (R-08). Container-query breakpoints, NOT viewport ones —
+     the section's one `md:` media query tests the window while the thing that
+     changes size is the pane, and at the app's own minimum window with the
+     sidebar open the pane is 760px while the viewport is 1000. Every number is
+     measured: 860 is where a 264px rail plus a usable canvas fits; 940 is where
+     a 246px legend card has a canvas to sit in; 1140 is where the full filter
+     row clears the rail beside it; 1400 is where a
+     permanent 340px detail rail stops costing the canvas more than it returns.
+     Declared here so the three consumers cannot drift, even though a
+     `@container` rule cannot itself read a custom property in its condition —
+     these are the documented source of the literals below. */
+  --knowledge-pane-two-col: 860px;
+  --knowledge-pane-legend-card: 940px;
+  --knowledge-pane-full-filters: 1140px;
+  --knowledge-pane-three-col: 1400px;
+  --knowledge-pane-short: 620px;
+
   --z-base: 0;
   --z-sticky: 100;
   --z-dropdown: 200;
@@ -1303,6 +1331,8 @@
      Only `grid-cols` keeps the `[var(…)]` form: it has no token shorthand. */
   --spacing-knowledge-rail-sources: var(--knowledge-rail-sources);
   --spacing-knowledge-rail-detail: var(--knowledge-rail-detail);
+  --spacing-knowledge-subject-height: var(--knowledge-subject-height);
+  --spacing-knowledge-filter-height: var(--knowledge-filter-height);
 }
 
 @layer base {
@@ -2555,30 +2585,217 @@
   max-height: 40%;
 }
 
-/* The Sources rail's summoned paste box (ui-spec §4.4).
+/* ═══════════════════════════════════════════════════════════════════════════
+   KNOWLEDGE PANE — the @container ladder (redesign R-08)
 
-   The rail owns ONE scroll container and the ingest panel's footer is
-   `sticky bottom-0` inside it, so a control that mounts at the end of the flow
-   is painted over by the footer until the rail is scrolled all the way down.
-   "Paste text" therefore looked like a dead button: the box appeared at y=790
-   in an 887px window, underneath the pinned strip, and so did the Stage button
-   it contains.
+   ⚠ THE QUANTITY MATTERS MORE THAN THE NUMBERS. The section shipped with one
+   breakpoint, `md:` at 930px, and it is a VIEWPORT media query — but the thing
+   that changes size is the PANE. `main.ts` derives `minWidth: 1000` as 240px of
+   sidebar plus the 760px reading column, so at the app's own minimum window
+   with the sidebar open the viewport is 1000 (so `md:` fires and lays out two
+   columns) while the pane is 760. The 300px Sources rail then leaves 444px for
+   a filter strip whose content measures 757px. The section was at its most
+   broken at the smallest size the app allows.
 
-   `IngestPanel` measures the footer and writes `--br-ingest-footer-inset` onto
-   this element before it scrolls, because the footer's height is a runtime fact
-   — the helper line under the primary button comes and goes. The fallback is a
-   generous inset rather than 0: covered-but-scrollable is the failure this rule
-   exists to prevent.
+   ⚠ SOURCE ORDER IS THE MECHANISM. Every rule below sits at the same
+   specificity, so the narrow defaults MUST be declared before the @container
+   blocks. Declared after, a `display` rule leaks into the narrow step and the
+   pane paints both the core facets and the collapsed `Filters` control at once.
+   Measured in the design studio, not theorised.
 
-   AUTHORED for the same reason `.br-swatch-ring` and `.br-graph-dock` are:
-   `scroll-mb-[…]` would be a *newly written* arbitrary utility, and a newly
-   written utility can silently fail to reach the stylesheet under
-   `BIOROUTER_NO_HMR` (`watch: { ignored: ['**'] }` is the same signal
-   Tailwind's class scanner uses). A scroll margin that does not generate does
-   not degrade the fix — it removes it. */
-.br-ingest-summoned {
-  scroll-margin-bottom: var(--br-ingest-footer-inset, 12rem);
+   ⚠ AUTHORED HERE rather than as Tailwind utilities, for the reason
+   `.br-swatch-ring` and `.br-graph-dock` already are: a newly written utility
+   can silently fail to reach the stylesheet under `BIOROUTER_NO_HMR`
+   (`watch: { ignored: ['**'] }` is the same signal Tailwind's scanner uses),
+   and a layout ladder that does not generate is an absent one, not a degraded
+   one. `@container` conditions cannot read a custom property either way.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.br-knowledge-pane {
+  container-name: br-knowledge-pane;
+  /* `size`, not `inline-size`: the height step below is load-bearing at the
+     app's 600px minimum window, where the pane is 568px tall. Size containment
+     needs a definite height, which the workspace grid gives it. */
+  container-type: size;
 }
+
+/* ── the narrow step (< 860px): one column, tabs, one Filters control ── */
+.br-knowledge-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+}
+/* A grid item's default `min-height: auto` lets a tall child push the row past
+   the pane; without this the Sources rail ran 59px past its own box. */
+.br-knowledge-body > * {
+  min-width: 0;
+  min-height: 0;
+}
+/* ⚠ THE SOURCES PANEL'S NARROW VISIBILITY IS REACT'S, NOT THIS FILE'S. Below
+   the two-column step the Sources/Graph tab pair decides which panel shows, and
+   `KnowledgeView` writes `flex`/`hidden` for that. These rules are UNLAYERED and
+   Tailwind's utilities are in `@layer utilities`, so anything declared here
+   beats `.hidden` regardless of specificity — a `display` value in the narrow
+   default would therefore override the tab and pin one panel on screen. So the
+   narrow step says nothing about these two, and the container steps below
+   FORCE both visible once there is room for both. */
+.br-knowledge-detail {
+  display: none;
+}
+.br-knowledge-legend-card {
+  display: none;
+}
+.br-knowledge-tabs {
+  display: flex;
+}
+.br-facet-core,
+.br-facet-extra,
+.br-facet-more {
+  display: none;
+}
+.br-facet-all,
+.br-facet-legend {
+  display: inline-flex;
+}
+.br-knowledge-readout {
+  display: none;
+}
+
+@container br-knowledge-pane (min-width: 860px) {
+  .br-knowledge-tabs {
+    display: none;
+  }
+  .br-knowledge-body {
+    grid-template-columns: 264px minmax(0, 1fr);
+  }
+  /* Both panels, side by side — this is where the container overrides the tab
+     state, because the tabs themselves are hidden at this step. */
+  .br-knowledge-sources,
+  .br-knowledge-graph {
+    display: flex;
+  }
+  .br-facet-all {
+    display: none;
+  }
+  .br-facet-core,
+  .br-facet-more {
+    display: inline-flex;
+  }
+}
+
+/* The legend card and the full filter row are TWO constraints, not one, and
+   bundling them under a single breakpoint was measurably wrong: at a 1040px
+   pane — a 1280px window with the sidebar open, a very common size — four
+   facets overflowed the centre column by 19px. */
+@container br-knowledge-pane (min-width: 940px) {
+  .br-knowledge-body {
+    grid-template-columns: var(--knowledge-rail-sources) minmax(0, 1fr);
+  }
+}
+
+/* ⚠ **This step promotes THREE chips at once, which is why it sits at 1140
+   and not at the 1060 a first measurement suggested.** `Predicate` moved into
+   `More` to stop the row clipping in the band below (see `GraphFacetStrip`), so
+   crossing this line now restores Predicate, Source AND Status together, plus
+   the readout. Swept in 10px steps across 720–1760: at 1060 the row overflowed
+   its column by 44px and did not clear until 1110. The lesson is the sweep, not
+   the number — both overflow seams this ladder has had were invisible at the
+   four canonical pane sizes and showed up only against every width in between,
+   because each one lives at a threshold where one step's promotion races
+   another step's narrowing. */
+@container br-knowledge-pane (min-width: 1140px) {
+  .br-facet-more {
+    display: none;
+  }
+  .br-facet-extra {
+    display: inline-flex;
+  }
+  .br-knowledge-readout {
+    display: flex;
+  }
+}
+
+@container br-knowledge-pane (min-width: 1400px) {
+  .br-knowledge-body {
+    grid-template-columns: 320px minmax(0, 1fr);
+  }
+  /* The detail rail sits INSIDE the graph pane rather than as a third grid
+     column, so the facet state it reads stays local to `KnowledgeGraphPanel`.
+     `container-type: size` is on the workspace, so a descendant still answers
+     to the pane's width — the query works either way, and this way there is no
+     state to lift. */
+  .br-knowledge-detail {
+    display: flex;
+    width: var(--knowledge-rail-detail);
+    flex: none;
+  }
+  /* The Legend control retires once the rail is permanent — there is nothing
+     left for it to open. */
+  .br-facet-legend {
+    display: none;
+  }
+}
+
+/* The height step. At a 600px window the pane is 568px, so this is the DEFAULT
+   state at the app's minimum, not an edge case: the header yields its
+   description line so the canvas keeps a usable box. */
+@container br-knowledge-pane (max-height: 620px) {
+  .br-knowledge-subtitle {
+    display: none;
+  }
+}
+
+/* ── the filter control (R-02) ──────────────────────────────────────────────
+   A filter is NOT a button and NOT a pill. It sits on `--radius-element`, the
+   same step as every button, input, select and tab — a control differentiated
+   by being a different SHAPE from the rest of the app is a control that reads
+   as foreign. What separates it is edge and ground: a 1.5px border on a
+   transparent fill reads as a field that holds a value, where a secondary
+   button is a filled slab with no edge at all. Engaged is a solid accent fill
+   rather than a tint, because across a 1600px bar a tint is a guess.
+
+   This rule is authored rather than composed from utilities because the
+   `:has()`-free resting/engaged pair has to survive the class scanner, and
+   because the design system's D-15 focus surface must read THROUGH it. */
+.br-facet {
+  border: 1.5px solid var(--border-subtle);
+  background: transparent;
+}
+.br-facet:hover {
+  border-color: var(--border-strong);
+  background: var(--background-muted);
+}
+.br-facet[data-engaged='true'] {
+  border-color: var(--background-accent);
+  background: var(--background-accent);
+  color: var(--text-on-accent);
+}
+.br-facet[data-engaged='true']:hover {
+  border-color: var(--background-accent);
+  background: var(--background-accent);
+}
+
+/* ⚠ **THERE IS NO CANVAS-ANCHORED LEGEND CARD, AND THAT IS DELIBERATE.**
+   An earlier revision floated the legend over the canvas between 940 and 1400,
+   BioOKF-style. Measured in the browser at a 946px pane it covered **44% of the
+   canvas width** and sat on top of the graph — which is the overlap complaint
+   this redesign exists to fix, reintroduced by the fix. A legend that hides the
+   thing it describes is worse than one you open on demand.
+
+   So: a real rail at >= 1400 where there is room for a column, and below that a
+   `Legend` control in the filter bar opening the SAME component in a popover.
+   Nothing ever overlaps the canvas, and the legend is dismissible at every size
+   because a popover is dismissible by construction. The control's own default
+   is declared with the other `.br-facet-*` defaults ABOVE the container blocks;
+   declaring it here, after them, is what let it survive into the rail step. */
+
+/* ⚠ **`.br-ingest-summoned` IS DELETED, AND SO IS THE BUG IT PATCHED** (R-06).
+   It carried a runtime-measured `scroll-margin-bottom` so the summoned paste
+   box would clear the ingest panel's `sticky bottom-0` footer — which painted
+   over the body by DOM order and made "Paste text" read as a dead button. The
+   footer is now a flex sibling of the scroller and occludes nothing, so there
+   is no margin left to measure. Removing the workaround with the bug is the
+   point; keeping it working would have preserved a fix for a defect that no
+   longer exists. */
 
 .biorouter-home-content {
   container-name: biorouter-home-content;

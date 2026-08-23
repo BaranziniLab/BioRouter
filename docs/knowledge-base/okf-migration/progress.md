@@ -50,7 +50,7 @@ on every spawned process via `ps eww`, and `lsof` showing zero open files under 
 | Create a BioOKF base through the UI | PASS |
 | Ingest into OKF through the ingest panel (live SSE) | PASS |
 | Ingest biomedical into BioOKF through the panel | PASS — 11 typed pages, 17 typed edges |
-| BioOKF graph: colour by type, shape by family, typed edges, legend | PASS |
+| BioOKF graph: colour by type, solid vs hollow by top-level class, typed edges, legend | PASS — the shape-by-family channel was removed after this run; see `../knowledge-ui-redesign/redesign-spec.md` R-04 |
 | Facet rail filtering | PASS |
 | **OKF *and legacy* graphs render** | **PASS** — the back-compat property |
 | Node inspector | PASS (after the fix in `eee061ce`) |
@@ -102,9 +102,30 @@ Each keeps its decision record so the reasoning is not lost.
 
 - The Radix missing-`Description` warning on the knowledge drawers (pre-existing on
   `ChangeLogDrawer`; the new lint drawer matches the house pattern). Worth one pass across all of them.
-- §5.12's keyboard model for the graph canvas.
 
 ## Log
+
+### 2026-08-22
+- **§5.12's keyboard model is built**, closing a WCAG 2.1.1 Level A failure that predates this
+  migration: the canvas §3.5 calls "the reason the view exists" had no tab stop, no focus model and
+  no traversal, so the primary content of the section could not be reached without a mouse. One tab
+  stop with a `focus-visible` ring, ±60° cone arrow traversal with a half-plane fallback, a
+  degree-ordered `Tab` walk, `Home` to the highest-degree node, and an `aria-live` region that speaks
+  `<identifier>, <type>, <family>`. Pure logic in `graph/graphKeyboard.ts` (18 tests); verified end
+  to end in a real browser, since jsdom cannot render the canvas at all — force-graph calls
+  `canvas.getContext('2d')`.
+- **The node shape channel was removed** by operator decision, making that live region the section's
+  only redundant channel rather than a second one. Rationale, what it cost and what it replaced:
+  `../knowledge-ui-redesign/redesign-spec.md` R-04 (amended).
+- **Two container-query overflow seams closed**, both found by sweeping the pane in 5px steps from
+  720 to 1800 rather than checking the four canonical sizes. Both lived exactly *at* a threshold,
+  where one step's promotion races another step's narrowing, so every canonical size rendered
+  correctly and the suite was green. `--knowledge-pane-full-filters` moved 1060 → 1140 and
+  `Predicate` folded into `More`. `styles/knowledgeLadder.test.ts` guards what jsdom can guard,
+  which is the declarations rather than the layout.
+- The graph's `zoomToFit` padding was found to be a regression, not a force-parameter problem:
+  after a fit the cluster occupies exactly `viewport - 2 × padding` on the binding axis, a quantity
+  no charge or link-distance value can move. Binding-axis fill 68% → 85%.
 
 ### 2026-08-19
 - 16-agent research sweep; design records DR-1…DR-28, each surviving a committee.

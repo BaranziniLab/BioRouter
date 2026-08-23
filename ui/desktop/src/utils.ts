@@ -74,6 +74,8 @@ const twMerge = extendTailwindMerge({
         'measure-graph',
         'knowledge-rail-sources',
         'knowledge-rail-detail',
+        'knowledge-subject-height',
+        'knowledge-filter-height',
       ],
       // All five elevations, not just the new one. The four that shipped before
       // `raised` were never registered, so they fell through to the `shadow-color`
