@@ -22,13 +22,16 @@ for f in biorouterd biorouter jbang npx uvx node; do
         echo "  Removed macOS binary: $f"
     fi
 done
-# Remove Windows executables and DLLs — they do not belong in Linux packages
-for f in "$BIN_DIR"/*.exe "$BIN_DIR"/*.dll "$BIN_DIR"/*.cmd; do
-    if [ -f "$f" ]; then
-        rm -f "$f"
-        echo "  Removed Windows file: $(basename "$f")"
-    fi
-done
+# Remove Windows executables and DLLs — they do not belong in Linux packages.
+#
+# ⚠ RECURSIVE, deliberately. This was a top-level glob (`$BIN_DIR/*.exe`), which
+# cannot match `$BIN_DIR/llamacpp/llama-server.exe` — and that is exactly where
+# they were. The shipped .deb carried 31 Windows files under
+# resources/bin/llamacpp/ as a result. `prepare-platform-binaries.js` below
+# replaces that whole directory with the Linux sidecar and then asserts no
+# foreign executable survives anywhere, so this sweep is defence in depth rather
+# than the only guard.
+find "$BIN_DIR" \( -name '*.exe' -o -name '*.dll' -o -name '*.cmd' \) -type f -print -delete 2>/dev/null || true
 # Remove bundled MinGit (Windows-only Git distribution dropped by download-mingit.js)
 if [ -d "$BIN_DIR/git" ]; then
     rm -rf "$BIN_DIR/git"
@@ -51,21 +54,23 @@ echo "  Installed Linux x64: biorouterd"
 cd "$DESKTOP_DIR"
 npm ci --cache /root/.npm
 
-# The browser interface bundle biorouterd serves (BIOROUTER_SERVE_UI), shipped
-# as the extraResource 'src/web'. Built explicitly HERE because this script
-# calls `npm run make` directly and so never runs prepare-platform-binaries.js,
-# which is where every other platform's packaging path builds it.
+# Run the SAME preparation every other platform runs. This script used to call
+# `npm run make` directly and skip it entirely, which is why the Linux packages
+# were the only ones with no binary validation — and why they shipped a Windows
+# llama-server: nothing here fetched the Linux one, so whatever the macOS build
+# had left in src/bin/llamacpp/ was packaged as-is.
+#
+# It fetches the Linux sidecar (replacing that directory wholesale), builds the
+# browser interface bundle biorouterd serves (BIOROUTER_SERVE_UI, shipped as the
+# extraResource 'src/web'), asserts the required binaries are present, and
+# asserts no foreign executable survived.
 #
 # The deb and rpm install under /opt, so `<exe dir>/../web` resolves inside the
 # app tree exactly as it does on macOS and Windows. It is the CLI-only packages
 # (packaging/cli/nfpm.yaml, /usr/bin) that cannot use that rule and place the
 # bundle at /usr/share/biorouter/web instead.
-echo "Building browser interface bundle (npm run build:web)..."
-npm run build:web
-[ -s "$DESKTOP_DIR/src/web/index.html" ] || {
-    echo "ERROR: npm run build:web produced no src/web/index.html"
-    exit 1
-}
+echo "Preparing Linux platform binaries (llama-server, web bundle, validation)..."
+ELECTRON_PLATFORM=linux ELECTRON_ARCH=x64 node scripts/prepare-platform-binaries.js
 
 echo "Running electron-forge make for Linux x64 (deb, rpm, zip)..."
 ELECTRON_PLATFORM=linux ELECTRON_ARCH=x64 npm run make -- --platform=linux --arch=x64 \

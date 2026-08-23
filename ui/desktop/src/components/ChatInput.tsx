@@ -2670,8 +2670,22 @@ export default function ChatInput({
                     )}
                   </div>
                 ) : (
-                  // File box preview
-                  <div className="flex items-center gap-2 px-3 py-2 bg-background-medium border border-border-subtle rounded-element min-w-[120px] max-w-[200px]">
+                  // File box preview.
+                  //
+                  // The error branch is not decoration. A file that could not be
+                  // located is still attached and still looks ordinary, so
+                  // without it the user sends a message believing a file went
+                  // with it. Only the image branch rendered `error` before, so a
+                  // dropped document failed completely silently.
+                  <div
+                    className={`flex items-center gap-2 px-3 py-2 bg-background-medium border rounded-element min-w-[120px] ${
+                      // An error needs room to be read. Clamping it to the
+                      // normal chip width hid all but two lines behind a
+                      // `title` tooltip, which is not a place a person looks
+                      // when they think their file attached fine.
+                      file.error ? 'border-border-danger max-w-[420px]' : 'border-border-subtle max-w-[200px]'
+                    }`}
+                  >
                     <div className="flex-shrink-0 w-8 h-8 bg-background-default border border-border-subtle rounded-inner flex items-center justify-center text-supporting font-mono text-text-muted">
                       {file.name.split('.').pop()?.toUpperCase() || 'FILE'}
                     </div>
@@ -2679,9 +2693,13 @@ export default function ChatInput({
                       <p className="text-secondary text-text-default truncate" title={file.name}>
                         {file.name}
                       </p>
-                      <p className="text-supporting text-text-muted">
-                        {file.type || 'Unknown type'}
-                      </p>
+                      {file.error ? (
+                        <p className="text-supporting text-text-danger">{file.error}</p>
+                      ) : (
+                        <p className="text-supporting text-text-muted">
+                          {file.type || 'Unknown type'}
+                        </p>
+                      )}
                     </div>
                   </div>
                 )}

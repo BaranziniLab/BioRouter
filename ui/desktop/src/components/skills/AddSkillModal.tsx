@@ -94,6 +94,18 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
 
   const processZipFile = async (file: File) => {
     const filePath = window.electron.getPathForFile(file);
+    // See `BrxtInstallModal`: an empty path means this surface cannot supply
+    // one. Sending the bare name would have the daemon extract whatever
+    // matching archive sat in its own working directory.
+    if (!filePath) {
+      setError(
+        'Biorouter is running on another machine, so it cannot read a file you ' +
+          'drop here. Copy the skill onto that machine and add it with ' +
+          '`biorouter skill install <path>`.'
+      );
+      setPreview(null);
+      return;
+    }
     const result = await window.electron.extractSkillZip(filePath);
     if ('error' in result) {
       setError(result.error);

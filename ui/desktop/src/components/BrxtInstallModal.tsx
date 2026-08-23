@@ -42,6 +42,9 @@ interface Props {
   registrySource?: { registryId: string; sourceUrl?: string };
 }
 
+const NO_LOCAL_PATH_MESSAGE =
+  'Biorouter is running on another machine, so it cannot read a file you drop here. Copy the file onto that machine and install it with `biorouter extension install <path>`.';
+
 export function BrxtInstallModal({
   onClose,
   onInstalled,
@@ -64,6 +67,15 @@ export function BrxtInstallModal({
   const { addExtension } = useConfig();
 
   const processFile = useCallback(async (fp: string) => {
+    // An empty path means the surface could not supply one -- a browser tab
+    // cannot know where a dropped file lives, and the daemon that would open it
+    // is on another machine. Refusing here is the point: passing the bare file
+    // name on would make the daemon resolve it against ITS working directory
+    // and possibly validate some unrelated bundle.
+    if (!fp) {
+      setError(NO_LOCAL_PATH_MESSAGE);
+      return;
+    }
     setError(null);
     setManifest(null);
     setSkillsPreview([]);

@@ -405,7 +405,20 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       installUpdate: () => {},
       restartApp: () => {},
       onUpdaterEvent: () => () => {},
-      getPathForFile: (file: File) => file.name,
+      // A browser cannot know where a dropped file lives on disk -- and the
+      // agent runs on the SERVER, so even if it could, that path would name a
+      // different machine. Returning `file.name` was actively dangerous: the
+      // bare name resolves against the server's working directory, so dropping
+      // `results.csv` could hand the agent some *other* `results.csv` that
+      // happens to exist there. A wrong answer with no error, which in a
+      // biomedical tool is the worst failure mode available.
+      //
+      // The empty string is the established "no path" sentinel here (see
+      // `useFileDrop`, whose tests already exercise it). Callers must treat it
+      // as "this surface cannot supply a path" and say so, never fall back to
+      // the name. Images are unaffected: they are staged as data URLs and never
+      // need a filesystem path at all.
+      getPathForFile: (_file: File) => '',
       ensureWindowContentWidth: async (width: number) => ({
         expanded: false,
         width,
