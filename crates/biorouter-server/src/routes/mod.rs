@@ -23,6 +23,41 @@ pub fn is_local_origin(origin: &str) -> bool {
     }
 }
 
+/// Whether `origin` names the very origin this request was addressed to.
+///
+/// [`is_local_origin`] answers "is this loopback", which was the whole question
+/// while the daemon only ever served a browser on the same machine. Since it can
+/// serve its own interface, a browser may legitimately reach it at a LAN address
+/// or a hostname — and the daemon cannot enumerate those. It may have bound
+/// `0.0.0.0`, and the address the user typed is not knowable from the bind.
+///
+/// What *is* knowable is the `Host` the request carries. A same-origin page
+/// always presents an `Origin` whose authority equals that `Host`, and a page on
+/// any other origin cannot — the browser sets both, and neither is reachable
+/// from script. So comparing the two is a precise same-origin test that needs no
+/// configuration and no wildcard, and it holds for every address the interface
+/// is ever reached at.
+///
+/// Both are compared whole. `http://evil.com` is not admitted by a `Host` of
+/// `evil.com.attacker.net`, because this is an equality test rather than a
+/// prefix one — the same trap [`is_local_origin`] documents.
+pub fn origin_matches_host(origin: &str, host: Option<&str>) -> bool {
+    let Some(host) = host else {
+        // No `Host` to compare against. Refuse rather than guess: the caller
+        // still has the loopback rule and the socket's token.
+        return false;
+    };
+    let authority = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"));
+    let Some(authority) = authority else {
+        // `null`, `file://`, and anything else opaque. Callers that admit
+        // `file://` do so by name; this is not the place for it.
+        return false;
+    };
+    !authority.is_empty() && !host.is_empty() && authority.eq_ignore_ascii_case(host)
+}
+
 /// Compare secrets without an early return, so a caller cannot recover the key
 /// one byte at a time by timing the response.
 ///
