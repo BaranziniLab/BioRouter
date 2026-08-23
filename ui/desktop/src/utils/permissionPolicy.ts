@@ -37,32 +37,24 @@ export function shouldOpenExternalNavigation(candidate: string, appUrl: URL): bo
   }
 }
 
-export function isAllowedArtifactFrameNavigation(
-  candidate: string,
-  proxyBaseUrl?: string
-): boolean {
-  try {
-    const url = new URL(candidate);
-    if (candidate === 'about:srcdoc' || candidate === 'about:blank') return true;
-    if (!proxyBaseUrl || url.username || url.password) return false;
-    const proxy = new URL(`${proxyBaseUrl.replace(/\/+$/, '')}/mcp-ui-proxy`);
-    if (
-      url.origin !== proxy.origin ||
-      url.pathname !== proxy.pathname ||
-      url.hash ||
-      url.searchParams.get('contentType') !== 'rawhtml'
-    ) {
-      return false;
-    }
-    for (const [key, value] of url.searchParams) {
-      if (key === 'contentType' && value === 'rawhtml') continue;
-      if (key === 'waitForRenderData' && value === 'true') continue;
-      return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * Where an artifact preview frame is allowed to navigate: nowhere.
+ *
+ * Every surface that displays a generated artifact — the side panel, the
+ * "open in browser" wrapper document — hands the figure to the frame as a
+ * `srcdoc`, so the only legitimate destinations are `about:srcdoc` and the
+ * `about:blank` the frame starts at. Anything else is the guest document trying
+ * to move the frame somewhere, which is exactly what must not happen.
+ *
+ * This used to carry a second allowance: the daemon's `/mcp-ui-proxy`, which
+ * served the figure to an inline iframe in the transcript. That surface is gone
+ * — a figure is only ever displayed in the artifact panel now — and with it the
+ * one reason this function needed to know the daemon's origin at all. Losing the
+ * parameter is a tightening, not a regression: the policy is now a closed set of
+ * two literals with nothing configurable about it.
+ */
+export function isAllowedArtifactFrameNavigation(candidate: string): boolean {
+  return candidate === 'about:srcdoc' || candidate === 'about:blank';
 }
 
 export function isAllowedRendererPermission(

@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  artifactPanelTargetContentWidth,
   createScrollToBottomHandler,
   createSessionDivergedHandler,
   isEventForSession,
   SCROLL_TO_BOTTOM_DELAY_MS,
   submitAndReturnToBottom,
 } from './BaseChat';
+import { artifactPanelTargetContentWidth } from './artifacts/useArtifactPanel';
 
 /**
  * These events are BROADCAST on `window`, so every mounted BaseChat hears every

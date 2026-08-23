@@ -103,7 +103,7 @@ interface ToolCallWithResponseProps {
    */
   turnActive?: boolean;
   append?: (value: string) => void;
-  onOpenArtifact?: (artifact: ArtifactSource) => void;
+  onOpenArtifact: (artifact: ArtifactSource) => void;
   workingDir?: string;
 }
 
@@ -490,7 +490,10 @@ function ToolCallWithResponseContent({
           }}
         />
       </div>
-      {/* MCP UI — Inline */}
+      {/* A `ui://` resource — an Auto Visualiser figure, an Agent Drafter app
+          card. It is NEVER drawn here: MCPUIResourceRenderer emits a
+          click-to-open card and the artifact side panel is the only surface
+          that renders the thing itself. */}
       {!hasMcpAppResourceURI &&
         toolResponse?.toolResult &&
         getToolResultContent(toolResponse.toolResult).map((content, index) => {
@@ -500,12 +503,7 @@ function ToolCallWithResponseContent({
           if (resourceContent && isUIResource(resourceContent)) {
             return (
               <div key={index} className="mt-3">
-                <MCPUIResourceRenderer
-                  content={resourceContent}
-                  sessionId={sessionId}
-                  appendPromptToChat={append}
-                  onOpenArtifact={onOpenArtifact}
-                />
+                <MCPUIResourceRenderer content={resourceContent} onOpenArtifact={onOpenArtifact} />
               </div>
             );
           } else {
@@ -626,7 +624,7 @@ interface ToolCallViewProps {
    * {@link ProviderExecution}).
    */
   providerExecution?: ProviderExecution | null;
-  onOpenArtifact?: (artifact: ArtifactSource) => void;
+  onOpenArtifact: (artifact: ArtifactSource) => void;
   workingDir?: string;
 }
 
@@ -1408,7 +1406,7 @@ function ExecutedCallRow({ call, index }: { call: ExecutedToolCall; index: numbe
 interface ToolResultViewProps {
   result: Content;
   isStartExpanded: boolean;
-  onOpenArtifact?: (artifact: ArtifactSource) => void;
+  onOpenArtifact: (artifact: ArtifactSource) => void;
   workingDir?: string;
 }
 

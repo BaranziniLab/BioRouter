@@ -1384,10 +1384,7 @@ const createChat = async (
       blockOffOriginNavigation(event, event.url);
       return;
     }
-    if (
-      isArtifactPreviewFrame(event.frame) &&
-      !isAllowedArtifactFrameNavigation(event.url, biorouterdClient.getConfig().baseUrl as string)
-    ) {
+    if (isArtifactPreviewFrame(event.frame) && !isAllowedArtifactFrameNavigation(event.url)) {
       log.warn('[Main] Blocked artifact frame navigation to', event.url);
       event.preventDefault();
     }
@@ -3963,7 +3960,9 @@ function registerCliInstallHandlers() {
     }
     const probe = await runProbe(process.platform === 'win32' ? 'where' : 'which', ['biorouter']);
     const pathLocation =
-      probe.ok && probe.stdout.trim().length > 0 ? probe.stdout.trim().split(/\r?\n/)[0].trim() : null;
+      probe.ok && probe.stdout.trim().length > 0
+        ? probe.stdout.trim().split(/\r?\n/)[0].trim()
+        : null;
 
     // Both version probes are independent subprocesses — resolve them together
     // rather than paying for one and then the other.
@@ -5473,87 +5472,6 @@ async function appMain() {
     return artifactFile;
   };
 
-  // Open self-contained artifact HTML in a large sandboxed Electron window.
-  // Live Agent Drafter apps use their explicit browser link instead.
-  const openArtifactInWindow = async (payload: OpenArtifactPayload) => {
-    try {
-      const isDark = payload.theme === 'dark';
-      const html = wrapArtifactForBrowser(
-        injectArtifactHostTheme(await prepareArtifactHtml(payload.html), isDark ? 'dark' : 'light')
-      );
-      const win = new BrowserWindow({
-        title: payload.title || 'Biorouter Artifact',
-        width: Math.min(Math.max(payload.width || 1000, 480), 1600),
-        height: Math.min(Math.max(payload.height || 760, 360), 1200),
-        resizable: true,
-        // Match the figure's own background so there is no flash before scripts run.
-        //
-        // DELIBERATELY NOT THEME-FAMILY-AWARE, and not a stray hardcode to
-        // clean up. This paints for the few frames before the artifact's own
-        // scripts run, so its only job is to agree with what the artifact is
-        // about to paint over it. That is `colors.bg` in
-        // `crates/biorouter-mcp/src/autovisualiser/templates/_common.js`
-        // (`dark ? '#1c1f26' : '#f5f7fa'`), which the RUST backend bakes into
-        // every figure and report; it resolves light/dark only and has no
-        // notion of parchment / alma-mater / roche-limit. Substituting the
-        // app family's `--background-default` here would not make the window
-        // family-aware — the figure would still paint its own grey — it would
-        // only replace "no flash" with "a flash of the wrong colour" against
-        // the app's own `--background-default` (`#ffffff` light, `#1b1b19`
-        // dark — one shared value across all three families since 2026-08-08).
-        //
-        // Making this genuinely family-aware means teaching `_common.js` to
-        // read a host palette (it already reads `window.__BR_VIZ_HOST_THEME__`
-        // for light/dark, injected by `injectArtifactHostTheme` just above, so
-        // the channel exists). That is a change in `crates/`, not here. Until
-        // the figure can honour a family, injecting one would be decoration.
-        //
-        // Known separate bug, left alone as it is a light/dark issue rather
-        // than a family one: light should be `#f5f7fa` to match `_common.js`,
-        // not `#ffffff`.
-        backgroundColor: isDark ? '#1c1f26' : '#ffffff',
-        webPreferences: {
-          nodeIntegration: false,
-          contextIsolation: true,
-          sandbox: true,
-          webSecurity: true,
-          backgroundThrottling: true,
-        },
-      });
-      // Artifact scripts cannot create windows or trigger the system browser.
-      win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-      const isArtifactPreviewFrame = trackArtifactPreviewFrames(win.webContents);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      win.webContents.on('will-frame-navigate' as any, (event: any) => {
-        if (isArtifactPreviewFrame(event.frame) && !isAllowedArtifactFrameNavigation(event.url)) {
-          event.preventDefault();
-        }
-      });
-
-      // Self-contained artifact HTML can be several megabytes — Auto Visualiser
-      // figures inline D3/Chart.js/Leaflet/Mermaid (a Mermaid diagram is ~3.3 MB,
-      // ~4.6 MB once percent-encoded). A `data:` URL would exceed Chromium's ~2 MB
-      // URL ceiling and silently abort the navigation (net::ERR_ABORTED), leaving a
-      // blank window with only the static markup. Write the HTML to a temp file and
-      // load it instead: no length limit, and a stable file:// origin so the figure's
-      // inline scripts run exactly as they do in the in-chat iframe. The `theme`
-      // query mirrors what the in-chat renderer passes so light/dark match.
-      const artifactFile = await writeArtifactTempFile(html);
-      // Remove the temp file once the window is gone (keeps it available across reloads).
-      win.on('closed', () => {
-        fs.unlink(artifactFile).catch(() => {});
-      });
-
-      await win.loadFile(artifactFile, { query: { theme: isDark ? 'dark' : 'light' } });
-      return { ok: true };
-    } catch (error) {
-      console.error('Error opening artifact window:', error);
-      return { ok: false };
-    }
-  };
-
-  // Open a self-contained, offline artifact preview in the user's default browser.
-  // Live Agent Drafter apps are launched through their explicit `/apps/<id>/` link.
   const openArtifactInBrowser = async (payload: OpenArtifactPayload) => {
     try {
       const html = wrapArtifactForBrowser(
@@ -5571,10 +5489,6 @@ async function appMain() {
     }
   };
 
-  ipcMain.handle('open-artifact-window', (_event, payload: unknown) => {
-    const normalized = normalizeArtifactPayload(payload);
-    return normalized ? openArtifactInWindow(normalized) : { ok: false };
-  });
   ipcMain.handle('open-artifact-in-browser', (_event, payload: unknown) => {
     const normalized = normalizeArtifactPayload(payload);
     return normalized ? openArtifactInBrowser(normalized) : { ok: false };

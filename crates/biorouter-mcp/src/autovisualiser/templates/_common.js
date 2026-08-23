@@ -4,7 +4,11 @@
  * Provides:
  *   - BioRouterViz.theme       : 'light' | 'dark' resolved from the iframe host query / prefers-color-scheme
  *   - BioRouterViz.palette     : categorical colour palette (theme-aware)
- *   - BioRouterViz.reportSize  : posts `ui-size-change` to the MCP-UI host so the iframe auto-resizes
+ *   - BioRouterViz.reportSize  : posts `ui-size-change` to the parent frame. An enclosing
+ *                                dashboard report (dashboard_template.html) listens and grows
+ *                                this panel's iframe to fit; displayed standalone in the
+ *                                artifact side panel the message is inert, because the panel
+ *                                sizes the frame itself and installs no listener.
  *   - BioRouterViz.autoResize  : wires reportSize to load / ResizeObserver / window resize
  *   - BioRouterViz.showError   : renders a friendly error card instead of a blank/broken frame
  *   - BioRouterViz.guard       : runs a draw fn, catching + surfacing any exception
@@ -99,6 +103,8 @@
       document.documentElement.offsetHeight
     );
     if (window.parent !== window) {
+      // Read by an enclosing dashboard report, which sizes this panel's iframe.
+      // Nobody listens when the figure stands alone in the artifact panel.
       window.parent.postMessage({ type: 'ui-size-change', payload: { height: h } }, '*');
     }
   }

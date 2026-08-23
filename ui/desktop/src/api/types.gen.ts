@@ -5625,20 +5625,6 @@ export type LlamacppWarmupResponses = {
 
 export type LlamacppWarmupResponse = LlamacppWarmupResponses[keyof LlamacppWarmupResponses];
 
-export type McpUiProxyData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/mcp-ui-proxy';
-};
-
-export type McpUiProxyResponses = {
-    /**
-     * MCP UI proxy HTML page
-     */
-    200: unknown;
-};
-
 export type MemoryDeleteCategoryData = {
     body: MemoryDeleteCategoryRequest;
     path?: never;

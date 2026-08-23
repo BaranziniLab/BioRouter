@@ -15,10 +15,14 @@
  *   - a `child` pair — one the child agent ran in its own sandbox, which passed
  *     none of Biorouter's gates — is the ONE case that says so on the card.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import ToolCallWithResponse, { providerExecutionOf } from './ToolCallWithResponse';
 import type { ToolRequestMessageContent, ToolResponseMessageContent } from '../types/message';
+
+// The transcript is no longer a display surface for artifacts — it can only hand
+// one to the panel — so `onOpenArtifact` is required all the way down the chain.
+const noopOpenArtifact = vi.fn();
 
 const CHILD_LABEL = /not gated by Biorouter/;
 
@@ -91,6 +95,7 @@ describe('a mirrored tool call renders as an ordinary tool call', () => {
         isCancelledMessage={false}
         toolRequest={mirroredRequest('bridged')}
         toolResponse={mirroredResponse('bridged')}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -125,6 +130,7 @@ describe('a mirrored tool call renders as an ordinary tool call', () => {
           isError: true,
           text: 'command not found: npm',
         })}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -145,6 +151,7 @@ describe('a mirrored tool call renders as an ordinary tool call', () => {
         isCancelledMessage={false}
         toolRequest={mirroredRequest('bridged')}
         turnActive
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -160,6 +167,7 @@ describe('the child-executed affordance', () => {
         isCancelledMessage={false}
         toolRequest={mirroredRequest('child')}
         toolResponse={mirroredResponse('child')}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -184,6 +192,7 @@ describe('the child-executed affordance', () => {
         isCancelledMessage={false}
         toolRequest={mirroredRequest()}
         toolResponse={mirroredResponse('child')}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -196,6 +205,7 @@ describe('the child-executed affordance', () => {
         isCancelledMessage={false}
         toolRequest={mirroredRequest('bridged')}
         toolResponse={mirroredResponse('bridged')}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -208,6 +218,7 @@ describe('the child-executed affordance', () => {
         isCancelledMessage={false}
         toolRequest={mirroredRequest()}
         toolResponse={mirroredResponse()}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -228,6 +239,7 @@ describe('parity with an API-provider tool call', () => {
         isCancelledMessage={false}
         toolRequest={mirroredRequest(executed)}
         toolResponse={mirroredResponse(executed, { isError })}
+        onOpenArtifact={noopOpenArtifact}
       />
     ).container.innerHTML;
 

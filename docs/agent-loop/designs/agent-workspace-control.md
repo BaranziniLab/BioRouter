@@ -464,9 +464,10 @@ from a `file://` document: the first policy fires `securitypolicyviolation` with
 *The origin gate admits `file://`, and that is what the packaged renderer sends.*
 `check_workspace_ws_auth` accepts a loopback origin (the dev renderer, served by vite) or
 the literal `file://`, and **refuses `"null"`** — the opaque origin of every sandboxed
-frame, including the agent-authored figures this same app renders through the
-unauthenticated `/mcp-ui-proxy`. That made the packaged path the one materially different
-input from the dev build, and it was unmeasured until Task 31's fixup measured it
+frame, including the agent-authored figures this same app renders in its artifact side
+panel, put into a `srcDoc` iframe sandboxed without `allow-same-origin`. That made the
+packaged path the one materially different input from the dev build, and it was
+unmeasured until Task 31's fixup measured it
 directly: a `file://` document in Electron 39.8.10 puts `Origin: file://` on the
 WebSocket handshake, not `null`, so the packaged renderer is admitted. Re-measure if the
 renderer ever moves to a custom protocol — a scheme the gate does not name reads as

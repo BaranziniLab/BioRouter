@@ -68,6 +68,7 @@ import { Greeting } from './common/Greeting';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
 import ArtifactViewer from './artifacts/ArtifactViewer';
+import { useArtifactPanel } from './artifacts/useArtifactPanel';
 import InAppTerminalDock from './InAppTerminalDock';
 import { ChatTurnError, hasVisibleTurnErrorMessage } from './conversation/ChatTurnError';
 import type { ArtifactRenderError } from './artifacts/ArtifactViewer';
@@ -88,12 +89,7 @@ import type {
   RawResource,
   ResourceContents,
 } from '../api';
-import {
-  PREVIEW_MIN_WIDTH,
-  PreviewPanelMode,
-  previewPanelMode,
-  SIDEBAR_COMPACT_WIDTH as SIDEBAR_COMPACT_TITLE_WIDTH,
-} from './Layout/yieldLadder';
+import { SIDEBAR_COMPACT_WIDTH as SIDEBAR_COMPACT_TITLE_WIDTH } from './Layout/yieldLadder';
 import { SubagentTabHeader } from './subagent/SubagentTabHeader';
 import { extractKnowledgeBases, useSubagentSession } from './subagent/useSubagentSession';
 import { useChatGroups } from '../contexts/ChatGroupsContext';
@@ -102,25 +98,6 @@ import { useChatGroups } from '../contexts/ChatGroupsContext';
 const CurrentModelContext = createContext<{ model: string; mode: string } | null>(null);
 export const useCurrentModelInfo = () => useContext(CurrentModelContext);
 
-// Rung 2 of the yield ladder (D-32). The floor is shared with the ladder rather
-// than re-declared, so the number the rule reasons about and the number the
-// panel clamps to cannot drift apart.
-const ARTIFACT_PANEL_MIN_WIDTH = PREVIEW_MIN_WIDTH;
-const ARTIFACT_PANEL_MAX_WIDTH = 920;
-// The chat's PREFERRED width — what the panel gives up first. Below this the
-// panel keeps narrowing toward its own 360px floor (the clamp in
-// getMaxArtifactPanelWidth), and at ARTIFACT_PANEL_MIN_WIDTH + CHAT_MIN_WIDTH
-// there is nothing left to give and rung 2 fires. See previewPanelMode.
-const ARTIFACT_PANEL_MIN_CHAT_WIDTH = 640;
-const ARTIFACT_PANEL_DEFAULT_WIDTH_RATIO = 0.48;
-const ARTIFACT_PANEL_AUTO_TUCK_WIDTH =
-  ARTIFACT_PANEL_MIN_WIDTH + ARTIFACT_PANEL_MIN_CHAT_WIDTH + 48;
-const ARTIFACT_PANEL_AUTO_EXPAND_PADDING = 24;
-// Matches the panel's close transition (--motion-fast); exit is a tier faster
-// than the --motion-base entrance so the panel unmounts as the slide completes.
-const ARTIFACT_PANEL_EXIT_MS = 120;
-// Imported, not re-declared — see SIDEBAR_COMPACT_WIDTH. This file held the
-// third copy of 1120.
 // How long after the agent last worked a render failure is still treated as part
 // of the current exchange (and worth auto-fixing). A figure the agent just made
 // usually errors within a second or two of finishing; a failure that surfaces
@@ -132,31 +109,6 @@ const HEADER_ACTION_BUTTON_CLASS =
   'no-drag flex items-center justify-center text-text-muted transition-colors hover:bg-background-medium hover:text-text-default';
 const PREVIEWABLE_TEXT_ARTIFACT_RE =
   /(?<![\w:/\\@])(?:file:\/\/|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|\/|\\\\)[^\s)\]}\x60"'<>]+\.(?:html?|png|jpe?g|gif|webp|svg|pdf|docx|xlsx|pptx|ipynb|sql|md|qmd|rmd|txt|log|json|csv|tsv|ya?ml|toml|xml|css|ts|tsx|js|jsx|py|r|rs|go|java|c|cpp|h|hpp)(?:[?#][^\s)\]}\x60"'<>]*)?(?![\w./\\])/gi;
-
-function clampArtifactPanelWidth(value: number, max: number) {
-  return Math.min(Math.max(value, ARTIFACT_PANEL_MIN_WIDTH), max);
-}
-
-export function getDefaultArtifactPanelWidth(containerWidth: number): number {
-  const maxWidth = Math.max(
-    ARTIFACT_PANEL_MIN_WIDTH,
-    Math.min(ARTIFACT_PANEL_MAX_WIDTH, containerWidth - ARTIFACT_PANEL_MIN_CHAT_WIDTH)
-  );
-  return clampArtifactPanelWidth(
-    Math.round(containerWidth * ARTIFACT_PANEL_DEFAULT_WIDTH_RATIO),
-    maxWidth
-  );
-}
-
-export function getArtifactPanelExpansionContentWidth(
-  contentWidth: number,
-  splitPaneWidth: number
-): number | null {
-  if (!Number.isFinite(contentWidth) || !Number.isFinite(splitPaneWidth)) return null;
-  const deficit = ARTIFACT_PANEL_AUTO_TUCK_WIDTH - splitPaneWidth;
-  if (deficit <= 0) return null;
-  return Math.ceil(contentWidth + deficit + ARTIFACT_PANEL_AUTO_EXPAND_PADDING);
-}
 
 // Whether an artifact render failure should be fed back to the agent to fix.
 //
@@ -255,26 +207,6 @@ export function isEventForSession(
 
 /** Delay before scrolling, so appended content has rendered first. */
 export const SCROLL_TO_BOTTOM_DELAY_MS = 200;
-
-/**
- * The OS-window content width this chat needs to fit its artifact panel, or
- * null if it must not resize the window at all.
- *
- * Resizing the window is app-scoped, but BaseChat is session-scoped. When more
- * than one chat is mounted (tabs and split panes do this), only the focused one
- * may resize — otherwise a background chat opening an artifact yanks the window
- * out from under the chat the user is actually looking at.
- */
-export function artifactPanelTargetContentWidth(opts: {
-  isMobile: boolean;
-  allowWindowResize: boolean;
-  windowWidth: number;
-  splitPaneWidth: number;
-}): number | null {
-  if (opts.isMobile) return null;
-  if (!opts.allowWindowResize) return null;
-  return getArtifactPanelExpansionContentWidth(opts.windowWidth, opts.splitPaneWidth) || null;
-}
 
 /**
  * Builds the 'scroll-chat-to-bottom' listener for one chat. Extracted from the
@@ -1097,15 +1029,6 @@ function BaseChatContent({
   // pre-session createSession below; once a session exists DirSwitcher
   // persists directly via updateWorkingDir and this value is never consulted.
   const [pendingWorkingDir, setPendingWorkingDir] = useState<string | null>(null);
-  const [presentedArtifact, setPresentedArtifact] = useState<ArtifactSource | null>(null);
-  const [isArtifactPanelOpen, setIsArtifactPanelOpen] = useState(false);
-  const [isArtifactPanelResizing, setIsArtifactPanelResizing] = useState(false);
-  const [artifactPanelWidth, setArtifactPanelWidth] = useState<number | null>(null);
-  // Rung 2 of the yield ladder. Derived from the PANE's measured width through
-  // previewPanelMode — never stored as a raw width, so the state only changes on
-  // the 720px crossing and a splitter drag does not re-render the whole chat
-  // once per frame.
-  const [previewMode, setPreviewMode] = useState<PreviewPanelMode>('side');
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [showEditWorkflowModal, setShowEditWorkflowModal] = useState(false);
@@ -1135,13 +1058,6 @@ function BaseChatContent({
     },
     [terminalDock, terminalDockKey]
   );
-  const splitPaneRef = useRef<HTMLDivElement>(null);
-  const artifactPanelCloseTimerRef = useRef<number | null>(null);
-  const artifactPanelOpenFrameRef = useRef<number | null>(null);
-  const artifactPanelResizeFrameRef = useRef<number | null>(null);
-  const pendingArtifactPanelWidthRef = useRef<number | null>(null);
-  const artifactPanelResizeCleanupRef = useRef<(() => void) | null>(null);
-  const artifactPanelWidthUserSetRef = useRef(false);
   const reportedArtifactRenderErrorsRef = useRef<Set<string>>(new Set());
   const pendingArtifactRenderFeedbackRef = useRef<Message | null>(null);
   // Wall-clock of the last moment the agent was actively working. Used to decide
@@ -1156,6 +1072,20 @@ function BaseChatContent({
   );
 
   const isMobile = useIsMobile();
+
+  // The artifact side panel — the ONE surface on which a generated artifact is
+  // ever displayed. Geometry, open/close and the rung-2 overlay decision all
+  // live in the shared hook, because the saved-session and shared-session views
+  // mount the same panel and must behave identically. What stays here is the
+  // part that needs a LIVE conversation: auto-open on a fresh artifact, and
+  // feeding a render failure back to the agent.
+  const artifactPanel = useArtifactPanel({ isMobile, allowWindowResize });
+  const {
+    splitPaneRef,
+    artifact: presentedArtifact,
+    openArtifact: handleOpenArtifact,
+    reset: resetArtifactPanel,
+  } = artifactPanel;
   const { state: sidebarState } = useSidebar();
   const [isSidebarCompact, setIsSidebarCompact] = useState(() => {
     return typeof window !== 'undefined' && window.innerWidth < SIDEBAR_COMPACT_TITLE_WIDTH;
@@ -1211,13 +1141,8 @@ function BaseChatContent({
 
   // Reset auto-submit flag when session changes
   useEffect(() => {
-    artifactPanelResizeCleanupRef.current?.();
+    resetArtifactPanel();
     hasAutoSubmittedRef.current = false;
-    setPresentedArtifact(null);
-    setIsArtifactPanelOpen(false);
-    setIsArtifactPanelResizing(false);
-    setArtifactPanelWidth(null);
-    artifactPanelWidthUserSetRef.current = false;
     setDiagnosticsOpen(false);
     setReviewOpen(false);
     // Only the LOCAL dock. The /pair terminal is keyed by tab id in the context,
@@ -1227,266 +1152,7 @@ function BaseChatContent({
     setShowEditWorkflowModal(false);
     knownArtifactKeysRef.current.clear();
     artifactInitialScanDoneRef.current = false;
-  }, [sessionId]);
-
-  useEffect(() => {
-    return () => {
-      if (artifactPanelCloseTimerRef.current) {
-        window.clearTimeout(artifactPanelCloseTimerRef.current);
-      }
-      if (artifactPanelOpenFrameRef.current) {
-        window.cancelAnimationFrame(artifactPanelOpenFrameRef.current);
-      }
-      if (artifactPanelResizeFrameRef.current) {
-        window.cancelAnimationFrame(artifactPanelResizeFrameRef.current);
-      }
-      artifactPanelResizeCleanupRef.current?.();
-    };
-  }, []);
-
-  const ensureArtifactPanelFits = useCallback(async () => {
-    const targetWidth = artifactPanelTargetContentWidth({
-      isMobile,
-      allowWindowResize,
-      windowWidth: window.innerWidth,
-      splitPaneWidth: splitPaneRef.current?.clientWidth ?? window.innerWidth,
-    });
-    if (!targetWidth || !window.electron.ensureWindowContentWidth) return;
-
-    await window.electron.ensureWindowContentWidth(targetWidth).catch(() => undefined);
-  }, [isMobile, allowWindowResize]);
-
-  /**
-   * Rung 2: ask the PANE, not the window, whether the preview panel can have a
-   * column.
-   *
-   * The shipped rule was `isMobile` — window < 930 — which is right for one group
-   * and blind the moment there are two: in a split the pane is decoupled from the
-   * window, so a 2-up split in a 1000px window left the panel's 360px floor
-   * sitting next to a 140px transcript. isMobile survives inside previewPanelMode
-   * as an override, so nothing between 720 and 930 changes.
-   */
-  const measurePreviewMode = useCallback(() => {
-    const paneWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
-    // Same value → React bails out. This runs from a ResizeObserver, so it must
-    // be free at rest.
-    setPreviewMode(previewPanelMode({ isMobile, paneWidth }));
-  }, [isMobile]);
-
-  const handleOpenArtifact = useCallback(
-    async (artifact: ArtifactSource) => {
-      if (artifactPanelCloseTimerRef.current) {
-        window.clearTimeout(artifactPanelCloseTimerRef.current);
-        artifactPanelCloseTimerRef.current = null;
-      }
-      if (artifactPanelOpenFrameRef.current) {
-        window.cancelAnimationFrame(artifactPanelOpenFrameRef.current);
-        artifactPanelOpenFrameRef.current = null;
-      }
-
-      if (!presentedArtifact) {
-        artifactPanelWidthUserSetRef.current = false;
-        await ensureArtifactPanelFits();
-      }
-
-      // Prime the rung BEFORE the panel exists: the observer below only starts
-      // once presentedArtifact is set, so without this the first frame would
-      // paint the panel in whichever mode the last artifact left behind. Measured
-      // after ensureArtifactPanelFits, which may have grown the OS window.
-      measurePreviewMode();
-      setPresentedArtifact(artifact);
-
-      if (presentedArtifact) {
-        setIsArtifactPanelOpen(true);
-        return;
-      }
-
-      setIsArtifactPanelOpen(false);
-      artifactPanelOpenFrameRef.current = window.requestAnimationFrame(() => {
-        artifactPanelOpenFrameRef.current = null;
-        setIsArtifactPanelOpen(true);
-      });
-    },
-    [ensureArtifactPanelFits, measurePreviewMode, presentedArtifact]
-  );
-
-  const handleCloseArtifactPanel = useCallback(() => {
-    artifactPanelResizeCleanupRef.current?.();
-    setIsArtifactPanelResizing(false);
-    setIsArtifactPanelOpen(false);
-
-    if (artifactPanelCloseTimerRef.current) {
-      window.clearTimeout(artifactPanelCloseTimerRef.current);
-    }
-
-    artifactPanelCloseTimerRef.current = window.setTimeout(() => {
-      artifactPanelCloseTimerRef.current = null;
-      setPresentedArtifact(null);
-      setIsArtifactPanelResizing(false);
-    }, ARTIFACT_PANEL_EXIT_MS);
-  }, []);
-
-  const getMaxArtifactPanelWidth = useCallback(() => {
-    const containerWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
-    return Math.max(
-      ARTIFACT_PANEL_MIN_WIDTH,
-      Math.min(ARTIFACT_PANEL_MAX_WIDTH, containerWidth - ARTIFACT_PANEL_MIN_CHAT_WIDTH)
-    );
-  }, []);
-
-  const getInitialArtifactPanelWidth = useCallback(() => {
-    const containerWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
-    return getDefaultArtifactPanelWidth(containerWidth);
-  }, []);
-
-  useEffect(() => {
-    if (!presentedArtifact || isMobile || artifactPanelWidth !== null) return;
-    setArtifactPanelWidth(getInitialArtifactPanelWidth());
-  }, [artifactPanelWidth, getInitialArtifactPanelWidth, isMobile, presentedArtifact]);
-
-  useEffect(() => {
-    const splitPane = splitPaneRef.current;
-    // Gated on `presentedArtifact` only. `isMobile` used to gate this too, but
-    // rung 2 has to keep watching the PANE at every window width — a split can
-    // starve the transcript in a window the mobile rule calls roomy. The width
-    // bookkeeping below stays a no-op in overlay mode, where the panel takes no
-    // width from anything.
-    if (!splitPane || !presentedArtifact) return;
-
-    const sampleSplitPane = () => {
-      measurePreviewMode();
-      if (isMobile) return;
-      setArtifactPanelWidth((currentWidth) => {
-        const maxWidth = getMaxArtifactPanelWidth();
-        if (currentWidth === null || !artifactPanelWidthUserSetRef.current) {
-          return getInitialArtifactPanelWidth();
-        }
-        const nextWidth = clampArtifactPanelWidth(currentWidth, maxWidth);
-        return nextWidth === currentWidth ? currentWidth : nextWidth;
-      });
-    };
-
-    sampleSplitPane();
-
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', sampleSplitPane);
-      return () => window.removeEventListener('resize', sampleSplitPane);
-    }
-
-    // No feedback loop: this observes the split pane, which is sized by the
-    // GROUP above it, and rung 2 only ever moves the panel between a column and
-    // an overlay INSIDE that pane. Neither mode can change the observed box, so
-    // the callback cannot retrigger itself — no hysteresis needed, and none
-    // added on spec.
-    const resizeObserver = new ResizeObserver(sampleSplitPane);
-    resizeObserver.observe(splitPane);
-    return () => resizeObserver.disconnect();
-  }, [
-    getInitialArtifactPanelWidth,
-    getMaxArtifactPanelWidth,
-    isMobile,
-    measurePreviewMode,
-    presentedArtifact,
-  ]);
-
-  const handleArtifactPanelResizeStart = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      // A yielded panel has no column to resize. The handle is already unwired at
-      // the render site; this is the second lock on the same door.
-      if (previewMode === 'overlay') return;
-
-      event.preventDefault();
-      event.stopPropagation();
-
-      artifactPanelResizeCleanupRef.current?.();
-
-      const startX = event.clientX;
-      const startWidth = artifactPanelWidth ?? getInitialArtifactPanelWidth();
-      const previousCursor = document.body.style.cursor;
-      const previousUserSelect = document.body.style.userSelect;
-      const resizeHandle = event.currentTarget;
-      const pointerId = event.pointerId;
-      let finished = false;
-
-      try {
-        resizeHandle.setPointerCapture(pointerId);
-      } catch {
-        // Global listeners below still keep the resize usable when capture is unavailable.
-      }
-
-      setIsArtifactPanelResizing(true);
-      artifactPanelWidthUserSetRef.current = true;
-      pendingArtifactPanelWidthRef.current = null;
-      document.body.style.cursor = 'col-resize';
-      document.body.style.userSelect = 'none';
-
-      const applyPendingWidth = () => {
-        artifactPanelResizeFrameRef.current = null;
-        const nextWidth = pendingArtifactPanelWidthRef.current;
-        pendingArtifactPanelWidthRef.current = null;
-        if (nextWidth !== null) setArtifactPanelWidth(nextWidth);
-      };
-
-      const scheduleWidth = (nextWidth: number) => {
-        pendingArtifactPanelWidthRef.current = nextWidth;
-        if (artifactPanelResizeFrameRef.current !== null) return;
-        artifactPanelResizeFrameRef.current = window.requestAnimationFrame(applyPendingWidth);
-      };
-
-      const handleMove = (moveEvent: globalThis.PointerEvent) => {
-        if (moveEvent.pointerId !== pointerId) return;
-        const nextWidth = startWidth - (moveEvent.clientX - startX);
-        scheduleWidth(clampArtifactPanelWidth(nextWidth, getMaxArtifactPanelWidth()));
-      };
-
-      const finishResize = (commitPendingWidth: boolean, updateState: boolean) => {
-        if (finished) return;
-        finished = true;
-        if (artifactPanelResizeFrameRef.current !== null) {
-          window.cancelAnimationFrame(artifactPanelResizeFrameRef.current);
-          artifactPanelResizeFrameRef.current = null;
-        }
-        if (commitPendingWidth && pendingArtifactPanelWidthRef.current !== null) {
-          setArtifactPanelWidth(pendingArtifactPanelWidthRef.current);
-        }
-        pendingArtifactPanelWidthRef.current = null;
-        if (updateState) setIsArtifactPanelResizing(false);
-        document.body.style.cursor = previousCursor;
-        document.body.style.userSelect = previousUserSelect;
-        window.removeEventListener('pointermove', handleMove);
-        window.removeEventListener('pointerup', handleEnd);
-        window.removeEventListener('pointercancel', handleEnd);
-        window.removeEventListener('blur', handleWindowBlur);
-        resizeHandle.removeEventListener('lostpointercapture', handleLostPointerCapture);
-        try {
-          if (resizeHandle.hasPointerCapture(pointerId))
-            resizeHandle.releasePointerCapture(pointerId);
-        } catch {
-          // The element may have left the document while the pointer was outside the window.
-        }
-        artifactPanelResizeCleanupRef.current = null;
-      };
-
-      const handleEnd = (endEvent: globalThis.PointerEvent) => {
-        if (endEvent.pointerId !== pointerId) return;
-        finishResize(true, true);
-      };
-
-      const handleWindowBlur = () => finishResize(true, true);
-      const handleLostPointerCapture = (lostEvent: globalThis.PointerEvent) => {
-        if (lostEvent.pointerId === pointerId) finishResize(true, true);
-      };
-
-      artifactPanelResizeCleanupRef.current = () => finishResize(false, false);
-
-      window.addEventListener('pointermove', handleMove);
-      window.addEventListener('pointerup', handleEnd);
-      window.addEventListener('pointercancel', handleEnd);
-      window.addEventListener('blur', handleWindowBlur);
-      resizeHandle.addEventListener('lostpointercapture', handleLostPointerCapture);
-    },
-    [artifactPanelWidth, getInitialArtifactPanelWidth, getMaxArtifactPanelWidth, previewMode]
-  );
+  }, [sessionId, resetArtifactPanel]);
 
   const {
     session,
@@ -2575,33 +2241,11 @@ function BaseChatContent({
 
           {presentedArtifact && artifactPanelEnabled && (
             <ArtifactViewer
-              artifact={presentedArtifact}
-              isOpen={isArtifactPanelOpen}
-              isResizing={isArtifactPanelResizing}
-              onClose={handleCloseArtifactPanel}
-              onOpenArtifact={handleOpenArtifact}
-              // Rung 2. 'overlay' means the panel has YIELDED ITS COLUMN: it is
-              // absolutely positioned inside the split pane, so it takes no width
-              // from the transcript at all and there is no edge to drag. The
-              // pane's full width stays the chat's, and closing the panel reveals
-              // it untouched. This is the treatment a mobile-width window has
-              // always got; rung 2 only changes WHEN it applies — a pane that
-              // cannot seat a 360px chat beside a 360px panel, at any window size.
-              onResizeStart={previewMode === 'overlay' ? undefined : handleArtifactPanelResizeStart}
+              {...artifactPanel.viewerProps}
+              // Chat-only, and the reason the panel's repair listener exists at
+              // all: a read-only transcript passes nothing here, so
+              // ArtifactViewer never installs the postMessage listener.
               onRenderError={handleArtifactRenderError}
-              style={
-                previewMode === 'overlay'
-                  ? undefined
-                  : {
-                      width: artifactPanelWidth ?? getInitialArtifactPanelWidth(),
-                      flexBasis: artifactPanelWidth ?? getInitialArtifactPanelWidth(),
-                    }
-              }
-              className={
-                previewMode === 'overlay'
-                  ? 'absolute inset-x-2 bottom-2 top-16 z-[70] rounded-lg border border-border-subtle'
-                  : 'min-w-[360px] flex-shrink-0'
-              }
             />
           )}
         </div>

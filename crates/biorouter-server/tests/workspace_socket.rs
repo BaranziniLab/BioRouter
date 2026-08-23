@@ -146,8 +146,9 @@ async fn the_mounted_socket_authenticates_and_carries_frames_both_ways() {
         axum::http::StatusCode::FORBIDDEN
     );
     // The Origin header is genuinely read at the call site. `null` is the opaque
-    // origin of every sandboxed agent-authored frame this app serves itself
-    // through the unauthenticated `/mcp-ui-proxy`.
+    // origin of every sandboxed agent-authored frame this app renders in its
+    // artifact side panel — a `srcDoc` iframe sandboxed without
+    // `allow-same-origin`.
     assert_eq!(
         refusal_status(
             connect(addr, &good, Some("null"))
