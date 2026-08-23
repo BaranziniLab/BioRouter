@@ -285,10 +285,10 @@ mod tests {
         // allow-downloads"`, no allow-same-origin — set in
         // ui/desktop/src/components/artifacts/ArtifactViewer.tsx and in
         // `wrapArtifactForBrowser`, ui/desktop/src/utils/artifactSecurity.ts) —
-        // and routes/mod.rs's own `origin_tests`
-        // rejects it by name. Admitting it would make this gate strictly weaker than
-        // `apps::check_ws_auth` (apps.rs:538-546), the route the design claims
-        // parity with, leaving the socket secret-only.
+        // and routes/mod.rs's own `origin_tests` rejects it by name. Admitting
+        // it would make this gate strictly weaker than `apps::check_ws_auth`
+        // (apps.rs:538-546), the route the design claims parity with, leaving
+        // the socket secret-only.
         assert!(check_workspace_ws_auth(Some("null"), Some(secret), secret).is_err());
         assert!(check_workspace_ws_auth(None, Some(secret), secret).is_ok());
         // Wrong/missing secret always refuses.
