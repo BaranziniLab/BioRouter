@@ -83,6 +83,12 @@ It gets a `WebContentsView` in its own session partition, with no preload.
 Three independent reasons, any one sufficient:
 
 1. **It would not work.** Half of real sites refuse framing (§1), including the brief's example.
+   Microsoft reached the identical conclusion from the identical evidence: VS Code's 1.109 notes
+   say its Simple Browser "relied on iframes", so "website authentication wasn't possible, and
+   common sites like Google, GitHub, and Stack Overflow couldn't be opened" — and that is why
+   they replaced it with a `WebContentsView`. Across a survey of Electron apps the split is clean:
+   those embedding a *fixed set of known* web apps use `<webview>`; those that must survive
+   *arbitrary* sites use `WebContentsView`. We are the second kind.
 2. **It would reverse a ruling.** `isAllowedArtifactFrameNavigation` is `about:srcdoc` or
    `about:blank` and nothing else, and `permissionPolicy.test.ts:48` asserts
    `https://example.test/exfiltrate` is `false`. That guard exists to stop agent-authored HTML
@@ -131,6 +137,30 @@ boundary — link navigation, redirects and `window.location` from an allowed or
 That is the same "privacy is safety, not security" line this repo already takes. Do not describe
 it as a boundary in the UI.
 
+> 🚩 **The highest-priority security item in this plan, and it was found by measurement, not by
+> reading.** A permission handler installed on `session.defaultSession` **does not cover a
+> partitioned session, and an unhandled session grants by default.** Two views were run side by
+> side: the one on its own partition with no handler returned `granted` for
+> `Notification.requestPermission()` and allowed geolocation, and the app's handler was **never
+> called**. `main.ts:4767` installs BioRouter's handler on `defaultSession` — so a new partition
+> would silently auto-grant notifications, geolocation, clipboard-read, media and display-capture.
+> The embedded session needs its own `setPermissionRequestHandler` (async prompts) **and**
+> `setPermissionCheckHandler` (synchronous checks), plus `setDevicePermissionHandler` and
+> `setDisplayMediaRequestHandler`. Deny-all first, allowlist after.
+
+### PP-04b — A login flow must leave the app
+
+RFC 8252 §8.12: native apps **MUST NOT** use embedded user-agents for authorization, because the
+host can read the credential and log every keystroke, and the user has no browser security
+indicators to check. Google has refused OAuth from embedded webviews since 2016. For a UCSF
+product this is a compliance point rather than a preference: any SSO or sign-in navigation hands
+off to the system browser.
+
+This also disposes of a tempting shortcut. Stripping `X-Frame-Options` to make iframes work does
+not merely re-enable clickjacking against the embedded site — **it does not even work**, because a
+cross-site frame is a third-party context where `SameSite=Lax` cookies are not sent. The user gets
+a logged-out, half-broken render.
+
 ### PP-05 — The agent reads the panel over the existing `WorkspaceBridge`
 
 Not a new channel. `/ui/workspace` is the renderer's only WebSocket to the daemon, it is
@@ -170,7 +200,16 @@ pushed in the existing echo, so "what is on screen?" costs no round-trip at all.
 
 Verified in §1. No `html2canvas`, no `html-to-image`, no `modern-screenshot`. Those libraries
 re-render the DOM, often get it wrong, and structurally cannot enter the sandboxed frame that
-holds most of what is worth capturing.
+holds most of what is worth capturing. `html2canvas` specifically has been unmaintained since
+July 2024, still carries a README disclaiming production use, and **does not support `oklch()`** —
+which is how this app's theme tokens are authored.
+
+Measured semantics to design against: `capturePage` grabs the compositor's current surface rather
+than forcing a render. It works on an **occluded** view and on one moved off-screen, returns the
+**last painted frame** for a hidden window, and returns an **empty image** if the view is hidden
+*and then* navigated — `stayHidden` does not help, and Windows is reportedly worse. So always
+check `NativeImage.isEmpty()`: the failure mode is a silently empty buffer, not a rejection. None
+of this bites the annotation path, where the user is by definition looking at the thing.
 
 ### PP-09 — An annotation crop reuses the existing image attachment path, unchanged
 
@@ -178,6 +217,21 @@ holds most of what is worth capturing.
 data, mimeType }`. **No schema change on either side, and no Rust change.** The existing caps
 apply and are the right ones: 4 MiB data-URL string, 3 MiB decoded, 5 images per message, and a
 MIME allowlist of `png|jpeg|jpg|gif|webp`. Crops are emitted as PNG, which is on that list.
+
+Three corrections to how that payload is built, each cheap and each with a measurable effect:
+
+- **Send the crop, not the whole image plus coordinates.** Anthropic's own guidance says so for
+  fine targets, and the arithmetic is stark: a 640×420 crop costs roughly 308 visual tokens, while
+  a full 3840×2160 screenshot costs 4,784 *and* gets downscaled — moving the very coordinates you
+  were pointing with.
+- **Never hard-code a coordinate convention.** Claude wants absolute pixels and explicitly warns
+  against normalized 0–1000; Gemini emits normalized 0–1000. A crop is the one payload that is
+  universal across providers.
+- **Put the image block before the text block.** `createUserMessage` currently appends images
+  after the text; Anthropic states Claude "works best when images come before text." One-line
+  reorder. ⚠️ Also note the widely-repeated `(w × h) / 750` token formula is **stale** — cost is
+  patch-based, `⌈w/28⌉ × ⌈h/28⌉`. Resize crops to the model's tier client-side (1,568 px long edge
+  standard; 2,576 px on the high-resolution tier) so no server-side resize happens behind you.
 
 ### PP-10 — A text annotation reuses the `<biorouter-ref>` chip grammar
 
@@ -220,22 +274,68 @@ also closes a pre-existing inconsistency.
 
 `jxl` is **not** added: Chromium 142 has no JPEG XL, and it is flag-gated even in 145.
 
-### PP-15 — TIFF decodes in Rust with crates already in the tree; HEIC uses a separately-loaded WASM
+### PP-15 — TIFF decodes in Rust with crates already in the tree
 
 `image` and `tiff` are already dependencies, both MIT/Apache-2.0. The `tiff` crate supports
 BigTIFF and real multi-page (`seek_to_image`/`next_image`/`more_images`) — which is what
 microscopy needs. ⚠️ Use the `tiff` crate **directly**: `image`'s `TiffDecoder` exposes only the
-first IFD. Honest gaps to document rather than paper over: no CCITT fax, no JPEG 2000, no LERC.
+first IFD.
 
-HEIC is the Mac-user pain point (every iPhone photo). Decoding needs only `libheif` + `libde265`,
-both **LGPL** — `x265` is GPL but encode-only, and we do not encode. Ship `libheif-js` loading
-its `.wasm` as a **separate file**, not the inlined bundle: that separability is what satisfies
-LGPL cleanly, and it avoids dragging a system `libheif` through the notarized macOS build and two
-Docker cross-compiles.
+Gaps to detect and report honestly rather than paper over: no CCITT G3, no JPEG 2000, no LERC,
+and **no YCbCr or palette photometric interpretation**. That last one is not academic —
+JPEG-compressed TIFF is usually YCbCr, which is exactly what scanner and whole-slide output
+produces. An unsupported variant must say so, not render blank. Pair with `kamadak-exif`
+(BSD-2-Clause) for orientation; wrong-rotation previews are the commonest cosmetic bug in this
+class of feature.
 
-Two traps to avoid, both verified: `heic2any` declares MIT on npm but bundles LGPL `libheif`; and
-`sharp` deliberately excludes HEIC from its prebuilts, with rebuilds baking absolute Homebrew
-paths into the `.node` that break after packaging.
+### PP-15b — HEIC is tiered and OS-first, because the patent exposure is not a licensing choice
+
+This is the decision that changed most under research, and the reason is worth stating plainly:
+**HEVC patents attach to the technique, not the implementation.** A pure-Rust MIT decoder would
+solve the copyleft question and do nothing whatever about patents. Access Advance's own FAQ
+answers "we make software that is free for users to download" with *"In general, HEVC software
+downloaded by users requires a license."*
+
+The market's behaviour corroborates it: `sharp` excludes HEIC from its prebuilts and calls it
+"patent-encumbered"; `wasm-vips` compiles `libheif` with `-DWITH_LIBDE265=OFF`; Debian splits the
+HEVC decoder into a plugin that is not installed by default; no browser has ever shipped it.
+
+**The one route that plausibly sidesteps patents is decoding through a decoder the OS vendor has
+already licensed.** So:
+
+| Tier | Platform | Mechanism | LGPL | Patent | Build cost |
+|---|---|---|---|---|---|
+| 1 | macOS | shell out to `sips` (ImageIO, 10.13+) | none | **covered by Apple** | none |
+| 2 | elsewhere | a lazily-loaded WASM decoder in the renderer | trivial | same as anyone's | none |
+| 3 | Windows | WIC if the user has the extensions; else Tier 2 | none | user's own | none |
+
+Since HEIC files are overwhelmingly iPhone and Mac artefacts, Tier 1 covers most real traffic for
+nothing. Verify once at startup with `sips --formats` and cache it — the published man page
+predates High Sierra and does not list HEIC, so trust the runtime probe over the documentation.
+
+**WASM in the renderer beats a native Rust `libheif` on every axis except none.** LGPL compliance
+is trivial because a discrete `.wasm` is replaceable by construction, where a bundled dylib is
+not "already present on the user's system" and its relink right conflicts with our own code
+signature. Security matters more than it looks: `libheif` published nine advisories in five weeks,
+three rated High, all heap errors in parsing **untrusted user files** — in WASM that corruption is
+contained by the sandbox; linked into the backend it runs beside the user's research data. And it
+avoids a `libheif` ≥1.17 floor that Debian bookworm's 1.15.1 does not meet, plus a mingw
+cross-compile with no vcpkg fallback.
+
+⚠️ **Adding any native binary is a release-pipeline change, not a dependency change** — nested
+code must be signed with the UCSF Developer ID and `@rpath`-fixed before the outer app, and
+`scripts/release.sh` does not do that today. That cost is avoided entirely by staying in WASM.
+
+Traps verified and to be avoided: `heic2any` declares MIT on npm while shipping 1.36 MB of
+compiled LGPL `libheif`; the `heif-rs` crate wears an Apache-2.0 label while statically linking
+**GPL-2.0 x265**; and `sharp` rebuilds bake absolute Homebrew paths into the `.node` that break
+after packaging. Prefer `heic-to` over `libheif-js` — the latter is pinned about a year behind
+upstream on CVE fixes.
+
+**Two items for escalation rather than code:** whether UCSF is comfortable shipping an LGPL
+component with a documented relink offer, and the HEVC patent question itself. If either answer is
+no, the tiered design degrades gracefully — macOS keeps full support via Tier 1 and other
+platforms show an honest "convert to JPEG" card.
 
 ### PP-16 — Large images move from data URLs to blob URLs
 
@@ -289,14 +389,51 @@ ImageMagick's own maintainer refused it on exactly these grounds), FITS.
 
 ### B — Office documents: gap-fill only
 
-PDF, DOCX, XLSX and PPTX already render. This workstream is about what happens at the edges:
+PDF, DOCX, XLSX and PPTX already render, and independent research validated all four library
+choices as the best permissively-licensed options available. This workstream is the edges — and
+one real bug.
+
+> **B0 — the PDF renderer is missing its offline assets, and this is a live defect.**
+> Verified: `cMapUrl`, `standardFontDataUrl`, `wasmUrl` and `iccUrl` appear **nowhere** in
+> `ui/desktop/src/`, and `getDocument` is called with `{ data }` alone. In pdf.js 6.x the JPEG 2000
+> and JBIG2 decoders are WASM modules loaded from `wasmUrl` — **so scanned and medical PDFs fail
+> to decode images today**, which for a biomedical corpus is close to the worst possible gap.
+> Missing `cMapUrl` also breaks CJK glyphs and `standardFontDataUrl` degrades non-embedded
+> Standard-14 fonts. Fixing it costs about 2.3 MB of bundled assets (skip `quickjs-eval.wasm` —
+> it is XFA/AcroForm scripting a view-only panel does not want) and requires
+> `'wasm-unsafe-eval'` in the renderer `script-src`. Note **not** `'unsafe-eval'`: pdf.js dropped
+> that requirement in 5.7.284, so every blog post saying otherwise is stale. All four URL options
+> throw unless they end in a trailing slash.
 
 | Step | Change |
 |---|---|
-| B1 | Audit the four shipped renderers against real files — tables, images, embedded charts, multi-sheet workbooks, speaker notes. Fix or document what breaks. |
-| B2 | Decide legacy `.doc`/`.xls`/`.ppt`: these are a different binary format entirely. `calamine` reads `.xls`. `.doc` and `.ppt` have no viable path — decline explicitly with a clear card. |
-| B3 | OpenDocument `.odt`/`.ods`/`.odp` and `.rtf` — decide, don't drift. `calamine` covers `.ods`. |
-| B4 | An unsupported document must say *which* format and *why*, not "can't be previewed here". |
+| B0 | Ship pdf.js's offline assets; add `'wasm-unsafe-eval'`; move `workerSrc` → `workerPort`; drop the unnecessary `legacy/` build |
+| B1 | Audit the four renderers against a real corpus — a manuscript with a TOC and tracked changes, a workbook with conditional formatting, a deck with SmartArt, and a scanned PDF with JBIG2 |
+| B2 | Decide legacy `.doc`/`.xls`/`.ppt`. `calamine` reads `.xls`; `.doc` and `.ppt` have no viable path — decline explicitly |
+| B3 | Decide OpenDocument and `.rtf` rather than letting them drift. `calamine` covers `.ods` |
+| B4 | An unsupported document says *which* format and *why*, not "can't be previewed here" |
+| B5 | State the fidelity ceiling in the UI — no pptx animations, 3D, equations or notes; no docx TOC or exact pagination. Every non-commercial renderer shares these limits, and saying so beats a user concluding their file is corrupt |
+
+`workerPort` in B0 is worth its own sentence: under `file://` the origin serializes to `"null"`,
+so pdf.js routes `workerSrc` through a `blob:` wrapper that the renderer's `worker-src 'self'`
+forbids. `workerPort` never takes that path. One line.
+
+**The Rust converters are not the answer here** and reusing them would be a downgrade: `docx.rs`
+matches only paragraphs so tables and images silently vanish, and `pptx.rs` writes the literal
+string `*[image omitted]*`. They exist to feed an LLM cheaply and deliberately discard appearance.
+There *is* a good Rust role, though — `office_oxide` (MIT/Apache-2.0) for a `to_markdown()` that
+feeds document text into the agent's context, complementary to the visual panel rather than a
+replacement for it.
+
+**Ruled out on licence or data-handling**, and worth recording because an automated scan catches
+none of the interesting ones: `@cyntler/react-doc-viewer` **uploads the document to
+`view.officeapps.live.com`**; `superdoc` and every ONLYOFFICE WASM port are **AGPL-3.0** (which
+would force BioRouter's own Apache-2.0 code open); `pptx-preview` declares **ISC on npm while
+being proprietary**; `gc-excelviewer` wears MIT over a commercial Wijmo engine; and npm's `xlsx`
+is frozen at 0.18.5 with **two HIGH CVEs whose advisories record no patched version** — one of
+them prototype pollution triggered by reading a crafted file, which is exactly this threat model.
+LibreOffice (MPL-2.0) is fine to *detect and use* if installed, and must not be bundled: 300–800 MB
+per platform against ~120 MB binaries today, plus re-signing hundreds of nested dylibs.
 
 **The Rust converters are not the answer here** and reusing them would be a downgrade: `docx.rs`
 matches only paragraphs so tables and images silently vanish, and `pptx.rs` writes the literal
@@ -335,6 +472,38 @@ ergonomics.
 One UX rule from three separate Codex bug reports: **the annotation composer's Enter key must
 agree with the chat composer's.** Theirs disagree and it is their most-complained-about detail.
 
+**This workstream needs no new dependencies.** Every piece is a platform API, an existing
+dependency, or first-party code:
+
+- **Painting a highlight** uses the CSS Custom Highlight API (`new Highlight(range)` +
+  `CSS.highlights.set(...)`), which Chromium 142 has, along with `highlightsFromPoint` for click
+  targets. It mutates no DOM, causes no reflow, survives React reconciliation, and handles overlap
+  natively — where span-wrapping fights the virtual DOM and gets wiped on the next render. Use a
+  **live `Range`**, not `StaticRange`, for exactly that reason. ⚠️ `::highlight()` accepts only
+  colour, `text-decoration`, `text-shadow` and text-stroke properties — **no border radius and no
+  background image** — so a rounded highlight pill must be an overlay driven from
+  `Range.getClientRects()`, not a `::highlight()` rule.
+- **Anchoring** is a hand-rolled W3C-shaped selector (`exact` + `prefix` + `suffix`, with a
+  character offset as a *hint*), about 150 lines. The library field does not justify a dependency:
+  Apache Annotator was retired from the incubator in 2025 and archived, and `rangy`, `mark.js` and
+  the `dom-anchor-*` family are all years stale. The same `prefix`/`suffix` doubles as the
+  surrounding context sent to the model, so anchoring and disambiguation cost the same bytes.
+- **The drag-rect** is hand-rolled too. The affordances are where the perceived quality lives, and
+  they come straight from `Cmd+Shift+4`: a live `W × H` badge tracking the cursor, `Shift` to
+  constrain, `Option` to size from centre, `Space` to reposition mid-drag, `Esc` to cancel, and
+  handles on the committed marquee so it is adjustable *before* commit rather than fire-and-forget.
+- **The ancestor problem** — a click always lands on the innermost node. bolt ships the answer as
+  "pick from layers": a small control that walks up the ancestor chain so the user can say they
+  meant the card, not the label inside it.
+
+⚠️ **Text selection inside an artifact iframe is impossible from the host** — no
+`allow-same-origin` means no `getSelection()` across that boundary. Either inject a selection
+agent into the artifact HTML that posts up through the existing trusted-frame channel, or treat
+HTML artifacts as image-only for annotation. **Ship image-only first**: one mechanism covers every
+artifact kind, and `capturePage` crosses the boundary that nothing else can. PDF *region* crop
+works today; PDF *text* selection needs pdf.js's `TextLayer` added to the canvas-only preview, and
+is its own piece of work.
+
 ### E — Agent access to the panel
 
 | Step | Change |
@@ -363,15 +532,16 @@ Ordered so that each phase ships something usable and the risky phase comes afte
 
 | Phase | Contents | Why here |
 |---|---|---|
-| **1** | A1, A2, A3 | Hours, no dependencies, fixes real files today |
-| **2** | B1–B4 | Audit before extending; may prove B2/B3 unnecessary |
+| **1** | **B0**, A1, A2, A3 | B0 is a live defect, not an enhancement — scanned and medical PDFs fail today. The rest is hours and no dependencies. |
+| **2** | B1–B5 | Audit before extending; may prove B2/B3 unnecessary |
 | **3** | E1–E5 | Independent of C and D; the channel exists |
 | **4** | A4, A5, A6 | New decoders, contained blast radius |
 | **5** | C1–C7 | The architectural change; needs its own review |
 | **6** | D1–D5 | Wants C in place so the browser is one of its surfaces |
 
-Phase 5 is the one to stop and re-review before merging. Phases 1–4 are additive to a surface
-that already works.
+Phase 5 is the one to stop and re-review before merging. Phases 1–4 are additive to a surface that
+already works — and phase 1 now leads with a bug fix rather than a feature, which is the right
+order regardless of what else is approved.
 
 ---
 
@@ -404,10 +574,12 @@ the bug they were written for. A guard that does not fail when its fix is revert
 
 | Risk | Assessment |
 |---|---|
-| The native view's overlay bill (PP-02) is larger than estimated | Highest-confidence risk. VS Code itemized it from experience. Mitigation: build C1+C2 first and evaluate before C3–C7. |
+| The permission-handler bypass (PP-04) ships unnoticed | **Would be a real vulnerability, and it is invisible to every existing test.** The measured default is *grant*. Must be a merge gate on C, verified in a running app rather than in jsdom. |
+| The native view's overlay bill (PP-02) is larger than estimated | Highest-confidence *cost* risk. VS Code itemized it from experience, and the resize seam is a ten-year-old Electron issue with no fix coming. Mitigation: build C1+C2 first and evaluate before C3–C7. |
 | An origin allowlist is mistaken for a boundary | Documented honestly in the UI, per PP-04. |
-| HEIC's LGPL obligation | Manageable — separate `.wasm` file. Worth a second pair of eyes before merge. |
-| `libheif-js` adds ~6.4 MB | Lazy-loaded on first `.heic` only. |
+| HEVC patent exposure | **Not removable by any library choice** (PP-15b). Escalate; Tier 1 avoids it on macOS. |
+| HEIC's LGPL obligation | Manageable — separate `.wasm`, never a bundled dylib. Worth a second pair of eyes before merge. |
+| A HEIC decoder adds ~6.4 MB | Lazy-loaded on first `.heic` only. |
 | Widening the panel's reach outruns its guards | `.biorouterignore` is **not** consulted on this path and fully-automatic mode admits any non-sensitive path. Any widening should state whether that is still acceptable. |
 
 **Questions for the reviewer:**
