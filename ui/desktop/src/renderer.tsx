@@ -407,11 +407,6 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       onTerminalExit: () => () => {},
       addRecentDir: async () => {},
       openDirectoryInExplorer: async () => {},
-      openArtifactWindow: async (payload: { html: string } | string) => {
-        const html = typeof payload === 'string' ? payload : payload.html;
-        const blob = new Blob([wrapArtifactForBrowser(html)], { type: 'text/html' });
-        window.open(URL.createObjectURL(blob), '_blank', 'noopener,noreferrer');
-      },
       openArtifactInBrowser: async (payload: { html: string } | string) => {
         const html = typeof payload === 'string' ? payload : payload.html;
         const blob = new Blob([wrapArtifactForBrowser(html)], { type: 'text/html' });

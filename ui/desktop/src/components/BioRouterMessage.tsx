@@ -49,7 +49,7 @@ interface BioRouterMessageProps {
     elicitationId: string,
     userData: Record<string, unknown>
   ) => Promise<void>;
-  onOpenArtifact?: (artifact: ArtifactSource) => void;
+  onOpenArtifact: (artifact: ArtifactSource) => void;
   workingDir?: string;
 }
 

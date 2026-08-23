@@ -28,6 +28,10 @@ import {
   DialogTitle,
 } from '../ui/dialog';
 import ProgressiveMessageList from '../ProgressiveMessageList';
+import ArtifactViewer from '../artifacts/ArtifactViewer';
+import { useArtifactPanel } from '../artifacts/useArtifactPanel';
+import type { ArtifactSource } from '../artifacts/artifactTypes';
+import { useIsMobile } from '../../hooks/use-mobile';
 import { SearchView } from '../conversation/SearchView';
 import BackButton from '../ui/BackButton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
@@ -96,7 +100,10 @@ const SessionMessages: React.FC<{
   isLoading: boolean;
   error: string | null;
   onRetry: () => void;
-}> = ({ messages, isLoading, error, onRetry }) => {
+  sessionId: string;
+  workingDir?: string;
+  onOpenArtifact: (artifact: ArtifactSource) => void;
+}> = ({ messages, isLoading, error, onRetry, sessionId, workingDir, onOpenArtifact }) => {
   const filteredMessages = filterMessagesForDisplay(messages);
 
   return (
@@ -125,12 +132,18 @@ const SessionMessages: React.FC<{
               <SearchView placeholder="Search history...">
                 <ProgressiveMessageList
                   messages={filteredMessages}
-                  chat={{
-                    sessionId: 'session-preview',
-                  }}
+                  // The REAL session id. This was the string 'session-preview',
+                  // which is nobody's session: every consumer that scopes work
+                  // by id — the scroll broadcast, Branch, an MCP app card —
+                  // silently addressed a chat that does not exist.
+                  chat={{ sessionId }}
                   toolCallNotifications={new Map()}
-                  append={() => {}} // Read-only for session history
+                  // No `append`. It used to be `() => {}`, which is TRUTHY, so
+                  // read-only surfaces advertised send-a-prompt controls that
+                  // did nothing when clicked. Absent means absent.
                   isUserMessage={isUserMessage} // Use the same function as BaseChat
+                  onOpenArtifact={onOpenArtifact}
+                  workingDir={workingDir}
                   batchSize={15} // Same as BaseChat default
                   batchDelay={30} // Same as BaseChat default
                   showLoadingThreshold={30} // Same as BaseChat default
@@ -170,6 +183,12 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
   // two cannot come to ask for different confirmations.
   const [declassifyOpen, setDeclassifyOpen] = useState(false);
   const [tier, setTier] = useState(session.privacy_tier);
+  // The same panel the live chat mounts, from the same hook — a saved figure is
+  // displayed exactly as a fresh one is, and there is no second renderer here.
+  // `allowWindowResize` is false: opening a page must never resize the user's
+  // window, and unlike a chat this surface is not somewhere they are working.
+  const artifactPanel = useArtifactPanel({ isMobile: useIsMobile(), allowWindowResize: false });
+  const { splitPaneRef, artifact: presentedArtifact, openArtifact } = artifactPanel;
   useEffect(() => setTier(session.privacy_tier), [session.privacy_tier]);
 
   const messages = session.conversation || [];
@@ -302,69 +321,85 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
   return (
     <>
       <MainPanelLayout>
-        <ReadableContent className="flex-1 flex flex-col min-h-0 px-8">
-          <SessionHeader
-            onBack={onBack}
-            title={session.name}
-            // The full pill, not the dense dot: this page has room, and it is
-            // the surface a user opens to answer "what is in this chat?". It
-            // reads the LOCAL tier, so a declassification made from the button
-            // beside it clears the badge without waiting for a refetch — an
-            // action whose only visible effect arrives on the next page load
-            // reads as an action that did nothing.
-            titleAdornment={tier ? <PrivacyBadge tier={tier} /> : null}
-            actionButtons={!isLoading ? actionButtons : null}
-          >
-            <div className="flex flex-col">
-              {!isLoading ? (
-                <>
-                  <div className="flex items-center text-text-muted text-supporting gap-5 font-mono tabular-nums">
-                    <span className="flex items-center">
-                      <Calendar className="w-4 h-4 mr-1" />
-                      {formatMessageTimestamp(messages[0]?.created)}
-                    </span>
-                    <span className="flex items-center">
-                      <MessageSquareText className="w-4 h-4 mr-1" />
-                      {session.message_count}
-                    </span>
-                    {billedTokenEstimate && (
-                      <span
-                        className="flex items-center"
-                        title={
-                          billedTokenEstimate.lowerBound
-                            ? 'At least this many tokens; only last-turn usage is available for this older chat'
-                            : 'Billed tokens across every turn, including recorded cache usage'
-                        }
-                      >
-                        <Target className="w-4 h-4 mr-1" />
-                        <span className="sr-only">Billed tokens: </span>
-                        {formatBilledTokenEstimate(billedTokenEstimate)}
+        {/* The horizontal split the artifact panel needs. It wraps
+            ReadableContent rather than sitting inside it: the readable measure
+            is a ceiling on PROSE, and a panel inside it would eat the column it
+            is meant to sit beside. `splitPaneRef` goes here because rung 2
+            measures this box — the one the transcript and the panel share. */}
+        <div ref={splitPaneRef} className="relative flex flex-1 min-h-0 min-w-0">
+          <ReadableContent className="flex-1 flex flex-col min-h-0 px-8">
+            <SessionHeader
+              onBack={onBack}
+              title={session.name}
+              // The full pill, not the dense dot: this page has room, and it is
+              // the surface a user opens to answer "what is in this chat?". It
+              // reads the LOCAL tier, so a declassification made from the button
+              // beside it clears the badge without waiting for a refetch — an
+              // action whose only visible effect arrives on the next page load
+              // reads as an action that did nothing.
+              titleAdornment={tier ? <PrivacyBadge tier={tier} /> : null}
+              actionButtons={!isLoading ? actionButtons : null}
+            >
+              <div className="flex flex-col">
+                {!isLoading ? (
+                  <>
+                    <div className="flex items-center text-text-muted text-supporting gap-5 font-mono tabular-nums">
+                      <span className="flex items-center">
+                        <Calendar className="w-4 h-4 mr-1" />
+                        {formatMessageTimestamp(messages[0]?.created)}
                       </span>
-                    )}
+                      <span className="flex items-center">
+                        <MessageSquareText className="w-4 h-4 mr-1" />
+                        {session.message_count}
+                      </span>
+                      {billedTokenEstimate && (
+                        <span
+                          className="flex items-center"
+                          title={
+                            billedTokenEstimate.lowerBound
+                              ? 'At least this many tokens; only last-turn usage is available for this older chat'
+                              : 'Billed tokens across every turn, including recorded cache usage'
+                          }
+                        >
+                          <Target className="w-4 h-4 mr-1" />
+                          <span className="sr-only">Billed tokens: </span>
+                          {formatBilledTokenEstimate(billedTokenEstimate)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center text-text-muted text-supporting mt-1 font-mono">
+                      <span className="flex items-center">
+                        <Folder className="w-4 h-4 mr-1" />
+                        {session.working_dir}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center text-secondary text-text-muted">
+                    <LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
+                    <span>Loading chat details...</span>
                   </div>
-                  <div className="flex items-center text-text-muted text-supporting mt-1 font-mono">
-                    <span className="flex items-center">
-                      <Folder className="w-4 h-4 mr-1" />
-                      {session.working_dir}
-                    </span>
-                  </div>
-                </>
-              ) : (
-                <div className="flex items-center text-secondary text-text-muted">
-                  <LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
-                  <span>Loading chat details...</span>
-                </div>
-              )}
-            </div>
-          </SessionHeader>
+                )}
+              </div>
+            </SessionHeader>
 
-          <SessionMessages
-            messages={messages}
-            isLoading={isLoading}
-            error={error}
-            onRetry={onRetry}
-          />
-        </ReadableContent>
+            <SessionMessages
+              messages={messages}
+              isLoading={isLoading}
+              error={error}
+              onRetry={onRetry}
+              sessionId={session.id}
+              workingDir={session.working_dir}
+              onOpenArtifact={openArtifact}
+            />
+          </ReadableContent>
+
+          {/* No `onRenderError`: a saved transcript has no live turn to hand a
+              broken figure back to, so ArtifactViewer installs no repair
+              listener. And nothing auto-opens here — the panel appears when the
+              reader clicks a card, never because the page loaded. */}
+          {presentedArtifact && <ArtifactViewer {...artifactPanel.viewerProps} />}
+        </div>
       </MainPanelLayout>
 
       <Dialog open={isShareModalOpen} onOpenChange={setIsShareModalOpen}>

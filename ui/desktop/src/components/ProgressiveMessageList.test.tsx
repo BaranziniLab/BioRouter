@@ -4,6 +4,10 @@ import ProgressiveMessageList from './ProgressiveMessageList';
 import { ChatState } from '../types/chatState';
 import type { Message } from '../api';
 
+// The transcript is no longer a display surface for artifacts — it can only hand
+// one to the panel — so `onOpenArtifact` is required all the way down the chain.
+const noopOpenArtifact = vi.fn();
+
 const assistantWithToolCall: Message = {
   id: 'assistant-1',
   role: 'assistant',
@@ -60,6 +64,7 @@ describe('ProgressiveMessageList trailing activity indicator', () => {
         batchSize={15}
         batchDelay={30}
         showLoadingThreshold={30}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -73,6 +78,7 @@ describe('ProgressiveMessageList trailing activity indicator', () => {
         isStreamingMessage
         chatState={ChatState.Streaming}
         lastMessageAt={Date.now()}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -87,6 +93,7 @@ describe('ProgressiveMessageList trailing activity indicator', () => {
         isStreamingMessage
         chatState={ChatState.Streaming}
         lastMessageAt={Date.now()}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
     expect(screen.getByTestId('turn-activity-indicator')).toBeInTheDocument();
@@ -96,6 +103,7 @@ describe('ProgressiveMessageList trailing activity indicator', () => {
         {...liveProps}
         isStreamingMessage={false}
         chatState={ChatState.Idle}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -111,6 +119,7 @@ describe('ProgressiveMessageList trailing activity indicator', () => {
         isStreamingMessage
         chatState={ChatState.Streaming}
         lastMessageAt={Date.now()}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -145,6 +154,7 @@ describe('ProgressiveMessageList trailing activity indicator', () => {
         isStreamingMessage
         chatState={ChatState.Streaming}
         lastMessageAt={Date.now()}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -191,6 +201,7 @@ describe('ProgressiveMessageList render stability', () => {
         batchSize={15}
         batchDelay={5}
         showLoadingThreshold={30}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 

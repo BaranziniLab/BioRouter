@@ -102,7 +102,6 @@ Object.defineProperty(window, 'electron', {
   value: {
     prepareArtifactHtml: async ({ html }: { html: string }) => ({ html }),
     readArtifactFile: readFixture,
-    openArtifactWindow: async () => undefined,
     openExternal: async () => undefined,
     broadcastThemeChange: () => undefined,
     on: () => () => undefined,

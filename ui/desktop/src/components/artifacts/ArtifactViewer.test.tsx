@@ -22,7 +22,6 @@ function installElectronMock() {
         size: 20,
         found: true,
       })),
-      openArtifactWindow: vi.fn(),
       openArtifactInBrowser: vi.fn(),
       openDirectoryInExplorer: vi.fn(),
       openExternal: vi.fn(),

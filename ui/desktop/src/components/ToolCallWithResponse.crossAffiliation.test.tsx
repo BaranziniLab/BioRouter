@@ -5,6 +5,10 @@ import ToolCallWithResponse from './ToolCallWithResponse';
 import type { ToolRequestMessageContent } from '../types/message';
 import { CROSS_AFFILIATION_ACCEPT_MARKER } from '../utils/crossAffiliation';
 
+// The transcript is no longer a display surface for artifacts — it can only hand
+// one to the panel — so `onOpenArtifact` is required all the way down the chain.
+const noopOpenArtifact = vi.fn();
+
 /**
  * Issue #56, DR-26 / Task 57 — the gate that matters.
  *
@@ -74,6 +78,7 @@ const renderTranscript = (error: string) =>
         id: 'tool-xaff',
         toolResult: { status: 'error', error },
       }}
+      onOpenArtifact={noopOpenArtifact}
     />
   );
 
@@ -141,6 +146,7 @@ describe('the cross-institutional refusal in the transcript', () => {
           id: 'tool-xaff-2',
           toolResult: { status: 'error', error: grantableRefusal('ucsf') },
         }}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -188,6 +194,7 @@ describe('the cross-institutional refusal in the transcript', () => {
           id: 'tool-xaff',
           toolResult: { status: 'error', error: grantableRefusal('ucsfomopagent') },
         }}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 

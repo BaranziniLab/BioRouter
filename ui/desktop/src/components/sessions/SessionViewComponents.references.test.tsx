@@ -4,6 +4,10 @@ import { SessionMessages } from './SessionViewComponents';
 import type { Message } from '../../api';
 import { refTag } from '../../utils/resourceRefs';
 
+// The transcript is no longer a display surface for artifacts — it can only hand
+// one to the panel — so `onOpenArtifact` is required all the way down the chain.
+const noopOpenArtifact = vi.fn();
+
 // Issue #65 — the shared/read-only session view is the one surface that renders
 // a user message through `MarkdownContent`, and react-markdown is configured
 // without `rehype-raw`, so it DROPS unknown HTML rather than showing it. A
@@ -23,7 +27,15 @@ const userMessage = (text: string): Message => ({
 });
 
 const renderMessages = (messages: Message[]) =>
-  render(<SessionMessages messages={messages} isLoading={false} error={null} onRetry={vi.fn()} />);
+  render(
+    <SessionMessages
+      messages={messages}
+      isLoading={false}
+      error={null}
+      onRetry={vi.fn()}
+      onOpenArtifact={noopOpenArtifact}
+    />
+  );
 
 describe('a session in the history view keeps its references visible', () => {
   it('shows a chip for a reference the markdown renderer would have swallowed', () => {

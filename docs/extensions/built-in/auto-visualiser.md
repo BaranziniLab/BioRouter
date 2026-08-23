@@ -4,7 +4,7 @@
 > **Status:** Current. The extension is live and healthy, but the chart catalogue in [Visualization types](#visualization-types) covers only 8 of the 34 tools the code now registers — see the warning below. For the full tool list the current truth is the source: `crates/biorouter-mcp/src/autovisualiser/` (`mod.rs`, `tools_charts.rs`, `tools_d3.rs`, `tools_extra.rs`, `tools_geo.rs`, `tools_dashboard.rs`).
 > **Audience:** end users.
 
-The Auto Visualiser extension lets BioRouter generate interactive data visualizations directly inside a conversation. It uses MCP-UI — the emerging Model Context Protocol standard for returning renderable UI from a tool — to return charts, graphs, maps and diagrams as `ui://` resources that the chat renders inline, without you having to ask for a figure explicitly.
+The Auto Visualiser extension lets BioRouter generate interactive data visualizations directly inside a conversation. It uses MCP-UI — the emerging Model Context Protocol standard for returning renderable UI from a tool — to return charts, graphs, maps and diagrams as `ui://` resources. A figure arrives in the conversation as a card you click; it opens in the artifact panel on the right, which is where every figure is shown. You do not have to ask for one explicitly.
 
 > **Warning.** The tool table in [Visualization types](#visualization-types) is out of date. The extension registers 34 tools. Not documented here: the scientific figures `render_volcano`, `render_manhattan`, `render_kaplan_meier` and `render_forest`; the relationship and hierarchy figures `render_heatmap`, `render_sunburst`, `render_dendrogram`, `render_wordcloud` and `render_calendar_heatmap`; the typed Mermaid wrappers (`render_flowchart`, `render_gantt`, `render_sequence`, `render_mindmap`, `render_timeline`, `render_er_diagram`, `render_state_diagram`, `render_class_diagram`); and the composite report tool `render_dashboard`, which combines several figures into one scrollable artifact. Until this page is refreshed, read the tool definitions in the source files named above.
 
@@ -31,7 +31,7 @@ The Auto Visualiser extension lets BioRouter generate interactive data visualiza
 
 ## Visualization types
 
-The Auto Visualiser integrates with BioRouter's MCP-UI system to detect when data would benefit from visualization and to render an interactive component. It analyzes data patterns in your conversation and picks the most appropriate visualization type.
+The Auto Visualiser detects when data would benefit from visualization and returns an interactive figure. It analyzes data patterns in your conversation and picks the most appropriate visualization type.
 
 | Chart type | Description | Detected when prompt implies |
 |------------|-------------|------------------------------|
@@ -48,7 +48,7 @@ The Auto Visualiser integrates with BioRouter's MCP-UI system to detect when dat
 
 - **Automatic detection**: BioRouter chooses the visualization type that suits your data.
 - **Interactive components**: figures support hover effects, zooming, and drill-down.
-- **MCP-UI integration**: rendering goes through the MCP-UI standard.
+- **One place to look**: every figure opens in the artifact panel, whether you are in a live chat or reading a saved or shared transcript.
 - **Multiple chart support**: one response can render several visualizations.
 - **Customizable styling**: custom colors, labels, and formatting options are supported.
 - **Export capability**: visualizations can be saved as HTML files for sharing.

@@ -402,12 +402,29 @@ compliance page is required reading before research data goes near either.
 
 ### Artifact side panel (desktop)
 
-The right-hand panel in chat previews **anything the agent creates**, not just
-visualizations. It opens automatically on the newest artifact.
+The right-hand panel previews **anything the agent creates**, not just
+visualizations, and it is the **only** surface any of it is ever displayed on. In
+a transcript an artifact is a click-to-open card and nothing else — there is no
+inline frame and no second "expand" destination. In a live chat the panel opens
+automatically on the newest artifact; a saved or shared transcript opens nothing
+until the reader clicks. Full rule, and the record of the inline renderer that
+was removed to make it true:
+[`docs/desktop-ui/artifact-display-surfaces.md`](docs/desktop-ui/artifact-display-surfaces.md).
 
 - **Components:** `ui/desktop/src/components/artifacts/` — `ArtifactViewer.tsx`
-  (the panel), `artifactUtils.ts` (detection + parsing helpers), `artifactTypes.ts`.
+  (the panel), `useArtifactPanel.ts` (its geometry + open/close state machine),
+  `artifactUtils.ts` (detection + parsing helpers), `artifactTypes.ts`.
   Collection lives in `collectArtifactsFromMessages` in `components/BaseChat.tsx`.
+- **Three surfaces mount it, from one hook.** `BaseChat.tsx`,
+  `sessions/SessionHistoryView.tsx` (History + a schedule's run detail) and
+  `sessions/SharedSessionView.tsx`. ⚠ **`onOpenArtifact` is REQUIRED down the
+  whole transcript chain** (`ProgressiveMessageList` → `BioRouterMessage` →
+  `ToolCallWithResponse` → `MCPUIResourceRenderer`), so a transcript surface with
+  nowhere to put an artifact does not compile. That is deliberate: the split this
+  replaced existed *only* because two call sites omitted an optional prop, and an
+  optional callback made the divergence invisible. Auto-open and auto-repair stay
+  chat-only — a read-only surface passes no `onRenderError`, so the panel never
+  installs the repair listener.
 - **What reaches the panel:**
   1. `ui://` embedded resources from tool responses — Auto Visualiser figures and
      reports, and Agent Drafter app preview cards (`create_app`, `configure_app`,
@@ -456,7 +473,8 @@ visualizations. It opens automatically on the newest artifact.
 - **No delete control on in-chat artifact cards.** Deleting an Agent Drafter app
   is destructive (removes files from disk) and lives only in the **Applications**
   tab (`ApplicationsView.tsx`) — never on the in-chat card in `MCPUIResourceRenderer`,
-  where a stray click would nuke an app. The card offers open/expand only.
+  where a stray click would nuke an app. The card opens the panel, and that is all
+  it does.
 - **Auto-repair of a broken artifact only resumes a *live* conversation.** When an
   artifact iframe posts `biorouter-viz-render-error`, `handleArtifactRenderError`
   in `BaseChat.tsx` feeds it back to the agent to fix — but only if
@@ -669,8 +687,12 @@ value's *location* is as load-bearing as the number.
 ### Auto Visualiser feature
 
 The Auto Visualiser (`autovisualiser`) built-in MCP server turns structured data
-into self-contained interactive HTML figures, returned as `ui://…` resources and
-rendered inline in chat (sandboxed iframe via `@mcp-ui` + the `/mcp-ui-proxy`).
+into self-contained interactive HTML figures, returned as `ui://…` resources.
+A figure is shown as a click-to-open card in the transcript and rendered in the
+**artifact side panel** (a sandboxed `srcdoc` iframe the panel builds itself) —
+never inline. The `/mcp-ui-proxy` route that served the old inline iframe is
+gone, along with its exemption from the secret-key middleware; see
+[`docs/desktop-ui/artifact-display-surfaces.md`](docs/desktop-ui/artifact-display-surfaces.md).
 
 - **Module:** `crates/biorouter-mcp/src/autovisualiser/` — `mod.rs` (router +
   the 8 original tools), `common.rs` (shared infra), `tools_extra.rs` (Mermaid

@@ -46,7 +46,7 @@ interface ProgressiveMessageListProps {
     elicitationId: string,
     userData: Record<string, unknown>
   ) => Promise<void>;
-  onOpenArtifact?: (artifact: ArtifactSource) => void;
+  onOpenArtifact: (artifact: ArtifactSource) => void;
   workingDir?: string;
   /**
    * Live turn state, supplied only by an interactive chat. Read-only replays

@@ -3,6 +3,10 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import ToolCallWithResponse, { logToString, summarizeToolCall } from './ToolCallWithResponse';
 import type { NotificationEvent, ToolRequestMessageContent } from '../types/message';
 
+// The transcript is no longer a display surface for artifacts — it can only hand
+// one to the panel — so `onOpenArtifact` is required all the way down the chain.
+const noopOpenArtifact = vi.fn();
+
 describe('summarizeToolCall', () => {
   it('summarizes file editing tools as natural reading and editing actions', () => {
     expect(
@@ -155,6 +159,7 @@ describe('summarizeToolCall', () => {
         isCancelledMessage={false}
         toolRequest={toolRequest}
         isStreamingMessage={false}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -188,6 +193,7 @@ describe('summarizeToolCall', () => {
         isCancelledMessage={false}
         toolRequest={toolRequest}
         isStreamingMessage={false}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -246,6 +252,7 @@ describe('summarizeToolCall', () => {
           id: 'tool-partial-graph',
           toolResult: { status: 'error', error: 'The command could not be started' },
         }}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -282,6 +289,7 @@ describe('summarizeToolCall', () => {
             value: { is_error: false },
           } as never,
         }}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -317,6 +325,7 @@ describe('summarizeToolCall', () => {
             },
           },
         }}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -364,6 +373,7 @@ describe('summarizeToolCall', () => {
             },
           },
         }}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -399,6 +409,7 @@ describe('summarizeToolCall', () => {
               message: undefined,
             } as never,
           ]}
+          onOpenArtifact={noopOpenArtifact}
         />
       );
 
@@ -516,6 +527,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
         isCancelledMessage={false}
         toolRequest={coordinatedRequest}
         toolResponse={coordinatedResponse}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -547,6 +559,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
         isCancelledMessage={false}
         toolRequest={coordinatedRequest}
         toolResponse={coordinatedResponse}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -593,6 +606,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
         isCancelledMessage={false}
         toolRequest={coordinatedRequest}
         toolResponse={craftedResponse}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -631,6 +645,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
         isCancelledMessage={false}
         toolRequest={coordinatedRequest}
         toolResponse={responseWithDrop}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -678,6 +693,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
             },
           } as never,
         }}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -710,6 +726,7 @@ describe('ToolCallWithResponse status derivation', () => {
         toolRequest={pendingToolRequest}
         toolResponse={undefined}
         turnActive={true}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -729,6 +746,7 @@ describe('ToolCallWithResponse status derivation', () => {
         toolResponse={undefined}
         isStreamingMessage={false}
         turnActive={true}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -743,6 +761,7 @@ describe('ToolCallWithResponse status derivation', () => {
         toolRequest={pendingToolRequest}
         toolResponse={undefined}
         turnActive={false}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -831,12 +850,14 @@ describe('ToolCallWithResponse renders delegations distinguishably', () => {
           toolRequest={delegationRequest('d1', 'Count the .rs files under crates/.')}
           toolResponse={undefined}
           turnActive={true}
+          onOpenArtifact={noopOpenArtifact}
         />
         <ToolCallWithResponse
           isCancelledMessage={false}
           toolRequest={delegationRequest('d2', 'Read Cargo.toml and report the version.')}
           toolResponse={undefined}
           turnActive={true}
+          onOpenArtifact={noopOpenArtifact}
         />
       </>
     );
@@ -928,6 +949,7 @@ describe('ToolCallWithResponse hides the guardrail frame from the reader', () =>
             },
           } as never
         }
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -959,6 +981,7 @@ describe('ToolCallWithResponse hides the guardrail frame from the reader', () =>
             },
           } as never
         }
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -994,6 +1017,7 @@ describe('ToolCallWithResponse hides the guardrail frame from the reader', () =>
             },
           } as never
         }
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -1022,6 +1046,7 @@ describe('ToolCallWithResponse hides the guardrail frame from the reader', () =>
             },
           } as never
         }
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 

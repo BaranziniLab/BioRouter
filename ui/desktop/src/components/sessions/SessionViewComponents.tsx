@@ -18,6 +18,7 @@ import { formatMessageTimestamp } from '../../utils/timeUtils';
 import { extractImagePaths, removeImagePathsFromText } from '../../utils/imageUtils';
 import { Message } from '../../api';
 import { EmptyState } from '../ui/empty-state';
+import type { ArtifactSource } from '../artifacts/artifactTypes';
 
 /**
  * Get tool responses map from messages
@@ -52,6 +53,20 @@ interface SessionMessagesProps {
   isLoading: boolean;
   error: string | null;
   onRetry: () => void;
+  /**
+   * Where a figure, an app card or a written file goes when the reader clicks
+   * it. Required, not optional: this is a transcript, and the artifact side
+   * panel is the only surface any of them is ever displayed on. A transcript
+   * that cannot open one has nowhere to put it.
+   */
+  onOpenArtifact: (artifact: ArtifactSource) => void;
+  /**
+   * The chat's working directory, so a relative path in a tool call resolves to
+   * a real file. A shared session carries one; without it `resolveArtifactPath`
+   * drops every relative artifact and the transcript silently shows fewer
+   * figures than it contains.
+   */
+  workingDir?: string;
 }
 
 /**
@@ -62,6 +77,8 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
   isLoading,
   error,
   onRetry,
+  onOpenArtifact,
+  workingDir,
 }) => {
   return (
     <ScrollArea className="h-full w-full">
@@ -156,7 +173,11 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
                           <div
                             className={`${toolRequests.length > 0 || imagePaths.length > 0 || messageRefs.length > 0 ? 'mb-4' : ''}`}
                           >
-                            <MarkdownContent content={proseText} />
+                            <MarkdownContent
+                              content={proseText}
+                              onOpenArtifact={onOpenArtifact}
+                              workingDir={workingDir}
+                            />
                           </div>
                         )}
 
@@ -194,6 +215,8 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
                                 key={toolRequest.id}
                                 toolRequest={toolRequest}
                                 toolResponse={toolResponsesMap.get(toolRequest.id)}
+                                onOpenArtifact={onOpenArtifact}
+                                workingDir={workingDir}
                               />
                             ))}
                           </div>
