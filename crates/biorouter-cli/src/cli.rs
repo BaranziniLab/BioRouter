@@ -1506,10 +1506,7 @@ enum Command {
     /// axis, so this is hidden from help and forwards a notice; it still runs,
     /// so anyone following older instructions is told where to go rather than
     /// hitting an unknown-command error.
-    #[command(
-        hide = true,
-        about = "Deprecated: use `biorouter serve` instead"
-    )]
+    #[command(hide = true, about = "Deprecated: use `biorouter serve` instead")]
     Web {
         /// Port to run the web server on
         #[arg(
@@ -2491,7 +2488,21 @@ pub async fn cli() -> anyhow::Result<()> {
         "CLI command executed"
     );
 
-    match cli.command {
+    dispatch(cli.command).await
+}
+
+/// Run the named command.
+///
+/// Split out of [`cli`] so that adding a verb grows a function that is nothing
+/// but arms. `clippy::too_many_lines` is enforced against a baseline here, and
+/// a dispatch table is exactly the shape that limit should not be spent on --
+/// while the setup above it is the part worth keeping short.
+///
+/// The match stays exhaustive with no wildcard arm: a new `Command` variant
+/// must fail to compile in both this function and `get_command_name`, so it
+/// cannot ship silently unreachable.
+async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
+    match command {
         Some(Command::Completion { shell, bin_name }) => {
             let mut cmd = Cli::command();
             generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
