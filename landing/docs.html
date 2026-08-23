@@ -247,7 +247,7 @@
       <li><strong>macOS:</strong> open the <code>.dmg</code> and drag Biorouter to <code>/Applications</code>. A <code>.zip</code> is also published for the in-app auto-updater.</li>
       <li><strong>Windows:</strong> unzip <code>Biorouter-win32-x64-*.zip</code> and run <code>Biorouter.exe</code>.</li>
       <li><strong>Linux desktop:</strong> install <code>biorouter_*_amd64.deb</code> (Debian/Ubuntu) or <code>BioRouter-*-1.x86_64.rpm</code> (Fedora/RHEL).</li>
-      <li><strong>Linux headless</strong> (servers, HPC nodes, containers): install the CLI-only package <code>biorouter-cli_*_amd64.deb</code> or <code>biorouter-cli-*-1.x86_64.rpm</code>. It ships just the <code>biorouter</code> CLI and the <code>biorouterd</code> daemon, with no desktop app.</li>
+      <li><strong>Linux without a desktop</strong> (servers, HPC nodes, containers): install the CLI-only package <code>biorouter-cli_*_amd64.deb</code> or <code>biorouter-cli-*-1.x86_64.rpm</code>. It ships the <code>biorouter</code> CLI, the <code>biorouterd</code> daemon and the web interface, with no desktop app &mdash; so you can still work in a browser by running <a href="#doc-cli">biorouter serve</a>.</li>
     </ul>
     <div class="alert alert-info" style="margin-top:12px;">
       <strong>Node is not required to run the app.</strong> Biorouter's backend is a native Rust binary (Rust 1.92). You only need <strong>Node 24+</strong> if you install an extension whose MCP server launches through <code>npx</code>.
@@ -1199,31 +1199,99 @@ biorouter usage --json</code></pre>
 @g how do I fix these permission denied errors?</code></pre>
 <div class="alert alert-info">There is also a hidden <code>biorouter term log</code> subcommand. The shell hook calls it to record each command into the terminal session; you do not run it directly.</div>
 
-<h2>Server and headless</h2>
+<h2>Server and browser access</h2>
 
-<h3>web</h3>
-<p>Start BioRouter Web: a lightweight, browser-based chat interface launched from the CLI that mirrors the desktop chat experience. It is useful when you want a GUI without installing the desktop app, or need access from another device.</p>
-<pre><code>biorouter web [-p PORT] [--host HOST] [--open] [--auth-token TOKEN] [--no-auth]</code></pre>
+<h3>serve</h3>
+<p>Run Biorouter and reach it from a web browser. <code>biorouter serve</code> starts the <code>biorouterd</code> daemon, hands it the built interface, and prints a URL to open. It is the <strong>same interface the desktop app shows</strong>, served over HTTP instead of wrapped in Electron, so sessions, extensions, knowledge bases, workflows and Agent Drafter apps all behave the way they do on the desktop.</p>
+<pre><code>biorouter serve [--host ADDR] [-p PORT] [--token TOKEN] [--no-token] [--web-dir DIR] [--open]</code></pre>
+<div class="alert alert-info"><code>biorouter headless</code> is an accepted alias and behaves identically. It is the name the standalone <code>biorouter-headless</code> binary was known by; that binary and its <code>.tar.gz</code> release artifact were retired, and the capability now ships in every install.</div>
+
+<h4>Install it</h4>
+<p>There is nothing extra to install. Every Biorouter package carries the interface bundle and the daemon that serves it:</p>
+<ul>
+  <li><strong>macOS, Windows, Linux desktop</strong> — the app ships the CLI. Accept the &ldquo;Install Biorouter CLI&rdquo; prompt, or run <code>biorouter setup-path</code>, then <code>biorouter serve</code> from any terminal.</li>
+  <li><strong>Linux servers, HPC nodes, containers</strong> — install the CLI-only package, which has no desktop app and no GUI dependencies:
+<pre><code>sudo apt install ./biorouter-cli_*_amd64.deb     # Debian / Ubuntu
+sudo dnf install ./biorouter-cli-*-1.x86_64.rpm  # Fedora / RHEL / Rocky</code></pre>
+  These install <code>biorouter</code> and <code>biorouterd</code> to <code>/usr/bin</code> and the interface to <code>/usr/share/biorouter/web</code>.</li>
+</ul>
+
+<h4>Set it up</h4>
+<p><strong>Choose the provider and model before you start serving.</strong> A browser session cannot change them &mdash; see <a href="#serve-fixed-model">the model is fixed</a> below &mdash; so this step is not optional:</p>
+<pre><code>biorouter configure     # pick a provider and model, and store its credential
+biorouter serve --open</code></pre>
+<p><code>serve</code> stays in the foreground and prints the address to open:</p>
+<pre><code>  Biorouter is serving at
+
+      http://127.0.0.1:8765/?t=1f4c9e02&hellip;
+
+  The token above is shown once, and is new on every launch.
+
+  The model is whichever `biorouter configure` chose; a browser cannot change it.
+  Press Ctrl-C to stop.</code></pre>
+<p>Open that whole address, <code>?t=</code> included &mdash; the token is what authenticates you. Biorouter exchanges it once for a session cookie and removes it from the address bar, so it does not linger in your history. <code>Ctrl+C</code> stops the daemon and frees the port.</p>
+
 <div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><code>-p, --port &lt;PORT&gt;</code></td><td>integer</td><td><code>3000</code></td><td>Port to run the web server on.</td></tr>
-    <tr><td><code>--host &lt;HOST&gt;</code></td><td>string</td><td><code>127.0.0.1</code></td><td>Address to bind. Use a LAN address to reach it from other devices.</td></tr>
-    <tr><td><code>--open</code></td><td>flag</td><td>off</td><td>Open the browser automatically when the server starts.</td></tr>
-    <tr><td><code>--auth-token &lt;TOKEN&gt;</code></td><td>string</td><td>none</td><td>Require this token (as a password or bearer token) to access the interface.</td></tr>
-    <tr><td><code>--no-auth</code></td><td>flag</td><td>off</td><td>Allow running without auth even when bound to a network address. Unsafe; use only on trusted networks.</td></tr>
+    <tr><td><code>--host &lt;ADDR&gt;</code></td><td>string</td><td><code>127.0.0.1</code></td><td>Address to bind. Anything reachable from another machine requires a token.</td></tr>
+    <tr><td><code>-p, --port &lt;PORT&gt;</code></td><td>integer</td><td><code>8765</code></td><td>Port to listen on. Deliberately not <code>3000</code>, which is the daemon's own default.</td></tr>
+    <tr><td><code>--token &lt;TOKEN&gt;</code></td><td>string</td><td>new random token per launch</td><td>Use a fixed token instead of a generated one, for a service unit or a script.</td></tr>
+    <tr><td><code>--no-token</code></td><td>flag</td><td>off</td><td>Serve with no access token. Refused for any non-loopback bind, and cannot be combined with <code>--token</code>.</td></tr>
+    <tr><td><code>--web-dir &lt;DIR&gt;</code></td><td>path</td><td>found automatically</td><td>Directory holding the built interface. The error names every location it tried.</td></tr>
+    <tr><td><code>--open</code></td><td>flag</td><td>off</td><td>Open a browser once the server is ready.</td></tr>
   </tbody>
 </table></div>
-<pre><code># Local web UI, open the browser
-biorouter web --open
 
-# Reachable on the LAN, password-protected
-biorouter web --host 192.168.1.7 --port 8080 --auth-token "$TOKEN"</code></pre>
-<p>Stop the server with <code>Ctrl+C</code>. Extension management, some file operations, and configuration changes still go through the CLI or a restart.</p>
-<div class="alert alert-warning">Do not expose the web interface to the internet without a real authentication and transport layer in front of it.</div>
+<h4>Reach it from another machine</h4>
+<p>The default bind is loopback, so by default nothing outside the machine can connect. Reaching it from elsewhere is an explicit choice, and a token becomes mandatory rather than optional:</p>
+<pre><code># Reachable on the network. A token is generated and required; --no-token is refused here.
+biorouter serve --host 0.0.0.0 --port 8765</code></pre>
+<p>The console then prints a second URL built from an address other machines can actually use. If it cannot determine one, it says so rather than printing a loopback address that could not possibly work from somewhere else.</p>
+<div class="alert alert-warning"><strong>An exposed port is an exposed agent.</strong> Anyone who reaches it with the token can run tools, read files the daemon can read, and spend your model credits. The token is a launch credential, not a user account: there are no separate logins and no per-user permissions. On anything larger than a trusted lab network, put a reverse proxy with TLS and real authentication in front of it, and do not expose it to the internet directly.</div>
+
+<h4 id="serve-fixed-model">The model is fixed before you start</h4>
+<p><strong>A browser session cannot change its model or provider.</strong> The picker is inert, and this is deliberate &mdash; it is a privacy property, not a limitation.</p>
+<p>Biorouter classifies a conversation by the sensitivity of what it has touched, and a conversation that has reached a private, institution-hosted model may never later reach a public one. That guarantee depends on knowing which model a conversation ran against. The desktop app can change the provider mid-session because it holds proof that a human at the keyboard asked; a browser tab holds no such proof, and manufacturing one would put the key somewhere page JavaScript could reach &mdash; exactly what the mechanism exists to prevent.</p>
+<p>So the capability is withdrawn rather than approximated: the provider is chosen once, at the terminal, and the privacy tier that choice implies holds for <em>every</em> session in that daemon. A run started against an institutional model is private for its whole life; one started against a commercial model is public for its whole life. Neither can drift. To change it, stop <code>serve</code>, run <code>biorouter configure</code>, and start it again.</p>
+
+<h4>What works in a browser, and what does not</h4>
+<div class="doc-table-scroll"><table class="doc-table">
+  <thead><tr><th>Capability</th><th>In a browser</th></tr></thead>
+  <tbody>
+    <tr><td>Chat, streaming, sessions and history</td><td>Yes</td></tr>
+    <tr><td>Extensions, skills, workflows, scheduled jobs</td><td>Yes</td></tr>
+    <tr><td>Knowledge bases and ingest</td><td>Yes</td></tr>
+    <tr><td>Agent Drafter apps, including their live agent sockets</td><td>Yes</td></tr>
+    <tr><td>Changing the model or provider</td><td>No &mdash; by design, see above</td></tr>
+    <tr><td>Dragging a file in from your own computer</td><td>No &mdash; the agent runs on the server, which cannot see your local disk. Images are the exception: they are uploaded with the message. Reference other files by their path <em>on the server</em>.</td></tr>
+    <tr><td>Desktop-only shell features (tray, dock, native terminal dock)</td><td>No</td></tr>
+  </tbody>
+</table></div>
+
+<h4>Run it as a service</h4>
+<p>A systemd unit for a shared host. Give it a fixed token so the URL survives restarts, and keep the daemon under a dedicated account:</p>
+<pre><code>[Unit]
+Description=Biorouter
+After=network-online.target
+
+[Service]
+User=biorouter
+Environment=BIOROUTER_DISABLE_KEYRING=true
+# BIOROUTER_TOKEN=... , mode 0600, owned by the service account
+EnvironmentFile=/etc/biorouter/serve.env
+ExecStart=/usr/bin/biorouter serve --host 0.0.0.0 --port 8765 --token ${BIOROUTER_TOKEN}
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target</code></pre>
+<p>On a host with no desktop keyring, Biorouter falls back to a plaintext <code>~/.config/biorouter/secrets.yaml</code>; <code>BIOROUTER_DISABLE_KEYRING=true</code> forces that behaviour explicitly. Restrict that file to the service account.</p>
+
+<h3>web (deprecated)</h3>
+<p><code>biorouter web</code> is superseded by <code>biorouter serve</code> and is hidden from <code>--help</code>. It served a small hand-written chat page rather than the Biorouter interface, defaulted to port <code>3000</code> (colliding with the daemon), and shared one agent across every chat. It still runs and prints a notice pointing at <code>serve</code>; it will be removed in a later release.</p>
 
 <h3>The biorouterd daemon</h3>
-<p><code>biorouterd</code> is the REST plus WebSocket agent server. The desktop GUI spawns it on an ephemeral local port and talks to it over HTTP and WebSocket using a type-safe client generated from the OpenAPI spec. You rarely start it yourself, but you can run it headlessly to back a self-hosted GUI, an exported app, or automation.</p>
+<p><code>biorouterd</code> is the REST plus WebSocket agent server. The desktop GUI spawns it on an ephemeral local port and talks to it over HTTP and WebSocket using a type-safe client generated from the OpenAPI spec. You rarely start it yourself: <code>biorouter serve</code> starts and supervises it for browser access, and exported apps launch it on demand. Run it directly for automation, or when you want the API without an interface.</p>
 <pre><code># Run the agent server (foreground, graceful shutdown on SIGINT/SIGTERM)
 biorouterd agent</code></pre>
 <div class="doc-table-scroll"><table class="doc-table">
@@ -1232,6 +1300,8 @@ biorouterd agent</code></pre>
     <tr><td><code>BIOROUTER_PORT</code></td><td><code>3000</code></td><td>Port the daemon binds. This is the flat form (the <code>Settings</code> struct is flat); it is not <code>BIOROUTER_SERVER__PORT</code>.</td></tr>
     <tr><td><code>BIOROUTER_HOST</code></td><td><code>127.0.0.1</code></td><td>Address the daemon binds.</td></tr>
     <tr><td><code>BIOROUTER_SERVER__SECRET_KEY</code></td><td>random per run</td><td>Auth key required on requests. If unset, the daemon generates a random key for the process and logs a warning. The nested key uses the <code>__</code> separator. In debug-server mode this is <code>test</code>.</td></tr>
+    <tr><td><code>BIOROUTER_SERVE_UI</code></td><td>unset</td><td>Directory holding the built interface. When set, the daemon serves it at <code>/</code> in addition to its API, which is how <code>biorouter serve</code> reaches a browser. Unset, the daemon serves only its API &mdash; what the desktop app wants, since Electron loads the interface itself.</td></tr>
+    <tr><td><code>BIOROUTER_BROWSER_TOKEN</code></td><td>unset</td><td>The token a browser must present once to receive a session cookie. <code>biorouter serve</code> generates and passes this; set it directly only if you are running the daemon yourself.</td></tr>
   </tbody>
 </table></div>
 <p>On start the daemon publishes its base URL as <code>BIOROUTER_APP_BASE_URL</code> so in-process tools can emit absolute <code>http://host:port/apps/&lt;id&gt;/</code> links. CORS is restricted to local origins. The daemon also exposes the same bundled MCP servers via <code>biorouterd mcp &lt;server&gt;</code>.</p>
