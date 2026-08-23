@@ -371,7 +371,6 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::status::diagnostics,
         super::routes::active_work::list_active_work,
         super::routes::active_work::cancel_active_work,
-        super::routes::mcp_ui_proxy::mcp_ui_proxy,
         super::routes::config_management::backup_config,
         super::routes::config_management::detect_provider,
         super::routes::config_management::get_detectable_providers,

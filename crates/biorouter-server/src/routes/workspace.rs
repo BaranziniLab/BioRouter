@@ -43,12 +43,12 @@ fn check_workspace_ws_auth(
         // origin; the dev renderer presents a loopback origin.
         //
         // **"null" is NOT admitted.** It is the opaque origin of any sandboxed
-        // frame — including the agent-authored figures this very app renders
-        // through `/mcp-ui-proxy`, which is served unauthenticated
-        // (`auth.rs`'s `is_unauthenticated_path`) with
-        // `sandbox='allow-scripts allow-downloads'` and no `allow-same-origin`
-        // (`routes/templates/mcp_ui_proxy.html:43`, pinned by
-        // `routes/mcp_ui_proxy.rs:45`). `routes/mod.rs`'s own `origin_tests`
+        // frame — including the agent-authored figures this very app renders in
+        // its artifact side panel, which are put into a `srcDoc` iframe with
+        // `sandbox="allow-scripts allow-downloads"` and no `allow-same-origin`
+        // (`ui/desktop/src/components/artifacts/ArtifactViewer.tsx`, and
+        // `wrapArtifactForBrowser` in `ui/desktop/src/utils/artifactSecurity.ts`
+        // for the opened/expanded view). `routes/mod.rs`'s own `origin_tests`
         // rejects it by name (`assert!(!is_local_origin("null"))`).
         // This gate must stay at least as strict as `apps::check_ws_auth`
         // (`apps.rs:538-546`), which is the route the design claims parity with.
@@ -280,11 +280,12 @@ mod tests {
         // packaged renderer loads from a file: URL (main.ts `pathToFileURL`).
         assert!(check_workspace_ws_auth(Some("file://"), Some(secret), secret).is_ok());
         // "null" is REFUSED. It is the opaque origin of every sandboxed frame,
-        // including the agent-authored figures this app serves itself through
-        // the unauthenticated /mcp-ui-proxy (sandbox without allow-same-origin
-        // — the attribute is set in the served document,
-        // routes/templates/mcp_ui_proxy.html:43, and pinned by the assertion at
-        // routes/mcp_ui_proxy.rs:45) — and routes/mod.rs's own `origin_tests`
+        // including the agent-authored figures this app renders in its artifact
+        // side panel (a srcDoc iframe carrying `sandbox="allow-scripts
+        // allow-downloads"`, no allow-same-origin — set in
+        // ui/desktop/src/components/artifacts/ArtifactViewer.tsx and in
+        // `wrapArtifactForBrowser`, ui/desktop/src/utils/artifactSecurity.ts) —
+        // and routes/mod.rs's own `origin_tests`
         // rejects it by name. Admitting it would make this gate strictly weaker than
         // `apps::check_ws_auth` (apps.rs:538-546), the route the design claims
         // parity with, leaving the socket secret-only.

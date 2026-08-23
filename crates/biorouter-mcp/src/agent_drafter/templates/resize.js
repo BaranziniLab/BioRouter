@@ -1,9 +1,12 @@
 /* Agent Drafter — auto-resize reporter.
  *
- * Injected into EVERY artifact (static and agentic). It reports the artifact's
- * content height to the Biorouter host so the preview iframe auto-grows instead
- * of clipping/scrolling. The host (@mcp-ui/client `autoResizeIframe`) listens
- * for `{ type: "ui-size-change", payload: { height } }`.
+ * Injected into EVERY artifact (static and agentic). It posts the artifact's
+ * content height as `{ type: "ui-size-change", payload: { height } }` to the
+ * parent frame. An enclosing page that embeds this artifact listens and grows
+ * the iframe to fit — an app built with the SDK does (`renderFigure` in
+ * sdk.ts), as does an Auto Visualiser dashboard report. When the artifact is
+ * displayed standalone in the desktop artifact side panel the message is inert:
+ * that panel sizes the frame itself and installs no listener.
  *
  * Exposes `window.__brReportSize()` so the agent runtime (agent.js) can trigger
  * a fresh measurement after it mutates the DOM (e.g. new chat messages) without
