@@ -1,4 +1,5 @@
 import React from 'react';
+import { isImageExtension } from '../utils/imageFormats';
 import {
   Folder,
   File,
@@ -51,7 +52,9 @@ export const getItemIcon = (item: DisplayItem): IconInfo => {
       const ext = item.name.split('.').pop()?.toLowerCase() || '';
 
       // Image files
-      if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp', 'bmp', 'tiff', 'tif'].includes(ext)) {
+      // Shares the panel's list so this icon cannot promise a preview the panel
+      // will refuse (it used to offer bmp/tiff/ico that landed on the binary card).
+      if (isImageExtension(ext)) {
         return { Icon: Image, color: CURRENT };
       }
 

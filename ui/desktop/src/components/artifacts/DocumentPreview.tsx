@@ -142,6 +142,29 @@ function PdfPageCanvas({
   );
 }
 
+/**
+ * Where pdf.js finds its runtime assets, copied into `public/pdfjs/` by
+ * `vite-plugins/pdfjsAssets.mts`.
+ *
+ * ⚠ **Every one of these must end in a trailing slash** — pdf.js throws
+ * `Invalid factory url: "..." must include trailing slash.` rather than
+ * degrading, so a missing slash is a hard failure at load.
+ *
+ * The one that actually matters day to day is `wasmUrl`: it carries the JPEG
+ * 2000 and JBIG2 decoders, without which *scanned and medical PDFs* render with
+ * their images silently missing. That was the shipped behaviour before this.
+ */
+function pdfAssetOptions() {
+  const base = new URL('pdfjs/', window.document.baseURI).href;
+  return {
+    cMapUrl: `${base}cmaps/`,
+    cMapPacked: true,
+    standardFontDataUrl: `${base}standard_fonts/`,
+    wasmUrl: `${base}wasm/`,
+    iccUrl: `${base}iccs/`,
+  };
+}
+
 function PdfPreview({ file, isResizing }: Pick<DocumentPreviewProps, 'file' | 'isResizing'>) {
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -152,17 +175,28 @@ function PdfPreview({ file, isResizing }: Pick<DocumentPreviewProps, 'file' | 'i
     setDocument(null);
     setError(null);
 
-    void Promise.all([
-      import('pdfjs-dist/legacy/build/pdf.mjs'),
-      import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'),
-    ])
-      .then(([pdfjs, workerModule]) => {
+    // `pdfjs-dist` (not the `legacy/` build): legacy targets browsers years
+    // older than the Chromium Electron ships and is ~13% larger for nothing.
+    // The bare specifier is also the only one carrying type declarations.
+    void import('pdfjs-dist')
+      .then((pdfjs) => {
         if (cancelled) return null;
-        pdfjs.GlobalWorkerOptions.workerSrc = workerModule.default;
-        loadingTask = pdfjs.getDocument({
+        // `workerPort`, not `workerSrc`. Under `file://` the origin serializes
+        // to "null", so pdf.js decides the worker is cross-origin and routes
+        // `workerSrc` through a `blob:` wrapper — which the renderer's
+        // `worker-src 'self'` forbids, killing every PDF in the packaged app
+        // while working fine against the dev server. `workerPort` hands pdf.js
+        // a Worker we constructed and never touches that path.
+        pdfjs.GlobalWorkerOptions.workerPort = new Worker(
+          new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url),
+          { type: 'module' }
+        );
+        const task = pdfjs.getDocument({
           data: new Uint8Array(file.data.slice(0)),
+          ...pdfAssetOptions(),
         });
-        return loadingTask.promise;
+        loadingTask = task;
+        return task.promise;
       })
       .then((nextDocument) => {
         if (!nextDocument || cancelled) return;

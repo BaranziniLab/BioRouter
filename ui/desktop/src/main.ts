@@ -123,6 +123,7 @@ import {
   wrapArtifactForBrowser,
 } from './utils/artifactSecurity';
 import { readGitArtifactTree } from './utils/artifactGit';
+import { IMAGE_BLOB_URL_THRESHOLD_BYTES, IMAGE_MIME_TYPES } from './utils/imageFormats';
 import { recordExtensionProvenance } from './utils/extensionProvenance';
 import { fetchRegistryWithLastGood } from './utils/registryCache';
 import { readArtifactDirectoryTree } from './utils/artifactDirectory';
@@ -308,41 +309,45 @@ function rendererEntryUrl(): URL {
     : pathToFileURL(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
 }
 
+// Image entries are spread in from `utils/imageFormats` rather than written out
+// here. This map is the one that decides `kind: 'image'` (via the
+// `startsWith('image/')` test in the artifact read handler), so a format missing
+// from it is a format the panel silently treats as an opaque binary — which is
+// exactly how `bmp`, `ico` and `avif` came to be unsupported despite Chromium
+// having decoded all three for years.
+const ARTIFACT_MIME_TYPES: Record<string, string> = {
+  ...Object.fromEntries(
+    Object.entries(IMAGE_MIME_TYPES).map(([extension, mime]) => [`.${extension}`, mime])
+  ),
+  '.css': 'text/css',
+  '.csv': 'text/csv',
+  '.htm': 'text/html',
+  '.html': 'text/html',
+  '.js': 'text/javascript',
+  '.json': 'application/json',
+  '.ipynb': 'application/x-ipynb+json',
+  '.md': 'text/markdown',
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.py': 'text/x-python',
+  '.r': 'text/x-r',
+  '.rs': 'text/rust',
+  '.sh': 'text/x-shellscript',
+  '.sql': 'application/sql',
+  '.toml': 'text/toml',
+  '.ts': 'text/typescript',
+  '.tsx': 'text/typescript',
+  '.txt': 'text/plain',
+  '.xml': 'application/xml',
+  '.yaml': 'application/yaml',
+  '.yml': 'application/yaml',
+};
+
 function mimeTypeForArtifactPath(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
-  const mimeTypes: Record<string, string> = {
-    '.css': 'text/css',
-    '.csv': 'text/csv',
-    '.gif': 'image/gif',
-    '.htm': 'text/html',
-    '.html': 'text/html',
-    '.jpeg': 'image/jpeg',
-    '.jpg': 'image/jpeg',
-    '.js': 'text/javascript',
-    '.json': 'application/json',
-    '.ipynb': 'application/x-ipynb+json',
-    '.md': 'text/markdown',
-    '.pdf': 'application/pdf',
-    '.png': 'image/png',
-    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    '.py': 'text/x-python',
-    '.r': 'text/x-r',
-    '.rs': 'text/rust',
-    '.sh': 'text/x-shellscript',
-    '.sql': 'application/sql',
-    '.svg': 'image/svg+xml',
-    '.toml': 'text/toml',
-    '.ts': 'text/typescript',
-    '.tsx': 'text/typescript',
-    '.txt': 'text/plain',
-    '.webp': 'image/webp',
-    '.xml': 'application/xml',
-    '.yaml': 'application/yaml',
-    '.yml': 'application/yaml',
-  };
-  return mimeTypes[ext] || 'application/octet-stream';
+  return ARTIFACT_MIME_TYPES[ext] || 'application/octet-stream';
 }
 
 function documentFormatForArtifactPath(filePath: string) {
@@ -3024,12 +3029,18 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
     }
 
     if (mimeType.startsWith('image/')) {
+      // Small images travel as a data URL because a `blob:` needs revoking and
+      // that bookkeeping is not worth it for an icon. Large ones travel as raw
+      // bytes: base64 would cost ~4/3 of the file as a JS string, twice.
+      const asBytes = stats.size > IMAGE_BLOB_URL_THRESHOLD_BYTES;
       return {
         kind: 'image',
         title,
         path: resolvedPath,
         mimeType,
-        dataUrl: `data:${mimeType};base64,${buffer.toString('base64')}`,
+        ...(asBytes
+          ? { bytes: Uint8Array.from(buffer).buffer }
+          : { dataUrl: `data:${mimeType};base64,${buffer.toString('base64')}` }),
         size: stats.size,
         found: true,
       };
@@ -4818,7 +4829,13 @@ async function appMain() {
       ? ARTIFACT_WRAPPER_CSP
       : "default-src 'self';" +
         "style-src 'self' 'unsafe-inline';" +
-        "script-src 'self';" +
+        // `wasm-unsafe-eval`, NOT `unsafe-eval`. pdf.js 6 ships its JPEG 2000,
+        // JBIG2 and colour-management decoders as WebAssembly, and Chromium
+        // blocks WASM outright unless this token is present. It does NOT permit
+        // `eval` or `new Function`; pdf.js dropped its need for those in
+        // 5.7.284, so the older advice to add `unsafe-eval` is stale and would
+        // widen this policy for nothing.
+        "script-src 'self' 'wasm-unsafe-eval';" +
         "img-src 'self' data: blob: https:;" +
         `connect-src ${buildConnectSrc()};` +
         "object-src 'none';" +

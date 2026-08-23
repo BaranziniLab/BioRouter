@@ -1,6 +1,7 @@
 import type { EmbeddedResource, RawResource, ResourceContents } from '../../api';
 import type { ThemeFamily } from '../../contexts/ThemeContext';
 import { GENERATED_THEMES } from '../../styles/themes.generated';
+import { IMAGE_EXTENSIONS } from '../../utils/imageFormats';
 import type { ArtifactSource } from './artifactTypes';
 
 const TEXT_EXTENSIONS = new Set([
@@ -39,7 +40,6 @@ const TEXT_EXTENSIONS = new Set([
   'yml',
 ]);
 
-const IMAGE_EXTENSIONS = new Set(['gif', 'jpeg', 'jpg', 'png', 'svg', 'webp']);
 const HTML_EXTENSIONS = new Set(['htm', 'html']);
 const DOCUMENT_EXTENSIONS = new Set(['docx', 'ipynb', 'pdf', 'pptx', 'xlsx']);
 const MAX_BROWSER_URL_BYTES = 8 * 1024;
@@ -845,4 +845,25 @@ export function artifactSourceFromResourceLink(resource: RawResource): ArtifactS
     ),
     url,
   };
+}
+
+/**
+ * A displayable `src` for an image preview, plus the cleanup that owns it.
+ *
+ * The main process sends small images as a data URL and large ones as raw
+ * bytes (see `ArtifactFilePreview`'s image variant). Callers must not branch on
+ * that themselves — every consumer that did would be a place a `blob:` URL
+ * could leak. `revoke` is a no-op for the data-URL case, so callers can always
+ * call it unconditionally on unmount.
+ */
+export function imageSourceForPreview(file: {
+  mimeType: string;
+  dataUrl?: string;
+  bytes?: ArrayBuffer;
+}): { src: string; revoke: () => void } {
+  if (file.bytes) {
+    const url = URL.createObjectURL(new Blob([file.bytes], { type: file.mimeType }));
+    return { src: url, revoke: () => URL.revokeObjectURL(url) };
+  }
+  return { src: file.dataUrl ?? '', revoke: () => {} };
 }

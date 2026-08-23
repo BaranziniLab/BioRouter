@@ -18,6 +18,7 @@ import { deriveWorkingDirLocked } from './bottom_menu/DirSwitcher';
 import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
 import { useFileDrop } from '../hooks/useFileDrop';
 import { selectBilledTokens } from '../utils/billedTokens';
+import { imageExtensionAlternation } from '../utils/imageFormats';
 import { mostCompleteBilledTokens } from '../utils/usageAccounting';
 import { Message } from '../api';
 import type { UserAttachment } from '../types/message';
@@ -107,8 +108,15 @@ export const useCurrentModelInfo = () => useContext(CurrentModelContext);
 const ARTIFACT_REPAIR_ACTIVE_GRACE_MS = 15_000;
 const HEADER_ACTION_BUTTON_CLASS =
   'no-drag flex items-center justify-center text-text-muted transition-colors hover:bg-background-medium hover:text-text-default';
-const PREVIEWABLE_TEXT_ARTIFACT_RE =
-  /(?<![\w:/\\@])(?:file:\/\/|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|\/|\\\\)[^\s)\]}\x60"'<>]+\.(?:html?|png|jpe?g|gif|webp|svg|pdf|docx|xlsx|pptx|ipynb|sql|md|qmd|rmd|txt|log|json|csv|tsv|ya?ml|toml|xml|css|ts|tsx|js|jsx|py|r|rs|go|java|c|cpp|h|hpp)(?:[?#][^\s)\]}\x60"'<>]*)?(?![\w./\\])/gi;
+// The image half of this alternation is generated from `utils/imageFormats`, so
+// adding a format cannot leave prose discovery behind. The non-image half stays
+// a literal: it is a deliberately closed list, not a mirror of another set.
+const PREVIEWABLE_TEXT_ARTIFACT_RE = new RegExp(
+  String.raw`(?<![\w:/\\@])(?:file://|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|/|\\\\)[^\s)\]}\x60"'<>]+\.(?:` +
+    `html?|${imageExtensionAlternation()}|` +
+    String.raw`pdf|docx|xlsx|pptx|ipynb|sql|md|qmd|rmd|txt|log|json|csv|tsv|ya?ml|toml|xml|css|ts|tsx|js|jsx|py|r|rs|go|java|c|cpp|h|hpp)(?:[?#][^\s)\]}\x60"'<>]*)?(?![\w./\\])`,
+  'gi'
+);
 
 // Whether an artifact render failure should be fed back to the agent to fix.
 //

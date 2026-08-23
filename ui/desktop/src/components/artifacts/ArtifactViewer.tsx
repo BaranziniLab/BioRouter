@@ -14,6 +14,7 @@ import { useTheme, useThemeFamily } from '../../contexts/ThemeContext';
 import { CODE_FONT_FAMILY, codeThemesByFamily } from '../../styles/codeTheme';
 import { cn } from '../../utils';
 import { injectArtifactBrowserCsp } from '../../utils/artifactSecurity';
+import { isImageExtension, isNativelyDecodableImage } from '../../utils/imageFormats';
 import {
   isTabCycleEvent,
   tabCycleOffset,
@@ -60,6 +61,7 @@ import {
   basenameFromPath,
   dirnameFromPath,
   extensionFromPath,
+  imageSourceForPreview,
   isDelimitedPath,
   isMarkdownPath,
   languageFromPath,
@@ -250,7 +252,7 @@ function iconForArtifact(artifact: ArtifactSource | null) {
   if (artifact.kind === 'externalUrl') return Globe;
   if (artifact.kind === 'file') {
     const ext = artifact.path.split('.').pop()?.toLowerCase();
-    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext || '')) return Image;
+    if (isImageExtension(ext)) return Image;
     if (['html', 'htm'].includes(ext || '')) return Globe;
     if (['js', 'ts', 'tsx', 'jsx', 'py', 'rs', 'sql', 'json', 'yaml', 'yml'].includes(ext || '')) {
       return Code;
@@ -954,13 +956,7 @@ function ArtifactPreviewBody({
   }
 
   if (file.kind === 'image') {
-    // The image is the content, so it sits on the panel ground with a gutter —
-    // no tinted well behind it, no radius pretending it is a card.
-    return (
-      <div className="flex h-full items-center justify-center overflow-auto p-4">
-        <img src={file.dataUrl} alt={file.title} className="max-h-full max-w-full object-contain" />
-      </div>
-    );
+    return <ImageFilePreview key={file.path} file={file} />;
   }
 
   if (file.kind === 'document') {
@@ -1362,6 +1358,57 @@ function DirectoryTreePreview({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ImageFilePreview({
+  file: preview,
+}: {
+  file: Extract<ArtifactFilePreview, { kind: 'image' }>;
+}) {
+  // The src is derived in an effect, not inline, because a large image arrives
+  // as bytes and becomes a `blob:` URL that has to be revoked. Building it
+  // during render would mint a fresh URL on every re-render and leak all but
+  // the last.
+  const [src, setSrc] = useState('');
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+    const { src: nextSrc, revoke } = imageSourceForPreview(preview);
+    setSrc(nextSrc);
+    return () => {
+      revoke();
+      setSrc('');
+    };
+  }, [preview]);
+
+  if (failed) {
+    return (
+      <ArtifactErrorState
+        message={
+          isNativelyDecodableImage(extensionFromPath(preview.path))
+            ? 'This image could not be decoded. It may be truncated or corrupt.'
+            : `This is a ${(extensionFromPath(preview.path) || 'image').toUpperCase()} image, which this preview cannot decode yet.`
+        }
+        path={preview.path}
+      />
+    );
+  }
+
+  // The image is the content, so it sits on the panel ground with a gutter —
+  // no tinted well behind it, no radius pretending it is a card.
+  return (
+    <div className="flex h-full items-center justify-center overflow-auto p-4">
+      {src ? (
+        <img
+          src={src}
+          alt={preview.title}
+          onError={() => setFailed(true)}
+          className="max-h-full max-w-full object-contain"
+        />
+      ) : null}
     </div>
   );
 }

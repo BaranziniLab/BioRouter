@@ -68,9 +68,17 @@ export type ArtifactFilePreview =
       title: string;
       path: string;
       mimeType: string;
-      dataUrl: string;
       size: number;
       found: true;
+      // **Exactly one of `dataUrl` and `bytes` is set**, decided by size in the
+      // main process. A base64 data URL costs ~4/3 of the file as a JS string
+      // and pays it twice — once as an IPC structured clone, once as a DOM
+      // attribute — and Chromium degrades on multi-megabyte URLs, so anything
+      // large arrives as raw bytes for the renderer to wrap in a `blob:` URL.
+      // Read them through `imageSourceForPreview`, never directly, so the
+      // blob's lifetime is always someone's job.
+      dataUrl?: string;
+      bytes?: ArrayBuffer;
     }
   | {
       kind: 'document';

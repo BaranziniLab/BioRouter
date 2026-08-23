@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
+import { pdfjsAssets } from './vite-plugins/pdfjsAssets.mjs';
 
 // https://vitejs.dev/config
 export default defineConfig({
@@ -9,7 +10,7 @@ export default defineConfig({
     'process.env.BIOROUTER_TUNNEL': JSON.stringify(process.env.BIOROUTER_TUNNEL !== 'no' && process.env.BIOROUTER_TUNNEL !== 'none'),
   },
 
-  plugins: [tailwindcss()],
+  plugins: [tailwindcss(), pdfjsAssets()],
 
   // BIOROUTER_NO_HMR=1 freezes the renderer: no watching, no hot reload. Set it
   // when driving the dev GUI (agent-browser / Playwright) while the tree is
