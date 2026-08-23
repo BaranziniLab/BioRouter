@@ -1498,8 +1498,18 @@ enum Command {
         open: bool,
     },
 
-    /// Start a web server with a chat interface
-    #[command(about = "Experimental: Start a web server with a chat interface")]
+    /// Deprecated: use `biorouter serve`
+    ///
+    /// This is an inherited, hand-written chat page -- not the Biorouter
+    /// interface. It defaults to port 3000, which collides with the daemon, and
+    /// it shares one agent across every chat. `serve` supersedes it on every
+    /// axis, so this is hidden from help and forwards a notice; it still runs,
+    /// so anyone following older instructions is told where to go rather than
+    /// hitting an unknown-command error.
+    #[command(
+        hide = true,
+        about = "Deprecated: use `biorouter serve` instead"
+    )]
     Web {
         /// Port to run the web server on
         #[arg(
