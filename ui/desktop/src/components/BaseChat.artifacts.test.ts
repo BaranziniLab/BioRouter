@@ -3,10 +3,12 @@ import type { Message } from '../api';
 import {
   collectArtifactsFromMessages,
   decideArtifactAutoOpen,
-  getDefaultArtifactPanelWidth,
-  getArtifactPanelExpansionContentWidth,
   shouldAutoRepairArtifact,
 } from './BaseChat';
+import {
+  getArtifactPanelExpansionContentWidth,
+  getDefaultArtifactPanelWidth,
+} from './artifacts/useArtifactPanel';
 import { ChatState } from '../types/chatState';
 
 const visibleMessage = (content: Message['content']): Message => ({

@@ -3,6 +3,10 @@ import { render, screen } from '@testing-library/react';
 import { SessionMessages } from './SessionViewComponents';
 import type { Message } from '../../api';
 
+// The transcript is no longer a display surface for artifacts — it can only hand
+// one to the panel — so `onOpenArtifact` is required all the way down the chain.
+const noopOpenArtifact = vi.fn();
+
 const userMessage: Message = {
   id: 'message-1',
   role: 'user',
@@ -31,7 +35,13 @@ describe('SessionMessages provenance (BR-71 §5)', () => {
     // machine — the highest-stakes place to pass another agent's text off as
     // the human's. §5 makes the label structural, not per-view.
     render(
-      <SessionMessages messages={[injected]} isLoading={false} error={null} onRetry={vi.fn()} />
+      <SessionMessages
+        messages={[injected]}
+        isLoading={false}
+        error={null}
+        onRetry={vi.fn()}
+        onOpenArtifact={noopOpenArtifact}
+      />
     );
 
     expect(screen.getByText(/injected by Planning chat/i)).toBeTruthy();
@@ -39,7 +49,13 @@ describe('SessionMessages provenance (BR-71 §5)', () => {
 
   it('shows no chip on an ordinary same-session message', () => {
     render(
-      <SessionMessages messages={[userMessage]} isLoading={false} error={null} onRetry={vi.fn()} />
+      <SessionMessages
+        messages={[userMessage]}
+        isLoading={false}
+        error={null}
+        onRetry={vi.fn()}
+        onOpenArtifact={noopOpenArtifact}
+      />
     );
 
     expect(screen.getByText('You')).toBeTruthy();

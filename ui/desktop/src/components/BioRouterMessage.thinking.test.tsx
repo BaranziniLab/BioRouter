@@ -4,6 +4,10 @@ import { describe, expect, it, vi } from 'vitest';
 import BioRouterMessage from './BioRouterMessage';
 import type { Message } from '../api';
 
+// The transcript is no longer a display surface for artifacts — it can only hand
+// one to the panel — so `onOpenArtifact` is required all the way down the chain.
+const noopOpenArtifact = vi.fn();
+
 vi.mock('./MarkdownContent', () => ({
   default: ({ content }: { content: string }) => <div data-testid="markdown">{content}</div>,
 }));
@@ -26,6 +30,7 @@ describe('BioRouterMessage chain-of-thought disclosure', () => {
         messages={[thinkingMessage()]}
         toolCallNotifications={new Map()}
         append={vi.fn()}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 
@@ -47,6 +52,7 @@ describe('BioRouterMessage chain-of-thought disclosure', () => {
         messages={[thinkingMessage()]}
         toolCallNotifications={new Map()}
         append={vi.fn()}
+        onOpenArtifact={noopOpenArtifact}
       />
     );
 

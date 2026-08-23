@@ -311,13 +311,6 @@ type ElectronAPI = {
   recordWorkflowHash: (workflow: Workflow) => Promise<boolean>;
   openDirectoryInExplorer: (directoryPath: string) => Promise<boolean>;
   launchApp: (app: BioRouterApp) => Promise<void>;
-  openArtifactWindow: (payload: {
-    html: string;
-    title?: string;
-    width?: number;
-    height?: number;
-    theme?: 'light' | 'dark';
-  }) => Promise<{ ok: boolean }>;
   openArtifactInBrowser: (payload: {
     html: string;
     title?: string;
@@ -666,13 +659,6 @@ const electronAPI: ElectronAPI = {
   openDirectoryInExplorer: (directoryPath: string) =>
     ipcRenderer.invoke('open-directory-in-explorer', directoryPath),
   launchApp: (app: BioRouterApp) => ipcRenderer.invoke('launch-app', app),
-  openArtifactWindow: (payload: {
-    html: string;
-    title?: string;
-    width?: number;
-    height?: number;
-    theme?: 'light' | 'dark';
-  }) => ipcRenderer.invoke('open-artifact-window', payload),
   openArtifactInBrowser: (payload: { html: string; title?: string; theme?: 'light' | 'dark' }) =>
     ipcRenderer.invoke('open-artifact-in-browser', payload),
   prepareArtifactHtml: (payload: { html: string }) =>

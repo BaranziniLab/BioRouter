@@ -207,7 +207,6 @@ fn is_unauthenticated_path(path: &str) -> bool {
     matches!(
         path,
         "/status"
-            | "/mcp-ui-proxy"
             | "/mcp-app-proxy"
             // BR-71: the desktop renderer opens this WebSocket, and a browser
             // WebSocket cannot send headers. The route carries its own two
@@ -675,9 +674,8 @@ mod tests {
         assert!(!is_unauthenticated_path("/ui/workspaceX"));
         assert!(!is_unauthenticated_path("/ui/workspace/admin"));
         assert!(!is_unauthenticated_path("/ui/workspace?secret=x"));
-        // The three that were already exempt still are.
+        // The two that were already exempt still are.
         assert!(is_unauthenticated_path("/status"));
-        assert!(is_unauthenticated_path("/mcp-ui-proxy"));
         assert!(is_unauthenticated_path("/mcp-app-proxy"));
         // …and nothing else is.
         assert!(!is_unauthenticated_path("/reply"));
