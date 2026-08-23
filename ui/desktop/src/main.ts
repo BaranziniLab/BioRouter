@@ -124,11 +124,13 @@ import {
 } from './utils/artifactSecurity';
 import { readGitArtifactTree } from './utils/artifactGit';
 import {
+  captureEmbeddedBrowser,
   controlEmbeddedBrowser,
   createEmbeddedBrowser,
   destroyEmbeddedBrowser,
   destroyEmbeddedBrowsersForWindow,
   navigateEmbeddedBrowser,
+  readEmbeddedBrowserText,
   setEmbeddedBrowserBounds,
   setEmbeddedBrowserVisible,
   type EmbeddedBrowserBounds,
@@ -2976,6 +2978,54 @@ ipcMain.handle('read-file', async (_event, filePath) => {
 });
 
 
+
+/**
+ * A PNG of a rectangle of this window, written to the temp dir.
+ *
+ * `capturePage` is a **compositor** grab, not a DOM walk, and that is the whole
+ * reason this exists: the artifact preview is a `srcdoc` iframe sandboxed
+ * without `allow-same-origin`, and the embedded browser is a separate native
+ * view — neither is reachable by html2canvas or any of its relatives, which
+ * re-render the DOM from the host's side. Verified against this exact Electron:
+ * a lime rect painted inside a sandboxed frame comes back lime.
+ *
+ * The bytes go to a file rather than across IPC because the same image has to
+ * reach the agent, and the workspace channel caps an inbound frame at 128 KiB.
+ */
+ipcMain.handle(
+  'capture-region',
+  async (
+    event,
+    payload: { x: number; y: number; width: number; height: number; label?: string }
+  ) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) return null;
+    const width = Math.round(payload?.width ?? 0);
+    const height = Math.round(payload?.height ?? 0);
+    if (width <= 0 || height <= 0) return null;
+
+    const image = await window.webContents.capturePage({
+      x: Math.round(payload.x),
+      y: Math.round(payload.y),
+      width,
+      height,
+    });
+    // A hidden-then-navigated view yields a zero-byte image and does NOT
+    // reject, so the empty case has to be checked rather than assumed.
+    if (image.isEmpty()) return null;
+
+    const dir = await ensureTempDirExists();
+    const safeLabel = (payload.label ?? 'region').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 24);
+    const filePath = path.join(
+      dir,
+      `capture-${safeLabel || 'region'}-${crypto.randomBytes(6).toString('hex')}.png`
+    );
+    await fs.writeFile(filePath, image.toPNG(), { mode: 0o600 });
+    const size = image.getSize();
+    return { path: filePath, width: size.width, height: size.height };
+  }
+);
+
 // ── Embedded browser (the artifact panel's live web view) ────────────────────
 //
 // Every handler resolves the owning window from the *event sender* rather than
@@ -3017,6 +3067,31 @@ ipcMain.handle(
   (_event, payload: { viewId: string; action: 'back' | 'forward' | 'reload' | 'stop' }) =>
     controlEmbeddedBrowser(payload.viewId, payload.action)
 );
+
+
+/**
+ * Text and pixels from the embedded browser.
+ *
+ * ⚠ These exist *separately* from `capture-region` because a `WebContentsView`
+ * is its own `WebContents`, a sibling native layer rather than part of the host
+ * page. `capturePage` on the window composites the window's own document —
+ * including sandboxed iframes, which is verified — but **not** a child view. A
+ * live page therefore has to be captured through its own contents.
+ */
+ipcMain.handle(
+  'embedded-browser:read-text',
+  async (_event, payload: { viewId: string; maxChars?: number }) =>
+    readEmbeddedBrowserText(payload.viewId, Math.max(0, payload.maxChars ?? 20_000))
+);
+
+ipcMain.handle('embedded-browser:capture', async (_event, payload: { viewId: string }) => {
+  const png = await captureEmbeddedBrowser(payload.viewId);
+  if (!png) return null;
+  const dir = await ensureTempDirExists();
+  const filePath = path.join(dir, `capture-page-${crypto.randomBytes(6).toString('hex')}.png`);
+  await fs.writeFile(filePath, png, { mode: 0o600 });
+  return { path: filePath };
+});
 
 ipcMain.handle('embedded-browser:destroy', (_event, payload: { viewId: string }) => {
   destroyEmbeddedBrowser(payload.viewId);

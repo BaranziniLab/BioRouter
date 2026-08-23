@@ -322,6 +322,13 @@ type ElectronAPI = {
   recordWorkflowHash: (workflow: Workflow) => Promise<boolean>;
   openDirectoryInExplorer: (directoryPath: string) => Promise<boolean>;
   launchApp: (app: BioRouterApp) => Promise<void>;
+  captureRegion: (payload: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    label?: string;
+  }) => Promise<{ path: string; width: number; height: number } | null>;
   embeddedBrowser: {
     create: (viewId: string, url: string) => Promise<EmbeddedBrowserState | null>;
     setBounds: (
@@ -332,6 +339,11 @@ type ElectronAPI = {
     navigate: (viewId: string, url: string) => Promise<boolean>;
     control: (viewId: string, action: 'back' | 'forward' | 'reload' | 'stop') => Promise<boolean>;
     destroy: (viewId: string) => Promise<void>;
+    readText: (
+      viewId: string,
+      maxChars: number
+    ) => Promise<{ url: string; title: string; text: string } | null>;
+    capture: (viewId: string) => Promise<{ path: string } | null>;
     onState: (
       callback: (payload: { viewId: string; state: EmbeddedBrowserState }) => void
     ) => () => void;
@@ -684,6 +696,13 @@ const electronAPI: ElectronAPI = {
   openDirectoryInExplorer: (directoryPath: string) =>
     ipcRenderer.invoke('open-directory-in-explorer', directoryPath),
   launchApp: (app: BioRouterApp) => ipcRenderer.invoke('launch-app', app),
+  captureRegion: (payload: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    label?: string;
+  }) => ipcRenderer.invoke('capture-region', payload),
   embeddedBrowser: {
     create: (viewId: string, url: string) =>
       ipcRenderer.invoke('embedded-browser:create', { viewId, url }),
@@ -696,6 +715,9 @@ const electronAPI: ElectronAPI = {
     control: (viewId: string, action: 'back' | 'forward' | 'reload' | 'stop') =>
       ipcRenderer.invoke('embedded-browser:control', { viewId, action }),
     destroy: (viewId: string) => ipcRenderer.invoke('embedded-browser:destroy', { viewId }),
+    readText: (viewId: string, maxChars: number) =>
+      ipcRenderer.invoke('embedded-browser:read-text', { viewId, maxChars }),
+    capture: (viewId: string) => ipcRenderer.invoke('embedded-browser:capture', { viewId }),
     onState: (callback: (payload: { viewId: string; state: EmbeddedBrowserState }) => void) => {
       const wrapped = (
         _event: unknown,

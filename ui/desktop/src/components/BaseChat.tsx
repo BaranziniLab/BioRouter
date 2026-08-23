@@ -19,6 +19,7 @@ import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
 import { useFileDrop } from '../hooks/useFileDrop';
 import { selectBilledTokens } from '../utils/billedTokens';
 import { imageExtensionAlternation } from '../utils/imageFormats';
+import { useArtifactPanelAccess } from './artifacts/useArtifactPanelAccess';
 import { mostCompleteBilledTokens } from '../utils/usageAccounting';
 import { Message } from '../api';
 import type { UserAttachment } from '../types/message';
@@ -1094,6 +1095,13 @@ function BaseChatContent({
     openArtifact: handleOpenArtifact,
     reset: resetArtifactPanel,
   } = artifactPanel;
+  // Publishes this panel to the agent. Chat-only: reading a saved transcript's
+  // panel would be reading a different conversation's screen.
+  useArtifactPanelAccess({
+    sessionId,
+    artifact: presentedArtifact,
+    isOpen: Boolean(presentedArtifact && artifactPanelEnabled),
+  });
   const { state: sidebarState } = useSidebar();
   const [isSidebarCompact, setIsSidebarCompact] = useState(() => {
     return typeof window !== 'undefined' && window.innerWidth < SIDEBAR_COMPACT_TITLE_WIDTH;

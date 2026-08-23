@@ -18,6 +18,10 @@ import {
 // State + layout types live in chatGroupsTypes, never in chatGroupsReducer —
 // the reducer imports them and re-exports nothing.
 import { leafGroupIds, type ChatGroupsState } from '../components/chatGroups/chatGroupsTypes';
+import {
+  describePanel,
+  type PanelDescriptor,
+} from '../components/artifacts/panelAccessRegistry';
 
 type EchoLayoutGroup = {
   group_id: string;
@@ -30,6 +34,15 @@ export type EchoFrame = {
   window_id: string;
   focused_session: string | null;
   layout: EchoLayoutGroup[];
+  /**
+   * What the focused chat's preview panel is showing, if anything.
+   *
+   * Rides the echo rather than needing a round-trip, so "what is on screen?" is
+   * free. Deliberately a *descriptor* and never content: the daemon caps an
+   * inbound frame at 128 KiB and hands stored echoes to the model verbatim, so
+   * this must stay a handful of short strings.
+   */
+  panel?: PanelDescriptor;
 };
 
 /** How long a burst of layout changes is allowed to settle before it is reported. */
@@ -60,6 +73,7 @@ export function buildEchoFrame(
     type: 'workspace_echo',
     window_id: windowId,
     focused_session: focusedSession,
+    panel: describePanel(focusedSession),
     layout: leafGroupIds(state.layout)
       .map((groupId) => state.groups[groupId])
       .filter(Boolean)
@@ -122,27 +136,45 @@ export function useWorkspaceChannel({
           return;
         }
         if (frame.type !== 'workspace') return;
-        let result: WorkspaceCommandResult;
+        // Handlers may be async — a capture cannot be anything else. The
+        // rejection path matters as much as the resolution one: a frame
+        // carrying a request_id is a tool call PARKED on this reply
+        // (WorkspaceBridge's pending map), so letting an error escape does not
+        // fail that call, it HANGS it to the daemon's timeout while this
+        // renderer carries on looking perfectly healthy. Every outcome must
+        // send something back.
+        // ⚠ The handler is invoked SYNCHRONOUSLY and only its *result* is
+        // awaited. Deferring the call itself to a microtask would be the
+        // easier shape and is wrong: `planWorkspaceCommand` is documented to
+        // be the whole answer with nothing left for a later tick, precisely
+        // because a frame arrives on a macrotask while React commits on the
+        // Scheduler's own — the same race that produced issue #38.
+        let outcome: WorkspaceCommandResult | Promise<WorkspaceCommandResult>;
         try {
-          result = applyWorkspaceCommand(frame);
+          outcome = applyWorkspaceCommand(frame);
         } catch (err) {
-          // A frame carrying a request_id is a tool call PARKED on the reply
-          // (WorkspaceBridge's pending map). Letting an exception escape here
-          // does not fail that call — it hangs it, to whatever timeout the
-          // daemon has, while this renderer carries on perfectly healthy. Turn
-          // it into a refusal the daemon can read and report.
-          result = { ok: false, detail: `renderer error: ${String(err)}` };
+          outcome = { ok: false, detail: `renderer error: ${String(err)}` };
         }
-        if (frame.request_id) {
-          ws.send(
-            JSON.stringify({
-              type: 'workspace_result',
-              request_id: frame.request_id,
-              ok: result.ok,
-              detail: result.detail ?? '',
-            })
-          );
-        }
+        void Promise.resolve(outcome)
+          .catch((err: unknown) => ({
+            ok: false,
+            detail: `renderer error: ${String(err)}`,
+          }))
+          .then((result: WorkspaceCommandResult) => {
+            if (!frame.request_id) return;
+            if (ws.readyState !== WebSocket.OPEN) return;
+            ws.send(
+              JSON.stringify({
+                type: 'workspace_result',
+                request_id: frame.request_id,
+                ok: result.ok,
+                detail: result.detail ?? '',
+                // Spread last so a handler can never overwrite the envelope's
+                // own fields and forge a different reply.
+                ...(result.data ?? {}),
+              })
+            );
+          });
       };
       ws.onclose = () => {
         // Only if this socket is still the live one. `socketRef` is shared

@@ -6,7 +6,15 @@ import {
   hasPendingWorkspaceCommands,
   resetWorkspaceCommandRegistry,
   type WorkspaceCommand,
+  type WorkspaceCommandResult,
 } from './workspaceCommandRegistry';
+
+
+// Every handler in this file is synchronous, which is what these cases are
+// about. `applyWorkspaceCommand` now returns a union because a *capture* cannot
+// be sync; narrowing here keeps each assertion testing what it always tested.
+const applySync = (cmd: Parameters<typeof applyWorkspaceCommand>[0]) =>
+  applyWorkspaceCommand(cmd) as WorkspaceCommandResult;
 
 const openTab: WorkspaceCommand = {
   type: 'workspace',
@@ -50,7 +58,7 @@ describe('workspaceCommandRegistry — the daemon→tabs hand-off', () => {
     // permanently-true peek would suppress the issue #38 redirect for good,
     // with a green suite.
     expect(hasPendingWorkspaceCommands()).toBe(false);
-    const result = applyWorkspaceCommand(openTab);
+    const result = applySync(openTab);
     expect(result.ok).toBe(false);
     expect(hasPendingWorkspaceCommands()).toBe(true);
     const drained = drainPendingWorkspaceCommands();
@@ -85,6 +93,6 @@ describe('workspaceCommandRegistry — the daemon→tabs hand-off', () => {
     const disposeA = registerWorkspaceCommands(() => ({ ok: true }));
     registerWorkspaceCommands(() => ({ ok: true, detail: 'B' }));
     disposeA();
-    expect(applyWorkspaceCommand(openTab).detail).toBe('B');
+    expect(applySync(openTab).detail).toBe('B');
   });
 });
