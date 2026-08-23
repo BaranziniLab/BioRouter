@@ -47,6 +47,11 @@ hex = "0.4.3"
 sha2 = "0.10"
 socket2 = "0.6.1"
 fs2 = "0.4.3"
+# `routes::shell` unpacks skill archives and `.brxt` extension bundles, which the
+# retired `biorouter-headless` binary used to do with the same crate at the same
+# version. `default-features = false` keeps it to the one codec a zip actually
+# produced by our tooling uses, exactly as that binary pinned it.
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 rustls = { version = "0.23", features = ["ring"] }
 
 # jemalloc only builds on Unix; the mingw windows-gnu cross target can't link it,

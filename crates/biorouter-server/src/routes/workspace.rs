@@ -136,8 +136,7 @@ async fn workspace_ws(
         host,
         params.get("secret").map(String::as_str),
         &rs.secret,
-    )
-    {
+    ) {
         tracing::warn!(
             origin = origin.unwrap_or("<none>"),
             "rejected workspace WS: {reason}"
@@ -289,9 +288,12 @@ mod tests {
         let secret = "test-secret";
         // Browser-set web origins must be loopback (CSWSH — is_local_origin,
         // routes/mod.rs:9-24).
-        assert!(check_workspace_ws_auth(Some("https://evil.com"), None, Some(secret), secret).is_err());
         assert!(
-            check_workspace_ws_auth(Some("http://127.0.0.1:5173"), None, Some(secret), secret).is_ok()
+            check_workspace_ws_auth(Some("https://evil.com"), None, Some(secret), secret).is_err()
+        );
+        assert!(
+            check_workspace_ws_auth(Some("http://127.0.0.1:5173"), None, Some(secret), secret)
+                .is_ok()
         );
         // Decision 3's Electron allowance, kept to ONE measured literal: the
         // packaged renderer loads from a file: URL (main.ts `pathToFileURL`).
@@ -377,13 +379,9 @@ mod tests {
         )
         .is_err());
         // A matching Host does not rescue an opaque origin.
-        assert!(check_workspace_ws_auth(
-            Some("null"),
-            Some("null"),
-            Some(secret),
-            secret,
-        )
-        .is_err());
+        assert!(
+            check_workspace_ws_auth(Some("null"), Some("null"), Some(secret), secret,).is_err()
+        );
         // And the secret is still required on the same-origin path, so the
         // widening cannot be mistaken for an exemption.
         assert!(check_workspace_ws_auth(

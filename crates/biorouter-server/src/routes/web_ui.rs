@@ -130,10 +130,14 @@ impl WebUi {
 /// daemon on an ephemeral one, and plainly wrong for a browser on another
 /// machine. Naming the origin explicitly removes that guess.
 fn inject_runtime_config(raw: &str, secret_key: &str) -> String {
+    // `apiBaseUrl` is deliberately ABSENT rather than empty. The renderer treats
+    // the mere presence of this global as "the daemon served me", and then uses
+    // its own origin -- which is the only correct answer, and the only one the
+    // daemon could not supply: it does not know the address the browser used.
+    // An empty string here would be falsy and fall through to the renderer's
+    // `http://127.0.0.1:3000` guess, which names a port the daemon need not be
+    // on and is meaningless from another machine.
     let config = serde_json::json!({
-        // Same origin: the daemon serves both the shell and the API, so the
-        // browser's own origin is the right base and no prefix is involved.
-        "apiBaseUrl": "",
         "headlessBaseUrl": "/headless",
         "secretKey": secret_key,
     });
@@ -149,10 +153,14 @@ fn inject_runtime_config(raw: &str, secret_key: &str) -> String {
     );
     match raw.find("</head>") {
         Some(at) => {
+            // `split_at` rather than two range indexes: this workspace's clippy
+            // configuration denies `string_slice`, and `find` already
+            // guarantees the offset is a character boundary.
+            let (before, after) = raw.split_at(at);
             let mut out = String::with_capacity(raw.len() + snippet.len());
-            out.push_str(&raw[..at]);
+            out.push_str(before);
             out.push_str(&snippet);
-            out.push_str(&raw[at..]);
+            out.push_str(after);
             out
         }
         // A shell with no </head> is not something Vite produces; serving it
@@ -271,7 +279,12 @@ mod tests {
     fn the_runtime_config_names_the_origin_rather_than_leaving_the_renderer_to_guess() {
         let out = inject_runtime_config("<html><head></head><body></body></html>", "deadbeef");
         assert!(out.contains("__BIOROUTER_HEADLESS_CONFIG__"));
-        assert!(out.contains("\"apiBaseUrl\":\"\""));
+        // Absent, not empty: an empty string is falsy in the renderer and would
+        // fall through to its hardcoded loopback guess.
+        assert!(
+            !out.contains("apiBaseUrl"),
+            "apiBaseUrl must be absent so the renderer uses its own origin"
+        );
         assert!(out.contains("\"secretKey\":\"deadbeef\""));
         // Injected inside <head>, so it runs before the module bundle that
         // reads it.

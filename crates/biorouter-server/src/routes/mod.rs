@@ -161,6 +161,7 @@ pub mod session;
 pub mod session_events;
 pub mod session_reach;
 pub mod setup;
+pub mod shell;
 pub mod status;
 pub mod tool_bridge;
 pub mod tunnel;
@@ -195,6 +196,11 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(coding_agents::routes(state.clone()))
         .merge(llamacpp::routes(state.clone()))
         .merge(memory::routes(state.clone()))
+        // The interface's own endpoints -- the filesystem browser, settings,
+        // extension installation. They stood in front of the daemon with no
+        // authentication at all; inside `configure` they take `check_token`
+        // like everything else. See `routes::shell`.
+        .merge(shell::routes(state.clone()))
         // No secret-key gate: the path carries a single-turn capability nonce, and
         // Codex sends no Authorization header at all, so a header scheme would
         // authenticate one client and not the other. See the module header.

@@ -7217,7 +7217,12 @@ mod tests {
 
         // Correct token + a loopback origin is accepted.
         assert_eq!(
-            check_ws_auth(Some("http://localhost:8080"), None, Some(expected), expected),
+            check_ws_auth(
+                Some("http://localhost:8080"),
+                None,
+                Some(expected),
+                expected
+            ),
             Ok(())
         );
 
