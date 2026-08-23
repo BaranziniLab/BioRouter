@@ -1624,9 +1624,24 @@ mod tests {
         // Relative paths resolve against the working directory and are folded
         // the same way.
         assert_eq!(guard.resolve("../../../etc/passwd"), Err(Refusal::Outside));
-        // `..` above the filesystem root is malformed rather than merely
-        // outside.
+        // Climbing above the filesystem root is refused everywhere, but it is
+        // not the SAME refusal everywhere, and the difference is real rather
+        // than incidental.
+        //
+        // On Unix `/` is the top of the single tree, so `/../../..` has nowhere
+        // left to go and the path is malformed. On Windows a leading `\` means
+        // "root of the current drive" and `..` there is absorbed rather than
+        // running out of tree, so the path is well-formed and simply lands
+        // outside every root. Asserting `Malformed` on both is asserting a
+        // Unix path model on Windows -- which is what CI caught.
+        //
+        // Both arms are asserted exactly, not collapsed to `is_err()`: a guard
+        // that refused every path would satisfy a weaker check and satisfy
+        // nothing this test exists for.
+        #[cfg(unix)]
         assert_eq!(guard.resolve("/../../.."), Err(Refusal::Malformed));
+        #[cfg(windows)]
+        assert_eq!(guard.resolve("/../../.."), Err(Refusal::Outside));
     }
 
     /// Traversal that stays inside a root is fine — `..` is not banned, it is
