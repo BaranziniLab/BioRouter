@@ -198,9 +198,7 @@ async fn index(
                 .header(header::LOCATION, "/")
                 .header(
                     header::SET_COOKIE,
-                    format!(
-                        "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict"
-                    ),
+                    format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict"),
                 )
                 .body(Body::empty())
                 .expect("valid redirect");
@@ -241,9 +239,7 @@ fn unauthorized() -> Response<Body> {
 /// Call this *after* `check_token` has been applied, so the shell and the
 /// static bundle sit outside it. See the module documentation.
 pub fn attach(app: Router, web_dir: PathBuf, ui: WebUi) -> Router {
-    let shell = Router::new()
-        .route("/", get(index))
-        .with_state(ui.clone());
+    let shell = Router::new().route("/", get(index)).with_state(ui.clone());
 
     // Real files -- the hashed `/assets/*` and the icons -- come off disk.
     // Directory auto-indexing is off so that `/` falls through to the gated
@@ -297,7 +293,10 @@ mod tests {
     fn a_configured_token_is_required_and_compared_whole() {
         let ui = ui_with(Some("0123456789abcdef"));
         assert!(ui.token_matches(Some("0123456789abcdef")));
-        assert!(!ui.token_matches(Some("0123456789abcde")), "prefix must not pass");
+        assert!(
+            !ui.token_matches(Some("0123456789abcde")),
+            "prefix must not pass"
+        );
         assert!(!ui.token_matches(Some("")), "empty must not pass");
         assert!(!ui.token_matches(None), "absent must not pass");
     }
@@ -370,7 +369,10 @@ mod tests {
         // cross-site request -- the reason it is safe for the cookie to exist
         // at all.
         assert!(cookie.contains("HttpOnly"), "cookie must be HttpOnly");
-        assert!(cookie.contains("SameSite=Strict"), "cookie must be SameSite=Strict");
+        assert!(
+            cookie.contains("SameSite=Strict"),
+            "cookie must be SameSite=Strict"
+        );
     }
 
     /// Would pass trivially against an implementation with no gate at all, so

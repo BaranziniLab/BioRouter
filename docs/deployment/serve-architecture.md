@@ -74,6 +74,27 @@ When it is set, the daemon mounts two things:
 The shell is served at the root and nowhere else (SD-4), so the bundle's baked-in
 root-absolute asset URLs are correct as built and nothing rewrites them.
 
+### The interface's routes never reach the daemon
+
+The application uses a **hash router** (`ui/desktop/src/App.tsx`, `ImmediateHashRouter`).
+Every one of its routes — `settings`, `sessions`, `knowledge`, `apps` and the rest — lives in
+the URL fragment, and a fragment is never sent to a server. Whatever the user navigates to, the
+daemon sees a request for `/`.
+
+Two consequences worth knowing before changing anything here:
+
+- **The application's route space and the API's URL space cannot collide.** They would
+  otherwise: `/sessions/{session_id}` is a real API route, and a browser-history router asking
+  for that path would be answered by the API rather than by the shell — a `401` on what looks
+  like an ordinary page load.
+- **The catch-all fallback is defensive, not load-bearing.** It exists so an unexpected path
+  returns the application instead of a bare `404`, and it is gated exactly as `/` is so it
+  cannot become a way to read the shell without the token.
+
+> **Warning.** Switching the interface to a browser-history router would make the collision
+> above real, and it would surface as a handful of pages that 401 while the rest work. If that
+> change is ever made, the API needs a path prefix of its own first.
+
 ### The one thing injected into the shell
 
 The renderer already knows how to run outside Electron. `ui/desktop/src/renderer.tsx` reads a
