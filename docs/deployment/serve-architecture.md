@@ -3,8 +3,8 @@
 > **What this is.** The architecture of the serving path: what `biorouter serve` starts, how the
 > daemon serves the interface, how a browser is authenticated, and which pieces of the old
 > reverse-proxying front door were deleted rather than moved.
-> **Status:** Current — implementation in progress. Sections marked **Planned** describe the
-> intended shape and are not yet in the tree; everything else describes code that is.
+> **Status:** Current. Describes shipped code; every mechanism below is in the tree and
+> exercised by the `serve` job in `.github/workflows/rust.yml`.
 > **Audience:** developers working on `biorouter-server`, `biorouter-cli`, or the renderer.
 
 Biorouter's interface is a single-page application. The desktop application loads it inside
@@ -55,7 +55,7 @@ filesystem browser, settings, extension installation, skill extraction — were 
 by a router carrying exactly one layer, `TraceLayer`. Moved into the daemon they sit behind the
 same middleware as everything else.
 
-## What the daemon does with a web directory — **Planned**
+## What the daemon does with a web directory
 
 `Settings` gains a third field beside `host` and `port`. It is a flat structure read from the
 environment with a `BIOROUTER_` prefix, so the new setting is `BIOROUTER_SERVE_UI`, pointing at
@@ -114,7 +114,7 @@ handing over the document. Everything downstream — the ninety-six-method shim 
 > the browser shim. Interface features reach the browser automatically unless they depend on an
 > Electron main-process capability.
 
-## Authenticating a browser — **Planned**
+## Authenticating a browser
 
 A browser's first request cannot carry a header, so the secret-key scheme every other client uses
 cannot gate the initial document. The exchange is therefore:
@@ -136,7 +136,7 @@ have. Keeping the cookie's job to one request means `check_token` is unchanged.
 > machine for a minute, and behind network address translation it would lock out their
 > colleagues too.
 
-## Reaching it from another machine — **Planned**
+## Reaching it from another machine
 
 The default bind is loopback (SD-2). A non-loopback bind is requested explicitly and requires a
 token, and in that configuration the command prints a URL built from a reachable address rather
@@ -152,9 +152,14 @@ rather than relaxed:
 
 Same-origin requests are unaffected by the first — a browser does not apply cross-origin rules
 to a page talking to its own origin — but the WebSocket origin gates are explicit checks in
-handler code and must learn the daemon's own serving origin. The correct widening is *the origin
-this daemon is serving on*, computed once at bind time. It is not "any origin", and it is not a
-wildcard.
+handler code, so both were taught the daemon's own serving origin.
+
+The rule is `origin_matches_host`: the request's `Origin` must equal its own `Host`. That is a
+same-origin test rather than a widening — the browser sets both headers and neither is reachable
+from script, so a page on any other origin cannot make them agree. It needs no configuration and
+no wildcard, and it holds for every address the interface is reached at, including ones the
+daemon could not have enumerated because it bound `0.0.0.0`. Both are compared whole, so a `Host`
+of `evil.com.attacker.net` does not admit an `Origin` of `http://evil.com`.
 
 ## What is deleted
 
@@ -170,7 +175,7 @@ successor are:
 What moves rather than dies is the sixteen `/headless/*` handlers, which become a route module in
 the daemon, and the resolution of where the web directory lives.
 
-## Where the bundle comes from — **Planned**
+## Where the bundle comes from
 
 The bundle the daemon serves is built by Vite with the default root base. That build already
 exists — `scripts/build-headless-linux.sh` runs it inside a container — and becomes an ordinary
