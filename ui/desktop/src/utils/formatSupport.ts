@@ -1,4 +1,3 @@
-import { DECODABLE_IMAGE_EXTENSIONS } from './imageFormats';
 
 /**
  * Why the panel cannot show a particular file.
@@ -88,12 +87,18 @@ const DOCUMENT_FORMAT_NOTES: Readonly<Record<string, FormatSupportNote>> = {
   },
 };
 
-/** Human-facing names for the image formats that need a decoder. */
+/**
+ * Image formats the panel still cannot show, and why.
+ *
+ * TIFF is deliberately absent: it is decoded in the renderer now, so a TIFF
+ * that fails is a *broken file*, not an unsupported format, and the image
+ * preview says so itself. HEIC remains here because its decoder is the
+ * operating system's — available on macOS, and nowhere else without taking on
+ * a licence and patent decision that is not a code change.
+ */
 const IMAGE_FORMAT_LABELS: Readonly<Record<string, string>> = {
   heic: 'HEIC image',
   heif: 'HEIF image',
-  tif: 'TIFF image',
-  tiff: 'TIFF image',
 };
 
 /**
@@ -109,10 +114,12 @@ export function describeUnsupportedFormat(
   const document = DOCUMENT_FORMAT_NOTES[ext];
   if (document) return document;
 
-  if ((DECODABLE_IMAGE_EXTENSIONS as readonly string[]).includes(ext)) {
+  const imageLabel = IMAGE_FORMAT_LABELS[ext];
+  if (imageLabel) {
     return {
-      label: IMAGE_FORMAT_LABELS[ext] ?? `${ext.toUpperCase()} image`,
-      reason: 'Chromium has no decoder for this format, so it cannot be shown directly.',
+      label: imageLabel,
+      reason:
+        'No browser can decode this format, and this system has no converter for it either.',
       suggestion: 'Convert it to PNG or JPEG to preview it here.',
     };
   }

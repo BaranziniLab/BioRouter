@@ -135,6 +135,7 @@ import {
   setEmbeddedBrowserVisible,
   type EmbeddedBrowserBounds,
 } from './utils/embeddedBrowser';
+import { heicToPng } from './utils/heicConvert';
 import { IMAGE_BLOB_URL_THRESHOLD_BYTES, IMAGE_MIME_TYPES } from './utils/imageFormats';
 import { recordExtensionProvenance } from './utils/extensionProvenance';
 import { fetchRegistryWithLastGood } from './utils/registryCache';
@@ -3165,10 +3166,34 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
     }
 
     if (mimeType.startsWith('image/')) {
+      // HEIC has no decoder in any browser, so it is converted here through the
+      // OS's own — the one route that carries neither a copyleft obligation nor
+      // HEVC patent exposure. Where that is unavailable the preview falls
+      // through to a card that names the format, which is more useful than a
+      // broken image.
+      if (mimeType === 'image/heic' || mimeType === 'image/heif') {
+        const png = await heicToPng(resolvedPath);
+        if (png) {
+          return {
+            kind: 'image',
+            title,
+            path: resolvedPath,
+            mimeType: 'image/png',
+            bytes: Uint8Array.from(png).buffer,
+            size: stats.size,
+            found: true,
+          };
+        }
+        return { kind: 'binary', title, path: resolvedPath, mimeType, size: stats.size, found: true };
+      }
+
       // Small images travel as a data URL because a `blob:` needs revoking and
       // that bookkeeping is not worth it for an icon. Large ones travel as raw
       // bytes: base64 would cost ~4/3 of the file as a JS string, twice.
-      const asBytes = stats.size > IMAGE_BLOB_URL_THRESHOLD_BYTES;
+      // TIFF always takes the bytes path — the renderer has to decode it before
+      // anything can be shown, so a data URL would be pure waste.
+      const asBytes =
+        stats.size > IMAGE_BLOB_URL_THRESHOLD_BYTES || mimeType === 'image/tiff';
       return {
         kind: 'image',
         title,

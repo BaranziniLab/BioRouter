@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DECODABLE_IMAGE_EXTENSIONS } from './imageFormats';
 import { DOCUMENT_FIDELITY_NOTES, describeUnsupportedFormat } from './formatSupport';
 
 /**
@@ -43,15 +42,18 @@ describe('describeUnsupportedFormat', () => {
     }
   );
 
-  it.each([...DECODABLE_IMAGE_EXTENSIONS])(
-    'names .%s as an image Chromium cannot decode',
-    (extension) => {
-      const note = describeUnsupportedFormat(extension)!;
-      expect(note.label).toMatch(/image$/);
-      expect(note.reason).toContain('no decoder');
-      expect(note.suggestion).toContain('PNG');
-    }
-  );
+  it.each(['heic', 'heif'])('names .%s as an image nothing here can decode', (extension) => {
+    const note = describeUnsupportedFormat(extension)!;
+    expect(note.label).toMatch(/image$/);
+    expect(note.suggestion).toContain('PNG');
+  });
+
+  // TIFF is decoded in the renderer now, so a TIFF that fails is a broken file
+  // rather than an unsupported format — and claiming otherwise would send the
+  // user off to convert a file that would have worked.
+  it.each(['tif', 'tiff'])('no longer refuses .%s, because it decodes', (extension) => {
+    expect(describeUnsupportedFormat(extension)).toBeNull();
+  });
 
   it('is case-insensitive, because file names are not', () => {
     expect(describeUnsupportedFormat('DOC')?.label).toBe('Legacy Word document');

@@ -16,7 +16,7 @@ import { cn } from '../../utils';
 import { injectArtifactBrowserCsp } from '../../utils/artifactSecurity';
 import { sendArtifactAnnotation } from '../../utils/annotationChannel';
 import { describeUnsupportedFormat } from '../../utils/formatSupport';
-import { isImageExtension, isNativelyDecodableImage } from '../../utils/imageFormats';
+import { isImageExtension } from '../../utils/imageFormats';
 import {
   isTabCycleEvent,
   tabCycleOffset,
@@ -1533,10 +1533,56 @@ function ImageFilePreview({
 
   useEffect(() => {
     setFailed(false);
-    const { src: nextSrc, revoke } = imageSourceForPreview(preview);
-    setSrc(nextSrc);
+    let revoke: (() => void) | null = null;
+    let cancelled = false;
+
+    // TIFF has no decoder in any browser, so it is decoded here before display.
+    // Done in the renderer, lazily, exactly like the four document renderers
+    // beside it — the alternative was a daemon round-trip, which would give
+    // image preview a failure mode (daemon down, no picture) that it does not
+    // have today.
+    if (preview.mimeType === 'image/tiff' && preview.bytes) {
+      const bytes = preview.bytes;
+      void import('utif2')
+        .then(async (UTIF) => {
+          if (cancelled) return;
+          const pages = UTIF.decode(bytes);
+          if (!pages.length) throw new Error('no pages');
+          // The first page only. Multi-page TIFF is real in microscopy and
+          // deserves a page control; showing page 1 is the honest first step,
+          // not a claim to have handled the stack.
+          UTIF.decodeImage(bytes, pages[0]);
+          const rgba = UTIF.toRGBA8(pages[0]);
+          const canvas = document.createElement('canvas');
+          canvas.width = pages[0].width;
+          canvas.height = pages[0].height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) throw new Error('no 2d context');
+          ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), canvas.width, canvas.height), 0, 0);
+          const blob = await new Promise<Blob | null>((resolve) =>
+            canvas.toBlob(resolve, 'image/png')
+          );
+          if (!blob || cancelled) return;
+          const url = URL.createObjectURL(blob);
+          revoke = () => URL.revokeObjectURL(url);
+          setSrc(url);
+        })
+        .catch(() => {
+          if (!cancelled) setFailed(true);
+        });
+      return () => {
+        cancelled = true;
+        revoke?.();
+        setSrc('');
+      };
+    }
+
+    const source = imageSourceForPreview(preview);
+    revoke = source.revoke;
+    setSrc(source.src);
     return () => {
-      revoke();
+      cancelled = true;
+      revoke?.();
       setSrc('');
     };
   }, [preview]);
@@ -1544,11 +1590,10 @@ function ImageFilePreview({
   if (failed) {
     return (
       <ArtifactErrorState
-        message={
-          isNativelyDecodableImage(extensionFromPath(preview.path))
-            ? 'This image could not be decoded. It may be truncated or corrupt.'
-            : `This is a ${(extensionFromPath(preview.path) || 'image').toUpperCase()} image, which this preview cannot decode yet.`
-        }
+        // By the time this renders the format was one we claim to handle —
+        // natively, or through the TIFF decoder, or through the OS. So the
+        // honest reading is a bad file, not a missing feature.
+        message="This image could not be decoded. It may be truncated or corrupt."
         path={preview.path}
       />
     );
