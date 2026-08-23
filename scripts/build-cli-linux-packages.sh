@@ -6,6 +6,12 @@
 # `scripts/release.sh backends <ver>`):
 #   target/x86_64-unknown-linux-gnu/release/{biorouter,biorouterd}
 #
+# The browser interface bundle is built HERE, on the host, because nothing else
+# in the CLI-only path runs npm. That makes this script share the GUI packaging
+# phases' ordering constraint: a host-native ui/desktop/node_modules is
+# required, so run it BEFORE `release.sh linux`/`windows` (which leave a
+# Linux-flavoured tree behind) or re-run `npm ci` in between.
+#
 # Usage: scripts/build-cli-linux-packages.sh <version>
 # Output:
 #   dist/cli/biorouter-cli_<version>_amd64.deb
@@ -21,6 +27,8 @@ cd "$ROOT"
 
 VERSION="${1:?usage: build-cli-linux-packages.sh <version>}"
 REL="target/x86_64-unknown-linux-gnu/release"
+DESK="ui/desktop"
+WEB="$DESK/src/web"
 OUT="dist/cli"
 DEB="$OUT/biorouter-cli_${VERSION}_amd64.deb"
 RPM="$OUT/biorouter-cli-${VERSION}-1.x86_64.rpm"
@@ -36,11 +44,21 @@ BR_HINT_LABEL="cli-pkg"
 br_require_command docker "The deb and rpm are built inside a container."
 docker info >/dev/null 2>&1 || br_dependency_die docker "docker daemon is not running" \
   "The docker CLI is installed but cannot reach a daemon. Start Docker Desktop (or dockerd) and retry."
+br_require_command npm "The browser interface bundle is built with npm run build:web."
 [ -f "$REL/biorouter" ]  || die "missing $REL/biorouter — run: scripts/release.sh backends $VERSION"
 [ -f "$REL/biorouterd" ] || die "missing $REL/biorouterd — run: scripts/release.sh backends $VERSION"
 
 mkdir -p "$OUT"
 rm -f "$DEB" "$RPM"
+
+# ── 0. Build the browser interface bundle (shipped at /usr/share/biorouter/web)
+# `biorouterd` serves this to a browser when `biorouter serve` points it there,
+# so a CLI package without it can run a terminal session and nothing else.
+# Always rebuilt: a stale src/web from an older checkout is as wrong as none.
+log "building browser interface bundle ($WEB)"
+( cd "$DESK" && npm run build:web )
+[ -s "$WEB/index.html" ] || die "npm run build:web produced no $WEB/index.html"
+[ -d "$WEB/assets" ] || die "npm run build:web produced no $WEB/assets — the bundle would serve a blank page"
 
 # ── 1. Build deb + rpm with nfpm (no root needed) ─────────────────────────────
 log "building deb + rpm with nfpm ($VERSION)"
@@ -63,6 +81,8 @@ docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg debian:bookworm-slim
   biorouter --version
   biorouterd --version
   biorouter doctor --no-update --format json >/dev/null
+  test -s /usr/share/biorouter/web/index.html
+  test -n "$(ls -A /usr/share/biorouter/web/assets)"
   echo "DEB_SMOKE_OK"
 ' | grep -q DEB_SMOKE_OK || die "deb smoke test FAILED"
 log "deb smoke test passed ✓"
@@ -75,6 +95,8 @@ docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg rockylinux:9 bash -e
   biorouter --version
   biorouterd --version
   biorouter doctor --no-update --format json >/dev/null
+  test -s /usr/share/biorouter/web/index.html
+  test -n "$(ls -A /usr/share/biorouter/web/assets)"
   echo "RPM_SMOKE_OK"
 ' | grep -q RPM_SMOKE_OK || die "rpm smoke test FAILED"
 log "rpm smoke test passed ✓"

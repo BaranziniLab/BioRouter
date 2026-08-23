@@ -351,6 +351,26 @@ generate-openapi:
 lint-ui:
     cd ui/desktop && npm run lint:check
 
+# Build the browser interface bundle biorouterd serves (BIOROUTER_SERVE_UI).
+# Writes a ROOT-BASE build of the renderer to ui/desktop/src/web/ (~8.8 MB),
+# which every packaging path ships beside the binaries — see extraResource in
+# ui/desktop/forge.config.ts, and /usr/share/biorouter/web in the CLI-only
+# packages. Output is gitignored.
+#
+# You do NOT need to run this before packaging: prepare-platform-binaries.js
+# (macOS + Windows), ui/desktop/scripts/build-linux-deb.sh (Linux GUI) and
+# scripts/build-cli-linux-packages.sh (CLI deb/rpm) each build it themselves,
+# so a package can never ship a stale or absent bundle. This target is for
+# pointing a locally built biorouterd at a fresh bundle by hand:
+#   just build-web && BIOROUTER_SERVE_UI=ui/desktop/src/web cargo run -p biorouter-server
+#
+# Deliberately NOT part of `check-everything`: it is a ~15 s bundler run that
+# checks nothing. `npm run lint:check` (which check-everything already runs)
+# type-checks and lints the same sources, so a build here could only fail where
+# tsc and eslint both passed — and every path that needs the artifact builds it.
+build-web:
+    cd ui/desktop && npm run build:web
+
 # make GUI with latest binary
 make-ui:
     @just release-binary

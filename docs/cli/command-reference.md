@@ -726,7 +726,44 @@ biorouter projects
 
 ## Interface
 
+### serve
+
+Run Biorouter and reach it from a browser. `serve` starts the `biorouterd` daemon, points it at the built interface, and prints the URL to open — the same interface the desktop app shows, served on one origin with no proxy in the path.
+
+**Alias**: `headless` — the name the retired standalone binary was known by, kept so older instructions still work.
+
+**Options:**
+
+- **`--host <HOST>`**: Address to bind. Anything reachable from another machine requires a token. Default is `127.0.0.1`
+- **`-p, --port <PORT>`**: Port to listen on. Default is `8765` — deliberately not `3000`, which is `biorouterd`'s own default
+- **`--token <TOKEN>`**: Use this access token instead of generating a fresh one
+- **`--no-token`**: Serve without an access token. Refused for a non-loopback bind, and cannot be combined with `--token`
+- **`--web-dir <DIR>`**: Directory holding the built interface. Located automatically when unset
+- **`--open`**: Open a browser once the server is ready
+
+**Usage:**
+
+```bash
+# Serve on this machine only, and open a browser
+biorouter serve --open
+
+# Serve on a different port
+biorouter serve --port 9000
+
+# Reach it from another machine on the network — a token is mandatory here
+biorouter serve --host 0.0.0.0
+
+# Reuse one address across restarts, for a bookmark or a service unit
+biorouter serve --host 0.0.0.0 --token "$(openssl rand -hex 32)"
+```
+
+The printed URL carries a one-off access token as `?t=<token>`, minted per launch and shown once. Opening it exchanges the token for a session cookie and redirects, so the token leaves the address bar. Use `Ctrl+C` to stop the server.
+
+> **Note.** A browser session cannot change its model or provider, deliberately — run `biorouter configure` to choose them **before** starting `serve`. [Reaching Biorouter from a browser](../deployment/browser-access.md) explains why, and covers the access token, remote access and troubleshooting.
+
 ### web
+
+> **Deprecated.** Use [`serve`](#serve) instead. `web` serves a minimal standalone chat page rather than the Biorouter interface, and its default port collides with `biorouterd`'s. It is kept for now and unchanged; new deployments should not use it.
 
 Start a new session in biorouter Web, a lightweight web-based interface launched via the CLI that mirrors the desktop app's chat experience.
 
@@ -909,4 +946,5 @@ Use the `"GWAS summary"` or `"enrichment"` search term to find and rerun it.
 - [Environment variables](../configuration/environment-variables.md) — per-invocation overrides for the same settings, including `BIOROUTER_CLI_THEME`.
 - [Managing sessions](../getting-started/managing-sessions.md) — how sessions are stored, resumed, and pruned behind the `session` subcommands.
 - [Workspace control](../agent-loop/workspace-control.md) — the daemon routes behind `session watch`, `send`, `attach`, and `cancel`, and the agent-side tools that do the same things.
+- [Reaching Biorouter from a browser](../deployment/browser-access.md) — the full guide to `serve`: the access token, reaching it from another machine, and what a browser session cannot do.
 - [Creating and sharing workflows](../workflows/creating-and-sharing-workflows.md) — how to author the workflow files that `run --workflow`, `workflow`, and `schedule` consume.

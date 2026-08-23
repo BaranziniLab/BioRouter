@@ -1,196 +1,271 @@
 # Headless Linux deployment
 
-> **What this is.** The end-to-end procedure for building the Linux headless
-> artifact on a Mac, verifying it carries no credentials, deploying it to an
-> Ubuntu host, migrating secrets, and smoke-testing the browser UI that host
-> serves.
-> **Status:** Current — last verified at the 1.88.2 release; every script named
-> below exists in `scripts/`.
-> **Audience:** developers and operators deploying Biorouter to a shared Linux
-> host, plus coding agents asked to build the headless artifact.
+> **What this is.** How to run Biorouter as a long-lived service on a Linux host that has no
+> graphical desktop: which package to install, how credentials get onto the host, the systemd unit
+> that keeps `biorouter serve` running, and how much of the network should be able to reach it.
+> **Status:** Current.
+> **Audience:** operators deploying Biorouter to a shared Linux host, and agents asked to set one
+> up.
 
-Headless mode exists for the case where you want Biorouter's compute to run on a
-server rather than on a laptop: `biorouterd` executes the agent loop on the Ubuntu
-host, and users reach it through an ordinary browser instead of the Electron
-desktop app. The build happens on macOS, the artifact is a portable tarball, and
-the deployment target is **Ubuntu 22.04 or 24.04 on x86_64** — the Ubuntu setup
-script verifies the OS version and refuses anything else.
+Run Biorouter this way when the compute belongs on a server rather than on a laptop: `biorouterd`
+executes the agent loop on the host, and users reach the ordinary Biorouter interface through a
+browser. Two Biorouter binaries do the work, `biorouter` and `biorouterd`, and both come from one
+package.
 
-Three binaries ship in the artifact:
+> **Note.** *Headless* here means **a host with no graphical desktop**. It is not a separate
+> product or a separate binary — the retired `biorouter-headless` executable and its
+> `biorouter-headless-linux-x64.tar.gz` tarball are gone ([decision SD-6](serve-decisions.md)), and
+> the browser interface is served by the same `biorouterd` the desktop application runs. The word
+> also means non-interactive prompt mode elsewhere in Biorouter; neither sense is meant here.
 
-| Binary | Role |
+Read [Reaching Biorouter from a browser](browser-access.md) first. It covers the command, the
+access token and what a browser session can do; this page covers only what is different about a
+server.
+
+---
+
+## Install the command-line packages
+
+The **CLI-only** Linux packages install `biorouter` and `biorouterd` with no desktop application,
+and they ship the browser interface bundle the daemon serves. Download the current version from the
+[releases page](https://github.com/BaranziniLab/biorouter/releases):
+
+```bash
+# Debian / Ubuntu
+sudo apt install ./biorouter-cli_<version>_amd64.deb
+
+# Fedora / RHEL / Rocky
+sudo dnf install ./biorouter-cli-<version>-1.x86_64.rpm
+```
+
+They lay down three things:
+
+| Path | What it is |
 |---|---|
-| `biorouter` | The command-line interface (CLI). |
-| `biorouterd` | The daemon that does the agent compute. |
-| `biorouter-headless` | The front door: serves the static browser UI, proxies `/api/*` to `biorouterd`, exposes `/headless/*`, and supervises the `biorouterd` process. |
+| `/usr/bin/biorouter` | The command-line interface, including `biorouter serve`. |
+| `/usr/bin/biorouterd` | The daemon that runs the agent loop and serves the interface. |
+| `/usr/share/biorouter/web` | The built browser interface. `biorouter serve` finds it here with no configuration. |
 
-## Build the artifact in one command
-
-If you have been asked simply to "build the app" or "compile the headless Debian
-binary" — this is the whole job. Run it from the repository root:
+Check the install before going further:
 
 ```bash
-source bin/activate-hermit
-scripts/package-headless-linux.sh
+biorouter --version
+biorouter doctor
 ```
 
-That command builds the Linux x64 binaries and browser UI, verifies the artifact
-does not contain local profiles or credential material, and writes:
+`doctor` reports optional prerequisites — `git`, `uv`, `node` — that some extensions need. The
+packages themselves depend only on `libxcb` and `zlib`.
 
-- `dist/headless-linux-x64/`
-- `dist/biorouter-headless-linux-x64.tar.gz`
+> **Note.** The Linux binaries are built against a glibc 2.31 baseline, which covers Debian 11,
+> Ubuntu 22.04 and Rocky 9 and anything newer. Do not install the **desktop** `biorouter_*.deb` /
+> `Biorouter-*.rpm` on a server: it carries an Electron application the host cannot display.
 
-Use the tarball as the portable Debian/Ubuntu release artifact. Use the
-directory for deployment and inspection.
+## Configure the provider before anything else
 
-The remaining sections unpack that one command into the individual operator
-steps, and cover deployment, secrets, and verification on the host.
-
-## Build the artifact without packaging
+**A browser session cannot change its model or provider** — the picker is inert, deliberately, and
+the reasoning is [decision SD-1](serve-decisions.md) and
+[Reaching Biorouter from a browser](browser-access.md#the-model-is-fixed-before-you-start). The
+provider is chosen once, on the host, and holds for every session that daemon runs.
 
 ```bash
-source bin/activate-hermit
-scripts/build-headless-linux.sh
+biorouter configure
 ```
 
-The artifact is written to `dist/headless-linux-x64/`:
+Run it as the user Biorouter will run as, because it writes into that user's configuration
+directory. If you are setting this up as a service, create the service account first — see
+[Run it as a service](#run-it-as-a-service) — and configure as that account.
 
-- `bin/biorouter`
-- `bin/biorouterd`
-- `bin/biorouter-headless`
-- `web/`
-- `manifest.txt`
+### Credentials on a host with no desktop keyring
 
-The build intentionally packages app deliverables only. It copies the three
-Linux binaries from the Docker build output and the static browser bundle from
-Vite.
-
-> **Warning.** A release artifact must stay profile-free. The build must never
-> copy any of the following into `dist/headless-linux-x64/`:
->
-> - `~/.config/biorouter/`
-> - `~/.aws/`
-> - `~/.ssh/`
-> - `~/Library/Application Support/`
-> - `secrets.yaml`, `config.yaml`, or `sessions.db`
-> - local `.env` files, OpenRouter keys, AWS keys, SSH keys, or downloaded
->   access key CSV files
->
-> Keep credential setup as a runtime concern. A deployment can point Biorouter
-> at a server-side config directory, but release artifacts must stay
-> profile-free.
-
-## Verify and package
-
-Run the artifact verifier before sharing or deploying a release build:
+Biorouter stores secrets in the operating system's credential store. A Linux host with no desktop
+session has no Secret Service to unlock, so it falls back to a file-backed store at
+`~/.config/biorouter/secrets.yaml`. Set it explicitly for a service, so the fallback is a decision
+rather than an accident:
 
 ```bash
-scripts/verify-headless-artifact.sh --tar
+BIOROUTER_DISABLE_KEYRING=true
 ```
 
-The verifier checks:
+That file holds **plaintext** credentials. Keep it readable only by the service user
+(`chmod 600`), keep it off shared storage and out of backups that others can read, and treat any
+host that has it as holding the keys it contains. [Secret storage](../security/secret-storage.md)
+covers the mechanism in full.
 
-- the expected artifact shape: `bin/`, `web/`, and `manifest.txt`
-- Linux x86_64 ELF binaries for `biorouter`, `biorouterd`, and
-  `biorouter-headless`
-- no packaged profile or credential-store file names
-- no obvious local paths or key-like material in artifact contents
+To move credentials from a machine you already use, the supported path is to run
+`biorouter configure` on the host and enter them there. If you copy `secrets.yaml` from another
+machine instead, copy only that file — not `config.yaml`, and not the session store — and fix its
+permissions afterwards.
 
-It intentionally prints only file names for failures, not matched secret text.
-If it fails, inspect the named files locally, remove the leak, rebuild, and rerun
-the verifier.
+> **Warning.** Never bake credentials into an image, a package or a release artifact. Credential
+> setup is a runtime step on the host.
 
-## Deploy to Ubuntu
+## Start it by hand first
+
+Prove the deployment works interactively before wrapping it in a service:
 
 ```bash
-scripts/deploy-headless-linux.sh ubuntu@HOST /path/to/key.pem
+biorouter serve --host 0.0.0.0
 ```
 
-The deploy script syncs `dist/headless-linux-x64/`, runs
-`scripts/setup-headless-ubuntu.sh` on the host, and prints the browser URL.
+`serve` prints the address to open, including the `?t=` access token, plus a second address built
+from a routable address of the host. A token is mandatory for any non-loopback bind — `--no-token`
+is refused there rather than warned about. `Ctrl-C` stops it.
 
-The Ubuntu setup script:
+If it cannot find the interface, pass `--web-dir /usr/share/biorouter/web` explicitly; the error
+names every location it tried.
 
-- verifies Ubuntu 22.04 or 24.04
-- installs Xvfb, Linux automation helpers, `jq`, `rsync`, and `uv`
-- installs the artifact under `/opt/biorouter-headless`
-- configures `biorouter-headless.service`, which serves the UI, proxies `/api/*`,
-  exposes `/headless/*`, and supervises `biorouterd`
-- configures `biorouter-xvfb.service`
-- installs `/usr/local/bin/biorouter-headless-url`
-- rewrites copied macOS extension paths to Ubuntu paths
-- rebuilds copied extension virtualenvs natively on Ubuntu
+## Run it as a service
 
-## Sync secrets from macOS
+Give the service its own unprivileged account, so a browser session's shell commands run as that
+account and not as root or as a person:
 
 ```bash
-scripts/sync-headless-secrets-macos.sh ubuntu@HOST /path/to/key.pem
+sudo useradd --create-home --shell /usr/sbin/nologin biorouter
 ```
 
-This is a separate runtime migration helper, not a packaging step. It reads the
-Biorouter macOS Keychain item and sends it over SSH into the Ubuntu file-backed
-secret store at `~/.config/biorouter/secrets.yaml`. Secret values are not
-printed. The service uses `BIOROUTER_DISABLE_KEYRING=true` on headless Linux.
+Then configure as that account — `sudo -u biorouter -H biorouter configure` — so the provider and
+credentials land in the home directory the service reads.
 
-> **Warning.** Do not run this script when creating a release artifact for
-> users. A user who starts headless Biorouter without credentials should be
-> prompted by the app to configure providers in the browser UI.
-
-## Get the browser URL
-
-On the Ubuntu host:
+For a service, the token must be stable across restarts — nobody is watching the terminal for a new
+one. Put it in an environment file rather than on the command line, where `ps` would show it to
+every user on the host:
 
 ```bash
-biorouter-headless-url
+sudo install -d -m 750 /etc/biorouter
+sudo tee /etc/biorouter/env >/dev/null <<'EOF'
+BIOROUTER_DISABLE_KEYRING=true
+BIOROUTER_BROWSER_TOKEN=<a long random string>
+EOF
+sudo chmod 600 /etc/biorouter/env
 ```
 
-The URL is clean; `biorouter-headless` injects the local `X-Secret-Key` header
-when proxying browser requests to `biorouterd`, so the secret is not carried in
-the browser URL.
+Generate the token with something that is actually random, for example `openssl rand -hex 32`.
 
-## Run the smoke checks
+```ini
+# /etc/systemd/system/biorouter.service
+[Unit]
+Description=Biorouter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=biorouter
+WorkingDirectory=/home/biorouter
+EnvironmentFile=/etc/biorouter/env
+ExecStart=/usr/bin/biorouter serve --host 0.0.0.0 --port 8765
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ```bash
-scripts/test-headless-linux.sh ubuntu@HOST /path/to/key.pem
-scripts/test-headless-linux.sh ubuntu@HOST /path/to/key.pem --live
+sudo systemctl daemon-reload
+sudo systemctl enable --now biorouter.service
+systemctl status biorouter.service
 ```
 
-The default smoke test checks OS version, systemd services, emitted URL, the
-public headless proxy, `/headless/health`, API status, provider/session/app
-visibility, provider model catalogs, copied extension path portability, the
-remote folder chooser bridge, non-empty Skills UI, and the browser UI. The
-browser check loads the emitted URL in Chromium or locally installed Chrome,
-verifies that the app is not blank, confirms the browser preload bridges are
-present, opens Settings, checks model/provider controls, opens Skills, confirms
-built-in skills are visible, and fails on relevant browser console warnings or
-errors. The `--live` mode additionally sends short completion requests through
-low-cost providers.
+The URL to hand to users is `http://<host>:8765/?t=<the token from the environment file>`. It stays
+valid until you change the token.
 
-> **Note.** Provider-specific failures can still be external to Biorouter. For
-> example, an institutional provider may reject a new EC2 public IP until it is
-> allowlisted, and a provider account can reject requests for billing reasons.
+> **Note.** `biorouter serve` starts `biorouterd` as a child process and stops it on the way out, so
+> systemd supervises one unit and not two. There is no separate daemon unit to enable.
 
-## Keep the browser UI in sync with the desktop UI
+## Decide who can reach the port
 
-This section is not part of the deployment flow. It covers the drift you have to
-watch for afterwards, because the headless browser UI and the Electron desktop
-shell are built from one shared renderer.
+A browser session that has authenticated is as capable as the desktop application: it drives an
+agent that runs shell commands and reads and writes files on this host, as the service user. Treat
+reaching the port as equivalent to a shell account.
 
-The headless app uses the same `ui/desktop` renderer as the desktop shell, built
-with `vite.renderer.config.mts`. UI changes for browser readability should be
-made in shared renderer components, then rebuilt with the headless scripts above.
+- **There is no transport encryption.** `biorouter serve` speaks plain HTTP. On anything but a
+  trusted local network, terminate TLS in front of it — bind loopback (`--host 127.0.0.1`) and put
+  nginx, Caddy or another reverse proxy on the public port. Serve it at the **root of a hostname**,
+  not under a path prefix; the interface is served at `/` and a subpath is not supported
+  ([decision SD-4](serve-decisions.md)).
+- **Restrict the source addresses.** Scope a cloud security group or a host firewall rule to the
+  addresses that need it, rather than relying on the token alone:
 
-For wide-browser layouts, current shared surfaces use the `ReadableContent`
-wrapper and `.biorouter-readable-content` class to constrain reading width. When
-checking for drift between desktop and headless, inspect the shared source first
-and then validate the deployed browser DOM rather than relying on an unauthenticated
-local Vite renderer, which may fall into onboarding without the daemon/config
-state needed for data-backed routes.
+  ```bash
+  sudo ufw allow from 10.0.0.0/8 to any port 8765 proto tcp
+  ```
+
+- **For a single user, expose nothing.** Leave the bind on loopback and forward the port over SSH:
+
+  ```bash
+  ssh -N -L 8765:127.0.0.1:8765 user@host
+  ```
+
+- **There are no user accounts.** Everyone who opens the address is the same user, with the same
+  files and the same conversation history.
+
+## Optional: a virtual display for GUI automation
+
+Most of Biorouter needs no display. The [Computer Controller](../extensions/built-in/computer-controller.md)
+extension is the exception: on Linux it drives X11 tools (`xdotool`, `wmctrl`, `xclip`,
+`xwininfo`), which need a display to talk to. On a host with no desktop, give it a virtual one:
+
+```bash
+sudo apt install xvfb xdotool wmctrl xclip x11-utils
+```
+
+Run `Xvfb` as its own unit, and set `DISPLAY` in `/etc/biorouter/env` so the service inherits it:
+
+```ini
+# /etc/systemd/system/biorouter-xvfb.service
+[Unit]
+Description=Virtual X display for Biorouter GUI automation
+After=network-online.target
+
+[Service]
+Type=simple
+User=biorouter
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then add `DISPLAY=:99` to the environment file and `After=biorouter-xvfb.service` to the Biorouter
+unit. Skip all of this if you are not using that extension.
+
+## Upgrading
+
+Install the newer package over the old one and restart the service:
+
+```bash
+sudo apt install ./biorouter-cli_<version>_amd64.deb   # or dnf install
+sudo systemctl restart biorouter.service
+```
+
+The package replaces the binaries **and** the interface bundle at `/usr/share/biorouter/web`
+together, so the two cannot drift apart. Configuration, secrets and session history live in the
+service user's home directory and are untouched.
+
+## Watching for interface drift
+
+The browser interface and the Electron desktop application are built from one shared renderer, so a
+change to a shared component reaches both. Two things follow for anyone maintaining this
+deployment:
+
+- Changes made for browser readability belong in the shared renderer components, not in anything
+  specific to this deployment. There is no second frontend to edit.
+- Wide-browser layouts are constrained by the `ReadableContent` wrapper and the
+  `.biorouter-readable-content` class, whose browser-only rules are scoped to
+  `body.biorouter-headless-browser`. When checking whether the browser and the desktop application
+  have diverged, read the shared source first, then confirm against the deployed browser rather
+  than a local development server, which can fall into onboarding without the daemon and
+  configuration state the data-backed routes need.
 
 ## Related documentation
 
-- [Secret storage](../security/secret-storage.md) — what `BIOROUTER_DISABLE_KEYRING=true` switches to, and why headless Linux uses the file-backed store.
-- [Environment variables](../configuration/environment-variables.md) — the full set of variables the daemon and the headless service read.
-- [Config file reference](../configuration/config-file-reference.md) — the server-side config directory a deployment points Biorouter at.
-- [Local cross-compilation](../releases/local-cross-compilation.md) — building Linux binaries on macOS outside the headless packaging scripts.
-- [Agent browser debugging](../desktop-ui/agent-browser-debugging.md) — driving the renderer in a real browser when the headless UI check fails.
+- [Reaching Biorouter from a browser](browser-access.md) — the command, the access token, and what a browser session can and cannot do.
+- [Decisions behind `biorouter serve`](serve-decisions.md) — why the model is fixed, why a token is mandatory off loopback, and why the standalone binary was retired.
+- [How browser-served Biorouter is built](serve-architecture.md) — the architecture, for developers.
+- [Secret storage](../security/secret-storage.md) — what `BIOROUTER_DISABLE_KEYRING=true` switches to, and why a host with no desktop keyring needs it.
+- [Environment variables](../configuration/environment-variables.md) — every variable the daemon and `biorouter serve` read.
+- [Config file reference](../configuration/config-file-reference.md) — the configuration directory a deployment points Biorouter at.
+- [Agent browser debugging](../desktop-ui/agent-browser-debugging.md) — driving the renderer in a real browser when the deployed interface misbehaves.
