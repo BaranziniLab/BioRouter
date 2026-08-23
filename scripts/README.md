@@ -17,7 +17,6 @@ This runs `scripts/build-headless-linux.sh`, verifies the artifact with
 `scripts/verify-headless-artifact.sh --tar`, and writes:
 
 - `dist/headless-linux-x64/`
-- `dist/biorouter-headless-linux-x64.tar.gz`
 
 The release artifact must contain only the app: the three Linux binaries, the
 browser bundle, and `manifest.txt`. Do not package local profiles, sessions,

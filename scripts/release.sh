@@ -229,8 +229,8 @@ verify_release_provenance() {
   actual_count="$(awk -F '\t' '$1 == "asset" { count++ } END { print count+0 }' "$manifest")"
   [ "$actual_count" -eq "$expected_count" ] \
     || die "release provenance contains $actual_count assets; expected exactly $expected_count"
-  [ "$expected_count" -eq 11 ] || die "internal release asset list changed; expected exactly 11 assets"
-  log "release provenance verified for 11 assets at $(release_provenance_value "$manifest" source_sha)"
+  [ "$expected_count" -eq 10 ] || die "internal release asset list changed; expected exactly 10 assets"
+  log "release provenance verified for 10 assets at $(release_provenance_value "$manifest" source_sha)"
 }
 
 # ── bump ────────────────────────────────────────────────────────────────────

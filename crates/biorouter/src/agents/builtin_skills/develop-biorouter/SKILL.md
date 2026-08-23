@@ -43,7 +43,6 @@ just install-deps             # npm ci in ui/desktop, yarn in documentation
 | `crates/biorouter-server` | Axum REST + WebSocket server, binary `biorouterd`; routes in `src/routes/` |
 | `crates/biorouter-cli` | Interactive CLI, binary `biorouter`; subcommands in `src/commands/` |
 | `crates/biorouter-mcp` | Built-in MCP servers (developer, computer controller, memory, auto visualiser, tutorial, knowledge, agent drafter, datasql, files, compute) |
-| `crates/biorouter-headless` | Browser-served headless Linux server |
 | `crates/biorouter-sandbox` | Capability-scoped sandboxed execution (docker, seatbelt, local) |
 | `crates/biorouter-acp` | Agent Communication Protocol for multi-agent orchestration |
 | `crates/biorouter-authprompt` | macOS auth prompt helper the background service cannot raise itself |
