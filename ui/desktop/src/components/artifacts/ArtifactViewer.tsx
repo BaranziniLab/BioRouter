@@ -14,6 +14,7 @@ import { useTheme, useThemeFamily } from '../../contexts/ThemeContext';
 import { CODE_FONT_FAMILY, codeThemesByFamily } from '../../styles/codeTheme';
 import { cn } from '../../utils';
 import { injectArtifactBrowserCsp } from '../../utils/artifactSecurity';
+import { sendArtifactAnnotation } from '../../utils/annotationChannel';
 import { describeUnsupportedFormat } from '../../utils/formatSupport';
 import { isImageExtension, isNativelyDecodableImage } from '../../utils/imageFormats';
 import {
@@ -26,6 +27,7 @@ import {
 import {
   ChevronDown,
   ChevronRight,
+  Camera,
   Code,
   ExternalLink,
   Eye,
@@ -49,6 +51,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
+import AnnotationOverlay, { type SelectedRegion } from './AnnotationOverlay';
 import DocumentPreview from './DocumentPreview';
 import WebPagePreview from './WebPagePreview';
 import NotebookPreview from './NotebookPreview';
@@ -117,6 +120,13 @@ interface ArtifactViewerProps {
   onOpenArtifact: (artifact: ArtifactSource) => void;
   onResizeStart?: (event: PointerEvent<HTMLDivElement>) => void;
   onRenderError?: (error: ArtifactRenderError) => void;
+  /**
+   * The chat this panel belongs to. Chat-only, exactly like `onRenderError`:
+   * a read-only transcript passes nothing, so the annotate control never
+   * appears there — annotating a saved session would attach a region to a
+   * conversation that is not running.
+   */
+  sessionId?: string;
   className?: string;
   style?: CSSProperties;
 }
@@ -279,6 +289,7 @@ export default function ArtifactViewer({
   onOpenArtifact,
   onResizeStart,
   onRenderError,
+  sessionId,
   className,
   style,
 }: ArtifactViewerProps) {
@@ -305,6 +316,9 @@ export default function ArtifactViewer({
    * reopening a session should not silently start loading pages.
    */
   const [browsingUrls, setBrowsingUrls] = useState<ReadonlySet<string>>(() => new Set());
+  const [isAnnotating, setIsAnnotating] = useState(false);
+  const previewBodyRef = useRef<HTMLDivElement | null>(null);
+
   const pendingNavigationKeyRef = useRef<string | null>(null);
   const draggedTabIdRef = useRef<string | null>(null);
   const tabPointerGestureRef = useRef<{
@@ -326,6 +340,47 @@ export default function ArtifactViewer({
   const showTabOverflowMenu = useTabStripOverflow(tabListRef, tabState.tabs.length);
   const activeTab = tabState.tabs.find((tab) => tab.id === tabState.activeTabId) ?? null;
   const activeArtifact = activeTab?.artifact ?? null;
+
+  /**
+   * Turn a selected region into an attachment on the composer.
+   *
+   * The rectangle is in the preview body's own coordinates; `capturePage`
+   * wants page coordinates, so the body's position is added back. The capture
+   * is a compositor grab in the main process, which is the only thing that can
+   * see into the sandboxed `srcdoc` frames most artifacts render in — a
+   * DOM-walking screenshot library would return an empty box for a figure.
+   */
+  const captureAnnotation = useCallback(
+    async (region: SelectedRegion) => {
+      setIsAnnotating(false);
+      const body = previewBodyRef.current;
+      if (!body || !sessionId) return;
+      const bodyRect = body.getBoundingClientRect();
+      const shot = await window.electron?.captureRegion({
+        x: bodyRect.left + region.x,
+        y: bodyRect.top + region.y,
+        width: region.width,
+        height: region.height,
+        label: 'annotation',
+      });
+      if (!shot) return;
+      sendArtifactAnnotation({
+        sessionId,
+        imagePath: shot.path,
+        sourceTitle: activeArtifact?.title ?? 'Preview',
+        sourceLocator:
+          activeArtifact?.kind === 'file'
+            ? activeArtifact.path
+            : activeArtifact?.kind === 'externalUrl'
+              ? activeArtifact.url
+              : undefined,
+        width: region.width,
+        height: region.height,
+      });
+    },
+    [activeArtifact, sessionId]
+  );
+
   const activeSourceKey = activeArtifact ? artifactSourceKey(activeArtifact) : null;
 
   const openArtifactInTab = useCallback(
@@ -800,6 +855,28 @@ export default function ArtifactViewer({
             </DropdownMenuContent>
           </DropdownMenu>
         )}
+        {sessionId && (
+          // Annotation is available on EVERY preview kind, not just one. Codex
+          // shipped commenting in its browser but not its document pane, and
+          // the open issue against that names our exact case: a researcher
+          // reads a generated report and cannot point at anything in it. For
+          // this audience the report IS the artifact.
+          <button
+            type="button"
+            data-testid="artifact-annotate"
+            aria-pressed={isAnnotating}
+            onClick={() => setIsAnnotating((current) => !current)}
+            className={cn(
+              HEADER_ACTION_BUTTON_CLASS,
+              'relative z-50 ml-0.5 shrink-0',
+              isAnnotating && 'bg-background-accent text-text-on-accent'
+            )}
+            aria-label={isAnnotating ? 'Cancel region selection' : 'Send a region to the chat'}
+            title={isAnnotating ? 'Cancel region selection' : 'Send a region to the chat'}
+          >
+            <Camera className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
         {activeArtifact.kind !== 'mcpResource' && (
           <button
             type="button"
@@ -828,12 +905,24 @@ export default function ArtifactViewer({
 
       {/* De-boxed (design spec H): no gutter, no card, no border, no shadow. The
           preview sits directly on the panel ground — panel → strip → content. */}
-      <div id="artifact-preview-content" className="relative z-0 min-h-0 flex-1 overflow-hidden">
+      <div
+        id="artifact-preview-content"
+        ref={previewBodyRef}
+        className="relative z-0 min-h-0 flex-1 overflow-hidden"
+      >
         {isResizing && (
           <div
             data-testid="artifact-resize-shield"
             aria-hidden="true"
             className="absolute inset-0 z-50 cursor-col-resize"
+          />
+        )}
+        {isAnnotating && (
+          <AnnotationOverlay
+            onCancel={() => setIsAnnotating(false)}
+            onSelect={(region) => {
+              void captureAnnotation(region);
+            }}
           />
         )}
         <ArtifactPreviewBody

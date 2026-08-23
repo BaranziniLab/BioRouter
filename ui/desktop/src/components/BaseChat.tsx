@@ -2262,6 +2262,10 @@ function BaseChatContent({
               // all: a read-only transcript passes nothing here, so
               // ArtifactViewer never installs the postMessage listener.
               onRenderError={handleArtifactRenderError}
+              // Chat-only, for the same reason as onRenderError above: it is
+              // what enables the annotate control, and a saved transcript has
+              // no running conversation to attach a region to.
+              sessionId={sessionId}
             />
           )}
         </div>
