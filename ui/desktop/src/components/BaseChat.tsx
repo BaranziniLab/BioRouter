@@ -10,7 +10,6 @@ import React, {
 } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { SearchView } from './conversation/SearchView';
-import LoadingBioRouter from './LoadingBioRouter';
 import ProgressiveMessageList from './ProgressiveMessageList';
 import { PendingToolCallList } from './PendingToolCallCard';
 import { MainPanelLayout } from './Layout/MainPanelLayout';
@@ -47,11 +46,7 @@ import { Button } from './ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { AlignLeft, CodeAnalysis, Pipeline, Terminal } from './icons/app-icons';
-import {
-  createArtifactRenderRepairMessage,
-  getThinkingMessage,
-  getTextContent,
-} from '../types/message';
+import { createArtifactRenderRepairMessage, getTextContent } from '../types/message';
 import ParameterInputModal from './ParameterInputModal';
 import { substituteParameters } from '../utils/providerUtils';
 import CreateWorkflowFromSessionModal from './workflows/CreateWorkflowFromSessionModal';
@@ -2212,20 +2207,33 @@ function BaseChatContent({
     </div>
   );
 
-  const renderWorkingStatus = () => {
-    if (chatState === ChatState.Idle) return null;
-
-    return (
-      <div className="w-full max-w-measure-chat mx-auto mb-2.5 pl-2 pointer-events-none">
-        <LoadingBioRouter
-          chatState={chatState}
-          message={
-            messages.length > 0 ? getThinkingMessage(messages[messages.length - 1]) : undefined
-          }
-        />
-      </div>
-    );
-  };
+  /*
+   * The composer's working status is the COMPOSER'S OWN EDGE now.
+   *
+   * This used to be a row above the card holding a breathing dot and a label.
+   * Three things were wrong with it and none was fixable in place:
+   *
+   *   1. Its dot was byte-identical to `TurnActivityIndicator`'s, and
+   *      `deriveTrailingActivity` only suppresses that one for
+   *      `WaitingForUserInput`, `LoadingConversation` and streaming prose — so
+   *      for `Thinking`, `Compacting` and all of tool execution, i.e. most of a
+   *      turn, both were on screen at once.
+   *   2. They sat 8px apart and could not be aligned. This row's `pl-2` put its
+   *      pill 12px from the column edge, which is exactly where the composer's
+   *      own context row sits; the transcript's pill sits at 4px, which is
+   *      exactly where the transcript's content sits. Both were correct, to
+   *      different grids. Deleting `pl-2` would have broken this row's
+   *      alignment with the composer instead of fixing anything.
+   *   3. Returning `null` when idle made the composer jump ~34px on every Send.
+   *
+   * The edge has none of those problems: there is no second glyph to duplicate,
+   * nothing to align, and no height. See the working-edge block in `main.css`
+   * for how it stays distinct from the focus edge it shares a border with.
+   *
+   * `LoadingBioRouter` itself is NOT dead — `Hub` and `ProgressiveMessageList`
+   * still use it for "loading chat"/"loading messages", which are not turn
+   * states and have no composer edge to ride on.
+   */
 
   if (sessionLoadError) {
     return (
@@ -2560,7 +2568,6 @@ function BaseChatContent({
                     : `px-4 sm:px-6 pb-6 pt-7 flex-shrink-0 ${disableAnimation ? '' : 'animate-[appear_200ms_var(--ease-out)_forwards]'}`
                 }
               >
-                {renderWorkingStatus()}
                 {renderChatInput()}
               </div>
             )}

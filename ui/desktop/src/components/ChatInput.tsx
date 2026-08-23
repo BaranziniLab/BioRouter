@@ -2300,6 +2300,20 @@ export default function ChatInput({
           isDraggingOver && 'inset-shadow-accent',
           isDraggingOver && 'bg-background-medium/80'
         )}
+        // THE WORKING EDGE. While a turn runs, the card's own border carries a
+        // travelling segment of the accent (`main.css`, next to the focus rule)
+        // — the replacement for the breathing dot that used to sit in a row
+        // above this card, duplicating the transcript's indicator 8px out of
+        // line with it.
+        //
+        // An ATTRIBUTE, not a class, and deliberately: the styling is authored
+        // CSS rather than a Tailwind utility (a newly written arbitrary class
+        // can silently fail to generate under `BIOROUTER_NO_HMR`), so the hook
+        // it keys off has to be something Tailwind never had to produce.
+        //
+        // `undefined` rather than `'false'` when idle, so the attribute is
+        // absent from the DOM and `[data-working]` is the whole test.
+        data-working={isLoading ? 'true' : undefined}
       >
         {/* Message Queue Display */}
         {queuedMessages.length > 0 && (

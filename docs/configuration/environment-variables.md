@@ -151,6 +151,8 @@ These variables control how biorouter handles [tool execution](../security/permi
 | `BIOROUTER_CLI_TOOL_PARAMS_TRUNCATION_MAX_LENGTH` | Maximum length for tool parameter values before truncation in CLI output (not in debug mode) | Integer | 40 |
 | `BIOROUTER_DEBUG` | Enables debug mode to show full tool parameters without truncation | `"1"`, `"true"` (case insensitive) to enable | false |
 | `BIOROUTER_SEARCH_PATHS` | Additional directories to search for executables when running extensions | JSON array of paths (e.g. `["/usr/local/bin", "~/custom/bin"]`) | System `PATH` only |
+| `BIOROUTER_AUTOVIS_CDN` | Makes [Auto Visualiser](../extensions/built-in/README.md) figures reference pinned CDN libraries instead of inlining them, so a stored figure is a few KB rather than megabytes. The desktop app sets it to `1`; a figure still never fetches anything at display time, because the Electron main process inlines the source before the artifact CSP applies — see [how a figure's libraries reach the renderer](../desktop-ui/artifact-cdn-assets.md). | `"1"`, `"true"`, `"yes"` to enable | off outside the desktop app; `1` inside it |
+| `BIOROUTER_AUTOVIS_DEBUG` | Dumps each generated figure's HTML to `<cache>/autovisualiser/<name>-<pid>.html` | `"1"`, `"true"` to enable | on in debug builds, otherwise off |
 
 These paths are prepended to the system `PATH` when extensions execute commands, so your custom tools are found without modifying your global `PATH`.
 
