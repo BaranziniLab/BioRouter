@@ -1450,6 +1450,54 @@ enum Command {
         cmd: BenchCommand,
     },
 
+    /// Run Biorouter and reach it from a browser
+    ///
+    /// `headless` is kept as an alias: it is the name the standalone binary
+    /// this replaced was known by, so anyone following older instructions
+    /// lands in the right place.
+    #[command(
+        about = "Run Biorouter and open it in a browser",
+        visible_alias = "headless"
+    )]
+    Serve {
+        /// Address to bind
+        #[arg(
+            long,
+            default_value = "127.0.0.1",
+            help = "Address to bind. Anything reachable from another machine requires a token."
+        )]
+        host: String,
+
+        /// Port to listen on
+        #[arg(
+            short,
+            long,
+            default_value_t = crate::commands::serve::DEFAULT_PORT,
+            help = "Port to listen on"
+        )]
+        port: u16,
+
+        /// Use this access token instead of a freshly generated one
+        #[arg(long, help = "Use this access token instead of generating one")]
+        token: Option<String>,
+
+        /// Serve without an access token
+        #[arg(
+            long,
+            conflicts_with = "token",
+            help = "Serve without an access token. Refused for a non-loopback bind."
+        )]
+        no_token: bool,
+
+        /// Directory holding the built interface
+        #[arg(long, help = "Directory holding the built web interface")]
+        web_dir: Option<std::path::PathBuf>,
+
+        /// Open a browser once it is ready
+        #[arg(long, help = "Open a browser once the server is ready")]
+        open: bool,
+    },
+
     /// Start a web server with a chat interface
     #[command(about = "Experimental: Start a web server with a chat interface")]
     Web {
@@ -1612,6 +1660,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::SetupPath { .. }) => "setup-path",
         Some(Command::Bench { .. }) => "bench",
         Some(Command::Workflow { .. }) => "workflow",
+        Some(Command::Serve { .. }) => "serve",
         Some(Command::Web { .. }) => "web",
         Some(Command::Term { .. }) => "term",
         Some(Command::Completion { .. }) => "completion",
@@ -2512,6 +2561,16 @@ pub async fn cli() -> anyhow::Result<()> {
         Some(Command::Extension { command }) => handle_extension_subcommand(command).await,
         Some(Command::Skill { command }) => handle_skill_subcommand(command).await,
         Some(Command::Apps { command }) => handle_apps_subcommand(command).await,
+        Some(Command::Serve {
+            host,
+            port,
+            token,
+            no_token,
+            web_dir,
+            open,
+        }) => {
+            crate::commands::serve::handle_serve(host, port, token, no_token, web_dir, open).await
+        }
         Some(Command::Web {
             port,
             host,
