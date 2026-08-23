@@ -9,6 +9,11 @@ import { ConfigProvider } from './components/ConfigContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { client } from './api/client.gen';
 import { wrapArtifactForBrowser } from './utils/artifactSecurity';
+// The marker written below and the helper every provider/model control reads
+// are one definition, so the surface cannot be stamped in a spelling nothing
+// detects. `utils/surface.ts` imports nothing and touches only `document`, so
+// pulling it in here cannot disturb the polyfill above.
+import { BROWSER_SURFACE_BODY_CLASS, BROWSER_SURFACE_MARKER } from './utils/surface';
 
 const App = lazy(() => import('./App'));
 
@@ -49,10 +54,20 @@ function getHeadlessConfig(): HeadlessConfig {
   const storedSecret = window.sessionStorage?.getItem('biorouter-headless-secret') ?? '';
   const secretKey = globalConfig.secretKey || querySecret || storedSecret;
   const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+  // A page the daemon served itself carries this global (see
+  // `crates/biorouter-server/src/routes/web_ui.rs`). That daemon serves the API
+  // on the very same origin, so the origin IS the base. The two fallbacks below
+  // it are for a page served by something else: the loopback guess names a port
+  // the daemon need not be on, and would be meaningless from another machine.
+  const servedByDaemon = Boolean(window.__BIOROUTER_HEADLESS_CONFIG__);
   const apiBaseUrl =
     globalConfig.apiBaseUrl ||
     params.get('api') ||
-    (isLocalhost ? 'http://127.0.0.1:3000' : `${window.location.origin}/api`);
+    (servedByDaemon
+      ? window.location.origin
+      : isLocalhost
+        ? 'http://127.0.0.1:3000'
+        : `${window.location.origin}/api`);
   const headlessBaseUrl =
     globalConfig.headlessBaseUrl || params.get('headless') || `${window.location.origin}/headless`;
 
@@ -92,13 +107,25 @@ function promptForRemotePath(message: string, defaultValue = '/home/ubuntu'): st
   return selected || null;
 }
 
+/// The secret every request to the interface's own endpoints must carry.
+///
+/// Those endpoints used to sit in front of the daemon behind no authentication
+/// at all. They are daemon routes now, so they take the same `X-Secret-Key` as
+/// every other route — and `headlessJson` returns `null` on failure, so without
+/// this a `401` is indistinguishable from "no data" and the whole surface fails
+/// silently into its local-storage fallback.
+let headlessSecretKey = '';
+
 async function headlessJson<T>(
   headlessBaseUrl: string,
   path: string,
   init?: RequestInit
 ): Promise<T | null> {
   try {
-    const response = await fetch(`${headlessBaseUrl}${path}`, init);
+    const response = await fetch(`${headlessBaseUrl}${path}`, {
+      ...init,
+      headers: { ...(init?.headers ?? {}), 'X-Secret-Key': headlessSecretKey },
+    });
     if (!response.ok) return null;
     return (await response.json()) as T;
   } catch {
@@ -147,8 +174,11 @@ type HeadlessArtifactFileResponse =
 // Browser/headless mode: inject browser-safe preload bridges so the app renders without Electron.
 if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
   const headlessConfig = getHeadlessConfig();
-  document.documentElement.dataset.biorouterSurface = 'headless';
-  document.body.classList.add('biorouter-headless-browser');
+  // Published for `headlessJson`, which is module-level and has no other way to
+  // reach it. Set before any shim method can run.
+  headlessSecretKey = headlessConfig.secretKey;
+  document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+  document.body.classList.add(BROWSER_SURFACE_BODY_CLASS);
   if (typeof window.appConfig === 'undefined') {
     (window as unknown as Record<string, unknown>).appConfig = {
       get: (key: string) => headlessConfig.appConfig[key],

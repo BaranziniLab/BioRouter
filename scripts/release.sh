@@ -18,9 +18,7 @@
 #   mac-intel <ver>   Package + sign + NOTARIZE the Intel .dmg.
 #   windows <ver>     Package the Windows .zip.
 #   linux <ver>       Package the GUI .deb + .rpm.
-#   cli-linux <ver>   Build the headless CLI-only .deb + .rpm.
-#   headless-linux <ver>
-#                     Build the browser-served headless Linux artifact.
+#   cli-linux <ver>   Build the CLI-only .deb + .rpm (no GUI).
 #   mac-manifest <ver>
 #                     Generate latest-mac.yml for electron-updater.
 #   verify <ver>      Verify all release artifacts (arch, notarization, dmg format).
@@ -231,8 +229,8 @@ verify_release_provenance() {
   actual_count="$(awk -F '\t' '$1 == "asset" { count++ } END { print count+0 }' "$manifest")"
   [ "$actual_count" -eq "$expected_count" ] \
     || die "release provenance contains $actual_count assets; expected exactly $expected_count"
-  [ "$expected_count" -eq 11 ] || die "internal release asset list changed; expected exactly 11 assets"
-  log "release provenance verified for 11 assets at $(release_provenance_value "$manifest" source_sha)"
+  [ "$expected_count" -eq 10 ] || die "internal release asset list changed; expected exactly 10 assets"
+  log "release provenance verified for 10 assets at $(release_provenance_value "$manifest" source_sha)"
 }
 
 # ── bump ────────────────────────────────────────────────────────────────────
@@ -449,7 +447,13 @@ cmd_linux() {
 # Independent of the GUI packaging — does NOT corrupt node_modules. Builds and
 # smoke-tests both packages in clean containers.
 cmd_cli-linux() {
-  local v="$1"; assert_release_source "$v"; ensure_docker
+  # ensure_host_node_deps because these packages now carry the browser interface
+  # bundle, which is built on the HOST by `npm run build:web`. After a Linux or
+  # Windows docker build the on-disk node_modules is Linux-flavored and that
+  # build dies on a missing @rollup/rollup-darwin-arm64 — a failure that reads
+  # as a rollup bug rather than an ordering one. The retired headless phase had
+  # this call for the same reason; it is needed here now that the payload moved.
+  local v="$1"; assert_release_source "$v"; ensure_docker; ensure_host_node_deps
   [ -f "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter" ] || die "linux backend missing — run: scripts/release.sh backends $v"
   log "building CLI-only Linux packages (deb + rpm)"
   bash "$ROOT/scripts/build-cli-linux-packages.sh" "$v"
@@ -457,20 +461,6 @@ cmd_cli-linux() {
   record_release_asset "$v" "$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
   log "cli deb: $ROOT/dist/cli/biorouter-cli_${v}_amd64.deb"
   log "cli rpm: $ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
-}
-
-# ── Headless browser Linux artifact ───────────────────────────────────────────
-# Independent of the Electron GUI packages. Produces the server/browser bundle
-# used for Debian/Ubuntu deployments and verifies that no local profiles or
-# credential material were packaged.
-cmd_headless-linux() {
-  local v="$1"; assert_release_source "$v"; ensure_docker; ensure_host_node_deps
-  log "building headless Linux browser artifact"
-  "$ROOT/scripts/package-headless-linux.sh"
-  local tarball="$ROOT/dist/biorouter-headless-linux-x64.tar.gz"
-  [ -f "$tarball" ] || die "headless artifact missing: $tarball"
-  record_release_asset "$v" "$tarball"
-  log "headless tarball: $tarball ($(du -h "$tarball" | cut -f1))"
 }
 
 # ── verify ────────────────────────────────────────────────────────────────────
@@ -485,13 +475,11 @@ cmd_verify() {
   local rpm="$DESK/out/make/rpm/x64/Biorouter-$v-1.x86_64.rpm"
   local clideb="$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb"
   local clirpm="$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
-  local headless="$ROOT/dist/biorouter-headless-linux-x64.tar.gz"
   local armzip="$DESK/out/make/$ARM64_ZIP_REL/Biorouter-darwin-arm64-$v.zip"
   local x64zip="$DESK/out/make/$X64_ZIP_REL/Biorouter-darwin-x64-$v.zip"
-  for f in "$arm" "$x64" "$armzip" "$x64zip" "$win" "$deb" "$rpm" "$clideb" "$clirpm" "$headless"; do
+  for f in "$arm" "$x64" "$armzip" "$x64zip" "$win" "$deb" "$rpm" "$clideb" "$clirpm"; do
     [ -f "$f" ] && log "present: $(basename "$f") ($(du -h "$f" | cut -f1))" || { printf 'MISSING: %s\n' "$f"; ok=0; }
   done
-  "$ROOT/scripts/verify-headless-artifact.sh" >/dev/null || ok=0
   # ⚠ Opens the built .app rather than trusting the packaging config. The macOS
   # auth helper is loaded by PATH at runtime, so a layout change moves it
   # somewhere the daemon does not look — and nothing fails: the daemon falls
@@ -568,8 +556,7 @@ release_assets() {
     "$DESK/out/make/deb/x64/biorouter_${v}_amd64.deb" \
     "$DESK/out/make/rpm/x64/Biorouter-$v-1.x86_64.rpm" \
     "$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb" \
-    "$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm" \
-    "$ROOT/dist/biorouter-headless-linux-x64.tar.gz"
+    "$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
 }
 
 require_remote_main_exact() {
@@ -627,9 +614,9 @@ with open(manifest_path, encoding="utf-8") as handle:
         local_assets[name] = {"digest": fields[2].lower(), "size": int(fields[3])}
 
 remote_assets = release.get("assets") or []
-if len(local_assets) != 11 or len(remote_assets) != 11:
+if len(local_assets) != 10 or len(remote_assets) != 10:
     raise SystemExit(
-        f"expected exactly 11 local and 11 uploaded assets; found {len(local_assets)} local and {len(remote_assets)} uploaded"
+        f"expected exactly 10 local and 10 uploaded assets; found {len(local_assets)} local and {len(remote_assets)} uploaded"
     )
 remote_by_name = {}
 for asset in remote_assets:
@@ -665,11 +652,11 @@ with open(stamp_path, "w", encoding="utf-8") as handle:
 PY
   then
     rm -f "$releases_json" "$stamp_file"
-    die "GitHub draft assets do not exactly match the 11 local release files"
+    die "GitHub draft assets do not exactly match the 10 local release files"
   fi
   LATEST_DRAFT_ASSET_UPDATED_AT="$(<"$stamp_file")"
   rm -f "$releases_json" "$stamp_file"
-  log "all 11 uploaded asset digests match local files"
+  log "all 10 uploaded asset digests match local files"
 }
 
 require_fresh_windows_smoke() {
@@ -759,8 +746,7 @@ cmd_all() {
   local v="$1"
   cmd_bump "$v"; cmd_backends "$v"
   cmd_mac-arm64 "$v"; cmd_mac-intel "$v"; cmd_windows "$v"; cmd_linux "$v"
-  cmd_cli-linux "$v"                                                    # headless CLI deb/rpm
-  cmd_headless-linux "$v"                                                # browser-served headless Linux
+  cmd_cli-linux "$v"                                                    # CLI-only deb/rpm (no GUI)
   ( cd "$DESK" && npm ci >/dev/null 2>&1 )
   # Before verify, not after: verify inspects latest-mac.yml, so generating it
   # only inside cmd_draft left a full run checking a manifest from the PREVIOUS
@@ -844,7 +830,7 @@ case "$CMD" in
       log "later phases take this explicitly, e.g. scripts/release.sh backends $RESOLVED"
     fi
     ;;
-  backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|headless-linux|verify|draft|publish)
+  backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|verify|draft|publish)
     need_version "$VER"
     # Keywords are deliberately REFUSED here. These phases run against a tree
     # that `bump` has already rewritten, so `minor` would resolve against the
@@ -855,5 +841,5 @@ case "$CMD" in
         die "'$VER' is only valid for 'bump' and 'all'. This phase needs the explicit version the tree is already at: $(current_version)" ;;
     esac
     "cmd_${CMD}" "$VER" ;;
-  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|headless-linux|verify|draft|publish|all} <version|major|minor|patch>" ;;
+  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|verify|draft|publish|all} <version|major|minor|patch>" ;;
 esac

@@ -62,7 +62,20 @@ let cfg = {
   // plugin composes with this value rather than replacing it.
   asar: { unpack: '**/node_modules/node-pty/**' },
   ignore: (file) => !keepInPackage(file),
-  extraResource: ['src/bin', 'src/images'],
+  // `src/web` is the ROOT-BASE build of the same renderer (`npm run build:web`),
+  // which `biorouterd` serves to a browser when pointed at it with
+  // BIOROUTER_SERVE_UI. It has to be an extraResource rather than a bundled
+  // asset for one reason: the daemon is a separate process that reads it off
+  // disk, and it cannot read out of app.asar. Every extraResource lands at
+  // `Contents/Resources/<basename>` on macOS and `resources/<basename>` in the
+  // Windows zip and the Linux staging tree — the same directory `bin/` lands
+  // in — so the shipped `biorouterd` finds the bundle at `<exe dir>/../web`
+  // with no path configuration anywhere.
+  //
+  // It must also stay a SIBLING of `src/bin`, never a child: `stage_bin` in
+  // scripts/release.sh does `rm -rf ui/desktop/src/bin`, which would take the
+  // bundle with it.
+  extraResource: ['src/bin', 'src/images', 'src/web'],
   icon: 'src/images/icon',
   // macOS code signing and notarization
   // Activate by setting APPLE_ID and APPLE_APP_SPECIFIC_PASSWORD in the build environment.

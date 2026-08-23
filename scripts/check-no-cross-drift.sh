@@ -20,14 +20,13 @@ tokens='rustup target add x86_64-(pc-windows-gnu|unknown-linux-gnu)|winpthread-g
 
 # Owners exempt from the recipe-token scan:
 #   scripts/cross-env.sh             — THE one true recipe.
-#   scripts/build-headless-linux.sh  — a DISTINCT, documented recipe: the headless
-#     browser binary links extra system libs (openssl / fontconfig / freetype /
-#     X11) that the 2-binary release build never needs, so it cannot go through
-#     cross_linux. It is exempt from the token scan but MUST still take its base
-#     image from the shared pin (asserted below), so the glibc floor is never
-#     duplicated.
 #   scripts/check-no-cross-drift.sh  — this file (it names the tokens).
-exempt='scripts/cross-env\.sh|scripts/build-headless-linux\.sh|scripts/check-no-cross-drift\.sh'
+#
+# There used to be a second exempt recipe, scripts/build-headless-linux.sh, for
+# the standalone browser binary. That binary is retired, so there is exactly ONE
+# cross recipe again and nothing else may be exempted without a reason written
+# here.
+exempt='scripts/cross-env\.sh|scripts/check-no-cross-drift\.sh'
 
 # Drop comment lines (a comment may legitimately name a token) and the exempt
 # owners, then report anything left.
@@ -44,10 +43,13 @@ fi
 grep -q 'LINUX_RUST_IMG:=rust:1.92-bullseye' scripts/cross-env.sh \
   || err "LINUX_RUST_IMG drifted off the bullseye (glibc 2.31) pin in scripts/cross-env.sh"
 
-# The specialized headless recipe must inherit that same pin, not hardcode one.
-if grep -qE 'RUST_IMAGE=.*rust:(latest|[0-9])' scripts/build-headless-linux.sh; then
-  err "scripts/build-headless-linux.sh hardcodes a cross image — use \$LINUX_RUST_IMG from cross-env.sh"
-fi
+# And no second recipe may reappear by being quietly re-exempted: the exemption
+# list above must name only cross-env.sh and this file. Asserted rather than
+# trusted, because a check that greps a file which no longer exists still exits
+# 0 -- it simply stops checking, and says so only on stderr.
+for owner in scripts/cross-env.sh scripts/check-no-cross-drift.sh; do
+  [ -f "$owner" ] || err "exempt owner $owner is missing; this guard is checking less than it claims"
+done
 
 [ "$fail" = 0 ] || exit 1
 echo "OK — one cross recipe, glibc floor intact."

@@ -26,7 +26,7 @@ Two kinds of document live here, and the difference matters more than any other 
 | Understand a cross-institution warning you just saw | [Institutional affiliation](security/institutional-affiliation.md) |
 | Resume, export or prune your past work | [Managing sessions](getting-started/managing-sessions.md) |
 | Run several conversations at once, or delegate to a subagent you can watch | [Workspace control](agent-loop/workspace-control.md) |
-| Run BioRouter as a shared headless server | [Headless Linux deployment](deployment/headless-linux.md) |
+| Use Biorouter in a web browser, on your own machine or a shared host | [Reaching Biorouter from a browser](deployment/browser-access.md) — then [Headless Linux deployment](deployment/headless-linux.md) if it should run as a server |
 | Fix an error you are hitting right now | [Common problems and fixes](troubleshooting/common-problems-and-fixes.md) |
 | Understand the codebase before changing it | [System overview](architecture/system-overview.md) |
 
@@ -48,7 +48,7 @@ Two kinds of document live here, and the difference matters more than any other 
 | [cli](cli/README.md) | The `biorouter` command-line surface: subcommands and flags, the interactive terminal UI, and the manual QA script that verifies both. |
 | [configuration](configuration/README.md) | The complete reference for both configuration forms — persistent YAML files and the environment variables that override them. |
 | [desktop-ui](desktop-ui/README.md) | Exercising the Electron desktop app as a running program: launching and driving the dev GUI, and the behavior to check once it is in front of you. |
-| [deployment](deployment/README.md) | Running BioRouter as a shared server rather than a desktop app: building the Linux headless artifact, deploying it, and migrating secrets. |
+| [deployment](deployment/README.md) | Reaching Biorouter through a browser instead of the desktop app — `biorouter serve` on your own machine or on a shared Linux host: the access token, what exposing the port means, and the decisions behind the serving path. |
 | [releases](releases/README.md) | Shipping to users: the auto-update QA checklist, a local cross-compilation recipe, and the published per-version release notes. |
 | [troubleshooting](troubleshooting/README.md) | Known problems and their fixes, the diagnostics bundle, and how to file a useful bug report. |
 | [design](design/README.md) | Visual design specifications and their rendered companions: brand marks, theme families, chat-group design spikes, the desktop UI overhaul, the proposed Astryx interface revision, and the browser-only design-system and boot-splash studios. |

@@ -48,9 +48,26 @@ cp "$LINUX_RELEASE/biorouterd" "$BIN_DIR/biorouterd"
 chmod +x "$BIN_DIR/biorouterd"
 echo "  Installed Linux x64: biorouterd"
 
-echo "Running electron-forge make for Linux x64 (deb, rpm, zip)..."
 cd "$DESKTOP_DIR"
 npm ci --cache /root/.npm
+
+# The browser interface bundle biorouterd serves (BIOROUTER_SERVE_UI), shipped
+# as the extraResource 'src/web'. Built explicitly HERE because this script
+# calls `npm run make` directly and so never runs prepare-platform-binaries.js,
+# which is where every other platform's packaging path builds it.
+#
+# The deb and rpm install under /opt, so `<exe dir>/../web` resolves inside the
+# app tree exactly as it does on macOS and Windows. It is the CLI-only packages
+# (packaging/cli/nfpm.yaml, /usr/bin) that cannot use that rule and place the
+# bundle at /usr/share/biorouter/web instead.
+echo "Building browser interface bundle (npm run build:web)..."
+npm run build:web
+[ -s "$DESKTOP_DIR/src/web/index.html" ] || {
+    echo "ERROR: npm run build:web produced no src/web/index.html"
+    exit 1
+}
+
+echo "Running electron-forge make for Linux x64 (deb, rpm, zip)..."
 ELECTRON_PLATFORM=linux ELECTRON_ARCH=x64 npm run make -- --platform=linux --arch=x64 \
     --targets "@electron-forge/maker-deb,@electron-forge/maker-rpm"
 

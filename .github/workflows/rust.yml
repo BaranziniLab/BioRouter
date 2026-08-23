@@ -255,3 +255,115 @@ jobs:
             /w/target/x86_64-unknown-linux-gnu/release/biorouter --version
             /w/target/x86_64-unknown-linux-gnu/release/biorouterd --version
           '
+
+  # `biorouter serve` end to end: the daemon serving the interface, the token
+  # exchange, and the endpoints that were previously unauthenticated.
+  #
+  # Before this job there was NO CI coverage of browser mode at all -- `grep -rn
+  # headless .github/` returned nothing while a tarball of it was a shipped
+  # release asset. The one smoke test that existed asserted the served page
+  # contained "<!doctype html>", which is true of a completely non-functional
+  # app.
+  #
+  # It cannot drive a real agent turn: there are no provider credentials here,
+  # and a browser session may not set a provider by design (decision SD-1 in
+  # docs/deployment/serve-decisions.md). What it does assert is everything
+  # between the browser and that boundary.
+  serve:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: serve
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install protoc (build-script dep)
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Linux native build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends libdbus-1-dev libxdo-dev
+
+      - name: Build the interface bundle
+        working-directory: ui/desktop
+        run: |
+          npm ci
+          npm run build:web
+          # Root base, not Forge's relative base: a relative-base bundle served
+          # at the root resolves its assets against the current path.
+          grep -q 'src="/assets/' src/web/index.html
+          ! grep -q 'src="./assets/' src/web/index.html
+
+      - name: Build the command and the daemon
+        run: cargo build -p biorouter-cli -p biorouter-server
+
+      - name: Serve, and check the whole browser contract
+        run: |
+          set -euo pipefail
+          export BIOROUTER_PATH_ROOT="$RUNNER_TEMP/serve-root"
+          export BIOROUTER_DISABLE_KEYRING=true
+          mkdir -p "$BIOROUTER_PATH_ROOT"
+          ./target/debug/biorouter serve \
+            --port 18777 --token citoken \
+            --web-dir "$PWD/ui/desktop/src/web" > "$RUNNER_TEMP/serve.log" 2>&1 &
+          serve_pid=$!
+          for _ in $(seq 1 90); do
+            curl -fsS -o /dev/null "http://127.0.0.1:18777/?t=citoken" && break
+            sleep 1
+          done
+
+          fail() { echo "FAILED: $1"; echo '--- serve log ---'; cat "$RUNNER_TEMP/serve.log"; exit 1; }
+
+          # The document carries the daemon secret, so it is gated.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18777/)" = 401 ] \
+            || fail 'the shell was served without a credential'
+          [ "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:18777/?t=wrong')" = 401 ] \
+            || fail 'a wrong token was accepted'
+
+          # The token is spent once, for a cookie, and leaves the address bar.
+          curl -s -o /dev/null -D "$RUNNER_TEMP/h" "http://127.0.0.1:18777/?t=citoken"
+          grep -qi '^HTTP/1.1 303' "$RUNNER_TEMP/h" || fail 'no redirect after the token exchange'
+          grep -qi 'set-cookie: biorouter_session=' "$RUNNER_TEMP/h" || fail 'no session cookie'
+          grep -qi 'HttpOnly' "$RUNNER_TEMP/h" || fail 'the session cookie is readable from script'
+          grep -qi 'SameSite=Strict' "$RUNNER_TEMP/h" || fail 'the session cookie is sent cross-site'
+
+          # With the cookie, the shell and its runtime configuration.
+          curl -fsS -b 'biorouter_session=citoken' http://127.0.0.1:18777/ > "$RUNNER_TEMP/shell.html"
+          grep -q '__BIOROUTER_HEADLESS_CONFIG__' "$RUNNER_TEMP/shell.html" || fail 'no runtime config'
+          grep -qE '"secretKey":"[0-9a-f]{64}"' "$RUNNER_TEMP/shell.html" || fail 'no daemon secret'
+          # ABSENT, not empty: empty is falsy in the renderer and sends the
+          # browser to a hardcoded 127.0.0.1:3000.
+          ! grep -q 'apiBaseUrl' "$RUNNER_TEMP/shell.html" \
+            || fail 'apiBaseUrl is present; the renderer will not use its own origin'
+          grep -q 'no-store' <(curl -s -D - -o /dev/null -b 'biorouter_session=citoken' http://127.0.0.1:18777/) \
+            || fail 'the shell is cacheable and it carries the secret'
+
+          # The bundle is really served.
+          asset=$(grep -o '/assets/index-[A-Za-z0-9_-]*\.js' "$RUNNER_TEMP/shell.html" | head -1)
+          [ -n "$asset" ] || fail 'no bundle reference in the shell'
+          curl -fsS -o /dev/null "http://127.0.0.1:18777$asset" || fail 'the bundle is not served'
+
+          # The interface's own endpoints are behind the daemon's auth now. They
+          # had none at all before.
+          secret=$(grep -o '"secretKey":"[0-9a-f]*"' "$RUNNER_TEMP/shell.html" | cut -d'"' -f4)
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18777/headless/health)" = 401 ] \
+            || fail 'an interface endpoint answered without the secret'
+          curl -fsS -H "X-Secret-Key: $secret" http://127.0.0.1:18777/headless/health \
+            | grep -q '"status":"ok"' || fail 'the interface endpoint did not answer with the secret'
+
+          # And a path traversal is refused, which the retired implementation
+          # allowed outright: fs_read had no validation of any kind.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Secret-Key: $secret" \
+              'http://127.0.0.1:18777/headless/fs/read?path=/etc/passwd')" = 403 ] \
+            || fail 'the filesystem endpoint read outside its allowed roots'
+
+          kill "$serve_pid" || true
+          echo 'the browser contract holds'

@@ -208,8 +208,8 @@ Requires building a real signed and notarized release.
 - [ ] Each darwin zip contains `Biorouter.app/` at the **root** with a `Contents/_CodeSignature` (`unzip -l … | head`).
 - [ ] The `.app` inside each zip is signed + **notarized**: `codesign -dv` and `xcrun stapler validate` pass on `out/Biorouter-darwin-<arch>/Biorouter.app`.
 - [ ] `scripts/release.sh mac-manifest X` writes `out/make/latest-mac.yml`; it references **both** `Biorouter-darwin-arm64-X.zip` and `Biorouter-darwin-x64-X.zip` with correct sizes and base64 SHA-512.
-- [ ] `scripts/release.sh verify X` reports all 10 file artifacts present + the `latest-mac.yml` arch-zip cross-check ✓, and verifies the local provenance manifest binds all 11 assets to the current source SHA.
-- [ ] The draft contains **11** assets (5 GUI + 2 CLI + the headless Linux tarball + 2 darwin zips + `latest-mac.yml`). `scripts/release.sh publish X` must verify every uploaded SHA-256 digest against the local files before publication. Confirm with `gh release view vX --json assets --jq '.assets[].name'`.
+- [ ] `scripts/release.sh verify X` reports all 9 file artifacts present + the `latest-mac.yml` arch-zip cross-check ✓, and verifies the local provenance manifest binds all 10 assets to the current source SHA.
+- [ ] The draft contains **10** assets (5 GUI + 2 CLI + 2 darwin zips + `latest-mac.yml`). `scripts/release.sh publish X` must verify every uploaded SHA-256 digest against the local files before publication. Confirm with `gh release view vX --json assets --jq '.assets[].name'`.
 
 ### Section C — macOS GUI auto-update, the core flow (arm64 **and** Intel)
 

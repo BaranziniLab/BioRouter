@@ -14,6 +14,7 @@ Environment variables are the per-invocation form of biorouter's settings: they 
 - [Session management](#session-management)
 - [Tool configuration](#tool-configuration)
 - [Security configuration](#security-configuration)
+- [Browser access](#browser-access)
 - [Observability](#observability)
 - [Workflow configuration](#workflow-configuration)
 - [Experimental features](#experimental-features)
@@ -190,6 +191,21 @@ These variables control security-related features.
 > * macOS/Linux: `~/.config/biorouter/secrets.yaml`
 > * Windows: `%APPDATA%\biorouter\config\secrets.yaml`
 
+## Browser access
+
+These variables control what `biorouterd` serves to a web browser. Both are set for you by
+[`biorouter serve`](../deployment/browser-access.md) on the daemon it starts — set them yourself
+only when you run `biorouterd` directly, or from a service unit where the token has to survive a
+restart.
+
+| Variable | Purpose | Values | Default |
+|----------|---------|---------|---------|
+| `BIOROUTER_SERVE_UI` | Directory holding the built browser interface for the daemon to serve. When it is unset the daemon serves no interface and answers only its API, which is what the desktop app wants — Electron loads the interface itself. `biorouter serve --web-dir <dir>` sets it. | Path to a directory containing an `index.html` | Unset (no interface served) |
+| `BIOROUTER_BROWSER_TOKEN` | The access token a browser presents to be handed the interface. It is exchanged on the first request for a session cookie and authenticates nothing else. When it is unset no token is required, which is only correct for a loopback bind — `biorouter serve` refuses to expose an untokened port. `biorouter serve --token <t>` sets it; otherwise the command generates a new one per launch. | Token string (`biorouter serve` uses 64 hexadecimal characters) | Unset (no token required) |
+
+> **Warning.** `BIOROUTER_BROWSER_TOKEN` is a credential. Put it in a file readable only by the
+> service user rather than on a command line, where `ps` shows it to every user on the host.
+
 ## Observability
 
 Beyond biorouter's built-in logging system, you can export telemetry to external observability platforms for advanced monitoring, performance analysis, and production insights.
@@ -334,4 +350,5 @@ Some user-facing variables are not listed above and are documented on their own 
 - [Secret storage](../security/secret-storage.md) — why `BIOROUTER_DISABLE_KEYRING` exists and what changes when you set it.
 - [Permission modes](../security/permission-modes.md) — what each `BIOROUTER_MODE` value permits.
 - [biorouter CLI command reference](../cli/command-reference.md) — the commands these variables modify, including themes and slash commands.
+- [Reaching Biorouter from a browser](../deployment/browser-access.md) — what `BIOROUTER_SERVE_UI` and `BIOROUTER_BROWSER_TOKEN` do in practice, and the command that sets them.
 - [Choosing a model provider](../getting-started/choosing-a-model-provider.md) — the provider names and model IDs the provider variables expect.

@@ -277,7 +277,15 @@ async fn agent_ws(
         .get(axum::http::header::ORIGIN)
         .and_then(|o| o.to_str().ok());
     let expected = ws_token_for(&id);
-    if let Err(reason) = check_ws_auth(origin, params.get("token").map(String::as_str), &expected) {
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok());
+    if let Err(reason) = check_ws_auth(
+        origin,
+        host,
+        params.get("token").map(String::as_str),
+        &expected,
+    ) {
         tracing::warn!(origin = origin.unwrap_or("<none>"), app = %id, "rejected app agent WebSocket: {reason}");
         return (StatusCode::FORBIDDEN, reason).into_response();
     }
@@ -539,11 +547,18 @@ fn ws_token_for(app_id: &str) -> String {
 ///    this daemon", now that the socket carries real authority.
 fn check_ws_auth(
     origin: Option<&str>,
+    host: Option<&str>,
     token: Option<&str>,
     expected: &str,
 ) -> Result<(), &'static str> {
     if let Some(origin) = origin {
-        if !super::is_local_origin(origin) {
+        // `origin_matches_host` admits a browser that reached this daemon at a
+        // LAN address or a hostname, which became possible when the daemon
+        // started serving its own interface (`routes::web_ui`). It compares the
+        // origin against this request's own `Host`, so it is a same-origin test
+        // rather than a widening: a page on any other origin cannot match, and
+        // an opaque `null` origin still fails because it strips no scheme.
+        if !super::is_local_origin(origin) && !super::origin_matches_host(origin, host) {
             return Err("cross-origin connect rejected");
         }
     }
@@ -7186,33 +7201,94 @@ mod tests {
 
         // A cross-origin page is rejected before the token even matters.
         assert_eq!(
-            check_ws_auth(Some("https://evil.com"), Some(expected), expected),
+            check_ws_auth(Some("https://evil.com"), None, Some(expected), expected),
             Err("cross-origin connect rejected")
         );
 
         // A loopback page with no/ wrong token is rejected.
         assert_eq!(
-            check_ws_auth(Some("http://localhost:8080"), None, expected),
+            check_ws_auth(Some("http://localhost:8080"), None, None, expected),
             Err("missing or invalid app socket token")
         );
         assert_eq!(
-            check_ws_auth(Some("http://127.0.0.1"), Some("nope"), expected),
+            check_ws_auth(Some("http://127.0.0.1"), None, Some("nope"), expected),
             Err("missing or invalid app socket token")
         );
 
         // Correct token + a loopback origin is accepted.
         assert_eq!(
-            check_ws_auth(Some("http://localhost:8080"), Some(expected), expected),
+            check_ws_auth(
+                Some("http://localhost:8080"),
+                None,
+                Some(expected),
+                expected
+            ),
             Ok(())
         );
 
         // Correct token + NO Origin header (a non-browser client) is accepted —
         // the token is the authority there.
-        assert_eq!(check_ws_auth(None, Some(expected), expected), Ok(()));
+        assert_eq!(check_ws_auth(None, None, Some(expected), expected), Ok(()));
 
         // A missing token still fails even without an Origin header.
         assert_eq!(
-            check_ws_auth(None, None, expected),
+            check_ws_auth(None, None, None, expected),
+            Err("missing or invalid app socket token")
+        );
+    }
+
+    /// An app opened in a browser that reached this daemon at a LAN address is
+    /// same-origin with it, even though `is_local_origin` has never heard of
+    /// that address. Without this an app's agent socket is dead in browser mode
+    /// exactly when the daemon is reached remotely -- and it fails silently,
+    /// because the client retries with backoff rather than reporting.
+    #[test]
+    fn an_app_page_served_at_a_lan_address_may_open_its_socket() {
+        use super::check_ws_auth;
+        let expected = "app-token";
+        assert_eq!(
+            check_ws_auth(
+                Some("http://192.168.1.42:8765"),
+                Some("192.168.1.42:8765"),
+                Some(expected),
+                expected,
+            ),
+            Ok(())
+        );
+    }
+
+    /// The refusing half. Each case passes an implementation that accepted any
+    /// origin once a `Host` was present, or that compared by prefix.
+    #[test]
+    fn an_app_socket_still_refuses_a_genuinely_cross_origin_page() {
+        use super::check_ws_auth;
+        let expected = "app-token";
+        assert_eq!(
+            check_ws_auth(
+                Some("https://evil.com"),
+                Some("192.168.1.42:8765"),
+                Some(expected),
+                expected,
+            ),
+            Err("cross-origin connect rejected")
+        );
+        assert_eq!(
+            check_ws_auth(
+                Some("http://192.168.1.42:8765.evil.com"),
+                Some("192.168.1.42:8765"),
+                Some(expected),
+                expected,
+            ),
+            Err("cross-origin connect rejected")
+        );
+        // The per-app token is still required on the same-origin path.
+        assert_eq!(
+            check_ws_auth(
+                Some("http://192.168.1.42:8765"),
+                Some("192.168.1.42:8765"),
+                Some("nope"),
+                expected,
+            ),
             Err("missing or invalid app socket token")
         );
     }

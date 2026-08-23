@@ -150,11 +150,41 @@ pub async fn run() -> Result<()> {
             secret_key.clone(),
             check_token,
         ))
-        .layer(cors)
-        // gzip large JSON payloads (config/providers/tools/session bodies). The
-        // default predicate skips small bodies and `text/event-stream`, so the
-        // streaming `/reply` SSE response is left unbuffered/uncompressed.
-        .layer(CompressionLayer::new());
+        .layer(cors);
+
+    // The web interface, when this daemon was asked to serve one. It is added
+    // AFTER `check_token` on purpose: `Router::layer` wraps only what was added
+    // before it, so the shell and the static bundle sit structurally outside
+    // that middleware rather than being exempted from it by path. See
+    // `routes::web_ui` for what gates them instead, and
+    // `docs/deployment/serve-architecture.md` for why the daemon serves them at
+    // all rather than a separate binary proxying to it.
+    let app = match settings.serve_ui.as_deref() {
+        Some(dir) => {
+            let web_dir = std::path::PathBuf::from(dir);
+            // A browser token is minted by whoever launched this daemon --
+            // `biorouter serve` -- and refused outright for a non-loopback bind
+            // there, so its absence here means a loopback bind whose launcher
+            // chose not to require one.
+            let browser_token = std::env::var("BIOROUTER_BROWSER_TOKEN").ok();
+            let ui = crate::routes::web_ui::WebUi::new(&web_dir, &secret_key, browser_token)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "could not read the web interface at {}: {e}",
+                        web_dir.display()
+                    )
+                })?;
+            info!("serving the web interface from {}", web_dir.display());
+            crate::routes::web_ui::attach(app, web_dir, ui)
+        }
+        None => app,
+    };
+
+    // gzip large JSON payloads (config/providers/tools/session bodies), and the
+    // interface bundle when one is served. The default predicate skips small
+    // bodies and `text/event-stream`, so the streaming `/reply` SSE response is
+    // left unbuffered/uncompressed. Outermost, so it covers the interface too.
+    let app = app.layer(CompressionLayer::new());
 
     let listener = tokio::net::TcpListener::bind(settings.socket_addr()).await?;
     let local_addr = listener.local_addr()?;

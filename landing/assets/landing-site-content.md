@@ -122,7 +122,6 @@ JavaScript detects the visitor's OS and shows the recommended download button pr
 | Linux Fedora/RHEL | BioRouter-1.88.1-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/BioRouter-1.88.1-1.x86_64.rpm |
 | Linux CLI Debian/Ubuntu | biorouter-cli_1.88.1_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter-cli_1.88.1_amd64.deb |
 | Linux CLI Fedora/RHEL | biorouter-cli-1.88.1-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter-cli-1.88.1-1.x86_64.rpm |
-| Linux headless web | biorouter-headless-linux-x64.tar.gz | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter-headless-linux-x64.tar.gz |
 
 ### Install Commands
 - macOS: Open DMG and drag Biorouter.app to /Applications

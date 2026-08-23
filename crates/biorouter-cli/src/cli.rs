@@ -1450,8 +1450,63 @@ enum Command {
         cmd: BenchCommand,
     },
 
-    /// Start a web server with a chat interface
-    #[command(about = "Experimental: Start a web server with a chat interface")]
+    /// Run Biorouter and reach it from a browser
+    ///
+    /// `headless` is kept as an alias: it is the name the standalone binary
+    /// this replaced was known by, so anyone following older instructions
+    /// lands in the right place.
+    #[command(
+        about = "Run Biorouter and open it in a browser",
+        visible_alias = "headless"
+    )]
+    Serve {
+        /// Address to bind
+        #[arg(
+            long,
+            default_value = "127.0.0.1",
+            help = "Address to bind. Anything reachable from another machine requires a token."
+        )]
+        host: String,
+
+        /// Port to listen on
+        #[arg(
+            short,
+            long,
+            default_value_t = crate::commands::serve::DEFAULT_PORT,
+            help = "Port to listen on"
+        )]
+        port: u16,
+
+        /// Use this access token instead of a freshly generated one
+        #[arg(long, help = "Use this access token instead of generating one")]
+        token: Option<String>,
+
+        /// Serve without an access token
+        #[arg(
+            long,
+            conflicts_with = "token",
+            help = "Serve without an access token. Refused for a non-loopback bind."
+        )]
+        no_token: bool,
+
+        /// Directory holding the built interface
+        #[arg(long, help = "Directory holding the built web interface")]
+        web_dir: Option<std::path::PathBuf>,
+
+        /// Open a browser once it is ready
+        #[arg(long, help = "Open a browser once the server is ready")]
+        open: bool,
+    },
+
+    /// Deprecated: use `biorouter serve`
+    ///
+    /// This is an inherited, hand-written chat page -- not the Biorouter
+    /// interface. It defaults to port 3000, which collides with the daemon, and
+    /// it shares one agent across every chat. `serve` supersedes it on every
+    /// axis, so this is hidden from help and forwards a notice; it still runs,
+    /// so anyone following older instructions is told where to go rather than
+    /// hitting an unknown-command error.
+    #[command(hide = true, about = "Deprecated: use `biorouter serve` instead")]
     Web {
         /// Port to run the web server on
         #[arg(
@@ -1612,6 +1667,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::SetupPath { .. }) => "setup-path",
         Some(Command::Bench { .. }) => "bench",
         Some(Command::Workflow { .. }) => "workflow",
+        Some(Command::Serve { .. }) => "serve",
         Some(Command::Web { .. }) => "web",
         Some(Command::Term { .. }) => "term",
         Some(Command::Completion { .. }) => "completion",
@@ -2432,7 +2488,21 @@ pub async fn cli() -> anyhow::Result<()> {
         "CLI command executed"
     );
 
-    match cli.command {
+    dispatch(cli.command).await
+}
+
+/// Run the named command.
+///
+/// Split out of [`cli`] so that adding a verb grows a function that is nothing
+/// but arms. `clippy::too_many_lines` is enforced against a baseline here, and
+/// a dispatch table is exactly the shape that limit should not be spent on --
+/// while the setup above it is the part worth keeping short.
+///
+/// The match stays exhaustive with no wildcard arm: a new `Command` variant
+/// must fail to compile in both this function and `get_command_name`, so it
+/// cannot ship silently unreachable.
+async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
+    match command {
         Some(Command::Completion { shell, bin_name }) => {
             let mut cmd = Cli::command();
             generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
@@ -2512,6 +2582,16 @@ pub async fn cli() -> anyhow::Result<()> {
         Some(Command::Extension { command }) => handle_extension_subcommand(command).await,
         Some(Command::Skill { command }) => handle_skill_subcommand(command).await,
         Some(Command::Apps { command }) => handle_apps_subcommand(command).await,
+        Some(Command::Serve {
+            host,
+            port,
+            token,
+            no_token,
+            web_dir,
+            open,
+        }) => {
+            crate::commands::serve::handle_serve(host, port, token, no_token, web_dir, open).await
+        }
         Some(Command::Web {
             port,
             host,

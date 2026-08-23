@@ -1,9 +1,12 @@
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const { fetchLlamaServer } = require('./fetch-llama-server');
 
 // Paths
+const appRoot = path.join(__dirname, '..');
 const srcBinDir = path.join(__dirname, '..', 'src', 'bin');
+const srcWebDir = path.join(__dirname, '..', 'src', 'web');
 const platformWinDir = path.join(__dirname, '..', 'src', 'platform', 'windows', 'bin');
 
 // Platform-specific file patterns
@@ -121,6 +124,44 @@ function copyPlatformFiles(targetPlatform) {
   }
 }
 
+// Build the browser interface bundle (src/web) that `biorouterd` serves when
+// pointed at it with BIOROUTER_SERVE_UI. forge ships it as an extraResource
+// beside src/bin, so the packaged daemon finds it at `<exe dir>/../web`.
+//
+// This runs here rather than in each package.json bundle:* script because this
+// file is the one step every GUI packaging path already shares — bundle:default,
+// bundle:intel, bundle:dmg, bundle:intel-dmg and build-windows.js all invoke it.
+// A bundle that is merely stale is as broken as one that is missing (it would
+// ship a renderer from whenever someone last ran the build by hand), so this
+// always rebuilds rather than skipping when the directory exists.
+function buildWebBundle() {
+  console.log('Building browser interface bundle (npm run build:web)...');
+
+  // Prefer the npm that invoked us so the build runs under the same Node
+  // (packaging requires Node 24 — a newer Node makes electron-forge no-op).
+  // `npm_execpath` is a JS file when npm ran us, so it has to go through
+  // process.execPath; falling back to the `npm` on PATH covers a bare
+  // `node scripts/prepare-platform-binaries.js`.
+  const npmCli = process.env.npm_execpath;
+  const [command, args] =
+    npmCli && /\.[cm]?js$/.test(npmCli)
+      ? [process.execPath, [npmCli, 'run', 'build:web']]
+      : [process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build:web']];
+
+  const result = spawnSync(command, args, { cwd: appRoot, stdio: 'inherit' });
+
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    console.error('\n❌ PACKAGING ERROR: `npm run build:web` failed.');
+    console.error('   The browser interface bundle could not be built, so the');
+    console.error('   package would ship without it. Fix the build and retry.');
+    console.error('');
+    process.exit(result.status ?? 1);
+  }
+}
+
 // Validate that required platform binaries are present before packaging
 function validateRequiredBinaries(targetPlatform) {
   // Both the server (biorouterd) AND the CLI (biorouter) must ship, so the app
@@ -134,14 +175,15 @@ function validateRequiredBinaries(targetPlatform) {
   const requiredForPlatform = required[targetPlatform];
   if (!requiredForPlatform) return;
 
+  const platformLabel =
+    targetPlatform === 'win32' ? 'Windows' : targetPlatform === 'darwin' ? 'macOS' : 'Linux';
+
   const missing = requiredForPlatform.filter((name) => {
     const fullPath = path.join(srcBinDir, name);
     return !fs.existsSync(fullPath);
   });
 
   if (missing.length > 0) {
-    const platformLabel =
-      targetPlatform === 'win32' ? 'Windows' : targetPlatform === 'darwin' ? 'macOS' : 'Linux';
     console.error(`\n❌ PACKAGING ERROR: Missing required ${platformLabel} binary/binaries:`);
     missing.forEach((name) => console.error(`   - ${path.join(srcBinDir, name)}`));
     console.error('\nBuild the backend first:');
@@ -151,6 +193,31 @@ function validateRequiredBinaries(targetPlatform) {
     } else {
       console.error('  cargo build --release  (then: just copy-binary)');
     }
+    console.error('');
+    process.exit(1);
+  }
+
+  // The browser interface bundle ships beside the binaries (extraResource
+  // 'src/web' in forge.config.ts), and `biorouterd` serves it from
+  // `<exe dir>/../web`. Missing, it fails far more quietly than a missing
+  // binary — the app itself still runs, and only `biorouter serve` is dead — so
+  // it gets the same fail-fast treatment. An empty or partial directory counts
+  // as missing: an index.html with no assets/ beside it serves a blank page.
+  const webIndex = path.join(srcWebDir, 'index.html');
+  const webAssets = path.join(srcWebDir, 'assets');
+  const webBundleIsUsable =
+    fs.existsSync(webIndex) &&
+    fs.statSync(webIndex).size > 0 &&
+    fs.existsSync(webAssets) &&
+    fs.readdirSync(webAssets).length > 0;
+
+  if (!webBundleIsUsable) {
+    console.error(
+      `\n❌ PACKAGING ERROR: Missing or empty ${platformLabel} browser interface bundle:`
+    );
+    console.error(`   - ${srcWebDir}`);
+    console.error('\nBuild the browser bundle first:');
+    console.error('  just build-web         (or: cd ui/desktop && npm run build:web)');
     console.error('');
     process.exit(1);
   }
@@ -172,7 +239,11 @@ function preparePlatformBinaries() {
   // Bundle the pinned llama-server sidecar for the Llama Server provider
   fetchLlamaServer(targetPlatform, targetArch);
 
-  // Fail fast if the backend binary is absent — prevents silent broken packages
+  // Build the browser interface bundle biorouterd serves (BIOROUTER_SERVE_UI)
+  buildWebBundle();
+
+  // Fail fast if the backend binary or the web bundle is absent — prevents
+  // silent broken packages
   validateRequiredBinaries(targetPlatform);
 
   console.log('Platform binary preparation complete');

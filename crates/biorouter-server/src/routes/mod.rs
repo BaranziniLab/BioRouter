@@ -23,6 +23,41 @@ pub fn is_local_origin(origin: &str) -> bool {
     }
 }
 
+/// Whether `origin` names the very origin this request was addressed to.
+///
+/// [`is_local_origin`] answers "is this loopback", which was the whole question
+/// while the daemon only ever served a browser on the same machine. Since it can
+/// serve its own interface, a browser may legitimately reach it at a LAN address
+/// or a hostname — and the daemon cannot enumerate those. It may have bound
+/// `0.0.0.0`, and the address the user typed is not knowable from the bind.
+///
+/// What *is* knowable is the `Host` the request carries. A same-origin page
+/// always presents an `Origin` whose authority equals that `Host`, and a page on
+/// any other origin cannot — the browser sets both, and neither is reachable
+/// from script. So comparing the two is a precise same-origin test that needs no
+/// configuration and no wildcard, and it holds for every address the interface
+/// is ever reached at.
+///
+/// Both are compared whole. `http://evil.com` is not admitted by a `Host` of
+/// `evil.com.attacker.net`, because this is an equality test rather than a
+/// prefix one — the same trap [`is_local_origin`] documents.
+pub fn origin_matches_host(origin: &str, host: Option<&str>) -> bool {
+    let Some(host) = host else {
+        // No `Host` to compare against. Refuse rather than guess: the caller
+        // still has the loopback rule and the socket's token.
+        return false;
+    };
+    let authority = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"));
+    let Some(authority) = authority else {
+        // `null`, `file://`, and anything else opaque. Callers that admit
+        // `file://` do so by name; this is not the place for it.
+        return false;
+    };
+    !authority.is_empty() && !host.is_empty() && authority.eq_ignore_ascii_case(host)
+}
+
 /// Compare secrets without an early return, so a caller cannot recover the key
 /// one byte at a time by timing the response.
 ///
@@ -126,11 +161,13 @@ pub mod session;
 pub mod session_events;
 pub mod session_reach;
 pub mod setup;
+pub mod shell;
 pub mod status;
 pub mod tool_bridge;
 pub mod tunnel;
 pub mod usage;
 pub mod utils;
+pub mod web_ui;
 pub mod workflow;
 pub mod workflow_utils;
 pub mod workspace;
@@ -159,6 +196,11 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(coding_agents::routes(state.clone()))
         .merge(llamacpp::routes(state.clone()))
         .merge(memory::routes(state.clone()))
+        // The interface's own endpoints -- the filesystem browser, settings,
+        // extension installation. They stood in front of the daemon with no
+        // authentication at all; inside `configure` they take `check_token`
+        // like everything else. See `routes::shell`.
+        .merge(shell::routes(state.clone()))
         // No secret-key gate: the path carries a single-turn capability nonce, and
         // Codex sends no Authorization header at all, so a header scheme would
         // authenticate one client and not the other. See the module header.

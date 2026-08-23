@@ -25,6 +25,9 @@ import {
 } from '../../../privacy/providerAffiliation';
 import { disclosureRequiredForTier, useDisclosure } from '../../../privacy/disclosureCopy';
 import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier';
+import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
+import { HOST_MANAGED_MODEL_REASON } from '../../../privacy/hostManagedModelCopy';
+import { isBrowserSurface } from '../../../../utils/surface';
 import type { ProviderTier, SessionClassification } from '../../../../api/types.gen';
 
 interface ModelsBottomBarProps {
@@ -119,6 +122,17 @@ export default function ModelsBottomBar({
    * field — never "public".
    */
   const [boundTier, setBoundTier] = useState<ProviderTier | undefined>(undefined);
+
+  /**
+   * SD-1 — is this chip's model chosen here, or on the machine running
+   * `biorouter serve`?
+   *
+   * ⚠ **Not state, and not fetched.** The surface a renderer is running on
+   * cannot change while it is running, so this is read straight from the DOM
+   * marker `renderer.tsx` stamps; a state hook here would add a render in which
+   * the two menu items are still offered.
+   */
+  const hostManaged = isBrowserSurface();
 
   // Check if lead/worker mode is active
   useEffect(() => {
@@ -437,17 +451,30 @@ export default function ModelsBottomBar({
               </div>
             )}
           </div>
+          {/*
+            SD-1. Both items below write `BIOROUTER_PROVIDER` — the first through
+            `/config/set_provider`, the second through `/config/upsert` on that
+            key and on `BIOROUTER_LEAD_*` — and a browser-served daemon refuses
+            all three with a 409 addressed to an AI agent. The note is inside the
+            same block as the items, so the reason is visible in the act of
+            reading why they are grey.
+          */}
+          <HostManagedModelNote className="border-b border-border-subtle px-3 py-2 text-[11px] leading-4 text-text-muted" />
           <div className="p-1.5">
             <DropdownMenuItem
               className="h-auto rounded-element px-2 py-1.5 text-xs font-medium text-text-default"
-              onClick={() => setIsAddModelModalOpen(true)}
+              disabled={hostManaged}
+              title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
+              onClick={hostManaged ? undefined : () => setIsAddModelModalOpen(true)}
             >
               <span>Change Model</span>
               <SlidersHorizontal className="ml-auto size-3.5" />
             </DropdownMenuItem>
             <DropdownMenuItem
               className="h-auto rounded-element px-2 py-1.5 text-xs font-medium text-text-default"
-              onClick={() => setIsLeadWorkerModalOpen(true)}
+              disabled={hostManaged}
+              title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
+              onClick={hostManaged ? undefined : () => setIsLeadWorkerModalOpen(true)}
             >
               <span>Lead/Worker Settings</span>
               <SlidersHorizontal className="ml-auto size-3.5" />

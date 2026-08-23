@@ -13,6 +13,9 @@ import CommercialSetupCard from './onboarding/CommercialSetupCard';
 import type { DetectedProviderSetup } from './onboarding/CommercialSetupCard';
 import { SwitchModelModal } from './settings/models/subcomponents/SwitchModelModal';
 import { createNavigationHandler } from '../utils/navigationUtils';
+import { isBrowserSurface } from '../utils/surface';
+import { HostManagedModelPanel } from './privacy/HostManagedModelPanel';
+import { HOST_SERVE_COMMAND } from './privacy/hostManagedModelCopy';
 
 interface ProviderGuardProps {
   didSelectProvider: boolean;
@@ -157,6 +160,15 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   }
 
   if (!hasProvider && showFirstTimeSetup) {
+    /**
+     * SD-1's dead end, closed. Every card below writes `BIOROUTER_PROVIDER`, and
+     * on a browser-served surface all five of those writes are refused with a
+     * 409 whose body is addressed to an AI agent. Offering the picker and then
+     * refusing it is the exact failure SD-1 rules out, so the browser gets the
+     * one instruction that actually works — go and run it on the host — and the
+     * cards are not rendered at all.
+     */
+    const hostManaged = isBrowserSurface();
     return (
       <div className="fixed inset-0 flex flex-col overflow-hidden bg-background-muted">
         {/* Flat page header */}
@@ -169,8 +181,9 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
               Welcome to Biorouter
             </h1>
             <p className="text-sm text-text-muted mt-1.5 leading-relaxed">
-              An integrated research environment that connects local, institution-hosted, and
-              commercial AI models in one interface, built for biomedical discovery.
+              {hostManaged
+                ? `Biorouter is being served to this browser by ${HOST_SERVE_COMMAND}. One more step is needed on that machine before you can start a chat.`
+                : 'An integrated research environment that connects local, institution-hosted, and commercial AI models in one interface, built for biomedical discovery.'}
             </p>
           </div>
         </div>
@@ -182,20 +195,26 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
           className="flex-1 min-h-0 overflow-y-auto bg-background-muted"
         >
           <div className="mx-auto max-w-2xl space-y-4 px-4 py-4 sm:px-8 sm:py-6">
-            <LlamaServerInlineCard onSuccess={handleLlamaServerComplete} />
-            <OllamaInlineCard onSuccess={handleOllamaComplete} />
-            <InstitutionalSetupCard
-              onSuccess={handleProviderReady}
-              onStartTesting={() => setUserInActiveSetup(true)}
-            />
-            {/* Above CommercialSetupCard on purpose: a user who already pays for a
-                coding-agent plan needs no key at all, so the cheaper path is offered
-                before the one that asks them to paste a secret. */}
-            <CodingAgentInlineCard onSuccess={handleProviderReady} />
-            <CommercialSetupCard
-              onSuccess={handleCommercialSuccess}
-              onStartTesting={() => setUserInActiveSetup(true)}
-            />
+            {hostManaged ? (
+              <HostManagedModelPanel />
+            ) : (
+              <>
+                <LlamaServerInlineCard onSuccess={handleLlamaServerComplete} />
+                <OllamaInlineCard onSuccess={handleOllamaComplete} />
+                <InstitutionalSetupCard
+                  onSuccess={handleProviderReady}
+                  onStartTesting={() => setUserInActiveSetup(true)}
+                />
+                {/* Above CommercialSetupCard on purpose: a user who already pays for a
+                    coding-agent plan needs no key at all, so the cheaper path is offered
+                    before the one that asks them to paste a secret. */}
+                <CodingAgentInlineCard onSuccess={handleProviderReady} />
+                <CommercialSetupCard
+                  onSuccess={handleCommercialSuccess}
+                  onStartTesting={() => setUserInActiveSetup(true)}
+                />
+              </>
+            )}
           </div>
         </div>
 

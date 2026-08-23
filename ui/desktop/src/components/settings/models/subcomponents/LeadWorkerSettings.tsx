@@ -14,6 +14,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../../../ui/dialog';
+import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
+import { HOST_MANAGED_MODEL_REASON } from '../../../privacy/hostManagedModelCopy';
+import { isBrowserSurface } from '../../../../utils/surface';
 
 interface LeadWorkerSettingsProps {
   isOpen: boolean;
@@ -160,7 +163,16 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
     }
   }, [isLoading, modelOptions, leadModel, workerModel]);
 
+  /**
+   * SD-1. Save writes `BIOROUTER_LEAD_MODEL`, `BIOROUTER_LEAD_PROVIDER` and
+   * `BIOROUTER_PROVIDER` — three of the five capability keys — and the disable
+   * branch *removes* two of them, which `/config/remove` guards identically.
+   * Both directions 409 in a browser.
+   */
+  const hostManaged = isBrowserSurface();
+
   const handleSave = async () => {
+    if (hostManaged) return;
     try {
       if (isEnabled && leadModel && workerModel) {
         // Save lead/worker configuration
@@ -212,6 +224,8 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
           <DialogDescription className="text-sm text-text-muted">
             Configure a lead model for planning and a worker model for execution.
           </DialogDescription>
+
+          <HostManagedModelNote className="rounded-container border border-border-subtle bg-background-muted px-3 py-2.5 text-xs leading-relaxed text-text-muted" />
 
           <div className="biorouter-modal-panel flex items-center justify-between gap-4 rounded-container px-3 py-2.5">
             <div>
@@ -384,7 +398,11 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
             <Button variant="ghost" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={handleSave} disabled={isEnabled && (!leadModel || !workerModel)}>
+            <Button
+              onClick={handleSave}
+              disabled={hostManaged || (isEnabled && (!leadModel || !workerModel))}
+              title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
+            >
               Save Settings
             </Button>
           </div>

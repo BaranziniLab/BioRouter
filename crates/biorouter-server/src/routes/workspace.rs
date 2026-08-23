@@ -34,6 +34,7 @@ struct WorkspaceRouteState {
 
 fn check_workspace_ws_auth(
     origin: Option<&str>,
+    host: Option<&str>,
     token: Option<&str>,
     expected: &str,
 ) -> Result<(), &'static str> {
@@ -52,7 +53,16 @@ fn check_workspace_ws_auth(
         // rejects it by name (`assert!(!is_local_origin("null"))`).
         // This gate must stay at least as strict as `apps::check_ws_auth`
         // (`apps.rs:538-546`), which is the route the design claims parity with.
-        if origin != "file://" && !super::is_local_origin(origin) {
+        // `origin_matches_host` is what admits a browser that reached this
+        // daemon at a LAN address or a hostname, which is possible now that the
+        // daemon serves its own interface (`routes::web_ui`). It is a
+        // same-origin test against the request's own `Host`, not a widening:
+        // a page on any other origin still cannot match, and `null` is still
+        // refused because it strips no scheme.
+        if origin != "file://"
+            && !super::is_local_origin(origin)
+            && !super::origin_matches_host(origin, host)
+        {
             return Err("cross-origin connect rejected");
         }
     }
@@ -118,9 +128,15 @@ async fn workspace_ws(
         .get(axum::http::header::ORIGIN)
         .and_then(|o| o.to_str().ok());
     let state = rs.state.clone();
-    if let Err(reason) =
-        check_workspace_ws_auth(origin, params.get("secret").map(String::as_str), &rs.secret)
-    {
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok());
+    if let Err(reason) = check_workspace_ws_auth(
+        origin,
+        host,
+        params.get("secret").map(String::as_str),
+        &rs.secret,
+    ) {
         tracing::warn!(
             origin = origin.unwrap_or("<none>"),
             "rejected workspace WS: {reason}"
@@ -272,13 +288,16 @@ mod tests {
         let secret = "test-secret";
         // Browser-set web origins must be loopback (CSWSH — is_local_origin,
         // routes/mod.rs:9-24).
-        assert!(check_workspace_ws_auth(Some("https://evil.com"), Some(secret), secret).is_err());
         assert!(
-            check_workspace_ws_auth(Some("http://127.0.0.1:5173"), Some(secret), secret).is_ok()
+            check_workspace_ws_auth(Some("https://evil.com"), None, Some(secret), secret).is_err()
+        );
+        assert!(
+            check_workspace_ws_auth(Some("http://127.0.0.1:5173"), None, Some(secret), secret)
+                .is_ok()
         );
         // Decision 3's Electron allowance, kept to ONE measured literal: the
         // packaged renderer loads from a file: URL (main.ts `pathToFileURL`).
-        assert!(check_workspace_ws_auth(Some("file://"), Some(secret), secret).is_ok());
+        assert!(check_workspace_ws_auth(Some("file://"), None, Some(secret), secret).is_ok());
         // "null" is REFUSED. It is the opaque origin of every sandboxed frame,
         // including the agent-authored figures this app renders in its artifact
         // side panel (a srcDoc iframe carrying `sandbox="allow-scripts
@@ -289,17 +308,89 @@ mod tests {
         // it would make this gate strictly weaker than `apps::check_ws_auth`
         // (apps.rs:538-546), the route the design claims parity with, leaving
         // the socket secret-only.
-        assert!(check_workspace_ws_auth(Some("null"), Some(secret), secret).is_err());
-        assert!(check_workspace_ws_auth(None, Some(secret), secret).is_ok());
+        assert!(check_workspace_ws_auth(Some("null"), None, Some(secret), secret).is_err());
+        assert!(check_workspace_ws_auth(None, None, Some(secret), secret).is_ok());
         // Wrong/missing secret always refuses.
-        assert!(check_workspace_ws_auth(None, Some("wrong"), secret).is_err());
-        assert!(check_workspace_ws_auth(None, None, secret).is_err());
+        assert!(check_workspace_ws_auth(None, None, Some("wrong"), secret).is_err());
+        assert!(check_workspace_ws_auth(None, None, None, secret).is_err());
         // Same length, differing in one byte, and a prefix: the comparison is
         // `secret_matches`, which returns early on LENGTH only. A call that got
         // its arguments confused, or compared lengths alone, passes the two
         // cases above (`"wrong"` is 5 bytes against 11) and fails these.
-        assert!(check_workspace_ws_auth(None, Some("test-secreT"), secret).is_err());
-        assert!(check_workspace_ws_auth(None, Some("test-secre"), secret).is_err());
+        assert!(check_workspace_ws_auth(None, None, Some("test-secreT"), secret).is_err());
+        assert!(check_workspace_ws_auth(None, None, Some("test-secre"), secret).is_err());
+    }
+
+    /// The daemon serves its own interface now (`routes::web_ui`), so a browser
+    /// can legitimately reach it at a LAN address or a hostname that
+    /// `is_local_origin` has never heard of. The same-origin rule is what admits
+    /// those, and it must admit ONLY those.
+    #[test]
+    fn a_browser_that_reached_this_daemon_at_a_lan_address_is_same_origin() {
+        let secret = "test-secret";
+        // Served at a LAN address: Origin and Host agree, so it is the very
+        // page this daemon handed out.
+        assert!(check_workspace_ws_auth(
+            Some("http://192.168.1.42:8765"),
+            Some("192.168.1.42:8765"),
+            Some(secret),
+            secret,
+        )
+        .is_ok());
+        // A hostname works identically -- nothing is enumerated.
+        assert!(check_workspace_ws_auth(
+            Some("http://lab-server:8765"),
+            Some("lab-server:8765"),
+            Some(secret),
+            secret,
+        )
+        .is_ok());
+    }
+
+    /// The half that makes the rule a gate rather than a hole. Each of these
+    /// passes an implementation that merely checks "a Host header is present",
+    /// or that prefix-matches instead of comparing whole.
+    #[test]
+    fn a_cross_origin_page_still_cannot_reach_the_socket_however_it_was_addressed() {
+        let secret = "test-secret";
+        // The attack the gate exists for: a page on another origin, connecting
+        // to the daemon. The browser sets Origin to the page, Host to the
+        // target -- they differ, so it is refused.
+        assert!(check_workspace_ws_auth(
+            Some("https://evil.com"),
+            Some("192.168.1.42:8765"),
+            Some(secret),
+            secret,
+        )
+        .is_err());
+        // Prefix confusion in both directions.
+        assert!(check_workspace_ws_auth(
+            Some("http://evil.com"),
+            Some("evil.com.attacker.net"),
+            Some(secret),
+            secret,
+        )
+        .is_err());
+        assert!(check_workspace_ws_auth(
+            Some("http://192.168.1.42:8765.evil.com"),
+            Some("192.168.1.42:8765"),
+            Some(secret),
+            secret,
+        )
+        .is_err());
+        // A matching Host does not rescue an opaque origin.
+        assert!(
+            check_workspace_ws_auth(Some("null"), Some("null"), Some(secret), secret,).is_err()
+        );
+        // And the secret is still required on the same-origin path, so the
+        // widening cannot be mistaken for an exemption.
+        assert!(check_workspace_ws_auth(
+            Some("http://192.168.1.42:8765"),
+            Some("192.168.1.42:8765"),
+            Some("wrong"),
+            secret,
+        )
+        .is_err());
     }
 
     #[test]

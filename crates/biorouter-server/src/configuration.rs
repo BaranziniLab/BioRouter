@@ -9,6 +9,19 @@ pub struct Settings {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    /// Directory holding the built web interface, or `None` to serve none.
+    ///
+    /// Set as `BIOROUTER_SERVE_UI`. When it is absent the daemon behaves
+    /// exactly as it always has and answers only its API — which is what the
+    /// desktop application wants, since Electron loads the bundle itself. When
+    /// it is present the daemon additionally serves that directory as the
+    /// application shell, which is how `biorouter serve` reaches a browser.
+    ///
+    /// It is a setting rather than a command-line flag because the daemon takes
+    /// no flags: `Settings` is the whole of its configuration surface, read from
+    /// the environment with a `BIOROUTER_` prefix.
+    #[serde(default)]
+    pub serve_ui: Option<String>,
 }
 
 impl Settings {
@@ -83,6 +96,7 @@ mod tests {
         let server_settings = Settings {
             host: "127.0.0.1".to_string(),
             port: 3000,
+            serve_ui: None,
         };
         let addr = server_settings.socket_addr();
         assert_eq!(addr.to_string(), "127.0.0.1:3000");

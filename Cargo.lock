@@ -1184,27 +1184,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "biorouter-headless"
-version = "1.89.4"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "dirs 6.0.0",
- "http-body-util",
- "mime_guess",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
- "tower-http 0.5.2",
- "tracing",
- "tracing-subscriber",
- "zip 8.6.0",
-]
-
-[[package]]
 name = "biorouter-mcp"
 version = "1.89.4"
 dependencies = [

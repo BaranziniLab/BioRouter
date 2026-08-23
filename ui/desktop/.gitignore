@@ -13,3 +13,4 @@ src/bin/temporal.db
 src/platform/windows/bin/git/
 # Signing credentials
 .env.signing
+src/web/

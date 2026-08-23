@@ -260,6 +260,15 @@ pub async fn handle_web(
     auth_token: Option<String>,
     _no_auth: bool, // kept for CLI backwards compatibility but no longer bypasses auth
 ) -> Result<()> {
+    // Deprecated in favour of `biorouter serve`, which serves the real
+    // Biorouter interface instead of this inherited single-page chat. Printed
+    // rather than refused: someone is following instructions that were correct
+    // when they were written, and stopping them dead would not help.
+    eprintln!(
+        "`biorouter web` is deprecated and will be removed in a future release.\n\
+         Use `biorouter serve` instead -- it serves the full Biorouter interface, \n\
+         with sessions, extensions and knowledge bases.\n"
+    );
     validate_network_auth(&host, &auth_token);
     crate::logging::setup_logging(Some("biorouter-web"), None)?;
 
