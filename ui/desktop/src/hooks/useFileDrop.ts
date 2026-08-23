@@ -110,14 +110,47 @@ export const useFileDrop = () => {
 
         try {
           const sourcePath = window.electron.getPathForFile(file);
-          const path = sourcePath || file.name;
           const canUploadAsImage =
             UPLOADABLE_IMAGE_TYPES.has(file.type.toLowerCase()) &&
             file.size <= MAX_STAGED_IMAGE_BYTES;
 
+          // ⚠ NEVER fall back to `file.name` when there is no source path.
+          //
+          // This used to read `sourcePath || file.name`, which looks like a
+          // harmless default and is not. A bare name is resolved against the
+          // working directory of whatever reads it -- and in browser mode that
+          // is the SERVER, a different machine from the one the file was
+          // dragged off. Dropping `results.csv` could therefore hand the agent
+          // a completely different `results.csv` that happened to exist there,
+          // with nothing anywhere reporting a problem.
+          //
+          // Images are exempt because they never need a path: they are read
+          // here as data URLs and staged by `saveDataUrlToTemp`, which is why
+          // dropping an image still works with no filesystem access at all.
+          if (!sourcePath && !canUploadAsImage) {
+            droppedFileObjects.push({
+              id: `dropped-nopath-${Date.now()}-${i}`,
+              path: '',
+              // Explicitly absent, matching the shape of the normal branch, so
+              // nothing downstream can read a stale or invented source.
+              sourcePath: undefined,
+              name: file.name,
+              type: file.type,
+              isImage: file.type.startsWith('image/'),
+              canUploadAsImage: false,
+              isLoading: false,
+              error:
+                'This file cannot be read from a browser tab. Biorouter runs on ' +
+                'another machine here, so it has no way to reach the file you ' +
+                'dropped. Copy it onto that machine and reference it by path, ' +
+                'or paste its contents into the message.',
+            });
+            continue;
+          }
+
           droppedFile = {
             id: `dropped-${Date.now()}-${i}`,
-            path,
+            path: sourcePath,
             sourcePath: sourcePath || undefined,
             name: file.name,
             type: file.type,
