@@ -13,6 +13,7 @@ import { SwitchModelModal } from '../models/subcomponents/SwitchModelModal';
 import type { View } from '../../../utils/navigationUtils';
 import { getOrderedProviderGroups } from './providerOrdering';
 import { NonPrivateModelDisclosureNote } from '../../privacy/NonPrivateModelDisclosureNote';
+import { HostManagedModelNote } from '../../privacy/HostManagedModelNote';
 
 const GridLayout = memo(function GridLayout({ children }: { children: React.ReactNode }) {
   return <div className="flex flex-col">{children}</div>;
@@ -204,6 +205,14 @@ function ProviderCards({
   const title = (editingProvider ? (editable ? 'Edit' : 'Configure') : 'Add') + '  Provider';
   return (
     <>
+      {/*
+        SD-1, stated once at the top of the page rather than on twenty cards.
+        Storing a provider's API key still works in a browser — a secret is not a
+        capability key — but the step *after* it, choosing which model becomes
+        the default, is refused. Saying so here means the user learns it before
+        pasting a key rather than after.
+      */}
+      <HostManagedModelNote className="mb-6 rounded-container border border-border-subtle bg-background-default px-4 py-3 text-xs leading-relaxed text-text-muted" />
       <div className="space-y-8">
         {sections.map((section) => {
           // The commercial section always renders: it hosts "Add Custom

@@ -9,6 +9,11 @@ import { ConfigProvider } from './components/ConfigContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { client } from './api/client.gen';
 import { wrapArtifactForBrowser } from './utils/artifactSecurity';
+// The marker written below and the helper every provider/model control reads
+// are one definition, so the surface cannot be stamped in a spelling nothing
+// detects. `utils/surface.ts` imports nothing and touches only `document`, so
+// pulling it in here cannot disturb the polyfill above.
+import { BROWSER_SURFACE_BODY_CLASS, BROWSER_SURFACE_MARKER } from './utils/surface';
 
 const App = lazy(() => import('./App'));
 
@@ -172,8 +177,8 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
   // Published for `headlessJson`, which is module-level and has no other way to
   // reach it. Set before any shim method can run.
   headlessSecretKey = headlessConfig.secretKey;
-  document.documentElement.dataset.biorouterSurface = 'headless';
-  document.body.classList.add('biorouter-headless-browser');
+  document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+  document.body.classList.add(BROWSER_SURFACE_BODY_CLASS);
   if (typeof window.appConfig === 'undefined') {
     (window as unknown as Record<string, unknown>).appConfig = {
       get: (key: string) => headlessConfig.appConfig[key],

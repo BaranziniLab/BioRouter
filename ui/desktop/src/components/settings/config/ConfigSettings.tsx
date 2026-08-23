@@ -7,6 +7,11 @@ import { cn } from '../../../utils';
 import { Save, RotateCcw, FileText, Settings } from '../../icons/app-icons';
 import { toastSuccess, toastError } from '../../../toasts';
 import { getUiNames, providerPrefixes } from '../../../utils/configUtils';
+import { isBrowserSurface, isHostManagedConfigKey } from '../../../utils/surface';
+import {
+  HOST_MANAGED_MODEL_REASON,
+  HOST_MANAGED_MODEL_SHORT,
+} from '../../privacy/hostManagedModelCopy';
 import type { ConfigData, ConfigValue } from '../../../types/config';
 import {
   Dialog,
@@ -65,7 +70,20 @@ export default function ConfigSettings() {
     });
   };
 
+  /**
+   * SD-1, key by key.
+   *
+   * ⚠ **Not a blanket disable.** This editor renders every non-secret config
+   * key, and a browser-served daemon refuses exactly five of them — the ones
+   * `is_capability_key` names. Greying out the whole page would be wrong about
+   * the great majority of it, so the question is asked per row. See
+   * `utils/surface.ts` for the mirrored list and the drift risk it carries.
+   */
+  const hostManaged = isBrowserSurface();
+  const isFixedByHost = (key: string) => hostManaged && isHostManagedConfigKey(key);
+
   const handleSave = async (key: string) => {
+    if (isFixedByHost(key)) return;
     setSaving(key);
     try {
       await upsert(key, configValues[key], false);
@@ -205,35 +223,50 @@ export default function ConfigSettings() {
                 {configEntries.length === 0 ? (
                   <p className="text-text-muted">No configuration settings found.</p>
                 ) : (
-                  configEntries.map(([key, _value]) => (
-                    <div key={key} className="grid grid-cols-[200px_1fr_auto] gap-3 items-center">
-                      <label className="text-sm font-medium text-text-default" title={key}>
-                        {getUiNames(key)}
-                      </label>
-                      <Input
-                        value={String(configValues[key] || '')}
-                        onChange={(e) => handleChange(key, e.target.value)}
-                        className={cn(
-                          'text-text-default border-border-subtle hover:border-border-subtle transition-colors',
-                          modifiedKeys.has(key) && 'border-border-info '
-                        )}
-                        placeholder={`Enter ${getUiNames(key)}`}
-                      />
-                      <Button
-                        onClick={() => handleSave(key)}
-                        disabled={!modifiedKeys.has(key) || saving === key}
-                        variant="ghost"
-                        size="sm"
-                        className="min-w-[60px]"
-                      >
-                        {saving === key ? (
-                          <span className="text-xs">Saving...</span>
-                        ) : (
-                          <Save className="h-4 w-4" />
-                        )}
-                      </Button>
-                    </div>
-                  ))
+                  configEntries.map(([key, _value]) => {
+                    const fixedByHost = isFixedByHost(key);
+                    return (
+                      <div key={key} className="grid grid-cols-[200px_1fr_auto] gap-3 items-center">
+                        <label className="text-sm font-medium text-text-default" title={key}>
+                          {getUiNames(key)}
+                        </label>
+                        <div className="min-w-0">
+                          <Input
+                            value={String(configValues[key] || '')}
+                            onChange={(e) => handleChange(key, e.target.value)}
+                            disabled={fixedByHost}
+                            className={cn(
+                              'text-text-default border-border-subtle hover:border-border-subtle transition-colors',
+                              modifiedKeys.has(key) && 'border-border-info '
+                            )}
+                            placeholder={`Enter ${getUiNames(key)}`}
+                          />
+                          {fixedByHost && (
+                            <p
+                              data-testid={`host-managed-config-${key}`}
+                              className="mt-1 text-xs leading-relaxed text-text-muted"
+                            >
+                              {HOST_MANAGED_MODEL_SHORT}
+                            </p>
+                          )}
+                        </div>
+                        <Button
+                          onClick={() => handleSave(key)}
+                          disabled={fixedByHost || !modifiedKeys.has(key) || saving === key}
+                          title={fixedByHost ? HOST_MANAGED_MODEL_REASON : undefined}
+                          variant="ghost"
+                          size="sm"
+                          className="min-w-[60px]"
+                        >
+                          {saving === key ? (
+                            <span className="text-xs">Saving...</span>
+                          ) : (
+                            <Save className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </div>

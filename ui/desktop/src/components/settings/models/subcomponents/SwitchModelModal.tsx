@@ -23,6 +23,9 @@ import {
   affiliationPresentation,
   readProviderAffiliation,
 } from '../../../privacy/providerAffiliation';
+import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
+import { HOST_MANAGED_MODEL_TITLE } from '../../../privacy/hostManagedModelCopy';
+import { isBrowserSurface } from '../../../../utils/surface';
 import {
   llamacppStatus,
   ProviderType,
@@ -302,6 +305,20 @@ export const SwitchModelModal = ({
   );
   const selectedAffiliationWords = affiliationPresentation(selectedAffiliation);
 
+  /**
+   * SD-1, at the one place every model picker in the app ends up.
+   *
+   * ⚠ **This is the choke point, so it is guarded here as well as at each
+   * entry.** `ModelsBottomBar`, `ModelSettingsButtons`, `ProviderGrid` and
+   * `ProviderGuard` all open this dialog, and each of them now refuses to on a
+   * browser surface — but an entry point that forgets is a picker that submits,
+   * and `changeModel` writes `BIOROUTER_PROVIDER` through
+   * `/config/set_provider`, which the daemon refuses with prose written for an
+   * AI agent. The same "pre-flight, not post-refusal" rule the tier check above
+   * follows.
+   */
+  const hostManaged = isBrowserSurface();
+
   const blockedReasonFor = useCallback(
     (providerName: string | undefined | null) =>
       privacyTier === 'private' && providerName && publicProviderNames.has(providerName)
@@ -364,6 +381,10 @@ export const SwitchModelModal = ({
   };
 
   const handleSubmit = async () => {
+    // The button below is already disabled on a browser surface; this is the
+    // second half of the same guard, for a keyboard submit or a call site that
+    // renders its own confirm.
+    if (hostManaged) return;
     setAttemptedSubmit(true);
     const isFormValid = validateForm();
 
@@ -643,8 +664,19 @@ export const SwitchModelModal = ({
             <Brain size={24} className="text-text-default" />
             {titleOverride || 'Switch models'}
           </DialogTitle>
-          <DialogDescription>Select a provider and model to use for your chats.</DialogDescription>
+          <DialogDescription>
+            {hostManaged
+              ? HOST_MANAGED_MODEL_TITLE
+              : 'Select a provider and model to use for your chats.'}
+          </DialogDescription>
         </DialogHeader>
+
+        {/*
+          Above the controls, not below them: the reason a picker is inert has
+          to be readable before the user tries it, which is the whole of SD-1's
+          consequence clause. Renders nothing on the desktop.
+        */}
+        <HostManagedModelNote className="rounded-container border border-border-subtle bg-background-muted px-3 py-2.5 text-xs leading-relaxed text-text-muted" />
 
         <div className="flex flex-col gap-4 py-4">
           {usePredefinedModels ? (
@@ -659,12 +691,21 @@ export const SwitchModelModal = ({
                   return (
                     <div
                       key={model.id || model.name}
-                      onClick={() => setSelectedPredefinedModel(model)}
+                      // The predefined branch swaps both selects for this flat
+                      // list, so it bypasses `isDisabled` on them entirely — the
+                      // same hole `validateForm` documents for the tier
+                      // pre-flight, and it has to be closed here for the same
+                      // reason.
+                      onClick={hostManaged ? undefined : () => setSelectedPredefinedModel(model)}
+                      aria-disabled={hostManaged || undefined}
                       className={[
-                        'biorouter-modal-row flex items-start gap-3 py-2.5 px-3 rounded-container cursor-pointer transition-colors',
+                        'biorouter-modal-row flex items-start gap-3 py-2.5 px-3 rounded-container transition-colors',
+                        hostManaged ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
                         isSelected
                           ? '!border-border-default tint-selected tint-interactive'
-                          : 'hover:!border-border-default tint-interactive',
+                          : hostManaged
+                            ? ''
+                            : 'hover:!border-border-default tint-interactive',
                       ].join(' ')}
                     >
                       {/* Radio dot */}
@@ -738,6 +779,7 @@ export const SwitchModelModal = ({
                   }}
                   placeholder="Provider, type to search"
                   isClearable
+                  isDisabled={hostManaged}
                 />
                 {attemptedSubmit && validationErrors.provider && (
                   <div className="text-text-danger text-sm mt-1">{validationErrors.provider}</div>
@@ -785,7 +827,7 @@ export const SwitchModelModal = ({
                           loadingModels ? 'Loading models…' : 'Select a model, type to search'
                         }
                         isClearable
-                        isDisabled={loadingModels}
+                        isDisabled={loadingModels || hostManaged}
                       />
 
                       {attemptedSubmit && validationErrors.model && (
@@ -810,6 +852,7 @@ export const SwitchModelModal = ({
                         placeholder="Type model name here"
                         onChange={(event) => setModel(event.target.value)}
                         value={model}
+                        disabled={hostManaged}
                       />
                       {attemptedSubmit && validationErrors.model && (
                         <div className="text-text-danger text-sm mt-1">
@@ -838,7 +881,7 @@ export const SwitchModelModal = ({
             <Button variant="outline" onClick={handleClose} type="button">
               Cancel
             </Button>
-            <Button onClick={handleSubmit} disabled={!isValid}>
+            <Button onClick={handleSubmit} disabled={!isValid || hostManaged}>
               Select model
             </Button>
           </div>
