@@ -1604,8 +1604,21 @@ mod tests {
             guard.resolve("~/../../../etc/passwd"),
             Err(Refusal::Outside)
         );
+        // Climb out of the root by an amount that does NOT depend on how deep
+        // the temporary directory happens to be. `{tmp}/home/../..` folds to
+        // the PARENT of `tmp`, which always exists and is always outside the
+        // root -- on every platform.
+        //
+        // A fixed `../../..` from `tmp` is not portable and was a real CI
+        // failure: macOS hands out a six-component temporary path
+        // (`/var/folders/xx/yyy/T/.tmpNNN`), so three levels up is still a real
+        // directory and the answer is `Outside`; Linux hands out
+        // `/tmp/.tmpNNN`, so the same three levels walk above `/` and the
+        // answer is correctly `Malformed`. The guard was right both times --
+        // the assertion was reading a property of the temporary directory
+        // rather than of the guard.
         assert_eq!(
-            guard.resolve(&format!("{}/../../..", tmp.path().display())),
+            guard.resolve(&format!("{}/home/../..", tmp.path().display())),
             Err(Refusal::Outside)
         );
         // Relative paths resolve against the working directory and are folded
