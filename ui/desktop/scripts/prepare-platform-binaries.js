@@ -163,6 +163,50 @@ function buildWebBundle() {
 }
 
 // Validate that required platform binaries are present before packaging
+function listFilesRecursive(dir) {
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...listFilesRecursive(full));
+    else out.push(full);
+  }
+  return out;
+}
+
+/// Fail if a package carries another platform's executables.
+///
+/// `validateRequiredBinaries` asserts the RIGHT files are present. Nothing
+/// asserted the WRONG ones are absent, and the two are not the same check: the
+/// Linux .deb shipped 31 Windows files under `bin/llamacpp/` — `llama-server.exe`
+/// among them — while every "is it there" assertion passed.
+///
+/// It has to recurse. The Linux packaging script removed `*.exe` with a
+/// top-level glob, which cannot match `bin/llamacpp/llama-server.exe`, and
+/// `cleanBinDirectory` walks one level for the same reason.
+function assertNoForeignBinaries(targetPlatform) {
+  const foreign = {
+    darwin: [/\.exe$/i, /\.dll$/i, /\.cmd$/i],
+    linux: [/\.exe$/i, /\.dll$/i, /\.cmd$/i],
+    win32: [],
+  }[targetPlatform];
+  if (!foreign || foreign.length === 0) return;
+
+  const offenders = listFilesRecursive(srcBinDir)
+    .filter((f) => foreign.some((re) => re.test(f)))
+    .map((f) => path.relative(srcBinDir, f));
+
+  if (offenders.length > 0) {
+    const label = targetPlatform === 'darwin' ? 'macOS' : 'Linux';
+    console.error(`\n❌ PACKAGING ERROR: ${offenders.length} foreign executable(s) in the ${label} bundle:`);
+    for (const o of offenders.slice(0, 40)) console.error(`   - ${o}`);
+    if (offenders.length > 40) console.error(`   ... and ${offenders.length - 40} more`);
+    console.error('\nThese belong to another platform and must not ship. If they are');
+    console.error('under llamacpp/, the wrong platform\'s sidecar was fetched.');
+    process.exit(1);
+  }
+}
+
 function validateRequiredBinaries(targetPlatform) {
   // Both the server (biorouterd) AND the CLI (biorouter) must ship, so the app
   // can offer "install the Biorouter CLI" from its bundled binary.
@@ -245,6 +289,9 @@ function preparePlatformBinaries() {
   // Fail fast if the backend binary or the web bundle is absent — prevents
   // silent broken packages
   validateRequiredBinaries(targetPlatform);
+
+  // ...and that no other platform's executables came along for the ride.
+  assertNoForeignBinaries(targetPlatform);
 
   console.log('Platform binary preparation complete');
 }
