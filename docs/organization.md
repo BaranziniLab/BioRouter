@@ -92,7 +92,7 @@ Current top-level areas:
 | `cli/` | the `biorouter` command-line interface |
 | `configuration/` | config files and environment variables |
 | `desktop-ui/` | the Electron GUI |
-| `deployment/` | running BioRouter somewhere other than a developer's laptop |
+| `deployment/` | reaching Biorouter through a browser — on your own machine or on a shared host |
 | `releases/` | release engineering, plus `notes/` per shipped version |
 | `troubleshooting/` | when something is broken |
 | `design/` | visual and interaction design, including HTML studios |

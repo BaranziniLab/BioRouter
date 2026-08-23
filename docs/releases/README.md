@@ -9,8 +9,8 @@ architecture QA.
 Come here when you are preparing, verifying, or documenting a shipped version. If you
 are installing BioRouter rather than building it, start with
 [installation](../getting-started/installation.md). If you are standing BioRouter up as
-a shared headless server, that is a separate artifact shape with its own scripts —
-see [deployment](../deployment/README.md). Note that the release pipeline itself
+a server people reach through a browser, that is [deployment](../deployment/README.md) —
+the same packages, started with `biorouter serve`. Note that the release pipeline itself
 (`scripts/release.sh`, the `release-*` targets in the `Justfile`) is the authority on
 how releases are actually cut; the cross-compilation guide here is explicitly *not*
 that path.
@@ -35,8 +35,8 @@ that path.
 
 ## Related documentation
 
-- [Deployment](../deployment/README.md) — running BioRouter as a shared headless
-  server, the other packaging path and the one that consumes cross-built Linux binaries.
+- [Deployment](../deployment/README.md) — reaching Biorouter through a browser, on
+  your own machine or on a shared host.
 - [Installation and setup](../getting-started/installation.md) — the per-platform
   install paths an update has to replace cleanly.
 - [Environment variables](../configuration/environment-variables.md) — reference for

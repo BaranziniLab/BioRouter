@@ -39,7 +39,6 @@ The backend is a Rust workspace (`crates/`) organized into several crates:
 | `biorouter-server` | REST API server (`biorouterd`) that the desktop UI communicates with |
 | `biorouter-cli` | Command-line interface (`biorouter` binary) |
 | `biorouter-mcp` | Built-in MCP servers |
-| `biorouter-headless` | Headless deployment binary (`biorouter-headless`) — serves the browser UI and proxies `/api/*` to `biorouterd` on a Linux host |
 | `biorouter-sandbox` | Capability-scoped sandboxed execution for Biorouter agents (a leaf crate with no engine dependencies) |
 | `biorouter-acp` | Agent Communication Protocol support |
 | `biorouter-bench` | Benchmarking tools |
