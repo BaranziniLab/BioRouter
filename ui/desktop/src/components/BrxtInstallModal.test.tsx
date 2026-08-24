@@ -1,5 +1,7 @@
-import { render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { BrxtManifest } from '../types/brxt';
 
 /**
  * `BrxtInstallModal` reaches for the live config on mount; nothing here installs
@@ -15,7 +17,19 @@ vi.mock('./ConfigContext', () => ({
 
 import { BrxtInstallModal } from './BrxtInstallModal';
 
+const MANIFEST: BrxtManifest = {
+  name: 'playwrightagent',
+  display_name: 'Playwright Agent',
+  description: 'Browser automation via Playwright.',
+  version: '0.1.0',
+  entry_point: 'main.py',
+  repository: 'https://github.com/BaranziniLab/PlaywrightAgent',
+  tools_count: 23,
+  env_vars: [],
+};
+
 afterEach(() => {
+  cleanup();
   delete (window as unknown as { electron?: unknown }).electron;
 });
 
@@ -36,10 +50,10 @@ describe('BrxtInstallModal — issue #56 §13.5', () => {
 
   /**
    * ⚠ **This modal is not only the file-drop route.** `BrowseExtensionsModal`
-   * downloads a marketplace `.brxt` and then renders THIS component with
-   * `preloadedFilePath` — so the browse row can show a Private badge, the
-   * install confirmation say "always Public", and Settings badge it Private
-   * afterwards. Three screens, two answers, one install.
+   * downloads a marketplace `.brxt` and then renders THIS component — so the
+   * browse row can show a Private badge, the install confirmation say "always
+   * Public", and Settings badge it Private afterwards. Three screens, two
+   * answers, one install.
    *
    * The task's own Step 3 names the other half of the same contradiction: a
    * hand-installed extension NAMED `ucsfomopagent` inherits the private badge,
@@ -76,5 +90,99 @@ describe('BrxtInstallModal — issue #56 §13.5', () => {
 
     expect(await screen.findByText(/only private models/i)).toBeInTheDocument();
     expect(screen.queryByText(/always Public/i)).toBeNull();
+  });
+
+  /**
+   * Issue #116. The marketplace row's badge is the only tier available while
+   * the bundle is still downloading, and the installer opens on top of that
+   * row — so it must not answer the question differently from the screen the
+   * user just clicked.
+   */
+  it('carries the marketplace row badge through the download, before any manifest exists', () => {
+    render(
+      <BrxtInstallModal
+        onClose={() => {}}
+        onInstalled={() => {}}
+        origin={{
+          kind: 'marketplace',
+          registrySource: { registryId: 'ucsfomopagent-1.0.0' },
+          entry: { name: 'UCSF OMOP', privacyTier: 'private' },
+          downloading: true,
+          onRetry: () => {},
+        }}
+      />
+    );
+
+    expect(screen.getByText(/only private models/i)).toBeInTheDocument();
+    expect(screen.queryByText(/always Public/i)).toBeNull();
+  });
+});
+
+/**
+ * Issue #116. The local route is the half that MUST keep its file controls, and
+ * these assertions are the reason the marketplace suite's absence-checks are
+ * worth anything: the same strings are found here and refused there.
+ */
+describe('BrxtInstallModal — the local-file route (issue #116)', () => {
+  it('keeps drag/drop and the file picker when no origin is given', () => {
+    render(<BrxtInstallModal onClose={() => {}} onInstalled={() => {}} />);
+
+    expect(screen.getByText('Add extension')).toBeInTheDocument();
+    expect(screen.getByText('Drop your .brxt file here')).toBeInTheDocument();
+    expect(screen.getByText('or click to browse')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Browse file…' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Back to marketplace' })).toBeNull();
+  });
+
+  /**
+   * ⚠ A preloaded path is NOT a marketplace install. Finder hands a
+   * double-clicked `.brxt` to the app over IPC and `ExtensionsView` preloads
+   * it, so deriving the mode from the path — the obvious shortcut — would strip
+   * the file controls off the one route that needs them and leave the user with
+   * no way to correct a mis-picked file.
+   */
+  it('stays on the local route for an IPC-preloaded file, offering to replace it', async () => {
+    (window as unknown as { electron: unknown }).electron = {
+      validateBrxtBundle: vi.fn(async () => ({ manifest: MANIFEST, skillsPreview: [] })),
+    };
+
+    render(
+      <BrxtInstallModal
+        onClose={() => {}}
+        onInstalled={() => {}}
+        preloadedFilePath="/tmp/playwright.brxt"
+      />
+    );
+
+    expect(await screen.findByText('Detected from bundle')).toBeInTheDocument();
+    expect(screen.getByText('Add extension')).toBeInTheDocument();
+    expect(screen.getByText('Drop a different .brxt file here')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Browse file…' })).toBeInTheDocument();
+  });
+
+  it('labels the local primary action by what it will actually do', async () => {
+    const install = vi.fn(async () => ({ installDir: '/ext/playwrightagent' }));
+    (window as unknown as { electron: unknown }).electron = {
+      validateBrxtBundle: vi.fn(async () => ({ manifest: MANIFEST, skillsPreview: [] })),
+      installBrxtBundle: install,
+    };
+
+    render(
+      <BrxtInstallModal
+        onClose={() => {}}
+        onInstalled={() => {}}
+        preloadedFilePath="/tmp/playwright.brxt"
+      />
+    );
+
+    // Zero env vars: the button installs, so it says so.
+    const button = await screen.findByRole('button', { name: 'Install extension' });
+    expect(screen.queryByRole('button', { name: /Next: configure/i })).toBeNull();
+
+    await userEvent.setup().click(button);
+    await waitFor(() => expect(install).toHaveBeenCalled());
+    // The local route records no registry provenance (DR-23): there is none.
+    expect(install).toHaveBeenCalledWith('/tmp/playwright.brxt', 'playwrightagent', undefined);
   });
 });
