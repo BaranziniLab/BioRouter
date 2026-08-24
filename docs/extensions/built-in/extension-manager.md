@@ -54,10 +54,19 @@ The result is a more focused session where BioRouter has exactly the tools it ne
 |------|-------------|----------|
 | `search_available_extensions` | Discover extensions that can be enabled or disabled | Finding the right extension for a task |
 | `manage_extensions` | Enable or disable an extension by name | Loading/unloading extensions dynamically |
+| `install_extension` | Install a BAAM marketplace extension end to end | The extension is not installed at all |
 | `list_resources` | List resources from extensions (if supported) | Discovering available data sources |
 | `read_resource` | Read specific resource content (if supported) | Accessing extension-provided data |
 
 > **Tip.** The resource tools (`list_resources` and `read_resource`) are only available when at least one enabled extension supports resources.
+
+## Installing one the user does not have
+
+`manage_extensions` only enables what is already installed. `install_extension` handles the rest: it downloads and validates the bundle, builds its Python environment, collects any credentials the extension needs, registers it, and attaches it to the current chat — so the agent never shells out to `curl` and the CLI.
+
+**The agent never sees a credential.** If the extension needs an API key, passcode or token, the install pauses and BioRouter opens its own dialog; the agent learns only which key *names* were configured. It must never ask for a value in chat — a credential in a chat message cannot configure anything and exposes it to every model that reads the transcript. The full design is in [Installing an extension, and where its credentials go](../installing-an-extension.md).
+
+Privacy Gate F1 applies to the **attach**, not the install: a public-model chat may install a private connector at the user's request and will not be able to use it in that chat.
 
 ## Malware scanning when an extension is enabled
 

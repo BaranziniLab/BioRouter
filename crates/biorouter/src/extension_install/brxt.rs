@@ -247,18 +247,27 @@ fn read_bundled_skills(
 }
 
 /// `name:` and `description:` out of a `SKILL.md` YAML frontmatter block.
+///
+/// Line-wise rather than by byte offset: the body is author-supplied text that
+/// routinely carries non-ASCII, and slicing a `&str` at a found index panics if
+/// the index lands inside a UTF-8 character.
 fn skill_frontmatter(body: &str) -> Option<(String, String)> {
-    let rest = body.strip_prefix("---")?;
-    let end = rest.find("\n---")?;
+    let mut lines = body.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
     let (mut name, mut description) = (None, None);
-    for line in rest[..end].lines() {
+    for line in lines {
+        if line.trim() == "---" {
+            return Some((name?, description.unwrap_or_default()));
+        }
         if let Some(v) = line.strip_prefix("name:") {
             name = Some(v.trim().trim_matches('"').trim_matches('\'').to_string());
         } else if let Some(v) = line.strip_prefix("description:") {
             description = Some(v.trim().trim_matches('"').trim_matches('\'').to_string());
         }
     }
-    Some((name?, description.unwrap_or_default()))
+    None
 }
 
 /// Whether `uv` — which every `.brxt` needs to build its environment — is here.

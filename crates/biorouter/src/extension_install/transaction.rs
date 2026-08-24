@@ -58,6 +58,15 @@ pub enum InstallSource {
     Marketplace { registry_id: String, url: String },
 }
 
+/// A terminal's echo-off prompt: handed the variables still to collect, returns
+/// what the person typed.
+///
+/// A closure rather than a direct call so the prompt stays in the CLI crate,
+/// where the terminal is, and this crate keeps no opinion about how a terminal
+/// asks.
+pub type TerminalPrompt =
+    Box<dyn FnMut(&[BrxtEnvVar]) -> anyhow::Result<HashMap<String, String>> + Send>;
+
 /// How this transaction may collect a value it does not have.
 pub enum CredentialPolicy {
     /// Publish a credential card to `session_id` and park until a person
@@ -69,13 +78,8 @@ pub enum CredentialPolicy {
         owner: Option<String>,
         ttl: Duration,
     },
-    /// Ask on this process's terminal, with echo off. Interactive CLI only:
-    /// the closure is handed key names and returns what the person typed.
-    ///
-    /// A closure rather than a direct `rpassword` call so the prompt stays in
-    /// the CLI crate, where the terminal is, and this crate keeps no opinion
-    /// about how a terminal asks.
-    Prompt(Box<dyn FnMut(&[BrxtEnvVar]) -> anyhow::Result<HashMap<String, String>> + Send>),
+    /// Ask on this process's terminal, with echo off. Interactive CLI only.
+    Prompt(TerminalPrompt),
     /// Never ask. An unattended run stops at
     /// [`InstallState::NeedsCredentials`] and rolls back.
     Refuse,
@@ -320,103 +324,20 @@ impl ExtensionInstallTransaction {
         run_uv_sync(&install_dir)?;
 
         // ── credentials ───────────────────────────────────────────────────
-        //
-        // `supplied` may already carry a declared-secret value (a `--secret`
-        // flag, the desktop's own form). Those are written here rather than
-        // being asked for again, and they go to the SAME place a card's answer
-        // would: the credential store, with only the name recorded.
-        let mut envs: HashMap<String, String> = HashMap::new();
-        let mut env_keys: Vec<String> = Vec::new();
-        self.apply_supplied(&manifest, &mut envs, &mut env_keys)?;
-
-        let unmet: Vec<BrxtEnvVar> = manifest
-            .env_vars
-            .iter()
-            .filter(|v| {
-                !envs.contains_key(&v.key)
-                    && !env_keys.contains(&v.key)
-                    && !secret_already_stored(&v.key)
-            })
-            .cloned()
-            .collect();
-        let unmet_required: Vec<String> = unmet
-            .iter()
-            .filter(|v| v.required)
-            .map(|v| v.key.clone())
-            .collect();
-
-        if !unmet.is_empty() {
-            match self
-                .collect_credentials(&manifest, &unmet, policy, cancel)
-                .await?
-            {
-                Collected::Values {
-                    configured_keys,
-                    settings,
-                } => {
-                    for (k, v) in settings {
-                        envs.insert(k, v);
-                    }
-                    for k in configured_keys {
-                        if manifest.env_vars.iter().any(|v| v.key == k && v.secret)
-                            && !env_keys.contains(&k)
-                        {
-                            env_keys.push(k.clone());
-                            self.undo.written_secrets.push(k);
-                        }
-                    }
-                }
-                Collected::Cancelled => {
-                    self.park_for_resume(&manifest, &bundle_path, &install_dir, &unmet);
-                    self.rollback_config_only();
-                    return Ok(self.report(InstallState::Cancelled, &manifest, &skills, &[]));
-                }
-                Collected::Refused => {
-                    if unmet_required.is_empty() {
-                        // Only optional values are missing, and nobody can be
-                        // asked. That is not a failure: the extension runs.
-                        debug!("Installing {} without its optional values", manifest.name);
-                    } else {
-                        self.park_for_resume(&manifest, &bundle_path, &install_dir, &unmet);
-                        self.rollback_config_only();
-                        return Ok(self.report(
-                            InstallState::NeedsCredentials {
-                                keys: unmet_required,
-                            },
-                            &manifest,
-                            &skills,
-                            &[],
-                        ));
-                    }
-                }
-            }
+        let ctx = InstallContext {
+            manifest: &manifest,
+            skills: &skills,
+            bundle_path: &bundle_path,
+            install_dir: &install_dir,
+        };
+        let mut values = ResolvedValues::default();
+        if let Some(stopped) = self
+            .settle_credentials(&ctx, &mut values, policy, cancel)
+            .await?
+        {
+            return Ok(stopped);
         }
-
-        // ⚠ The last gate before registration, and the reason this type exists.
-        // A required value that is still missing here means the extension cannot
-        // authenticate, and registering it anyway is what made an agent-driven
-        // shell install report success for something permanently broken.
-        let still_missing: Vec<String> = manifest
-            .required_vars()
-            .filter(|v| {
-                !envs.contains_key(&v.key)
-                    && !env_keys.contains(&v.key)
-                    && !secret_already_stored(&v.key)
-            })
-            .map(|v| v.key.clone())
-            .collect();
-        if !still_missing.is_empty() {
-            self.park_for_resume(&manifest, &bundle_path, &install_dir, &unmet);
-            self.rollback_config_only();
-            return Ok(self.report(
-                InstallState::NeedsCredentials {
-                    keys: still_missing,
-                },
-                &manifest,
-                &skills,
-                &[],
-            ));
-        }
+        let ResolvedValues { envs, mut env_keys } = values;
 
         // ── register ──────────────────────────────────────────────────────
         env_keys.sort();
@@ -444,6 +365,112 @@ impl ExtensionInstallTransaction {
             &skills,
             &env_keys,
         ))
+    }
+
+    /// The credential phase: write what the caller already had, ask for what is
+    /// missing, and re-check before anything is registered.
+    ///
+    /// `Ok(Some(report))` means the install **stopped here** — cancelled, or
+    /// short of a required value with nobody to ask. Both leave a resume record
+    /// and undo this run's config work; neither is an error.
+    async fn settle_credentials(
+        &mut self,
+        ctx: &InstallContext<'_>,
+        values: &mut ResolvedValues,
+        policy: &mut CredentialPolicy,
+        cancel: Option<&CancellationToken>,
+    ) -> anyhow::Result<Option<InstallReport>> {
+        let manifest = ctx.manifest;
+
+        // `supplied` may already carry a declared-secret value (a `--secret`
+        // flag, the desktop's own form). Those are written here rather than
+        // being asked for again, and they go to the SAME place a card's answer
+        // would: the credential store, with only the name recorded.
+        self.apply_supplied(manifest, &mut values.envs, &mut values.env_keys)?;
+
+        let unmet: Vec<BrxtEnvVar> = manifest
+            .env_vars
+            .iter()
+            .filter(|v| values.is_unmet(&v.key))
+            .cloned()
+            .collect();
+        let unmet_required: Vec<String> = unmet
+            .iter()
+            .filter(|v| v.required)
+            .map(|v| v.key.clone())
+            .collect();
+
+        if !unmet.is_empty() {
+            match self
+                .collect_credentials(manifest, &unmet, policy, cancel)
+                .await?
+            {
+                Collected::Values {
+                    configured_keys,
+                    settings,
+                } => {
+                    values.envs.extend(settings);
+                    for k in configured_keys {
+                        if manifest.env_vars.iter().any(|v| v.key == k && v.secret)
+                            && !values.env_keys.contains(&k)
+                        {
+                            values.env_keys.push(k.clone());
+                            self.undo.written_secrets.push(k);
+                        }
+                    }
+                }
+                Collected::Cancelled => {
+                    return Ok(Some(self.stop(ctx, &unmet, InstallState::Cancelled)));
+                }
+                Collected::Refused if unmet_required.is_empty() => {
+                    // Only optional values are missing, and nobody can be
+                    // asked. That is not a failure: the extension runs.
+                    debug!("Installing {} without its optional values", manifest.name);
+                }
+                Collected::Refused => {
+                    return Ok(Some(self.stop(
+                        ctx,
+                        &unmet,
+                        InstallState::NeedsCredentials {
+                            keys: unmet_required,
+                        },
+                    )));
+                }
+            }
+        }
+
+        // ⚠ The last gate before registration, and the reason this type exists.
+        // A required value that is still missing here means the extension cannot
+        // authenticate, and registering it anyway is what made an agent-driven
+        // shell install report success for something permanently broken.
+        let still_missing: Vec<String> = manifest
+            .required_vars()
+            .filter(|v| values.is_unmet(&v.key))
+            .map(|v| v.key.clone())
+            .collect();
+        if !still_missing.is_empty() {
+            return Ok(Some(self.stop(
+                ctx,
+                &unmet,
+                InstallState::NeedsCredentials {
+                    keys: still_missing,
+                },
+            )));
+        }
+        Ok(None)
+    }
+
+    /// Stop before registration: keep the extracted tree, undo this run's
+    /// config and credentials, and record what a retry still needs.
+    fn stop(
+        &mut self,
+        ctx: &InstallContext<'_>,
+        pending: &[BrxtEnvVar],
+        state: InstallState,
+    ) -> InstallReport {
+        self.park_for_resume(ctx.manifest, ctx.bundle_path, ctx.install_dir, pending);
+        self.rollback_config_only();
+        self.report(state, ctx.manifest, ctx.skills, &[])
     }
 
     /// Write the values the caller already had, splitting credentials from
@@ -698,6 +725,34 @@ pub fn compose_config(
         timeout: Some(300),
         bundled: None,
         available_tools: Vec::new(),
+    }
+}
+
+/// What the credential phase is working on, so the helpers below take one
+/// borrow instead of four.
+struct InstallContext<'a> {
+    manifest: &'a BrxtManifest,
+    skills: &'a [BundledSkill],
+    bundle_path: &'a std::path::Path,
+    install_dir: &'a std::path::Path,
+}
+
+/// Values resolved so far: settings bound for `config.yaml`, and the NAMES of
+/// credentials written to the credential store.
+#[derive(Default)]
+struct ResolvedValues {
+    envs: HashMap<String, String>,
+    env_keys: Vec<String>,
+}
+
+impl ResolvedValues {
+    /// Whether `key` still has to come from somewhere. A value already in the
+    /// credential store counts as met — an install that re-asks for a passcode
+    /// the machine already holds trains the user to paste ones they need not.
+    fn is_unmet(&self, key: &str) -> bool {
+        !self.envs.contains_key(key)
+            && !self.env_keys.iter().any(|k| k == key)
+            && !secret_already_stored(key)
     }
 }
 

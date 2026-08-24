@@ -9,6 +9,7 @@ Come here when you want to add a capability BioRouter does not have yet, when yo
 | Document | What it covers |
 |---|---|
 | [Extensions, skills, and MCP agents](extensions-and-skills-guide.md) | The end-user guide to the three ways BioRouter is extended — MCP extensions, platform extensions, and skills — covering how to add, configure, and author each, plus installing from the BAAM marketplace and connecting remote MCP agents. |
+| [Installing an extension, and where its credentials go](installing-an-extension.md) | How a `.brxt` install works from each of the four surfaces that can do it — the desktop marketplace, the local file drop, the CLI and an agent in chat — and the design of the credential path: why a secret never enters the conversation, what enforces that rather than documents it, and what it costs (a browser daemon cannot accept credentials over HTTP). |
 | [Reliable Slack posting from the agent](slack-posting-investigation.md) | An options memo comparing three ways to give the agent reliable Slack posting — incoming webhook, a Slack MCP server with a bot token, and a user token or the Slack CLI — with a recommendation. **Open investigation, not implemented:** no `slack_post` tool or Slack extension exists in the tree, and the recommendation has been neither accepted nor rejected. |
 
 ## Built-in extension reference

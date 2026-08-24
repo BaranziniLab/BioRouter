@@ -255,24 +255,9 @@ pub async fn handle_configure(name: String) -> Result<()> {
         .find(|e| name_to_key(&e.config.name()) == key)
         .ok_or_else(|| anyhow!("No extension named '{name}' is configured"))?;
 
-    let ExtensionConfig::Stdio { args, .. } = &entry.config else {
-        bail!("'{name}' is not a .brxt extension, so it has no manifest to configure from");
-    };
-    let install_dir = args
-        .iter()
-        .position(|a| a == "--directory")
-        .and_then(|i| args.get(i + 1))
-        .map(PathBuf::from)
+    let install_dir = brxt_install_dir(&entry.config)
         .ok_or_else(|| anyhow!("'{name}' was not installed from a .brxt bundle"))?;
-
-    let manifest_path = install_dir.join("manifest.json");
-    let manifest: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(&manifest_path)
-            .with_context(|| format!("reading {}", manifest_path.display()))?,
-    )?;
-    let vars: Vec<BrxtEnvVar> =
-        serde_json::from_value(manifest.get("env_vars").cloned().unwrap_or_default())
-            .unwrap_or_default();
+    let vars = declared_vars(&install_dir)?;
     if vars.is_empty() {
         println!(
             "  {} {} declares no configurable values",
@@ -317,6 +302,57 @@ pub async fn handle_configure(name: String) -> Result<()> {
         return Ok(());
     }
 
+    let written = store_configured_values(&entry, &vars, values)?;
+    println!(
+        "  {} {} {}",
+        style("✓").green(),
+        style(&name).fg(ACCENT).bold(),
+        style(if written.is_empty() {
+            "settings updated".to_string()
+        } else {
+            format!("configured {}", written.join(", "))
+        })
+        .dim()
+    );
+    Ok(())
+}
+
+/// Where a `.brxt` extension was unpacked, read off the `--directory` argument
+/// its launch command carries.
+fn brxt_install_dir(config: &ExtensionConfig) -> Option<PathBuf> {
+    let ExtensionConfig::Stdio { args, .. } = config else {
+        return None;
+    };
+    args.iter()
+        .position(|a| a == "--directory")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from)
+}
+
+/// The `env_vars` an installed bundle's manifest declares.
+fn declared_vars(install_dir: &std::path::Path) -> Result<Vec<BrxtEnvVar>> {
+    let manifest_path = install_dir.join("manifest.json");
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&manifest_path)
+            .with_context(|| format!("reading {}", manifest_path.display()))?,
+    )?;
+    Ok(
+        serde_json::from_value(manifest.get("env_vars").cloned().unwrap_or_default())
+            .unwrap_or_default(),
+    )
+}
+
+/// Write the entered values and fold the result back into the config entry:
+/// credential NAMES into `env_keys`, ordinary settings into `envs`.
+///
+/// Returns the credential names written. A key promoted to the credential store
+/// is removed from `envs`, so a value that used to sit in plaintext does not
+/// stay there beside its own replacement.
+fn store_configured_values(
+    entry: &biorouter::config::extensions::ExtensionEntry,
+    vars: &[BrxtEnvVar],
+    values: HashMap<String, String>,
+) -> Result<Vec<String>> {
     let config = biorouter::config::Config::global();
     let mut written: Vec<String> = Vec::new();
     let mut settings: HashMap<String, String> = HashMap::new();
@@ -331,8 +367,6 @@ pub async fn handle_configure(name: String) -> Result<()> {
         }
     }
 
-    // Fold the result back into the config entry: names into `env_keys`,
-    // ordinary settings into `envs`.
     let ExtensionConfig::Stdio {
         name: cfg_name,
         description,
@@ -345,7 +379,7 @@ pub async fn handle_configure(name: String) -> Result<()> {
         available_tools,
     } = entry.config.clone()
     else {
-        unreachable!("checked above")
+        bail!("not a .brxt extension");
     };
     let mut env_map = envs.get_env();
     env_map.extend(settings);
@@ -353,7 +387,6 @@ pub async fn handle_configure(name: String) -> Result<()> {
         if !env_keys.contains(k) {
             env_keys.push(k.clone());
         }
-        // A key promoted to the keyring must not also sit in plain config.
         env_map.remove(k);
     }
     env_keys.sort();
@@ -367,25 +400,14 @@ pub async fn handle_configure(name: String) -> Result<()> {
             cmd,
             args,
             envs: biorouter::agents::extension::Envs::new(env_map),
-            env_keys: env_keys.clone(),
+            env_keys,
             timeout,
             bundled,
             available_tools,
         },
     });
-
-    println!(
-        "  {} {} {}",
-        style("✓").green(),
-        style(&name).fg(ACCENT).bold(),
-        style(if written.is_empty() {
-            "settings updated".to_string()
-        } else {
-            format!("configured {}", written.join(", "))
-        })
-        .dim()
-    );
-    Ok(())
+    written.sort();
+    Ok(written)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

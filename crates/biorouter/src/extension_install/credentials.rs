@@ -388,7 +388,7 @@ mod tests {
     /// fails if somebody widens `SecretKeyRequest` to carry one.
     #[test]
     fn a_published_card_carries_key_names_and_nothing_else() {
-        let vars = vec![var("SPOKEAGENT_PASSCODE", true, true)];
+        let vars = [var("SPOKEAGENT_PASSCODE", true, true)];
         let keys: Vec<SecretKeyRequest> = vars.iter().map(BrxtEnvVar::as_key_request).collect();
         let json = serde_json::to_string(&keys).unwrap();
         assert!(json.contains("SPOKEAGENT_PASSCODE"));

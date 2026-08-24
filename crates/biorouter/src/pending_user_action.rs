@@ -149,18 +149,23 @@ impl UserActionRequest {
     /// transcript. Refusing it here means the guarantee holds for surfaces this
     /// module has never heard of.
     fn accepts(&self, outcome: &UserActionOutcome) -> bool {
-        match (self, outcome) {
-            (_, UserActionOutcome::Cancelled)
-            | (_, UserActionOutcome::TimedOut)
-            | (_, UserActionOutcome::Failed { .. }) => true,
+        matches!(
+            (self, outcome),
+            // Every request can end without an answer.
             (
+                _,
+                UserActionOutcome::Cancelled
+                    | UserActionOutcome::TimedOut
+                    | UserActionOutcome::Failed { .. }
+            ) | (
                 Self::ToolApproval(_),
-                UserActionOutcome::Approved { .. } | UserActionOutcome::Denied { .. },
-            ) => true,
-            (Self::Elicitation(_), UserActionOutcome::Provided { .. }) => true,
-            (Self::Secrets(_), UserActionOutcome::SecretsConfigured { .. }) => true,
-            _ => false,
-        }
+                UserActionOutcome::Approved { .. } | UserActionOutcome::Denied { .. }
+            ) | (Self::Elicitation(_), UserActionOutcome::Provided { .. })
+                | (
+                    Self::Secrets(_),
+                    UserActionOutcome::SecretsConfigured { .. }
+                )
+        )
     }
 }
 
@@ -497,7 +502,17 @@ fn request_message(id: &str, request: &UserActionRequest) -> Message {
             r.destination.clone(),
         ),
     };
-    Message::assistant().with_content(content)
+    // `user_only` for the same reason `handle_approval_tool_requests` marks its
+    // card: a decision prompt is for the person, and a model that read one would
+    // be reading a question it cannot answer. It is belt-and-braces here — the
+    // drain does not persist an ephemeral card and never pushes one into the
+    // conversation — but the flag is what keeps that true if either changes.
+    match request {
+        UserActionRequest::Elicitation(_) => Message::assistant().with_content(content),
+        // An elicitation is deliberately NOT user-only: its answer is part of
+        // the conversation, and the model that raised it has to see both.
+        _ => Message::assistant().with_content(content).user_only(),
+    }
 }
 
 /// Whether `message` is a decision prompt rather than a record.
@@ -745,6 +760,34 @@ mod tests {
             })
         )));
         assert!(!is_ephemeral_card(&Message::assistant().with_text("hi")));
+    }
+
+    /// A chat-less run's card must be UNSCOPED, not queued under a session
+    /// named "". Every such run in the process would otherwise share one queue,
+    /// which is #40's cross-session leak with a different key.
+    #[tokio::test]
+    async fn an_unscoped_park_is_deliverable_to_any_loop() {
+        use crate::action_required_manager::ActionRequiredManager;
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(None, None, approval("developer__shell"));
+        let id = parked.id().to_string();
+        // Any session's loop can drain it, which is what "unscoped" means.
+        let drained = ActionRequiredManager::global().drain_requests("some-other-session");
+        assert!(
+            drained.iter().any(|m| m.content.iter().any(|c| {
+                matches!(
+                    c,
+                    MessageContent::ActionRequired(a)
+                        if matches!(
+                            &a.data,
+                            crate::conversation::message::ActionRequiredData::ToolConfirmation {
+                                id: card_id, ..
+                            } if *card_id == id
+                        )
+                )
+            })),
+            "an unscoped card must reach a loop that is not its own session's"
+        );
     }
 
     #[tokio::test]

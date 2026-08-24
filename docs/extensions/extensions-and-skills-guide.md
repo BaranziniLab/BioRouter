@@ -114,6 +114,8 @@ Marketplace installs never ask you for a file. **Extensions** → **Browse Exten
 
 The **Add Extension** button beside it is the local route, and that one does take a file: drag a `.brxt` onto it, or browse for one.
 
+If an extension needs an API key, passcode or token, Biorouter asks for it in its own dialog and stores it in your operating system's credential store. **Never type a credential into the chat** — it cannot configure anything from there, and it would be visible to every model that reads the conversation. The same is true of the command line: `biorouter extension install` prompts with echo off rather than taking a value as an argument. See [Installing an extension, and where its credentials go](installing-an-extension.md).
+
 ### Developing a custom extension
 
 Extensions are standard MCP servers. You can write one in any language (Python, TypeScript, Rust, etc.) that implements the MCP protocol.
