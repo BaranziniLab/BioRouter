@@ -182,6 +182,10 @@ impl Completer for ProviderCompleter {
             Arc::new(tokio::sync::Mutex::new(Some(Arc::clone(&self.provider))));
         let capability = crate::privacy::CallCapability::sample(&shared).await;
 
+        // An empty id when there is no chat behind the run. The bridge reads
+        // that as "unscoped" rather than as a session literally named "", which
+        // is the difference between a card any loop may surface and a queue every
+        // chat-less run in the process shares.
         let session = crate::session::session_manager::Session {
             id: self.session_id.clone().unwrap_or_default(),
             ..Default::default()
