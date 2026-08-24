@@ -89,11 +89,13 @@ Up to 32 sessions per call; default timeout 120 s, max 600 s. A timeout is not a
 
 ### `workspace_open`
 
-Opens or focuses a conversation. Pass `session_id` to bring an existing one up, or `new` to start a fresh one (working directory defaults to the current conversation's; extensions, knowledge bases and a first prompt are optional).
+Opens or focuses a conversation **you** own. Pass `session_id` to bring an existing one up, or `new` to start a fresh one — then `new.kind` is required and must be `"user"` (working directory defaults to the current conversation's; extensions, knowledge bases and a first prompt are optional).
 
-> "Start a separate chat for the figure work and give it the plotting extension." → `workspace_open { new: { extensions: ["developer"], prompt: "Draft the figure panel layout" } }`
+> "Start a separate chat for the figure work and give it the plotting extension." → `workspace_open { new: { kind: "user", extensions: ["developer"], prompt: "Draft the figure panel layout" } }`
 
 `placement` is `tab` (default), `split` or `window`; `focus` defaults to **false**, so a new tab never steals the composer you are typing in.
+
+**It cannot delegate.** `new.kind: "sub_agent"` is refused, with a result pointing the agent at `subagent`. A conversation this tool creates is yours: it has no parent, so it is never nested under the agent in History and never appears in "Show subagent runs". That separation is structural rather than advisory ([#111](https://github.com/BaranziniLab/biorouter/issues/111)) — see the [session metadata contract](../../agent-loop/session-metadata-contract.md).
 
 ### `subagent`
 
