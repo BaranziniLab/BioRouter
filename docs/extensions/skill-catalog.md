@@ -41,6 +41,14 @@ fetches.
 | HTTP surface | `crates/biorouter-server/src/routes/skills.rs` |
 | Interface | `ui/desktop/src/components/skills/useSkillCatalog.ts` |
 
+Every interface surface that lists skills reads that one hook: Settings
+(`SkillsView`), the composer picker (`BottomMenuSkillSelection`), the
+`@`-mention list (`MentionPopover`) and the workflow resource picker. The
+renderer's own scanner — `loadSkillsFromDirs`, `ALL_SKILL_DIRS`,
+`OTHER_SKILL_DIRS` — is **deleted**, along with `skillUtils`'
+`BUILTIN_SKILL_NAMES`: "did Biorouter put this here?" is answered by
+`CatalogSkill.builtin`, in the process that owns the seeder.
+
 `SkillsClient::get_default_skill_directories()` still exists, and the CLI still
 calls it, but it is now the paths-only view of `roots()`. **Adding a root means
 editing `roots()` and nothing else.**
@@ -158,6 +166,28 @@ write. The refusal message travels back in the mutation's *result* rather than
 in hook state, because a caller reading it from hook state reads its own stale
 render closure — which is how every failure once reported "The change was not
 saved." with the reason dropped.
+
+## What Settings shows, and what it will not delete
+
+Rows are grouped by where the skill came from: **Biorouter Skills**, one group
+per installed extension (**From BiorOffice**), **Skills From Other Agents**, and
+**From This Project**.
+
+A package is one expandable row carrying its display name, version and entry
+point, opening to its components with their groups — not N unrelated rows.
+
+⚠ **Two kinds of skill have no Delete control.** One Biorouter ships and
+re-seeds on every start, and one an installed extension supplies. In both cases
+the delete would succeed, toast, and be silently undone. That is the lesson
+`BUILTIN_SKILL_NAMES` was originally written for, applied to a second case the
+list never covered.
+
+Deleting goes through the importer's remover
+(`POST /skills/packages/remove`), which renames the directory aside before
+deleting it. The root it deletes under is chosen from
+`skill_catalog::roots()` — a path a caller invents matches nothing and is
+refused, which is what makes it safe for this handler to cover
+`~/.claude/skills` and a project directory as well as Biorouter's own.
 
 ## Debugging a skill that is installed but not usable
 

@@ -100,6 +100,12 @@ describe('Settings -> Chat section order', () => {
  * user's skill list and counted; a name missing from Rust means the seeder
  * stops writing a file the UI still advertises.
  *
+ * ⚠ **There are TWO copies now, not three.** `skillUtils.BUILTIN_SKILL_NAMES`
+ * is gone: it answered "did Biorouter put this here?", which the daemon answers
+ * directly as `CatalogSkill.builtin`. A pinning test over a list nothing reads
+ * guards nothing, so what is asserted below is that the copy has not come
+ * back.
+ *
  * Reading the Rust source is the only way to check this from here, and it is
  * the same approach `measures.test.ts` takes for a value only the source can
  * settle.
@@ -160,8 +166,20 @@ describe('the built-in skill list, across all three copies', () => {
     expect([...CONTEXT_IDS].sort()).toEqual(rustNames());
   });
 
-  it('skillUtils names every skill Rust SEEDS, not only the Contexts', async () => {
-    const { BUILTIN_SKILL_NAMES } = await import('../../skills/skillUtils');
-    expect([...BUILTIN_SKILL_NAMES].sort()).toEqual(shippedNames());
+  it('the renderer keeps no second list of the skills Rust seeds', () => {
+    const source = readFileSync(
+      join(__dirname, '..', '..', 'skills', 'skillUtils.ts'),
+      'utf8'
+    );
+    // `shippedNames()` is still called, so the extractor it exercises stays
+    // honest: a name Rust seeds must be findable from here even though nothing
+    // in the renderer mirrors the list any more.
+    expect(shippedNames().length).toBeGreaterThan(CONTEXT_IDS.size);
+    for (const name of shippedNames()) {
+      expect(
+        source.includes(`'${name}'`),
+        `skillUtils.ts names '${name}' again — read CatalogSkill.builtin instead`
+      ).toBe(false);
+    }
   });
 });
