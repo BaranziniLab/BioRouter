@@ -147,6 +147,21 @@ const EXPECTED: &[Site] = &[
     },
     Site {
         needle: "CallCapability::sample(",
+        file: "crates/biorouter/src/agents/knowledge_source_tool.rs",
+        count: 1,
+        what: "`handle_ingest_source`, the chat-document-ingest branch of \
+               `dispatch_tool_call`, which returns before the agent loop's own \
+               sample for the same reason the conversation-ingest branch above \
+               does. It is a SECOND instance of that pattern rather than a \
+               duplicate: a different tool, reached by a different argument \
+               shape, whose sample feeds `resolve_target_kb` the audience for \
+               the candidate list its no-target error may name. That list is \
+               exactly what audit finding 17 was about, so the branch that \
+               builds it has to decide the pair itself rather than inherit one \
+               that is not in scope yet",
+    },
+    Site {
+        needle: "CallCapability::sample(",
         file: "crates/biorouter/src/agents/extension_manager.rs",
         count: 2,
         what: "`extension_reach` (Gate E's discovery filter and mark, which \
