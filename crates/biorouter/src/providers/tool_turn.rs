@@ -195,6 +195,7 @@ impl ProviderToolTurnContext {
         capability: CallCapability,
         cancel: Option<CancellationToken>,
     ) -> Self {
+        let tool_risks = Arc::new(ToolRiskRegistry::new());
         Self::new(
             session,
             // Auto: a workflow the user explicitly started is an authorised
@@ -205,7 +206,7 @@ impl ProviderToolTurnContext {
             // escalation raises a real dialog instead of dead-ending.
             BioRouterMode::Auto,
             dispatcher,
-            Arc::new(crate::tool_inspection::ToolInspectionManager::new()),
+            Arc::new(workflow_inspectors(Arc::clone(&tool_risks))),
             capability,
             Conversation::new_unvalidated(vec![]),
             cancel,
@@ -215,7 +216,7 @@ impl ProviderToolTurnContext {
                 Arc::new(tokio::sync::Mutex::new(None)),
             )),
             None,
-            Arc::new(ToolRiskRegistry::new()),
+            tool_risks,
         )
     }
 
@@ -267,6 +268,13 @@ impl ProviderToolTurnContext {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<ProviderTurn, ProviderError> {
+        // BR-18's grades, for THIS turn's surface. The registry starts from the
+        // built-in table and learns the rest from the tools it is shown, exactly
+        // as `Agent::prepare_tools` refreshes it — a workflow's tools are its
+        // own, so nothing else could have taught it about them, and an ungraded
+        // tool would reach an approval card with nothing to say about its risk.
+        self.tool_risks.refresh_from_tools(tools);
+
         let grant = bridge::BridgeGrant::new(
             self.session.clone(),
             self.mode,
@@ -429,6 +437,44 @@ fn executed_calls(messages: &[Message]) -> Vec<ExecutedToolCall> {
         .into_iter()
         .filter_map(|id| by_id.remove(&id))
         .collect()
+}
+
+/// The gate stack a workflow turn runs behind.
+///
+/// The inspectors a chat turn registers, minus the two that need agent-owned
+/// state (hooks, repetition history) and are meaningless for a bounded run with
+/// no conversation. It is a real stack and not an empty one for a reason that
+/// bites immediately: `BridgeGrant` refuses a call whose verdict is "no decision
+/// was reached", because an absent decision must never read as approval — so an
+/// empty manager does not mean "allow everything", it means every bridged call
+/// is refused.
+///
+/// The **security** and **sensitive-ops** inspectors are the load-bearing half.
+/// They escalate regardless of mode, so `BioRouterMode::Auto` above is a
+/// statement about ordinary authorised steps, not a blanket grant: a workflow
+/// that reaches for something genuinely dangerous still raises the #107 dialog.
+fn workflow_inspectors(tool_risks: Arc<ToolRiskRegistry>) -> ToolInspectionManager {
+    use crate::config::permission::PermissionManager;
+    use crate::managed::ManagedPolicy;
+    use crate::permission::managed_inspector::ManagedPolicyInspector;
+    use crate::permission::permission_inspector::PermissionInspector;
+    use crate::security::security_inspector::SecurityInspector;
+    use crate::security::sensitive_ops::SensitiveOpsInspector;
+
+    let managed = Arc::new(ManagedPolicy::empty());
+    let mut manager = ToolInspectionManager::new();
+    manager.add_inspector(Box::new(ManagedPolicyInspector::new(Arc::clone(&managed))));
+    manager.add_inspector(Box::new(SecurityInspector::new()));
+    manager.add_inspector(Box::new(SensitiveOpsInspector));
+    manager.add_inspector(Box::new(PermissionInspector::new(
+        tool_risks,
+        PermissionManager::instance(),
+        managed,
+        // No provider: a workflow has no lead/worker pair to grade against, and
+        // the inspector's only use for one is smart-approve's model call.
+        Arc::new(tokio::sync::Mutex::new(None)),
+    )));
+    manager
 }
 
 /// The session's whole extension surface, as a bridge dispatcher.

@@ -155,6 +155,38 @@ const EXPECTED: &[Site] = &[
                each falling back to a sample only when handed no admitted capability",
     },
     Site {
+        needle: "CallCapability::sample(",
+        file: "crates/biorouter/src/knowledge/provider_completer.rs",
+        count: 1,
+        what: "#109's `complete_with_dispatch`, the seam that lets a knowledge macro \
+               run under a coding-agent provider. It is a decider for the same \
+               reason `issue_tool_bridge` is and it is a SECOND one rather than a \
+               duplicate: a macro calls `Provider::complete` directly, so no agent \
+               loop has sampled anything, and the bridged calls arrive from a child \
+               process with no capability of their own to inherit. This is the one \
+               place holding the `Arc<dyn Provider>` those calls will run under, so \
+               sampling here — once, before the turn — is what fixes the pair \
+               instead of re-reading per callback across a process boundary. The \
+               three callers that build a completer (the HTTP route, the CLI, the \
+               probe) inherit it rather than each sampling their own, which is the \
+               difference between one decision and three that can disagree",
+    },
+    Site {
+        needle: "CallCapability::public_enforced(",
+        file: "crates/biorouter/src/providers/tool_turn.rs",
+        count: 1,
+        what: "NOT a production decider: `mod tests`' `context()` helper, which every \
+               `ProviderToolTurnContext` those tests build takes its pair from — the \
+               most restrictive one, rather than a permissive one invented for a \
+               test's convenience. Counted for the reason the bridge's test helper \
+               below is: a line-wise grep cannot tell a `#[cfg(test)]` block from \
+               production, and a filter that tried would blind the census to \
+               production too. The production side of this primitive TAKES its \
+               capability as an argument — `for_workflow` has no constructor call of \
+               its own — precisely so that a workflow cannot acquire one by \
+               accident; the one production caller is the `sample(` row above",
+    },
+    Site {
         needle: "CallCapability::public_enforced(",
         file: "crates/biorouter-server/src/routes/agent.rs",
         count: 1,

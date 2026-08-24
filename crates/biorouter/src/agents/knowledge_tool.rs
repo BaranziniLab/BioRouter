@@ -149,7 +149,16 @@ impl Agent {
             ))
         })?;
         let (completer, tier, affiliation) = ProviderCompleter::paired(provider);
-        Ok((Box::new(completer), tier, affiliation))
+        // #107 / #109: this macro runs from inside a chat, so this session's own
+        // agent loop is the surface that can draw a human-decision card and the
+        // one that will drain it. Scoping the card here is what makes an
+        // approval raised by a bridged macro tool answerable at all; a run
+        // started from the Knowledge view has no loop and leaves it unscoped.
+        Ok((
+            Box::new(completer.in_session(session.id.clone())),
+            tier,
+            affiliation,
+        ))
     }
 }
 

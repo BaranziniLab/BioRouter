@@ -216,7 +216,7 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
 
     let cancel_ref = args.cancel.as_deref();
     let agent_result = agent
-        .run(&user, &dispatch, cancel_ref, args.event_sink.as_ref())
+        .run(&user, std::sync::Arc::new(dispatch), cancel_ref, args.event_sink.as_ref())
         .await;
 
     let run = IngestRun {
@@ -651,10 +651,11 @@ fn no_pages_written_error(source_id: &str, result: &SubAgentResult) -> String {
             msg.push_str(
                 ". The model wrote its tool calls out as text instead of making them, \
                  which is what a model does when it was handed no tools. That is a \
-                 property of the model bound to this ingest rather than of the source \
-                 or the prompt: the coding-agent providers (Claude Code, Codex) reach \
-                 Biorouter's tools over a bridge that only a chat turn sets up, so they \
-                 cannot drive a knowledge macro. Choose a different model for ingestion",
+                 property of the run rather than of the source or the prompt. Since \
+                 issue #109 a coding-agent provider (Claude Code, Codex) receives its \
+                 tools over Biorouter's MCP bridge on this path too, so the usual cause \
+                 is now that the bridge was not reachable — check that Biorouter's own \
+                 server is running, and try the run again",
             );
         }
         msg.push_str(&format!(
@@ -1104,11 +1105,18 @@ mod tests {
     /// reached disk, and the failure quoted that prose back under "the model's
     /// last message was", which reads as a model that would not cooperate.
     ///
-    /// The real cause is structural and upstream: `complete_with_model` on the
-    /// coding-agent providers accepts `tools` and does not forward them, since
-    /// their tool surface arrives over a bridge that only a chat turn sets up.
-    /// A macro calling the provider directly gets a tool-less model every time.
-    /// Nobody reading the old message would find that.
+    /// The real cause was structural and upstream: `complete_with_model` on the
+    /// coding-agent providers accepted `tools` and did not forward them, since
+    /// their tool surface arrived over a bridge only a chat turn set up. A macro
+    /// calling the provider directly got a tool-less model every time. Nobody
+    /// reading the old message would find that.
+    ///
+    /// ⚠ **That cause is fixed** (#109): a macro turn goes through
+    /// `ProviderToolTurnContext`, which issues the grant. This detector stays,
+    /// because it is keyed on the SHAPE of the reply rather than on a provider
+    /// name — so it still catches any future path that hands a model no tools,
+    /// including this one when the bridge is unreachable. Only the remedy it
+    /// offers changed.
     #[test]
     fn a_model_that_narrated_its_tool_calls_is_named_as_such() {
         let narrated = "**Step 1 - Source page**\n<tool_call>\n{\"name\": \"kb_write\",                         \"arguments\": {\"path\": \"knowledge/source/tocilizumab.md\"}}\n                        </tool_call>\n<tool_response>\nOK\n</tool_response>";
@@ -1129,8 +1137,17 @@ mod tests {
             "the failure must name what actually happened: {msg}"
         );
         assert!(
-            msg.contains("Choose a different model for ingestion"),
-            "and what to do about it, since the Knowledge view has its own model picker: {msg}"
+            msg.contains("try the run again"),
+            "and what to do about it: {msg}"
+        );
+        // #109: the old text told the user to choose a different model, because
+        // the coding-agent providers genuinely could not drive a macro. They can
+        // now — they receive their tools over the bridge on this path too — so
+        // that advice would send someone to change a working configuration
+        // instead of looking at the reachability that actually failed.
+        assert!(
+            !msg.contains("Choose a different model"),
+            "the fixed limitation must not still be offered as the remedy: {msg}"
         );
     }
 

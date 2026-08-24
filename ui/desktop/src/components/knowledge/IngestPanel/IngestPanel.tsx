@@ -18,7 +18,7 @@ import { PasteTextBox } from './PasteTextBox';
 import { StagedList } from './StagedList';
 import type { FileDropWarning, StagedFileCandidate } from './fileValidation';
 import { validateDroppedFiles } from './fileValidation';
-import { ingestModelBlockedByProvider, resolveIngestModel } from './resolveIngestModel';
+import { resolveIngestModel } from './resolveIngestModel';
 
 function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 9);
@@ -143,23 +143,18 @@ export function IngestPanel() {
   // first while either is in flight told users with a perfectly good
   // configuration to go and set one up.
   const modelPending = !model && (kbPending || modelConfigStatus === 'loading');
-  // A fourth reason `model` can be null, and the only one that is not a gap in
-  // the user's setup: everything resolved, but the only candidate was a
-  // coding-agent provider a knowledge macro cannot drive. Telling that user
-  // "No model configured" sends them to Settings to fix a configuration that is
-  // already correct, so the picker needs to be able to tell the two apart.
-  const modelBlockedByProvider =
-    !primaryKbUnresolved &&
-    ingestModelBlockedByProvider(primaryKb?.default_model, currentProvider, currentModel);
+  // #109: a fourth state, `unsupported`, used to sit here for "the only
+  // candidate is a coding-agent provider a macro cannot drive". Those providers
+  // now receive their tools over the MCP bridge like any other, so the state has
+  // no cause left — and a renderer guessing support from a provider NAME was
+  // always the wrong place for the answer.
   const modelValueState = model
     ? 'resolved'
     : kbUnavailable
       ? 'unavailable'
       : modelPending
         ? 'loading'
-        : modelBlockedByProvider
-          ? 'unsupported'
-          : 'resolved';
+        : 'resolved';
 
   async function onDefaultModelChange(next: ModelRef) {
     // Saving a default to an id whose manifest never arrived writes to a base

@@ -577,7 +577,7 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
 
     let cancel_ref = args.cancel.as_deref();
     let agent_result = agent
-        .run(&user, &dispatch, cancel_ref, args.event_sink.as_ref())
+        .run(&user, std::sync::Arc::new(dispatch), cancel_ref, args.event_sink.as_ref())
         .await;
 
     settle_autofix(svc, &args.kb_id, &repo, &txn, report, agent_result)

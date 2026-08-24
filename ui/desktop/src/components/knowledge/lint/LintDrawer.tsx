@@ -16,10 +16,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../../ui/sheet';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { useKnowledge } from '../KnowledgeContext';
 import { useIngestStream } from '../hooks/useIngestStream';
-import {
-  ingestModelBlockedByProvider,
-  resolveIngestModel,
-} from '../IngestPanel/resolveIngestModel';
+import { resolveIngestModel } from '../IngestPanel/resolveIngestModel';
 
 /**
  * Running the base's lint, and reading what it found (ui-spec §4.11).
@@ -114,29 +111,6 @@ export function LintDrawer({ open, onOpenChange }: Props) {
 
   const model = useMemo(
     () => resolveIngestModel(primaryKb?.default_model, currentProvider, currentModel),
-    [primaryKb?.default_model, currentProvider, currentModel]
-  );
-
-  /**
-   * Why `model` is null, when it is — and the reason this drawer has to ask.
-   *
-   * ⚠ **This surface is the SECOND consumer of `resolveIngestModel`.** The
-   * resolver was taught to refuse `claude_code` / `codex`, because both reach
-   * `complete_with_model` with `tools` dropped and a macro run against one
-   * narrates its calls as prose and writes nothing. That made it return `null`
-   * for a configuration that is entirely correct, and this drawer read `null`
-   * the only way it knew how: as "the user has not set a model up". A user whose
-   * only provider is a coding agent therefore had the run control permanently
-   * disabled and was told to choose a model in the Sources rail — which is
-   * exactly the picker that same exclusion emptied for them. A loop with no way
-   * out, and the false verdict `ingestModelBlockedByProvider` exists to prevent.
-   *
-   * The refusal itself stands: a check that reads every page through a model
-   * that receives no tools finishes having read nothing, and dispatching it
-   * would only cost the user a full run. What changes is what we say about it.
-   */
-  const modelBlockedByProvider = useMemo(
-    () => ingestModelBlockedByProvider(primaryKb?.default_model, currentProvider, currentModel),
     [primaryKb?.default_model, currentProvider, currentModel]
   );
 
@@ -278,22 +252,22 @@ export function LintDrawer({ open, onOpenChange }: Props) {
               button because reaching `useNavigate` from this component would
               make it un-renderable outside a router — every test in
               `LintDrawer.test.tsx` renders it bare. */}
-          {!model &&
-            (modelBlockedByProvider ? (
-              <EmptyState
-                compact
-                icon={AlertCircle}
-                title="This model can’t run a check"
-                description="A check reads the base through a model, and the one configured here only receives tools inside a chat — the run would finish having read nothing. Add a provider that can make tool calls in Settings, then try again. This model still works in chat."
-              />
-            ) : (
-              <EmptyState
-                compact
-                icon={AlertCircle}
-                title="No model is configured"
-                description="A check reads the base with a model. Choose one in the Sources rail and try again."
-              />
-            ))}
+          {/* #109: this used to branch on whether the configured provider was a
+              coding agent, because `resolveIngestModel` refused those and this
+              drawer read the resulting `null` as "no model set up" — telling a
+              user whose only provider was a coding agent to choose a model in a
+              picker that same exclusion had emptied. Both halves of that loop
+              are gone: the resolver no longer refuses by name, and a macro turn
+              carries its tools over the MCP bridge. `null` here means what it
+              says again. */}
+          {!model && (
+            <EmptyState
+              compact
+              icon={AlertCircle}
+              title="No model is configured"
+              description="A check reads the base with a model. Choose one in the Sources rail and try again."
+            />
+          )}
 
           {model && running && (
             <div

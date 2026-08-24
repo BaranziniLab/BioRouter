@@ -179,29 +179,26 @@ describe('IngestPanel model selection', () => {
     expect(mocks.start).not.toHaveBeenCalled();
   });
 
-  it('does not inherit a chat model a knowledge macro cannot drive', async () => {
+  it('inherits a coding-agent chat model like any other (#109)', async () => {
     mocks.modelAndProvider.currentProvider = 'claude_code';
     mocks.modelAndProvider.currentModel = 'opus-5';
 
     render(<IngestPanel />);
     stageSomeText();
 
-    // `claude_code` reaches `complete_with_model` with its `tools` dropped, so a
-    // digest dispatched at it narrates every call as prose and writes nothing.
-    // Preselecting it costs the user a full model run for an empty base.
-    expect(modelLabels()).not.toContain('claude_code / opus-5');
+    // `claude_code` used to be skipped here, because its `complete_with_model`
+    // dropped the `tools` a macro passes and a digest narrated its calls instead
+    // of writing pages. A macro turn now carries its tools over the MCP bridge,
+    // so skipping it would hide a model that works — and would hand the user the
+    // "No model configured" dead end for a configuration that is correct.
+    expect(modelLabels()).toContain('claude_code / opus-5');
 
-    // And the reason offered is the true one. "No model configured" would send a
-    // user whose chat model works perfectly well to Settings to fix nothing.
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
-    expect(trigger).toHaveTextContent(/can’t digest sources/);
     expect(trigger).not.toHaveTextContent(/no model configured/i);
+    expect(trigger).not.toHaveTextContent(/can’t digest sources/);
 
     const digest = screen.getByTestId('knowledge-digest-button');
-    expect(digest).toHaveAttribute('aria-disabled', 'true');
-    fireEvent.click(digest);
-    await waitFor(() => expect(mocks.checkModel).not.toHaveBeenCalled());
-    expect(mocks.start).not.toHaveBeenCalled();
+    expect(digest).not.toHaveAttribute('aria-disabled', 'true');
   });
 });
 

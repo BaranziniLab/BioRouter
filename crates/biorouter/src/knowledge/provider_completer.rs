@@ -7,13 +7,17 @@
 
 use crate::conversation::message::{Message, MessageContent};
 use crate::providers::base::Provider;
+use crate::providers::coding_agent::bridge::BridgeToolDispatch;
+use crate::providers::tool_turn::ProviderToolTurnContext;
 use anyhow::Result;
 use async_trait::async_trait;
 use biorouter_mcp::knowledge::subagent::loop_::{
-    Completer, LlmMessage, LlmReply, LlmToolCall, ToolResultPart,
+    Completer, CompleterTurn, ExecutedCall, LlmMessage, LlmReply, LlmToolCall, ToolDispatch,
+    ToolResultPart,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Tool};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
 // Adapter
@@ -23,11 +27,50 @@ pub struct ProviderCompleter {
     /// Private, with [`Self::new`], so that [`Self::paired`] is the only way any
     /// other module can obtain a `ProviderCompleter` at all — see its doc.
     provider: Arc<dyn Provider>,
+    /// Which session a human-decision card raised during a bridged turn belongs
+    /// to (#107 / #109).
+    ///
+    /// `None` means the run has no chat behind it — the Knowledge view's ingest
+    /// panel, a scheduled job — and the card is queued unscoped, deliverable by
+    /// any session's loop.
+    ///
+    /// ⚠ **Known gap, recorded rather than implied away.** A macro run from the
+    /// Knowledge view has no agent loop draining that queue at all, so an
+    /// approval raised there would go unanswered until its TTL. In practice a
+    /// macro's tool surface is the workflow's own — the KB tools — under
+    /// `BioRouterMode::Auto`, so the permission inspector allows and nothing is
+    /// raised; the security and sensitive-ops inspectors can still escalate, and
+    /// that is the case with nowhere to draw. Closing it means giving the ingest
+    /// SSE stream a card frame, which is a UI change and not this one.
+    session_id: Option<String>,
+    /// The run's cancellation, so a bridged tool call is reachable by whatever
+    /// stops the run.
+    cancel: Option<CancellationToken>,
 }
 
 impl ProviderCompleter {
     fn new(provider: Arc<dyn Provider>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            session_id: None,
+            cancel: None,
+        }
+    }
+
+    /// Scope any human-decision card this completer's turns raise to
+    /// `session_id`. See the field's doc for what `None` means.
+    #[must_use]
+    pub fn in_session(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Bind the run's cancellation, so a bridged tool call and a parked approval
+    /// are both reachable by whatever stops the run.
+    #[must_use]
+    pub fn cancelled_by(mut self, cancel: CancellationToken) -> Self {
+        self.cancel = Some(cancel);
+        self
     }
 
     /// The completer **and** the tier of the provider behind it, from one
@@ -98,6 +141,149 @@ impl Completer for ProviderCompleter {
         let tool_calls = extract_tool_calls(&reply_msg)?;
 
         Ok(LlmReply { text, tool_calls })
+    }
+
+    /// #109: the seam that makes a coding-agent provider usable by a macro.
+    ///
+    /// `claude_code` and `codex` do not receive tools in the request; their
+    /// child process reaches Biorouter's over an MCP bridge that the *provider
+    /// call* establishes. So the run's dispatcher has to be reachable from
+    /// inside the call, which is what this argument is for, and the child then
+    /// chooses and executes the calls itself — behind the same inspectors,
+    /// permission decision, approval round trip and cancellation a chat turn
+    /// gets, because it is the same [`crate::providers::coding_agent::bridge`]
+    /// gate stack.
+    ///
+    /// Everything else keeps the default: a provider that receives its tools in
+    /// the request returns tool *requests* for the loop to dispatch, and
+    /// [`ProviderToolTurnContext::run`] leaves that path untouched down to
+    /// issuing no grant at all.
+    async fn complete_with_dispatch(
+        &self,
+        system_prompt: &str,
+        messages: &[LlmMessage],
+        tools: &[Tool],
+        dispatch: Arc<dyn ToolDispatch>,
+    ) -> Result<CompleterTurn> {
+        if !self.provider.uses_tool_bridge() {
+            return Ok(self.complete(system_prompt, messages, tools).await?.into());
+        }
+
+        let provider_messages: Vec<Message> =
+            messages.iter().map(llm_to_provider_message).collect();
+
+        // ONE read of the provider mutex and the master toggle, here, and
+        // carried into the grant from there. A bridged call arrives from a child
+        // process with no capability of its own to inherit, so fixing it before
+        // the turn is the whole reason `CallCapability` exists — re-reading per
+        // callback would be the two-reads race with a process boundary through
+        // the middle.
+        let shared: crate::agents::types::SharedProvider =
+            Arc::new(tokio::sync::Mutex::new(Some(Arc::clone(&self.provider))));
+        let capability = crate::privacy::CallCapability::sample(&shared).await;
+
+        let session = crate::session::session_manager::Session {
+            id: self.session_id.clone().unwrap_or_default(),
+            ..Default::default()
+        };
+        let context = ProviderToolTurnContext::for_workflow(
+            session,
+            Arc::new(SubAgentDispatchBridge { dispatch }),
+            capability,
+            self.cancel.clone(),
+        );
+
+        let turn = context
+            .run(&self.provider, system_prompt, &provider_messages, tools)
+            .await
+            .map_err(|e| anyhow::anyhow!("provider.complete failed: {e}"))?;
+
+        // A mirrored request is a RECORD. Handing it back in `tool_calls` would
+        // make the loop dispatch it a second time, and a `kb_write_page` run
+        // twice is a second write, not a redraw.
+        let executed = turn
+            .executed
+            .iter()
+            .map(|call| ExecutedCall {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                args: call.arguments.clone(),
+                output: call.output.clone(),
+                is_error: call.is_error,
+            })
+            .collect();
+        let tool_calls = turn
+            .pending_tool_calls()
+            .into_iter()
+            .map(|request| match &request.tool_call {
+                Ok(params) => Ok(LlmToolCall {
+                    id: request.id.clone(),
+                    name: params.name.to_string(),
+                    args: params
+                        .arguments
+                        .clone()
+                        .map(serde_json::Value::Object)
+                        .unwrap_or(serde_json::Value::Null),
+                }),
+                Err(e) => Err(anyhow::anyhow!(
+                    "the model requested a tool call Biorouter could not decode: {}",
+                    e.message
+                )),
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(CompleterTurn {
+            reply: LlmReply {
+                text: turn.text(),
+                tool_calls,
+            },
+            executed,
+        })
+    }
+}
+
+/// A sub-agent loop's dispatcher, as something the tool bridge can call.
+///
+/// The two traits are the same idea in two crates that cannot see each other:
+/// `ToolDispatch` lives in `biorouter-mcp` (which must not depend on
+/// `biorouter`), `BridgeToolDispatch` in `biorouter`. This adapter lives here,
+/// the one place that already depends on both — the same reason
+/// [`ProviderCompleter`] itself is here.
+///
+/// The session id, capability and cancellation are dropped rather than
+/// forwarded, and that is not a loss: a `ToolDispatch` is a closure over ONE
+/// run's state — the ingest macro's carries the git transaction every write in
+/// the run must land on — so there is no second session it could serve and no
+/// second capability it could be asked about. What decides whether the call may
+/// run at all has already happened above this point, in the grant.
+struct SubAgentDispatchBridge {
+    dispatch: Arc<dyn ToolDispatch>,
+}
+
+#[async_trait]
+impl BridgeToolDispatch for SubAgentDispatchBridge {
+    async fn dispatch(
+        &self,
+        _session_id: &str,
+        call: CallToolRequestParams,
+        _capability: crate::privacy::CallCapability,
+        _cancel: CancellationToken,
+    ) -> std::result::Result<CallToolResult, String> {
+        let name = call.name.to_string();
+        let args = call
+            .arguments
+            .map(serde_json::Value::Object)
+            .unwrap_or(serde_json::Value::Null);
+        match self.dispatch.call(&name, args).await {
+            Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
+            // A tool that refused is a RESULT the child's model reads and acts
+            // on, not a transport error it may retry — the same distinction the
+            // loop's own dispatcher makes when it feeds `error: …` back as a
+            // tool result. A JSON-RPC error here would read as a broken server.
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "error: {e}"
+            ))])),
+        }
     }
 }
 

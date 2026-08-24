@@ -169,7 +169,7 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
     let agent_result = agent
         .run(
             &args.question,
-            &dispatch,
+            std::sync::Arc::new(dispatch),
             cancel_ref,
             args.event_sink.as_ref(),
         )
