@@ -136,6 +136,25 @@ export function getElicitationContent(
   );
 }
 
+/**
+ * Issue #117. A credential card.
+ *
+ * ⚠ There is deliberately **no** `createSecretResponseMessage` beside
+ * `createElicitationResponseMessage`. An elicitation is answered by appending an
+ * `agentVisible` message carrying `user_data`; a credential card is answered by
+ * `POST /action-required/secrets`, which writes the values to the OS credential
+ * store and returns key names. Adding a response message type here is the one
+ * change that would put a secret back on the conversation transport.
+ */
+export function getSecretRequestContent(
+  message: Message
+): (ActionRequired & { type: 'actionRequired' }) | undefined {
+  return message.content.find(
+    (content): content is ActionRequired & { type: 'actionRequired' } =>
+      content.type === 'actionRequired' && content.data.actionType === 'secretRequest'
+  );
+}
+
 export function hasCompletedToolCalls(message: Message): boolean {
   const toolRequests = getToolRequests(message);
   return toolRequests.length > 0;

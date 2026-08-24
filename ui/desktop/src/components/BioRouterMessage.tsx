@@ -11,11 +11,13 @@ import {
   getToolResponses,
   getToolConfirmationContent,
   getElicitationContent,
+  getSecretRequestContent,
   NotificationEvent,
 } from '../types/message';
 import { Message } from '../api';
 import ToolCallConfirmation from './ToolCallConfirmation';
 import ElicitationRequest from './ElicitationRequest';
+import SecretRequestCard from './SecretRequestCard';
 import MessageCopyLink from './MessageCopyLink';
 import MessageDivergeLink from './MessageDivergeLink';
 import { MessageMeta } from './MessageMeta';
@@ -113,6 +115,7 @@ export default function BioRouterMessage({
   const messageIndex = messageIndexProp ?? messages.findIndex((msg) => msg.id === message.id);
   const toolConfirmationContent = getToolConfirmationContent(message);
   const elicitationContent = getElicitationContent(message);
+  const secretRequestContent = getSecretRequestContent(message);
   // Prefer the parent's single precomputed chain map; only recompute locally
   // (the old O(n)-per-message cost) when not provided.
   const toolCallChains = useMemo(
@@ -274,6 +277,16 @@ export default function BioRouterMessage({
             isClicked={false}
             actionRequiredContent={elicitationContent}
             onSubmit={submitElicitationResponse}
+          />
+        )}
+
+        {/* Issue #117. Unlike every other card here it takes NO submit
+            callback: it answers the daemon directly, because routing a
+            credential through `append` would put it in the transcript. */}
+        {secretRequestContent && (
+          <SecretRequestCard
+            isCancelledMessage={false}
+            actionRequiredContent={secretRequestContent}
           />
         )}
       </div>

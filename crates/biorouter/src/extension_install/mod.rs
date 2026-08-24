@@ -23,6 +23,6 @@ pub use credentials::{
     CredentialRequests, CredentialSpec, ParkedCredentials, SubmitOutcome, DEFAULT_CREDENTIAL_TTL,
 };
 pub use transaction::{
-    CredentialPolicy, ExtensionInstallTransaction, InstallReport, InstallSource, InstallState,
-    ResumableInstall, ResumableInstalls,
+    classify_supplied, compose_config, CredentialPolicy, ExtensionInstallTransaction,
+    InstallReport, InstallSource, InstallState, ResumableInstall, ResumableInstalls,
 };

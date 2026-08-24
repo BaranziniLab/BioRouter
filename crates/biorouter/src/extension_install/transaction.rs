@@ -421,22 +421,7 @@ impl ExtensionInstallTransaction {
         // ── register ──────────────────────────────────────────────────────
         env_keys.sort();
         env_keys.dedup();
-        let config = ExtensionConfig::Stdio {
-            name: manifest.name.clone(),
-            description: manifest.description.clone(),
-            cmd: "uv".to_string(),
-            args: vec![
-                "run".to_string(),
-                "--directory".to_string(),
-                install_dir.display().to_string(),
-                manifest.entry_point.clone(),
-            ],
-            envs: Envs::new(envs),
-            env_keys: env_keys.clone(),
-            timeout: Some(300),
-            bundled: None,
-            available_tools: Vec::new(),
-        };
+        let config = compose_config(&manifest, &install_dir, envs, env_keys.clone());
         set_extension(ExtensionEntry {
             enabled: self.enable,
             config: config.clone(),
@@ -469,30 +454,17 @@ impl ExtensionInstallTransaction {
         envs: &mut HashMap<String, String>,
         env_keys: &mut Vec<String>,
     ) -> anyhow::Result<()> {
+        let (secret_keys, settings) = classify_supplied(manifest, &self.supplied);
         let config = crate::config::Config::global();
-        for (key, value) in &self.supplied {
-            if value.trim().is_empty() {
-                continue;
-            }
-            let declared_secret = manifest
-                .env_vars
-                .iter()
-                .find(|v| &v.key == key)
-                .map(|v| v.secret)
-                // A key the manifest never declared is an ad-hoc setting. It is
-                // NOT assumed secret: guessing wrong in that direction hides a
-                // value the user expected to see in their config.
-                .unwrap_or(false);
-            if declared_secret {
-                config
-                    .set_secret(key, value)
-                    .map_err(|e| anyhow::anyhow!("Failed to store `{key}`: {e}"))?;
-                env_keys.push(key.clone());
-                self.undo.written_secrets.push(key.clone());
-            } else {
-                envs.insert(key.clone(), value.clone());
-            }
+        for key in secret_keys {
+            let value = &self.supplied[&key];
+            config
+                .set_secret(&key, value)
+                .map_err(|e| anyhow::anyhow!("Failed to store `{key}`: {e}"))?;
+            env_keys.push(key.clone());
+            self.undo.written_secrets.push(key);
         }
+        envs.extend(settings);
         Ok(())
     }
 
@@ -656,6 +628,76 @@ impl ExtensionInstallTransaction {
             configured_keys: configured_keys.to_vec(),
             skills: skills.to_vec(),
         }
+    }
+}
+
+/// Split caller-supplied values into credentials and ordinary settings.
+///
+/// **Public because this is the decision that decides what may be written to
+/// `config.yaml`**, and a decision that important should be assertable without
+/// running an install. Returns key names for the credential half and full
+/// values for the settings half — the caller writes the credentials to the
+/// credential store from `supplied`, which is the only map that holds them.
+///
+/// A key the manifest never declared is an ad-hoc **setting**, not a credential.
+/// Guessing the other way would hide a value the user expected to see in their
+/// own config, and `--secret KEY=VALUE` already exists for the case where they
+/// meant a credential.
+pub fn classify_supplied(
+    manifest: &BrxtManifest,
+    supplied: &HashMap<String, String>,
+) -> (Vec<String>, HashMap<String, String>) {
+    let mut secret_keys = Vec::new();
+    let mut settings = HashMap::new();
+    for (key, value) in supplied {
+        if value.trim().is_empty() {
+            continue;
+        }
+        let declared_secret = manifest
+            .env_vars
+            .iter()
+            .find(|v| &v.key == key)
+            .map(|v| v.secret)
+            .unwrap_or(false);
+        if declared_secret {
+            secret_keys.push(key.clone());
+        } else {
+            settings.insert(key.clone(), value.clone());
+        }
+    }
+    secret_keys.sort();
+    (secret_keys, settings)
+}
+
+/// The config entry an install registers.
+///
+/// **Public for the same reason as [`classify_supplied`]**: `config.yaml` is a
+/// plaintext file on disk, this is the only function that decides what goes into
+/// it, and "no credential is ever in `envs`" is a property a test must be able
+/// to state directly rather than infer from a successful install.
+pub fn compose_config(
+    manifest: &BrxtManifest,
+    install_dir: &std::path::Path,
+    envs: HashMap<String, String>,
+    mut env_keys: Vec<String>,
+) -> ExtensionConfig {
+    env_keys.sort();
+    env_keys.dedup();
+    ExtensionConfig::Stdio {
+        name: manifest.name.clone(),
+        description: manifest.description.clone(),
+        cmd: "uv".to_string(),
+        args: vec![
+            "run".to_string(),
+            "--directory".to_string(),
+            install_dir.display().to_string(),
+            manifest.entry_point.clone(),
+        ],
+        envs: Envs::new(envs),
+        env_keys,
+        timeout: Some(300),
+        bundled: None,
+        available_tools: Vec::new(),
     }
 }
 

@@ -967,8 +967,13 @@ class ChatStreamController {
     const hasElicitation = msg.content.some(
       (content) => content.type === 'actionRequired' && content.data.actionType === 'elicitation'
     );
+    // Issue #117. A credential card parks the turn the same way, and the chat
+    // must say so — the install is genuinely waiting on the person.
+    const hasSecretRequest = msg.content.some(
+      (content) => content.type === 'actionRequired' && content.data.actionType === 'secretRequest'
+    );
     const chatState =
-      hasToolConfirmation || hasElicitation
+      hasToolConfirmation || hasElicitation || hasSecretRequest
         ? ChatState.WaitingForUserInput
         : getCompactingMessage(msg)
           ? ChatState.Compacting
