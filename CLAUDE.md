@@ -866,6 +866,77 @@ per-app agent over `GET /apps/<id>/agent`. Full design in
   arrive). Examples: `scripts/agent-drafter-apps/examples/ui/` +
   `install-examples.sh`.
 
+### Skills: one catalog, one importer (#113, #115)
+
+Two rules govern every skill surface, and both replaced a set of parallel
+implementations that had drifted. Reference:
+[`docs/extensions/skill-catalog.md`](docs/extensions/skill-catalog.md) and
+[`docs/extensions/skill-packages.md`](docs/extensions/skill-packages.md).
+
+**The daemon owns the catalog, and nothing else scans.**
+`crates/biorouter/src/agents/skill_catalog.rs` enumerates the roots *with
+provenance* (`roots()` — the ONE definition; `SkillsClient::get_default_skill_directories`
+is its paths-only view), discovers skills, derives bundles from the discovery
+result, and composes machine-wide with per-session state in `compose_state` —
+which `skills_extension`'s own filter also calls, so the model's view and the
+interface's switch cannot disagree. Served over `GET /skills/catalog`; the
+renderer's `loadSkillsFromDirs`/`ALL_SKILL_DIRS` scanner is **deleted**, and
+Settings, the composer picker, the `@`-mention list and the workflow picker all
+read `useSkillCatalog`.
+
+- **The catalog is a process-global snapshot every `SkillsClient` reads
+  through**, not a constructor-time map, so a skill installed mid-conversation
+  is loadable in that conversation. Staleness = the root set (an extension
+  install *adds a root*) + the mtime of every root and every **bundle**
+  directory (creating `<bundle>/<child>/` bumps the bundle's mtime, not the
+  root's). ⚠ mtime has a one-second window; in-process writers must call
+  `skill_catalog::invalidate()`/`refresh()` rather than rely on it.
+- **Per-chat state is `workspace_skills/v1` on the session row, never
+  `skills-config.json`** — that file is machine-wide and shared with
+  `biorouter skill enable/disable`. `POST /skills/session` persists first and
+  reads the catalog back *after* the write, so the interface renders confirmed
+  state; a refusal restores the previous catalog and raises an **error** toast.
+  Precedence: skill `add` > skill `remove` > **bundle** `add` > bundle `remove`
+  > machine-wide. The bundle arms are load-bearing — without them a per-chat
+  bundle toggle writes a name no skill matches.
+- ⚠ `CatalogSkill.builtin` answers "did Biorouter put this here?". The
+  hand-synced `skillUtils.BUILTIN_SKILL_NAMES` copy is gone; `contexts.test.ts`
+  now asserts it has not come back.
+
+**One import pipeline** — `crates/biorouter/src/agents/skill_package/`, reached
+from Add Skill (URL or `.zip`), the marketplace, the `importSkillPackage` MCP
+tool, `biorouter skill install <path-or-url>`, and `/skills/packages/*`. The two
+depth-counting archive parsers in `routes/shell.rs` and `commands/skill.rs` are
+deleted, not kept in step.
+
+- **Metadata beats shape**, and the ladder **merges** rather than picking one
+  rung: `biorouter-package.json` → `.codex-plugin/plugin.json` →
+  `.claude-plugin/plugin.json` → `skills-manifest.json` → structure. HyperFrames
+  ships all three plugin files and only the Codex one carries `skills`.
+- **A shared name prefix is never the detector** — `media-use`, `slideshow`,
+  `product-launch-video` and `faceless-explainer` carry none — and every
+  component keeps its declared name exactly.
+- **Ambiguity is a question**: components loose at an archive root with no
+  manifest could be one package or a zipped folder, so the plan says so and
+  install refuses until answered. A named parent directory is not ambiguous, and
+  neither is a manifest. Over HTTP the question is a **200** `needsChoice`, not
+  a 4xx — an agent seeing an error retries instead of asking.
+- **A partial write never lands**: staged in a sibling directory, verified by
+  reading the tree back, swapped in with two renames.
+- ⚠ **Run the live test after touching `manifest.rs` or `plan.rs`:**
+  `cargo test -p biorouter --test skill_package_live -- --ignored`. It downloads
+  the real HyperFrames repository. A complete synthetic fixture matrix passed
+  while **three** real defects survived — `skills-manifest.json`'s `skills` is a
+  *map* not an array (which failed the whole document and refused the import),
+  the display name lives in the plugin manifest's `interface` block, and package
+  identity was resolved before the single-skill collapse. A fixture is a
+  statement about what you *think* the world looks like.
+
+Tests: `cargo test -p biorouter --lib -- skill`,
+`cargo test -p biorouter-server --lib -- routes::skills`,
+`cargo test -p biorouter-cli --lib` (**needs an isolated `HOME`**), and
+`cd ui/desktop && npm run test:run`.
+
 ### Workspace control (several conversations at once)
 
 Workspace control (BR-71) is the agent's tool surface over *other* conversations:
