@@ -166,7 +166,7 @@ impl Agent {
 /// does the same.
 ///
 /// [`CallCapability`]: crate::privacy::CallCapability
-fn kb_caller(cap: crate::privacy::CallCapability) -> KbCaller {
+pub(crate) fn kb_caller(cap: crate::privacy::CallCapability) -> KbCaller {
     KbCaller::new(
         cap.tier().is_private(),
         crate::privacy::affiliation::caller_affiliation(cap.affiliation()),
@@ -320,18 +320,42 @@ async fn build_model_ref_completer(
         ));
     }
 
+    let provider = build_model_ref_provider(
+        model,
+        session,
+        "digesting this conversation",
+        "the knowledge base's default model",
+    )
+    .await?;
+    let (completer, tier, affiliation) = ProviderCompleter::paired(provider);
+    Ok((Box::new(completer), tier, affiliation))
+}
+
+/// The provider behind a [`ModelRef`], past **Gate H**.
+///
+/// Split out of [`build_model_ref_completer`] so a caller that needs the
+/// provider itself — a batch, which mints one completer per source from one
+/// `Arc` — reaches the gate through this function instead of writing a second
+/// copy of it. Gate H exists once in this file, and both knowledge paths run it.
+///
+/// `session` is the classification of the session whose content is about to
+/// travel. It has to be passed: this function's whole job is to build a provider
+/// the session row does not name, so there is no bound provider for a later gate
+/// to consult. `what` and `env_key_to_name` are Gate H's own two strings — the
+/// feature named in the refusal and the knob that fixes it — and they differ per
+/// caller, which is why they are arguments rather than constants here.
+pub(crate) async fn build_model_ref_provider(
+    model: &ModelRef,
+    session: crate::privacy::SessionClassification,
+    what: &str,
+    env_key_to_name: &str,
+) -> anyhow::Result<std::sync::Arc<dyn crate::providers::base::Provider>> {
     let model_config = ModelConfig::new(&model.model)?;
     let provider = crate::providers::create(&model.provider, model_config).await?;
     // AFTER `create`: the tier belongs to the instance that was resolved, not to
     // the name the manifest asked for. Constructing it discloses nothing.
-    crate::privacy::assert_alt_provider_allowed(
-        "digesting this conversation",
-        provider.as_ref(),
-        session,
-        "the knowledge base's default model",
-    )?;
-    let (completer, tier, affiliation) = ProviderCompleter::paired(provider);
-    Ok((Box::new(completer), tier, affiliation))
+    crate::privacy::assert_alt_provider_allowed(what, provider.as_ref(), session, env_key_to_name)?;
+    Ok(provider)
 }
 
 /// Slugify a display name into a valid KB id (lowercase, a-z0-9-, no leading /
