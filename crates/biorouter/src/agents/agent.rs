@@ -23,8 +23,8 @@ use crate::agents::extension_manager::{
 use crate::agents::extension_manager_extension::MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE;
 use crate::agents::final_output_tool::{FINAL_OUTPUT_CONTINUATION_MESSAGE, FINAL_OUTPUT_TOOL_NAME};
 use crate::agents::platform_tools::{
-    PLATFORM_INGEST_CONVERSATION_TOOL_NAME, PLATFORM_MANAGE_SCHEDULE_TOOL_NAME,
-    PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
+    PLATFORM_INGEST_CONVERSATION_TOOL_NAME, PLATFORM_INGEST_SOURCE_TOOL_NAME,
+    PLATFORM_MANAGE_SCHEDULE_TOOL_NAME, PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
 };
 use crate::agents::prompt_manager::PromptManager;
 use crate::agents::resource_refs::{extract_resource_refs, ResourceRefs};
@@ -4864,6 +4864,7 @@ impl Agent {
             let dispatched_elsewhere = is_spawn_tool_call(name)
                 || name == crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME
                 || name == crate::agents::platform_tools::PLATFORM_INGEST_CONVERSATION_TOOL_NAME
+                || name == crate::agents::platform_tools::PLATFORM_INGEST_SOURCE_TOOL_NAME
                 || name == crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME
                 || name == crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
                 || self.is_frontend_tool(name).await;
@@ -4956,6 +4957,25 @@ impl Agent {
                 .map(Value::Object)
                 .unwrap_or(Value::Object(serde_json::Map::new()));
             let result = self.handle_ingest_conversation(arguments, session).await;
+            let wrapped_result = result.map(|content| CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            });
+            return (request_id, Ok(ToolCallResult::from(wrapped_result)));
+        }
+
+        // Issue #108: documents into a knowledge base, through the one
+        // transactional ingest macro. Dispatched here beside its conversation
+        // sibling — it needs the agent's own provider (or an alternate the
+        // caller named), which the extension manager has no access to.
+        if tool_call.name == PLATFORM_INGEST_SOURCE_TOOL_NAME {
+            let arguments = tool_call
+                .arguments
+                .map(Value::Object)
+                .unwrap_or(Value::Object(serde_json::Map::new()));
+            let result = self.handle_ingest_source(arguments, session).await;
             let wrapped_result = result.map(|content| CallToolResult {
                 content,
                 structured_content: None,
@@ -5691,6 +5711,12 @@ impl Agent {
         // agent's provider, which is checked at call time.
         if extension_name.is_none() || extension_name.as_deref() == Some("platform") {
             prefixed_tools.push(platform_tools::ingest_conversation_tool());
+            // Issue #108. Beside it, and on the same terms: the knowledge store
+            // is always present and the provider is checked at call time. It is
+            // NOT gated on the knowledge extension being loaded — the extension
+            // supplies primitives a model reaches for when this tool is absent,
+            // which is the exact failure this tool exists to end.
+            prefixed_tools.push(platform_tools::ingest_source_tool());
         }
 
         // BR-7: the retrieval half of externalized tool results. Only offered

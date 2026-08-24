@@ -901,6 +901,35 @@ mod tests {
         );
     }
 
+    /// Issue #108. `platform__ingest_source` is the one first-class ingestion
+    /// operation, and an explicit "ingest these PDFs" in Auto mode must not earn
+    /// a generic filesystem prompt on top of the request the user already made.
+    ///
+    /// It reads as ordinary here because the classifier asks the right question:
+    /// the tool's name carries no mutating verb, so its `paths` never become
+    /// candidate write targets. That is a property worth pinning rather than
+    /// assuming — a rename to something like `write_sources` would silently
+    /// start escalating every ingest, and nothing else in the tree would notice.
+    #[test]
+    fn the_source_ingest_tool_is_not_a_filesystem_mutation() {
+        for arguments in [
+            json!({"paths": ["/Users/me/papers/ms-2024.pdf"], "kb_id": "ms-papers"}),
+            json!({"path": "/Users/me/papers", "kb_id": "ms-papers"}),
+            json!({"sources": ["~/Downloads/a.pdf", "https://example.org/b.pdf"]}),
+        ] {
+            let finding = sensitive_file_operation(
+                crate::agents::platform_tools::PLATFORM_INGEST_SOURCE_TOOL_NAME,
+                &args(arguments.clone()),
+                Path::new("/home/me/proj"),
+            );
+            assert!(
+                finding.is_none(),
+                "ingesting documents must not request approval in Auto mode ({arguments}), \
+                 got {finding:?}"
+            );
+        }
+    }
+
     // --- the inspector, end to end (the directive's gates) -----------------
 
     use crate::conversation::message::ToolRequest;
