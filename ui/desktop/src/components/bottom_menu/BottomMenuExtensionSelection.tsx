@@ -24,6 +24,7 @@ import { addToAgent, removeFromAgent } from '../settings/extensions/agent-api';
 import { extensionPairingRefused } from '../settings/extensions/extensionPrivacy';
 import { useBoundProviderTier } from '../privacy/useBoundProviderTier';
 import { setExtensionOverride, getExtensionOverrides } from '../../store/extensionOverrides';
+import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
 
 /** §14.5's reason, in the composer's own words. Public model → private tool. */
 const PAIRING_REFUSED_REASON =
@@ -91,10 +92,18 @@ export const BottomMenuExtensionSelection = ({
 
     window.addEventListener('session-created', handleSessionLoaded);
     window.addEventListener('message-stream-finished', handleSessionLoaded);
+    // Issue #112. The global inventory is repaired by `ConfigContext`, but this
+    // menu also holds the SESSION's own list — the thing that decides whether a
+    // row reads as on for this chat — and a catalogue change can move that too
+    // (an agent-driven install attaches as it goes). Same debounce as the two
+    // above, deliberately: they are the same kind of "something changed
+    // underneath us" signal.
+    window.addEventListener(CATALOG_CHANGED_EVENT, handleSessionLoaded);
 
     return () => {
       window.removeEventListener('session-created', handleSessionLoaded);
       window.removeEventListener('message-stream-finished', handleSessionLoaded);
+      window.removeEventListener(CATALOG_CHANGED_EVENT, handleSessionLoaded);
       if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     };
   }, []);

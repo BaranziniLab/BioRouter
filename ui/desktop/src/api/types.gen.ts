@@ -188,20 +188,6 @@ export type AgentInitializationError = {
     retryable: boolean;
 };
 
-/**
- * Why the caller has to choose, and what the choices are.
- */
-export type Ambiguity = {
-    /**
-     * The component names the caller is choosing among.
-     */
-    components: Array<string>;
-    /**
-     * One sentence for the dialog.
-     */
-    reason: string;
-};
-
 export type Annotations = {
     audience?: Array<Role>;
     lastModified?: string;
@@ -304,69 +290,71 @@ export type CarriedPage = {
     source_path: string;
 };
 
-/**
- * A directory of skills installed and removed as one unit.
- */
-export type CatalogBundle = {
-    directory: string;
+export type CatalogChangeReason = 'install' | 'uninstall' | 'update' | 'enable' | 'disable' | 'import';
+
+export type CatalogChanged = {
+    extensions?: Array<CatalogExtensionChange>;
+    reason: CatalogChangeReason;
     /**
-     * The package's own display name when a manifest supplied one, else the
-     * directory name.
+     * Monotonic per-daemon-process counter. A consumer that has applied a
+     * revision >= this may drop the event; one that missed a gap refetches.
      */
-    displayName: string;
+    revision: number;
     /**
-     * The bundle directory name. This is the identifier `skills-config.json`
-     * lists to disable the whole bundle.
+     * The session the change was made from, when it was made from one.
+     *
+     * ⚠ Present so a surface can offer "attach to this chat" — **not** a
+     * delivery scope. The change is machine-wide and every session's inventory
+     * is stale after it.
      */
-    name: string;
-    package?: PackageSummary | null;
-    /**
-     * Member skill names, sorted.
-     */
-    skills: Array<string>;
-    source: SkillSource;
-    sourceRoot: string;
-    state: SkillState;
+    sessionId?: string | null;
+    skills?: Array<CatalogSkillChange>;
 };
 
 /**
- * One skill, as the interface and the model both see it.
+ * What a client gets back from a poll.
  */
-export type CatalogSkill = {
+export type CatalogDelta = {
+    changes?: Array<CatalogChanged>;
     /**
-     * Shipped with Biorouter, so the interface offers no Delete for it.
+     * The current revision. A client stores this and passes it as `since`.
      */
-    builtin: boolean;
+    revision: number;
     /**
-     * The bundle directory this skill sits in, when it is a bundle member.
+     * The client fell further behind than the buffer holds, so `changes` is
+     * not a complete history. **Refetch the inventory** rather than applying
+     * it.
      */
-    bundle?: string | null;
-    description: string;
-    directory: string;
-    /**
-     * Frontmatter `name` — the identifier every enablement surface keys on.
-     */
-    name: string;
-    /**
-     * Root-relative logical path, `/`-separated on every platform
-     * (`superpowers/brainstorming`). What `biorouter skill list` prints.
-     */
-    slug: string;
-    source: SkillSource;
-    sourceRoot: string;
-    state: SkillState;
+    truncated?: boolean;
 };
 
-/**
- * The serialisable catalog: what `GET /skills/catalog` returns and what the
- * desktop picker renders. There is no second derivation of any of these
- * fields on the interface side — that separation is what #113 removed.
- */
-export type CatalogView = {
-    bundles: Array<CatalogBundle>;
-    generation: number;
-    roots: Array<SkillRoot>;
-    skills: Array<CatalogSkill>;
+export type CatalogEntryChange = 'added' | 'removed' | 'updated' | 'enabled' | 'disabled';
+
+export type CatalogExtensionChange = {
+    /**
+     * Skills that shipped inside this extension's bundle.
+     */
+    bundledSkillIds?: Array<string>;
+    change: CatalogEntryChange;
+    config?: ExtensionConfig | null;
+    displayName?: string | null;
+    enabled: boolean;
+    /**
+     * `name_to_key(name)` — the join every surface already uses, and the only
+     * identifier that survives a display-name change.
+     */
+    key: string;
+    name: string;
+};
+
+export type CatalogSkillChange = {
+    change: CatalogEntryChange;
+    id: string;
+    name?: string | null;
+    /**
+     * The extension whose bundle carried it, when it came from one.
+     */
+    sourceExtensionKey?: string | null;
 };
 
 export type ChangeKind = 'ingest' | 'link' | 'flag' | 'query' | 'lint' | 'restore' | 'manual';
@@ -851,13 +839,6 @@ export type ErrorResponse = {
 };
 
 /**
- * Which rung of the detection ladder decided the shape. Reported so a preview
- * can explain itself, and so a test can assert that the *manifest* decided
- * rather than the structure happening to agree with it.
- */
-export type Evidence = 'biorouterManifest' | 'codexPlugin' | 'claudePlugin' | 'skillsManifest' | 'skillsDirectory' | 'structuralInference' | 'singleSkill';
-
-/**
  * Represents the different types of MCP extensions that can be added to the manager
  */
 export type ExtensionConfig = {
@@ -1184,94 +1165,6 @@ export type ImageContent = {
     mimeType: string;
 };
 
-export type ImportChoice = 'bundle' | 'individual';
-
-/**
- * Which shape the importer decided on.
- */
-export type ImportKind = 'single' | 'bundle';
-
-/**
- * The serialisable half of a plan — everything except the file bytes.
- */
-export type ImportPreview = {
-    ambiguity?: Ambiguity | null;
-    components: Array<PlannedSkill>;
-    displayName: string;
-    entryPoint?: string | null;
-    evidence: Evidence;
-    /**
-     * How many files would be written.
-     */
-    fileCount: number;
-    groups: {
-        [key: string]: unknown;
-    };
-    id: string;
-    kind: ImportKind;
-    shadows: Array<string>;
-    source: SourceProvenance;
-    version?: string | null;
-};
-
-/**
- * What to import, in the two forms a caller has.
- *
- * One request type for a pasted repository URL, an agent's tool call, a local
- * `.zip` and a marketplace asset, because giving each of those its own
- * resolution is how the four came to disagree in the first place.
- */
-export type ImportRequest = {
-    choice?: ImportChoice | null;
-    /**
-     * Which components to keep when `choice` is `individual`.
-     */
-    components?: Array<string>;
-    /**
-     * A `.zip` on the machine the daemon runs on.
-     */
-    filePath?: string | null;
-    /**
-     * Answer to a previous preview's question, by its `planId`.
-     */
-    planId?: string | null;
-    /**
-     * Branch, tag or commit. Overrides a ref in the URL.
-     */
-    reference?: string | null;
-    /**
-     * `https://github.com/owner/repo`, a `/tree/<ref>` URL, or a direct
-     * archive URL on an allowed host.
-     */
-    url?: string | null;
-};
-
-/**
- * The answer to an import request: either it happened, or somebody has to
- * choose first.
- *
- * ⚠ **`NeedsChoice` is a 200, not an error.** It is a legitimate outcome the
- * caller is expected to act on — the issue's "real pending user-input state" —
- * and an agent that saw a 4xx would reasonably retry the same call rather than
- * asking the person the question it was handed.
- */
-export type ImportResult = {
-    /**
-     * One entry per installed unit: a bundle is one, "install these
-     * separately" is one each.
-     */
-    installed: Array<InstalledPackage>;
-    preview: ImportPreview;
-    status: 'installed';
-} | {
-    /**
-     * Pass this back with a `choice` to answer.
-     */
-    planId: string;
-    preview: ImportPreview;
-    status: 'needsChoice';
-};
-
 export type ImportSessionRequest = {
     json: string;
 };
@@ -1295,30 +1188,6 @@ export type InspectJobResponse = {
     processStartTime?: string | null;
     runningDurationSeconds?: number | null;
     sessionId?: string | null;
-};
-
-/**
- * What an install did.
- */
-export type InstalledPackage = {
-    /**
-     * The catalog generation after the refresh, so a caller can tell whether
-     * it is looking at an inventory that already includes this.
-     */
-    catalogGeneration: number;
-    directory: string;
-    displayName: string;
-    entryPoint?: string | null;
-    id: string;
-    kind: ImportKind;
-    /**
-     * True when this replaced an existing install of the same id.
-     */
-    replaced: boolean;
-    /**
-     * Component skill names, in the order they were installed.
-     */
-    skills: Array<string>;
 };
 
 /**
@@ -2182,32 +2051,6 @@ export type ModelUsageRow = {
     turns: number;
 };
 
-/**
- * The part of an installed package's record the interface needs. The full
- * record lives beside the skills as `biorouter-package.json`; see
- * `crate::agents::skill_package`.
- */
-export type PackageSummary = {
-    displayName: string;
-    /**
-     * The router/entry-point skill a manifest declared, by frontmatter name.
-     */
-    entryPoint?: string | null;
-    /**
-     * Optional named groups, e.g. `core` / `on-demand`.
-     */
-    groups?: {
-        [key: string]: unknown;
-    };
-    id: string;
-    installedAt?: string | null;
-    installer?: string | null;
-    resolvedCommit?: string | null;
-    sourceRef?: string | null;
-    sourceUrl?: string | null;
-    version?: string | null;
-};
-
 export type PageContent = {
     content: string;
     /**
@@ -2276,30 +2119,6 @@ export type PersistedMessage = {
      * alone.
      */
     userVisible: boolean;
-};
-
-/**
- * One component of a planned import.
- */
-export type PlannedSkill = {
-    description: string;
-    /**
-     * Directory name under the package root. Taken from the source layout so
-     * a manifest referring to `skills/media-use` still resolves after install.
-     */
-    directory: string;
-    /**
-     * The router the package declares as its way in.
-     */
-    entryPoint: boolean;
-    /**
-     * The manifest's group for this component, e.g. `core` / `on-demand`.
-     */
-    group?: string | null;
-    /**
-     * The frontmatter `name`, preserved exactly.
-     */
-    name: string;
 };
 
 export type PreviewBody = {
@@ -2632,25 +2451,6 @@ export type RedactedThinkingContent = {
 export type RemoveExtensionRequest = {
     name: string;
     session_id: string;
-};
-
-export type RemovePackageRequest = {
-    /**
-     * The install directory name — a `CatalogBundle.name`, or the last
-     * component of a `CatalogSkill.slug`.
-     */
-    id: string;
-    /**
-     * Which skills root it lives under. Omit for the Biorouter one.
-     *
-     * ⚠ **Validated against [`skill_catalog::roots`], not merely resolved.**
-     * This handler deletes a directory tree, so the root is chosen from the
-     * set the daemon itself enumerated rather than taken from the caller. A
-     * path the caller invents matches nothing and is refused — which is why
-     * this can safely cover `~/.claude/skills` and a project directory, the
-     * two the Skills pane has always offered a Delete for.
-     */
-    sourceRoot?: string | null;
 };
 
 export type Rename = {
@@ -3006,46 +2806,6 @@ export type SessionModelUsageResponse = {
     models: Array<ModelUsageRow>;
 };
 
-/**
- * Add and remove are applied to **this** conversation only.
- */
-export type SessionSkillsRequest = {
-    /**
-     * Skill (or bundle) names to enable for this conversation, even where the
-     * machine-wide preference has them off.
-     */
-    add?: Array<string>;
-    /**
-     * Skill (or bundle) names to disable for this conversation, even where the
-     * machine-wide preference has them on.
-     */
-    remove?: Array<string>;
-    sessionId: string;
-};
-
-/**
- * The catalog after the write, plus the override that produced it.
- *
- * Returning the whole catalog rather than an acknowledgement is deliberate: it
- * is what lets the interface render confirmed state instead of the optimistic
- * state it just guessed, and it collapses the toggle-then-refetch race that
- * two concurrent toggles would otherwise lose.
- */
-export type SessionSkillsResponse = {
-    catalog: CatalogView;
-    /**
-     * The persisted `workspace_skills/v1` value, echoed so a caller can tell a
-     * per-chat deviation from a machine-wide default without re-deriving it.
-     */
-    sessionAdd: Array<string>;
-    sessionRemove: Array<string>;
-};
-
-/**
- * How one session deviates from the machine-wide answer for a given skill.
- */
-export type SessionState = 'default' | 'added' | 'removed';
-
 export type SessionSummary = {
     created_at: string;
     /**
@@ -3221,72 +2981,6 @@ export type SidecarStatus = {
     warmed?: boolean;
 };
 
-/**
- * One directory skills are discovered under, with its provenance.
- */
-export type SkillRoot = {
-    path: string;
-    source: SkillSource;
-};
-
-/**
- * Where a skill came from, as the interface shows it.
- */
-export type SkillSource = {
-    /**
-     * The extension's directory name, when `kind` is `extension`.
-     */
-    extension?: string | null;
-    kind: SkillSourceKind;
-    /**
-     * A short human label for the "where from" chip — the extension's name
-     * when it has one, else the root's own.
-     */
-    label: string;
-};
-
-/**
- * Which of the five kinds of root a skill came from.
- *
- * ⚠ A **unit-variant** enum carrying no data, with the extension name held
- * beside it in [`SkillSource`] rather than inside an `Extension { .. }`
- * variant. The variant form is the more natural Rust, and it generates an
- * internally-tagged object that `serde(flatten)` and `utoipa` disagree about —
- * the spec emits an `allOf` the TypeScript client cannot narrow. A flat struct
- * crosses the wire unambiguously, which matters more here than the tidier
- * type, because this shape IS the contract the picker renders from.
- */
-export type SkillSourceKind = 'claudeHome' | 'agentsHome' | 'biorouter' | 'extension' | 'project';
-
-/**
- * The composed enablement of one catalog entry, with every input kept
- * separate so the interface can explain *why* a switch is where it is.
- */
-export type SkillState = {
-    /**
-     * What the model actually sees: the composition of the three above.
-     */
-    effective: boolean;
-    /**
-     * A shipped **Context** the user switched off in Settings → Contexts. Such
-     * a skill is hidden from the catalog but stays loadable by exact name; see
-     * `skills_extension::hidden_contexts_in`.
-     */
-    hiddenContext: boolean;
-    /**
-     * `skills-config.json` (`disabled[]`) says this is on. A bundle child is
-     * off when either its own name or its bundle's name is listed.
-     */
-    machineEnabled: boolean;
-    session: SessionState;
-    /**
-     * The deviation was written against the BUNDLE's name, not this skill's.
-     * Lets the interface explain a member's switch instead of leaving it
-     * looking arbitrary.
-     */
-    sessionViaBundle: boolean;
-};
-
 export type SlashCommand = {
     command: string;
     command_type: CommandType;
@@ -3305,27 +2999,6 @@ export type SourceMeta = {
     original_filename?: string | null;
     sha256: string;
     title: string;
-    url?: string | null;
-};
-
-/**
- * What a resolved import came from, kept so an update knows where to look and
- * a user can see what they installed.
- */
-export type SourceProvenance = {
-    /**
-     * `repository` | `archive` | `marketplace` | `cli` | `agent`.
-     */
-    installer?: string | null;
-    /**
-     * The branch, tag or commit that was asked for.
-     */
-    reference?: string | null;
-    /**
-     * The immutable commit the archive actually came from, when the host tells
-     * us (GitHub returns it in `ETag`).
-     */
-    resolvedCommit?: string | null;
     url?: string | null;
 };
 
@@ -4501,6 +4174,63 @@ export type UpdateWorkingDirResponses = {
      */
     200: unknown;
 };
+
+export type CatalogChangesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * The last revision this client applied. `0` (or absent) means "tell me
+         * the current revision", which is how a fresh client establishes a
+         * baseline without a refetch.
+         */
+        since?: number;
+        /**
+         * How long to park, in milliseconds. Clamped to [`MAX_WAIT`].
+         */
+        timeout_ms?: number | null;
+    };
+    url: '/catalog/changes';
+};
+
+export type CatalogChangesErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+};
+
+export type CatalogChangesResponses = {
+    /**
+     * The catalogue delta since `since`
+     */
+    200: CatalogDelta;
+};
+
+export type CatalogChangesResponse = CatalogChangesResponses[keyof CatalogChangesResponses];
+
+export type CatalogRevisionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/catalog/revision';
+};
+
+export type CatalogRevisionErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+};
+
+export type CatalogRevisionResponses = {
+    /**
+     * The current revision
+     */
+    200: CatalogDelta;
+};
+
+export type CatalogRevisionResponse = CatalogRevisionResponses[keyof CatalogRevisionResponses];
 
 export type CodingAgentsStatusData = {
     body?: never;
@@ -7266,208 +6996,6 @@ export type UpdateSessionUserWorkflowValuesResponses = {
 };
 
 export type UpdateSessionUserWorkflowValuesResponse2 = UpdateSessionUserWorkflowValuesResponses[keyof UpdateSessionUserWorkflowValuesResponses];
-
-export type SkillCatalogHandlerData = {
-    body?: never;
-    path?: never;
-    query?: {
-        /**
-         * Compose the machine-wide catalog with this conversation's override.
-         * Omit for the machine-wide view — what a new chat would start with.
-         */
-        session_id?: string | null;
-        /**
-         * Rescan the filesystem before answering, instead of reusing the cached
-         * snapshot. The interface sets this after an install it did not perform
-         * itself (a marketplace click, a `.brxt` drop) and after a `CatalogChanged`
-         * notice, since a change made by another process may land inside the
-         * snapshot's one-second mtime window.
-         */
-        refresh?: boolean;
-    };
-    url: '/skills/catalog';
-};
-
-export type SkillCatalogHandlerErrors = {
-    /**
-     * Unauthorized - invalid or missing secret key
-     */
-    401: unknown;
-    /**
-     * This conversation's skill state is unreadable
-     */
-    500: unknown;
-};
-
-export type SkillCatalogHandlerResponses = {
-    /**
-     * The catalog
-     */
-    200: CatalogView;
-};
-
-export type SkillCatalogHandlerResponse = SkillCatalogHandlerResponses[keyof SkillCatalogHandlerResponses];
-
-export type InstallSkillPackageData = {
-    body: ImportRequest;
-    path?: never;
-    query?: never;
-    url: '/skills/packages/install';
-};
-
-export type InstallSkillPackageErrors = {
-    /**
-     * The source could not be read or installed
-     */
-    400: unknown;
-    /**
-     * Unauthorized - invalid or missing secret key
-     */
-    401: unknown;
-    /**
-     * That preview has expired
-     */
-    410: unknown;
-};
-
-export type InstallSkillPackageResponses = {
-    /**
-     * Installed, or a question to answer
-     */
-    200: ImportResult;
-};
-
-export type InstallSkillPackageResponse = InstallSkillPackageResponses[keyof InstallSkillPackageResponses];
-
-export type PreviewSkillPackageData = {
-    body: ImportRequest;
-    path?: never;
-    query?: never;
-    url: '/skills/packages/preview';
-};
-
-export type PreviewSkillPackageErrors = {
-    /**
-     * The source could not be read
-     */
-    400: unknown;
-    /**
-     * Unauthorized - invalid or missing secret key
-     */
-    401: unknown;
-    /**
-     * That preview has expired
-     */
-    410: unknown;
-};
-
-export type PreviewSkillPackageResponses = {
-    /**
-     * What an install would do
-     */
-    200: ImportResult;
-};
-
-export type PreviewSkillPackageResponse = PreviewSkillPackageResponses[keyof PreviewSkillPackageResponses];
-
-export type RemoveSkillPackageData = {
-    body: RemovePackageRequest;
-    path?: never;
-    query?: never;
-    url: '/skills/packages/remove';
-};
-
-export type RemoveSkillPackageErrors = {
-    /**
-     * Unauthorized - invalid or missing secret key
-     */
-    401: unknown;
-    /**
-     * No such package
-     */
-    404: unknown;
-};
-
-export type RemoveSkillPackageResponses = {
-    /**
-     * Removed
-     */
-    200: PackageSummary;
-};
-
-export type RemoveSkillPackageResponse = RemoveSkillPackageResponses[keyof RemoveSkillPackageResponses];
-
-export type RefreshSkillCatalogData = {
-    body?: never;
-    path?: never;
-    query?: {
-        /**
-         * Compose the machine-wide catalog with this conversation's override.
-         * Omit for the machine-wide view — what a new chat would start with.
-         */
-        session_id?: string | null;
-        /**
-         * Rescan the filesystem before answering, instead of reusing the cached
-         * snapshot. The interface sets this after an install it did not perform
-         * itself (a marketplace click, a `.brxt` drop) and after a `CatalogChanged`
-         * notice, since a change made by another process may land inside the
-         * snapshot's one-second mtime window.
-         */
-        refresh?: boolean;
-    };
-    url: '/skills/refresh';
-};
-
-export type RefreshSkillCatalogErrors = {
-    /**
-     * Unauthorized - invalid or missing secret key
-     */
-    401: unknown;
-    /**
-     * This conversation's skill state is unreadable
-     */
-    500: unknown;
-};
-
-export type RefreshSkillCatalogResponses = {
-    /**
-     * The freshly scanned catalog
-     */
-    200: CatalogView;
-};
-
-export type RefreshSkillCatalogResponse = RefreshSkillCatalogResponses[keyof RefreshSkillCatalogResponses];
-
-export type SetSessionSkillsData = {
-    body: SessionSkillsRequest;
-    path?: never;
-    query?: never;
-    url: '/skills/session';
-};
-
-export type SetSessionSkillsErrors = {
-    /**
-     * Unauthorized - invalid or missing secret key
-     */
-    401: unknown;
-    /**
-     * No such conversation
-     */
-    404: unknown;
-    /**
-     * The override could not be persisted
-     */
-    500: unknown;
-};
-
-export type SetSessionSkillsResponses = {
-    /**
-     * Applied
-     */
-    200: SessionSkillsResponse;
-};
-
-export type SetSessionSkillsResponse = SetSessionSkillsResponses[keyof SetSessionSkillsResponses];
 
 export type StatusData = {
     body?: never;

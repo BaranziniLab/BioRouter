@@ -204,6 +204,13 @@ pub async fn run() -> Result<()> {
         tunnel_manager.check_auto_start().await;
     });
 
+    // Issue #112. Watch `config.yaml` for extension changes made outside this
+    // process — a `biorouter extension install` run in another terminal, a deep
+    // link, a hand edit. The daemon's own writes announce themselves through
+    // the config choke points; this is the only thing that can see the others,
+    // and without it a running app needs a restart to notice them.
+    biorouter::catalog::spawn_config_watcher();
+
     // `into_make_service_with_connect_info` is what puts the real peer address
     // in request extensions, so the auth throttle can key on it instead of the
     // client-supplied `x-forwarded-for` header.
