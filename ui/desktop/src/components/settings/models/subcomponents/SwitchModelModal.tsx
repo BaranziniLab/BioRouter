@@ -103,11 +103,7 @@ const llamaModelOption = (
   // download is, whether they already have it, and whether it suits this machine.
   // The fallback state and the raw `owner/repo:QUANT` spec are diagnostics, not
   // selection criteria — LocalModelInventory in Settings is where those belong.
-  const detail = [
-    entry.download_size,
-    llamaDownloadLabel(entry),
-    llamaFitLabel(entry),
-  ]
+  const detail = [entry.download_size, llamaDownloadLabel(entry), llamaFitLabel(entry)]
     .filter(Boolean)
     .join(' · ');
 
@@ -368,15 +364,39 @@ export const SwitchModelModal = ({
     onClose();
   };
 
+  /**
+   * The switch, as a state the dialog can render.
+   *
+   * ⚠ **A bind is not instant and can fail, and until this existed the dialog
+   * admitted neither.** `changeModel` awaits two round trips to the daemon
+   * (`/agent/update_provider`, then `/config/set_provider`); the button stayed
+   * fully live throughout, and on failure `handleSubmit` returned without
+   * closing the dialog and without writing anything into it — the sole report
+   * was a toast in the far corner of the screen, which is off-screen for anyone
+   * looking at the dialog they just clicked in. The bug this was reported as is
+   * quotable: *"the Select Model button actually froze without telling me
+   * why"*. It had not frozen. It had no way to speak.
+   */
+  const [switching, setSwitching] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
   const handleSubmit = async () => {
     // The button below is already disabled on a browser surface; this is the
     // second half of the same guard, for a keyboard submit or a call site that
     // renders its own confirm.
     if (hostManaged) return;
+    // Re-entrancy: the button is disabled while a switch is in flight, but a
+    // keyboard submit reaches here directly. Two binds racing would write two
+    // different providers through `/config/set_provider` and leave whichever
+    // landed second as the global default.
+    if (switching) return;
     setAttemptedSubmit(true);
+    setSubmitError(null);
     const isFormValid = validateForm();
+    if (!isFormValid) return;
 
-    if (isFormValid) {
+    setSwitching(true);
+    try {
       let modelObj: Model;
 
       if (usePredefinedModels && selectedPredefinedModel) {
@@ -389,6 +409,13 @@ export const SwitchModelModal = ({
 
       const changed = await changeModel(sessionId, modelObj);
       if (!changed) {
+        // `changeModel` has already raised the toast that explains *why* — a
+        // privacy barrier, a missing user proof, a provider failure. This says
+        // the far plainer thing the toast cannot, in the place the user is
+        // looking: the dialog is still open because nothing was switched.
+        setSubmitError(
+          'The model was not switched. See the notification for what went wrong, then try again.'
+        );
         return;
       }
 
@@ -396,6 +423,18 @@ export const SwitchModelModal = ({
         onModelSelected(modelObj.name);
       }
       onClose();
+    } catch (error) {
+      // ⚠ This arm is why the dialog could hang silently. `handleSubmit` is
+      // wired straight to `onClick`, so nothing holds the promise it returns: a
+      // throw anywhere above became an *unhandled rejection*, the dialog
+      // stayed open, and not one pixel changed. Anything that can throw here —
+      // a provider-metadata fetch, an unreachable daemon — now lands in the
+      // dialog instead of in the console.
+      setSubmitError(
+        error instanceof Error ? error.message : `The model could not be switched: ${String(error)}`
+      );
+    } finally {
+      setSwitching(false);
     }
   };
 
@@ -855,6 +894,16 @@ export const SwitchModelModal = ({
           )}
         </div>
 
+        {submitError && (
+          <div
+            data-testid="switch-model-submit-error"
+            role="alert"
+            className="rounded-container border border-border-subtle bg-background-muted px-3 py-2.5 text-sm leading-relaxed text-text-danger [overflow-wrap:anywhere]"
+          >
+            {submitError}
+          </div>
+        )}
+
         <DialogFooter className="pt-4 flex-col sm:flex-row gap-3">
           <a
             href={QUICKSTART_GUIDE_URL}
@@ -869,8 +918,8 @@ export const SwitchModelModal = ({
             <Button variant="outline" onClick={handleClose} type="button">
               Cancel
             </Button>
-            <Button onClick={handleSubmit} disabled={!isValid || hostManaged}>
-              Select model
+            <Button onClick={handleSubmit} disabled={!isValid || hostManaged || switching}>
+              {switching ? 'Switching\u2026' : 'Select model'}
             </Button>
           </div>
         </DialogFooter>
