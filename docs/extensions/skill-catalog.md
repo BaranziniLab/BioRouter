@@ -1,0 +1,162 @@
+# The skill catalog
+
+> **What this is.** How BioRouter decides which skills exist, which of them are on, and how a per-chat choice differs from a machine-wide one. Reference for the daemon-served catalog introduced by issue #113.
+> **Status:** Current. The catalog, the `/skills/*` routes and the composer's per-chat toggles are shipped.
+> **Audience:** contributors, and anyone debugging a skill that is installed but not usable.
+
+## The one-sentence version
+
+There is one catalog, the daemon owns it, and everything — the model's
+`listSkills`, the composer's picker, Settings, the CLI — reads that one answer.
+
+## Why it had to become one thing
+
+Before this, three surfaces answered "which skills exist?" independently, and
+they disagreed:
+
+| Surface | Roots scanned |
+|---|---|
+| The agent (`skills_extension.rs`) | seven kinds, including `~/.config/biorouter/extensions/<name>/skills` |
+| The desktop picker (`skillUtils.ts`) | three |
+| `biorouter skill list` | the agent's, by calling into it |
+
+So a skill bundled inside an installed extension — BiorOffice's Word, Excel and
+PowerPoint skills; MarkItDown's converter — was loadable by the model, listed by
+the CLI, and had **no row in the interface**. Toggling it was not possible
+because there was nothing to toggle.
+
+A second scanner with a different root list is not a bug you fix once. The lists
+drift again the next time a root is added. So the renderer no longer scans: it
+fetches.
+
+## Where each piece lives
+
+| Concern | Home |
+|---|---|
+| The root list, with provenance | `crates/biorouter/src/agents/skill_catalog.rs` — `roots()` |
+| Discovery and bundle derivation | `SkillCatalog::scan` |
+| The enablement rule | `skill_catalog::compose_state` |
+| Machine-wide preference | `~/.config/biorouter/skills-config.json`, `disabled[]` |
+| Per-chat deviation | the session row, `extension_data` key `workspace_skills/v1` |
+| HTTP surface | `crates/biorouter-server/src/routes/skills.rs` |
+| Interface | `ui/desktop/src/components/skills/useSkillCatalog.ts` |
+
+`SkillsClient::get_default_skill_directories()` still exists, and the CLI still
+calls it, but it is now the paths-only view of `roots()`. **Adding a root means
+editing `roots()` and nothing else.**
+
+## The five roots, in override order
+
+Later wins, so a skill of the same frontmatter `name` further down shadows one
+above it.
+
+1. `~/.claude/skills`
+2. `~/.config/agents/skills`
+3. `~/.config/biorouter/skills`
+4. `~/.config/biorouter/extensions/<extension>/skills`, one root per installed
+   extension, sorted so two extensions shipping the same skill name resolve the
+   same way on every start
+5. the working directory's `.claude/skills`, `.biorouter/skills`, `.agents/skills`
+
+A skill's identity is the `name:` in its frontmatter, never its directory name.
+
+## Two scopes, and why they must not be confused
+
+**Machine-wide** is `skills-config.json`. It is shared with
+`biorouter skill enable/disable` and with every other window, so writing to it
+from a chat would change every other conversation.
+
+**Per-chat** is `workspace_skills/v1` on the session row: an `add` list and a
+`remove` list, each holding skill names or bundle names. It is a *deviation*
+from the machine-wide answer, not a copy of it, so a machine-wide change still
+reaches a chat that has no opinion about that skill.
+
+Precedence, most specific first — one function, `compose_state`, and both the
+model's filter and the interface's switch read it:
+
+1. a Context switched off in Settings → Contexts hides the skill **before**
+   anything below is consulted, so a per-chat grant cannot put back something
+   the user turned off in Settings (it stays loadable by exact name; see
+   [built-in/skills.md](built-in/skills.md))
+2. the session `add` list names the skill
+3. the session `remove` list names the skill
+4. the session `add` list names the skill's **bundle**
+5. the session `remove` list names the skill's bundle
+6. `skills-config.json` names the skill or its bundle
+
+⚠ Steps 4 and 5 are why a per-chat bundle toggle persists the **bundle's** name
+rather than expanding its members at click time: a bundle that later gains a
+skill stays covered, where an expanded list would silently stop covering it.
+
+## Hot-loading: a skill installed mid-conversation
+
+`SkillsClient` used to discover skills in its constructor and hold that map for
+the life of the process, so a skill installed afterwards could never become
+loadable in an existing chat. It now reads the process-global catalog on every
+access, and a refresh reaches **every live conversation at once**.
+
+The catalog rescans when either of two things changes:
+
+* the **root set** — recomputed on every read, because installing an extension
+  adds a root; or
+* the **modification time** of any root or any bundle directory. Bundle
+  directories are watched as well as roots because creating
+  `<bundle>/<child>/` bumps the bundle's mtime and not the root's.
+
+⚠ mtime has one-second granularity on some filesystems, so a write in the same
+second as the last scan can be missed. Every change BioRouter makes itself calls
+`skill_catalog::invalidate()` or `refresh()`, which closes that window. It stays
+open only for a write by another process — `biorouter skill install` at a
+terminal — and the interface's explicit refresh covers that: the composer's menu
+asks the daemon to rescan each time it opens.
+
+## The HTTP surface
+
+All three require `X-Secret-Key`, like every other route.
+
+| Route | What it does |
+|---|---|
+| `GET /skills/catalog?session_id=&refresh=` | The catalog, composed for one conversation. Omit `session_id` for the machine-wide view a new chat would start with. |
+| `POST /skills/session` | `{ sessionId, add[], remove[] }`. Persists the deviation and returns the catalog **read back after the write**, so the caller renders confirmed state rather than its own guess. |
+| `POST /skills/refresh` | Rescan unconditionally and publish. What an install calls. |
+
+There is deliberately no `X-User-Action` gate. Proof-of-user exists for raises
+the *model* must not perform alone; enabling a skill in your own chat grants
+nothing the machine-wide catalog did not already hold, and requiring the proof
+would break browser access outright, since `biorouter serve` installs no digest
+(see [serve decisions](../deployment/serve-decisions.md), SD-1).
+
+## The rule the interface is held to
+
+**A switch shows confirmed backend state, never local intent.** The composer's
+per-chat branch once wrote a `Map` in React state and raised a green toast
+saying the skill was "enabled for this chat" — no request, no write, no catalog
+refresh, no live agent. The switch moved, the toast was green, and the next turn
+saw exactly what it saw before.
+
+So: the toggle is optimistic for one frame, then replaced by the daemon's
+answer; a refusal restores the previous catalog and raises an **error** toast
+carrying the daemon's own words; and no success toast is raised on a failed
+write. The refusal message travels back in the mutation's *result* rather than
+in hook state, because a caller reading it from hook state reads its own stale
+render closure — which is how every failure once reported "The change was not
+saved." with the reason dropped.
+
+## Debugging a skill that is installed but not usable
+
+1. `biorouter skill list` — if it is absent, discovery never saw it. Check the
+   frontmatter parses (`name:` and `description:` both present).
+2. `GET /skills/catalog` — if the CLI sees it and this does not, the daemon is
+   holding a stale snapshot; `POST /skills/refresh`.
+3. If the catalog lists it with `state.effective: false`, read the rest of
+   `state`: `machineEnabled: false` means `skills-config.json`, `session:
+   "removed"` means this chat, and `sessionViaBundle: true` means the chat
+   turned off the bundle rather than the skill.
+4. `hiddenContext: true` means Settings → Contexts, and the skill is still
+   loadable by exact name — that asymmetry is intentional.
+
+## Related documentation
+
+- [Skills extension](built-in/skills.md) — the user-facing guide to what a skill is and where to get one
+- [Extensions, skills, and MCP agents](extensions-and-skills-guide.md) — installing and authoring
+- [Workspace control](../agent-loop/workspace-control.md) — `workspace_set_tools`, the model's own route to the same per-session state

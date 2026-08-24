@@ -662,18 +662,6 @@ impl SkillsClient {
         )
     }
 
-    fn is_skill_enabled(
-        name: &str,
-        skill: &Skill,
-        disabled: &std::collections::HashSet<String>,
-    ) -> bool {
-        !disabled.contains(name)
-            && !skill
-                .bundle_name
-                .as_deref()
-                .is_some_and(|bundle| disabled.contains(bundle))
-    }
-
     /// The composed disabled test for the session this client serves: the
     /// machine-wide file (`skills-config.json`, which contains skill names AND
     /// bundle names) composed with the session override (`workspace_skills`).
@@ -1039,12 +1027,20 @@ impl McpClientTrait for SkillsClient {
     ) -> Result<ListToolsResult, Error> {
         let disabled = Self::get_disabled_skills();
         let skills = self.skills.skills();
+        // Machine-wide, because `list_tools` carries no session id — the same
+        // documented residual as `generate_instructions`. Still routed through
+        // the one composer, so "enabled" cannot mean something different here
+        // than it does two functions away.
+        let machine_wide = crate::agents::session_skills::SessionSkillOverride::default();
         let has_enabled_skills = skills.iter().any(|(name, skill)| {
-            !disabled.contains(name)
-                && !skill
-                    .bundle_name
-                    .as_deref()
-                    .is_some_and(|b| disabled.contains(b))
+            skill_catalog::compose_state(
+                name,
+                skill.bundle_name.as_deref(),
+                &disabled,
+                &std::collections::HashSet::new(),
+                &machine_wide,
+            )
+            .effective
         });
         let tools = if has_enabled_skills {
             Self::get_tools()
@@ -2790,7 +2786,9 @@ Working dir biorouter content
                 vec!["about-biorouter".to_string(), "alpha".to_string()],
                 "switched on, a Context is in the catalog like any other skill"
             );
-            assert!(SkillsClient::generate_instructions(&client.skills.skills()).contains("2 skills"));
+            assert!(
+                SkillsClient::generate_instructions(&client.skills.skills()).contains("2 skills")
+            );
         })
         .await;
 

@@ -61,8 +61,12 @@ pub struct SessionSkillOverride {
 pub enum OverrideMatch {
     /// No entry names this skill or its bundle; the machine-wide answer stands.
     None,
-    Added { via_bundle: bool },
-    Removed { via_bundle: bool },
+    Added {
+        via_bundle: bool,
+    },
+    Removed {
+        via_bundle: bool,
+    },
 }
 
 impl SessionSkillOverride {
@@ -249,7 +253,6 @@ mod tests {
         };
         assert!(!both.is_disabled("c", None, &machine_disabled));
     }
-
 
     /// A per-chat bundle toggle has to reach the bundle's members, and a
     /// member's own entry has to beat it. Without the first, the composer's

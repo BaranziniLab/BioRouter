@@ -246,7 +246,6 @@ pub fn routes(state: Arc<AppState>) -> Router {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     /// The per-chat write must never reach the machine-wide preference file.
     /// Stated as a source assertion because the handler's own body is where the

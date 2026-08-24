@@ -352,14 +352,12 @@ impl SkillCatalog {
                 .parent()
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| skill.source_root.join(&bundle_name));
-            let entry = bundles
-                .entry(bundle_name)
-                .or_insert_with(|| BundleRecord {
-                    package: read_package_record(&directory),
-                    directory,
-                    source_root: skill.source_root.clone(),
-                    members: Vec::new(),
-                });
+            let entry = bundles.entry(bundle_name).or_insert_with(|| BundleRecord {
+                package: read_package_record(&directory),
+                directory,
+                source_root: skill.source_root.clone(),
+                members: Vec::new(),
+            });
             entry.members.push(skill.metadata.name.clone());
         }
         for record in bundles.values_mut() {
@@ -374,7 +372,9 @@ impl SkillCatalog {
         let watched = watched
             .into_iter()
             .map(|path| {
-                let mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+                let mtime = std::fs::metadata(&path)
+                    .ok()
+                    .and_then(|m| m.modified().ok());
                 (path, mtime)
             })
             .collect();
@@ -453,13 +453,7 @@ impl SkillCatalog {
             .bundles
             .iter()
             .map(|(name, record)| {
-                let state = compose_state(
-                    name,
-                    None,
-                    &machine_disabled,
-                    &hidden_contexts,
-                    over,
-                );
+                let state = compose_state(name, None, &machine_disabled, &hidden_contexts, over);
                 CatalogBundle {
                     name: name.clone(),
                     display_name: record
@@ -704,10 +698,7 @@ mod tests {
                 root_at(&user, biorouter_root()),
                 root_at(
                     &extension,
-                    SkillSource::new(
-                        SkillSourceKind::Extension,
-                        Some("BiorOffice".to_string()),
-                    ),
+                    SkillSource::new(SkillSourceKind::Extension, Some("BiorOffice".to_string())),
                 ),
             ],
             1,
@@ -739,7 +730,10 @@ mod tests {
 
         let beta = view.skills.iter().find(|s| s.name == "beta").unwrap();
         assert_eq!(beta.state.session, SessionState::Removed);
-        assert!(beta.state.machine_enabled, "machine-wide state is unchanged");
+        assert!(
+            beta.state.machine_enabled,
+            "machine-wide state is unchanged"
+        );
         assert!(!beta.state.effective, "but this chat does not see it");
     }
 
