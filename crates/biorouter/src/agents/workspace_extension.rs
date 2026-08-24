@@ -127,8 +127,7 @@ const INSTRUCTIONS: &str = indoc! {r#"
       tab the user can watch and talk to; you still receive only its final
       summary, so use workspace_read_conversation view:"tool_calls" on it to
       verify what it did. The user may have intervened; the result tells you so.
-    Only the workspace tools in your tool list are available; `subagent` is the
-    one spawn tool, always available when delegation is enabled.
+    Only the workspace tools in your tool list are available.
     Routing: to search past conversations by content use chatrecall (if
     enabled), not these tools. Durable facts belong in Memory. To fold a
     conversation into a knowledge base use ingest_conversation; to re-read an
