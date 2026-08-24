@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import CreateWorkflowFromSessionModal from '../CreateWorkflowFromSessionModal';
-import { createWorkflow } from '../../../api/sdk.gen';
+import { createWorkflow, skillCatalogHandler } from '../../../api/sdk.gen';
 import type { CreateWorkflowResponse } from '../../../api/types.gen';
 import { saveWorkflow } from '../../../workflow/workflow_management';
 
@@ -27,6 +27,38 @@ vi.mock('../../../api/sdk.gen', () => ({
     data: { active_kb: null, hidden_kbs: [] },
     error: undefined,
   }),
+  // ⚠ The skill picker reads the daemon's catalog now, not a renderer-side
+  // filesystem scan (#113). Omitting this did not fail anything — the modal
+  // catches the load and falls back to an empty list — so the test went on
+  // passing while silently exercising a workflow with NO skills to attach.
+  // A blank-but-correctly-shaped resolution is what the comment above promises.
+  skillCatalogHandler: vi.fn().mockResolvedValue({
+    data: {
+      generation: 1,
+      roots: [],
+      skills: [
+        {
+          name: 'literature-review',
+          description: 'Survey the literature',
+          slug: 'literature-review',
+          directory: '/skills/literature-review',
+          sourceRoot: '/skills',
+          source: { kind: 'biorouter', extension: null, label: 'Biorouter' },
+          bundle: null,
+          builtin: false,
+          state: {
+            machineEnabled: true,
+            session: 'default',
+            sessionViaBundle: false,
+            hiddenContext: false,
+            effective: true,
+          },
+        },
+      ],
+      bundles: [],
+    },
+    error: undefined,
+  }),
 }));
 
 vi.mock('../../../toasts', () => ({
@@ -38,6 +70,7 @@ vi.mock('../../../workflow/workflow_management', () => ({
 }));
 
 const mockCreateWorkflow = vi.mocked(createWorkflow);
+const mockSkillCatalog = vi.mocked(skillCatalogHandler);
 const mockSaveWorkflow = vi.mocked(saveWorkflow);
 
 describe('CreateWorkflowFromSessionModal', () => {
@@ -278,6 +311,20 @@ describe('CreateWorkflowFromSessionModal', () => {
         expect(defaultProps.onWorkflowCreated).toHaveBeenCalled();
         expect(defaultProps.onClose).toHaveBeenCalled();
       });
+    });
+
+    /**
+     * The picker's skills come from the daemon's catalog (#113), so a skill
+     * bundled inside an installed extension can be attached to a workflow —
+     * which the renderer-side scan this replaced never saw.
+     *
+     * ⚠ Asserted because the modal *catches* a failed load and falls back to an
+     * empty list. When the mock was incomplete this whole file still passed,
+     * while every test in it silently ran with no skills to attach at all.
+     */
+    it('asks the daemon for the skill catalog when it opens', async () => {
+      render(<CreateWorkflowFromSessionModal {...defaultProps} />);
+      await waitFor(() => expect(mockSkillCatalog).toHaveBeenCalled());
     });
 
     it('saves generated extensions, knowledge bases, and skills from the analysis response', async () => {
