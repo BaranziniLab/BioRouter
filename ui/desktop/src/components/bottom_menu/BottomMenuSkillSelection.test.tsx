@@ -157,6 +157,57 @@ describe('BottomMenuSkillSelection', () => {
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
   });
 
+  /**
+   * Two fast clicks must land in the order they were made. Without the queue
+   * in `useSkillCatalog`, the second request can resolve first and the switch
+   * settles on the OLDER of the two answers — a toggle that looks like it
+   * ignored the last click.
+   */
+  it('serialises concurrent toggles so the last click wins', async () => {
+    const order: string[] = [];
+    let releaseFirst: (() => void) | null = null;
+    mocks.setSessionSkills.mockImplementation(async (options: { body: { remove: string[] } }) => {
+      const disabling = options.body.remove.length > 0;
+      order.push(disabling ? 'disable' : 'enable');
+      if (disabling) {
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+      }
+      return {
+        data: {
+          catalog: view({
+            skills: [
+              skill('example-skill', {
+                state: {
+                  machineEnabled: true,
+                  session: disabling ? 'removed' : 'added',
+                  sessionViaBundle: false,
+                  hiddenContext: false,
+                  effective: !disabling,
+                },
+              }),
+            ],
+          }),
+          sessionAdd: disabling ? [] : ['example-skill'],
+          sessionRemove: disabling ? ['example-skill'] : [],
+        },
+      };
+    });
+
+    render(<BottomMenuSkillSelection sessionId="20260824_1" />);
+    const [toggle] = await openMenu();
+
+    fireEvent.click(toggle); // disable — parked
+    await waitFor(() => expect(order).toEqual(['disable']));
+    fireEvent.click(toggle); // enable — must wait its turn
+    expect(order).toEqual(['disable']);
+
+    releaseFirst!();
+    await waitFor(() => expect(order).toEqual(['disable', 'enable']));
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+  });
+
   it('says "for this chat" only when there is a chat', async () => {
     mocks.setSessionSkills.mockResolvedValue({
       data: { catalog: view(), sessionAdd: [], sessionRemove: ['example-skill'] },

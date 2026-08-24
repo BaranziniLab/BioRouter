@@ -11,10 +11,11 @@ import { createPortal } from 'react-dom';
 import { ItemIcon } from './ItemIcon';
 import BuiltInBadge from './ui/BuiltInBadge';
 import { CommandType, getActive, getSessionExtensions, getSlashCommands, listBases } from '../api';
+import type { CatalogView } from '../api';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { labelledRefTag, refTag, type RefKind } from '../utils/resourceRefs';
 import { useConfig } from './ConfigContext';
-import { ALL_SKILL_DIRS, loadSkillsFromDirs } from './skills/skillUtils';
+import { fetchSkillCatalog, standaloneSkills } from './skills/useSkillCatalog';
 import bundledExtensionsData from './settings/extensions/bundled-extensions.json';
 
 type DisplayItemType = CommandType | 'Directory' | 'File' | 'KnowledgeBase' | 'Skill' | 'Extension';
@@ -559,7 +560,12 @@ const MentionPopover = forwardRef<
               query: sessionId ? { session_id: sessionId } : undefined,
               throwOnError: false,
             }),
-            loadSkillsFromDirs(ALL_SKILL_DIRS).catch(() => ({ singles: [], bundles: [] })),
+            // The daemon's catalog, not a renderer scan: a skill bundled inside
+            // an installed extension was loadable by the model and absent from
+            // this list, so `@skill:word` completed to nothing (#113).
+            fetchSkillCatalog(sessionId).catch(
+              () => ({ generation: 0, roots: [], skills: [], bundles: [] }) as CatalogView
+            ),
             sessionId
               ? getSessionExtensions({ path: { session_id: sessionId } }).catch(() => null)
               : Promise.resolve(null),
@@ -603,13 +609,13 @@ const MentionPopover = forwardRef<
         }
         for (const bundle of skillsResult.bundles) {
           commandItems.push({
-            name: `skill:${bundle.bundleName}`,
+            name: `skill:${bundle.name}`,
             extra: `${bundle.skills.length} skill${bundle.skills.length === 1 ? '' : 's'} in bundle`,
             itemType: 'Skill',
-            relativePath: bundle.bundleName,
+            relativePath: bundle.name,
           });
         }
-        for (const skill of skillsResult.singles) {
+        for (const skill of standaloneSkills(skillsResult)) {
           commandItems.push({
             name: `skill:${skill.name}`,
             extra: skill.description,
