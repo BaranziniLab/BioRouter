@@ -328,8 +328,40 @@ Parks until named conversations finish. This is the tool that replaces polling; 
 |---|---|---|---|
 | `session_ids` | string[] | required | 1 to 32 ids. Empty is an error; more than 32 is an error naming the cap. |
 | `mode` | string | `"any"` | `any` returns as soon as one finishes; `all` waits for every one. |
-| `timeout_s` | u64 | `120` | `.clamp(1, 600)`. |
+| `timeout_s` | u64 | `120` | `.clamp(1, 600)`, then shortened to fit the transport — see below. |
 | `assume_running` | bool | `false` | Skip the liveness pre-check and park unconditionally. Use when a turn is known to be starting but may not have claimed its lock yet. |
+
+### The effective wait depends on the transport (#110)
+
+`timeout_s` is what the schema accepts; it is not always what the wait can be.
+On a **bridged coding-agent turn** (`claude_code`, `codex`) the call is held open
+inside the child's own MCP client, which applies a hard per-call wall clock and
+abandons the request when it elapses. Issue #110 measured that at ~60 seconds
+while this schema advertised 600, so every long watch failed with *"The operation
+timed out"* — a transport failure, not the non-error partial report this handler
+had ready.
+
+Two things changed, and both are load-bearing:
+
+- **Biorouter configures the child's deadline** (`bridge::CHILD_TOOL_CALL_TIMEOUT`,
+  written as `timeout` in Claude Code's MCP config and `tool_timeout_sec` in
+  Codex's), so a long watch fits.
+- **The handler clamps anyway**, to `bridge::bridged_call_budget()` minus the room
+  an answer needs. That is what keeps the guarantee when the configuration is not
+  honoured — an older CLI, a renamed field, a user's own `MCP_TOOL_TIMEOUT`.
+
+When the wait is shortened the reply says so, naming **both** numbers:
+
+```text
+(Waited 50s of the 600s requested: this turn's transport ends a single tool call
+at 50s, so the wait was shortened to return this status instead of failing.
+Watch again to keep waiting — the completions above are not repeated.)
+```
+
+Repeated bounded watches are therefore the intended pattern for multi-minute
+work, and they lose nothing: every completion observed before the deadline is in
+the report, including under `mode: "all"`, so the follow-up watch only names what
+is still running. **A timeout is never an error**, on any transport.
 
 ### How liveness is decided
 

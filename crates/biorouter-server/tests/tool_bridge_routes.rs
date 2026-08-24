@@ -1067,3 +1067,247 @@ async fn a_bridged_codex_call_needing_approval_is_answerable_and_resumes() {
         "the approved tool's output never reached the answer. Expected {marker}, got: {text}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #110: a bridged tool call that takes longer than the child's default deadline
+// ---------------------------------------------------------------------------
+
+/// A tool that takes `SLOW_TOOL_SECS` to answer and then returns a marker.
+///
+/// 90 seconds is chosen against the measured failure, not for comfort: issue
+/// #110 recorded every bridged call dying at "almost exactly 60 seconds", so a
+/// tool that answers at 90 can only succeed if the per-server deadline Biorouter
+/// now configures is actually being honoured by the child. A 30-second tool
+/// would pass whether the fix worked or not.
+const SLOW_TOOL_SECS: u64 = 90;
+
+struct SlowDispatch {
+    marker: String,
+}
+
+#[async_trait::async_trait]
+impl bridge::BridgeToolDispatch for SlowDispatch {
+    async fn dispatch(
+        &self,
+        _session_id: &str,
+        _call: rmcp::model::CallToolRequestParams,
+        _capability: CallCapability,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<rmcp::model::CallToolResult, String> {
+        tokio::time::sleep(std::time::Duration::from_secs(SLOW_TOOL_SECS)).await;
+        Ok(rmcp::model::CallToolResult::success(vec![
+            rmcp::model::Content::text(format!(
+                "waited {SLOW_TOOL_SECS}s and finished. marker={}",
+                self.marker
+            )),
+        ]))
+    }
+}
+
+fn slow_tool() -> rmcp::model::Tool {
+    rmcp::model::Tool::new(
+        "workspace__workspace_watch",
+        "Wait for background conversations to finish. A timeout is never an error.",
+        Arc::new(
+            serde_json::from_value(json!({
+                "type": "object",
+                "properties": { "timeout_s": { "type": "integer" } }
+            }))
+            .expect("a valid schema"),
+        ),
+    )
+}
+
+/// A grant over one deliberately slow tool, in Auto mode so nothing asks for a
+/// human and the only thing under test is the transport's patience.
+fn slow_grant(marker: &str) -> bridge::BridgeGrant {
+    use biorouter::config::permission::PermissionManager;
+    use biorouter::managed::ManagedPolicy;
+    use biorouter::permission::permission_inspector::PermissionInspector;
+    use biorouter::permission::tool_risk::ToolRiskRegistry;
+
+    let risks = Arc::new(ToolRiskRegistry::new());
+    let managed = Arc::new(ManagedPolicy::empty());
+    let mut inspections = ToolInspectionManager::new();
+    inspections.add_inspector(Box::new(PermissionInspector::new(
+        Arc::clone(&risks),
+        PermissionManager::instance(),
+        managed,
+        Arc::new(tokio::sync::Mutex::new(None)),
+    )));
+
+    bridge::BridgeGrant::new(
+        Session::default(),
+        BioRouterMode::Auto,
+        Arc::new(SlowDispatch {
+            marker: marker.to_string(),
+        }),
+        Arc::new(inspections),
+        CallCapability::public_enforced(),
+        vec![slow_tool()],
+        Conversation::new_unvalidated(vec![]),
+        None,
+        no_hooks(),
+        None,
+        risks,
+    )
+}
+
+/// **#110 through the real Claude Code.** A bridged call that takes 90 seconds
+/// must come back as a *result*, not as "The operation timed out".
+///
+/// This is the assertion the issue asks for and the one no handler test can
+/// make: `workspace_watch` always built a non-error partial report, and it never
+/// reached the model, because the child's own MCP client applied a ~60-second
+/// hard wall clock and abandoned the request first. What is under test here is
+/// the per-server `timeout` Biorouter now writes into the child's MCP config —
+/// so a regression that dropped that field, or a CLI that stopped honouring it,
+/// fails here rather than in a user's session.
+#[tokio::test]
+#[serial_test::serial]
+#[ignore = "needs the `claude` CLI installed and signed in; spends the user's own plan quota and takes ~2 minutes"]
+async fn a_slow_bridged_call_survives_claude_codes_per_call_deadline() {
+    let marker = format!("SLOWPROOF{:016x}", rand::random::<u64>());
+    serve_real_bridge().await;
+    let lease = bridge::issue(slow_grant(&marker)).expect("the base URL is published");
+
+    // Exactly the config the provider writes, including the timeout field.
+    let config = serde_json::json!({
+        "mcpServers": {
+            "biorouter": {
+                "type": "http",
+                "url": lease.url(),
+                "timeout": bridge::CHILD_TOOL_CALL_TIMEOUT.as_millis() as u64,
+            }
+        }
+    });
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let config_path = dir.path().join("mcp.json");
+    std::fs::write(&config_path, config.to_string()).expect("write the bridge config");
+
+    let started = std::time::Instant::now();
+    let mut child = tokio::process::Command::new("claude")
+        .args([
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--model",
+            "haiku",
+            "--tools",
+            "",
+            "--setting-sources",
+            "",
+            "--strict-mcp-config",
+            "--permission-mode",
+            "bypassPermissions",
+            "--no-session-persistence",
+            "--system-prompt",
+            "You are Biorouter. Use the tools you are given and be patient with slow ones.",
+        ])
+        .arg("--mcp-config")
+        .arg(&config_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env_remove("ANTHROPIC_API_KEY")
+        .spawn()
+        .expect("the claude CLI runs");
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        stdin
+            .write_all(
+                b"Call workspace_watch once with timeout_s 600. It is slow; wait for it. \
+                  Then reply with ONLY the marker value it returned.",
+            )
+            .await
+            .expect("write the prompt");
+        stdin.shutdown().await.expect("close stdin");
+    }
+    let output = child.wait_with_output().await.expect("the CLI finishes");
+    let elapsed = started.elapsed();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let dump = || {
+        format!(
+            "elapsed {}s; stdout was:\n{stdout}\nstderr:\n{}",
+            elapsed.as_secs(),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    };
+
+    // The exact diagnostic #110 reported, in the exact place it appeared.
+    assert!(
+        !stdout.to_lowercase().contains("operation timed out"),
+        "the bridged call was abandoned by the child's MCP client; {}",
+        dump()
+    );
+    assert!(
+        stdout.contains(&marker),
+        "the slow tool's result never reached the model. Expected {marker}. {}",
+        dump()
+    );
+    // And it really did outlive the old ceiling, rather than the tool having
+    // been fast: a pass at 20 seconds would prove nothing about the deadline.
+    assert!(
+        elapsed >= std::time::Duration::from_secs(SLOW_TOOL_SECS),
+        "the run finished before the tool could have; {}",
+        dump()
+    );
+}
+
+/// **#110 through the real Codex.** A different MCP client with its own default
+/// deadline and its own knob (`tool_timeout_sec`, seconds rather than
+/// milliseconds), so nothing proven against Claude Code transfers by argument.
+#[tokio::test]
+#[serial_test::serial]
+#[ignore = "needs the `codex` CLI installed and signed in; spends the user's own plan quota and takes ~2 minutes"]
+async fn a_slow_bridged_call_survives_codexs_per_call_deadline() {
+    use biorouter::conversation::message::Message;
+    use biorouter::model::ModelConfig;
+    use biorouter::providers::base::Provider;
+    use biorouter::providers::codex::CodexProvider;
+
+    let marker = format!("SLOWPROOFCODEX{:016x}", rand::random::<u64>());
+    serve_real_bridge().await;
+    let lease = bridge::issue(slow_grant(&marker)).expect("the base URL is published");
+
+    let provider = CodexProvider::from_env(ModelConfig::new("gpt-5.5").expect("a known model"))
+        .await
+        .expect("the codex CLI is installed");
+    let messages = vec![Message::user().with_text(
+        "Call the workspace__workspace_watch tool once with timeout_s 600. It is slow; wait \
+         for it. Then reply with ONLY the marker value it returned.",
+    )];
+
+    let started = std::time::Instant::now();
+    let outcome = bridge::ACTIVE_BRIDGE_URL
+        .scope(
+            Some(lease.url().to_string()),
+            provider.complete(
+                "You are Biorouter. Use the tools you are given and be patient with slow ones.",
+                &messages,
+                &[],
+            ),
+        )
+        .await;
+    let elapsed = started.elapsed();
+
+    let (message, _usage) = outcome.expect("the codex turn must not fail");
+    let text = message.as_concat_text();
+    assert!(
+        !text.to_lowercase().contains("timed out"),
+        "the bridged call was abandoned by Codex's MCP client after {}s: {text}",
+        elapsed.as_secs()
+    );
+    assert!(
+        text.contains(&marker),
+        "the slow tool's result never reached the model. Expected {marker}, got: {text}"
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_secs(SLOW_TOOL_SECS),
+        "the run finished before the tool could have ({}s)",
+        elapsed.as_secs()
+    );
+}

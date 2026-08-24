@@ -560,7 +560,11 @@ impl WorkspaceClient {
                 "Wait until one (or all) of the named conversations finishes its \
                  current turn, and report why it ended. Use after spawning \
                  background subagents or injecting turns instead of polling. A \
-                 timeout is not an error.",
+                 timeout is NEVER an error: the reply lists whatever finished and \
+                 whatever is still running, so call it again to keep waiting. The \
+                 wait may be shortened to fit the transport carrying this turn — \
+                 when it is, the reply says the effective wait and the one you \
+                 asked for.",
                 serde_json::to_value(schema_for!(WorkspaceWatchParams)).unwrap(),
                 true,
             ),
@@ -2510,7 +2514,16 @@ impl WorkspaceClient {
             Some("all") => true,
             Some(other) => return Err(format!("unknown mode '{other}' (any | all)")),
         };
-        let timeout = std::time::Duration::from_secs(args.timeout_s.unwrap_or(120).clamp(1, 600));
+        let requested =
+            std::time::Duration::from_secs(args.timeout_s.unwrap_or(120).clamp(1, 600));
+        // #110: what the *transport* allows, which is not always what the schema
+        // advertises. A bridged coding-agent call is held open inside the
+        // child's own MCP client, which applies a hard per-call wall clock and
+        // abandons the request when it elapses — so a wait that outruns it does
+        // not trade latency for completeness, it loses the partial answer too:
+        // the model is told "The operation timed out" instead of being handed
+        // the completions this handler had already collected.
+        let (timeout, clamped_from) = clamp_watch_to_transport(requested);
         let assume_running = args.assume_running.unwrap_or(false);
 
         // Subscribe FIRST, then pre-check. Reversing this loses a completion
@@ -2574,6 +2587,7 @@ impl WorkspaceClient {
             &completed,
             &still_running,
             timeout,
+            clamped_from,
             unknown_liveness,
         ))])
     }
@@ -2635,6 +2649,7 @@ impl WorkspaceClient {
         completed: &[(String, String)],
         still_running: &[&String],
         timeout: std::time::Duration,
+        clamped_from: Option<std::time::Duration>,
         unknown_liveness: usize,
     ) -> String {
         let mut report = String::new();
@@ -2678,7 +2693,58 @@ impl WorkspaceClient {
                  (view:\"summary\" for its outcome, view:\"tool_calls\" for what it did).",
             );
         }
+        // #110: say when the wait was shorter than the one asked for, and why.
+        // A caller that is not told will read "still running" after 60 s as the
+        // answer to the 600-second question it asked, and either give up on a
+        // subagent that is working fine or start polling transcripts. Naming the
+        // effective wait is what makes "watch again" the obvious next move.
+        if let Some(requested) = clamped_from {
+            report.push_str(&format!(
+                "\n(Waited {}s of the {}s requested: this turn's transport ends a single \
+                 tool call at {}s, so the wait was shortened to return this status instead \
+                 of failing. Watch again to keep waiting — the completions above are not \
+                 repeated.)",
+                timeout.as_secs(),
+                requested.as_secs(),
+                timeout.as_secs(),
+            ));
+        }
         report
+    }
+}
+
+/// Shorten a requested wait to what the transport carrying this call allows.
+///
+/// Returns the effective wait and, when it was shortened, the one that was
+/// asked for — so the report can say both rather than silently answering a
+/// different question.
+///
+/// The margin is what the answer itself needs on the wire, and it is subtracted
+/// rather than assumed: a wait equal to the budget finishes at the instant the
+/// request is abandoned, which is the failure with the timing made tight rather
+/// than the failure fixed.
+///
+/// Free and pure so the arithmetic is testable without a bridge; the only input
+/// that varies is the task-local the bridge publishes.
+fn clamp_watch_to_transport(
+    requested: std::time::Duration,
+) -> (std::time::Duration, Option<std::time::Duration>) {
+    const ANSWER_MARGIN: std::time::Duration = std::time::Duration::from_secs(10);
+    let Some(budget) = crate::providers::coding_agent::bridge::bridged_call_budget() else {
+        // Not a bridged call: nothing is holding a socket open, so the schema's
+        // ceiling is the only one that applies.
+        return (requested, None);
+    };
+    let allowed = budget.saturating_sub(ANSWER_MARGIN).max(
+        // A budget smaller than the margin would clamp every wait to zero and
+        // turn `workspace_watch` into a liveness poll. One second is the schema's
+        // own floor.
+        std::time::Duration::from_secs(1),
+    );
+    if requested <= allowed {
+        (requested, None)
+    } else {
+        (allowed, Some(requested))
     }
 }
 
@@ -3291,6 +3357,123 @@ fn gui_detail(gui_result: &serde_json::Value) -> Option<&str> {
 pub(crate) mod tests {
     use super::*;
     use crate::agents::extension::PlatformExtensionContext;
+    use std::time::Duration;
+
+    // ---------------------------------------------------------------------
+    // #110: a wait that outruns the transport
+    // ---------------------------------------------------------------------
+
+    /// Off a bridged call there is nothing holding a socket open, so the
+    /// schema's own ceiling is the only one that applies and the wait is
+    /// answered as asked.
+    #[test]
+    fn an_unbridged_watch_waits_exactly_as_long_as_it_was_asked_to() {
+        let (effective, clamped) = clamp_watch_to_transport(Duration::from_secs(600));
+        assert_eq!(effective, Duration::from_secs(600));
+        assert_eq!(clamped, None, "nothing to explain when nothing was shortened");
+    }
+
+    /// The bug: a 600-second wait inside a transport that ends the call sooner.
+    /// It must come back SHORTER — and say so — rather than run to 600 and be
+    /// abandoned, which loses the partial answer along with the wait.
+    #[tokio::test]
+    async fn a_bridged_watch_is_shortened_to_fit_its_transport() {
+        let (effective, clamped) = crate::providers::coding_agent::bridge::with_call_budget_for_test(
+            Duration::from_secs(60),
+            async { clamp_watch_to_transport(Duration::from_secs(600)) },
+        )
+        .await;
+        assert_eq!(
+            effective,
+            Duration::from_secs(50),
+            "the margin is what the answer itself needs on the wire"
+        );
+        assert_eq!(clamped, Some(Duration::from_secs(600)));
+        assert!(
+            effective < Duration::from_secs(60),
+            "a wait equal to the budget finishes exactly when the request is \
+             abandoned, which is the same failure with tighter timing"
+        );
+    }
+
+    /// A wait that already fits is left alone, and reports nothing — an
+    /// explanation for a shortening that did not happen is noise the model has
+    /// to reason about.
+    #[tokio::test]
+    async fn a_bridged_watch_that_already_fits_is_untouched() {
+        let (effective, clamped) = crate::providers::coding_agent::bridge::with_call_budget_for_test(
+            Duration::from_secs(600),
+            async { clamp_watch_to_transport(Duration::from_secs(120)) },
+        )
+        .await;
+        assert_eq!(effective, Duration::from_secs(120));
+        assert_eq!(clamped, None);
+    }
+
+    /// A pathologically small budget must not clamp the wait to zero and turn
+    /// `workspace_watch` into a liveness poll that always says "still running".
+    #[tokio::test]
+    async fn a_tiny_budget_still_leaves_a_real_wait() {
+        let (effective, _) = crate::providers::coding_agent::bridge::with_call_budget_for_test(
+            Duration::from_secs(2),
+            async { clamp_watch_to_transport(Duration::from_secs(600)) },
+        )
+        .await;
+        assert!(
+            effective >= Duration::from_secs(1),
+            "the schema's own floor is one second"
+        );
+    }
+
+    /// The shortening has to be legible. A caller told only "still running"
+    /// after 50 s will read that as the answer to the 600-second question it
+    /// asked — and either abandon a subagent that is working fine or fall back
+    /// to polling transcripts, which is the behaviour `workspace_watch` exists
+    /// to replace.
+    #[test]
+    fn a_shortened_watch_reports_both_the_effective_and_the_requested_wait() {
+        let still = "sess-a".to_string();
+        let report = WorkspaceClient::watch_report(
+            &[],
+            &[&still],
+            Duration::from_secs(50),
+            Some(Duration::from_secs(600)),
+            0,
+        );
+        assert!(report.contains("50s"), "the effective wait: {report}");
+        assert!(report.contains("600s"), "and the one asked for: {report}");
+        assert!(
+            report.to_lowercase().contains("watch again"),
+            "and the move that follows from it: {report}"
+        );
+        assert!(
+            !report.to_lowercase().contains("timed out")
+                && !report.to_lowercase().contains("error"),
+            "a timeout is a status, never a failure: {report}"
+        );
+    }
+
+    /// Completions observed before the deadline survive the shortening. Mode
+    /// `all` holds finished targets until every target completes, so a clamp
+    /// that dropped them would lose exactly the work the wait had already paid
+    /// for.
+    #[test]
+    fn a_shortened_watch_keeps_the_completions_it_observed() {
+        let still = "sess-c".to_string();
+        let report = WorkspaceClient::watch_report(
+            &[
+                ("sess-a".to_string(), "finished".to_string()),
+                ("sess-b".to_string(), "finished".to_string()),
+            ],
+            &[&still],
+            Duration::from_secs(50),
+            Some(Duration::from_secs(600)),
+            0,
+        );
+        assert!(report.contains("sess-a") && report.contains("sess-b"));
+        assert!(report.contains("sess-c"), "and what is still running");
+        assert!(report.contains("600s"), "and that the wait was shortened");
+    }
 
     /// ⚠ **The one list of idioms that must never come back, for every file
     /// that guards against them.**

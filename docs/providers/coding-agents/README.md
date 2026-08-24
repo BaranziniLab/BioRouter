@@ -16,6 +16,15 @@ no Business Associate Agreement and no zero-data-retention agreement, so protect
 information must never reach these providers, and the page explains both the rule and the
 gate that enforces it.
 
+**They are not chat-only any more.** Until issue #109, only the main chat loop
+knew how to give these two providers tools, so a knowledge ingest / query / lint
+macro, a scheduled workflow or any other bounded sub-agent run against one
+narrated its tool calls as prose and wrote nothing — and the Knowledge view
+carried a provider denylist to keep users away from it. Every one of those paths
+now goes through the same bridge, so a subscription-billed model is a first-class
+choice for tool-heavy work rather than a downgrade. See
+[the tool bridge](tool-bridge.md#the-tools-do-not-have-to-be-an-extensions-109).
+
 ## Documents
 
 | Document | What it covers |

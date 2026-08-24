@@ -899,8 +899,21 @@ fn bridge_mcp_config() -> Result<Option<tempfile::NamedTempFile>, ProviderError>
     let Some(url) = bridge::active_bridge_url() else {
         return Ok(None);
     };
+    // #110: `timeout` is the per-server **millisecond** hard wall clock Claude
+    // Code applies to one `tools/call`. Its default killed every bridged call at
+    // ~60 s, which turned `workspace_watch`'s advertised 600-second wait — and
+    // any other slow Biorouter tool — into "The operation timed out": a
+    // transport failure the model may retry, rather than the partial answer the
+    // handler was about to return. The CLI's own help is explicit that progress
+    // notifications do not extend it, so raising it is the only lever.
     let body = serde_json::json!({
-        "mcpServers": { "biorouter": { "type": "http", "url": url } }
+        "mcpServers": {
+            "biorouter": {
+                "type": "http",
+                "url": url,
+                "timeout": bridge::CHILD_TOOL_CALL_TIMEOUT.as_millis() as u64,
+            }
+        }
     });
 
     let mut file = tempfile::Builder::new()

@@ -33,6 +33,51 @@ MCP tools/list  <-  the session's tool set, exactly as the model would see it
 MCP tools/call   ->  the inspector stack, then ExtensionManager::dispatch_tool_call
 ```
 
+## The tools do not have to be an extension's (#109)
+
+`tools/call` lands on a `BridgeToolDispatch`, not on a hardcoded
+`ExtensionManager`. A chat turn's dispatcher *is* the session's extension manager
+— that is what `providers::tool_turn::session_tools` says — but a bounded
+workflow has its own small surface with its own dispatcher, and those tools are in
+no extension at all. The knowledge ingest macro is the case that forced it: its
+`KbToolDispatch` carries the git transaction every write in the run must land on,
+so a call routed to the `knowledge` extension instead would commit somewhere else.
+
+What that unlocked is the whole of #109. Before it, the only caller that knew how
+to give a coding-agent provider tools was `Agent::reply`; every other agentic loop
+— the knowledge macros, scheduled workflows, bounded sub-agents — called
+`Provider::complete` directly with a `tools` argument `claude_code` and `codex`
+**discard**. The failure was silent and expensive: the model produced a complete,
+correct plan with every call written out as prose, invented its own
+`<tool_response>OK</tool_response>` replies to continue against, and wrote
+nothing, after a full run the user paid for. The Knowledge UI's answer was a
+hardcoded provider denylist, now deleted.
+
+[`ProviderToolTurnContext`](../../../crates/biorouter/src/providers/tool_turn.rs)
+is the primitive: issue a one-turn grant over the workflow's own tools, scope the
+URL around the call, drop the lease when it returns. It prefers `stream()` when
+the provider offers it — not for latency, but because the mirrored pairs
+recording what the child ran exist only on that path, so a workflow driven
+through `complete_with_model` would execute every tool correctly and be unable to
+say afterwards which ones. `ProviderTurn::pending_tool_calls()` excludes the
+mirrored requests, so a caller's loop cannot dispatch a call the child already
+ran.
+
+⚠ **An empty `ToolInspectionManager` is not "allow everything".** A grant refuses
+a call whose verdict is "no decision was reached", so a context built without
+inspectors refuses every bridged call. `for_workflow` therefore installs a real
+stack — managed policy, security, sensitive ops, permission. The security and
+sensitive-ops inspectors escalate regardless of mode, which is what keeps its
+`BioRouterMode::Auto` a statement about ordinary authorised steps rather than a
+blanket grant.
+
+⚠ **A workflow with no HTTP server refuses instead of degrading.** A *chat* turn
+with no bridge runs the child tool-less, and that is right: an answer from the
+conversation beats a failed turn. A workflow that *is* a sequence of tool calls
+has no such fallback — it would narrate and write nothing — so
+`ProviderToolTurnContext` fails before the model runs, naming the provider and
+the way out.
+
 ## It is generic, and that is the point
 
 Nothing in the bridge knows anything about any individual tool, and no tool needs per-tool work to
@@ -269,6 +314,46 @@ The approval card is raised *before* anything happens and is answerable. A call 
 by policy, by the user, or because the request expired — still shows as a red mirrored card naming
 the tool, so a turn that quietly did less than the user thought is still visible in the transcript.
 
+## The child's per-call deadline is configured, not discovered (#110)
+
+Both CLIs apply a **hard per-call wall clock** to an MCP `tools/call` and abandon
+the request when it elapses. Their defaults are far below what Biorouter's slower
+tools need: issue #110 measured Claude Code's at "almost exactly 60 seconds"
+against a `workspace_watch` whose schema advertises waits of up to 600. Every one
+of those died at 60 with **"The operation timed out"** — a transport failure the
+model may retry, rather than the non-error partial report the handler was about
+to return. The handler was correct the whole time; it simply never got to answer.
+
+So the deadline is set explicitly, per server, on both sides:
+
+| CLI | Field | Unit | Where |
+| --- | --- | --- | --- |
+| Claude Code | `timeout` | milliseconds | the `--mcp-config` server entry. Its own help calls it a "hard wall-clock limit per call; **progress notifications do not extend it**". |
+| Codex | `tool_timeout_sec` | seconds | the `thread/start` config override, beside the URL. `startup_timeout_sec` covers the initial connect. |
+
+`bridge::CHILD_TOOL_CALL_TIMEOUT` is what both are given, and
+`bridge::child_tool_call_budget()` is what a call may actually spend — the
+difference is the room the answer itself needs on the wire.
+
+**A tool that waits must clamp to the budget.** `BridgeGrant::call` publishes it
+in a task-local for the duration of the call, readable as
+`bridge::bridged_call_budget()`; absent means this is not a bridged call and
+nothing is holding a socket open. `workspace_watch` reads it, shortens its wait,
+and **says both numbers** — the effective wait and the one that was asked for —
+because a caller told only "still running" after 50 s will read that as the answer
+to its 600-second question, and either abandon a subagent that is working fine or
+fall back to polling transcripts, which is the behaviour the tool exists to
+replace.
+
+⚠ **Raising the deadline is not the whole fix, and neither half is optional.**
+The clamp is what keeps the guarantee when the configuration is not honoured — an
+older CLI, a future one that renames the field, a user's own `MCP_TOOL_TIMEOUT`.
+Without it, a regression in either vendor turns straight back into "The operation
+timed out". Without the raised deadline, every long tool is clamped to a minute.
+The E2E tests in `tool_bridge_routes.rs` drive a deliberately 90-second tool
+through both real CLIs, so a dropped field fails there rather than in a user's
+session.
+
 ## Transport: loopback HTTP, and the URL is the credential
 
 The bridge is an HTTP endpoint on the daemon — `POST /tool_bridge/{nonce}` — rather than a spawned
@@ -352,7 +437,8 @@ outlasts stream consumption.
 
 | Concern | File |
 | --- | --- |
-| Grants, leases, the nonce, the task-local | [`crates/biorouter/src/providers/coding_agent/bridge.rs`](../../../crates/biorouter/src/providers/coding_agent/bridge.rs) |
+| Grants, leases, the nonce, the task-locals, the transport budget | [`crates/biorouter/src/providers/coding_agent/bridge.rs`](../../../crates/biorouter/src/providers/coding_agent/bridge.rs) |
+| Running one provider turn with Biorouter tools, from anywhere | [`crates/biorouter/src/providers/tool_turn.rs`](../../../crates/biorouter/src/providers/tool_turn.rs) |
 | Parking a call on a person: approval, elicitation, secret-safe credentials | [`crates/biorouter/src/pending_user_action.rs`](../../../crates/biorouter/src/pending_user_action.rs) |
 | The queue the card is published on, and the loop's wake seam | [`crates/biorouter/src/action_required_manager.rs`](../../../crates/biorouter/src/action_required_manager.rs) |
 | The mirror marker, and the request/response pair builders | [`crates/biorouter/src/providers/coding_agent/mirror.rs`](../../../crates/biorouter/src/providers/coding_agent/mirror.rs) |

@@ -225,7 +225,20 @@ impl CodexProvider {
             // outright). Until then this is disclosed in
             // `docs/providers/coding-agents/child-agent-isolation.md` rather than
             // papered over.
-            config["mcp_servers"] = json!({ "biorouter": { "url": url } });
+            // #110: `tool_timeout_sec` is the per-server **second** wall clock
+            // Codex applies to one `tools/call`, and `startup_timeout_sec` the
+            // one it applies to the initial connect. Their defaults are far
+            // below what Biorouter's slower tools need — `workspace_watch`
+            // alone advertises waits of up to 600 s — and a call that outruns
+            // the deadline comes back as a transport timeout rather than as the
+            // partial result the handler was about to return.
+            config["mcp_servers"] = json!({
+                "biorouter": {
+                    "url": url,
+                    "tool_timeout_sec": bridge::CHILD_TOOL_CALL_TIMEOUT.as_secs(),
+                    "startup_timeout_sec": 30,
+                }
+            });
             // ⚠ Tell the model which set of tools actually works, because the two
             // it can see are not equally usable and the broken pair looks more
             // familiar.

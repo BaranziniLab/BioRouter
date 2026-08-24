@@ -153,6 +153,8 @@ aborts the reader task, which drops the child, which `kill_on_drop(true)` reaps.
 | The child has no tools at all | No bridge was established — typically a CLI process with no HTTP server. The turn still answers from the conversation; this is deliberate degradation, not an error. |
 | An empty response with nothing in the logs | For Codex, the app server exited before a terminal frame; the error carries a bounded tail of the child's stderr. For Claude Code, stderr is drained concurrently and included in the failure. |
 | A turn that stops at 30 minutes | The turn ceiling. The child is killed rather than left holding the session. |
+| "The operation timed out" on a slow Biorouter tool | The child's own per-call MCP deadline abandoned the request. Biorouter configures it (`timeout` for Claude Code, `tool_timeout_sec` for Codex) — see [the child's per-call deadline](tool-bridge.md#the-childs-per-call-deadline-is-configured-not-discovered-110) — so seeing this means the field was not honoured. A tool that waits should have clamped to `bridge::bridged_call_budget()` and returned a partial result instead. |
+| A watch that reports a shorter wait than you asked for | Working as intended (#110). The wait was clamped to fit the transport, and the reply names both numbers. Watch again; the completions already reported are not repeated. |
 
 ## Related documentation
 

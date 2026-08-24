@@ -205,19 +205,36 @@ pub struct BridgeGrant {
     nonce: String,
 }
 
-/// How long a bridged `tools/call` may keep the child's HTTP request open.
+/// The per-call MCP deadline Biorouter asks each child CLI to apply (#110).
 ///
-/// Not a policy choice — a measurement of the child's own MCP client. Claude
-/// Code applies a hard per-call wall clock and abandons the request when it
-/// elapses (issue #110 measured ~60 s), and an abandoned request surfaces to the
-/// child's model as "The operation timed out", which is a transport failure it
-/// may retry rather than an answer it can act on.
+/// Both CLIs apply a hard per-call wall clock and abandon the request when it
+/// elapses; the default is far shorter than Biorouter's own long-running tools
+/// need. Issue #110 measured Claude Code's at ~60 s against a `workspace_watch`
+/// whose schema advertises waits of up to 600 s — every one of which died at 60
+/// with "The operation timed out", a transport failure the model may retry
+/// rather than an answer it can act on.
 ///
-/// So anything on this path that waits must fit *inside* the budget and answer
-/// with a real result, rather than letting the deadline pass and hoping. The
-/// margin between the two is what the answer itself needs.
+/// So the deadline is configured rather than discovered. Both CLIs expose the
+/// knob per MCP server, which is what makes this reliable rather than a hope:
+///
+/// | CLI | Where |
+/// | --- | --- |
+/// | Claude Code | `timeout` (**milliseconds**) in the `--mcp-config` server entry. Its own help calls it a "hard wall-clock limit per call; progress notifications do not extend it". |
+/// | Codex | `mcp_servers.<name>.tool_timeout_sec` (**seconds**) in the `thread/start` config override. |
+///
+/// Deliberately **above** [`child_tool_call_budget`] rather than equal to it:
+/// the budget is what a call may spend, and the difference is the room the
+/// answer itself needs on the wire.
+pub const CHILD_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(660);
+
+/// How long a bridged `tools/call` may actually spend before it must answer.
+///
+/// Anything on this path that waits must fit *inside* this and answer with a
+/// real result, rather than letting the deadline pass and hoping. A tool that
+/// runs past it does not get more time — it gets an abandoned request, and the
+/// model reads that as a broken server.
 pub fn child_tool_call_budget() -> Duration {
-    Duration::from_secs(50)
+    Duration::from_secs(600)
 }
 
 /// The longest a bridged call may park on a human before it must answer the
@@ -230,7 +247,41 @@ pub fn child_tool_call_budget() -> Duration {
 /// time — it converts a card they could still answer into a transport error the
 /// model reads as a broken server.
 fn approval_ttl() -> Duration {
-    child_tool_call_budget().saturating_sub(Duration::from_secs(5))
+    child_tool_call_budget().saturating_sub(Duration::from_secs(30))
+}
+
+tokio::task_local! {
+    /// How long the bridged tool call running on this task may take (#110).
+    ///
+    /// A task-local because the tools that need it are ordinary MCP handlers
+    /// with no idea what is calling them — `workspace_watch` accepts a
+    /// `timeout_s` up to 600 and must clamp it to what the *transport* allows,
+    /// and it cannot be handed that through a schema every other caller shares.
+    ///
+    /// Absent means "not a bridged call": an ordinary agent turn holds nothing
+    /// open, so nothing needs clamping.
+    static BRIDGED_CALL_BUDGET: Duration;
+}
+
+/// The wall clock the bridged tool call on this task must answer within, or
+/// `None` when this is not a bridged call.
+///
+/// A tool that waits should clamp to this and return a **partial result** at the
+/// deadline. Running past it is not an option that trades latency for
+/// completeness: the child abandons the request and the model is told the
+/// operation timed out, which loses the partial answer as well as the wait.
+pub fn bridged_call_budget() -> Option<Duration> {
+    BRIDGED_CALL_BUDGET.try_with(|d| *d).ok()
+}
+
+/// Run `f` as though it were a bridged tool call with `budget` left.
+///
+/// For the tools that clamp to the budget: `workspace_watch`'s arithmetic is
+/// what #110 is about, and exercising it through a real child CLI would make a
+/// unit test depend on a subscription. The production scope is
+/// [`BridgeGrant::call`] and there is no other.
+pub async fn with_call_budget_for_test<F: std::future::Future>(budget: Duration, f: F) -> F::Output {
+    BRIDGED_CALL_BUDGET.scope(budget, f).await
 }
 
 impl BridgeGrant {
@@ -385,7 +436,15 @@ impl BridgeGrant {
     /// PreToolUse hooks and still staged whatever they returned.
     pub async fn call(&self, call: CallToolRequestParams) -> Result<CallToolResult, String> {
         let request_id = uuid::Uuid::new_v4().to_string();
-        let outcome = self.dispatch_one(request_id.clone(), call).await;
+        // #110: publish the transport's budget for the duration of the call, so
+        // a tool that waits can clamp to it instead of running past the child's
+        // deadline and losing its partial answer to an abandoned request.
+        let outcome = BRIDGED_CALL_BUDGET
+            .scope(
+                child_tool_call_budget(),
+                self.dispatch_one(request_id.clone(), call),
+            )
+            .await;
         self.discard_staged_hook_context(&request_id);
         outcome
     }
