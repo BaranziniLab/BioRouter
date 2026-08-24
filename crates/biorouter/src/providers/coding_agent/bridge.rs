@@ -485,8 +485,16 @@ impl BridgeGrant {
 
         // Owned by the grant's nonce so the lease can release it, scoped to the
         // session so only that session's loop may surface it (#40).
+        //
+        // ⚠ An EMPTY session id is `None`, not `Some("")`. A workflow with no
+        // chat behind it — a scheduled knowledge macro, a `Session::default()` —
+        // carries one, and `Some("")` would key a queue on the empty string that
+        // every such run in the process would share, which is #40's
+        // cross-session leak with a different key. `None` is the unscoped
+        // fallback the manager already has for exactly this case.
+        let session_scope = (!self.session.id.is_empty()).then_some(self.session.id.as_str());
         let parked = PendingUserActions::global().park(
-            Some(&self.session.id),
+            session_scope,
             (!self.nonce.is_empty()).then_some(self.nonce.as_str()),
             request,
         );
