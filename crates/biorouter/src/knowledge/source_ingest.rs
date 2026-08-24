@@ -654,6 +654,49 @@ mod tests {
         p
     }
 
+    /// A real one-page PDF with an extractable text layer.
+    ///
+    /// The acceptance criterion of issue #108 is stated in PDFs, and a markdown
+    /// fixture would route around the whole `convert::pdf` branch — the layer
+    /// the reported run actually fought with. Built the same way that
+    /// converter's own tests build theirs, so there is no binary blob in the
+    /// repository and no second idea of what a valid fixture is.
+    fn pdf(dir: &std::path::Path, name: &str, text: &str) -> PathBuf {
+        use pdf_writer::{Content, Finish, Name, Pdf, Rect, Ref, Str};
+
+        let mut doc = Pdf::new();
+        let (catalog, tree, page_id, font, content_id) = (
+            Ref::new(1),
+            Ref::new(2),
+            Ref::new(3),
+            Ref::new(4),
+            Ref::new(5),
+        );
+        doc.catalog(catalog).pages(tree);
+        doc.pages(tree).kids([page_id]).count(1);
+        let mut page = doc.page(page_id);
+        page.parent(tree)
+            .media_box(Rect::new(0.0, 0.0, 595.0, 842.0))
+            .resources()
+            .fonts()
+            .pair(Name(b"F1"), font);
+        page.contents(content_id);
+        page.finish();
+        doc.type1_font(font).base_font(Name(b"Helvetica"));
+        let mut content = Content::new();
+        content
+            .begin_text()
+            .set_font(Name(b"F1"), 12.0)
+            .next_line(72.0, 770.0)
+            .show(Str(text.as_bytes()))
+            .end_text();
+        doc.stream(content_id, &content.finish());
+
+        let p = dir.join(name);
+        std::fs::write(&p, doc.finish()).unwrap();
+        p
+    }
+
     /// One page write per run, at a path that differs per run.
     ///
     /// ⚠ The differing path is load-bearing, not cosmetic: the macro commits
@@ -745,11 +788,17 @@ mod tests {
 
     /// The acceptance criterion, end to end: a batch of local documents produces
     /// raw sources **and** curated pages, each committed on its own, and the
-    /// report says the pages exist.
+    /// report says the pages exist. A real PDF beside a markdown file, because
+    /// the reported failure was about PDFs and the converter branch they take is
+    /// part of what is being claimed to work.
     #[tokio::test]
     async fn a_batch_of_local_documents_produces_curated_pages_and_commits() {
         let (dir, svc) = fresh_svc();
-        let a = file(dir.path(), "a.md", "# Alpha\n\nA finding about alpha.");
+        let a = pdf(
+            dir.path(),
+            "alpha.pdf",
+            "Alpha: a finding about alpha, long enough to carry a real text layer.",
+        );
         let b = file(dir.path(), "b.md", "# Beta\n\nA finding about beta.");
 
         let report = ingest_sources(
@@ -776,7 +825,33 @@ mod tests {
         let mut pages = curated_pages(&svc);
         pages.sort();
         assert_eq!(pages, vec!["doc-0.md", "doc-1.md"], "{}", report.summary());
-        assert_eq!(raw_sources(&svc).len(), 2);
+
+        // ⚠ The mock completer writes its page whatever the source said, so
+        // "curated pages exist" alone would pass even if the PDF had converted
+        // to nothing. Read the staged raw markdown back and require the PDF's
+        // own words in it: that is what proves the converter branch ran.
+        let raw = raw_sources(&svc);
+        assert_eq!(raw.len(), 2);
+        let staged: String = raw
+            .iter()
+            .map(|id| {
+                std::fs::read_to_string(
+                    paths::kb_root(svc.root(), "k")
+                        .join("raw")
+                        .join(id)
+                        .join("source.md"),
+                )
+                .unwrap_or_default()
+            })
+            .collect();
+        assert!(
+            staged.contains("a finding about alpha"),
+            "the PDF's text layer must reach raw/<source>/source.md; got: {staged}"
+        );
+        assert!(
+            staged.contains("A finding about beta"),
+            "the markdown source must reach raw/<source>/source.md; got: {staged}"
+        );
     }
 
     /// The failure half. A run that curates nothing must abort its transaction,
