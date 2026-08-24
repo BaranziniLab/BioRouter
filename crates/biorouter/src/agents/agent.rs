@@ -9430,6 +9430,86 @@ mod tests {
         }
     }
 
+    /// #107: a bridged call's prompt lives in the process-global registry, not
+    /// in this agent's map — it was raised on an axum task with no `Agent` in
+    /// scope. The desktop posts both kinds of decision to the same route, so
+    /// `handle_confirmation` has to reach both. Without the fallthrough the
+    /// route answers `unknown` and the child stays parked to its TTL.
+    #[tokio::test]
+    async fn a_confirmation_reaches_a_bridged_prompt_this_agent_never_registered() {
+        use crate::pending_user_action::{
+            PendingUserActions, ToolApprovalRequest, UserActionOutcome, UserActionRequest,
+        };
+        let agent = Agent::new();
+        let parked = PendingUserActions::global().park(
+            Some("bridged-sess"),
+            None,
+            UserActionRequest::ToolApproval(ToolApprovalRequest {
+                tool_name: "developer__shell".to_string(),
+                arguments: serde_json::Map::new(),
+                prompt: None,
+                risk: None,
+                preview: None,
+            }),
+        );
+        let id = parked.id().to_string();
+        assert!(
+            !agent.pending_confirmations.lock().unwrap().contains_key(&id),
+            "the fixture is only meaningful if this agent never registered it"
+        );
+        assert!(
+            agent.has_pending_confirmation(&id),
+            "a route must be able to see that something IS waiting"
+        );
+
+        assert_eq!(
+            agent
+                .handle_confirmation(id.clone(), confirmation(Permission::AllowOnce))
+                .await,
+            ConfirmationOutcome::Delivered
+        );
+        assert_eq!(
+            parked
+                .wait(std::time::Duration::from_secs(5), None)
+                .await,
+            UserActionOutcome::Approved {
+                permission: Permission::AllowOnce
+            }
+        );
+        assert!(!agent.has_pending_confirmation(&id));
+    }
+
+    /// Dismissing a card is not judging the call. `Cancel` must not reach the
+    /// parked caller as a denial, or the permission store would learn something
+    /// the user never said.
+    #[tokio::test]
+    async fn dismissing_a_bridged_card_is_a_cancel_not_a_denial() {
+        use crate::pending_user_action::{
+            PendingUserActions, ToolApprovalRequest, UserActionOutcome, UserActionRequest,
+        };
+        let agent = Agent::new();
+        let parked = PendingUserActions::global().park(
+            Some("bridged-sess"),
+            None,
+            UserActionRequest::ToolApproval(ToolApprovalRequest {
+                tool_name: "developer__shell".to_string(),
+                arguments: serde_json::Map::new(),
+                prompt: None,
+                risk: None,
+                preview: None,
+            }),
+        );
+        agent
+            .handle_confirmation(parked.id().to_string(), confirmation(Permission::Cancel))
+            .await;
+        assert_eq!(
+            parked
+                .wait(std::time::Duration::from_secs(5), None)
+                .await,
+            UserActionOutcome::Cancelled
+        );
+    }
+
     /// #41 regression: the exact shape the Bedrock decoder used to produce —
     /// two assistant tool-request messages sharing one id, separated by a
     /// user tool-response (so `Conversation::push` cannot merge them). Before

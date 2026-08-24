@@ -212,7 +212,10 @@ loop therefore sees exactly one final text `Message` per turn, and the GUI sees 
 cards at all. A call routed to `needs_approval` is refused, never parked:
 "``{name}`` needs a person's approval, and this turn has no way to ask for one"
 (`bridge.rs:334-339`), because the child is blocked on an HTTP response with no human
-channel (`:266-270`).
+channel (`:266-270`). ⚠ **That half has since been fixed and this paragraph is history**:
+#107 parks the call on a real, routable approval request — see
+[the tool bridge](tool-bridge.md#a-call-needing-approval-is-put-to-a-person-and-the-call-waits-107).
+The line numbers above are the pre-fix tree's.
 
 **Codex's built-ins never even touch the bridge.** `exec`/`apply_patch` "cannot be switched
 off … only the sandbox constrains" them (`codex.rs:197-199`), `web_search` is disabled
