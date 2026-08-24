@@ -245,6 +245,18 @@ pub fn render_message(message: &Message, debug: bool) {
                 ActionRequiredData::ElicitationResponse { id, .. } => {
                     println!("action_required(elicitation_response): {}", id)
                 }
+                // #107: key names only. A credential card carries no value —
+                // the trusted surface writes them straight to the keyring — and
+                // this line reaches a terminal that may be piped or logged.
+                ActionRequiredData::SecretRequest { prompt, keys, .. } => {
+                    println!(
+                        "action_required(secret_request): {prompt} [{}]",
+                        keys.iter()
+                            .map(|k| k.key.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
             },
             MessageContent::Text(text) => print_markdown(&text.text, theme),
             MessageContent::ToolRequest(req) => render_tool_request(req, theme, debug),

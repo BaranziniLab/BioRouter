@@ -1306,6 +1306,11 @@ fn format_message_for_compacting(msg: &Message) -> String {
                 ActionRequiredData::ElicitationResponse { id, .. } => {
                     format!("action_required(elicitation_response): {}", id)
                 }
+                // Key names only: this string is a context-window summary that
+                // reaches a model, and the card carries no value anyway (#107).
+                ActionRequiredData::SecretRequest { keys, .. } => {
+                    format!("action_required(secret_request): {} key(s)", keys.len())
+                }
             },
             MessageContent::FrontendToolRequest(req) => {
                 if let Ok(call) = &req.tool_call {

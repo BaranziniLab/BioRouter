@@ -25,6 +25,12 @@ export type ActionRequiredData = {
     actionType: 'elicitationResponse';
     id: string;
     user_data: unknown;
+} | {
+    actionType: 'secretRequest';
+    destination: SecretDestination;
+    id: string;
+    keys: Array<SecretKeyRequest>;
+    prompt: string;
 };
 
 export type ActiveKbResponse = {
@@ -2572,6 +2578,38 @@ export type ScheduledJob = {
      */
     run_count?: number;
     source: string;
+};
+
+/**
+ * Where the trusted surface must put the values it collects.
+ */
+export type SecretDestination = {
+    kind: 'keyring';
+} | {
+    extensionName: string;
+    kind: 'extensionEnv';
+};
+
+/**
+ * One credential a [`ActionRequiredData::SecretRequest`] card asks for.
+ */
+export type SecretKeyRequest = {
+    /**
+     * Optional help text: where to get the value, what format it takes.
+     */
+    description?: string | null;
+    /**
+     * The name it is stored under — an env var name, a keyring entry.
+     */
+    key: string;
+    /**
+     * What the field is called on the card.
+     */
+    label: string;
+    /**
+     * Whether the request can be satisfied without this one.
+     */
+    required?: boolean;
 };
 
 export type Session = {

@@ -3283,6 +3283,18 @@ impl Agent {
         // queued for that session's loop, so its prompt is never persisted or
         // yielded under the wrong session id (#40).
         for mut elicitation_message in ActionRequiredManager::global().drain_requests(session_id) {
+            // #107: an approval or credential card is a *decision prompt*, not a
+            // record. `handle_approval_tool_requests` yields its card without
+            // persisting for exactly this reason: once answered the card means
+            // nothing, and a persisted one reopens the session showing a
+            // "waiting for approval" dialog for a call that finished long ago —
+            // clickable, and routed to a request id that no longer exists.
+            // Elicitations keep being persisted, because their *answer* is part
+            // of the conversation and the response row references this one.
+            if crate::pending_user_action::is_ephemeral_card(&elicitation_message) {
+                messages.push(elicitation_message);
+                continue;
+            }
             // #41: adopt the minted uid so the yielded copy matches the row.
             if let Err(e) = manager
                 .add_message_adopting_uid(session_id, &mut elicitation_message)
@@ -4895,6 +4907,11 @@ impl Agent {
             // which is not an error anywhere — it is a valid string that goes out
             // as a header and comes back 401.
             self.vault.lock().await.clone(),
+            // #107: BR-63's risk grades. An approval card raised from the bridge
+            // must be the SAME card the agent's own path yields — same risk
+            // grade, same preview — or the user faces two dialogs for one
+            // decision with no way to tell which is which.
+            Arc::clone(&self.tool_risks),
         ))
     }
 
@@ -5777,6 +5794,11 @@ impl Agent {
             .lock()
             .map(|pending| pending.contains_key(request_id))
             .unwrap_or(false)
+            // #107: a bridged call's prompt lives in the process-global
+            // registry. A route answering "nothing is waiting" for one that is
+            // would tell the client to stop showing a card the user still has to
+            // click.
+            || crate::pending_user_action::PendingUserActions::global().is_pending(request_id)
     }
 
     /// Handle a confirmation response for a tool request.
@@ -5812,11 +5834,43 @@ impl Agent {
                 }
             }
             None => {
-                debug!(
-                    "Ignoring confirmation for request {}: no prompt is awaiting a decision",
-                    request_id
-                );
-                ConfirmationOutcome::Unknown
+                // #107: a bridged coding-agent call parks on
+                // `pending_user_action`, not on this map — it runs on an axum
+                // task inside `POST /tool_bridge/{nonce}` with a grant snapshot
+                // and no `Agent` at all. The desktop posts both kinds of
+                // decision to the same route, so the fallthrough is what stops
+                // the newer mechanism needing a second endpoint the client would
+                // have to know to choose between.
+                use crate::pending_user_action::{
+                    PendingUserActions, ResolveOutcome, UserActionOutcome,
+                };
+                use crate::permission::Permission;
+                let relayed = match confirmation.permission {
+                    Permission::AlwaysAllow | Permission::AllowOnce => {
+                        UserActionOutcome::Approved {
+                            permission: confirmation.permission,
+                        }
+                    }
+                    // `Cancel` is the user dismissing the card rather than
+                    // judging the call, and the parked caller has to be able to
+                    // tell those apart: a dismissal is not a refusal of the
+                    // tool, and recording it as one would teach the permission
+                    // store something the user never said.
+                    Permission::Cancel => UserActionOutcome::Cancelled,
+                    Permission::DenyOnce | Permission::AlwaysDeny => UserActionOutcome::Denied {
+                        permission: confirmation.permission,
+                    },
+                };
+                match PendingUserActions::global().resolve(&request_id, relayed) {
+                    ResolveOutcome::Delivered => ConfirmationOutcome::Delivered,
+                    ResolveOutcome::Rejected | ResolveOutcome::Unknown => {
+                        debug!(
+                            "Ignoring confirmation for request {}: no prompt is awaiting a decision",
+                            request_id
+                        );
+                        ConfirmationOutcome::Unknown
+                    }
+                }
             }
         }
     }
@@ -7109,7 +7163,45 @@ impl Agent {
                 // conversation state are durable.
                 let mut pending_turn_abort: Option<(TurnAbortCode, String)> = None;
 
-                while let Some(next) = stream.next().await {
+                // #107: race the provider's own output against a request for a
+                // human decision, exactly as the tool-batch loop below does and
+                // for the same reason — the thing that would answer is parked
+                // inside the thing we are awaiting.
+                //
+                // On a coding-agent turn that is literal: the child is blocked on
+                // an HTTP response from `POST /tool_bridge/{nonce}`, which is
+                // itself parked on an approval card, so the provider stream
+                // yields NOTHING until a person answers. A drain placed after the
+                // next item could therefore never run, and the card would surface
+                // only once the whole turn was over — which is the shape #107
+                // reported as "no dialog ever appeared".
+                //
+                // It is not gated to coding agents. Any provider call is an await
+                // an extension's elicitation can land inside, and surfacing the
+                // card while the call is still running is strictly earlier than
+                // surfacing it afterwards. The wake is scoped to this session, so
+                // a concurrent session's prompt is neither seen nor drained (#40).
+                //
+                // A `loop` rather than `while let`, only because Rust forbids an
+                // unlabeled `continue` in a `while` condition; every `break` and
+                // `continue` in the body below still means what it did.
+                loop {
+                    let next = match next_batch_wake(
+                        &cancel_token,
+                        &mut stream,
+                        &session_config.id,
+                    )
+                    .await
+                    {
+                        BatchWake::Cancelled | BatchWake::Item(None) => break,
+                        BatchWake::ElicitationReady => {
+                            for msg in self.drain_elicitation_messages(&session_config.id).await {
+                                yield AgentEvent::Message(msg);
+                            }
+                            continue;
+                        }
+                        BatchWake::Item(Some(next)) => next,
+                    };
                     if is_token_cancelled(&cancel_token) {
                         break;
                     }
@@ -9336,6 +9428,86 @@ mod tests {
             principal_type: crate::permission::permission_confirmation::PrincipalType::Tool,
             permission,
         }
+    }
+
+    /// #107: a bridged call's prompt lives in the process-global registry, not
+    /// in this agent's map — it was raised on an axum task with no `Agent` in
+    /// scope. The desktop posts both kinds of decision to the same route, so
+    /// `handle_confirmation` has to reach both. Without the fallthrough the
+    /// route answers `unknown` and the child stays parked to its TTL.
+    #[tokio::test]
+    async fn a_confirmation_reaches_a_bridged_prompt_this_agent_never_registered() {
+        use crate::pending_user_action::{
+            PendingUserActions, ToolApprovalRequest, UserActionOutcome, UserActionRequest,
+        };
+        let agent = Agent::new();
+        let parked = PendingUserActions::global().park(
+            Some("bridged-sess"),
+            None,
+            UserActionRequest::ToolApproval(ToolApprovalRequest {
+                tool_name: "developer__shell".to_string(),
+                arguments: serde_json::Map::new(),
+                prompt: None,
+                risk: None,
+                preview: None,
+            }),
+        );
+        let id = parked.id().to_string();
+        assert!(
+            !agent.pending_confirmations.lock().unwrap().contains_key(&id),
+            "the fixture is only meaningful if this agent never registered it"
+        );
+        assert!(
+            agent.has_pending_confirmation(&id),
+            "a route must be able to see that something IS waiting"
+        );
+
+        assert_eq!(
+            agent
+                .handle_confirmation(id.clone(), confirmation(Permission::AllowOnce))
+                .await,
+            ConfirmationOutcome::Delivered
+        );
+        assert_eq!(
+            parked
+                .wait(std::time::Duration::from_secs(5), None)
+                .await,
+            UserActionOutcome::Approved {
+                permission: Permission::AllowOnce
+            }
+        );
+        assert!(!agent.has_pending_confirmation(&id));
+    }
+
+    /// Dismissing a card is not judging the call. `Cancel` must not reach the
+    /// parked caller as a denial, or the permission store would learn something
+    /// the user never said.
+    #[tokio::test]
+    async fn dismissing_a_bridged_card_is_a_cancel_not_a_denial() {
+        use crate::pending_user_action::{
+            PendingUserActions, ToolApprovalRequest, UserActionOutcome, UserActionRequest,
+        };
+        let agent = Agent::new();
+        let parked = PendingUserActions::global().park(
+            Some("bridged-sess"),
+            None,
+            UserActionRequest::ToolApproval(ToolApprovalRequest {
+                tool_name: "developer__shell".to_string(),
+                arguments: serde_json::Map::new(),
+                prompt: None,
+                risk: None,
+                preview: None,
+            }),
+        );
+        agent
+            .handle_confirmation(parked.id().to_string(), confirmation(Permission::Cancel))
+            .await;
+        assert_eq!(
+            parked
+                .wait(std::time::Duration::from_secs(5), None)
+                .await,
+            UserActionOutcome::Cancelled
+        );
     }
 
     /// #41 regression: the exact shape the Bedrock decoder used to produce —

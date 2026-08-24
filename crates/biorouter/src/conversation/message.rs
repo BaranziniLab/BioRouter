@@ -144,6 +144,52 @@ pub enum ActionRequiredData {
         id: String,
         user_data: serde_json::Value,
     },
+    /// #107: credentials a *trusted surface* must collect and write straight to
+    /// their destination.
+    ///
+    /// The card carries key names, labels and a destination — and deliberately
+    /// nothing a value could sit in. The answer never comes back through this
+    /// type: the surface stores the values itself and resolves the parked call
+    /// with `SecretsConfigured { configured_keys }`, so a credential is never
+    /// persisted into a session row, replayed into a later prompt, or flattened
+    /// into a child agent's transcript. There is deliberately no
+    /// `SecretResponse` sibling to `ElicitationResponse`; adding one would undo
+    /// the entire guarantee.
+    #[serde(rename_all = "camelCase")]
+    SecretRequest {
+        id: String,
+        prompt: String,
+        keys: Vec<SecretKeyRequest>,
+        destination: SecretDestination,
+    },
+}
+
+/// One credential a [`ActionRequiredData::SecretRequest`] card asks for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretKeyRequest {
+    /// The name it is stored under — an env var name, a keyring entry.
+    pub key: String,
+    /// What the field is called on the card.
+    pub label: String,
+    /// Optional help text: where to get the value, what format it takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Whether the request can be satisfied without this one.
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// Where the trusted surface must put the values it collects.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SecretDestination {
+    /// The OS credential store (macOS Keychain / Windows Credential Manager /
+    /// Linux Secret Service), via the `keyring` crate.
+    Keyring,
+    /// An extension's own environment, keyed by extension name.
+    #[serde(rename_all = "camelCase")]
+    ExtensionEnv { extension_name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -230,6 +276,11 @@ impl fmt::Display for MessageContent {
                 }
                 ActionRequiredData::ElicitationResponse { id, .. } => {
                     write!(f, "[ActionRequired: ElicitationResponse for {}]", id)
+                }
+                // Key names only — `Display` reaches logs and prompt
+                // flattening, and the card carries no value to leak anyway.
+                ActionRequiredData::SecretRequest { keys, .. } => {
+                    write!(f, "[ActionRequired: SecretRequest for {} key(s)]", keys.len())
                 }
             },
             MessageContent::FrontendToolRequest(r) => match &r.tool_call {
@@ -354,6 +405,24 @@ impl MessageContent {
                 id: id.into(),
                 message,
                 requested_schema,
+            },
+        })
+    }
+
+    /// #107: ask a trusted surface for credentials. Takes no values and has no
+    /// response constructor — see [`ActionRequiredData::SecretRequest`].
+    pub fn action_required_secrets<S: Into<String>>(
+        id: S,
+        prompt: String,
+        keys: Vec<SecretKeyRequest>,
+        destination: SecretDestination,
+    ) -> Self {
+        MessageContent::ActionRequired(ActionRequired {
+            data: ActionRequiredData::SecretRequest {
+                id: id.into(),
+                prompt,
+                keys,
+                destination,
             },
         })
     }

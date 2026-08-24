@@ -4,8 +4,8 @@
 > any marketplace plugin — reach a child coding agent while BioRouter still executes them behind
 > its inspectors, permission mode, `.biorouterignore`, vault and privacy gates. Why MCP is the only
 > channel that can do this, why the capability travels in the URL rather than a header, how a
-> bridged call becomes a visible tool card without being executed twice, and why a call needing
-> human approval is refused rather than parked.
+> bridged call becomes a visible tool card without being executed twice, and how a call needing
+> human approval is put to a person and resumed.
 > **Status:** Current.
 > **Audience:** developers working on the coding-agent providers, the extension layer, or the
 > daemon's routes.
@@ -63,7 +63,7 @@ Stop, without the hooks manager a `PreToolUse` rewrite cannot be collected, and 
 | --- | --- |
 | Tool discovery / privacy Gate E | Inherited. The advertised set is the one `filter_tools` produced for the model — already tier-filtered and reach-filtered — and `tools/list` serves it verbatim, so there is no second policy here to drift from the first. |
 | Tool inspectors (command policy, sensitive ops, everything in the inspector stack) | Run on every call, against the conversation snapshot and the session's permission mode. |
-| Permission mode | The inspectors' permission decision is honoured: denied is refused, and "no decision was reached" is refused too — an absent decision must never read as approval. |
+| Permission mode | The inspectors' permission decision is honoured: denied is refused, "no decision was reached" is refused too (an absent decision must never read as approval), and `needs_approval` is [put to a person](#a-call-needing-approval-is-put-to-a-person-and-the-call-waits-107) rather than refused. |
 | Privacy Gate C | `dispatch_tool_call` is the one choke point every tool call passes through, and a bridged call goes through it with the turn's `CallCapability`. |
 | `PreToolUse` hook rewrites | Applied and then **re-judged**. The hooks have already run inside the inspector pass, so their `updatedInput` is collected and applied, and every inspector except the hook one re-runs on the rewritten arguments — otherwise a hook would be a hole straight through the security and permission gates, which only ever saw what the child's model asked for. The rewrite is taken scoped to this call's own request id, because the staging buffer is per session and bridged calls run concurrently. |
 | `text_editor` path jail | Pointed at **this** grant's mode before anything is dispatched. The jail is a process-global atomic whose only other setter is the agent's own inspection batch, which a coding-agent turn never reaches — so without this a bridged call ran under whatever the last session in the process left behind. It is correct at the instant it is written rather than for the duration of the call; see the residual noted below. |
@@ -92,25 +92,100 @@ rather than a channel for out-of-band prose — so the bridge drops its own stag
 deliberately, rather than leaving them for the session's next ordinary turn to inject into an
 unrelated transcript.
 
-## A call needing approval is refused, not parked
+## A call needing approval is put to a person, and the call waits (#107)
 
-If the permission inspector routes a call to `needs_approval`, the bridge returns a refusal whose
-text tells the child's model to ask the user in words:
+If the permission inspector routes a call to `needs_approval`, the bridge raises a real approval
+request and parks the child's HTTP call until somebody answers.
+
+**What this replaced.** Until #107 the bridge returned a refusal telling the child's model to ask
+the user in words:
 
 ```text
 `<tool>` needs a person's approval, and this turn has no way to ask for one.
 Tell the user what you wanted to run and why, and let them approve it.
 ```
 
-Waiting is not available. The child is blocked on an HTTP response and there is no channel through
-which a human could answer it, so parking the call would stall the turn until the timeout — a
-half-hour of nothing. Refusing is also the fail-safe direction: the turn ends with the user knowing
-what was wanted, rather than with something having happened.
+The model did exactly that, and the sentence was false in a way nothing on screen revealed: **no
+request id had been minted**, so no dialog opened, there was nothing for a client to post to, and
+the word "approve" typed into the chat resolved nothing. A retry hit the identical refusal. The
+turn could only end in confusion — which is what the issue reported.
 
-Refusals travel as an MCP tool **result** with `isError`, not as a JSON-RPC error. The distinction
-matters: a JSON-RPC error is a transport failure the child may retry or treat as a broken server,
-whereas `isError` is a result the model reads and can act on. It is how the model learns to ask the
-user instead of retrying.
+### The card is the agent's own card
+
+[`crate::pending_user_action`](../../../crates/biorouter/src/pending_user_action.rs) is the one
+registry both approval mechanics now route through. It publishes into the **same session-scoped
+queue the agent loop already drains** (`ActionRequiredManager`), carrying the same
+`ActionRequired::ToolConfirmation` payload — including BR-63's risk grade and preview — that
+`handle_approval_tool_requests` yields on the agent's own path.
+
+Three things follow, and each is the reason for the choice:
+
+- **The desktop needed no change.** It draws the dialog it already had, and
+  `POST /action-required/tool-confirmation` resolves it through a fallthrough in
+  `Agent::handle_confirmation`: if the agent's own `pending_confirmations` map has no entry for the
+  id, the decision is relayed to the process-global registry. One route, one dialog, two mechanics.
+- **One wake source.** A second queue would make every agent loop race two notifies, which is the
+  exact shape that made #40 a cross-session prompt leak.
+- **The reply loop had to learn to drain during the provider call.** On a coding-agent turn the
+  child is blocked on the bridge's HTTP response, which is itself parked on the card — so the
+  provider stream yields *nothing* until a person answers, and a drain placed after the next stream
+  item could never run. `Agent::reply` now races `stream.next()` against `request_arrived` with the
+  same `next_batch_wake` the tool-batch loop uses. It is not gated to coding agents: any provider
+  call is an await an extension's elicitation can land inside, and surfacing it during the call is
+  strictly earlier than surfacing it afterwards.
+
+### Every way out is bounded
+
+| Release | Mechanism |
+| --- | --- |
+| The user decides | Allow (`AllowOnce` / `AlwaysAllow`) runs the call; Deny returns a refusal result. A **dismissal** (`Cancel`) is relayed as `Cancelled`, not as a denial — dismissing a card is not judging the call, and recording it as one would teach the permission store something the user never said. |
+| Turn cancel | The grant carries **the turn's own** cancel token, so Stop, `AppState::cancel_turn` and the websocket `TurnGuard` all reach a parked call. |
+| Lease drop | The grant's nonce is the park's *owner*; `BridgeLease::drop` calls `cancel_owner`, so a turn that ended by panic or early return cannot leave a child blocked on a response nobody will answer. |
+| Session deleted | `DELETE /sessions/{id}` calls `cancel_session`. A card belonging to a deleted chat can never be answered — the surface it would be drawn on is gone. |
+| TTL | `approval_ttl()`, deliberately **shorter than the child's own per-call deadline**. |
+
+⚠ **The TTL is bounded by the transport, not by `BIOROUTER_CONFIRMATION_TIMEOUT_SECS`.** The
+agent's own prompt may wait an hour because nothing is holding a socket open. This one cannot,
+because a child CLI is: both CLIs apply a hard per-call wall clock (issue #110 measured Claude
+Code's at ~60 s) and abandon the request when it elapses. Waiting past it does not give the user
+more time — it converts a card they could still answer into "The operation timed out", a transport
+failure the model may retry, producing a *second* card for the same call. So the park fits inside
+`bridge::child_tool_call_budget()` and always answers with a result.
+
+### The refusal texts never invite an unanswerable question
+
+Whatever happens, the child gets an MCP tool **result** with `isError`, not a JSON-RPC error: a
+JSON-RPC error is a transport failure the child may retry or treat as a broken server, whereas
+`isError` is a result the model reads and acts on. And on every non-approval path the text says
+plainly that a chat message cannot approve it, because by then the request id is gone. That
+property is asserted (`no_outcome_claims_a_chat_message_can_approve`), not merely intended — the
+old wording is precisely what turned a missing dialog into a loop of polite, futile requests.
+
+### Concurrent asks cannot resolve each other
+
+Every park mints its own uuid and its own `oneshot`. A decision for an id nobody is waiting on is
+dropped and reported as `Unknown`, never re-aimed at whichever call happens to be parked now. Both
+child CLIs issue parallel `tools/call`, so this is the ordinary case rather than a corner one — it
+is BR-62's property for the agent's own path, extended to this one.
+
+### Secret-safe requests
+
+The same registry carries `UserActionRequest::Secrets`: a request for credentials that a *trusted
+surface* collects and writes straight to the keyring. The parked caller learns only which keys were
+configured, because `UserActionOutcome::SecretsConfigured` has no field a value could sit in, the
+published card (`ActionRequiredData::SecretRequest`) carries key names and labels only, and
+`resolve` **refuses** a data-bearing outcome for a secrets request rather than letting a mis-wired
+route smuggle one into the transcript. A secret that never enters the conversation transport cannot
+be persisted into a session row, replayed into a later prompt, or flattened into a child agent's
+transcript.
+
+### What is not persisted
+
+An approval or credential card is a decision prompt, not a record. The drain skips writing it to
+history: an answered card means nothing, and a persisted one reopens the session showing a
+live-looking dialog for a call that finished long ago, routed to a request id that no longer
+exists. Elicitations keep being persisted, because their *answer* is part of the conversation and
+the response row references them.
 
 ## The mirror: how a bridged call becomes a visible card
 
@@ -173,14 +248,12 @@ cosmetic. ⚠ **The GUI does not yet draw a label separating the two** — the m
 persisted metadata, but a card reading `exec` looks like any other card today. Until that label
 lands, read `exec` and `apply_patch` cards on a Codex turn as child-executed.
 
-### What the mirror does not fix
+### The mirror and the approval card are different things
 
-A call routed to `needs_approval` is still refused rather than prompting, exactly as described
-above. What changed is only the reporting: the refusal now shows as a red card naming the tool,
-instead of vanishing into a turn that quietly did less than the user thought. Interactive approval
-of a bridged call would require parking the child's HTTP request until a human answers, which is a
-separate design and deliberately deferred — see
-[streaming and tool-call parity](streaming-and-tool-call-parity.md).
+The mirror draws what *happened*: a `ToolRequest`/`ToolResponse` pair, green or red, after the fact.
+The approval card is raised *before* anything happens and is answerable. A call that is refused —
+by policy, by the user, or because the request expired — still shows as a red mirrored card naming
+the tool, so a turn that quietly did less than the user thought is still visible in the transcript.
 
 ## Transport: loopback HTTP, and the URL is the credential
 
@@ -266,6 +339,8 @@ outlasts stream consumption.
 | Concern | File |
 | --- | --- |
 | Grants, leases, the nonce, the task-local | [`crates/biorouter/src/providers/coding_agent/bridge.rs`](../../../crates/biorouter/src/providers/coding_agent/bridge.rs) |
+| Parking a call on a person: approval, elicitation, secret-safe credentials | [`crates/biorouter/src/pending_user_action.rs`](../../../crates/biorouter/src/pending_user_action.rs) |
+| The queue the card is published on, and the loop's wake seam | [`crates/biorouter/src/action_required_manager.rs`](../../../crates/biorouter/src/action_required_manager.rs) |
 | The mirror marker, and the request/response pair builders | [`crates/biorouter/src/providers/coding_agent/mirror.rs`](../../../crates/biorouter/src/providers/coding_agent/mirror.rs) |
 | The loop branch that persists a mirrored pair without dispatching it | [`crates/biorouter/src/agents/agent.rs`](../../../crates/biorouter/src/agents/agent.rs) |
 | The HTTP/JSON-RPC endpoint | [`crates/biorouter-server/src/routes/tool_bridge.rs`](../../../crates/biorouter-server/src/routes/tool_bridge.rs) |

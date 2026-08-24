@@ -733,6 +733,22 @@ async fn delete_session(
         );
     }
 
+    // #107: and release anything parked on a human for it. A card belonging to a
+    // deleted chat can never be answered — the surface it would be drawn on is
+    // gone — so leaving it queued means the call holding a child CLI's HTTP
+    // request open waits out its full TTL for a decision nobody can make. The
+    // turn cancel above covers a call parked inside a running turn; this covers
+    // the rest, and is idempotent when there is nothing to release.
+    let released = biorouter::pending_user_action::PendingUserActions::global()
+        .cancel_session(&session_id);
+    if released > 0 {
+        tracing::info!(
+            session_id = %session_id,
+            released,
+            "released requests parked on a person for a session being deleted"
+        );
+    }
+
     state
         .session_manager()
         .delete_session(&session_id)

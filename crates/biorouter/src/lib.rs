@@ -34,6 +34,7 @@ pub mod mcp_utils;
 pub mod model;
 pub mod oauth;
 pub mod observability;
+pub mod pending_user_action;
 pub mod permission;
 pub mod privacy;
 pub mod prompt_template;
