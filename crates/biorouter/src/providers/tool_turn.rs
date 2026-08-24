@@ -712,11 +712,12 @@ mod tests {
         assert!(turn.executed.is_empty());
     }
 
-    /// A workflow made of tool calls must fail *before* spending a model run
-    /// when there is no server for the child to call back into. The chat loop's
-    /// degradation — run tool-less and answer from the conversation — is exactly
-    /// wrong here: the model narrates the calls and writes nothing.
-    // The "no HTTP server" refusal is pinned in its own integration binary,
+    // A workflow made of tool calls must fail *before* spending a model run when
+    // there is no server for the child to call back into — the chat loop's
+    // degradation (run tool-less, answer from the conversation) is exactly wrong
+    // there, because the model narrates the calls and writes nothing.
+    //
+    // That refusal is pinned in its own integration binary,
     // `tests/provider_tool_turn_no_server.rs`. It cannot live here: the
     // published base URL is process-global (it must be — the HTTP handler runs
     // on a different task from the turn that issued the grant), so a unit test
