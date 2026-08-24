@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyOptimistically } from './useSkillCatalog';
+import { applyOptimistically, CATALOG_CHANGED_EVENT } from './useSkillCatalog';
 import type { CatalogBundle, CatalogSkill, CatalogView } from '../../api';
 
 const state = (effective: boolean, machineEnabled = true) => ({
@@ -72,5 +72,11 @@ describe('applyOptimistically', () => {
     const before = JSON.stringify(view);
     applyOptimistically(view, ['hyperframes', 'solo'], false, true);
     expect(JSON.stringify(view)).toBe(before);
+  });
+});
+
+describe('CATALOG_CHANGED_EVENT', () => {
+  it('is the name worktree 4 publishes', () => {
+    expect(CATALOG_CHANGED_EVENT).toBe('catalog:changed');
   });
 });

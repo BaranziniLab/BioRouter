@@ -31,6 +31,18 @@
  *   `workspace_skills/v1` on the session row and touches no machine-wide file.
  *   Getting this backwards would make one chat's toggle change every other
  *   chat, window and CLI invocation.
+ *
+ * # `catalog:changed` (#112)
+ *
+ * Installing an extension can add a whole skill root
+ * (`~/.config/biorouter/extensions/<name>/skills`), so this hook subscribes to
+ * the machine-wide `catalog:changed` event and rescans on it.
+ *
+ * ⚠ **It keys off `revision` and reads nothing else from the payload.** The
+ * event carries a `skills[]` list, and a consumer that repaired its inventory
+ * from that list would drift the first time two events raced. A monotonic
+ * revision that has advanced means "you are stale"; the answer to being stale
+ * is to refetch.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -84,6 +96,13 @@ export interface SkillCatalogState {
 
 const EMPTY: CatalogView = { generation: 0, roots: [], skills: [], bundles: [] };
 
+/**
+ * The machine-wide inventory-changed signal (#112). Named here as a constant so
+ * the string is not spelled twice, and so a grep for the name finds the
+ * consumer as well as the producer.
+ */
+export const CATALOG_CHANGED_EVENT = 'catalog:changed';
+
 function errorText(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
@@ -128,6 +147,22 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
 
   useEffect(() => {
     void reload();
+  }, [reload]);
+
+  // A `window` event rather than React state, so this works from any surface —
+  // including one outside the provider tree, or in a second window.
+  const appliedRevision = useRef(0);
+  useEffect(() => {
+    const onCatalogChanged = (event: Event) => {
+      const revision = (event as CustomEvent<{ revision?: number }>).detail?.revision;
+      if (typeof revision === 'number') {
+        if (revision <= appliedRevision.current) return;
+        appliedRevision.current = revision;
+      }
+      void reload(true);
+    };
+    window.addEventListener(CATALOG_CHANGED_EVENT, onCatalogChanged);
+    return () => window.removeEventListener(CATALOG_CHANGED_EVENT, onCatalogChanged);
   }, [reload]);
 
   const setEnabled = useCallback(

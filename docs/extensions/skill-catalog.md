@@ -110,6 +110,23 @@ open only for a write by another process — `biorouter skill install` at a
 terminal — and the interface's explicit refresh covers that: the composer's menu
 asks the daemon to rescan each time it opens.
 
+## Reacting to an extension install (`catalog:changed`, #112)
+
+Installing an extension can add a whole skill root, so both halves of the
+interface subscribe to the machine-wide inventory-changed event:
+
+* **Rust** — anything that changes skills on disk calls
+  `skill_catalog::invalidate()` (drop the snapshot) or `refresh()` (rescan and
+  publish). That is the entry point for a `CatalogChanged` subscriber.
+* **Renderer** — `useSkillCatalog` listens for the `catalog:changed` `window`
+  event and rescans.
+
+⚠ **The renderer keys off `revision` and reads nothing else from the payload.**
+The event carries a `skills[]` list, and a consumer that repaired its inventory
+from that list rather than refetching would drift the first time two events
+raced. A monotonic revision that has advanced means "you are stale"; the answer
+to being stale is to refetch.
+
 ## The HTTP surface
 
 All three require `X-Secret-Key`, like every other route.
