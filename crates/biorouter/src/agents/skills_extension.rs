@@ -250,6 +250,41 @@ struct ListSkillsParams {
     limit: Option<usize>,
 }
 
+/// Arguments for `importSkillPackage`.
+///
+/// One tool, one shape, whether the model was handed a repository URL, a local
+/// `.zip`, or a question to answer — see `skill_package` for why four surfaces
+/// resolving a source four ways is the defect and not the design.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ImportSkillPackageParams {
+    /// A repository URL (`https://github.com/owner/repo`, optionally
+    /// `/tree/<ref>`) or a direct archive URL.
+    url: Option<String>,
+    /// A `.zip` on this machine.
+    file_path: Option<String>,
+    /// Branch, tag or commit. Overrides a ref in the URL.
+    reference: Option<String>,
+    /// The `planId` from a previous call that asked a question.
+    plan_id: Option<String>,
+    /// `bundle` to install everything as one package, `individual` to install
+    /// the named `components` as separate top-level skills. Only needed when a
+    /// previous call asked.
+    choice: Option<String>,
+    /// Which components to keep when `choice` is `individual`.
+    #[serde(default)]
+    components: Vec<String>,
+    /// Report what would happen without writing anything.
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct RemoveSkillPackageParams {
+    /// The installed package's directory name, as `listSkills` reports it in
+    /// `bundle`.
+    name: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct SearchSkillsParams {
     query: String,
@@ -948,6 +983,140 @@ impl SkillsClient {
         Ok(vec![Content::text(response)])
     }
 
+    /// `importSkillPackage`.
+    ///
+    /// ⚠ **The ambiguous case returns a QUESTION, not an install.** A model
+    /// that is told "this could be one package or five separate skills" can ask
+    /// the person; one handed a silent default cannot. Flattening by default is
+    /// the behaviour #115 exists to remove, so it is not reachable from here
+    /// without an explicit `choice`.
+    async fn handle_import_skill_package(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        use crate::agents::skill_package::{self, pending, ImportSource};
+
+        let params: ImportSkillPackageParams = Self::parse_tool_args(arguments)?;
+
+        let plan = if let Some(plan_id) = params.plan_id.as_deref() {
+            pending::take(plan_id).ok_or_else(|| {
+                format!(
+                    "The import preview '{plan_id}' has expired or was already answered. \
+                     Call importSkillPackage again with the original url or file_path."
+                )
+            })?
+        } else {
+            let source = match (params.url.as_deref(), params.file_path.as_deref()) {
+                (Some(url), None) => ImportSource::Url {
+                    url: url.to_string(),
+                    reference: params.reference.clone(),
+                },
+                (None, Some(path)) => ImportSource::Archive {
+                    path: std::path::PathBuf::from(path),
+                },
+                (Some(_), Some(_)) => {
+                    return Err("Give either url or file_path, not both.".to_string())
+                }
+                (None, None) => {
+                    return Err(
+                        "Give a url, a file_path, or the plan_id of a preview to answer."
+                            .to_string(),
+                    )
+                }
+            };
+            let fetched = skill_package::fetch(&source)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            skill_package::plan_from_entries(fetched.entries, &fetched.id_hints, fetched.source)
+                .map_err(|e| format!("{e:#}"))?
+        };
+
+        let choice = params.choice.as_deref().map(str::to_ascii_lowercase);
+        let plans = match (choice.as_deref(), plan.ambiguity.is_some()) {
+            (Some("individual"), _) => {
+                let keep: Vec<String> = if params.components.is_empty() {
+                    plan.components.iter().map(|c| c.name.clone()).collect()
+                } else {
+                    params.components.clone()
+                };
+                let picked = plan.clone().into_individual(&keep);
+                if picked.is_empty() {
+                    return Err("None of the named components are in this package.".to_string());
+                }
+                picked
+            }
+            (Some("bundle"), _) => vec![plan.clone().as_bundle()],
+            (Some(other), _) => {
+                return Err(format!(
+                    "choice must be 'bundle' or 'individual', not '{other}'."
+                ))
+            }
+            (None, false) => vec![plan.clone()],
+            (None, true) => {
+                let ambiguity = plan.ambiguity.clone().expect("checked above");
+                let preview = plan.preview();
+                let plan_id = pending::park(plan);
+                return Ok(vec![Content::text(
+                    serde_json::json!({
+                        "status": "needsChoice",
+                        "planId": plan_id,
+                        "question": ambiguity.reason,
+                        "components": ambiguity.components,
+                        "howToAnswer": format!(
+                            "Ask the user which they want, then call importSkillPackage again with \
+                             plan_id '{plan_id}' and choice 'bundle', or choice 'individual' plus \
+                             the components they picked. Do not choose for them."
+                        ),
+                        "preview": preview,
+                    })
+                    .to_string(),
+                )]);
+            }
+        };
+
+        if params.dry_run {
+            return Ok(vec![Content::text(
+                serde_json::json!({
+                    "status": "dryRun",
+                    "wouldInstall": plans.iter().map(|p| p.preview()).collect::<Vec<_>>(),
+                })
+                .to_string(),
+            )]);
+        }
+
+        let root = skill_package::install::install_root();
+        let mut installed = Vec::new();
+        for plan in &plans {
+            installed.push(skill_package::install(plan, &root).map_err(|e| format!("{e:#}"))?);
+        }
+        Ok(vec![Content::text(
+            serde_json::json!({
+                "status": "installed",
+                "installed": installed,
+                // The catalog was refreshed by the install, so the skills are
+                // callable in THIS conversation — the model does not need a new
+                // chat, and should not tell the user it does (#113 / #115).
+                "usableInThisConversation": true,
+            })
+            .to_string(),
+        )])
+    }
+
+    async fn handle_remove_skill_package(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let params: RemoveSkillPackageParams = Self::parse_tool_args(arguments)?;
+        let root = crate::agents::skill_package::install::install_root();
+        let removed = crate::agents::skill_package::remove(&params.name, &root)
+            .map_err(|e| format!("{e:#}"))?;
+        Ok(vec![Content::text(
+            serde_json::json!({ "status": "removed", "package": removed }).to_string(),
+        )])
+    }
+
+    /// The tools that only make sense once skills exist. Gated on there being
+    /// at least one enabled — see `list_tools`.
     fn get_tools() -> Vec<Tool> {
         fn input_schema<T: JsonSchema>() -> JsonObject {
             let schema = schema_for!(T);
@@ -1016,6 +1185,75 @@ impl SkillsClient {
             }),
         ]
     }
+
+    /// The tools that manage what is installed.
+    ///
+    /// ⚠ **Offered even when no skill is installed yet**, unlike the three
+    /// above. A machine with an empty skills directory is exactly the one that
+    /// needs an installer, and gating these the same way would mean the only
+    /// route to a first skill is a shell command — which is what #115 found the
+    /// agent doing, and why an import ended up as one flattened directory per
+    /// `SKILL.md`.
+    fn management_tools() -> Vec<Tool> {
+        fn input_schema<T: JsonSchema>() -> JsonObject {
+            let schema = schema_for!(T);
+            serde_json::to_value(schema)
+                .expect("Failed to serialize tool schema")
+                .as_object()
+                .expect("Schema should be an object")
+                .clone()
+        }
+
+        vec![
+            Tool::new(
+                "importSkillPackage".to_string(),
+                indoc! {r#"
+                    Install a skill, or a coordinated package of skills, from a repository
+                    URL or a local .zip.
+
+                    Use this instead of shell commands whenever the user asks to install
+                    skills from a repository. It detects the package's own manifest, keeps a
+                    multi-skill repository together as ONE bundle with its declared name,
+                    entry-point router and groups, preserves every component's declared name
+                    exactly, and installs or replaces the whole package atomically.
+
+                    If the source is ambiguous the tool returns status "needsChoice" with a
+                    question and a planId. Ask the user, then call again with that planId and
+                    choice "bundle" or "individual". Do not choose on their behalf.
+
+                    After a successful install the skills are usable in this conversation
+                    immediately; there is no need to start a new chat.
+                "#}
+                .to_string(),
+                input_schema::<ImportSkillPackageParams>(),
+            )
+            .annotate(ToolAnnotations {
+                title: Some("Install skill package".to_string()),
+                read_only_hint: Some(false),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(false),
+                open_world_hint: Some(true),
+            }),
+            Tool::new(
+                "removeSkillPackage".to_string(),
+                indoc! {r#"
+                    Remove an installed skill or skill package by its installed name,
+                    together with every component it contains.
+
+                    This deletes files from disk. Confirm with the user first.
+                "#}
+                .to_string(),
+                input_schema::<RemoveSkillPackageParams>(),
+            )
+            .annotate(ToolAnnotations {
+                title: Some("Remove skill package".to_string()),
+                read_only_hint: Some(false),
+                destructive_hint: Some(true),
+                idempotent_hint: Some(false),
+                open_world_hint: Some(false),
+            }),
+        ]
+    }
 }
 
 #[async_trait]
@@ -1042,11 +1280,12 @@ impl McpClientTrait for SkillsClient {
             )
             .effective
         });
-        let tools = if has_enabled_skills {
+        let mut tools = if has_enabled_skills {
             Self::get_tools()
         } else {
             Vec::new()
         };
+        tools.extend(Self::management_tools());
         Ok(ListToolsResult {
             tools,
             next_cursor: None,
@@ -1086,6 +1325,8 @@ impl McpClientTrait for SkillsClient {
             "searchSkills" => self.handle_search_skills(arguments, &over).await,
             "listSkills" => self.handle_list_skills(arguments, &over).await,
             "loadSkill" => self.handle_load_skill(arguments, &over).await,
+            "importSkillPackage" => self.handle_import_skill_package(arguments).await,
+            "removeSkillPackage" => self.handle_remove_skill_package(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
 
@@ -1456,7 +1697,17 @@ Content from dir3
             .list_tools(None, CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(result.tools.len(), 0);
+        let tool_names: Vec<_> = result.tools.iter().map(|tool| tool.name.as_ref()).collect();
+        // ⚠ The catalog tools are gone, and the management tools stay. A
+        // machine with no skills is exactly the one that needs an installer,
+        // and gating these the same way would leave a shell command as the only
+        // route to a first skill — which is how #115's flattened import
+        // happened.
+        assert_eq!(
+            tool_names,
+            vec!["importSkillPackage", "removeSkillPackage"],
+            "no catalog tools without skills, but the installer is still offered"
+        );
     }
 
     #[tokio::test]
@@ -1513,7 +1764,16 @@ Content
             .await
             .unwrap();
         let tool_names: Vec<_> = result.tools.iter().map(|tool| tool.name.as_ref()).collect();
-        assert_eq!(tool_names, vec!["searchSkills", "listSkills", "loadSkill"]);
+        assert_eq!(
+            tool_names,
+            vec![
+                "searchSkills",
+                "listSkills",
+                "loadSkill",
+                "importSkillPackage",
+                "removeSkillPackage"
+            ]
+        );
     }
 
     /// Issue #65, the consumer seam. `handle_load_skill` resolves a skill by

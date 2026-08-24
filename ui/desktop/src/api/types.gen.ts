@@ -182,6 +182,20 @@ export type AgentInitializationError = {
     retryable: boolean;
 };
 
+/**
+ * Why the caller has to choose, and what the choices are.
+ */
+export type Ambiguity = {
+    /**
+     * The component names the caller is choosing among.
+     */
+    components: Array<string>;
+    /**
+     * One sentence for the dialog.
+     */
+    reason: string;
+};
+
 export type Annotations = {
     audience?: Array<Role>;
     lastModified?: string;
@@ -831,6 +845,13 @@ export type ErrorResponse = {
 };
 
 /**
+ * Which rung of the detection ladder decided the shape. Reported so a preview
+ * can explain itself, and so a test can assert that the *manifest* decided
+ * rather than the structure happening to agree with it.
+ */
+export type Evidence = 'biorouterManifest' | 'codexPlugin' | 'claudePlugin' | 'skillsManifest' | 'skillsDirectory' | 'structuralInference' | 'singleSkill';
+
+/**
  * Represents the different types of MCP extensions that can be added to the manager
  */
 export type ExtensionConfig = {
@@ -1157,6 +1178,94 @@ export type ImageContent = {
     mimeType: string;
 };
 
+export type ImportChoice = 'bundle' | 'individual';
+
+/**
+ * Which shape the importer decided on.
+ */
+export type ImportKind = 'single' | 'bundle';
+
+/**
+ * The serialisable half of a plan — everything except the file bytes.
+ */
+export type ImportPreview = {
+    ambiguity?: Ambiguity | null;
+    components: Array<PlannedSkill>;
+    displayName: string;
+    entryPoint?: string | null;
+    evidence: Evidence;
+    /**
+     * How many files would be written.
+     */
+    fileCount: number;
+    groups: {
+        [key: string]: unknown;
+    };
+    id: string;
+    kind: ImportKind;
+    shadows: Array<string>;
+    source: SourceProvenance;
+    version?: string | null;
+};
+
+/**
+ * What to import, in the two forms a caller has.
+ *
+ * One request type for a pasted repository URL, an agent's tool call, a local
+ * `.zip` and a marketplace asset, because giving each of those its own
+ * resolution is how the four came to disagree in the first place.
+ */
+export type ImportRequest = {
+    choice?: ImportChoice | null;
+    /**
+     * Which components to keep when `choice` is `individual`.
+     */
+    components?: Array<string>;
+    /**
+     * A `.zip` on the machine the daemon runs on.
+     */
+    filePath?: string | null;
+    /**
+     * Answer to a previous preview's question, by its `planId`.
+     */
+    planId?: string | null;
+    /**
+     * Branch, tag or commit. Overrides a ref in the URL.
+     */
+    reference?: string | null;
+    /**
+     * `https://github.com/owner/repo`, a `/tree/<ref>` URL, or a direct
+     * archive URL on an allowed host.
+     */
+    url?: string | null;
+};
+
+/**
+ * The answer to an import request: either it happened, or somebody has to
+ * choose first.
+ *
+ * ⚠ **`NeedsChoice` is a 200, not an error.** It is a legitimate outcome the
+ * caller is expected to act on — the issue's "real pending user-input state" —
+ * and an agent that saw a 4xx would reasonably retry the same call rather than
+ * asking the person the question it was handed.
+ */
+export type ImportResult = {
+    /**
+     * One entry per installed unit: a bundle is one, "install these
+     * separately" is one each.
+     */
+    installed: Array<InstalledPackage>;
+    preview: ImportPreview;
+    status: 'installed';
+} | {
+    /**
+     * Pass this back with a `choice` to answer.
+     */
+    planId: string;
+    preview: ImportPreview;
+    status: 'needsChoice';
+};
+
 export type ImportSessionRequest = {
     json: string;
 };
@@ -1180,6 +1289,30 @@ export type InspectJobResponse = {
     processStartTime?: string | null;
     runningDurationSeconds?: number | null;
     sessionId?: string | null;
+};
+
+/**
+ * What an install did.
+ */
+export type InstalledPackage = {
+    /**
+     * The catalog generation after the refresh, so a caller can tell whether
+     * it is looking at an inventory that already includes this.
+     */
+    catalogGeneration: number;
+    directory: string;
+    displayName: string;
+    entryPoint?: string | null;
+    id: string;
+    kind: ImportKind;
+    /**
+     * True when this replaced an existing install of the same id.
+     */
+    replaced: boolean;
+    /**
+     * Component skill names, in the order they were installed.
+     */
+    skills: Array<string>;
 };
 
 /**
@@ -2139,6 +2272,30 @@ export type PersistedMessage = {
     userVisible: boolean;
 };
 
+/**
+ * One component of a planned import.
+ */
+export type PlannedSkill = {
+    description: string;
+    /**
+     * Directory name under the package root. Taken from the source layout so
+     * a manifest referring to `skills/media-use` still resolves after install.
+     */
+    directory: string;
+    /**
+     * The router the package declares as its way in.
+     */
+    entryPoint: boolean;
+    /**
+     * The manifest's group for this component, e.g. `core` / `on-demand`.
+     */
+    group?: string | null;
+    /**
+     * The frontmatter `name`, preserved exactly.
+     */
+    name: string;
+};
+
 export type PreviewBody = {
     commit_sha: string;
     path: string;
@@ -2469,6 +2626,13 @@ export type RedactedThinkingContent = {
 export type RemoveExtensionRequest = {
     name: string;
     session_id: string;
+};
+
+export type RemovePackageRequest = {
+    /**
+     * The install directory name — `CatalogBundle.name`.
+     */
+    id: string;
 };
 
 export type Rename = {
@@ -3091,6 +3255,27 @@ export type SourceMeta = {
     original_filename?: string | null;
     sha256: string;
     title: string;
+    url?: string | null;
+};
+
+/**
+ * What a resolved import came from, kept so an update knows where to look and
+ * a user can see what they installed.
+ */
+export type SourceProvenance = {
+    /**
+     * `repository` | `archive` | `marketplace` | `cli` | `agent`.
+     */
+    installer?: string | null;
+    /**
+     * The branch, tag or commit that was asked for.
+     */
+    reference?: string | null;
+    /**
+     * The immutable commit the archive actually came from, when the host tells
+     * us (GitHub returns it in `ETag`).
+     */
+    resolvedCommit?: string | null;
     url?: string | null;
 };
 
@@ -7021,6 +7206,95 @@ export type SkillCatalogHandlerResponses = {
 };
 
 export type SkillCatalogHandlerResponse = SkillCatalogHandlerResponses[keyof SkillCatalogHandlerResponses];
+
+export type InstallSkillPackageData = {
+    body: ImportRequest;
+    path?: never;
+    query?: never;
+    url: '/skills/packages/install';
+};
+
+export type InstallSkillPackageErrors = {
+    /**
+     * The source could not be read or installed
+     */
+    400: unknown;
+    /**
+     * Unauthorized - invalid or missing secret key
+     */
+    401: unknown;
+    /**
+     * That preview has expired
+     */
+    410: unknown;
+};
+
+export type InstallSkillPackageResponses = {
+    /**
+     * Installed, or a question to answer
+     */
+    200: ImportResult;
+};
+
+export type InstallSkillPackageResponse = InstallSkillPackageResponses[keyof InstallSkillPackageResponses];
+
+export type PreviewSkillPackageData = {
+    body: ImportRequest;
+    path?: never;
+    query?: never;
+    url: '/skills/packages/preview';
+};
+
+export type PreviewSkillPackageErrors = {
+    /**
+     * The source could not be read
+     */
+    400: unknown;
+    /**
+     * Unauthorized - invalid or missing secret key
+     */
+    401: unknown;
+    /**
+     * That preview has expired
+     */
+    410: unknown;
+};
+
+export type PreviewSkillPackageResponses = {
+    /**
+     * What an install would do
+     */
+    200: ImportResult;
+};
+
+export type PreviewSkillPackageResponse = PreviewSkillPackageResponses[keyof PreviewSkillPackageResponses];
+
+export type RemoveSkillPackageData = {
+    body: RemovePackageRequest;
+    path?: never;
+    query?: never;
+    url: '/skills/packages/remove';
+};
+
+export type RemoveSkillPackageErrors = {
+    /**
+     * Unauthorized - invalid or missing secret key
+     */
+    401: unknown;
+    /**
+     * No such package
+     */
+    404: unknown;
+};
+
+export type RemoveSkillPackageResponses = {
+    /**
+     * Removed
+     */
+    200: PackageSummary;
+};
+
+export type RemoveSkillPackageResponse = RemoveSkillPackageResponses[keyof RemoveSkillPackageResponses];
 
 export type RefreshSkillCatalogData = {
     body?: never;

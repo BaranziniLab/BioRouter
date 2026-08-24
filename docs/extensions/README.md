@@ -10,6 +10,7 @@ Come here when you want to add a capability BioRouter does not have yet, when yo
 |---|---|
 | [Extensions, skills, and MCP agents](extensions-and-skills-guide.md) | The end-user guide to the three ways BioRouter is extended — MCP extensions, platform extensions, and skills — covering how to add, configure, and author each, plus installing from the BAAM marketplace and connecting remote MCP agents. |
 | [The skill catalog](skill-catalog.md) | How BioRouter decides which skills exist and which are on: the five roots, the daemon-served catalog every surface reads, the difference between a machine-wide and a per-chat choice, and how a skill installed mid-conversation becomes usable in it. |
+| [Skill packages](skill-packages.md) | Importing a skill, or a coordinated package of skills, from a repository URL, a ZIP, the marketplace, the CLI or an agent: the detection ladder, why ambiguity is a question rather than a default, and what lands on disk. |
 | [Reliable Slack posting from the agent](slack-posting-investigation.md) | An options memo comparing three ways to give the agent reliable Slack posting — incoming webhook, a Slack MCP server with a bot token, and a user token or the Slack CLI — with a recommendation. **Open investigation, not implemented:** no `slack_post` tool or Slack extension exists in the tree, and the recommendation has been neither accepted nor rejected. |
 
 ## Built-in extension reference

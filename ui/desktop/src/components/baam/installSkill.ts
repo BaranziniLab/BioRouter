@@ -1,41 +1,60 @@
-// Install a skill from a registry download URL: fetch the .zip to a temp file,
-// extract + parse it through the existing skills:extract-zip flow, then write
-// the text files into ~/.config/biorouter/skills/<slug>/. Mirrors the on-disk
-// layout produced by AddSkillModal so a downloaded skill is indistinguishable
-// from a hand-imported one.
+// Install a skill from a registry download URL.
+//
+// ⚠ **Through the one import pipeline** (`/skills/packages/install`), not
+// through a renderer-side unzip-and-write. This function used to fetch the
+// asset, extract it with the daemon's depth-counting ZIP parser, and write the
+// text files itself — so a marketplace asset that happened to be a
+// multi-skill package got the same flattening a pasted repository URL did
+// (#115), and a partial write left a half-installed skill with no way to tell.
+//
+// The asset is downloaded to a temporary file first, exactly as before, because
+// the importer takes a path or a URL and the registry's asset URLs are already
+// on the allowed-host list either way — but the *interpretation* of what comes
+// back is now the daemon's single one.
 
-import { BIOROUTER_SKILLS_DIR } from '../skills/skillUtils';
+import { installSkillPackage } from '../../api';
+import type { ImportResult } from '../../api';
 import type { RegistrySkill } from './registry';
-
-const TEXT_EXTENSIONS = new Set(['.md', '.txt', '.yaml', '.yml', '.json', '.py', '.sh']);
 
 export interface InstallResult {
   ok: boolean;
   name: string;
   error?: string;
+  /** Set when the source was ambiguous and nobody has answered yet. */
+  needsChoice?: { planId: string; reason: string; components: string[] };
 }
 
 export async function installRegistrySkill(skill: RegistrySkill): Promise<InstallResult> {
   const dl = await window.electron.downloadRegistryAsset(skill.download);
   if ('error' in dl) return { ok: false, name: skill.name, error: dl.error };
 
-  const extracted = await window.electron.extractSkillZip(dl.path);
-  if ('error' in extracted) return { ok: false, name: skill.name, error: extracted.error };
-
-  const destFolder = `${BIOROUTER_SKILLS_DIR}/${extracted.slug}`;
-  await window.electron.ensureDirectory(destFolder);
-
-  const textFiles = extracted.files.filter(([relPath]) => {
-    const ext = relPath.slice(relPath.lastIndexOf('.')).toLowerCase();
-    return TEXT_EXTENSIONS.has(ext) || !relPath.includes('.');
-  });
-
-  for (const [relPath, content] of textFiles) {
-    const ok = await window.electron.writeFile(`${destFolder}/${relPath}`, content);
-    if (!ok) {
-      return { ok: false, name: skill.name, error: `Could not write to ${destFolder}` };
+  try {
+    const response = await installSkillPackage<true>({
+      body: { filePath: dl.path },
+      throwOnError: true,
+    });
+    const result = response.data as ImportResult;
+    if (result.status === 'needsChoice') {
+      // A catalogued marketplace asset should never reach here — its layout is
+      // known. Reported rather than resolved, because picking one on the user's
+      // behalf is the behaviour this replaced.
+      return {
+        ok: false,
+        name: skill.name,
+        needsChoice: {
+          planId: result.planId,
+          reason: result.preview.ambiguity?.reason ?? 'This package needs a choice.',
+          components: result.preview.components.map((component) => component.name),
+        },
+        error: result.preview.ambiguity?.reason,
+      };
     }
+    return { ok: true, name: skill.name };
+  } catch (err) {
+    return {
+      ok: false,
+      name: skill.name,
+      error: err instanceof Error ? err.message : `Could not install ${skill.name}`,
+    };
   }
-
-  return { ok: true, name: skill.name };
 }
