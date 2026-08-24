@@ -500,6 +500,9 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::knowledge::check_model,
         super::routes::knowledge::get_active,
         super::routes::knowledge::set_active,
+        super::routes::skills::skill_catalog_handler,
+        super::routes::skills::set_session_skills,
+        super::routes::skills::refresh_skill_catalog,
     ),
     components(schemas(
         super::routes::config_management::UpsertConfigQuery,
@@ -693,6 +696,22 @@ impl utoipa::Modify for ApiKeySecurity {
         biorouter::workflow::WorkflowParameterRequirement,
         biorouter::workflow::Response,
         biorouter::workflow::SubWorkflow,
+        // #113: the canonical skill catalog. utoipa does NOT register nested
+        // types transitively, so every one of these has to be named — see the
+        // `ProviderAffiliation` note above for what a missing one looks like
+        // (a `$ref` the TypeScript generator cannot resolve, reported as a
+        // tooling bug rather than as a missing line here).
+        super::routes::skills::SessionSkillsRequest,
+        super::routes::skills::SessionSkillsResponse,
+        biorouter::agents::skill_catalog::CatalogView,
+        biorouter::agents::skill_catalog::CatalogSkill,
+        biorouter::agents::skill_catalog::CatalogBundle,
+        biorouter::agents::skill_catalog::PackageSummary,
+        biorouter::agents::skill_catalog::SkillRoot,
+        biorouter::agents::skill_catalog::SkillSource,
+        biorouter::agents::skill_catalog::SkillSourceKind,
+        biorouter::agents::skill_catalog::SkillState,
+        biorouter::agents::skill_catalog::SessionState,
         biorouter::agents::types::RetryConfig,
         biorouter::agents::types::SuccessCheck,
         super::routes::agent::UpdateProviderRequest,

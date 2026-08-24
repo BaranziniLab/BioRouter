@@ -284,6 +284,71 @@ export type CarriedPage = {
     source_path: string;
 };
 
+/**
+ * A directory of skills installed and removed as one unit.
+ */
+export type CatalogBundle = {
+    directory: string;
+    /**
+     * The package's own display name when a manifest supplied one, else the
+     * directory name.
+     */
+    displayName: string;
+    /**
+     * The bundle directory name. This is the identifier `skills-config.json`
+     * lists to disable the whole bundle.
+     */
+    name: string;
+    package?: PackageSummary | null;
+    /**
+     * Member skill names, sorted.
+     */
+    skills: Array<string>;
+    source: SkillSource;
+    sourceRoot: string;
+    state: SkillState;
+};
+
+/**
+ * One skill, as the interface and the model both see it.
+ */
+export type CatalogSkill = {
+    /**
+     * Shipped with Biorouter, so the interface offers no Delete for it.
+     */
+    builtin: boolean;
+    /**
+     * The bundle directory this skill sits in, when it is a bundle member.
+     */
+    bundle?: string | null;
+    description: string;
+    directory: string;
+    /**
+     * Frontmatter `name` — the identifier every enablement surface keys on.
+     */
+    name: string;
+    /**
+     * Root-relative logical path, `/`-separated on every platform
+     * (`superpowers/brainstorming`). What `biorouter skill list` prints.
+     */
+    slug: string;
+    source: SkillSource;
+    sourceRoot: string;
+    state: SkillState;
+};
+
+/**
+ * The serialisable catalog: what `GET /skills/catalog` returns and what the
+ * desktop picker renders. There is no second derivation of any of these
+ * fields on the interface side — that separation is what #113 removed.
+ */
+export type CatalogView = {
+    bundles: Array<CatalogBundle>;
+    generation: number;
+    roots: Array<SkillRoot>;
+    skills: Array<CatalogSkill>;
+};
+
 export type ChangeKind = 'ingest' | 'link' | 'flag' | 'query' | 'lint' | 'restore' | 'manual';
 
 export type ChatRequest = {
@@ -1978,6 +2043,32 @@ export type ModelUsageRow = {
     turns: number;
 };
 
+/**
+ * The part of an installed package's record the interface needs. The full
+ * record lives beside the skills as `biorouter-package.json`; see
+ * `crate::agents::skill_package`.
+ */
+export type PackageSummary = {
+    displayName: string;
+    /**
+     * The router/entry-point skill a manifest declared, by frontmatter name.
+     */
+    entryPoint?: string | null;
+    /**
+     * Optional named groups, e.g. `core` / `on-demand`.
+     */
+    groups?: {
+        [key: string]: unknown;
+    };
+    id: string;
+    installedAt?: string | null;
+    installer?: string | null;
+    resolvedCommit?: string | null;
+    sourceRef?: string | null;
+    sourceUrl?: string | null;
+    version?: string | null;
+};
+
 export type PageContent = {
     content: string;
     /**
@@ -2701,6 +2792,46 @@ export type SessionModelUsageResponse = {
     models: Array<ModelUsageRow>;
 };
 
+/**
+ * Add and remove are applied to **this** conversation only.
+ */
+export type SessionSkillsRequest = {
+    /**
+     * Skill (or bundle) names to enable for this conversation, even where the
+     * machine-wide preference has them off.
+     */
+    add?: Array<string>;
+    /**
+     * Skill (or bundle) names to disable for this conversation, even where the
+     * machine-wide preference has them on.
+     */
+    remove?: Array<string>;
+    sessionId: string;
+};
+
+/**
+ * The catalog after the write, plus the override that produced it.
+ *
+ * Returning the whole catalog rather than an acknowledgement is deliberate: it
+ * is what lets the interface render confirmed state instead of the optimistic
+ * state it just guessed, and it collapses the toggle-then-refetch race that
+ * two concurrent toggles would otherwise lose.
+ */
+export type SessionSkillsResponse = {
+    catalog: CatalogView;
+    /**
+     * The persisted `workspace_skills/v1` value, echoed so a caller can tell a
+     * per-chat deviation from a machine-wide default without re-deriving it.
+     */
+    sessionAdd: Array<string>;
+    sessionRemove: Array<string>;
+};
+
+/**
+ * How one session deviates from the machine-wide answer for a given skill.
+ */
+export type SessionState = 'default' | 'added' | 'removed';
+
 export type SessionSummary = {
     created_at: string;
     /**
@@ -2874,6 +3005,72 @@ export type SidecarStatus = {
      * model in this process.
      */
     warmed?: boolean;
+};
+
+/**
+ * One directory skills are discovered under, with its provenance.
+ */
+export type SkillRoot = {
+    path: string;
+    source: SkillSource;
+};
+
+/**
+ * Where a skill came from, as the interface shows it.
+ */
+export type SkillSource = {
+    /**
+     * The extension's directory name, when `kind` is `extension`.
+     */
+    extension?: string | null;
+    kind: SkillSourceKind;
+    /**
+     * A short human label for the "where from" chip — the extension's name
+     * when it has one, else the root's own.
+     */
+    label: string;
+};
+
+/**
+ * Which of the five kinds of root a skill came from.
+ *
+ * ⚠ A **unit-variant** enum carrying no data, with the extension name held
+ * beside it in [`SkillSource`] rather than inside an `Extension { .. }`
+ * variant. The variant form is the more natural Rust, and it generates an
+ * internally-tagged object that `serde(flatten)` and `utoipa` disagree about —
+ * the spec emits an `allOf` the TypeScript client cannot narrow. A flat struct
+ * crosses the wire unambiguously, which matters more here than the tidier
+ * type, because this shape IS the contract the picker renders from.
+ */
+export type SkillSourceKind = 'claudeHome' | 'agentsHome' | 'biorouter' | 'extension' | 'project';
+
+/**
+ * The composed enablement of one catalog entry, with every input kept
+ * separate so the interface can explain *why* a switch is where it is.
+ */
+export type SkillState = {
+    /**
+     * What the model actually sees: the composition of the three above.
+     */
+    effective: boolean;
+    /**
+     * A shipped **Context** the user switched off in Settings → Contexts. Such
+     * a skill is hidden from the catalog but stays loadable by exact name; see
+     * `skills_extension::hidden_contexts_in`.
+     */
+    hiddenContext: boolean;
+    /**
+     * `skills-config.json` (`disabled[]`) says this is on. A bundle child is
+     * off when either its own name or its bundle's name is listed.
+     */
+    machineEnabled: boolean;
+    session: SessionState;
+    /**
+     * The deviation was written against the BUNDLE's name, not this skill's.
+     * Lets the interface explain a member's switch instead of leaving it
+     * looking arbitrary.
+     */
+    sessionViaBundle: boolean;
 };
 
 export type SlashCommand = {
@@ -6783,6 +6980,119 @@ export type UpdateSessionUserWorkflowValuesResponses = {
 };
 
 export type UpdateSessionUserWorkflowValuesResponse2 = UpdateSessionUserWorkflowValuesResponses[keyof UpdateSessionUserWorkflowValuesResponses];
+
+export type SkillCatalogHandlerData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Compose the machine-wide catalog with this conversation's override.
+         * Omit for the machine-wide view — what a new chat would start with.
+         */
+        session_id?: string | null;
+        /**
+         * Rescan the filesystem before answering, instead of reusing the cached
+         * snapshot. The interface sets this after an install it did not perform
+         * itself (a marketplace click, a `.brxt` drop) and after a `CatalogChanged`
+         * notice, since a change made by another process may land inside the
+         * snapshot's one-second mtime window.
+         */
+        refresh?: boolean;
+    };
+    url: '/skills/catalog';
+};
+
+export type SkillCatalogHandlerErrors = {
+    /**
+     * Unauthorized - invalid or missing secret key
+     */
+    401: unknown;
+    /**
+     * This conversation's skill state is unreadable
+     */
+    500: unknown;
+};
+
+export type SkillCatalogHandlerResponses = {
+    /**
+     * The catalog
+     */
+    200: CatalogView;
+};
+
+export type SkillCatalogHandlerResponse = SkillCatalogHandlerResponses[keyof SkillCatalogHandlerResponses];
+
+export type RefreshSkillCatalogData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Compose the machine-wide catalog with this conversation's override.
+         * Omit for the machine-wide view — what a new chat would start with.
+         */
+        session_id?: string | null;
+        /**
+         * Rescan the filesystem before answering, instead of reusing the cached
+         * snapshot. The interface sets this after an install it did not perform
+         * itself (a marketplace click, a `.brxt` drop) and after a `CatalogChanged`
+         * notice, since a change made by another process may land inside the
+         * snapshot's one-second mtime window.
+         */
+        refresh?: boolean;
+    };
+    url: '/skills/refresh';
+};
+
+export type RefreshSkillCatalogErrors = {
+    /**
+     * Unauthorized - invalid or missing secret key
+     */
+    401: unknown;
+    /**
+     * This conversation's skill state is unreadable
+     */
+    500: unknown;
+};
+
+export type RefreshSkillCatalogResponses = {
+    /**
+     * The freshly scanned catalog
+     */
+    200: CatalogView;
+};
+
+export type RefreshSkillCatalogResponse = RefreshSkillCatalogResponses[keyof RefreshSkillCatalogResponses];
+
+export type SetSessionSkillsData = {
+    body: SessionSkillsRequest;
+    path?: never;
+    query?: never;
+    url: '/skills/session';
+};
+
+export type SetSessionSkillsErrors = {
+    /**
+     * Unauthorized - invalid or missing secret key
+     */
+    401: unknown;
+    /**
+     * No such conversation
+     */
+    404: unknown;
+    /**
+     * The override could not be persisted
+     */
+    500: unknown;
+};
+
+export type SetSessionSkillsResponses = {
+    /**
+     * Applied
+     */
+    200: SessionSkillsResponse;
+};
+
+export type SetSessionSkillsResponse = SetSessionSkillsResponses[keyof SetSessionSkillsResponses];
 
 export type StatusData = {
     body?: never;

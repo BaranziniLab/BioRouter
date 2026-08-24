@@ -4373,6 +4373,160 @@
         ]
       }
     },
+    "/skills/catalog": {
+      "get": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "The canonical catalog: every root, every skill, every bundle, and the",
+        "description": "composed enablement for one conversation.",
+        "operationId": "skill_catalog_handler",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Compose the machine-wide catalog with this conversation's override.\nOmit for the machine-wide view — what a new chat would start with.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "description": "Rescan the filesystem before answering, instead of reusing the cached\nsnapshot. The interface sets this after an install it did not perform\nitself (a marketplace click, a `.brxt` drop) and after a `CatalogChanged`\nnotice, since a change made by another process may land inside the\nsnapshot's one-second mtime window.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "500": {
+            "description": "This conversation's skill state is unreadable"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/refresh": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Rescan the filesystem and publish a new catalog to every live conversation.",
+        "description": "The endpoint an install calls — a marketplace skill, a dropped `.zip`, a\n`.brxt` extension whose `skills/` subdirectory becomes a new root, or\nworktree 4's `CatalogChanged` notice. It rescans unconditionally rather than\nconsulting mtimes, because the caller already knows something changed.",
+        "operationId": "refresh_skill_catalog",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Compose the machine-wide catalog with this conversation's override.\nOmit for the machine-wide view — what a new chat would start with.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "description": "Rescan the filesystem before answering, instead of reusing the cached\nsnapshot. The interface sets this after an install it did not perform\nitself (a marketplace click, a `.brxt` drop) and after a `CatalogChanged`\nnotice, since a change made by another process may land inside the\nsnapshot's one-second mtime window.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The freshly scanned catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "500": {
+            "description": "This conversation's skill state is unreadable"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/session": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Enable or disable skills for one conversation, and hand back what the model",
+        "description": "will see on its next turn.",
+        "operationId": "set_session_skills",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionSkillsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionSkillsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "404": {
+            "description": "No such conversation"
+          },
+          "500": {
+            "description": "The override could not be persisted"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/status": {
       "get": {
         "tags": [
@@ -5629,6 +5783,139 @@
           },
           "source_path": {
             "type": "string"
+          }
+        }
+      },
+      "CatalogBundle": {
+        "type": "object",
+        "description": "A directory of skills installed and removed as one unit.",
+        "required": [
+          "name",
+          "displayName",
+          "directory",
+          "sourceRoot",
+          "source",
+          "skills",
+          "state"
+        ],
+        "properties": {
+          "directory": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string",
+            "description": "The package's own display name when a manifest supplied one, else the\ndirectory name."
+          },
+          "name": {
+            "type": "string",
+            "description": "The bundle directory name. This is the identifier `skills-config.json`\nlists to disable the whole bundle."
+          },
+          "package": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PackageSummary"
+              }
+            ],
+            "nullable": true
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Member skill names, sorted."
+          },
+          "source": {
+            "$ref": "#/components/schemas/SkillSource"
+          },
+          "sourceRoot": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SkillState"
+          }
+        }
+      },
+      "CatalogSkill": {
+        "type": "object",
+        "description": "One skill, as the interface and the model both see it.",
+        "required": [
+          "name",
+          "description",
+          "slug",
+          "directory",
+          "sourceRoot",
+          "source",
+          "builtin",
+          "state"
+        ],
+        "properties": {
+          "builtin": {
+            "type": "boolean",
+            "description": "Shipped with Biorouter, so the interface offers no Delete for it."
+          },
+          "bundle": {
+            "type": "string",
+            "description": "The bundle directory this skill sits in, when it is a bundle member.",
+            "nullable": true
+          },
+          "description": {
+            "type": "string"
+          },
+          "directory": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "Frontmatter `name` — the identifier every enablement surface keys on."
+          },
+          "slug": {
+            "type": "string",
+            "description": "Root-relative logical path, `/`-separated on every platform\n(`superpowers/brainstorming`). What `biorouter skill list` prints."
+          },
+          "source": {
+            "$ref": "#/components/schemas/SkillSource"
+          },
+          "sourceRoot": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SkillState"
+          }
+        }
+      },
+      "CatalogView": {
+        "type": "object",
+        "description": "The serialisable catalog: what `GET /skills/catalog` returns and what the\ndesktop picker renders. There is no second derivation of any of these\nfields on the interface side — that separation is what #113 removed.",
+        "required": [
+          "generation",
+          "roots",
+          "skills",
+          "bundles"
+        ],
+        "properties": {
+          "bundles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogBundle"
+            }
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "roots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillRoot"
+            }
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogSkill"
+            }
           }
         }
       },
@@ -8963,6 +9250,55 @@
           }
         }
       },
+      "PackageSummary": {
+        "type": "object",
+        "description": "The part of an installed package's record the interface needs. The full\nrecord lives beside the skills as `biorouter-package.json`; see\n`crate::agents::skill_package`.",
+        "required": [
+          "id",
+          "displayName"
+        ],
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "entryPoint": {
+            "type": "string",
+            "description": "The router/entry-point skill a manifest declared, by frontmatter name.",
+            "nullable": true
+          },
+          "groups": {
+            "type": "object",
+            "description": "Optional named groups, e.g. `core` / `on-demand`."
+          },
+          "id": {
+            "type": "string"
+          },
+          "installedAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "installer": {
+            "type": "string",
+            "nullable": true
+          },
+          "resolvedCommit": {
+            "type": "string",
+            "nullable": true
+          },
+          "sourceRef": {
+            "type": "string",
+            "nullable": true
+          },
+          "sourceUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "version": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
       "PageContent": {
         "type": "object",
         "required": [
@@ -10461,6 +10797,68 @@
           }
         }
       },
+      "SessionSkillsRequest": {
+        "type": "object",
+        "description": "Add and remove are applied to **this** conversation only.",
+        "required": [
+          "sessionId"
+        ],
+        "properties": {
+          "add": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Skill (or bundle) names to enable for this conversation, even where the\nmachine-wide preference has them off."
+          },
+          "remove": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Skill (or bundle) names to disable for this conversation, even where the\nmachine-wide preference has them on."
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        }
+      },
+      "SessionSkillsResponse": {
+        "type": "object",
+        "description": "The catalog after the write, plus the override that produced it.\n\nReturning the whole catalog rather than an acknowledgement is deliberate: it\nis what lets the interface render confirmed state instead of the optimistic\nstate it just guessed, and it collapses the toggle-then-refetch race that\ntwo concurrent toggles would otherwise lose.",
+        "required": [
+          "catalog",
+          "sessionAdd",
+          "sessionRemove"
+        ],
+        "properties": {
+          "catalog": {
+            "$ref": "#/components/schemas/CatalogView"
+          },
+          "sessionAdd": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The persisted `workspace_skills/v1` value, echoed so a caller can tell a\nper-chat deviation from a machine-wide default without re-deriving it."
+          },
+          "sessionRemove": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SessionState": {
+        "type": "string",
+        "description": "How one session deviates from the machine-wide answer for a given skill.",
+        "enum": [
+          "default",
+          "added",
+          "removed"
+        ]
+      },
       "SessionSummary": {
         "type": "object",
         "required": [
@@ -10768,6 +11166,87 @@
           "warmed": {
             "type": "boolean",
             "description": "True only after Biorouter has received a non-empty completion from this\nmodel in this process."
+          }
+        }
+      },
+      "SkillRoot": {
+        "type": "object",
+        "description": "One directory skills are discovered under, with its provenance.",
+        "required": [
+          "path",
+          "source"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SkillSource"
+          }
+        }
+      },
+      "SkillSource": {
+        "type": "object",
+        "description": "Where a skill came from, as the interface shows it.",
+        "required": [
+          "kind",
+          "label"
+        ],
+        "properties": {
+          "extension": {
+            "type": "string",
+            "description": "The extension's directory name, when `kind` is `extension`.",
+            "nullable": true
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SkillSourceKind"
+          },
+          "label": {
+            "type": "string",
+            "description": "A short human label for the \"where from\" chip — the extension's name\nwhen it has one, else the root's own."
+          }
+        }
+      },
+      "SkillSourceKind": {
+        "type": "string",
+        "description": "Which of the five kinds of root a skill came from.\n\n⚠ A **unit-variant** enum carrying no data, with the extension name held\nbeside it in [`SkillSource`] rather than inside an `Extension { .. }`\nvariant. The variant form is the more natural Rust, and it generates an\ninternally-tagged object that `serde(flatten)` and `utoipa` disagree about —\nthe spec emits an `allOf` the TypeScript client cannot narrow. A flat struct\ncrosses the wire unambiguously, which matters more here than the tidier\ntype, because this shape IS the contract the picker renders from.",
+        "enum": [
+          "claudeHome",
+          "agentsHome",
+          "biorouter",
+          "extension",
+          "project"
+        ]
+      },
+      "SkillState": {
+        "type": "object",
+        "description": "The composed enablement of one catalog entry, with every input kept\nseparate so the interface can explain *why* a switch is where it is.",
+        "required": [
+          "machineEnabled",
+          "session",
+          "sessionViaBundle",
+          "hiddenContext",
+          "effective"
+        ],
+        "properties": {
+          "effective": {
+            "type": "boolean",
+            "description": "What the model actually sees: the composition of the three above."
+          },
+          "hiddenContext": {
+            "type": "boolean",
+            "description": "A shipped **Context** the user switched off in Settings → Contexts. Such\na skill is hidden from the catalog but stays loadable by exact name; see\n`skills_extension::hidden_contexts_in`."
+          },
+          "machineEnabled": {
+            "type": "boolean",
+            "description": "`skills-config.json` (`disabled[]`) says this is on. A bundle child is\noff when either its own name or its bundle's name is listed."
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionState"
+          },
+          "sessionViaBundle": {
+            "type": "boolean",
+            "description": "The deviation was written against the BUNDLE's name, not this skill's.\nLets the interface explain a member's switch instead of leaving it\nlooking arbitrary."
           }
         }
       },
