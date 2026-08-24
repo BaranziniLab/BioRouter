@@ -2703,9 +2703,21 @@ export type RemoveExtensionRequest = {
 
 export type RemovePackageRequest = {
     /**
-     * The install directory name — `CatalogBundle.name`.
+     * The install directory name — a `CatalogBundle.name`, or the last
+     * component of a `CatalogSkill.slug`.
      */
     id: string;
+    /**
+     * Which skills root it lives under. Omit for the Biorouter one.
+     *
+     * ⚠ **Validated against [`skill_catalog::roots`], not merely resolved.**
+     * This handler deletes a directory tree, so the root is chosen from the
+     * set the daemon itself enumerated rather than taken from the caller. A
+     * path the caller invents matches nothing and is refused — which is why
+     * this can safely cover `~/.claude/skills` and a project directory, the
+     * two the Skills pane has always offered a Delete for.
+     */
+    sourceRoot?: string | null;
 };
 
 export type Rename = {

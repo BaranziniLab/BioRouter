@@ -293,6 +293,30 @@ mod tests {
         assert!(write < read, "the write must precede the read");
     }
 
+    /// A delete handler must not take its directory from the caller. The root
+    /// comes from the daemon's own enumeration, and a path outside it is
+    /// refused rather than resolved.
+    #[test]
+    fn the_remove_handler_chooses_its_root_from_the_catalogs_own_list() {
+        let src = include_str!("skills.rs");
+        let body = crate::routes::body_of(
+            src,
+            "pub async fn remove_skill_package(\n    Json(request): Json<RemovePackageRequest>,",
+        );
+        assert!(
+            body.contains("skill_catalog::roots()"),
+            "the root set comes from the catalog"
+        );
+        assert!(
+            body.contains("is not one of this machine's skill directories"),
+            "an unknown root is refused, not resolved"
+        );
+        assert!(
+            !body.contains("PathBuf::from(requested)"),
+            "a caller-supplied path must never become the delete target"
+        );
+    }
+
     /// `refresh` rescans; `catalog` may reuse the cached snapshot. Swapping
     /// them would make the post-install refresh a no-op that looks like one.
     #[test]
@@ -370,8 +394,18 @@ pub enum ImportResult {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RemovePackageRequest {
-    /// The install directory name — `CatalogBundle.name`.
+    /// The install directory name — a `CatalogBundle.name`, or the last
+    /// component of a `CatalogSkill.slug`.
     pub id: String,
+    /// Which skills root it lives under. Omit for the Biorouter one.
+    ///
+    /// ⚠ **Validated against [`skill_catalog::roots`], not merely resolved.**
+    /// This handler deletes a directory tree, so the root is chosen from the
+    /// set the daemon itself enumerated rather than taken from the caller. A
+    /// path the caller invents matches nothing and is refused — which is why
+    /// this can safely cover `~/.claude/skills` and a project directory, the
+    /// two the Skills pane has always offered a Delete for.
+    pub source_root: Option<String>,
 }
 
 fn bad_request(message: impl std::fmt::Display) -> (StatusCode, String) {
@@ -521,7 +555,19 @@ pub async fn install_skill_package(
 pub async fn remove_skill_package(
     Json(request): Json<RemovePackageRequest>,
 ) -> Result<Json<PackageSummary>, (StatusCode, String)> {
-    let root = skill_package::install::install_root();
+    let root = match request.source_root.as_deref() {
+        None => skill_package::install::install_root(),
+        Some(requested) => skill_catalog::roots()
+            .into_iter()
+            .map(|root| root.path)
+            .find(|path| path.as_os_str() == requested)
+            .ok_or_else(|| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("`{requested}` is not one of this machine's skill directories"),
+                )
+            })?,
+    };
     skill_package::remove(&request.id, &root)
         .map(Json)
         .map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))

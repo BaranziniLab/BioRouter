@@ -1,56 +1,27 @@
-export interface Skill {
-  folderPath: string; // absolute path to the skill folder  e.g. ~/.config/biorouter/skills/my-skill
-  sourceDir: string; // parent directory (one of the watched dirs)
-  name: string; // from SKILL.md frontmatter
-  description: string; // from SKILL.md frontmatter
-  content: string; // raw SKILL.md content
-  bundleName?: string; // optional: parent bundle name if part of a bundle
-}
-
-export interface SkillBundle {
-  bundleName: string; // folder name of the bundle
-  folderPath: string; // absolute path to the bundle folder
-  sourceDir: string; // parent directory (one of the watched dirs)
-  skills: Skill[]; // array of skills in this bundle
-}
-
+/**
+ * What is left of the renderer's own view of skills.
+ *
+ * ⚠ **The filesystem scanner is gone** (#113). `loadSkillsFromDirs`,
+ * `ALL_SKILL_DIRS` and `OTHER_SKILL_DIRS` walked three roots against the
+ * backend's seven, so a skill bundled inside an installed extension was
+ * loadable by the model and invisible in every interface surface that used
+ * them — Settings, the composer picker, the `@`-mention list and the workflow
+ * resource picker alike. They all read `useSkillCatalog` now, and the
+ * `Skill`/`SkillBundle` shapes it produced are the generated `CatalogSkill` and
+ * `CatalogBundle`.
+ *
+ * What remains is the two things a renderer legitimately does without asking
+ * the daemon: parse the frontmatter of a file the user is *authoring*
+ * (`CustomSkillModal`), and derive a folder name from it.
+ *
+ * ⚠ **The `BUILTIN_SKILL_NAMES` copy is gone too**, and deliberately. Its job
+ * was to hide Delete and show the "Built-in" badge, and a hand-synced list is a
+ * bad way to answer "did Biorouter put this here?" — it had already drifted
+ * once, and the Skills pane offered a Delete that succeeded, toasted, and was
+ * silently rewritten by the next startup. `CatalogSkill.builtin` answers it
+ * from `is_builtin_skill_name`, in the process that owns the seeder.
+ */
 export const BIOROUTER_SKILLS_DIR = '~/.config/biorouter/skills';
-
-// Skills that ship with Biorouter. The backend re-seeds them on every session
-// start ('about-biorouter', 'develop-biorouter', 'develop-biorouter-extension'
-// and 'develop-biorouter-skill' via skills_extension.rs's BUILTIN_SKILLS;
-// 'update-soul' via knowledge/soul.rs), so deleting their folder has no lasting
-// effect — the UI therefore offers only the enable/disable toggle for them, not
-// deletion.
-export const BUILTIN_SKILL_NAMES = [
-  'about-biorouter',
-  'develop-biorouter',
-  'develop-biorouter-extension',
-  'develop-biorouter-skill',
-  'update-soul',
-  // ⚠ Shipped, but NOT Contexts — so they belong here and not in `CONTEXTS`.
-  //
-  // Rust draws the same line with two functions: `context_skill_names()`
-  // (BUILTIN_SKILLS + soul) is what the Settings toggles mirror, while
-  // `is_builtin_skill_name()` is over `shipped_skills()`, which also includes
-  // KNOWLEDGE_SKILLS. This list mirrors the SECOND one, because its job is to
-  // hide Delete and show the Built-in badge.
-  //
-  // Without them the Skills pane offered a Delete control on a seeded skill:
-  // the delete succeeded, the toast said so, and the next startup rewrote the
-  // folder. A button that reports success and silently reverts is worse than
-  // no button.
-  'knowledge-choose-a-format',
-  'knowledge-ingest-okf',
-  'knowledge-ingest-biookf',
-  'knowledge-lint',
-];
-
-export function isBuiltinSkill(name: string): boolean {
-  return BUILTIN_SKILL_NAMES.includes(name);
-}
-export const OTHER_SKILL_DIRS = ['~/.claude/skills', '~/.config/agents/skills'];
-export const ALL_SKILL_DIRS = [BIOROUTER_SKILLS_DIR, ...OTHER_SKILL_DIRS];
 
 /**
  * Read a single top-level frontmatter field, supporting both inline values
@@ -113,73 +84,6 @@ export function parseSkillFrontmatter(
   const description = readFrontmatterField(fm, 'description');
   if (!name || !description) return null;
   return { name, description };
-}
-
-/**
- * Load all skills from a list of directories using Electron IPC.
- *
- * Detection rule per directory entry `<slug>`:
- *   - `<dir>/<slug>/SKILL.md` exists → single skill
- *   - No root SKILL.md, but sub-dirs of `<dir>/<slug>/` contain SKILL.md → bundle
- *   - Otherwise → ignored
- */
-export async function loadSkillsFromDirs(
-  dirs: string[]
-): Promise<{ singles: Skill[]; bundles: SkillBundle[] }> {
-  const singles: Skill[] = [];
-  const bundles: SkillBundle[] = [];
-
-  for (const dir of dirs) {
-    const folders: string[] = await window.electron.listSkillDirs(dir);
-
-    for (const folder of folders) {
-      const skillMdPath = `${dir}/${folder}/SKILL.md`;
-      const result = await window.electron.readFile(skillMdPath);
-
-      if (result.found && result.file) {
-        const parsed = parseSkillFrontmatter(result.file);
-        if (!parsed) continue;
-        singles.push({
-          folderPath: `${dir}/${folder}`,
-          sourceDir: dir,
-          name: parsed.name,
-          description: parsed.description,
-          content: result.file,
-        });
-      } else {
-        // No SKILL.md at root — check if sub-dirs have SKILL.md (bundle)
-        const subFolders: string[] = await window.electron.listSkillDirs(`${dir}/${folder}`);
-        const bundleSkills: Skill[] = [];
-
-        for (const sub of subFolders) {
-          const subPath = `${dir}/${folder}/${sub}/SKILL.md`;
-          const subResult = await window.electron.readFile(subPath);
-          if (!subResult.found || !subResult.file) continue;
-          const parsed = parseSkillFrontmatter(subResult.file);
-          if (!parsed) continue;
-          bundleSkills.push({
-            folderPath: `${dir}/${folder}/${sub}`,
-            sourceDir: dir,
-            name: parsed.name,
-            description: parsed.description,
-            content: subResult.file,
-            bundleName: folder,
-          });
-        }
-
-        if (bundleSkills.length > 0) {
-          bundles.push({
-            bundleName: folder,
-            folderPath: `${dir}/${folder}`,
-            sourceDir: dir,
-            skills: bundleSkills,
-          });
-        }
-      }
-    }
-  }
-
-  return { singles, bundles };
 }
 
 /**
