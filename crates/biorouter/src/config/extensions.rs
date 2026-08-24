@@ -234,6 +234,24 @@ fn change_row(
     }
 }
 
+/// Write an entry **without announcing it**, for a caller that will publish a
+/// richer catalogue event itself.
+///
+/// The one such caller is the install transaction, which knows the bundle's
+/// skills and so can fill in `bundled_skill_ids` — a fact this function cannot
+/// see. Two events for one install would be harmless (consumers refetch) but
+/// noisy, and the second would be the only complete one.
+///
+/// ⚠ **A caller that uses this and then fails to publish leaves every inventory
+/// stale**, which is the exact bug #112 exists to fix. Use `set_extension`
+/// unless you are the one publishing.
+pub fn set_extension_silent(entry: ExtensionEntry) {
+    let mut extensions = get_extensions_map();
+    extensions.insert(entry.config.key(), entry);
+    save_extensions_map(extensions);
+    crate::catalog::CatalogEvents::global().sync_snapshot(&get_all_extensions());
+}
+
 pub fn set_extension(entry: ExtensionEntry) {
     use crate::catalog::{CatalogChangeReason, CatalogEntryChange};
     let mut extensions = get_extensions_map();
