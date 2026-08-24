@@ -53,18 +53,76 @@ pub struct SessionSkillOverride {
     pub remove: Vec<String>,
 }
 
+/// Which entry of an override decided a given skill, if any.
+///
+/// `via_bundle` is what lets the interface say *why* a member is off — "the
+/// HyperFrames bundle is off for this chat" rather than an unexplained switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverrideMatch {
+    /// No entry names this skill or its bundle; the machine-wide answer stands.
+    None,
+    Added {
+        via_bundle: bool,
+    },
+    Removed {
+        via_bundle: bool,
+    },
+}
+
 impl SessionSkillOverride {
-    /// The composition rule, in one place: an explicit session `add` wins over
-    /// everything, then an explicit session `remove`, then the machine-wide
-    /// disabled set.
-    pub fn is_disabled(&self, skill_name: &str, machine_disabled: &HashSet<String>) -> bool {
+    /// Which entry decides `skill_name`, most specific first.
+    ///
+    /// The order is skill `add` → skill `remove` → bundle `add` → bundle
+    /// `remove` → nothing. Naming a skill is a more specific statement than
+    /// naming the bundle it happens to sit in, so it wins; within one level,
+    /// `add` wins over `remove` for the reason [`Self::merge`] records — a call
+    /// that both adds and removes the same name is asking for it to be present.
+    ///
+    /// ⚠ **The bundle level is not decoration.** The composer offers one switch
+    /// per bundle, and `apply` persists exactly what that switch names. Without
+    /// this arm, a per-chat bundle toggle would write a name that matches no
+    /// skill and change nothing — a switch that moves, persists, and does
+    /// nothing, which is the whole defect #113 is about.
+    ///
+    /// It is also the reason the override stores the BUNDLE name rather than
+    /// its members expanded at click time: a bundle that later gains a skill is
+    /// still covered, whereas an expanded list silently stops covering it.
+    pub fn resolve(&self, skill_name: &str, bundle: Option<&str>) -> OverrideMatch {
         if self.add.iter().any(|s| s == skill_name) {
-            return false;
+            return OverrideMatch::Added { via_bundle: false };
         }
         if self.remove.iter().any(|s| s == skill_name) {
-            return true;
+            return OverrideMatch::Removed { via_bundle: false };
         }
-        machine_disabled.contains(skill_name)
+        if let Some(bundle) = bundle {
+            if self.add.iter().any(|s| s == bundle) {
+                return OverrideMatch::Added { via_bundle: true };
+            }
+            if self.remove.iter().any(|s| s == bundle) {
+                return OverrideMatch::Removed { via_bundle: true };
+            }
+        }
+        OverrideMatch::None
+    }
+
+    /// The composition rule, in one place: an explicit session grant wins over
+    /// everything, then an explicit session revoke, then the machine-wide
+    /// disabled set — with [`Self::resolve`]'s specificity order inside the
+    /// session half.
+    pub fn is_disabled(
+        &self,
+        skill_name: &str,
+        bundle: Option<&str>,
+        machine_disabled: &HashSet<String>,
+    ) -> bool {
+        match self.resolve(skill_name, bundle) {
+            OverrideMatch::Added { .. } => false,
+            OverrideMatch::Removed { .. } => true,
+            OverrideMatch::None => {
+                machine_disabled.contains(skill_name)
+                    || bundle.is_some_and(|bundle| machine_disabled.contains(bundle))
+            }
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -168,23 +226,23 @@ mod tests {
             ["a".to_string(), "b".to_string()].into_iter().collect();
 
         let empty = SessionSkillOverride::default();
-        assert!(empty.is_disabled("a", &machine_disabled));
-        assert!(!empty.is_disabled("c", &machine_disabled));
+        assert!(empty.is_disabled("a", None, &machine_disabled));
+        assert!(!empty.is_disabled("c", None, &machine_disabled));
 
         // add re-enables a machine-disabled skill FOR THIS SESSION ONLY.
         let added = SessionSkillOverride {
             add: vec!["a".into()],
             remove: vec![],
         };
-        assert!(!added.is_disabled("a", &machine_disabled));
-        assert!(added.is_disabled("b", &machine_disabled));
+        assert!(!added.is_disabled("a", None, &machine_disabled));
+        assert!(added.is_disabled("b", None, &machine_disabled));
 
         // remove disables a machine-enabled skill for this session.
         let removed = SessionSkillOverride {
             add: vec![],
             remove: vec!["c".into()],
         };
-        assert!(removed.is_disabled("c", &machine_disabled));
+        assert!(removed.is_disabled("c", None, &machine_disabled));
 
         // An explicit add wins over an explicit remove: the last write in one
         // call is `add`, and a tool that both adds and removes the same name is
@@ -193,7 +251,53 @@ mod tests {
             add: vec!["c".into()],
             remove: vec!["c".into()],
         };
-        assert!(!both.is_disabled("c", &machine_disabled));
+        assert!(!both.is_disabled("c", None, &machine_disabled));
+    }
+
+    /// A per-chat bundle toggle has to reach the bundle's members, and a
+    /// member's own entry has to beat it. Without the first, the composer's
+    /// bundle switch persists a name no skill matches; without the second,
+    /// "all of HyperFrames except the router" is unexpressible.
+    #[test]
+    fn a_bundle_entry_covers_its_members_and_a_member_entry_beats_it() {
+        let none: std::collections::HashSet<String> = Default::default();
+
+        let bundle_off = SessionSkillOverride {
+            add: vec![],
+            remove: vec!["hyperframes".into()],
+        };
+        assert!(bundle_off.is_disabled("media-use", Some("hyperframes"), &none));
+        assert_eq!(
+            bundle_off.resolve("media-use", Some("hyperframes")),
+            OverrideMatch::Removed { via_bundle: true }
+        );
+        assert!(
+            !bundle_off.is_disabled("media-use", None, &none),
+            "a skill outside the bundle is untouched"
+        );
+
+        let bundle_off_one_on = SessionSkillOverride {
+            add: vec!["media-use".into()],
+            remove: vec!["hyperframes".into()],
+        };
+        assert!(!bundle_off_one_on.is_disabled("media-use", Some("hyperframes"), &none));
+        assert_eq!(
+            bundle_off_one_on.resolve("media-use", Some("hyperframes")),
+            OverrideMatch::Added { via_bundle: false }
+        );
+        assert!(bundle_off_one_on.is_disabled("slideshow", Some("hyperframes"), &none));
+    }
+
+    /// The machine-wide half is bundle-aware too: `skills-config.json` holds
+    /// skill names AND bundle names, which is how the Settings pane's
+    /// bundle switch has always worked.
+    #[test]
+    fn the_machine_wide_set_is_matched_against_the_bundle_name_as_well() {
+        let machine_disabled: std::collections::HashSet<String> =
+            ["hyperframes".to_string()].into_iter().collect();
+        let empty = SessionSkillOverride::default();
+        assert!(empty.is_disabled("media-use", Some("hyperframes"), &machine_disabled));
+        assert!(!empty.is_disabled("media-use", None, &machine_disabled));
     }
 
     #[tokio::test]

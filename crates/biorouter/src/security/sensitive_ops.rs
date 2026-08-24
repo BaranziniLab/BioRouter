@@ -58,8 +58,17 @@
 //!      manager and never reach an agent-layer inspector, so a sensitive write
 //!      hidden inside a script would otherwise run with no prompt (the R2-01
 //!      regression: `echo … >> ~/.ssh/config` executed silently in Auto mode).
-//!      The body's string literals are scanned as embedded shell commands and,
-//!      when a mutating editor command is present, as sensitive path targets.
+//!      The body's string literals are scanned as embedded shell commands, and
+//!      each inner `callee({…})` site is graded by the *same* classifier the
+//!      outer tool call gets — a mutating callee, and only its own path-keyed
+//!      arguments as targets.
+//!
+//!      A candidate path is always tied to the concrete call that would mutate
+//!      it. Scanning every literal in a script because *some* token elsewhere
+//!      looked like a write is a lexical cross-product, and it produced issue
+//!      #106: `kb_write_page` (a knowledge-base tool whose name contains
+//!      "write") beside an unrelated `page.path.split("/")` read the utility
+//!      literal `"/"` as the filesystem root and stalled Auto mode on a prompt.
 //!
 //! Reads are never escalated: only redirect targets, mutating-binary targets,
 //! and mutating editor writes count. A `cat /etc/hosts` or a `view` of a
@@ -303,14 +312,6 @@ const SHELL_MUTATING_BINARIES: &[&str] = &[
     "copy", "move", "del", "erase", "md", "rd", "ren", "rename", "xcopy", "robocopy",
 ];
 
-/// Tokens whose presence in an `execute_code` body marks it as containing a
-/// mutating editor call (`text_editor({command:"write"…})`), gating the
-/// path-literal scan so a `view`-only script that merely *reads* a sensitive
-/// path is not escalated.
-#[rustfmt::skip]
-const EDITOR_WRITE_INDICATORS: &[&str] =
-    &["write", "create", "str_replace", "insert", "append", "delete"];
-
 /// True for the code-execution `execute_code` tool, whose opaque JS body carries
 /// the real (inner) tool calls and must be scanned for embedded sensitive writes.
 fn is_execute_code(tool_name: &str) -> bool {
@@ -343,36 +344,49 @@ fn command_writes_sensitively(command: &str, env: &EnvFacts) -> Option<(String, 
     None
 }
 
+/// Read the JS string / template literal that opens at `chars[start]` (a `"`,
+/// `'` or backtick), returning its raw inner text and the index just past the
+/// closing quote (or the end of input for an unterminated literal). Escapes are
+/// kept verbatim (a `\n` stays two characters, never a real newline) so an
+/// embedded path token is preserved exactly.
+///
+/// The one string scanner in this module: every other walker delegates here, so
+/// a parenthesis, colon or brace *inside* a literal can never be mistaken for
+/// program syntax by one walker while another skips it.
+fn read_string_literal(chars: &[char], start: usize) -> (String, usize) {
+    let quote = chars[start];
+    let mut i = start + 1;
+    let mut cur = String::new();
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '\\' && i + 1 < chars.len() {
+            cur.push(ch);
+            cur.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+        if ch == quote {
+            i += 1;
+            break;
+        }
+        cur.push(ch);
+        i += 1;
+    }
+    (cur, i)
+}
+
 /// Extract the raw inner text of every JS string / template literal in a script.
-/// Escapes are kept verbatim (a `\n` stays two characters, never a real newline)
-/// so an embedded path token is preserved exactly. Best-effort: interpolation
-/// (`${…}`) and other dynamic construction are not resolved (the documented gap).
+/// Best-effort: interpolation (`${…}`) and other dynamic construction are not
+/// resolved (the documented gap).
 fn extract_string_literals(code: &str) -> Vec<String> {
-    let mut out = Vec::new();
     let chars: Vec<char> = code.chars().collect();
+    let mut out = Vec::new();
     let mut i = 0;
     while i < chars.len() {
-        let c = chars[i];
-        if c == '"' || c == '\'' || c == '`' {
-            let quote = c;
-            i += 1;
-            let mut cur = String::new();
-            while i < chars.len() {
-                let ch = chars[i];
-                if ch == '\\' && i + 1 < chars.len() {
-                    cur.push(ch);
-                    cur.push(chars[i + 1]);
-                    i += 2;
-                    continue;
-                }
-                if ch == quote {
-                    i += 1;
-                    break;
-                }
-                cur.push(ch);
-                i += 1;
-            }
-            out.push(cur);
+        if matches!(chars[i], '"' | '\'' | '`') {
+            let (lit, next) = read_string_literal(&chars, i);
+            out.push(lit);
+            i = next;
         } else {
             i += 1;
         }
@@ -380,26 +394,250 @@ fn extract_string_literals(code: &str) -> Vec<String> {
     out
 }
 
-/// Scan an `execute_code` JS body for a sensitive write: every string literal is
-/// tried as an embedded shell command, and — when the script contains a mutating
-/// editor command — as a sensitive path target for a `text_editor` write.
+/// True for a character that may appear in a JS identifier.
+fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '$'
+}
+
+/// Index of the `)` closing the `(` at `open`, or `None` when unbalanced.
+/// String literals are skipped, so a parenthesis inside one never shifts depth.
+fn matching_paren(chars: &[char], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < chars.len() {
+        match chars[i] {
+            '"' | '\'' | '`' => {
+                let (_, next) = read_string_literal(chars, i);
+                i = next;
+                continue;
+            }
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The string literals of a `[…]` array starting at `chars[open]`, plus the index
+/// just past its `]`. Only top-level elements are collected.
+fn read_string_array(chars: &[char], open: usize) -> (Vec<String>, usize) {
+    let mut items = Vec::new();
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < chars.len() {
+        match chars[i] {
+            '"' | '\'' | '`' => {
+                let (lit, next) = read_string_literal(chars, i);
+                if depth == 1 {
+                    items.push(lit);
+                }
+                i = next;
+                continue;
+            }
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (items, i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    (items, chars.len())
+}
+
+/// One inner tool call recovered from an `execute_code` body: the callee name
+/// and the arguments that are *statically literal enough to classify*. A value
+/// built at runtime (a variable, an interpolation, a computed expression) is
+/// simply absent from the map rather than guessed at — the documented gap.
+struct InnerCall {
+    callee: String,
+    args: Map<String, Value>,
+}
+
+/// The `key: "value"` / `key: ["a", "b"]` pairs of one call's argument span.
+///
+/// A pair inside a **nested parenthesized subexpression** is skipped: it belongs
+/// to that expression, not to this call. That containment rule is the fix for
+/// issue #106 — in `kb_write_page({ path: page.path.split("/").pop() })` the
+/// utility literal `"/"` sits inside `split(…)`, so it is never offered as this
+/// call's write target. (The nested call is still classified in its own right;
+/// [`extract_inner_calls`] visits it separately.)
+fn named_string_args(span: &[char]) -> Map<String, Value> {
+    let mut out = Map::new();
+    let mut i = 0;
+    while i < span.len() {
+        if span[i] == '(' {
+            let Some(end) = matching_paren(span, i) else {
+                break;
+            };
+            i = end + 1;
+            continue;
+        }
+        // One token: a quoted key, a bare identifier key, or neither.
+        let (token, after) = if matches!(span[i], '"' | '\'' | '`') {
+            let (lit, next) = read_string_literal(span, i);
+            (Some(lit), next)
+        } else if is_ident_char(span[i]) {
+            let start = i;
+            let mut end = i;
+            while end < span.len() && is_ident_char(span[end]) {
+                end += 1;
+            }
+            (Some(span[start..end].iter().collect::<String>()), end)
+        } else {
+            (None, i + 1)
+        };
+        let Some(key) = token else {
+            i = after;
+            continue;
+        };
+        let mut j = after;
+        while j < span.len() && span[j].is_whitespace() {
+            j += 1;
+        }
+        if j >= span.len() || span[j] != ':' {
+            i = after; // not a key after all
+            continue;
+        }
+        j += 1;
+        while j < span.len() && span[j].is_whitespace() {
+            j += 1;
+        }
+        if j >= span.len() {
+            break;
+        }
+        match span[j] {
+            '"' | '\'' | '`' => {
+                let (lit, next) = read_string_literal(span, j);
+                out.insert(key, Value::String(lit));
+                i = next;
+            }
+            '[' => {
+                let (items, next) = read_string_array(span, j);
+                if !items.is_empty() {
+                    out.insert(
+                        key,
+                        Value::Array(items.into_iter().map(Value::String).collect()),
+                    );
+                }
+                i = next;
+            }
+            // A dynamic value: resume *at* the expression so any call inside it
+            // is still seen, and so its own parentheses are skipped wholesale.
+            _ => i = j,
+        }
+    }
+    out
+}
+
+/// Every `callee(…)` call site in a script, paired with the named literal
+/// arguments it was given.
+///
+/// Scanning continues *inside* each argument span, so a nested call
+/// (`record_result(text_editor({…}))`) is recovered as a call in its own right.
+fn extract_inner_calls(code: &str) -> Vec<InnerCall> {
+    let chars: Vec<char> = code.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if matches!(chars[i], '"' | '\'' | '`') {
+            let (_, next) = read_string_literal(&chars, i);
+            i = next;
+            continue;
+        }
+        if !is_ident_char(chars[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && is_ident_char(chars[i]) {
+            i += 1;
+        }
+        let mut j = i;
+        while j < chars.len() && chars[j].is_whitespace() {
+            j += 1;
+        }
+        if j >= chars.len() || chars[j] != '(' {
+            continue;
+        }
+        let Some(end) = matching_paren(&chars, j) else {
+            continue;
+        };
+        out.push(InnerCall {
+            callee: chars[start..i].iter().collect(),
+            args: named_string_args(&chars[j + 1..end]),
+        });
+        // Deliberately do NOT skip past `end`: a call nested in the argument
+        // span is a call site of its own and must be classified too.
+    }
+    out
+}
+
+/// A mutating file operation — named tool plus its arguments — whose target path
+/// is sensitive. The single classifier behind both the outer tool call and the
+/// inner calls recovered from an `execute_code` body, so an inner call is graded
+/// **exactly** as the same call made directly would be, and the two can never
+/// drift apart.
+fn mutating_path_write(
+    tool_name: &str,
+    args: &Map<String, Value>,
+    env: &EnvFacts,
+) -> Option<(String, &'static str)> {
+    if !operation_is_mutating(tool_name, args) {
+        return None;
+    }
+    for raw in path_values(args) {
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let tp = normalize_for(env.platform, &raw, env);
+        if let Some(reason) = sensitivity_reason(&tp, env) {
+            return Some((tp.norm, reason));
+        }
+    }
+    None
+}
+
+/// Scan an `execute_code` JS body for a sensitive write. Two independent passes,
+/// each of which associates a candidate path with the **concrete call that would
+/// mutate it** rather than with the script as a whole:
+///
+///  1. *Embedded shell command lines.* Every string literal is tried as a
+///     command line; only a redirect target or the path argument of a mutating
+///     binary counts, so a literal that is not a write is inert. The scan stays
+///     script-wide on purpose — a command is routinely assembled into a variable
+///     (`const cmd = "… >> ~/.ssh/config"; shell({command: cmd})`) and would
+///     escape a call-scoped scan.
+///  2. *Inner tool calls.* Each `callee({…})` site is graded by
+///     [`mutating_path_write`], i.e. exactly as the same tool call made directly
+///     would be: the callee must read as a mutation, and only its own
+///     path-keyed arguments are candidate targets.
+///
+/// Pass 2 replaces a lexical cross-product that flagged issue #106: the old scan
+/// enabled itself whenever *any* write-ish substring appeared anywhere in the
+/// source, and then offered *every* literal in the script as a filesystem
+/// target. A KB page write (`kb_write_page`, whose name contains "write") beside
+/// an unrelated `page.path.split("/")` therefore normalized the utility literal
+/// `"/"` to the filesystem root and parked Auto mode on an approval prompt.
 fn code_writes_sensitively(code: &str, env: &EnvFacts) -> Option<(String, &'static str)> {
-    let literals = extract_string_literals(code);
-    for lit in &literals {
-        if let Some(hit) = command_writes_sensitively(lit, env) {
+    for lit in extract_string_literals(code) {
+        if let Some(hit) = command_writes_sensitively(&lit, env) {
             return Some(hit);
         }
     }
-    let lc = code.to_ascii_lowercase();
-    if EDITOR_WRITE_INDICATORS.iter().any(|w| lc.contains(w)) {
-        for lit in &literals {
-            if lit.trim().is_empty() {
-                continue;
-            }
-            let tp = normalize_for(env.platform, lit, env);
-            if let Some(reason) = sensitivity_reason(&tp, env) {
-                return Some((tp.norm, reason));
-            }
+    for call in extract_inner_calls(code) {
+        if let Some(hit) = mutating_path_write(&call.callee, &call.args, env) {
+            return Some(hit);
         }
     }
     None
@@ -420,16 +658,8 @@ pub fn sensitive_file_operation(
     let env = EnvFacts::host(&working_dir.to_string_lossy());
 
     // 1. File-editor / file-tool path arguments (mutations only).
-    if operation_is_mutating(tool_name, args) {
-        for raw in path_values(args) {
-            if raw.trim().is_empty() {
-                continue;
-            }
-            let tp = normalize_for(env.platform, &raw, &env);
-            if let Some(reason) = sensitivity_reason(&tp, &env) {
-                return Some(format!("writes to {} ({reason})", tp.norm));
-            }
-        }
+    if let Some((path, reason)) = mutating_path_write(tool_name, args, &env) {
+        return Some(format!("writes to {path} ({reason})"));
     }
 
     // 2. Shell command lines (developer/shell and any command-bearing tool).
@@ -669,6 +899,35 @@ mod tests {
             finding.is_none(),
             "an ordinary tmp write must not be flagged"
         );
+    }
+
+    /// Issue #108. `platform__ingest_source` is the one first-class ingestion
+    /// operation, and an explicit "ingest these PDFs" in Auto mode must not earn
+    /// a generic filesystem prompt on top of the request the user already made.
+    ///
+    /// It reads as ordinary here because the classifier asks the right question:
+    /// the tool's name carries no mutating verb, so its `paths` never become
+    /// candidate write targets. That is a property worth pinning rather than
+    /// assuming — a rename to something like `write_sources` would silently
+    /// start escalating every ingest, and nothing else in the tree would notice.
+    #[test]
+    fn the_source_ingest_tool_is_not_a_filesystem_mutation() {
+        for arguments in [
+            json!({"paths": ["/Users/me/papers/ms-2024.pdf"], "kb_id": "ms-papers"}),
+            json!({"path": "/Users/me/papers", "kb_id": "ms-papers"}),
+            json!({"sources": ["~/Downloads/a.pdf", "https://example.org/b.pdf"]}),
+        ] {
+            let finding = sensitive_file_operation(
+                crate::agents::platform_tools::PLATFORM_INGEST_SOURCE_TOOL_NAME,
+                &args(arguments.clone()),
+                Path::new("/home/me/proj"),
+            );
+            assert!(
+                finding.is_none(),
+                "ingesting documents must not request approval in Auto mode ({arguments}), \
+                 got {finding:?}"
+            );
+        }
     }
 
     // --- the inspector, end to end (the directive's gates) -----------------
@@ -934,6 +1193,175 @@ record_result("done");"#;
         assert!(
             code_writes_sensitively(code, &env).is_none(),
             "markdown prose with <type>/<slug> placeholders must not be flagged as a root write"
+        );
+    }
+
+    // --- issue #106: a candidate path belongs to the call that mutates it ----
+
+    /// The reported repro. `kb_write_page` is a knowledge-base tool, not a file
+    /// editor, but its name contains "write"; the old whole-source gate let that
+    /// enable a scan of *every* literal in the script, so the unrelated utility
+    /// literal `"/"` from `page.path.split("/")` normalized to the filesystem
+    /// root and stalled Auto mode on an approval prompt it should never show.
+    #[test]
+    fn execute_code_kb_page_write_beside_slash_utility_is_not_flagged() {
+        let env = nix_env();
+        let code = r##"import { kb_write_page } from "knowledge";
+const pages = [
+  { path: "knowledge/disease/multiple-sclerosis.md", body: "# Multiple sclerosis" },
+  { path: "knowledge/gene/hla-drb1.md", body: "# HLA-DRB1" },
+];
+for (const page of pages) {
+  const filename = page.path.split("/").pop();
+  kb_write_page({ kb_id: "ms-papers", path: page.path, body: page.body });
+  record_result(`wrote ${filename}`);
+}"##;
+        assert!(
+            code_writes_sensitively(code, &env).is_none(),
+            "a KB page write beside an unrelated split(\"/\") must NOT be flagged, got {:?}",
+            code_writes_sensitively(code, &env)
+        );
+    }
+
+    /// The containment rule, exercised where it actually bites: the `"/"` sits
+    /// *inside* the mutating call's own argument list. It is an argument of
+    /// `split`, never of `kb_write_page`, so it is not a candidate target.
+    #[test]
+    fn a_utility_literal_inside_a_mutating_calls_arguments_is_not_its_target() {
+        let env = nix_env();
+        let code = r#"import { kb_write_page } from "knowledge";
+kb_write_page({ path: page.path.split("/").pop(), body: text });"#;
+        assert!(
+            code_writes_sensitively(code, &env).is_none(),
+            "a literal inside a nested call is that call's argument, not the outer write target"
+        );
+    }
+
+    /// The other half of the same rule: dropping the whole-source scan must not
+    /// drop coverage. A genuinely sensitive path in the mutating call's *own*
+    /// path argument is still flagged, including when the call is nested inside
+    /// another expression.
+    #[test]
+    fn a_sensitive_path_in_the_mutating_calls_own_argument_is_still_flagged() {
+        let env = nix_env();
+        for code in [
+            r#"kb_write_page({ path: "/etc/cron.d/x", body: "pwn" });"#,
+            r#"record_result(text_editor({ command: "write", path: "~/.ssh/config", file_text: "Host evil" }));"#,
+            r#"files__write_file({ path: page.dir.split("/").pop(), output_path: "/etc/shadow" });"#,
+        ] {
+            assert!(
+                code_writes_sensitively(code, &env).is_some(),
+                "a sensitive path in the mutating call's own argument must be flagged: {code}"
+            );
+        }
+    }
+
+    /// Content is not a target. A markdown body that merely *mentions* a
+    /// sensitive path is not a write to it — `body` / `file_text` are not
+    /// path-keyed arguments, so only `path` is graded.
+    #[test]
+    fn a_sensitive_path_quoted_in_page_content_is_not_a_write_target() {
+        let env = nix_env();
+        let code = r#"kb_write_page({
+  path: "knowledge/procedure/key-rotation.md",
+  body: "Rotate the key stored at ~/.ssh/id_ed25519, then reload /etc/ssh/sshd_config.",
+});"#;
+        assert!(
+            code_writes_sensitively(code, &env).is_none(),
+            "a sensitive path named in prose content is not a write to it"
+        );
+    }
+
+    /// End-to-end at the inspector (acceptance criterion): an ordinary
+    /// knowledge-page write batch in Auto mode produces no approval request.
+    #[tokio::test]
+    async fn auto_mode_leaves_a_knowledge_page_write_batch_unescalated() {
+        let inspector = SensitiveOpsInspector;
+        let req = ToolRequest {
+            id: "req_kb".to_string(),
+            tool_call: Ok(CallToolRequestParams {
+                task: None,
+                name: "code_execution__execute_code".into(),
+                arguments: Some(args(json!({
+                    "code": "import { kb_write_page } from \"knowledge\";\n\
+                             for (const page of pages) {\n\
+                               const slug = page.path.split(\"/\").pop();\n\
+                               kb_write_page({ path: page.path, body: page.body });\n\
+                             }"
+                }))),
+                meta: None,
+            }),
+            metadata: None,
+            tool_meta: None,
+        };
+        let results = inspector
+            .inspect(
+                &[req],
+                &[],
+                BioRouterMode::Auto,
+                &crate::session::Session::default(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            results.is_empty(),
+            "an ordinary KB page write must not request approval in Auto mode, got {results:?}"
+        );
+    }
+
+    // --- the inner-call parser (pure) -------------------------------------
+
+    #[test]
+    fn inner_calls_are_scoped_to_their_own_parentheses() {
+        let calls =
+            extract_inner_calls(r#"kb_write_page({ path: p.split("/").pop(), kb_id: "ms" });"#);
+        let outer = calls
+            .iter()
+            .find(|c| c.callee == "kb_write_page")
+            .expect("the outer call is recovered");
+        assert!(
+            !outer.args.contains_key("path"),
+            "a dynamic path must be absent, not guessed: {:?}",
+            outer.args
+        );
+        assert_eq!(outer.args.get("kb_id").and_then(Value::as_str), Some("ms"));
+        assert!(
+            calls.iter().any(|c| c.callee == "split"),
+            "the nested call is still recovered in its own right"
+        );
+    }
+
+    #[test]
+    fn inner_call_args_read_literals_arrays_and_quoted_keys() {
+        let calls =
+            extract_inner_calls(r#"rm_files({ "paths": ["/etc/a", "/etc/b"], dry: false });"#);
+        let call = calls.iter().find(|c| c.callee == "rm_files").unwrap();
+        assert_eq!(
+            call.args
+                .get("paths")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert!(
+            !call.args.contains_key("dry"),
+            "a non-literal value is absent"
+        );
+    }
+
+    /// Parentheses, colons and braces inside a string literal are text, not
+    /// syntax — the one string scanner keeps every walker in agreement.
+    #[test]
+    fn syntax_inside_a_string_literal_does_not_confuse_the_parser() {
+        let calls = extract_inner_calls(
+            r#"note({ text: "not a key: (nor a paren", path: "/etc/passwd" });"#,
+        );
+        let call = calls.iter().find(|c| c.callee == "note").unwrap();
+        assert_eq!(
+            call.args.get("path").and_then(Value::as_str),
+            Some("/etc/passwd"),
+            "args after a literal containing syntax are still read: {:?}",
+            call.args
         );
     }
 

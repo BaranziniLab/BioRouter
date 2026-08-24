@@ -7,3 +7,4 @@ pub use provider_completer::ProviderCompleter;
 
 pub mod conversation_ingest;
 pub mod soul;
+pub mod source_ingest;

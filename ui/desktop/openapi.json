@@ -19,7 +19,7 @@
           "super::routes::action_required"
         ],
         "summary": "Store the credentials an extension install is parked on, and release it.",
-        "description": "The response reports **names only**: `configuredKeys` on success, `missing`\nwhen a required field came back empty. There is nowhere in it a value can\nsit, which is what lets the parked install — and therefore the model — be\ntold the truth about what happened without being told what it was.\n\nRequires the DR-16 proof-of-user header. The model reaches this daemon over\nthe same HTTP with the same secret key, so without the proof it could satisfy\nits own credential card with a value it invented and drive the install past\nthe one step that exists to involve a person.",
+        "description": "The response reports **names only**: `configuredKeys` on success, `missing`\nwhen a required field came back empty. There is nowhere in it a value can\nsit, which is what lets the parked install \u2014 and therefore the model \u2014 be\ntold the truth about what happened without being told what it was.\n\nRequires the DR-16 proof-of-user header. The model reaches this daemon over\nthe same HTTP with the same secret key, so without the proof it could satisfy\nits own credential card with a value it invented and drive the install past\nthe one step that exists to involve a person.",
         "operationId": "submit_secrets",
         "requestBody": {
           "content": {
@@ -55,7 +55,7 @@
           "super::routes::action_required"
         ],
         "summary": "Deliver a tool-permission decision to the prompt that is waiting for it.",
-        "description": "**Idempotent** (BR-62). The decision is routed by tool request id to that\nprompt's own channel, so a decision for an id nobody is waiting on — a\ndouble-clicked Allow, a card the user answered after the prompt expired or the\nturn was cancelled, a stale client replaying an old confirmation — is dropped\nrather than applied to whatever tool call happens to be pending now. (Before\nBR-62 confirmations went to a single per-agent channel, so a late \"allow\"\nreally could approve an unrelated later tool call.)\n\nBoth outcomes are a 200: a duplicate click is a no-op, not a failure. The\n`status` field reports which happened — `delivered` when a live prompt took\nthe decision, `unknown` when nothing was waiting on that id.",
+        "description": "**Idempotent** (BR-62). The decision is routed by tool request id to that\nprompt's own channel, so a decision for an id nobody is waiting on \u2014 a\ndouble-clicked Allow, a card the user answered after the prompt expired or the\nturn was cancelled, a stale client replaying an old confirmation \u2014 is dropped\nrather than applied to whatever tool call happens to be pending now. (Before\nBR-62 confirmations went to a single per-agent channel, so a late \"allow\"\nreally could approve an unrelated later tool call.)\n\nBoth outcomes are a 200: a duplicate click is a no-op, not a failure. The\n`status` field reports which happened \u2014 `delivered` when a live prompt took\nthe decision, `unknown` when nothing was waiting on that id.",
         "operationId": "confirm_tool_action",
         "requestBody": {
           "content": {
@@ -235,7 +235,7 @@
           "workspace"
         ],
         "summary": "Hard cancel: trip the cancellation token of the turn in flight for this",
-        "description": "session (BR-62).\n\nBefore this route, cancelling meant dropping the SSE socket — the only thing\nthat closed `tx` and tripped the token — so a turn could not be stopped by a\nsecond client, the CLI, or a script, and `/agent/stop` merely evicted the\nagent from the LRU while the in-flight reply task ran on happily against its\nown `Arc<Agent>`. Tripping the token unwinds the agent loop at its next\nboundary and unblocks a tool-permission prompt it may be parked on.\n\nDeliberately **idempotent**: cancelling a session with no turn in flight (a\ndouble-clicked Stop button, a cancel that raced the turn's own completion) is\na 200 with `cancelled: false`, never an error. A cancel that reports failure\nbecause the thing was already stopped is exactly the unreliability this BR\nexists to remove.",
+        "description": "session (BR-62).\n\nBefore this route, cancelling meant dropping the SSE socket \u2014 the only thing\nthat closed `tx` and tripped the token \u2014 so a turn could not be stopped by a\nsecond client, the CLI, or a script, and `/agent/stop` merely evicted the\nagent from the LRU while the in-flight reply task ran on happily against its\nown `Arc<Agent>`. Tripping the token unwinds the agent loop at its next\nboundary and unblocks a tool-permission prompt it may be parked on.\n\nDeliberately **idempotent**: cancelling a session with no turn in flight (a\ndouble-clicked Stop button, a cancel that raced the turn's own completion) is\na 200 with `cancelled: false`, never an error. A cancel that reports failure\nbecause the thing was already stopped is exactly the unreliability this BR\nexists to remove.",
         "operationId": "cancel_turn",
         "requestBody": {
           "content": {
@@ -273,7 +273,7 @@
           "super::routes::agent"
         ],
         "summary": "Record the user's acceptance of one cross-institutional data flow (issue #56,",
-        "description": "DR-26 / Task 49).\n\n⚠ **This route is a reversal of `/agent/add_extension`'s posture and the\ndifference is the ruling, not an inconsistency.** That route refuses a private\nextension on a public session *outright*, with no user-proof branch, because\nattaching one is a raise the user cannot authorize either. A Private↔Private\ncross-institution flow is the opposite case: both endpoints are already\nprivate, the tier boundary is not being crossed, and DR-26 states explicitly\nthat legitimate cross-institutional work under a real DUA exists and that the\nuser may accept the stated risk. Blocking it outright is the design\nresearchers route around by turning the feature off. So this route exists, and\nthe tier refusal beside it is untouched.\n\nThe grant is keyed on the **triple** (session, extension, model affiliation),\nwhere the affiliation is read by the daemon from the same sample that produced\nthe warning — never from the request. Re-binding to a different institution's\nmodel changes the triple, so the acceptance does not carry over.\n\n⚠ **The desktop surface is the accept control on the refusal itself** (Task\n57): `CrossAffiliationAcceptCard` renders inside the failed tool call that\ncarries `privacy::refusal::CROSS_AFFILIATION_ACCEPT_MARKER`, and posts here\nwith the `X-User-Action` header this route requires. The generated client\nattaches no header of its own, so every caller must supply one — which is the\npoint: a call without it is refused, and only a surface the user gestured at\nhas one to send.",
+        "description": "DR-26 / Task 49).\n\n\u26a0 **This route is a reversal of `/agent/add_extension`'s posture and the\ndifference is the ruling, not an inconsistency.** That route refuses a private\nextension on a public session *outright*, with no user-proof branch, because\nattaching one is a raise the user cannot authorize either. A Private\u2194Private\ncross-institution flow is the opposite case: both endpoints are already\nprivate, the tier boundary is not being crossed, and DR-26 states explicitly\nthat legitimate cross-institutional work under a real DUA exists and that the\nuser may accept the stated risk. Blocking it outright is the design\nresearchers route around by turning the feature off. So this route exists, and\nthe tier refusal beside it is untouched.\n\nThe grant is keyed on the **triple** (session, extension, model affiliation),\nwhere the affiliation is read by the daemon from the same sample that produced\nthe warning \u2014 never from the request. Re-binding to a different institution's\nmodel changes the triple, so the acceptance does not carry over.\n\n\u26a0 **The desktop surface is the accept control on the refusal itself** (Task\n57): `CrossAffiliationAcceptCard` renders inside the failed tool call that\ncarries `privacy::refusal::CROSS_AFFILIATION_ACCEPT_MARKER`, and posts here\nwith the `X-User-Action` header this route requires. The generated client\nattaches no header of its own, so every caller must supply one \u2014 which is the\npoint: a call without it is refused, and only a surface the user gestured at\nhas one to send.",
         "operationId": "agent_cross_affiliation_grant",
         "requestBody": {
           "content": {
@@ -1622,7 +1622,7 @@
           "workspace"
         ],
         "summary": "Soft interrupt: queue a user message to be injected into the session's",
-        "description": "running turn at the next safe loop boundary, instead of cancelling the turn\nand re-sending the whole context. Returns 202 Accepted; the message surfaces\nas a normal user message in the active reply stream on the next loop step.\n\nBR-61: rejected with 409 when the session has no turn in flight — with no\nrunning loop to drain the queue the text would sit on the agent until some\nunrelated later turn injected it. Clients treat 409 as \"just send it as a\nnormal message\".\n\n#69: the 409 is now decided by the *agent's own queue*, not by the turn-lock\ncheck above it. Checking the lock and then queueing are two steps against\nstate the reply loop changes underneath them: a steer could be accepted (202)\nafter the loop had already performed its final empty-queue check, and the text\nthen surfaced in an unrelated later turn. `try_queue_soft_interrupt` decides\nacceptance and enqueues in one critical section, and reports back *which* turn\ntook the message — so a 202 names something real.",
+        "description": "running turn at the next safe loop boundary, instead of cancelling the turn\nand re-sending the whole context. Returns 202 Accepted; the message surfaces\nas a normal user message in the active reply stream on the next loop step.\n\nBR-61: rejected with 409 when the session has no turn in flight \u2014 with no\nrunning loop to drain the queue the text would sit on the agent until some\nunrelated later turn injected it. Clients treat 409 as \"just send it as a\nnormal message\".\n\n#69: the 409 is now decided by the *agent's own queue*, not by the turn-lock\ncheck above it. Checking the lock and then queueing are two steps against\nstate the reply loop changes underneath them: a steer could be accepted (202)\nafter the loop had already performed its final empty-queue check, and the text\nthen surfaced in an unrelated later turn. `try_queue_soft_interrupt` decides\nacceptance and enqueues in one critical section, and reports back *which* turn\ntook the message \u2014 so a 202 names something real.",
         "operationId": "interrupt",
         "requestBody": {
           "content": {
@@ -2090,7 +2090,7 @@
           "super::routes::knowledge"
         ],
         "summary": "Lint a knowledge base and stream the result.",
-        "description": "The stream's terminal `event: done` frame carries a `LintResult`: the\nautofix commit, if any, wrapped around a `LintReport` — the four hygiene\nlists this route has always returned, plus `diagnostics`, the typed findings.\nEach of those is a stable rule id (`kb.` for hygiene, `okf.` and `biookf.`\nfor the format layers), a severity, the subject it is about and a message;\na consumer matches on `rule` and never on `message`, which is prose.\n\nBoth schemas are published under `components.schemas` rather than as this\nresponse's body, because the body is an event stream and typing it as JSON\nwould be a false statement the generated client believes.\n\nA **legacy** base (below the OKF generation) is given the hygiene rules and\nno format layer, so its report carries `kb.*` diagnostics only — DR-26: this\nbuild has promised never to rewrite those pages, and reporting that decision\nas one conformance error per page would bury the findings that are real.",
+        "description": "The stream's terminal `event: done` frame carries a `LintResult`: the\nautofix commit, if any, wrapped around a `LintReport` \u2014 the four hygiene\nlists this route has always returned, plus `diagnostics`, the typed findings.\nEach of those is a stable rule id (`kb.` for hygiene, `okf.` and `biookf.`\nfor the format layers), a severity, the subject it is about and a message;\na consumer matches on `rule` and never on `message`, which is prose.\n\nBoth schemas are published under `components.schemas` rather than as this\nresponse's body, because the body is an event stream and typing it as JSON\nwould be a false statement the generated client believes.\n\nA **legacy** base (below the OKF generation) is given the hygiene rules and\nno format layer, so its report carries `kb.*` diagnostics only \u2014 DR-26: this\nbuild has promised never to rewrite those pages, and reporting that decision\nas one conformance error per page would bury the findings that are real.",
         "operationId": "lint",
         "parameters": [
           {
@@ -2162,14 +2162,14 @@
         "tags": [
           "super::routes::knowledge"
         ],
-        "summary": "⚠ **No caller barrier here, and it is the same position `GET /export` takes.**",
-        "description": "This route is the USER's own path: they can already read both bases through\n`GET /bases/{id}/page` and download either as a `.brkb`, and DR-14 governs\nwhat a MODEL can reach. Passing a public-model identity instead would refuse\nthe user every merge involving a private base of their own — the feature's\nmain case — and passing a private one would be inventing a model that is not\nthere.\n\nWhat still runs, and is the part that matters, is the classification fold:\nthe destination takes `max` over the tier axis and the union over owning\ninstitutions. That is what keeps the model side honest after a merge the user\nperformed.\n\nThe proof-of-user is therefore load-bearing rather than ceremonial — it is\nthe whole of what separates this branch from the tool channel.",
+        "summary": "\u26a0 **No caller barrier here, and it is the same position `GET /export` takes.**",
+        "description": "This route is the USER's own path: they can already read both bases through\n`GET /bases/{id}/page` and download either as a `.brkb`, and DR-14 governs\nwhat a MODEL can reach. Passing a public-model identity instead would refuse\nthe user every merge involving a private base of their own \u2014 the feature's\nmain case \u2014 and passing a private one would be inventing a model that is not\nthere.\n\nWhat still runs, and is the part that matters, is the classification fold:\nthe destination takes `max` over the tier axis and the union over owning\ninstitutions. That is what keeps the model side honest after a merge the user\nperformed.\n\nThe proof-of-user is therefore load-bearing rather than ceremonial \u2014 it is\nthe whole of what separates this branch from the tool channel.",
         "operationId": "merge_bases",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Destination knowledge base ID — canonical; never modified",
+            "description": "Destination knowledge base ID \u2014 canonical; never modified",
             "required": true,
             "schema": {
               "type": "string"
@@ -2692,7 +2692,7 @@
           "super::routes::knowledge"
         ],
         "summary": "Move a knowledge base's privacy tier, on the user's behalf (issue #56 DR-18).",
-        "description": "The ONLY route in the tree that can LOWER one. It is user-only (DR-16's\n`X-User-Action`, the same header and the same key Task 18A installs — not a\nsecond one), it works in both directions, and the change carries its\nprovenance into `.kb-tiers` so a released base stays distinguishable from one\nthat was always public.\n\n⚠ **There is no `kb_set_tier` tool and there must never be one.** A model\nraises a tier as a side effect of writing (Task 10B, raise-only) and can do\nnothing else.\n\n⚠ **The typed confirmation is not enforced here, and that is deliberate**,\nunlike `POST /sessions/{id}/declassify` where the daemon re-derives the grade.\nA session's grade depends on server state (its stored provenance), so a client\ncould otherwise claim the weak control for a chat that no longer qualifies.\nA base's grade depends only on the DIRECTION, which the request itself states:\na publicize with no phrase is exactly what the request says it wants, and the\nphrase's job — making the user check *which* base — is a property of the\ndialog, not a claim about server state. What the daemon enforces is the thing\na client cannot fake: the proof that a human asked at all.",
+        "description": "The ONLY route in the tree that can LOWER one. It is user-only (DR-16's\n`X-User-Action`, the same header and the same key Task 18A installs \u2014 not a\nsecond one), it works in both directions, and the change carries its\nprovenance into `.kb-tiers` so a released base stays distinguishable from one\nthat was always public.\n\n\u26a0 **There is no `kb_set_tier` tool and there must never be one.** A model\nraises a tier as a side effect of writing (Task 10B, raise-only) and can do\nnothing else.\n\n\u26a0 **The typed confirmation is not enforced here, and that is deliberate**,\nunlike `POST /sessions/{id}/declassify` where the daemon re-derives the grade.\nA session's grade depends on server state (its stored provenance), so a client\ncould otherwise claim the weak control for a chat that no longer qualifies.\nA base's grade depends only on the DIRECTION, which the request itself states:\na publicize with no phrase is exactly what the request says it wants, and the\nphrase's job \u2014 making the user check *which* base \u2014 is a property of the\ndialog, not a claim about server state. What the daemon enforces is the thing\na client cannot fake: the proof that a human asked at all.",
         "operationId": "set_kb_tier",
         "parameters": [
           {
@@ -3063,7 +3063,7 @@
           "super::routes::config_management"
         ],
         "summary": "The disclosure copy, and whether it has been acknowledged.",
-        "description": "⚠ **Deliberately does NOT consult the master privacy switch.** DR-15 turns\noff gates, the ratchet and refusals; it does not turn off the truth, and with\nenforcement off the exposure is *larger*. Every other privacy route in this\nfile reads the switch, which is exactly why wiring this one the same way is\nthe plausible mistake.",
+        "description": "\u26a0 **Deliberately does NOT consult the master privacy switch.** DR-15 turns\noff gates, the ratchet and refusals; it does not turn off the truth, and with\nenforcement off the exposure is *larger*. Every other privacy route in this\nfile reads the switch, which is exactly why wiring this one the same way is\nthe plausible mistake.",
         "operationId": "get_privacy_disclosure",
         "responses": {
           "200": {
@@ -3085,7 +3085,7 @@
           "super::routes::config_management"
         ],
         "summary": "Record that the user has read the disclosure.",
-        "description": "⚠ **DR-16's proof-of-user, unconditionally.** This is the one thing making\nDR-17's accepted risks acceptable, so a caller holding nothing but the daemon\nsecret — which AR-11 measured to be recoverable from inside the daemon, i.e.\nthe model — must not be able to acknowledge on the user's behalf. Unlike\n`upsert_config`'s guard this is NOT additionally gated on the master privacy\nswitch: turning enforcement off must not hand the model the dismiss button.",
+        "description": "\u26a0 **DR-16's proof-of-user, unconditionally.** This is the one thing making\nDR-17's accepted risks acceptable, so a caller holding nothing but the daemon\nsecret \u2014 which AR-11 measured to be recoverable from inside the daemon, i.e.\nthe model \u2014 must not be able to acknowledge on the user's behalf. Unlike\n`upsert_config`'s guard this is NOT additionally gated on the master privacy\nswitch: turning enforcement off must not hand the model the dismiss button.",
         "operationId": "ack_privacy_disclosure",
         "responses": {
           "200": {
@@ -3921,8 +3921,8 @@
         "tags": [
           "Session Management"
         ],
-        "summary": "Mark a private chat public (issue #56 §12.4/§12.5).",
-        "description": "The ONLY route in the tree that lowers a session's classification. It is\nuser-only (DR-16's `X-User-Action`), it is graded on the chat's provenance,\nand every use leaves a row in `classification_audit` — a declassified session\nmust never become indistinguishable from one that was always public.",
+        "summary": "Mark a private chat public (issue #56 \u00a712.4/\u00a712.5).",
+        "description": "The ONLY route in the tree that lowers a session's classification. It is\nuser-only (DR-16's `X-User-Action`), it is graded on the chat's provenance,\nand every use leaves a row in `classification_audit` \u2014 a declassified session\nmust never become indistinguishable from one that was always public.",
         "operationId": "declassify_session",
         "parameters": [
           {
@@ -3963,7 +3963,7 @@
             "description": "Unauthorized - Invalid or missing API key"
           },
           "403": {
-            "description": "Refused by a privacy boundary (issue #56 §12.4): lowering a chat's classification is the user's decision, and the request carried no proof it came from them (body = plain text)"
+            "description": "Refused by a privacy boundary (issue #56 \u00a712.4): lowering a chat's classification is the user's decision, and the request carried no proof it came from them (body = plain text)"
           },
           "404": {
             "description": "Session not found"
@@ -3985,7 +3985,7 @@
           "Session Management"
         ],
         "summary": "Diverge (branch) a session into a brand-new session that inherits the full",
-        "description": "conversation history and metadata of the original, while leaving the\noriginal completely untouched. Unlike `edit_message` with `Diverge`, no\ntruncation is performed — the entire history is carried over so the user can\ncontinue a fresh conversation from exactly where they left off.",
+        "description": "conversation history and metadata of the original, while leaving the\noriginal completely untouched. Unlike `edit_message` with `Diverge`, no\ntruncation is performed \u2014 the entire history is carried over so the user can\ncontinue a fresh conversation from exactly where they left off.",
         "operationId": "diverge_session",
         "parameters": [
           {
@@ -4048,7 +4048,7 @@
           "Session Management"
         ],
         "summary": "Prepare a session for an edited message.",
-        "description": "`diverge` (the default) copies the history into a NEW session, trimmed at the\nedited message, and returns that session's id. The original is untouched.\n\n`edit` truncates THIS session in place, dropping every message from\n`timestamp` onwards. Because that destroys history a concurrent writer may\nalready have been told was saved, the cut is refused — with nothing deleted —\nwhile a turn is in flight, and it never reaches past the rows the server read\nwhen it took the request. You may additionally send `expectedMessageIds`, the\nids of every message your view of the session holds: the cut is then also\nrefused if the session holds a message your view does not name, and the 409\nbody's `missing_message_ids` says which, so you can re-read and retry.",
+        "description": "`diverge` (the default) copies the history into a NEW session, trimmed at the\nedited message, and returns that session's id. The original is untouched.\n\n`edit` truncates THIS session in place, dropping every message from\n`timestamp` onwards. Because that destroys history a concurrent writer may\nalready have been told was saved, the cut is refused \u2014 with nothing deleted \u2014\nwhile a turn is in flight, and it never reaches past the rows the server read\nwhen it took the request. You may additionally send `expectedMessageIds`, the\nids of every message your view of the session holds: the cut is then also\nrefused if the session holds a message your view does not name, and the 409\nbody's `missing_message_ids` says which, so you can re-read and retry.",
         "operationId": "edit_message",
         "parameters": [
           {
@@ -4400,6 +4400,292 @@
                 }
               }
             }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/catalog": {
+      "get": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "The canonical catalog: every root, every skill, every bundle, and the",
+        "description": "composed enablement for one conversation.",
+        "operationId": "skill_catalog_handler",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Compose the machine-wide catalog with this conversation's override.\nOmit for the machine-wide view \u2014 what a new chat would start with.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "description": "Rescan the filesystem before answering, instead of reusing the cached\nsnapshot. The interface sets this after an install it did not perform\nitself (a marketplace click, a `.brxt` drop) and after a `CatalogChanged`\nnotice, since a change made by another process may land inside the\nsnapshot's one-second mtime window.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "500": {
+            "description": "This conversation's skill state is unreadable"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/packages/install": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Import a skill package, atomically, and refresh the catalog.",
+        "operationId": "install_skill_package",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Installed, or a question to answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The source could not be read or installed"
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "410": {
+            "description": "That preview has expired"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/packages/preview": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Look at a source without installing anything.",
+        "operationId": "preview_skill_package",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What an install would do",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The source could not be read"
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "410": {
+            "description": "That preview has expired"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/packages/remove": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Remove an installed package or single skill, and every component with it.",
+        "operationId": "remove_skill_package",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemovePackageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageSummary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "404": {
+            "description": "No such package"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/refresh": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Rescan the filesystem and publish a new catalog to every live conversation.",
+        "description": "The endpoint an install calls \u2014 a marketplace skill, a dropped `.zip`, a\n`.brxt` extension whose `skills/` subdirectory becomes a new root, or\nworktree 4's `CatalogChanged` notice. It rescans unconditionally rather than\nconsulting mtimes, because the caller already knows something changed.",
+        "operationId": "refresh_skill_catalog",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Compose the machine-wide catalog with this conversation's override.\nOmit for the machine-wide view \u2014 what a new chat would start with.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "description": "Rescan the filesystem before answering, instead of reusing the cached\nsnapshot. The interface sets this after an install it did not perform\nitself (a marketplace click, a `.brxt` drop) and after a `CatalogChanged`\nnotice, since a change made by another process may land inside the\nsnapshot's one-second mtime window.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The freshly scanned catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "500": {
+            "description": "This conversation's skill state is unreadable"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/session": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Enable or disable skills for one conversation, and hand back what the model",
+        "description": "will see on its next turn.",
+        "operationId": "set_session_skills",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionSkillsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionSkillsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "404": {
+            "description": "No such conversation"
+          },
+          "500": {
+            "description": "The override could not be persisted"
           }
         },
         "security": [
@@ -5144,7 +5430,7 @@
           },
           {
             "type": "object",
-            "description": "#107: credentials a *trusted surface* must collect and write straight to\ntheir destination.\n\nThe card carries key names, labels and a destination — and deliberately\nnothing a value could sit in. The answer never comes back through this\ntype: the surface stores the values itself and resolves the parked call\nwith `SecretsConfigured { configured_keys }`, so a credential is never\npersisted into a session row, replayed into a later prompt, or flattened\ninto a child agent's transcript. There is deliberately no\n`SecretResponse` sibling to `ElicitationResponse`; adding one would undo\nthe entire guarantee.",
+            "description": "#107: credentials a *trusted surface* must collect and write straight to\ntheir destination.\n\nThe card carries key names, labels and a destination \u2014 and deliberately\nnothing a value could sit in. The answer never comes back through this\ntype: the surface stores the values itself and resolves the parked call\nwith `SecretsConfigured { configured_keys }`, so a credential is never\npersisted into a session row, replayed into a later prompt, or flattened\ninto a child agent's transcript. There is deliberately no\n`SecretResponse` sibling to `ElicitationResponse`; adding one would undo\nthe entire guarantee.",
             "required": [
               "id",
               "prompt",
@@ -5355,7 +5641,7 @@
       },
       "AffiliationInstitution": {
         "type": "object",
-        "description": "One institution, as a surface that has to *print* it needs it (issue #56,\nDR-26).\n\nBoth halves travel, and neither is derivable from the other. The `id` is the\nnormalised slug — what `registry.json` publishes, what `baam.html`'s\n`data-affiliation` carries, what every cross-affiliation warning prints and\nwhat a user quotes in a support conversation. The `display_name` is what the\nregistry publishes for it, and is **absent** for an institution the registry\ndoes not know.\n\n⚠ **An absent display name is not an error and must never render as\nnothing.** Task 47 rules that an affiliation naming an unpublished\ninstitution is a *mismatch* whose raw id is surfaced; dropping the row\nbecause it has no pretty name would make a real constraint disappear from the\none surface a user can see it on. This mirrors `privacy::affiliation::label`,\nwhich falls back to the bare id for exactly that reason.",
+        "description": "One institution, as a surface that has to *print* it needs it (issue #56,\nDR-26).\n\nBoth halves travel, and neither is derivable from the other. The `id` is the\nnormalised slug \u2014 what `registry.json` publishes, what `baam.html`'s\n`data-affiliation` carries, what every cross-affiliation warning prints and\nwhat a user quotes in a support conversation. The `display_name` is what the\nregistry publishes for it, and is **absent** for an institution the registry\ndoes not know.\n\n\u26a0 **An absent display name is not an error and must never render as\nnothing.** Task 47 rules that an affiliation naming an unpublished\ninstitution is a *mismatch* whose raw id is surfaced; dropping the row\nbecause it has no pretty name would make a real constraint disappear from the\none surface a user can see it on. This mirrors `privacy::affiliation::label`,\nwhich falls back to the bare id for exactly that reason.",
         "required": [
           "id"
         ],
@@ -5433,6 +5719,27 @@
           }
         }
       },
+      "Ambiguity": {
+        "type": "object",
+        "description": "Why the caller has to choose, and what the choices are.",
+        "required": [
+          "reason",
+          "components"
+        ],
+        "properties": {
+          "components": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The component names the caller is choosing among."
+          },
+          "reason": {
+            "type": "string",
+            "description": "One sentence for the dialog."
+          }
+        }
+      },
       "Annotations": {
         "type": "object",
         "properties": {
@@ -5494,7 +5801,7 @@
               },
               "plan": {
                 "type": "string",
-                "description": "`\"max\"`, `\"pro\"`, … as the vendor reports it. Advisory only.",
+                "description": "`\"max\"`, `\"pro\"`, \u2026 as the vendor reports it. Advisory only.",
                 "nullable": true
               },
               "state": {
@@ -5668,7 +5975,7 @@
         "properties": {
           "cancelled": {
             "type": "boolean",
-            "description": "True when a running turn was found and its cancellation token tripped.\nFalse means there was nothing to cancel — which is a success, not an error."
+            "description": "True when a running turn was found and its cancellation token tripped.\nFalse means there was nothing to cancel \u2014 which is a success, not an error."
           },
           "turn_id": {
             "type": "string",
@@ -5702,6 +6009,139 @@
           }
         }
       },
+      "CatalogBundle": {
+        "type": "object",
+        "description": "A directory of skills installed and removed as one unit.",
+        "required": [
+          "name",
+          "displayName",
+          "directory",
+          "sourceRoot",
+          "source",
+          "skills",
+          "state"
+        ],
+        "properties": {
+          "directory": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string",
+            "description": "The package's own display name when a manifest supplied one, else the\ndirectory name."
+          },
+          "name": {
+            "type": "string",
+            "description": "The bundle directory name. This is the identifier `skills-config.json`\nlists to disable the whole bundle."
+          },
+          "package": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PackageSummary"
+              }
+            ],
+            "nullable": true
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Member skill names, sorted."
+          },
+          "source": {
+            "$ref": "#/components/schemas/SkillSource"
+          },
+          "sourceRoot": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SkillState"
+          }
+        }
+      },
+      "CatalogSkill": {
+        "type": "object",
+        "description": "One skill, as the interface and the model both see it.",
+        "required": [
+          "name",
+          "description",
+          "slug",
+          "directory",
+          "sourceRoot",
+          "source",
+          "builtin",
+          "state"
+        ],
+        "properties": {
+          "builtin": {
+            "type": "boolean",
+            "description": "Shipped with Biorouter, so the interface offers no Delete for it."
+          },
+          "bundle": {
+            "type": "string",
+            "description": "The bundle directory this skill sits in, when it is a bundle member.",
+            "nullable": true
+          },
+          "description": {
+            "type": "string"
+          },
+          "directory": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "Frontmatter `name` \u2014 the identifier every enablement surface keys on."
+          },
+          "slug": {
+            "type": "string",
+            "description": "Root-relative logical path, `/`-separated on every platform\n(`superpowers/brainstorming`). What `biorouter skill list` prints."
+          },
+          "source": {
+            "$ref": "#/components/schemas/SkillSource"
+          },
+          "sourceRoot": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SkillState"
+          }
+        }
+      },
+      "CatalogView": {
+        "type": "object",
+        "description": "The serialisable catalog: what `GET /skills/catalog` returns and what the\ndesktop picker renders. There is no second derivation of any of these\nfields on the interface side \u2014 that separation is what #113 removed.",
+        "required": [
+          "generation",
+          "roots",
+          "skills",
+          "bundles"
+        ],
+        "properties": {
+          "bundles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogBundle"
+            }
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "roots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillRoot"
+            }
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogSkill"
+            }
+          }
+        }
+      },
       "ChangeKind": {
         "type": "string",
         "enum": [
@@ -5732,7 +6172,7 @@
           "from_seq": {
             "type": "integer",
             "format": "int64",
-            "description": "Attach only from this per-turn sequence number, when `turn_id` names a\nturn already in flight.\n\nA pure OPTIMISATION and deliberately so: a client that already rendered\nframes `0..N` skips re-receiving them, but one that omits the field gets\nthe whole turn replayed and its own sequence gate makes that idempotent.\nNothing about correctness depends on the server honouring it.\n\nIt lives in the BODY rather than in `?from_seq=`, because `/reply` is\ngenerated with `query?: never` in `api/types.gen.ts` — a query parameter\ncould only be smuggled past the typed client, while a `ChatRequest` field\nappears properly the next time the OpenAPI spec is regenerated.",
+            "description": "Attach only from this per-turn sequence number, when `turn_id` names a\nturn already in flight.\n\nA pure OPTIMISATION and deliberately so: a client that already rendered\nframes `0..N` skips re-receiving them, but one that omits the field gets\nthe whole turn replayed and its own sequence gate makes that idempotent.\nNothing about correctness depends on the server honouring it.\n\nIt lives in the BODY rather than in `?from_seq=`, because `/reply` is\ngenerated with `query?: never` in `api/types.gen.ts` \u2014 a query parameter\ncould only be smuggled past the typed client, while a `ChatRequest` field\nappears properly the next time the OpenAPI spec is regenerated.",
             "nullable": true,
             "minimum": 0
           },
@@ -5749,7 +6189,7 @@
           },
           "turn_id": {
             "type": "string",
-            "description": "Client-generated idempotency key naming *this* turn (BR-62). Optional, but\na client that retries `/reply` — an SSE reconnect, a fetch retry on a\nflaky network — should send the same key it sent the first time. The retry\nthen comes back as a 409 with `duplicate: true`, meaning \"that turn is\nstill running\", instead of being mistaken for a genuine second turn.\n\nSince the live-turn-stream work this is also the ATTACH pointer: posting\na `turn_id` that names a turn already in flight is answered 200 with that\nturn's stream instead of 409. Either name works — the key the client\nchose, or the server-assigned `turn-N` it read off a frame's `turn_id` /\n`POST /agent/resume`'s `active_turn`.",
+            "description": "Client-generated idempotency key naming *this* turn (BR-62). Optional, but\na client that retries `/reply` \u2014 an SSE reconnect, a fetch retry on a\nflaky network \u2014 should send the same key it sent the first time. The retry\nthen comes back as a 409 with `duplicate: true`, meaning \"that turn is\nstill running\", instead of being mistaken for a genuine second turn.\n\nSince the live-turn-stream work this is also the ATTACH pointer: posting\na `turn_id` that names a turn already in flight is answered 200 with that\nturn's stream instead of 409. Either name works \u2014 the key the client\nchose, or the server-assigned `turn-N` it read off a frame's `turn_id` /\n`POST /agent/resume`'s `active_turn`.",
             "nullable": true
           },
           "user_message": {
@@ -5804,7 +6244,7 @@
       },
       "CodingAgentKind": {
         "type": "string",
-        "description": "Which vendor CLI. Kept as an enum rather than a string so the match arms that\ndiffer (and there are several — the auth probe especially) cannot silently\nfall through for a new variant.",
+        "description": "Which vendor CLI. Kept as an enum rather than a string so the match arms that\ndiffer (and there are several \u2014 the auth probe especially) cannot silently\nfall through for a new variant.",
         "enum": [
           "claude_code",
           "codex"
@@ -6116,7 +6556,7 @@
       },
       "CrossAffiliationGrantRequest": {
         "type": "object",
-        "description": "Issue #56 Task 49 (DR-26): the user accepting ONE cross-institutional data\nflow.\n\n⚠ **There is no `affiliation` field, and there must not be one.** The grant is\nkeyed on the affiliation of the model bound *right now*, read by the daemon\nfrom the same sample that produced the warning. A client-supplied institution\nwould let a caller record an acceptance for a triple the user was never shown\n— which is the one thing this control exists to prevent.",
+        "description": "Issue #56 Task 49 (DR-26): the user accepting ONE cross-institutional data\nflow.\n\n\u26a0 **There is no `affiliation` field, and there must not be one.** The grant is\nkeyed on the affiliation of the model bound *right now*, read by the daemon\nfrom the same sample that produced the warning. A client-supplied institution\nwould let a caller record an acceptance for a triple the user was never shown\n\u2014 which is the one thing this control exists to prevent.",
         "required": [
           "session_id",
           "extension"
@@ -6191,7 +6631,7 @@
           "level": {
             "type": "integer",
             "format": "int32",
-            "description": "1–4. Level 0 days are omitted from the response entirely.",
+            "description": "1\u20134. Level 0 days are omitted from the response entirely.",
             "minimum": 0
           },
           "messages": {
@@ -6279,7 +6719,7 @@
         "properties": {
           "confirmation": {
             "type": "string",
-            "description": "The last six characters of the session id, as the user typed them.\n\nRequired when the chat's provenance is anything other than `turn:*` —\nsee `biorouter::privacy::declassify::requires_typed_confirmation`, which\nis where the grading lives. The daemon re-derives the grade from the\nSTORED provenance rather than trusting the client to say which control it\nshowed, so a caller cannot claim the single-click path for a chat that\nreached a private data source.",
+            "description": "The last six characters of the session id, as the user typed them.\n\nRequired when the chat's provenance is anything other than `turn:*` \u2014\nsee `biorouter::privacy::declassify::requires_typed_confirmation`, which\nis where the grading lives. The daemon re-derives the grade from the\nSTORED provenance rather than trusting the client to say which control it\nshowed, so a caller cannot claim the single-click path for a chat that\nreached a private data source.",
             "nullable": true
           }
         }
@@ -6438,7 +6878,7 @@
           },
           "subject": {
             "type": "string",
-            "description": "What the finding is *about*: a page's `identifier`, a bundle-relative\npath, or an edge rendered as `<subject> -<predicate>-> <object>`.\nNever empty — a diagnostic whose subject a caller has to reconstruct\nfrom the message is one nobody acts on."
+            "description": "What the finding is *about*: a page's `identifier`, a bundle-relative\npath, or an edge rendered as `<subject> -<predicate>-> <object>`.\nNever empty \u2014 a diagnostic whose subject a caller has to reconstruct\nfrom the message is one nobody acts on."
           }
         }
       },
@@ -6471,7 +6911,7 @@
           "truncateAfter": {
             "type": "integer",
             "format": "int64",
-            "description": "Optional anchor: the `created` timestamp (ms) of the assistant message a\nper-message Diverge button was clicked on. The branch is trimmed to end\nat that answer. When omitted, the branch ends at the most recent\ncomplete assistant answer — an in-flight turn captured mid-generation is\nnever carried over.",
+            "description": "Optional anchor: the `created` timestamp (ms) of the assistant message a\nper-message Diverge button was clicked on. The branch is trimmed to end\nat that answer. When omitted, the branch ends at the most recent\ncomplete assistant answer \u2014 an in-flight turn captured mid-generation is\nnever carried over.",
             "nullable": true
           },
           "truncateAfterId": {
@@ -6522,7 +6962,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Your view of this session: the durable ids (`Message.id`) of every\nmessage it holds, in any order.\n\nOPTIONAL, and enforced when you send it. For `edit`, which truncates the\nlive session, supplying it is how the server checks that you are deleting\nthe history you actually saw: a stored message your list does not name\nlanded after you rendered the conversation, and the cut is refused with\n409 `conversation_out_of_date` rather than destroying it. Omit it and the\ncut still runs under the turn lock and is still bounded to the rows the\nserver itself just read — safe, but blind to that wider race. Ignored for\n`diverge`, which writes only to a new session and cannot destroy anything.\n\nAn EMPTY list is not the same as omitting the field: it asserts your view\nholds nothing, and is checked as such (so a non-empty session refuses it).",
+            "description": "Your view of this session: the durable ids (`Message.id`) of every\nmessage it holds, in any order.\n\nOPTIONAL, and enforced when you send it. For `edit`, which truncates the\nlive session, supplying it is how the server checks that you are deleting\nthe history you actually saw: a stored message your list does not name\nlanded after you rendered the conversation, and the cut is refused with\n409 `conversation_out_of_date` rather than destroying it. Omit it and the\ncut still runs under the turn lock and is still bounded to the rows the\nserver itself just read \u2014 safe, but blind to that wider race. Ignored for\n`diverge`, which writes only to a new session and cannot destroy anything.\n\nAn EMPTY list is not the same as omitting the field: it asserts your view\nholds nothing, and is checked as such (so a non-empty session refuses it).",
             "nullable": true
           },
           "timestamp": {
@@ -6613,6 +7053,19 @@
             "type": "string"
           }
         }
+      },
+      "Evidence": {
+        "type": "string",
+        "description": "Which rung of the detection ladder decided the shape. Reported so a preview\ncan explain itself, and so a test can assert that the *manifest* decided\nrather than the structure happening to agree with it.",
+        "enum": [
+          "biorouterManifest",
+          "codexPlugin",
+          "claudePlugin",
+          "skillsManifest",
+          "skillsDirectory",
+          "structuralInference",
+          "singleSkill"
+        ]
       },
       "ExtensionConfig": {
         "oneOf": [
@@ -7091,16 +7544,16 @@
           },
           "knowledge_level": {
             "type": "string",
-            "description": "The BioOKF §8.1 provenance triplet.",
+            "description": "The BioOKF \u00a78.1 provenance triplet.",
             "nullable": true
           },
           "negated": {
             "type": "boolean",
-            "description": "SPEC §6.F polarity, emitted rather than left for the renderer to infer\nfrom a `not_` prefix — the prefix is one of two spellings (the other is\nthe legacy `negated: true` attribute) and a renderer that knows only the\nfirst draws a negative claim as a positive one."
+            "description": "SPEC \u00a76.F polarity, emitted rather than left for the renderer to infer\nfrom a `not_` prefix \u2014 the prefix is one of two spellings (the other is\nthe legacy `negated: true` attribute) and a renderer that knows only the\nfirst draws a negative claim as a positive one."
           },
           "predicate": {
             "type": "string",
-            "description": "The BioOKF §6 predicate. `None` for an untyped link, which is what makes\n\"this edge has no type\" answerable rather than inferred from an empty\nstring.",
+            "description": "The BioOKF \u00a76 predicate. `None` for an untyped link, which is what makes\n\"this edge has no type\" answerable rather than inferred from an empty\nstring.",
             "nullable": true
           },
           "primary_source": {
@@ -7116,14 +7569,14 @@
           },
           "qualifiers": {
             "type": "object",
-            "description": "BioOKF §7.2 context, plus every attribute this build does not recognise —\n`direction`, `aspect`, `species_context`, `sex`, `timepoint`, and\nanything BioOKF adds after this build shipped — as text, in key order.\n\nIt is the residue map as well as the context map, and that asymmetry is\ndeliberate: an attribute nobody has classified is *context* until someone\nsays otherwise. The alternative loses data outright — the attribute\nexists on disk, and a deriver that models only what it recognises drops\nthe rest on the floor where nothing can report it.",
+            "description": "BioOKF \u00a77.2 context, plus every attribute this build does not recognise \u2014\n`direction`, `aspect`, `species_context`, `sex`, `timepoint`, and\nanything BioOKF adds after this build shipped \u2014 as text, in key order.\n\nIt is the residue map as well as the context map, and that asymmetry is\ndeliberate: an attribute nobody has classified is *context* until someone\nsays otherwise. The alternative loses data outright \u2014 the attribute\nexists on disk, and a deriver that models only what it recognises drops\nthe rest on the floor where nothing can report it.",
             "additionalProperties": {
               "type": "string"
             }
           },
           "quantitative": {
             "type": "object",
-            "description": "BioOKF §7.3: the quantitative bundle, keyed by the slot the producer\nwrote. `effect_size`, `p_value`, `ci_lower`, `ci_upper`, `sample_size`,\n`effect_metric`, `adjusted_p_value`, `standard_error`, `sensitivity`,\n`specificity`, `auc`, `frequency`, `clinical_phase`, `response_direction`,\n`unit`, … — see `graph::QUANTITATIVE_KEYS` for the set this build routes\nhere and for why an unrecognised key does not land here by default.",
+            "description": "BioOKF \u00a77.3: the quantitative bundle, keyed by the slot the producer\nwrote. `effect_size`, `p_value`, `ci_lower`, `ci_upper`, `sample_size`,\n`effect_metric`, `adjusted_p_value`, `standard_error`, `sensitivity`,\n`specificity`, `auc`, `frequency`, `clinical_phase`, `response_direction`,\n`unit`, \u2026 \u2014 see `graph::QUANTITATIVE_KEYS` for the set this build routes\nhere and for why an unrecognised key does not land here by default.",
             "additionalProperties": {
               "$ref": "#/components/schemas/QuantitativeValue"
             }
@@ -7135,7 +7588,7 @@
           },
           "synthesized": {
             "type": "boolean",
-            "description": "This edge was derived from provenance rather than authored as a\nrelationship (UI spec §2.1, adopted by DR-27).\n\n§5.7 draws it as the faint dotted line with **no taper** and §4.8 replaces\nits provenance triplet with the \"author an explicit `reported_in` edge to\nmake it first-class\" note, so it is a rendering channel a consumer cannot\nreconstruct: an implicit provenance link and an authored `reported_in`\nedge are the same `(from, to, predicate)` triple and differ only in who\nwrote them.\n\n⚠ **Nothing in this build sets it.** The deriver emits only edges a page\nstates, and DR-24 puts the `reported_in` emission in BioOKF-mode *ingest*\n— so today this is always `false` and therefore never serialized. It is\ndeclared now because Stage 6 freezes the generated TypeScript client and\na channel absent from that contract cannot be added by the producer\nalone."
+            "description": "This edge was derived from provenance rather than authored as a\nrelationship (UI spec \u00a72.1, adopted by DR-27).\n\n\u00a75.7 draws it as the faint dotted line with **no taper** and \u00a74.8 replaces\nits provenance triplet with the \"author an explicit `reported_in` edge to\nmake it first-class\" note, so it is a rendering channel a consumer cannot\nreconstruct: an implicit provenance link and an authored `reported_in`\nedge are the same `(from, to, predicate)` triple and differ only in who\nwrote them.\n\n\u26a0 **Nothing in this build sets it.** The deriver emits only edges a page\nstates, and DR-24 puts the `reported_in` emission in BioOKF-mode *ingest*\n\u2014 so today this is always `false` and therefore never serialized. It is\ndeclared now because Stage 6 freezes the generated TypeScript client and\na channel absent from that contract cannot be added by the producer\nalone."
           },
           "to": {
             "type": "string"
@@ -7162,20 +7615,20 @@
           "degree": {
             "type": "integer",
             "format": "int32",
-            "description": "Incident edge count — every edge with this node at either end, after\n[`crate::knowledge::graph`] has deduplicated them.\n\nUI spec §2.1, adopted by DR-27. It drives hub sizing (§5.6 floors its\n`deg(n)` at this value) and the descending-degree keyboard order (§5.12),\nand the renderer cannot derive it cheaply: it would have to walk the\nwhole edge list on every frame of a force layout, for a number that is\nconstant for the life of the graph.\n\n`Option` because the spec draws it optional and a consumer must be able\nto tell \"the producer did not supply this\" from \"this node has no edges\"\n— the deriver always fills it, and fills it with `Some(0)` for an\nisolated node.",
+            "description": "Incident edge count \u2014 every edge with this node at either end, after\n[`crate::knowledge::graph`] has deduplicated them.\n\nUI spec \u00a72.1, adopted by DR-27. It drives hub sizing (\u00a75.6 floors its\n`deg(n)` at this value) and the descending-degree keyboard order (\u00a75.12),\nand the renderer cannot derive it cheaply: it would have to walk the\nwhole edge list on every frame of a force layout, for a number that is\nconstant for the life of the graph.\n\n`Option` because the spec draws it optional and a consumer must be able\nto tell \"the producer did not supply this\" from \"this node has no edges\"\n\u2014 the deriver always fills it, and fills it with `Some(0)` for an\nisolated node.",
             "nullable": true,
             "minimum": 0
           },
           "external": {
             "type": "boolean",
-            "description": "A node an edge points at that has no page in this bundle yet.\n\nOKF §11 makes a broken link something a consumer MUST tolerate, so this\nis not an error state — it is the curation queue, surfaced. See\n`graph::derive` for why a dangling *legacy* `[[…]]` link does not produce\none of these."
+            "description": "A node an edge points at that has no page in this bundle yet.\n\nOKF \u00a711 makes a broken link something a consumer MUST tolerate, so this\nis not an error state \u2014 it is the curation queue, surfaced. See\n`graph::derive` for why a dangling *legacy* `[[\u2026]]` link does not produce\none of these."
           },
           "id": {
             "type": "string"
           },
           "identifier": {
             "type": "string",
-            "description": "The display identity — `identifier`, or `title` as SPEC §14's deprecated\nalias for it. Distinct from `label`, which stays whatever the page list\nhas always shown, so a renderer can change what it shows without the\nderiver changing what an edge resolves against.",
+            "description": "The display identity \u2014 `identifier`, or `title` as SPEC \u00a714's deprecated\nalias for it. Distinct from `label`, which stays whatever the page list\nhas always shown, so a renderer can change what it shows without the\nderiver changing what an edge resolves against.",
             "nullable": true
           },
           "kind": {
@@ -7186,7 +7639,7 @@
           },
           "node_type": {
             "type": "string",
-            "description": "The concept document's own `type` (OKF §4.1), exactly as written.\n\nA raw `String` and not an enum, in both profiles. OKF leaves `type` open,\nand DR-7 forbids rejecting a page over an unrecognised value — an enum\nhere would be a rejection mechanism wearing a different hat, silently\nreplacing the producer's word with a fallback on the way past. `None` for\nevery page in a legacy base, which carries `kind` and no `type`.",
+            "description": "The concept document's own `type` (OKF \u00a74.1), exactly as written.\n\nA raw `String` and not an enum, in both profiles. OKF leaves `type` open,\nand DR-7 forbids rejecting a page over an unrecognised value \u2014 an enum\nhere would be a rejection mechanism wearing a different hat, silently\nreplacing the producer's word with a fallback on the way past. `None` for\nevery page in a legacy base, which carries `kind` and no `type`.",
             "nullable": true
           },
           "path": {
@@ -7199,16 +7652,16 @@
           },
           "stale": {
             "type": "boolean",
-            "description": "OKF §5.5: `stale_after` has passed. Computed here, at derivation time,\nrather than in the renderer — a renderer that compares dates would give a\ndifferent answer per client clock and per cache age."
+            "description": "OKF \u00a75.5: `stale_after` has passed. Computed here, at derivation time,\nrather than in the renderer \u2014 a renderer that compares dates would give a\ndifferent answer per client clock and per cache age."
           },
           "status": {
             "type": "string",
-            "description": "OKF §5.4 `draft | stable | deprecated`, or whatever else the producer\nwrote. Emitted only when the page states one: §5.4 says an absent\n`status` *reads* as `stable`, and writing `stable` onto every legacy node\nwould turn a consumer's assumption into the producer's assertion.",
+            "description": "OKF \u00a75.4 `draft | stable | deprecated`, or whatever else the producer\nwrote. Emitted only when the page states one: \u00a75.4 says an absent\n`status` *reads* as `stable`, and writing `stable` onto every legacy node\nwould turn a consumer's assumption into the producer's assertion.",
             "nullable": true
           },
           "subtype": {
             "type": "string",
-            "description": "BioOKF §7.1 `subtype`: agent-coined, never validated against anything.",
+            "description": "BioOKF \u00a77.1 `subtype`: agent-coined, never validated against anything.",
             "nullable": true
           }
         }
@@ -7299,6 +7752,187 @@
           }
         }
       },
+      "ImportChoice": {
+        "type": "string",
+        "enum": [
+          "bundle",
+          "individual"
+        ]
+      },
+      "ImportKind": {
+        "type": "string",
+        "description": "Which shape the importer decided on.",
+        "enum": [
+          "single",
+          "bundle"
+        ]
+      },
+      "ImportPreview": {
+        "type": "object",
+        "description": "The serialisable half of a plan \u2014 everything except the file bytes.",
+        "required": [
+          "kind",
+          "id",
+          "displayName",
+          "groups",
+          "components",
+          "evidence",
+          "source",
+          "shadows",
+          "fileCount"
+        ],
+        "properties": {
+          "ambiguity": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Ambiguity"
+              }
+            ],
+            "nullable": true
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlannedSkill"
+            }
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "entryPoint": {
+            "type": "string",
+            "nullable": true
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/Evidence"
+          },
+          "fileCount": {
+            "type": "integer",
+            "description": "How many files would be written.",
+            "minimum": 0
+          },
+          "groups": {
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ImportKind"
+          },
+          "shadows": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceProvenance"
+          },
+          "version": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "ImportRequest": {
+        "type": "object",
+        "description": "What to import, in the two forms a caller has.\n\nOne request type for a pasted repository URL, an agent's tool call, a local\n`.zip` and a marketplace asset, because giving each of those its own\nresolution is how the four came to disagree in the first place.",
+        "properties": {
+          "choice": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ImportChoice"
+              }
+            ],
+            "nullable": true
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Which components to keep when `choice` is `individual`."
+          },
+          "filePath": {
+            "type": "string",
+            "description": "A `.zip` on the machine the daemon runs on.",
+            "nullable": true
+          },
+          "planId": {
+            "type": "string",
+            "description": "Answer to a previous preview's question, by its `planId`.",
+            "nullable": true
+          },
+          "reference": {
+            "type": "string",
+            "description": "Branch, tag or commit. Overrides a ref in the URL.",
+            "nullable": true
+          },
+          "url": {
+            "type": "string",
+            "description": "`https://github.com/owner/repo`, a `/tree/<ref>` URL, or a direct\narchive URL on an allowed host.",
+            "nullable": true
+          }
+        }
+      },
+      "ImportResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "installed",
+              "preview",
+              "status"
+            ],
+            "properties": {
+              "installed": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/InstalledPackage"
+                },
+                "description": "One entry per installed unit: a bundle is one, \"install these\nseparately\" is one each."
+              },
+              "preview": {
+                "$ref": "#/components/schemas/ImportPreview"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "installed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "planId",
+              "preview",
+              "status"
+            ],
+            "properties": {
+              "planId": {
+                "type": "string",
+                "description": "Pass this back with a `choice` to answer."
+              },
+              "preview": {
+                "$ref": "#/components/schemas/ImportPreview"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "needsChoice"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "The answer to an import request: either it happened, or somebody has to\nchoose first.\n\n\u26a0 **`NeedsChoice` is a 200, not an error.** It is a legitimate outcome the\ncaller is expected to act on \u2014 the issue's \"real pending user-input state\" \u2014\nand an agent that saw a 4xx would reasonably retry the same call rather than\nasking the person the question it was handed.",
+        "discriminator": {
+          "propertyName": "status"
+        }
+      },
       "ImportSessionRequest": {
         "type": "object",
         "required": [
@@ -7368,6 +8002,54 @@
           }
         }
       },
+      "InstalledPackage": {
+        "type": "object",
+        "description": "What an install did.",
+        "required": [
+          "id",
+          "displayName",
+          "kind",
+          "skills",
+          "directory",
+          "replaced",
+          "catalogGeneration"
+        ],
+        "properties": {
+          "catalogGeneration": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The catalog generation after the refresh, so a caller can tell whether\nit is looking at an inventory that already includes this.",
+            "minimum": 0
+          },
+          "directory": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "entryPoint": {
+            "type": "string",
+            "nullable": true
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ImportKind"
+          },
+          "replaced": {
+            "type": "boolean",
+            "description": "True when this replaced an existing install of the same id."
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Component skill names, in the order they were installed."
+          }
+        }
+      },
       "InterruptAccepted": {
         "type": "object",
         "description": "Response body for an accepted soft interrupt (#69).",
@@ -7403,7 +8085,7 @@
       },
       "KbFormat": {
         "type": "string",
-        "description": "Which of the two OKF profiles a base's **producer** follows (DR-6).\n\nBoth profiles write the same on-disk shape — BioOKF only adds constraints,\nso a BioOKF bundle is always a valid OKF bundle. The value therefore selects\nhow strictly a *write* is checked and which vocabulary the sub-agent is\ntaught; it never selects how a page is *read*, which is the property that\nlets one reader, one graph deriver and one renderer serve both.\n\n⚠ **On its own this does not answer \"is this base OKF?\".** It carries\n`#[serde(default)]` like every other manifest field (DR-12), so every\n`manifest.yaml` written before Stage 3 — every base on disk — reads back as\n`Okf` while its pages are `title`/`kind` frontmatter and `[[wiki links]]`.\nThe **generation number** is what separates them: ask [`Manifest::profile`],\nwhich folds [`CURRENT_SCHEMA_VERSION`] in, and never this field alone.",
+        "description": "Which of the two OKF profiles a base's **producer** follows (DR-6).\n\nBoth profiles write the same on-disk shape \u2014 BioOKF only adds constraints,\nso a BioOKF bundle is always a valid OKF bundle. The value therefore selects\nhow strictly a *write* is checked and which vocabulary the sub-agent is\ntaught; it never selects how a page is *read*, which is the property that\nlets one reader, one graph deriver and one renderer serve both.\n\n\u26a0 **On its own this does not answer \"is this base OKF?\".** It carries\n`#[serde(default)]` like every other manifest field (DR-12), so every\n`manifest.yaml` written before Stage 3 \u2014 every base on disk \u2014 reads back as\n`Okf` while its pages are `title`/`kind` frontmatter and `[[wiki links]]`.\nThe **generation number** is what separates them: ask [`Manifest::profile`],\nwhich folds [`CURRENT_SCHEMA_VERSION`] in, and never this field alone.",
         "enum": [
           "okf",
           "biookf"
@@ -7426,11 +8108,11 @@
             }
           }
         ],
-        "description": "One row of `GET /knowledge/bases`: the stored manifest plus the privacy tier\n(issue #56).\n\nThe tier is **flattened alongside** the manifest rather than added to it,\nbecause `manifest.yaml` is the on-disk record and the tier lives in\n`.kb-tiers`. A `tier` field on [`Manifest`] would be persisted by the next\n`manifest::save` and become a second, staler answer to a question the tier\nstore already answers — and it would also appear on `kb_list_bases`, a\nmodel-facing tool whose payload Task 10D's metadata register governs.\n\nThis route is user-facing: the renderer is the only caller, and Task 10C\nalready removes private bases from the model's own listing entirely."
+        "description": "One row of `GET /knowledge/bases`: the stored manifest plus the privacy tier\n(issue #56).\n\nThe tier is **flattened alongside** the manifest rather than added to it,\nbecause `manifest.yaml` is the on-disk record and the tier lives in\n`.kb-tiers`. A `tier` field on [`Manifest`] would be persisted by the next\n`manifest::save` and become a second, staler answer to a question the tier\nstore already answers \u2014 and it would also appear on `kb_list_bases`, a\nmodel-facing tool whose payload Task 10D's metadata register governs.\n\nThis route is user-facing: the renderer is the only caller, and Task 10C\nalready removes private bases from the model's own listing entirely."
       },
       "KbTier": {
         "type": "string",
-        "description": "A knowledge base's privacy tier (issue #56, design §9.3 B4).\n\nThe stored form is the lowercase word in `.kb-tiers`, and it is the same\nvocabulary [`crate::knowledge::tier`] compares against — one spelling, so the\nenum and the store cannot drift.\n\n⚠ **This is a USER-FACING type, not a model-facing one.** Task 10D's metadata\nregister governs what a model may learn about a base; nothing here is added\nto a `#[tool]` response. It travels on the HTTP surface the renderer reads\n(`GET /knowledge/bases`, `GET|POST /knowledge/bases/{id}/tier`) and nowhere\nelse — in particular it is deliberately NOT a field on [`Manifest`], because\n`manifest.yaml` is the on-disk record and a second copy of the tier there\nwould be a second answer to the question `.kb-tiers` already answers.\n\nThe `bool` in `tier.rs` is unchanged and stays: `biorouter-mcp` cannot depend\non `biorouter`, where `ProviderTier` lives, and the ratchet's argument is the\nCALLER's capability rather than a base's tier.",
+        "description": "A knowledge base's privacy tier (issue #56, design \u00a79.3 B4).\n\nThe stored form is the lowercase word in `.kb-tiers`, and it is the same\nvocabulary [`crate::knowledge::tier`] compares against \u2014 one spelling, so the\nenum and the store cannot drift.\n\n\u26a0 **This is a USER-FACING type, not a model-facing one.** Task 10D's metadata\nregister governs what a model may learn about a base; nothing here is added\nto a `#[tool]` response. It travels on the HTTP surface the renderer reads\n(`GET /knowledge/bases`, `GET|POST /knowledge/bases/{id}/tier`) and nowhere\nelse \u2014 in particular it is deliberately NOT a field on [`Manifest`], because\n`manifest.yaml` is the on-disk record and a second copy of the tier there\nwould be a second answer to the question `.kb-tiers` already answers.\n\nThe `bool` in `tier.rs` is unchanged and stays: `biorouter-mcp` cannot depend\non `biorouter`, where `ProviderTier` lives, and the ratchet's argument is the\nCALLER's capability rather than a base's tier.",
         "enum": [
           "public",
           "private"
@@ -7455,7 +8137,7 @@
           },
           "page_count": {
             "type": "integer",
-            "description": "What a publicize would release, counted from the tree at read time — not\nfrom anything the renderer already had. The confirmation states the blast\nradius rather than asking \"are you sure\", so these are the numbers it\nsays out loud.",
+            "description": "What a publicize would release, counted from the tree at read time \u2014 not\nfrom anything the renderer already had. The confirmation states the blast\nradius rather than asking \"are you sure\", so these are the numbers it\nsays out loud.",
             "minimum": 0
           },
           "raw_source_count": {
@@ -7500,7 +8182,7 @@
       },
       "LintReport": {
         "type": "object",
-        "description": "The payload of the lint stream's terminal `event: done` frame, and — since\nStage 6 — a published schema.\n\nIt is `ToSchema` rather than merely `Serialize` because\n`POST /knowledge/bases/{id}/lint` answers over SSE, so the shape a client\nhas to parse cannot be inferred from the response body's own type. Declaring\nit puts the four lists **and** the typed [`Diagnostics`] into\n`components.schemas`, and therefore into the generated TypeScript, where the\nrenderer reads the frame. A hand-written interface in `ui/` would be the\nsame contract with nothing keeping it in step.",
+        "description": "The payload of the lint stream's terminal `event: done` frame, and \u2014 since\nStage 6 \u2014 a published schema.\n\nIt is `ToSchema` rather than merely `Serialize` because\n`POST /knowledge/bases/{id}/lint` answers over SSE, so the shape a client\nhas to parse cannot be inferred from the response body's own type. Declaring\nit puts the four lists **and** the typed [`Diagnostics`] into\n`components.schemas`, and therefore into the generated TypeScript, where the\nrenderer reads the frame. A hand-written interface in `ui/` would be the\nsame contract with nothing keeping it in step.",
         "required": [
           "orphans",
           "contradictions",
@@ -7523,14 +8205,14 @@
             "items": {
               "type": "string"
             },
-            "description": "Link targets written in source pages that name no page under\n`knowledge/` — again over all four grammars, so a typed base's `edges:`\ncitations are read."
+            "description": "Link targets written in source pages that name no page under\n`knowledge/` \u2014 again over all four grammars, so a typed base's `edges:`\ncitations are read."
           },
           "orphans": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Pages nothing else in the bundle links to, in any of the four grammars\n(`graph::bundle_links`) — not the legacy bracket form alone, which is\nwhat made this list every page of a typed base."
+            "description": "Pages nothing else in the bundle links to, in any of the four grammars\n(`graph::bundle_links`) \u2014 not the legacy bracket form alone, which is\nwhat made this list every page of a typed base."
           },
           "stale_sources": {
             "type": "array",
@@ -7543,7 +8225,7 @@
       },
       "LintResult": {
         "type": "object",
-        "description": "What the lint stream's terminal `event: done` frame actually carries.\n\nThe [`LintReport`] is nested rather than flattened because a lint answers two\nquestions — what is wrong, and what was changed about it — and an autofix\nthat rewrote pages has a `commit_sha` the report itself cannot express.\nPublished as a schema for the reason its `report` field is; see\n[`LintReport`].",
+        "description": "What the lint stream's terminal `event: done` frame actually carries.\n\nThe [`LintReport`] is nested rather than flattened because a lint answers two\nquestions \u2014 what is wrong, and what was changed about it \u2014 and an autofix\nthat rewrote pages has a `commit_sha` the report itself cannot express.\nPublished as a schema for the reason its `report` field is; see\n[`LintReport`].",
         "required": [
           "report",
           "fixes_applied"
@@ -7551,7 +8233,7 @@
         "properties": {
           "commit_sha": {
             "type": "string",
-            "description": "The autofix commit, or `None` for a read-only lint — which is every lint\nthat ran without `autofix`, and therefore without a provider at all.",
+            "description": "The autofix commit, or `None` for a read-only lint \u2014 which is every lint\nthat ran without `autofix`, and therefore without a provider at all.",
             "nullable": true
           },
           "fixes_applied": {
@@ -7764,7 +8446,7 @@
           },
           "speed_hint": {
             "type": "string",
-            "description": "Short human-readable expected-speed hint shown next to the download\nsize (e.g. \"Fast per token — 3B active (MoE), but heavy to load\")."
+            "description": "Short human-readable expected-speed hint shown next to the download\nsize (e.g. \"Fast per token \u2014 3B active (MoE), but heavy to load\")."
           },
           "suitability_message": {
             "type": "string"
@@ -7901,7 +8583,7 @@
         "properties": {
           "path": {
             "type": "string",
-            "description": "Absolute on-disk path to the knowledge base directory (the folder that\nholds `knowledge/`, `raw/`, `index.md`, …). Clients use this to open the\nfolder in the OS file explorer so users can inspect raw markdown."
+            "description": "Absolute on-disk path to the knowledge base directory (the folder that\nholds `knowledge/`, `raw/`, `index.md`, \u2026). Clients use this to open the\nfolder in the OS file explorer so users can inspect raw markdown."
           }
         }
       },
@@ -7918,7 +8600,7 @@
         "properties": {
           "biookf_version": {
             "type": "string",
-            "description": "The BioOKF revision, when [`Self::format`] is `biookf`.\n\nIt lives **here and not in `index.md`** (DR-23's corollary): OKF §8\npermits `okf_version` in a bundle-root index file and nothing else, so a\n`biookf_version` there is a conformance failure — which is exactly the\ndeviation BioOKF's own spec makes and BioRouter does not.",
+            "description": "The BioOKF revision, when [`Self::format`] is `biookf`.\n\nIt lives **here and not in `index.md`** (DR-23's corollary): OKF \u00a78\npermits `okf_version` in a bundle-root index file and nothing else, so a\n`biookf_version` there is a conformance failure \u2014 which is exactly the\ndeviation BioOKF's own spec makes and BioRouter does not.",
             "nullable": true
           },
           "color": {
@@ -7947,7 +8629,7 @@
           },
           "okf_version": {
             "type": "string",
-            "description": "The OKF revision this bundle declares, mirroring the bundle-root\n`index.md` frontmatter (OKF §8/§12). `None` on a base written before the\nOKF generation, which is the honest answer: it declares no revision.\n\nUnlike the six fields above these two take no `#[schema(required)]`.\nThat pairing exists there because the server always serializes those, so\nthe `serde(default)` describes only the read side; here the `None`\ndescribes genuinely absent data, and `required` would be a false\nstatement about the response that the generated TypeScript would then\nbelieve.",
+            "description": "The OKF revision this bundle declares, mirroring the bundle-root\n`index.md` frontmatter (OKF \u00a78/\u00a712). `None` on a base written before the\nOKF generation, which is the honest answer: it declares no revision.\n\nUnlike the six fields above these two take no `#[schema(required)]`.\nThat pairing exists there because the server always serializes those, so\nthe `serde(default)` describes only the read side; here the `None`\ndescribes genuinely absent data, and `required` would be a false\nstatement about the response that the generated TypeScript would then\nbelieve.",
             "nullable": true
           },
           "schema_version": {
@@ -8030,7 +8712,7 @@
           },
           "revision": {
             "type": "string",
-            "description": "Digest of the whole category file as it was listed.\n\nThe compare-and-set token for every delete: any write to the category —\nan agent appending, another window deleting — changes it, so a delete\nthat still carries the listed revision is a delete of the category the\nuser was actually looking at. Without it the user confirms a list that\nhas since moved on and destroys something they were never shown."
+            "description": "Digest of the whole category file as it was listed.\n\nThe compare-and-set token for every delete: any write to the category \u2014\nan agent appending, another window deleting \u2014 changes it, so a delete\nthat still carries the listed revision is a delete of the category the\nuser was actually looking at. Without it the user confirms a list that\nhas since moved on and destroys something they were never shown."
           },
           "size_bytes": {
             "type": "integer",
@@ -8093,7 +8775,7 @@
           },
           "digest": {
             "type": "string",
-            "description": "`MemoryEntry.digest` of the row that was listed at that position — the\nrow's identity, over its tags as well as its body."
+            "description": "`MemoryEntry.digest` of the row that was listed at that position \u2014 the\nrow's identity, over its tags as well as its body."
           },
           "index": {
             "type": "integer",
@@ -8148,7 +8830,7 @@
           },
           "digest": {
             "type": "string",
-            "description": "Digest of this entry exactly as it is serialized on disk — tag line and\nbody together.\n\nThis is the row's identity, and it is what a delete has to name. The body\nalone is not an identity: two entries can carry the same text under\ndifferent tags, and a body-only guard is satisfied by whichever of them\nhappens to sit at the index (#63 review, finding 6)."
+            "description": "Digest of this entry exactly as it is serialized on disk \u2014 tag line and\nbody together.\n\nThis is the row's identity, and it is what a delete has to name. The body\nalone is not an identity: two entries can carry the same text under\ndifferent tags, and a body-only guard is satisfied by whichever of them\nhappens to sit at the index (#63 review, finding 6)."
           },
           "index": {
             "type": "integer",
@@ -8160,7 +8842,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Words from the entry's leading `# …` line; empty when it has none."
+            "description": "Words from the entry's leading `# \u2026` line; empty when it has none."
           }
         }
       },
@@ -8239,7 +8921,7 @@
       },
       "MergeReport": {
         "type": "object",
-        "description": "What the merge did, or — for a dry run — what it *would* do.\n\nThe dry run and the merge produce this from the **same** [`plan`] call, so\nthe preview cannot describe a different operation from the one that runs.",
+        "description": "What the merge did, or \u2014 for a dry run \u2014 what it *would* do.\n\nThe dry run and the merge produce this from the **same** [`plan`] call, so\nthe preview cannot describe a different operation from the one that runs.",
         "required": [
           "destination_kb_id",
           "source_kb_id",
@@ -8273,7 +8955,7 @@
           },
           "destination_pages_before": {
             "type": "integer",
-            "description": "The destination's page count before the merge — the size of the set\n[`verify_snapshot`] checked.",
+            "description": "The destination's page count before the merge \u2014 the size of the set\n[`verify_snapshot`] checked.",
             "minimum": 0
           },
           "destination_tier": {
@@ -8316,7 +8998,7 @@
             "items": {
               "$ref": "#/components/schemas/Rename"
             },
-            "description": "Raw sources copied into the destination, `from` → `to` (equal when there\nwas no collision)."
+            "description": "Raw sources copied into the destination, `from` \u2192 `to` (equal when there\nwas no collision)."
           },
           "raw_deduped": {
             "type": "array",
@@ -8327,12 +9009,12 @@
           },
           "references_rewritten": {
             "type": "integer",
-            "description": "How many references were repointed — edge `object`, edge\n`primary_source`, `raw_source` paths and body links.",
+            "description": "How many references were repointed \u2014 edge `object`, edge\n`primary_source`, `raw_source` paths and body links.",
             "minimum": 0
           },
           "references_seen": {
             "type": "integer",
-            "description": "How many references the rewriter **looked at**, of the same four kinds.\n\nThe denominator, and it is here because its absence hid a corruption. A\npreview that says only \"1 identifier renamed, 3 references rewritten\"\nreads as complete, and read exactly that way while plain `[[Name]]`\nlinks went through a map that could not rename them — silently\nretargeted at the destination's own page of that name. `seen -\nrewritten` is what the merge saw and deliberately left alone, so a\nreader can ask why a number is large before approving the least\nreversible operation in the subsystem.",
+            "description": "How many references the rewriter **looked at**, of the same four kinds.\n\nThe denominator, and it is here because its absence hid a corruption. A\npreview that says only \"1 identifier renamed, 3 references rewritten\"\nreads as complete, and read exactly that way while plain `[[Name]]`\nlinks went through a map that could not rename them \u2014 silently\nretargeted at the destination's own page of that name. `seen -\nrewritten` is what the merge saw and deliberately left alone, so a\nreader can ask why a number is large before approving the least\nreversible operation in the subsystem.",
             "minimum": 0
           },
           "source_kb_id": {
@@ -8716,7 +9398,7 @@
           },
           {
             "type": "object",
-            "description": "A tool call the model has begun emitting, announced as soon as its name\nis known — before its arguments finish generating. Advisory only: the\nclient draws a skeleton tool card keyed by `id` and later merges the\nauthoritative `Message` tool request (same `id`) into it. This is NOT a\ntool request and must never be dispatched, gated, or persisted; it does\nnot enter `all_messages` or the coalescer.",
+            "description": "A tool call the model has begun emitting, announced as soon as its name\nis known \u2014 before its arguments finish generating. Advisory only: the\nclient draws a skeleton tool card keyed by `id` and later merges the\nauthoritative `Message` tool request (same `id`) into it. This is NOT a\ntool request and must never be dispatched, gated, or persisted; it does\nnot enter `all_messages` or the coalescer.",
             "required": [
               "id",
               "name",
@@ -8765,7 +9447,7 @@
           },
           {
             "type": "object",
-            "description": "#59: the ids this turn's messages were actually persisted under.\n\nA client that watches a whole turn go by cannot otherwise learn them: a\nmessage is streamed *before* it is stored, one streamed assistant reply\ncan become several stored rows, and the model-only rows (BR-47 post-edit\ndiagnostics, loop-guard / stall / budget nudges, hook context) are never\nstreamed at all. Without this frame `expectedMessageIds` on\n`POST /sessions/{session_id}/edit_message` — the ids of every message the\nclient's view holds — is unsatisfiable, and the in-place edit it guards\nanswers 409 on a session nobody else has touched.\n\nIds only: this frame never re-sends message bodies. Each entry carries\n`userVisible`, which is what separates a row the client is deliberately\nnot shown from one it was simply never told about — a client draws\nnothing for a `userVisible: false` row but must still name it.\n\nThe converse does NOT hold: `userVisible: true` is not an instruction to\ndraw, it is the absence of the hidden flag, and the content usually\narrived already inside a `Message` frame (one streamed reply is stored as\nseveral rows). This frame is for accounting; the transcript comes from\n`Message` frames alone. See `PersistedMessage::user_visible`.",
+            "description": "#59: the ids this turn's messages were actually persisted under.\n\nA client that watches a whole turn go by cannot otherwise learn them: a\nmessage is streamed *before* it is stored, one streamed assistant reply\ncan become several stored rows, and the model-only rows (BR-47 post-edit\ndiagnostics, loop-guard / stall / budget nudges, hook context) are never\nstreamed at all. Without this frame `expectedMessageIds` on\n`POST /sessions/{session_id}/edit_message` \u2014 the ids of every message the\nclient's view holds \u2014 is unsatisfiable, and the in-place edit it guards\nanswers 409 on a session nobody else has touched.\n\nIds only: this frame never re-sends message bodies. Each entry carries\n`userVisible`, which is what separates a row the client is deliberately\nnot shown from one it was simply never told about \u2014 a client draws\nnothing for a `userVisible: false` row but must still name it.\n\nThe converse does NOT hold: `userVisible: true` is not an instruction to\ndraw, it is the absence of the hidden flag, and the content usually\narrived already inside a `Message` frame (one streamed reply is stored as\nseveral rows). This frame is for accounting; the transcript comes from\n`Message` frames alone. See `PersistedMessage::user_visible`.",
             "required": [
               "messages",
               "type"
@@ -8818,7 +9500,7 @@
           },
           "pinned": {
             "type": "boolean",
-            "description": "#51: carry this message verbatim through every compaction instead of\ndissolving it into a summary. Never dropped by summarization — but still\nsubject to the overall context budget, which trims the oldest pins first\nand reports it. Defaults to false."
+            "description": "#51: carry this message verbatim through every compaction instead of\ndissolving it into a summary. Never dropped by summarization \u2014 but still\nsubject to the overall context budget, which trims the oldest pins first\nand reports it. Defaults to false."
           },
           "provenance": {
             "allOf": [
@@ -8836,7 +9518,7 @@
       },
       "MessageProvenance": {
         "type": "object",
-        "description": "Where a message came from, when it did not originate with this session's own\nuser↔agent pair. Cross-session control without provenance is\nindistinguishable from prompt injection (BR-71 §2.4) — stamped in storage,\nnot just in the UI.\n\n**The guarantee, stated as what is actually enforced.** A stamp is not\nsuppressible by anything on the normalize → compact → write-back path, which\nis the path that decides what the model sees and what the store keeps. Three\nsites across two stages had to be taught it, because each rebuilds or\nreplaces metadata rather than updating it — the `..self` builders inherited\nthe field for free, which is exactly why these stood out:\n\n- [`crate::conversation::merge_consecutive_messages`] keeps only the first\nmessage's metadata, so a change of origin is a merge boundary\n(`is_provenance_boundary`), exactly as `pinned` is.\n- the legacy compaction path replaces the archived original's metadata with\n`MessageMetadata::invisible()`, and rebuilds the preserved copy from its\ntext alone; both carry the stamp across explicitly\n(`crate::context_mgmt`).\n\nIt is deliberately NOT a claim about anything outside that path. A caller\nholding a `Message` can always construct an unstamped one, and a stamp whose\n`kind` a reader does not recognise degrades to `None` rather than taking the\nrest of the metadata down with it (see `MessageMetadata::provenance`). The\ndefence a stamp *enables* — [`frame_workspace_injection`] — is baked into\nmessage content, not metadata, precisely so it cannot be undone by a metadata\nedit.\n\n`Hash` is derived deliberately: this value is part of\n[`crate::conversation::normalize`]'s per-message cache validator. See\n`message_fingerprint` there.",
+        "description": "Where a message came from, when it did not originate with this session's own\nuser\u2194agent pair. Cross-session control without provenance is\nindistinguishable from prompt injection (BR-71 \u00a72.4) \u2014 stamped in storage,\nnot just in the UI.\n\n**The guarantee, stated as what is actually enforced.** A stamp is not\nsuppressible by anything on the normalize \u2192 compact \u2192 write-back path, which\nis the path that decides what the model sees and what the store keeps. Three\nsites across two stages had to be taught it, because each rebuilds or\nreplaces metadata rather than updating it \u2014 the `..self` builders inherited\nthe field for free, which is exactly why these stood out:\n\n- [`crate::conversation::merge_consecutive_messages`] keeps only the first\nmessage's metadata, so a change of origin is a merge boundary\n(`is_provenance_boundary`), exactly as `pinned` is.\n- the legacy compaction path replaces the archived original's metadata with\n`MessageMetadata::invisible()`, and rebuilds the preserved copy from its\ntext alone; both carry the stamp across explicitly\n(`crate::context_mgmt`).\n\nIt is deliberately NOT a claim about anything outside that path. A caller\nholding a `Message` can always construct an unstamped one, and a stamp whose\n`kind` a reader does not recognise degrades to `None` rather than taking the\nrest of the metadata down with it (see `MessageMetadata::provenance`). The\ndefence a stamp *enables* \u2014 [`frame_workspace_injection`] \u2014 is baked into\nmessage content, not metadata, precisely so it cannot be undone by a metadata\nedit.\n\n`Hash` is derived deliberately: this value is part of\n[`crate::conversation::normalize`]'s per-message cache validator. See\n`message_fingerprint` there.",
         "required": [
           "kind"
         ],
@@ -8985,7 +9667,7 @@
       },
       "ModelUsageRow": {
         "type": "object",
-        "description": "One `(model, provider)` group of the per-model usage breakdown.\n\n`model_id` / `provider` are `None` for turns recorded before model\nattribution landed, or when the provider reported no model — those rows\naggregate together as the \"unknown\" group.",
+        "description": "One `(model, provider)` group of the per-model usage breakdown.\n\n`model_id` / `provider` are `None` for turns recorded before model\nattribution landed, or when the provider reported no model \u2014 those rows\naggregate together as the \"unknown\" group.",
         "required": [
           "inputTokens",
           "outputTokens",
@@ -9030,6 +9712,55 @@
             "type": "integer",
             "format": "int64",
             "description": "Number of billed turns attributed to this group."
+          }
+        }
+      },
+      "PackageSummary": {
+        "type": "object",
+        "description": "The part of an installed package's record the interface needs. The full\nrecord lives beside the skills as `biorouter-package.json`; see\n`crate::agents::skill_package`.",
+        "required": [
+          "id",
+          "displayName"
+        ],
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "entryPoint": {
+            "type": "string",
+            "description": "The router/entry-point skill a manifest declared, by frontmatter name.",
+            "nullable": true
+          },
+          "groups": {
+            "type": "object",
+            "description": "Optional named groups, e.g. `core` / `on-demand`."
+          },
+          "id": {
+            "type": "string"
+          },
+          "installedAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "installer": {
+            "type": "string",
+            "nullable": true
+          },
+          "resolvedCommit": {
+            "type": "string",
+            "nullable": true
+          },
+          "sourceRef": {
+            "type": "string",
+            "nullable": true
+          },
+          "sourceUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "version": {
+            "type": "string",
+            "nullable": true
           }
         }
       },
@@ -9124,11 +9855,43 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "The `msg_uid` the row was actually stored under — the id\n`POST /sessions/{id}/edit_message` compares `expectedMessageIds`\nagainst."
+            "description": "The `msg_uid` the row was actually stored under \u2014 the id\n`POST /sessions/{id}/edit_message` compares `expectedMessageIds`\nagainst."
           },
           "userVisible": {
             "type": "boolean",
-            "description": "Whether this row is HIDDEN from the transcript. It is not a rendering\ninstruction, and reading it as one double-draws.\n\n`false` is the model-only plumbing a turn stores but deliberately\nkeeps out of the transcript (the BR-47 post-edit diagnostics, the\nloop-guard / stall / budget nudges, hook context). Publishing it\n*with* the flag is what separates \"you are deliberately not being\nshown this row\" from \"you were never told it exists\" — the client can\nname the id without drawing anything for it. That direction is exact:\n`false` means the row must not appear in the transcript.\n\n`true` means only \"not hidden\" — NOT \"draw this\". The content may\nalready have been delivered inside a `Message` frame, and on a\ntool-bearing turn it has been: one streamed reply is stored as a\nrebuilt thinking row plus one `tool_use` row per request, each built\nfrom `Message::assistant()` / `Message::new` and so carrying the\ndefault `user_visible: true`, while the client was shown that same\ncontent once already as the reply itself. A client that drew every\n`true` row would render the same tool request twice.\n\nThis frame is for ACCOUNTING — naming rows so `expectedMessageIds`\ncan be complete. The transcript still comes from `Message` frames\nalone."
+            "description": "Whether this row is HIDDEN from the transcript. It is not a rendering\ninstruction, and reading it as one double-draws.\n\n`false` is the model-only plumbing a turn stores but deliberately\nkeeps out of the transcript (the BR-47 post-edit diagnostics, the\nloop-guard / stall / budget nudges, hook context). Publishing it\n*with* the flag is what separates \"you are deliberately not being\nshown this row\" from \"you were never told it exists\" \u2014 the client can\nname the id without drawing anything for it. That direction is exact:\n`false` means the row must not appear in the transcript.\n\n`true` means only \"not hidden\" \u2014 NOT \"draw this\". The content may\nalready have been delivered inside a `Message` frame, and on a\ntool-bearing turn it has been: one streamed reply is stored as a\nrebuilt thinking row plus one `tool_use` row per request, each built\nfrom `Message::assistant()` / `Message::new` and so carrying the\ndefault `user_visible: true`, while the client was shown that same\ncontent once already as the reply itself. A client that drew every\n`true` row would render the same tool request twice.\n\nThis frame is for ACCOUNTING \u2014 naming rows so `expectedMessageIds`\ncan be complete. The transcript still comes from `Message` frames\nalone."
+          }
+        }
+      },
+      "PlannedSkill": {
+        "type": "object",
+        "description": "One component of a planned import.",
+        "required": [
+          "name",
+          "description",
+          "directory",
+          "entryPoint"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "directory": {
+            "type": "string",
+            "description": "Directory name under the package root. Taken from the source layout so\na manifest referring to `skills/media-use` still resolves after install."
+          },
+          "entryPoint": {
+            "type": "boolean",
+            "description": "The router the package declares as its way in."
+          },
+          "group": {
+            "type": "string",
+            "description": "The manifest's group for this component, e.g. `core` / `on-demand`.",
+            "nullable": true
+          },
+          "name": {
+            "type": "string",
+            "description": "The frontmatter `name`, preserved exactly."
           }
         }
       },
@@ -9243,7 +10006,7 @@
       },
       "PrivacyBarrierBody": {
         "type": "object",
-        "description": "The body of the 409 `/agent/update_provider` returns when a privacy boundary\nrefused the bind (issue #56, Gate A).\n\nTyped rather than a bare string because the GUI does not merely report the\nrefusal — it renders §14.4's repair card from it, and the card names both\ncolliding tiers and offers the private models that would work. A plain-text\n409 would leave the renderer parsing prose.",
+        "description": "The body of the 409 `/agent/update_provider` returns when a privacy boundary\nrefused the bind (issue #56, Gate A).\n\nTyped rather than a bare string because the GUI does not merely report the\nrefusal \u2014 it renders \u00a714.4's repair card from it, and the card names both\ncolliding tiers and offers the private models that would work. A plain-text\n409 would leave the renderer parsing prose.",
         "required": [
           "code",
           "session_classification",
@@ -9272,7 +10035,7 @@
       },
       "PrivacyDisclosureResponse": {
         "type": "object",
-        "description": "What `GET /privacy/disclosure` serves (issue #56, DR-17 requirement 3).\n\n⚠ **The copy is on the wire on purpose.** The sentence exists in the GUI\ndialog, the settings panel, the provider grid, the model chip, the CLI,\n`docs/` and the landing site; four hand-written copies drift within one\nrelease and the drifted one is always the one a user reads. One definition\nlives in `biorouter::privacy::disclosure` and the renderer renders what it is\nhanded — a hardcoded English string in a component is the failure this shape\nexists to prevent, and it is invisible until the two disagree.",
+        "description": "What `GET /privacy/disclosure` serves (issue #56, DR-17 requirement 3).\n\n\u26a0 **The copy is on the wire on purpose.** The sentence exists in the GUI\ndialog, the settings panel, the provider grid, the model chip, the CLI,\n`docs/` and the landing site; four hand-written copies drift within one\nrelease and the drifted one is always the one a user reads. One definition\nlives in `biorouter::privacy::disclosure` and the renderer renders what it is\nhanded \u2014 a hardcoded English string in a component is the failure this shape\nexists to prevent, and it is invisible until the two disagree.",
         "required": [
           "title_template",
           "long",
@@ -9282,7 +10045,7 @@
         "properties": {
           "acknowledged": {
             "type": "boolean",
-            "description": "Has the user acknowledged on this install? Once per install, not once per\nsession — a dialog on every chat is a dialog nobody reads."
+            "description": "Has the user acknowledged on this install? Once per install, not once per\nsession \u2014 a dialog on every chat is a dialog nobody reads."
           },
           "long": {
             "type": "string",
@@ -9294,7 +10057,7 @@
           },
           "title_template": {
             "type": "string",
-            "description": "The dialog heading, with `{provider}` still in it — the renderer\nsubstitutes the display name of the provider it is warning about, and so\nnever has to know the English around it."
+            "description": "The dialog heading, with `{provider}` still in it \u2014 the renderer\nsubstitutes the display name of the provider it is warning about, and so\nnever has to know the English around it."
           }
         }
       },
@@ -9308,7 +10071,7 @@
       },
       "ProviderAffiliation": {
         "type": "object",
-        "description": "DR-26's third axis for one provider **instance**, in the shape a UI can\nrender (issue #56).\n\n⚠ **Resolved from the instance, never from a name.** [`Self::of`] is the only\nconstructor a caller should reach for, and it reads\n[`Provider::tier`] and [`Provider::affiliation`] off one `&dyn Provider` —\nthe same two instance methods every gate reads. A `versa_* => ucsf` table\nwould keep claiming the institution for a Versa module repointed at another\nhost, which `tier()` has already demoted to Public: a private-looking\ninstitution chip on a public flow. Both Versa providers derive `ucsf` from\nthe same gateway-host check that decides their tier\n(`providers::ucsf_gateway_affiliation`), so a repointed instance loses\nPrivate and `ucsf` **together**, and this type is what carries that pairing\nout to the UI.\n\n⚠ **`Option<ProviderAffiliation>::None` is \"public — no affiliation at all\",\nand it is a fourth state distinct from all three\n[`ProviderAffiliationKind`]s.** See [`Self::resolved`] for the table.",
+        "description": "DR-26's third axis for one provider **instance**, in the shape a UI can\nrender (issue #56).\n\n\u26a0 **Resolved from the instance, never from a name.** [`Self::of`] is the only\nconstructor a caller should reach for, and it reads\n[`Provider::tier`] and [`Provider::affiliation`] off one `&dyn Provider` \u2014\nthe same two instance methods every gate reads. A `versa_* => ucsf` table\nwould keep claiming the institution for a Versa module repointed at another\nhost, which `tier()` has already demoted to Public: a private-looking\ninstitution chip on a public flow. Both Versa providers derive `ucsf` from\nthe same gateway-host check that decides their tier\n(`providers::ucsf_gateway_affiliation`), so a repointed instance loses\nPrivate and `ucsf` **together**, and this type is what carries that pairing\nout to the UI.\n\n\u26a0 **`Option<ProviderAffiliation>::None` is \"public \u2014 no affiliation at all\",\nand it is a fourth state distinct from all three\n[`ProviderAffiliationKind`]s.** See [`Self::resolved`] for the table.",
         "required": [
           "kind"
         ],
@@ -9327,7 +10090,7 @@
       },
       "ProviderAffiliationKind": {
         "type": "string",
-        "description": "Which of DR-26's three model-side affiliations this is.\n\n⚠ **There is no `Public` variant, and that is the whole shape of the type.**\nA public model's affiliation is not a value here, it is the *absence* of a\n[`ProviderAffiliation`] — `Option::None` — exactly as\n[`ModelAffiliation`] has no public variant. Giving \"public\" a seat would\ninvite a renderer to draw a chip for it, and a chip that says \"no\ninstitution\" on a public model reads as a *constraint* on a model that has\nnone of the private tier's protections at all.\n\nA closed enum rather than a free string so a renderer can switch on it\ntotally: a fourth affiliation must be a compile error at the badge, not a\nsilently-unhandled branch that renders as the safest-looking of the three.",
+        "description": "Which of DR-26's three model-side affiliations this is.\n\n\u26a0 **There is no `Public` variant, and that is the whole shape of the type.**\nA public model's affiliation is not a value here, it is the *absence* of a\n[`ProviderAffiliation`] \u2014 `Option::None` \u2014 exactly as\n[`ModelAffiliation`] has no public variant. Giving \"public\" a seat would\ninvite a renderer to draw a chip for it, and a chip that says \"no\ninstitution\" on a public model reads as a *constraint* on a model that has\nnone of the private tier's protections at all.\n\nA closed enum rather than a free string so a renderer can switch on it\ntotally: a fourth affiliation must be a compile error at the badge, not a\nsilently-unhandled branch that renders as the safest-looking of the three.",
         "enum": [
           "local",
           "institutions",
@@ -9434,7 +10197,7 @@
           },
           "runs_locally": {
             "type": "boolean",
-            "description": "Whether this provider's inference runs on the user's own machine — a\nbundled or self-hosted server — rather than on a remote service.\n\nDisplay only: it is what splits the private tier into the settings\ngrid's \"Local Models\" and \"Institutional Models\" sections. It is **not**\nthe privacy tier, and neither field is derivable from the other: a\nself-hosted server pointed off the machine is still `runs_locally` by\ntype and Public by instance."
+            "description": "Whether this provider's inference runs on the user's own machine \u2014 a\nbundled or self-hosted server \u2014 rather than on a remote service.\n\nDisplay only: it is what splits the private tier into the settings\ngrid's \"Local Models\" and \"Institutional Models\" sections. It is **not**\nthe privacy tier, and neither field is derivable from the other: a\nself-hosted server pointed off the machine is still `runs_locally` by\ntype and Public by instance."
           },
           "tier": {
             "$ref": "#/components/schemas/ProviderTier"
@@ -9443,7 +10206,7 @@
       },
       "ProviderTier": {
         "type": "string",
-        "description": "CAPABILITY — the least-privileged model currently bound to a session.\n\nDeliberately **not** `Ord`: `max` over this type is always a bug. A mixed\nlead/worker composite is `least(lead, worker)`, so a private lead with a\npublic worker has **public** reach.",
+        "description": "CAPABILITY \u2014 the least-privileged model currently bound to a session.\n\nDeliberately **not** `Ord`: `max` over this type is always a bug. A mixed\nlead/worker composite is `least(lead, worker)`, so a private lead with a\npublic worker has **public** reach.",
         "enum": [
           "public",
           "private"
@@ -9483,7 +10246,7 @@
             "type": "string"
           }
         ],
-        "description": "One reading of one BioOKF §7.3 quantitative slot: a number when the producer\nwrote one, and the text they wrote otherwise.\n\nUI spec §2.1 types the map as `Record<string, string | number>`, and both\narms are load-bearing. `p_value: 3.0e-6` is a number and a renderer that\nreceived it as a string could not right-align or format it; `p_value: <0.001`\nand `effect_size: 2.5 nM` are *also* things a model writes, and coercing\nthose to `None` deletes a statistic with nothing left to report it.\n\nThe variant is chosen by the value alone, never by the key — see\n[`crate::knowledge::graph`]'s `QUANTITATIVE_KEYS` for why the key decides\nonly which map an attribute lands in."
+        "description": "One reading of one BioOKF \u00a77.3 quantitative slot: a number when the producer\nwrote one, and the text they wrote otherwise.\n\nUI spec \u00a72.1 types the map as `Record<string, string | number>`, and both\narms are load-bearing. `p_value: 3.0e-6` is a number and a renderer that\nreceived it as a string could not right-align or format it; `p_value: <0.001`\nand `effect_size: 2.5 nM` are *also* things a model writes, and coercing\nthose to `None` deletes a statistic with nothing left to report it.\n\nThe variant is chosen by the value alone, never by the key \u2014 see\n[`crate::knowledge::graph`]'s `QUANTITATIVE_KEYS` for why the key decides\nonly which map an attribute lands in."
       },
       "QueryBody": {
         "type": "object",
@@ -9739,6 +10502,23 @@
           },
           "session_id": {
             "type": "string"
+          }
+        }
+      },
+      "RemovePackageRequest": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The install directory name \u2014 a `CatalogBundle.name`, or the last\ncomponent of a `CatalogSkill.slug`."
+          },
+          "sourceRoot": {
+            "type": "string",
+            "description": "Which skills root it lives under. Omit for the Biorouter one.\n\n\u26a0 **Validated against [`skill_catalog::roots`], not merely resolved.**\nThis handler deletes a directory tree, so the root is chosen from the\nset the daemon itself enumerated rather than taken from the caller. A\npath the caller invents matches nothing and is refused \u2014 which is why\nthis can safely cover `~/.claude/skills` and a project directory, the\ntwo the Skills pane has always offered a Delete for.",
+            "nullable": true
           }
         }
       },
@@ -10189,7 +10969,7 @@
         "properties": {
           "creator_session_id": {
             "type": "string",
-            "description": "Issue #56 (§9.3 C2). The chat this schedule was created from, when there\nwas one — `/loop` and `/schedule` always have one; a workflow scheduled\nfrom the CLI or the schedules route does not.\n\nA scheduled run resolves its provider from THIS session's recorded\n`provider_name` before falling back to the global default (see\n[`resolve_scheduled_provider`]). Without it a job created from a chat on\na private model silently runs on the user's commercial default — R5 —\nand, once the design's §6.3 rule that a `Scheduled` session inherits its\ncreator's classification lands, Gate A would refuse the bind on every\ntick forever.",
+            "description": "Issue #56 (\u00a79.3 C2). The chat this schedule was created from, when there\nwas one \u2014 `/loop` and `/schedule` always have one; a workflow scheduled\nfrom the CLI or the schedules route does not.\n\nA scheduled run resolves its provider from THIS session's recorded\n`provider_name` before falling back to the global default (see\n[`resolve_scheduled_provider`]). Without it a job created from a chat on\na private model silently runs on the user's commercial default \u2014 R5 \u2014\nand, once the design's \u00a76.3 rule that a `Scheduled` session inherits its\ncreator's classification lands, Gate A would refuse the bind on every\ntick forever.",
             "nullable": true
           },
           "cron": {
@@ -10218,7 +10998,7 @@
           "max_runs": {
             "type": "integer",
             "format": "int32",
-            "description": "Optional cap on total firings. When `Some(n)`, the job auto-pauses once\n`run_count` reaches `n` — the bound that keeps `/loop` from running\nforever. `None` = unbounded (durable `/schedule` jobs).",
+            "description": "Optional cap on total firings. When `Some(n)`, the job auto-pauses once\n`run_count` reaches `n` \u2014 the bound that keeps `/loop` from running\nforever. `None` = unbounded (durable `/schedule` jobs).",
             "nullable": true,
             "minimum": 0
           },
@@ -10297,7 +11077,7 @@
           },
           "key": {
             "type": "string",
-            "description": "The name it is stored under — an env var name, a keyring entry."
+            "description": "The name it is stored under \u2014 an env var name, a keyring entry."
           },
           "label": {
             "type": "string",
@@ -10339,7 +11119,7 @@
           },
           "branch_point_msg_uid": {
             "type": "string",
-            "description": "The durable `msg_uid` of the exact parent message this session was\nbranched at — the divergence point (BR-45). Paired with `diverged_from`\n(parent session), it is the edge label of the branch forest. `None` for\nnormally-created sessions. Anchoring on this stable id instead of a\nwhole-second timestamp is what fixes the same-second over-truncation.",
+            "description": "The durable `msg_uid` of the exact parent message this session was\nbranched at \u2014 the divergence point (BR-45). Paired with `diverged_from`\n(parent session), it is the edge label of the branch forest. `None` for\nnormally-created sessions. Anchoring on this stable id instead of a\nwhole-second timestamp is what fixes the same-second over-truncation.",
             "nullable": true
           },
           "conversation": {
@@ -10356,7 +11136,7 @@
           },
           "diverged_from": {
             "type": "string",
-            "description": "Id of the session this one was diverged (branched) from, if any. Set by\n`diverge_session`; `None` for normally-created sessions. Lets the UI show\na session's lineage (\"branched from …\").",
+            "description": "Id of the session this one was diverged (branched) from, if any. Set by\n`diverge_session`; `None` for normally-created sessions. Lets the UI show\na session's lineage (\"branched from \u2026\").",
             "nullable": true
           },
           "extension_data": {
@@ -10392,12 +11172,12 @@
           },
           "parent_session_id": {
             "type": "string",
-            "description": "Id of the parent session that spawned this one as a subagent (BR-71).\nSibling of `diverged_from` (branch lineage): `diverged_from` records a\nuser fork; this records a delegation. `None` for non-subagent sessions.\nIt is also what the §7 capability matrix's `L` axis reads (issue #56).",
+            "description": "Id of the parent session that spawned this one as a subagent (BR-71).\nSibling of `diverged_from` (branch lineage): `diverged_from` records a\nuser fork; this records a delegation. `None` for non-subagent sessions.\nIt is also what the \u00a77 capability matrix's `L` axis reads (issue #56).",
             "nullable": true
           },
           "privacy_reason": {
             "type": "string",
-            "description": "Audit and UX only — never read by a gate. One of `turn:<provider>`,\n`mcp:<extension>`, `inherited:<parent_id>`, `diverged:<parent_id>`,\n`backfill:<provider>`, `declassified_by_user`. §12.4 grades the\ndeclassification confirmation on whether it has ever been `mcp:*`.\n\nIt therefore holds the **dominant** provenance, not the first or the\nlatest one: the storage layer lets an `mcp:` raise displace a non-`mcp:`\nreason and lets nothing displace an `mcp:` reason. Freezing it on the\nfirst raise would answer \"has it ever been `mcp:*`\" with a flat no, since\nGate B's `turn:*` always lands before Gate C's `mcp:*`.",
+            "description": "Audit and UX only \u2014 never read by a gate. One of `turn:<provider>`,\n`mcp:<extension>`, `inherited:<parent_id>`, `diverged:<parent_id>`,\n`backfill:<provider>`, `declassified_by_user`. \u00a712.4 grades the\ndeclassification confirmation on whether it has ever been `mcp:*`.\n\nIt therefore holds the **dominant** provenance, not the first or the\nlatest one: the storage layer lets an `mcp:` raise displace a non-`mcp:`\nreason and lets nothing displace an `mcp:` reason. Freezing it on the\nfirst raise would answer \"has it ever been `mcp:*`\" with a flat no, since\nGate B's `turn:*` always lands before Gate C's `mcp:*`.",
             "nullable": true
           },
           "privacy_tier": {
@@ -10417,7 +11197,7 @@
           "total_tokens": {
             "type": "integer",
             "format": "int32",
-            "description": "The *current* turn's usage — the live context-window occupancy. Bounded by\nthe model's context limit, so `i32` is safe.",
+            "description": "The *current* turn's usage \u2014 the live context-window occupancy. Bounded by\nthe model's context limit, so `i32` is safe.",
             "nullable": true
           },
           "updated_at": {
@@ -10449,7 +11229,7 @@
       },
       "SessionClassification": {
         "type": "string",
-        "description": "CLASSIFICATION — the most sensitive thing a session has ever touched.\n\n`Ord` is derived and `Public < Private`, so `max` is the accumulation and is\nspellable. Monotone in time; the storage layer refuses to lower it (see\n`SessionUpdateBuilder`'s `CASE WHEN` emission).",
+        "description": "CLASSIFICATION \u2014 the most sensitive thing a session has ever touched.\n\n`Ord` is derived and `Public < Private`, so `max` is the accumulation and is\nspellable. Monotone in time; the storage layer refuses to lower it (see\n`SessionUpdateBuilder`'s `CASE WHEN` emission).",
         "enum": [
           "public",
           "private"
@@ -10599,6 +11379,68 @@
           }
         }
       },
+      "SessionSkillsRequest": {
+        "type": "object",
+        "description": "Add and remove are applied to **this** conversation only.",
+        "required": [
+          "sessionId"
+        ],
+        "properties": {
+          "add": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Skill (or bundle) names to enable for this conversation, even where the\nmachine-wide preference has them off."
+          },
+          "remove": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Skill (or bundle) names to disable for this conversation, even where the\nmachine-wide preference has them on."
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        }
+      },
+      "SessionSkillsResponse": {
+        "type": "object",
+        "description": "The catalog after the write, plus the override that produced it.\n\nReturning the whole catalog rather than an acknowledgement is deliberate: it\nis what lets the interface render confirmed state instead of the optimistic\nstate it just guessed, and it collapses the toggle-then-refetch race that\ntwo concurrent toggles would otherwise lose.",
+        "required": [
+          "catalog",
+          "sessionAdd",
+          "sessionRemove"
+        ],
+        "properties": {
+          "catalog": {
+            "$ref": "#/components/schemas/CatalogView"
+          },
+          "sessionAdd": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The persisted `workspace_skills/v1` value, echoed so a caller can tell a\nper-chat deviation from a machine-wide default without re-deriving it."
+          },
+          "sessionRemove": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SessionState": {
+        "type": "string",
+        "description": "How one session deviates from the machine-wide answer for a given skill.",
+        "enum": [
+          "default",
+          "added",
+          "removed"
+        ]
+      },
       "SessionSummary": {
         "type": "object",
         "required": [
@@ -10616,7 +11458,7 @@
           },
           "diverged_from": {
             "type": "string",
-            "description": "BR-45: the session this one was branched from, or `None`.\n\nCarried on the SUMMARY, not just on the full [`Session`], because the\nsidebar draws a glyph per chat kind and had no other way to know. Its\nonly remaining signal was the default branch NAME (`\"… (branch 2)\"`),\nwhich anyone can rename away: of the branches on this machine, one in\nfive had been renamed and so drew as an ordinary chat.",
+            "description": "BR-45: the session this one was branched from, or `None`.\n\nCarried on the SUMMARY, not just on the full [`Session`], because the\nsidebar draws a glyph per chat kind and had no other way to know. Its\nonly remaining signal was the default branch NAME (`\"\u2026 (branch 2)\"`),\nwhich anyone can rename away: of the branches on this machine, one in\nfive had been renamed and so drew as an ordinary chat.",
             "nullable": true
           },
           "id": {
@@ -10688,21 +11530,21 @@
             "items": {
               "type": "string"
             },
-            "description": "Replace this scope's hidden list — i.e. redefine the session's set.\nOmit to leave the set alone. `[]` is an explicit \"hide nothing here\",\nnot a request to inherit the machine-wide list.",
+            "description": "Replace this scope's hidden list \u2014 i.e. redefine the session's set.\nOmit to leave the set alone. `[]` is an explicit \"hide nothing here\",\nnot a request to inherit the machine-wide list.",
             "nullable": true
           },
           "inherit_primary": {
             "type": "boolean",
-            "description": "Drop this session's own primary override so it follows the machine-wide\ndefault again — the way back from `clear_primary`, and the only way out\nof the explicit \"no primary\" that deleting a session's pinned base\nleaves behind. Mutually exclusive with `primary_kb` and `clear_primary`.\n\nAt machine scope there is nothing above to inherit, so this coincides\nwith `clear_primary`."
+            "description": "Drop this session's own primary override so it follows the machine-wide\ndefault again \u2014 the way back from `clear_primary`, and the only way out\nof the explicit \"no primary\" that deleting a session's pinned base\nleaves behind. Mutually exclusive with `primary_kb` and `clear_primary`.\n\nAt machine scope there is nothing above to inherit, so this coincides\nwith `clear_primary`."
           },
           "kb_id": {
             "type": "string",
-            "description": "Deprecated alias for `primary_kb`, kept for one release so a stale\nrenderer bundle talking to a fresh daemon keeps working. Follows the\nsame rule: omitted leaves the pointer alone, `null` forgets it — which\nis exactly how such a bundle clears.",
+            "description": "Deprecated alias for `primary_kb`, kept for one release so a stale\nrenderer bundle talking to a fresh daemon keeps working. Follows the\nsame rule: omitted leaves the pointer alone, `null` forgets it \u2014 which\nis exactly how such a bundle clears.",
             "nullable": true
           },
           "primary_kb": {
             "type": "string",
-            "description": "Make this base the session's primary — the KB-less write target. It\nmust be a member of the **resulting** set, so `hidden_kbs` in the same\nbody is applied first. Omit to leave the pointer alone; send `null` to\nforget it (the same as `clear_primary`).",
+            "description": "Make this base the session's primary \u2014 the KB-less write target. It\nmust be a member of the **resulting** set, so `hidden_kbs` in the same\nbody is applied first. Omit to leave the pointer alone; send `null` to\nforget it (the same as `clear_primary`).",
             "nullable": true
           },
           "session_id": {
@@ -10800,7 +11642,7 @@
       },
       "Severity": {
         "type": "string",
-        "description": "Three severities, no fatal one — see the module header.\n\nA distinct type from [`okf::Severity`] rather than a re-export, because this\none crosses the wire: it is `Deserialize` and `rename_all = \"lowercase\"`, and\npinning that spelling here means a rename upstream cannot silently change a\nJSON payload the UI reads.",
+        "description": "Three severities, no fatal one \u2014 see the module header.\n\nA distinct type from [`okf::Severity`] rather than a re-export, because this\none crosses the wire: it is `Deserialize` and `rename_all = \"lowercase\"`, and\npinning that spelling here means a rename upstream cannot silently change a\nJSON payload the UI reads.",
         "enum": [
           "error",
           "warning",
@@ -10909,6 +11751,87 @@
           }
         }
       },
+      "SkillRoot": {
+        "type": "object",
+        "description": "One directory skills are discovered under, with its provenance.",
+        "required": [
+          "path",
+          "source"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SkillSource"
+          }
+        }
+      },
+      "SkillSource": {
+        "type": "object",
+        "description": "Where a skill came from, as the interface shows it.",
+        "required": [
+          "kind",
+          "label"
+        ],
+        "properties": {
+          "extension": {
+            "type": "string",
+            "description": "The extension's directory name, when `kind` is `extension`.",
+            "nullable": true
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SkillSourceKind"
+          },
+          "label": {
+            "type": "string",
+            "description": "A short human label for the \"where from\" chip \u2014 the extension's name\nwhen it has one, else the root's own."
+          }
+        }
+      },
+      "SkillSourceKind": {
+        "type": "string",
+        "description": "Which of the five kinds of root a skill came from.\n\n\u26a0 A **unit-variant** enum carrying no data, with the extension name held\nbeside it in [`SkillSource`] rather than inside an `Extension { .. }`\nvariant. The variant form is the more natural Rust, and it generates an\ninternally-tagged object that `serde(flatten)` and `utoipa` disagree about \u2014\nthe spec emits an `allOf` the TypeScript client cannot narrow. A flat struct\ncrosses the wire unambiguously, which matters more here than the tidier\ntype, because this shape IS the contract the picker renders from.",
+        "enum": [
+          "claudeHome",
+          "agentsHome",
+          "biorouter",
+          "extension",
+          "project"
+        ]
+      },
+      "SkillState": {
+        "type": "object",
+        "description": "The composed enablement of one catalog entry, with every input kept\nseparate so the interface can explain *why* a switch is where it is.",
+        "required": [
+          "machineEnabled",
+          "session",
+          "sessionViaBundle",
+          "hiddenContext",
+          "effective"
+        ],
+        "properties": {
+          "effective": {
+            "type": "boolean",
+            "description": "What the model actually sees: the composition of the three above."
+          },
+          "hiddenContext": {
+            "type": "boolean",
+            "description": "A shipped **Context** the user switched off in Settings \u2192 Contexts. Such\na skill is hidden from the catalog but stays loadable by exact name; see\n`skills_extension::hidden_contexts_in`."
+          },
+          "machineEnabled": {
+            "type": "boolean",
+            "description": "`skills-config.json` (`disabled[]`) says this is on. A bundle child is\noff when either its own name or its bundle's name is listed."
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionState"
+          },
+          "sessionViaBundle": {
+            "type": "boolean",
+            "description": "The deviation was written against the BUNDLE's name, not this skill's.\nLets the interface explain a member's switch instead of leaving it\nlooking arbitrary."
+          }
+        }
+      },
       "SlashCommand": {
         "type": "object",
         "required": [
@@ -10975,6 +11898,31 @@
           },
           "title": {
             "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "SourceProvenance": {
+        "type": "object",
+        "description": "What a resolved import came from, kept so an update knows where to look and\na user can see what they installed.",
+        "properties": {
+          "installer": {
+            "type": "string",
+            "description": "`repository` | `archive` | `marketplace` | `cli` | `agent`.",
+            "nullable": true
+          },
+          "reference": {
+            "type": "string",
+            "description": "The branch, tag or commit that was asked for.",
+            "nullable": true
+          },
+          "resolvedCommit": {
+            "type": "string",
+            "description": "The immutable commit the archive actually came from, when the host tells\nus (GitHub returns it in `ETag`).",
+            "nullable": true
           },
           "url": {
             "type": "string",
@@ -11058,7 +12006,7 @@
       },
       "SubmitSecretsRequest": {
         "type": "object",
-        "description": "Answering a credential card (#117).\n\n⚠ **This request body carries secrets and nothing else in the codebase does.**\nThe values reach `submit_credentials`, which writes them to the OS credential\nstore and drops them. Do not add a field to the response that could carry one\nback, do not add `#[derive(Debug)]` (see the hand-written impl below), and do\nnot log the body.",
+        "description": "Answering a credential card (#117).\n\n\u26a0 **This request body carries secrets and nothing else in the codebase does.**\nThe values reach `submit_credentials`, which writes them to the OS credential\nstore and drops them. Do not add a field to the response that could carry one\nback, do not add `#[derive(Debug)]` (see the hand-written impl below), and do\nnot log the body.",
         "required": [
           "id"
         ],
@@ -11124,7 +12072,7 @@
           },
           {
             "type": "object",
-            "description": "BR-48: run `command` and pass when its combined stdout+stderr contains\n`substring`. Unlike [`Shell`](SuccessCheck::Shell), the exit status is\nignored — this checks the *content* of the output (e.g. `0 failed`,\n`PASS`, a coverage percentage).",
+            "description": "BR-48: run `command` and pass when its combined stdout+stderr contains\n`substring`. Unlike [`Shell`](SuccessCheck::Shell), the exit status is\nignored \u2014 this checks the *content* of the output (e.g. `0 failed`,\n`PASS`, a coverage percentage).",
             "required": [
               "command",
               "substring",
@@ -11172,7 +12120,7 @@
             }
           }
         ],
-        "description": "A single success check to validate workflow completion, or (BR-48) to gate\nan interactive chat turn from finishing with unmet conditions.\n\nOriginally a single `Shell` variant used only by the workflow retry path.\nBR-48 added the non-shell variants and a done-ness gate so an interactive\nsession can also declare \"not done until these hold\" — see\n[`crate::agents::done_gate`].",
+        "description": "A single success check to validate workflow completion, or (BR-48) to gate\nan interactive chat turn from finishing with unmet conditions.\n\nOriginally a single `Shell` variant used only by the workflow retry path.\nBR-48 added the non-shell variants and a done-ness gate so an interactive\nsession can also declare \"not done until these hold\" \u2014 see\n[`crate::agents::done_gate`].",
         "discriminator": {
           "propertyName": "type"
         }
@@ -11873,7 +12821,7 @@
         "properties": {
           "confirm": {
             "type": "string",
-            "description": "Issue #56 Task 30. The typed confirmation Settings → Privacy sends with a\nwrite to `BIOROUTER_PRIVACY_TIERS`, and nothing else sends at all.\n\n⚠ **What this is and what it is not.** It is a **UX guard against an\naccidental or model-composed config write**, not an authorization\nboundary: the phrase is a fixed string in the shipped source, so a caller\nholding the daemon secret replays it. That is acceptable because\n`check_token` has no principal — the daemon cannot tell Settings →\nPrivacy from any other loopback caller — and because the *authorization*\non this route is `X-User-Action`, not the phrase. What the phrase buys is\nthat the flip cannot be a side effect of an ordinary `/config/upsert`,\nwhich is the reachable path: a model *can* compose one of those through a\ntool.\n\n⚠ **This comment used to justify the phrase by adding *\"and a caller that\nalready holds the secret can raise its own session to private capability\nanyway\"*, citing AR-15. That is no longer true and is withdrawn** —\nAR-15 was retired on 2026-08-02 by DR-16 (commit `0757823f`), which made\nan upward provider bind require `X-User-Action`. Do not restore the\nargument: the guard does not need it, and a stale \"we are already open\nhere anyway\" is how a weakened control gets waved through.",
+            "description": "Issue #56 Task 30. The typed confirmation Settings \u2192 Privacy sends with a\nwrite to `BIOROUTER_PRIVACY_TIERS`, and nothing else sends at all.\n\n\u26a0 **What this is and what it is not.** It is a **UX guard against an\naccidental or model-composed config write**, not an authorization\nboundary: the phrase is a fixed string in the shipped source, so a caller\nholding the daemon secret replays it. That is acceptable because\n`check_token` has no principal \u2014 the daemon cannot tell Settings \u2192\nPrivacy from any other loopback caller \u2014 and because the *authorization*\non this route is `X-User-Action`, not the phrase. What the phrase buys is\nthat the flip cannot be a side effect of an ordinary `/config/upsert`,\nwhich is the reachable path: a model *can* compose one of those through a\ntool.\n\n\u26a0 **This comment used to justify the phrase by adding *\"and a caller that\nalready holds the secret can raise its own session to private capability\nanyway\"*, citing AR-15. That is no longer true and is withdrawn** \u2014\nAR-15 was retired on 2026-08-02 by DR-16 (commit `0757823f`), which made\nan upward provider bind require `X-User-Action`. Do not restore the\nargument: the guard does not need it, and a stale \"we are already open\nhere anyway\" is how a weakened control gets waved through.",
             "nullable": true
           },
           "is_secret": {
@@ -11939,7 +12887,7 @@
       },
       "UsageReportRow": {
         "type": "object",
-        "description": "One bucket of the usage report.\n\n`date` is present unless grouping by [`UsageGroup::Model`]; `modelId` is\npresent unless grouping by [`UsageGroup::Day`]. `cost` is the dollar cost of\nthe priced turns in the bucket, or `None` when *every* contributing turn was\nunpriced (an unknown model) — a `null` cost never means \"$0\". `hasUnpriced`\nflags a bucket that mixes priced, unpriced, or incomplete turns, so a day\ncost can be read as \"at least this much\" rather than exact.",
+        "description": "One bucket of the usage report.\n\n`date` is present unless grouping by [`UsageGroup::Model`]; `modelId` is\npresent unless grouping by [`UsageGroup::Day`]. `cost` is the dollar cost of\nthe priced turns in the bucket, or `None` when *every* contributing turn was\nunpriced (an unknown model) \u2014 a `null` cost never means \"$0\". `hasUnpriced`\nflags a bucket that mixes priced, unpriced, or incomplete turns, so a day\ncost can be read as \"at least this much\" rather than exact.",
         "required": [
           "inputTokens",
           "outputTokens",
@@ -12090,7 +13038,7 @@
           },
           "costExcludesCache": {
             "type": "boolean",
-            "description": "`true` when cache cost is omitted because pricing or cache accounting is\nincomplete — the figure is then a lower bound."
+            "description": "`true` when cache cost is omitted because pricing or cache accounting is\nincomplete \u2014 the figure is then a lower bound."
           },
           "hasUnpriced": {
             "type": "boolean"
