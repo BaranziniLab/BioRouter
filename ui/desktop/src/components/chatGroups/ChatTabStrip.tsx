@@ -3,6 +3,8 @@ import { ChevronDown, X } from '../icons/app-icons';
 import { cn } from '../../utils';
 import { getSessionTitlePadding } from '../Layout/TitlebarControls';
 import { useTabStripOverflow } from '../Layout/useTabStripOverflow';
+import { ContextMenu, ContextMenuTrigger } from '../ui/context-menu';
+import { ChatRowContextMenuContent } from '../chats/ChatRowContextMenu';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -441,28 +443,42 @@ export function ChatTabStrip({
               // see the note on the scroll box. It is already covered.
               className={cn('br-tab group')}
             >
-              <button
-                ref={isActive ? activeTabRef : undefined}
-                type="button"
-                role="tab"
-                aria-selected={isActive}
-                tabIndex={isActive ? 0 : -1}
-                title={tab.title}
-                // Astryx §4.3: ONE icon-label gap across the app, 8px. The 7px
-                // here was the last arbitrary one in the strip — a document tab
-                // and a nav row now measure the same distance from glyph to
-                // word. `gap-2` is the token, not a magic number.
-                className="flex min-w-0 flex-1 items-center gap-2 bg-transparent text-left"
-                onPointerDown={(event) => beginDrag(event, tab.tabId, tab.title, groupId)}
-                onKeyDown={(event) => handleKeyDown(event, index)}
-                onClick={() => {
-                  // Swallow the synthetic click that ends a drag — otherwise
-                  // dropping a tab also activates whatever you dropped it on.
-                  if (guardClick()) return;
-                  onSelect(tab.tabId);
-                }}
-              >
-                {/* ⚠ The leading glyph now carries BOTH what the tab is and
+              {/* #114: parity with History and Recents. `beginDrag` already
+                  ignores anything but button 0, so a right-click cannot start a
+                  tab drag — that guard is what makes a context menu safe here.
+
+                  ⚠ **The trigger goes on the LABEL BUTTON, not on `.br-tab`.**
+                  `asChild` on the wrapper would merge a handler onto the div
+                  that owns the drag gesture and the drop-target attributes, and
+                  the note above is explicit that nothing new may be declared on
+                  that element. `tab.cwd` is a starting hint only — the new
+                  window resumes `tab.sessionId`, whose record carries the real
+                  directory — so an empty one is passed through rather than
+                  guessed at. */}
+              <ContextMenu>
+                <ContextMenuTrigger asChild>
+                  <button
+                    ref={isActive ? activeTabRef : undefined}
+                    type="button"
+                    role="tab"
+                    aria-selected={isActive}
+                    tabIndex={isActive ? 0 : -1}
+                    title={tab.title}
+                    // Astryx §4.3: ONE icon-label gap across the app, 8px. The 7px
+                    // here was the last arbitrary one in the strip — a document tab
+                    // and a nav row now measure the same distance from glyph to
+                    // word. `gap-2` is the token, not a magic number.
+                    className="flex min-w-0 flex-1 items-center gap-2 bg-transparent text-left"
+                    onPointerDown={(event) => beginDrag(event, tab.tabId, tab.title, groupId)}
+                    onKeyDown={(event) => handleKeyDown(event, index)}
+                    onClick={() => {
+                      // Swallow the synthetic click that ends a drag — otherwise
+                      // dropping a tab also activates whatever you dropped it on.
+                      if (guardClick()) return;
+                      onSelect(tab.tabId);
+                    }}
+                  >
+                    {/* ⚠ The leading glyph now carries BOTH what the tab is and
                     whether it is private, replacing an identical-for-every-tab
                     bubble plus a separate dense privacy dot.
 
@@ -477,13 +493,22 @@ export function ChatTabStrip({
                     The `sub` text chip is gone with it — a sub-agent now reads
                     as a robot glyph in the same slot as every other kind,
                     instead of a word competing with the title for width. */}
-                <ChatKindIcon
-                  session={tabKindSource(tab, tabAnnotations[tab.sessionId])}
-                  tier={privacyTiers[tab.sessionId]}
-                  className="h-4 w-4 br-tab__privacy-dot"
+                    <ChatKindIcon
+                      session={tabKindSource(tab, tabAnnotations[tab.sessionId])}
+                      tier={privacyTiers[tab.sessionId]}
+                      className="h-4 w-4 br-tab__privacy-dot"
+                    />
+                    <span className="br-tab__label">{tab.title}</span>
+                  </button>
+                </ContextMenuTrigger>
+                <ChatRowContextMenuContent
+                  target={{
+                    sessionId: tab.sessionId,
+                    workingDir: tab.cwd,
+                    openInNewTab: () => onSelect(tab.tabId),
+                  }}
                 />
-                <span className="br-tab__label">{tab.title}</span>
-              </button>
+              </ContextMenu>
 
               {isRunning ? (
                 // The pulse sits where the close control would be, and the control

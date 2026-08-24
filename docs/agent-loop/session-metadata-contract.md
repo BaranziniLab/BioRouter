@@ -56,6 +56,32 @@ operation accepts exactly this string with no decoration: Chat Recall's exact-ID
 `workspace_list`, `workspace_open`, `workspace_read_conversation`, `workspace_send_prompt`,
 `workspace_watch`, `workspace_set_tools`, `workspace_close`, and the `/sessions/{id}` routes.
 
+## Getting an ID out of the app, and what to do with it
+
+Right-click a conversation and pick **Copy conversation ID**. The menu is on all
+three places a chat row is drawn — sidebar Recents, full History, and the tab strip —
+and carries the same three actions in the same order everywhere: *Open in new tab*,
+*Open in new window*, *Copy conversation ID*. History's `⋯` overflow shows the identical
+list, which is also the keyboard path there; on any row the Menu key or Shift+F10 opens
+the right-click menu, because both dispatch a `contextmenu` event on the focused element.
+
+What lands on the clipboard is `Session.id` and nothing else — no prefix, no URL, no
+name. That is the point: the string can be pasted straight into a chat, where it is
+already what every ID-taking operation accepts.
+
+**When the user pastes an exact ID and asks about that conversation, resolve it as an
+ID.** Do not fuzzy-search by title — an exact handle was supplied precisely so nothing
+has to be guessed at, and a title search can match the wrong chat while looking like it
+worked. In order of narrowness:
+
+| The user wants | Reach for |
+|---|---|
+| A compact reminder of what that chat was | Chat Recall's **exact-ID load** (`session_id`, not `query`) — head and tail of the transcript |
+| Its full or structured content | `workspace_read_conversation`, narrowest view first (`summary`, then `tool_calls`, then `transcript`) |
+| To open it, inject into it, watch it, or re-tool it | `workspace_open` / `send_prompt` / `watch` / `set_tools`, and only when the user asked for that operation and policy permits it |
+
+Holding the ID changes none of the permissions — see [Privacy](#privacy).
+
 ## Session kind
 
 `session_type` is a closed vocabulary and the **only** signal for what a conversation is. Do
