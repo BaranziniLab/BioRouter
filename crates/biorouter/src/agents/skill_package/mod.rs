@@ -50,6 +50,7 @@ use serde::{Deserialize, Serialize};
 pub mod archive;
 pub mod install;
 pub mod manifest;
+pub mod pending;
 pub mod plan;
 pub mod source;
 

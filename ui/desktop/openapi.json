@@ -4427,6 +4427,138 @@
         ]
       }
     },
+    "/skills/packages/install": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Import a skill package, atomically, and refresh the catalog.",
+        "operationId": "install_skill_package",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Installed, or a question to answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The source could not be read or installed"
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "410": {
+            "description": "That preview has expired"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/packages/preview": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Look at a source without installing anything.",
+        "operationId": "preview_skill_package",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What an install would do",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The source could not be read"
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "410": {
+            "description": "That preview has expired"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/packages/remove": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Remove an installed package or single skill, and every component with it.",
+        "operationId": "remove_skill_package",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemovePackageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageSummary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "404": {
+            "description": "No such package"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/skills/refresh": {
       "post": {
         "tags": [
@@ -5514,6 +5646,27 @@
           },
           "retryable": {
             "type": "boolean"
+          }
+        }
+      },
+      "Ambiguity": {
+        "type": "object",
+        "description": "Why the caller has to choose, and what the choices are.",
+        "required": [
+          "reason",
+          "components"
+        ],
+        "properties": {
+          "components": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The component names the caller is choosing among."
+          },
+          "reason": {
+            "type": "string",
+            "description": "One sentence for the dialog."
           }
         }
       },
@@ -6831,6 +6984,19 @@
           }
         }
       },
+      "Evidence": {
+        "type": "string",
+        "description": "Which rung of the detection ladder decided the shape. Reported so a preview\ncan explain itself, and so a test can assert that the *manifest* decided\nrather than the structure happening to agree with it.",
+        "enum": [
+          "biorouterManifest",
+          "codexPlugin",
+          "claudePlugin",
+          "skillsManifest",
+          "skillsDirectory",
+          "structuralInference",
+          "singleSkill"
+        ]
+      },
       "ExtensionConfig": {
         "oneOf": [
           {
@@ -7516,6 +7682,187 @@
           }
         }
       },
+      "ImportChoice": {
+        "type": "string",
+        "enum": [
+          "bundle",
+          "individual"
+        ]
+      },
+      "ImportKind": {
+        "type": "string",
+        "description": "Which shape the importer decided on.",
+        "enum": [
+          "single",
+          "bundle"
+        ]
+      },
+      "ImportPreview": {
+        "type": "object",
+        "description": "The serialisable half of a plan — everything except the file bytes.",
+        "required": [
+          "kind",
+          "id",
+          "displayName",
+          "groups",
+          "components",
+          "evidence",
+          "source",
+          "shadows",
+          "fileCount"
+        ],
+        "properties": {
+          "ambiguity": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Ambiguity"
+              }
+            ],
+            "nullable": true
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlannedSkill"
+            }
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "entryPoint": {
+            "type": "string",
+            "nullable": true
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/Evidence"
+          },
+          "fileCount": {
+            "type": "integer",
+            "description": "How many files would be written.",
+            "minimum": 0
+          },
+          "groups": {
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ImportKind"
+          },
+          "shadows": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceProvenance"
+          },
+          "version": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "ImportRequest": {
+        "type": "object",
+        "description": "What to import, in the two forms a caller has.\n\nOne request type for a pasted repository URL, an agent's tool call, a local\n`.zip` and a marketplace asset, because giving each of those its own\nresolution is how the four came to disagree in the first place.",
+        "properties": {
+          "choice": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ImportChoice"
+              }
+            ],
+            "nullable": true
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Which components to keep when `choice` is `individual`."
+          },
+          "filePath": {
+            "type": "string",
+            "description": "A `.zip` on the machine the daemon runs on.",
+            "nullable": true
+          },
+          "planId": {
+            "type": "string",
+            "description": "Answer to a previous preview's question, by its `planId`.",
+            "nullable": true
+          },
+          "reference": {
+            "type": "string",
+            "description": "Branch, tag or commit. Overrides a ref in the URL.",
+            "nullable": true
+          },
+          "url": {
+            "type": "string",
+            "description": "`https://github.com/owner/repo`, a `/tree/<ref>` URL, or a direct\narchive URL on an allowed host.",
+            "nullable": true
+          }
+        }
+      },
+      "ImportResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "installed",
+              "preview",
+              "status"
+            ],
+            "properties": {
+              "installed": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/InstalledPackage"
+                },
+                "description": "One entry per installed unit: a bundle is one, \"install these\nseparately\" is one each."
+              },
+              "preview": {
+                "$ref": "#/components/schemas/ImportPreview"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "installed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "planId",
+              "preview",
+              "status"
+            ],
+            "properties": {
+              "planId": {
+                "type": "string",
+                "description": "Pass this back with a `choice` to answer."
+              },
+              "preview": {
+                "$ref": "#/components/schemas/ImportPreview"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "needsChoice"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "The answer to an import request: either it happened, or somebody has to\nchoose first.\n\n⚠ **`NeedsChoice` is a 200, not an error.** It is a legitimate outcome the\ncaller is expected to act on — the issue's \"real pending user-input state\" —\nand an agent that saw a 4xx would reasonably retry the same call rather than\nasking the person the question it was handed.",
+        "discriminator": {
+          "propertyName": "status"
+        }
+      },
       "ImportSessionRequest": {
         "type": "object",
         "required": [
@@ -7582,6 +7929,54 @@
           "sessionId": {
             "type": "string",
             "nullable": true
+          }
+        }
+      },
+      "InstalledPackage": {
+        "type": "object",
+        "description": "What an install did.",
+        "required": [
+          "id",
+          "displayName",
+          "kind",
+          "skills",
+          "directory",
+          "replaced",
+          "catalogGeneration"
+        ],
+        "properties": {
+          "catalogGeneration": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The catalog generation after the refresh, so a caller can tell whether\nit is looking at an inventory that already includes this.",
+            "minimum": 0
+          },
+          "directory": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "entryPoint": {
+            "type": "string",
+            "nullable": true
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ImportKind"
+          },
+          "replaced": {
+            "type": "boolean",
+            "description": "True when this replaced an existing install of the same id."
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Component skill names, in the order they were installed."
           }
         }
       },
@@ -9398,6 +9793,38 @@
           }
         }
       },
+      "PlannedSkill": {
+        "type": "object",
+        "description": "One component of a planned import.",
+        "required": [
+          "name",
+          "description",
+          "directory",
+          "entryPoint"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "directory": {
+            "type": "string",
+            "description": "Directory name under the package root. Taken from the source layout so\na manifest referring to `skills/media-use` still resolves after install."
+          },
+          "entryPoint": {
+            "type": "boolean",
+            "description": "The router the package declares as its way in."
+          },
+          "group": {
+            "type": "string",
+            "description": "The manifest's group for this component, e.g. `core` / `on-demand`.",
+            "nullable": true
+          },
+          "name": {
+            "type": "string",
+            "description": "The frontmatter `name`, preserved exactly."
+          }
+        }
+      },
       "PreviewBody": {
         "type": "object",
         "required": [
@@ -10005,6 +10432,18 @@
           },
           "session_id": {
             "type": "string"
+          }
+        }
+      },
+      "RemovePackageRequest": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The install directory name — `CatalogBundle.name`."
           }
         }
       },
@@ -11316,6 +11755,31 @@
           },
           "title": {
             "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "SourceProvenance": {
+        "type": "object",
+        "description": "What a resolved import came from, kept so an update knows where to look and\na user can see what they installed.",
+        "properties": {
+          "installer": {
+            "type": "string",
+            "description": "`repository` | `archive` | `marketplace` | `cli` | `agent`.",
+            "nullable": true
+          },
+          "reference": {
+            "type": "string",
+            "description": "The branch, tag or commit that was asked for.",
+            "nullable": true
+          },
+          "resolvedCommit": {
+            "type": "string",
+            "description": "The immutable commit the archive actually came from, when the host tells\nus (GitHub returns it in `ETag`).",
+            "nullable": true
           },
           "url": {
             "type": "string",

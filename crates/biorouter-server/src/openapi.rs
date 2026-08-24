@@ -503,6 +503,9 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::skills::skill_catalog_handler,
         super::routes::skills::set_session_skills,
         super::routes::skills::refresh_skill_catalog,
+        super::routes::skills::preview_skill_package,
+        super::routes::skills::install_skill_package,
+        super::routes::skills::remove_skill_package,
     ),
     components(schemas(
         super::routes::config_management::UpsertConfigQuery,
@@ -702,6 +705,17 @@ impl utoipa::Modify for ApiKeySecurity {
         // (a `$ref` the TypeScript generator cannot resolve, reported as a
         // tooling bug rather than as a missing line here).
         super::routes::skills::SessionSkillsRequest,
+        super::routes::skills::ImportRequest,
+        super::routes::skills::ImportChoice,
+        super::routes::skills::ImportResult,
+        super::routes::skills::RemovePackageRequest,
+        biorouter::agents::skill_package::ImportPreview,
+        biorouter::agents::skill_package::ImportKind,
+        biorouter::agents::skill_package::Evidence,
+        biorouter::agents::skill_package::Ambiguity,
+        biorouter::agents::skill_package::PlannedSkill,
+        biorouter::agents::skill_package::SourceProvenance,
+        biorouter::agents::skill_package::InstalledPackage,
         super::routes::skills::SessionSkillsResponse,
         biorouter::agents::skill_catalog::CatalogView,
         biorouter::agents::skill_catalog::CatalogSkill,

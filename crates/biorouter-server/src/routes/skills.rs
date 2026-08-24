@@ -55,7 +55,10 @@ use axum::{
     Json, Router,
 };
 use biorouter::agents::session_skills::{self, SessionSkillOverride};
-use biorouter::agents::skill_catalog::{self, CatalogView};
+use biorouter::agents::skill_catalog::{self, CatalogView, PackageSummary};
+use biorouter::agents::skill_package::{
+    self, pending, ImportPlan, ImportPreview, ImportSource, InstalledPackage,
+};
 use biorouter::session::SessionManager;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -241,6 +244,9 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/skills/catalog", get(skill_catalog_handler))
         .route("/skills/session", post(set_session_skills))
         .route("/skills/refresh", post(refresh_skill_catalog))
+        .route("/skills/packages/preview", post(preview_skill_package))
+        .route("/skills/packages/install", post(install_skill_package))
+        .route("/skills/packages/remove", post(remove_skill_package))
         .with_state(state)
 }
 
@@ -299,4 +305,224 @@ mod tests {
         assert!(refresh.contains("skill_catalog::refresh()"));
         assert!(!refresh.contains("skill_catalog::current()"));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Package import (#115).
+// ---------------------------------------------------------------------------
+
+/// What to import, in the two forms a caller has.
+///
+/// One request type for a pasted repository URL, an agent's tool call, a local
+/// `.zip` and a marketplace asset, because giving each of those its own
+/// resolution is how the four came to disagree in the first place.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportRequest {
+    /// `https://github.com/owner/repo`, a `/tree/<ref>` URL, or a direct
+    /// archive URL on an allowed host.
+    pub url: Option<String>,
+    /// A `.zip` on the machine the daemon runs on.
+    pub file_path: Option<String>,
+    /// Branch, tag or commit. Overrides a ref in the URL.
+    pub reference: Option<String>,
+    /// Answer to a previous preview's question, by its `planId`.
+    pub plan_id: Option<String>,
+    /// How to resolve an ambiguity: `bundle`, or `individual` with `components`.
+    pub choice: Option<ImportChoice>,
+    /// Which components to keep when `choice` is `individual`.
+    #[serde(default)]
+    pub components: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportChoice {
+    Bundle,
+    Individual,
+}
+
+/// The answer to an import request: either it happened, or somebody has to
+/// choose first.
+///
+/// ⚠ **`NeedsChoice` is a 200, not an error.** It is a legitimate outcome the
+/// caller is expected to act on — the issue's "real pending user-input state" —
+/// and an agent that saw a 4xx would reasonably retry the same call rather than
+/// asking the person the question it was handed.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum ImportResult {
+    #[serde(rename_all = "camelCase")]
+    Installed {
+        /// One entry per installed unit: a bundle is one, "install these
+        /// separately" is one each.
+        installed: Vec<InstalledPackage>,
+        preview: ImportPreview,
+    },
+    #[serde(rename_all = "camelCase")]
+    NeedsChoice {
+        /// Pass this back with a `choice` to answer.
+        plan_id: String,
+        preview: ImportPreview,
+    },
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovePackageRequest {
+    /// The install directory name — `CatalogBundle.name`.
+    pub id: String,
+}
+
+fn bad_request(message: impl std::fmt::Display) -> (StatusCode, String) {
+    (StatusCode::BAD_REQUEST, message.to_string())
+}
+
+/// Resolve a request into a plan, either by fetching or by taking the parked
+/// one it answers.
+async fn resolve_plan(request: &ImportRequest) -> Result<ImportPlan, (StatusCode, String)> {
+    if let Some(plan_id) = request.plan_id.as_deref() {
+        return pending::take(plan_id).ok_or_else(|| {
+            // Expired or already answered. Never fall through to a fresh fetch:
+            // the answer was given about a specific archive, and a branch moves.
+            (
+                StatusCode::GONE,
+                format!(
+                    "that import preview ({plan_id}) has expired or was already answered. \
+                     Preview the source again."
+                ),
+            )
+        });
+    }
+
+    let source = match (request.url.as_deref(), request.file_path.as_deref()) {
+        (Some(url), None) => ImportSource::Url {
+            url: url.to_string(),
+            reference: request.reference.clone(),
+        },
+        (None, Some(path)) => ImportSource::Archive {
+            path: std::path::PathBuf::from(path),
+        },
+        (Some(_), Some(_)) => return Err(bad_request("name either a url or a filePath, not both")),
+        (None, None) => {
+            return Err(bad_request(
+                "name a url, a filePath, or the planId of a preview to answer",
+            ))
+        }
+    };
+
+    let fetched = skill_package::fetch(&source)
+        .await
+        .map_err(|e| bad_request(format!("{e:#}")))?;
+    skill_package::plan_from_entries(fetched.entries, &fetched.id_hints, fetched.source)
+        .map_err(|e| bad_request(format!("{e:#}")))
+}
+
+/// Look at a source without installing anything.
+#[utoipa::path(
+    post,
+    path = "/skills/packages/preview",
+    request_body = ImportRequest,
+    responses(
+        (status = 200, description = "What an install would do", body = ImportResult),
+        (status = 400, description = "The source could not be read"),
+        (status = 401, description = "Unauthorized - invalid or missing secret key"),
+        (status = 410, description = "That preview has expired"),
+    ),
+    security(("api_key" = [])),
+    tag = "skills",
+)]
+pub async fn preview_skill_package(
+    Json(request): Json<ImportRequest>,
+) -> Result<Json<ImportResult>, (StatusCode, String)> {
+    let plan = resolve_plan(&request).await?;
+    let preview = plan.preview();
+    Ok(Json(ImportResult::NeedsChoice {
+        plan_id: pending::park(plan),
+        preview,
+    }))
+}
+
+/// Import a skill package, atomically, and refresh the catalog.
+#[utoipa::path(
+    post,
+    path = "/skills/packages/install",
+    request_body = ImportRequest,
+    responses(
+        (status = 200, description = "Installed, or a question to answer", body = ImportResult),
+        (status = 400, description = "The source could not be read or installed"),
+        (status = 401, description = "Unauthorized - invalid or missing secret key"),
+        (status = 410, description = "That preview has expired"),
+    ),
+    security(("api_key" = [])),
+    tag = "skills",
+)]
+pub async fn install_skill_package(
+    Json(request): Json<ImportRequest>,
+) -> Result<Json<ImportResult>, (StatusCode, String)> {
+    let plan = resolve_plan(&request).await?;
+
+    let plans = match (request.choice, plan.ambiguity.is_some()) {
+        (Some(ImportChoice::Individual), _) => {
+            let keep = if request.components.is_empty() {
+                plan.components.iter().map(|c| c.name.clone()).collect()
+            } else {
+                request.components.clone()
+            };
+            let picked = plan.clone().into_individual(&keep);
+            if picked.is_empty() {
+                return Err(bad_request(
+                    "none of the named components are in this package",
+                ));
+            }
+            picked
+        }
+        (Some(ImportChoice::Bundle), _) => vec![plan.clone().as_bundle()],
+        // Unambiguous and no choice given: install it as detected. This is what
+        // makes an explicit manifest a one-call install rather than a dialog
+        // per child.
+        (None, false) => vec![plan.clone()],
+        // Ambiguous and no choice given: ask. Deliberately a 200 — see
+        // `ImportResult`.
+        (None, true) => {
+            let preview = plan.preview();
+            return Ok(Json(ImportResult::NeedsChoice {
+                plan_id: pending::park(plan),
+                preview,
+            }));
+        }
+    };
+
+    let root = skill_package::install::install_root();
+    let mut installed = Vec::new();
+    for plan in &plans {
+        installed
+            .push(skill_package::install(plan, &root).map_err(|e| bad_request(format!("{e:#}")))?);
+    }
+    Ok(Json(ImportResult::Installed {
+        preview: plan.preview(),
+        installed,
+    }))
+}
+
+/// Remove an installed package or single skill, and every component with it.
+#[utoipa::path(
+    post,
+    path = "/skills/packages/remove",
+    request_body = RemovePackageRequest,
+    responses(
+        (status = 200, description = "Removed", body = PackageSummary),
+        (status = 401, description = "Unauthorized - invalid or missing secret key"),
+        (status = 404, description = "No such package"),
+    ),
+    security(("api_key" = [])),
+    tag = "skills",
+)]
+pub async fn remove_skill_package(
+    Json(request): Json<RemovePackageRequest>,
+) -> Result<Json<PackageSummary>, (StatusCode, String)> {
+    let root = skill_package::install::install_root();
+    skill_package::remove(&request.id, &root)
+        .map(Json)
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))
 }
