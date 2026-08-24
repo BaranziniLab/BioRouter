@@ -444,6 +444,18 @@ export default function ExtensionsSection({
           onClose={() => setIsBrowseModalOpen(false)}
           onInstalled={fetchExtensions}
           installedNames={new Set(extensions.map((e) => e.name.toLowerCase()))}
+          /* Issue #116. An installed marketplace row opens the very same
+             configuration modal the card's gear opens — this screen owns both,
+             so there is no reason to make the user find the card first. */
+          onConfigureInstalled={(entry) => {
+            const key = nameToKey(entry.extension_name ?? entry.name);
+            const match =
+              extensions.find((e) => nameToKey(e.name) === key) ??
+              extensions.find((e) => nameToKey(e.name) === nameToKey(entry.id));
+            if (!match) return;
+            setIsBrowseModalOpen(false);
+            handleConfigureClick(match);
+          }}
         />
       )}
     </section>

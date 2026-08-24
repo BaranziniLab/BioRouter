@@ -24,6 +24,7 @@ pub mod context_budget;
 pub mod context_mgmt;
 pub mod conversation;
 pub mod execution;
+pub mod extension_install;
 pub mod guardrails;
 pub mod hints;
 pub mod hooks;

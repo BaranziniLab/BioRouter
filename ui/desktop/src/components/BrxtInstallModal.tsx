@@ -12,6 +12,12 @@ import { upsertConfig } from '../api';
 import { userActionHeaders } from '../utils/userAction';
 import { toastService } from '../toasts';
 import { DependencyErrorBanner } from './DependencyErrorBanner';
+import {
+  marketplacePhase,
+  primaryInstallAction,
+  resultingPrivacyTier,
+  type BrxtInstallOrigin,
+} from './brxtInstallFlow';
 
 interface EnvEntry {
   key: string;
@@ -22,36 +28,46 @@ interface EnvEntry {
   auto_propagate: boolean;
 }
 
-type Step = 'drop' | 'configure';
+/**
+ * Issue #116. The two entry modes share this component's validation and install
+ * internals and nothing else, so the first step is named for what it *is* in
+ * each — picking a file, or reviewing the extension the user already picked —
+ * rather than for the local route's drop zone.
+ */
+type Step = 'select' | 'configure';
+
+/**
+ * A label has to point at its input. These fields carry a credential and are
+ * the one part of this modal a screen-reader user must be able to navigate
+ * unambiguously, and an unassociated `<label>` gives them nothing to land on.
+ */
+const envFieldId = (key: string) => `brxt-env-${key}`;
 
 interface Props {
   onClose: () => void;
   onInstalled: () => void;
   preloadedFilePath?: string;
   /**
-   * Issue #56 Task 43 (DR-23). Where this bundle came from, when it came from
-   * the marketplace: `BrowseExtensionsModal` knows the registry `id` and the
-   * download URL, and this modal is where the install actually happens. The
-   * install records them beside the config entry so the daemon re-derives the
-   * privacy tier from the stable id rather than from the config name, which the
-   * user (or the model) can rename.
+   * Where this install came from. Defaults to the local-file route.
    *
-   * Absent for the drop-a-file route, which has no registry id — that install
-   * records nothing and the daemon falls back to the config-name join.
+   * ⚠ **Not derivable from `preloadedFilePath`.** Finder hands a double-clicked
+   * `.brxt` to the app over IPC and `ExtensionsView` preloads its path, so a
+   * preloaded path means "a file is already chosen", never "this came from the
+   * marketplace". See `brxtInstallFlow.ts`.
    */
-  registrySource?: { registryId: string; sourceUrl?: string };
+  origin?: BrxtInstallOrigin;
 }
 
 const NO_LOCAL_PATH_MESSAGE =
   'Biorouter is running on another machine, so it cannot read a file you drop here. Copy the file onto that machine and install it with `biorouter extension install <path>`.';
 
-export function BrxtInstallModal({
-  onClose,
-  onInstalled,
-  preloadedFilePath,
-  registrySource,
-}: Props) {
-  const [step, setStep] = useState<Step>('drop');
+export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, origin }: Props) {
+  const installOrigin: BrxtInstallOrigin = origin ?? { kind: 'local-file' };
+  const isMarketplace = installOrigin.kind === 'marketplace';
+  const registrySource =
+    installOrigin.kind === 'marketplace' ? installOrigin.registrySource : undefined;
+
+  const [step, setStep] = useState<Step>('select');
   const [filePath, setFilePath] = useState<string | null>(null);
   const [manifest, setManifest] = useState<BrxtManifest | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -141,8 +157,15 @@ export function BrxtInstallModal({
   const setEnvValue = (key: string, value: string) =>
     setEnvEntries((prev) => prev.map((e) => (e.key === key ? { ...e, value } : e)));
 
+  /**
+   * Issue #116. One decision, read by both the button's label and its click, so
+   * a screen that says "Install extension" cannot open a configuration step and
+   * a screen that says "Next: configure" cannot install.
+   */
+  const primaryAction = primaryInstallAction(manifest);
+
   const handleNext = () => {
-    if (manifest && manifest.env_vars.length === 0) {
+    if (primaryAction.kind === 'install') {
       handleInstall();
     } else {
       setStep('configure');
@@ -235,9 +258,9 @@ export function BrxtInstallModal({
    * no provenance for the daemon to treat as private. But this component is not
    * only the file-drop case:
    *
-   *   - `BrowseExtensionsModal` downloads a marketplace `.brxt` and renders THIS
-   *     component with `preloadedFilePath`, so a row badged Private led straight
-   *     into a confirmation that said "always Public";
+   *   - `BrowseExtensionsModal` renders THIS component for a marketplace
+   *     install, so a row badged Private led straight into a confirmation that
+   *     said "always Public";
    *   - and the task's own Step 3 records that a bundle merely NAMED
    *     `ucsfomopagent` inherits the private badge — "fail-closed, and fine",
    *     which it only is if the last screen before Install did not promise the
@@ -248,24 +271,210 @@ export function BrxtInstallModal({
    * produce, resolved through `classifyExtension` — the same union the Settings
    * card, the Browse row and the composer all read, so they cannot disagree.
    *
-   * Before a file is chosen there is no name to classify and the route IS the
-   * only fact available, so §13.5's sentence stands verbatim: a user who has not
-   * yet picked a bundle should already know what dropping one in here means.
+   * Issue #116 adds the marketplace's own answer to the same union, for the
+   * window where the bundle is still downloading and there is no manifest to
+   * classify: the row the user clicked already rendered a badge, and the modal
+   * that opens on top of it must not contradict the row it came from. Private
+   * from either source wins — see `resultingPrivacyTier`.
+   *
+   * Before a file is chosen on the LOCAL route there is no name to classify and
+   * the route IS the only fact available, so §13.5's sentence stands verbatim:
+   * a user who has not yet picked a bundle should already know what dropping
+   * one in here means.
    *
    * One sentence, one element: the assertions match on the normalised text of a
    * single node, and splitting a phrase into a nested `<strong>` would take it
    * out of that node.
    */
-  const resultingTier = manifest ? classifyExtension(manifest.name) : 'public';
+  const resultingTier = resultingPrivacyTier(
+    manifest ? classifyExtension(manifest.name) : null,
+    installOrigin.kind === 'marketplace' ? installOrigin.entry.privacyTier : undefined
+  );
+  const publicNotice = isMarketplace
+    ? 'The Biorouter marketplace publishes this name as public. Any model, including commercial models hosted outside your institution, will be able to call this extension.'
+    : 'Extensions installed from a file are always Public. Any model, including commercial models hosted outside your institution, will be able to call this extension.';
   const badgeNotice =
     resultingTier === 'private'
       ? 'The Biorouter marketplace publishes this name as private, so this extension will be Private: only private models will be able to call it.'
-      : 'Extensions installed from a file are always Public. Any model, including commercial models hosted outside your institution, will be able to call this extension.';
+      : publicNotice;
 
   const requiredVars = envEntries.filter((e) => e.required);
   const optionalVars = envEntries.filter((e) => !e.required);
   const requiredMissing = requiredVars.some((e) => !e.value.trim());
-  const isBusy = isValidating || isInstalling;
+
+  /**
+   * Issue #116. The marketplace route's own progress. `downloading` is the
+   * parent's — `BrowseExtensionsModal` opens this modal the instant Add is
+   * clicked, so the download runs *inside* the install rather than in front of
+   * it, and a failure lands on a screen that can offer Retry.
+   */
+  const phase = marketplacePhase({
+    downloading: installOrigin.kind === 'marketplace' ? installOrigin.downloading : false,
+    downloadError: installOrigin.kind === 'marketplace' ? installOrigin.downloadError : null,
+    isValidating,
+    validationError: error,
+    hasManifest: manifest !== null,
+  });
+  const downloadError =
+    installOrigin.kind === 'marketplace' ? (installOrigin.downloadError ?? null) : null;
+  const isBusy =
+    isValidating ||
+    isInstalling ||
+    (installOrigin.kind === 'marketplace' && installOrigin.downloading);
+
+  const marketplaceName = isMarketplace
+    ? (manifest?.display_name ??
+      (installOrigin.kind === 'marketplace' ? installOrigin.entry.name : ''))
+    : '';
+  const marketplaceMeta =
+    installOrigin.kind === 'marketplace'
+      ? [installOrigin.entry.organization, manifest ? `v${manifest.version}` : undefined]
+          .filter(Boolean)
+          .join(' · ')
+      : '';
+
+  const privacyPanel = (
+    <div className="biorouter-modal-panel rounded-lg p-3">
+      <PrivacyBadge tier={resultingTier} />
+      <p className="text-supporting text-text-muted mt-1.5 leading-relaxed">{badgeNotice}</p>
+    </div>
+  );
+
+  const manifestSummary = manifest && !error && (
+    <div className="biorouter-modal-panel rounded-xl p-4">
+      <p className="text-xs text-text-muted uppercase tracking-wide mb-2">
+        {isMarketplace ? 'From the Biorouter marketplace' : 'Detected from bundle'}
+      </p>
+      <p className="text-sm font-semibold">{manifest.display_name}</p>
+      <p className="text-xs text-text-muted mt-0.5">
+        v{manifest.version}
+        {manifest.tools_count ? ` · ${manifest.tools_count} tools` : ''}
+        {skillsPreview.length > 0
+          ? ` · ${skillsPreview.length} skill${skillsPreview.length !== 1 ? 's' : ''}`
+          : ''}
+        {' · '}
+        {requiredVars.length} required env var
+        {requiredVars.length !== 1 ? 's' : ''}
+        {optionalVars.length > 0 ? `, ${optionalVars.length} optional` : ''}
+      </p>
+      <p className="text-sm text-text-default mt-2">{manifest.description}</p>
+      {skillsPreview.length > 0 && (
+        <div className="mt-2 pt-2 shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]">
+          <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-1">
+            Skills included
+          </p>
+          {skillsPreview.map((skill) => (
+            <p key={skill.slug} className="text-xs text-text-muted leading-relaxed">
+              · <span className="font-medium">{skill.name}</span>: {skill.description}
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  const dependencyBanner = error && (
+    <DependencyErrorBanner
+      error={error}
+      failure={{
+        kind: 'extension',
+        name: manifest?.name ?? 'extension',
+        displayName: manifest?.display_name ?? manifest?.name,
+        command: 'uv sync',
+      }}
+    />
+  );
+
+  let title: React.ReactNode;
+  let subtitle: React.ReactNode;
+  if (step === 'configure') {
+    title = `Configure ${manifest?.display_name ?? ''}`;
+    subtitle = 'Fill in required credentials. Optional fields are pre-filled with defaults.';
+  } else if (isMarketplace) {
+    title = `Install ${marketplaceName}`;
+    subtitle = marketplaceMeta
+      ? `From the Biorouter marketplace · ${marketplaceMeta}`
+      : 'From the Biorouter marketplace.';
+  } else {
+    title = 'Add extension';
+    subtitle = 'Install a Biorouter extension bundle (.brxt file).';
+  }
+
+  /**
+   * Issue #116. On the marketplace route Cancel, Back and the × are all one
+   * thing — returning to the list the user came from — so there is one control
+   * and it says so. Offering a second "Cancel" beside it would imply the two
+   * differ.
+   */
+  const backToMarketplace = (
+    <Button variant="outline" onClick={onClose} disabled={isInstalling}>
+      Back to marketplace
+    </Button>
+  );
+
+  let footer: React.ReactNode;
+  if (step === 'select' && isMarketplace) {
+    footer = (
+      <>
+        {backToMarketplace}
+        {phase === 'error' ? (
+          <Button
+            disabled={isBusy}
+            onClick={() => {
+              setError(null);
+              if (downloadError) {
+                if (installOrigin.kind === 'marketplace') installOrigin.onRetry();
+              } else if (preloadedFilePath) {
+                processFile(preloadedFilePath);
+              }
+            }}
+          >
+            Retry
+          </Button>
+        ) : (
+          <Button disabled={!manifest || isBusy} onClick={handleNext}>
+            {isInstalling ? 'Installing…' : primaryAction.label}
+          </Button>
+        )}
+      </>
+    );
+  } else if (step === 'select') {
+    footer = (
+      <>
+        <Button variant="outline" onClick={onClose} disabled={isBusy}>
+          Cancel
+        </Button>
+        <Button disabled={!manifest || !!error || isBusy} onClick={handleNext}>
+          {isInstalling ? 'Installing…' : primaryAction.label}
+        </Button>
+      </>
+    );
+  } else {
+    footer = (
+      <>
+        <Button
+          variant="outline"
+          disabled={isBusy}
+          onClick={() => {
+            setStep('select');
+            setError(null);
+          }}
+        >
+          Back
+        </Button>
+        {isMarketplace ? (
+          backToMarketplace
+        ) : (
+          <Button variant="outline" onClick={onClose} disabled={isBusy}>
+            Cancel
+          </Button>
+        )}
+        <Button disabled={requiredMissing || isInstalling} onClick={handleInstall}>
+          {isInstalling ? 'Installing…' : 'Install extension'}
+        </Button>
+      </>
+    );
+  }
 
   return (
     <ModalShell
@@ -277,56 +486,60 @@ export function BrxtInstallModal({
       size="md"
       purpose={isBusy ? 'required' : 'form'}
       scrollBody
-      title={step === 'drop' ? 'Add extension' : `Configure ${manifest?.display_name ?? ''}`}
-      subtitle={
-        step === 'drop'
-          ? 'Install a Biorouter extension bundle (.brxt file).'
-          : 'Fill in required credentials. Optional fields are pre-filled with defaults.'
-      }
-      footer={
-        step === 'drop' ? (
-          <>
-            <Button variant="outline" onClick={onClose} disabled={isBusy}>
-              Cancel
-            </Button>
-            <Button
-              disabled={!manifest || !!error || isValidating || isInstalling}
-              onClick={handleNext}
-            >
-              {isInstalling ? 'Installing…' : 'Next: configure'}
-            </Button>
-          </>
-        ) : (
-          <>
-            <Button
-              variant="outline"
-              disabled={isBusy}
-              onClick={() => {
-                setStep('drop');
-                setError(null);
-              }}
-            >
-              Back
-            </Button>
-            <Button variant="outline" onClick={onClose} disabled={isBusy}>
-              Cancel
-            </Button>
-            <Button disabled={requiredMissing || isInstalling} onClick={handleInstall}>
-              {isInstalling ? 'Installing…' : 'Install extension'}
-            </Button>
-          </>
-        )
-      }
+      title={title}
+      subtitle={subtitle}
+      footer={footer}
     >
-      {step === 'drop' && (
+      {step === 'select' && isMarketplace && (
+        /* Issue #116. The marketplace route renders NO local-file controls: no
+           drop zone, no file input, no "Browse file…". The user chose this
+           extension on the previous screen and Biorouter is fetching it — there
+           is nothing for them to supply. */
+        <div className="py-3 space-y-4">
+          {privacyPanel}
+
+          {phase === 'downloading' && (
+            <div className="biorouter-modal-panel rounded-xl p-8 text-center">
+              <Package className="w-10 h-10 mx-auto mb-2 text-text-muted" />
+              <p className="text-sm text-text-muted animate-pulse">
+                Downloading {marketplaceName}…
+              </p>
+            </div>
+          )}
+
+          {phase === 'validating' && (
+            <div className="biorouter-modal-panel rounded-xl p-8 text-center">
+              <Package className="w-10 h-10 mx-auto mb-2 text-text-muted" />
+              <p className="text-sm text-text-muted animate-pulse">Reading bundle…</p>
+            </div>
+          )}
+
+          {phase === 'error' &&
+            (downloadError ? (
+              <DependencyErrorBanner
+                error={downloadError}
+                hideDebugAction
+                failure={{
+                  kind: 'extension',
+                  name:
+                    installOrigin.kind === 'marketplace' ? installOrigin.entry.name : 'extension',
+                  command: 'download',
+                }}
+              />
+            ) : (
+              dependencyBanner
+            ))}
+
+          {phase === 'ready' && manifestSummary}
+        </div>
+      )}
+
+      {step === 'select' && !isMarketplace && (
         <div className="py-3 space-y-4">
           {/* §13.5: the tier this install will actually produce, stated before
               a bundle has even been chosen — someone who has not yet picked one
               should already know what dropping it in here means. */}
-          <div className="biorouter-modal-panel rounded-lg p-3">
-            <PrivacyBadge tier={resultingTier} />
-            <p className="text-supporting text-text-muted mt-1.5 leading-relaxed">{badgeNotice}</p>
-          </div>
+          {privacyPanel}
 
           {/* Drop zone */}
           <div
@@ -358,7 +571,9 @@ export function BrxtInstallModal({
             ) : (
               <>
                 <Package className="w-10 h-10 mx-auto mb-2 text-text-muted" />
-                <p className="text-sm font-medium mb-1">Drop your .brxt file here</p>
+                <p className="text-sm font-medium mb-1">
+                  {manifest ? 'Drop a different .brxt file here' : 'Drop your .brxt file here'}
+                </p>
                 <p className="text-xs text-text-muted mb-3">or click to browse</p>
                 <Button
                   variant="outline"
@@ -378,50 +593,10 @@ export function BrxtInstallModal({
           {/* Error banner. A `.brxt` install fails most often on `uv sync` —
               a Python dependency that will not build on this machine — which is
               precisely the kind of thing a session with a shell can work out. */}
-          {error && (
-            <DependencyErrorBanner
-              error={error}
-              failure={{
-                kind: 'extension',
-                name: manifest?.name ?? 'extension',
-                displayName: manifest?.display_name ?? manifest?.name,
-                command: 'uv sync',
-              }}
-            />
-          )}
+          {dependencyBanner}
 
           {/* Manifest preview card */}
-          {manifest && !error && (
-            <div className="biorouter-modal-panel rounded-xl p-4">
-              <p className="text-xs text-text-muted uppercase tracking-wide mb-2">
-                Detected from bundle
-              </p>
-              <p className="text-sm font-semibold">{manifest.display_name}</p>
-              <p className="text-xs text-text-muted mt-0.5">
-                v{manifest.version}
-                {manifest.tools_count ? ` · ${manifest.tools_count} tools` : ''}
-                {skillsPreview.length > 0
-                  ? ` · ${skillsPreview.length} skill${skillsPreview.length !== 1 ? 's' : ''}`
-                  : ''}
-                {' · '}
-                {requiredVars.length} required env var
-                {requiredVars.length !== 1 ? 's' : ''}
-              </p>
-              <p className="text-sm text-text-default mt-2">{manifest.description}</p>
-              {skillsPreview.length > 0 && (
-                <div className="mt-2 pt-2 shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]">
-                  <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-1">
-                    Skills included
-                  </p>
-                  {skillsPreview.map((skill) => (
-                    <p key={skill.slug} className="text-xs text-text-muted leading-relaxed">
-                      · <span className="font-medium">{skill.name}</span>: {skill.description}
-                    </p>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          {manifestSummary}
         </div>
       )}
 
@@ -434,10 +609,14 @@ export function BrxtInstallModal({
               </p>
               {requiredVars.map((entry) => (
                 <div key={entry.key}>
-                  <label className="block text-xs font-semibold mb-1">
+                  <label
+                    htmlFor={envFieldId(entry.key)}
+                    className="block text-xs font-semibold mb-1"
+                  >
                     {entry.key} <span className="text-text-danger">*</span>
                   </label>
                   <input
+                    id={envFieldId(entry.key)}
                     type={entry.secret ? 'password' : 'text'}
                     className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm "
                     placeholder={entry.description}
@@ -450,7 +629,42 @@ export function BrxtInstallModal({
             </div>
           )}
 
-          {optionalVars.length > 0 && (
+          {/* Issue #116. When an extension declares only optional variables the
+              first step's button says so, and this step must not then hide them
+              behind a disclosure the user has to find. They are open. */}
+          {optionalVars.length > 0 && requiredVars.length === 0 && (
+            <div className="space-y-3">
+              <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">
+                Optional
+              </p>
+              <p className="text-xs text-text-muted">
+                {manifest.display_name} needs no credentials to run. These {optionalVars.length}{' '}
+                optional setting{optionalVars.length !== 1 ? 's are' : ' is'} pre-filled with
+                defaults — install without changing anything if you are not sure.
+              </p>
+              {optionalVars.map((entry) => (
+                <div key={entry.key}>
+                  <label
+                    htmlFor={envFieldId(entry.key)}
+                    className="block text-xs font-medium text-text-muted mb-1"
+                  >
+                    {entry.key}
+                  </label>
+                  <input
+                    id={envFieldId(entry.key)}
+                    type={entry.secret ? 'password' : 'text'}
+                    className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm "
+                    placeholder={entry.description}
+                    value={entry.value}
+                    onChange={(e) => setEnvValue(entry.key, e.target.value)}
+                    autoComplete="off"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {optionalVars.length > 0 && requiredVars.length > 0 && (
             <div>
               <button
                 type="button"
@@ -467,10 +681,14 @@ export function BrxtInstallModal({
                   </p>
                   {optionalVars.map((entry) => (
                     <div key={entry.key}>
-                      <label className="block text-xs font-medium text-text-muted mb-1">
+                      <label
+                        htmlFor={envFieldId(entry.key)}
+                        className="block text-xs font-medium text-text-muted mb-1"
+                      >
                         {entry.key}
                       </label>
                       <input
+                        id={envFieldId(entry.key)}
                         type={entry.secret ? 'password' : 'text'}
                         className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm "
                         placeholder={entry.description}
@@ -485,25 +703,12 @@ export function BrxtInstallModal({
             </div>
           )}
 
-          {error && (
-            <DependencyErrorBanner
-              error={error}
-              failure={{
-                kind: 'extension',
-                name: manifest?.name ?? 'extension',
-                displayName: manifest?.display_name ?? manifest?.name,
-                command: 'uv sync',
-              }}
-            />
-          )}
+          {dependencyBanner}
 
           {/* §13.5: the resulting badge, above the Install button — the footer
               sits directly below this body, so it is the last thing read before
               the button that commits the install. */}
-          <div className="biorouter-modal-panel rounded-lg p-3">
-            <PrivacyBadge tier={resultingTier} />
-            <p className="text-supporting text-text-muted mt-1.5 leading-relaxed">{badgeNotice}</p>
-          </div>
+          {privacyPanel}
         </div>
       )}
     </ModalShell>

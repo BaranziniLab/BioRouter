@@ -11,6 +11,7 @@ import {
   getDefaultFormData,
   ExtensionFormData,
   createExtensionConfig,
+  nameToKey,
 } from '../settings/extensions/utils';
 import { activateExtensionDefault } from '../settings/extensions';
 import { useConfig } from '../ConfigContext';
@@ -41,6 +42,10 @@ export default function ExtensionsView({
   const [isBrxtModalOpen, setIsBrxtModalOpen] = useState(false);
   const [isBrowseModalOpen, setIsBrowseModalOpen] = useState(false);
   const [installedExtNames, setInstalledExtNames] = useState<Set<string>>(new Set());
+  // Issue #116. The names as configured, not lowercased: `scrollToExtension`
+  // resolves a DOM id from `kebabCase(name)`, so a lowercased name would miss
+  // the card for every extension whose name is not already lowercase.
+  const [installedExtNamesRaw, setInstalledExtNamesRaw] = useState<string[]>([]);
   const [brxtPreloadedPath, setBrxtPreloadedPath] = useState<string | undefined>(undefined);
   const [refreshKey, setRefreshKey] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
@@ -56,6 +61,7 @@ export default function ExtensionsView({
       .then((exts) => {
         if (cancelled) return;
         setInstalledExtNames(new Set(exts.map((e) => e.name.toLowerCase())));
+        setInstalledExtNamesRaw(exts.map((e) => e.name));
       })
       .catch(() => {});
     return () => {
@@ -230,6 +236,24 @@ export default function ExtensionsView({
           onClose={() => setIsBrowseModalOpen(false)}
           onInstalled={() => setRefreshKey((prev) => prev + 1)}
           installedNames={installedExtNames}
+          /**
+           * Issue #116. This page owns the Browse modal but not the Settings
+           * card's configuration modal — that lives inside `ExtensionsSection`
+           * below — so the strongest thing it can honestly do is what the
+           * acceptance criterion allows as the alternative: close the
+           * marketplace and take the user to the extension's Settings entry,
+           * scrolled to and highlighted, where the gear opens its credentials.
+           * (`ExtensionsSection`'s own Browse modal, on the Settings route,
+           * opens that configuration directly.)
+           */
+          onConfigureInstalled={(ext) => {
+            const key = nameToKey(ext.extension_name ?? ext.name);
+            const match =
+              installedExtNamesRaw.find((name) => nameToKey(name) === key) ??
+              installedExtNamesRaw.find((name) => nameToKey(name) === nameToKey(ext.id));
+            setIsBrowseModalOpen(false);
+            if (match) scrollToExtension(match);
+          }}
         />
       )}
     </MainPanelLayout>

@@ -944,12 +944,21 @@ enum ExtensionCommand {
             help = "Set a plain env var (repeatable)"
         )]
         env: Vec<String>,
+        /// ⚠ Kept for scripts that already do this; never recommended. The
+        /// value is in your shell history and visible to `ps` for the life of
+        /// the process. Prefer the interactive prompt (echo off) or
+        /// `--secret-stdin`.
         #[arg(
             long = "secret",
             value_name = "KEY=VALUE",
-            help = "Set a secret env var, stored in the keyring (repeatable)"
+            help = "Set a secret env var (visible to `ps` — prefer the prompt or --secret-stdin)"
         )]
         secret: Vec<String>,
+        #[arg(
+            long = "secret-stdin",
+            help = "Read KEY=VALUE lines from stdin, for unattended runs"
+        )]
+        secret_stdin: bool,
         #[arg(long = "no-enable", help = "Install without enabling")]
         no_enable: bool,
     },
@@ -964,6 +973,13 @@ enum ExtensionCommand {
             value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
         )]
         format: String,
+    },
+
+    /// Re-enter an installed extension's credentials, with echo off
+    #[command(about = "Configure an installed extension's credentials")]
+    Configure {
+        #[arg(help = "Extension name")]
+        name: String,
     },
 
     /// Remove a configured extension
@@ -2303,9 +2319,11 @@ async fn handle_extension_subcommand(command: ExtensionCommand) -> Result<()> {
             path,
             env,
             secret,
+            secret_stdin,
             no_enable,
-        } => extension::handle_install(path, env, secret, no_enable).await,
+        } => extension::handle_install(path, env, secret, secret_stdin, no_enable).await,
         ExtensionCommand::List { format } => extension::handle_list(&format).await,
+        ExtensionCommand::Configure { name } => extension::handle_configure(name).await,
         ExtensionCommand::Remove { name, purge } => extension::handle_remove(name, purge).await,
     }
 }

@@ -6,44 +6,20 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::io::{IsTerminal, Read};
+use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
-use biorouter::agents::extension::{Envs, ExtensionConfig};
-use biorouter::config::extensions::{
-    get_all_extensions, name_to_key, remove_extension, set_extension, ExtensionEntry,
-};
+use biorouter::agents::extension::ExtensionConfig;
+use biorouter::config::extensions::{get_all_extensions, name_to_key, remove_extension};
 use biorouter::config::paths::Paths;
-use biorouter::config::Config;
+use biorouter::extension_install::{
+    BrxtEnvVar, CredentialPolicy, ExtensionInstallTransaction, InstallReport, InstallSource,
+    InstallState,
+};
 use console::{style, Color};
-use serde::Deserialize;
 
 const ACCENT: Color = Color::Color256(137);
-
-#[derive(Debug, Deserialize)]
-struct BrxtManifest {
-    name: String,
-    display_name: String,
-    description: String,
-    #[allow(dead_code)]
-    version: String,
-    entry_point: String,
-    #[allow(dead_code)]
-    repository: String,
-    #[serde(default)]
-    env_vars: Vec<BrxtEnvVar>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BrxtEnvVar {
-    key: String,
-    #[serde(default)]
-    required: bool,
-    #[serde(default)]
-    secret: bool,
-}
 
 fn extensions_root() -> PathBuf {
     Paths::config_dir().join("extensions")
@@ -78,287 +54,360 @@ fn parse_kv(pairs: &[String]) -> Result<HashMap<String, String>> {
 // install
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Install a `.brxt` bundle.
+///
+/// ⚠ **This used to print a warning about a missing required value and register
+/// the extension anyway** (#117). The result started, failed to authenticate,
+/// and reported success — which is fine when a human read the warning scrolling
+/// past, and is exactly wrong when an agent ran the command and reported the
+/// exit code. There is no "install it broken" path any more:
+///
+/// * at a terminal, the missing values are asked for, with echo off for
+///   anything the manifest declares secret;
+/// * unattended, the install stops and says which key names it needs, and the
+///   extension is not registered.
+///
+/// The heavy lifting is [`biorouter::extension_install`], so this and the
+/// desktop and an agent-driven install are the same transaction with different
+/// front doors.
 pub async fn handle_install(
     path: PathBuf,
     env_flags: Vec<String>,
     secret_flags: Vec<String>,
+    secret_stdin: bool,
     no_enable: bool,
 ) -> Result<()> {
-    if !path.exists() {
-        bail!("File not found: {}", path.display());
+    let mut supplied = parse_kv(&env_flags)?;
+    let from_flags = parse_kv(&secret_flags)?;
+    if !from_flags.is_empty() {
+        // ⚠ Kept working, never recommended. A value in `--secret` is in the
+        // shell history and in `ps` output for the life of the process, and the
+        // caller has already typed it by the time we get here — refusing would
+        // only cost them the install without un-exposing anything. The warning
+        // names the two paths that do not have the problem.
+        println!(
+            "  {} {} is visible in your shell history and to `ps`. \
+             Run without it to be prompted with echo off, or pipe `KEY=VALUE` lines \
+             into `--secret-stdin`.",
+            style("⚠").yellow(),
+            style("--secret").yellow(),
+        );
+    }
+    supplied.extend(from_flags);
+    supplied.extend(read_secret_stdin(secret_stdin)?);
+
+    let interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    let policy = if interactive {
+        CredentialPolicy::Prompt(Box::new(prompt_for_values))
+    } else {
+        CredentialPolicy::Refuse
+    };
+
+    let spinner = cliclack::spinner();
+    spinner.start("installing…");
+    let report = ExtensionInstallTransaction::new(InstallSource::LocalFile { path })
+        .with_values(supplied)
+        .enabled(!no_enable)
+        .run(policy, None)
+        .await;
+    spinner.stop("");
+
+    report_install(&report, interactive)
+}
+
+/// Read `KEY=VALUE` lines from stdin when `--secret-stdin` was passed.
+///
+/// The unattended answer to "how do I configure a secret without putting it in
+/// `ps`". Reading the whole of stdin is why it is opt-in: an interactive run
+/// would block on it forever.
+fn read_secret_stdin(enabled: bool) -> Result<HashMap<String, String>> {
+    if !enabled {
+        return Ok(HashMap::new());
+    }
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .context("reading KEY=VALUE lines from stdin")?;
+    let pairs: Vec<String> = buf
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect();
+    parse_kv(&pairs)
+}
+
+/// Ask at the terminal, with echo off for anything declared secret.
+fn prompt_for_values(vars: &[BrxtEnvVar]) -> Result<HashMap<String, String>> {
+    let mut values = HashMap::new();
+    for var in vars {
+        let label = if var.required {
+            format!("{} (required)", var.key)
+        } else {
+            format!("{} (optional — Enter to skip)", var.key)
+        };
+        let help = if var.description.is_empty() {
+            String::new()
+        } else {
+            format!("\n  {}", style(&var.description).dim())
+        };
+        print!("{help}");
+
+        let entered: String = if var.secret {
+            // Echo off. The one property that makes a terminal safe for this:
+            // nothing is written to the screen, so nothing is in the scrollback,
+            // and nothing reaches the shell's history file.
+            // `required` is enforced below rather than by the widget: an
+            // OPTIONAL secret must be skippable with Enter, and the transaction
+            // re-checks every required key before it registers anything, so a
+            // widget-level rule here would only be a second, divergent copy.
+            cliclack::password(label).mask('•').interact()?
+        } else {
+            cliclack::input(label)
+                .default_input(var.default.as_deref().unwrap_or(""))
+                .required(false)
+                .interact()?
+        };
+        if !entered.trim().is_empty() {
+            values.insert(var.key.clone(), entered);
+        }
+    }
+    Ok(values)
+}
+
+/// Say what happened. `needs_credentials` is a first-class result with a
+/// non-zero exit, so a script — or an agent — cannot read it as success.
+fn report_install(report: &InstallReport, interactive: bool) -> Result<()> {
+    match &report.state {
+        InstallState::Attached | InstallState::Installed => {
+            let state = if report.enabled {
+                "installed and enabled"
+            } else {
+                "installed"
+            };
+            println!(
+                "  {} {} {}",
+                style("✓").green(),
+                style(report.display_name.as_deref().unwrap_or("extension"))
+                    .fg(ACCENT)
+                    .bold(),
+                style(state).dim()
+            );
+            if !report.configured_keys.is_empty() {
+                // NAMES only — this line is read by whoever ran the command,
+                // which in an agent-driven install is a model.
+                println!(
+                    "  {} configured {}",
+                    style("·").dim(),
+                    style(report.configured_keys.join(", ")).dim()
+                );
+            }
+            Ok(())
+        }
+        InstallState::NeedsCredentials { keys } => {
+            let name = report.display_name.as_deref().unwrap_or("This extension");
+            bail!(
+                "{name} needs {} before it can run, and this run has no terminal to ask on.\n  \
+                 Missing: {}\n  \
+                 Configure them by re-running at a terminal, or pipe `KEY=VALUE` lines in:\n    \
+                 printf '%s\\n' 'KEY=…' | biorouter extension install <bundle> --secret-stdin\n  \
+                 Do not pass a credential as a command-line argument: it is visible to `ps` \
+                 and lands in your shell history.\n  \
+                 The extension was NOT registered — an extension that cannot authenticate is \
+                 worse than one that is missing.",
+                if keys.len() == 1 { "a value" } else { "values" },
+                keys.join(", "),
+            )
+        }
+        InstallState::Cancelled => {
+            if interactive {
+                println!(
+                    "  {} install cancelled; nothing was registered",
+                    style("·").dim()
+                );
+                Ok(())
+            } else {
+                bail!("The install was cancelled; nothing was registered.")
+            }
+        }
+        InstallState::Failed { reason } => bail!("{reason}"),
+        // Reachable only if a caller polls a report mid-run, which this
+        // command does not do.
+        other => bail!("Install ended in an unexpected state: {other:?}"),
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// configure
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Re-enter an installed extension's credentials without reinstalling it.
+///
+/// The counterpart to the desktop's Configure action (#117): the same manifest,
+/// the same echo-off prompt, the same split of credential-to-keyring versus
+/// setting-to-config. Existing values are reported as **configured** and never
+/// read back — the prompt offers to replace them, and skipping keeps whatever is
+/// already stored.
+pub async fn handle_configure(name: String) -> Result<()> {
+    let key = name_to_key(&name);
+    let entry = get_all_extensions()
+        .into_iter()
+        .find(|e| name_to_key(&e.config.name()) == key)
+        .ok_or_else(|| anyhow!("No extension named '{name}' is configured"))?;
+
+    let install_dir = brxt_install_dir(&entry.config)
+        .ok_or_else(|| anyhow!("'{name}' was not installed from a .brxt bundle"))?;
+    let vars = declared_vars(&install_dir)?;
+    if vars.is_empty() {
+        println!(
+            "  {} {} declares no configurable values",
+            style("·").dim(),
+            style(&name).bold()
+        );
+        return Ok(());
     }
 
-    // 0. Gate on `uv`: installing a .brxt builds a Python venv with `uv sync`,
-    // so refuse up front (with an actionable message) rather than failing late.
-    if biorouter::system::status_of("uv")
-        .map(|d| !d.installed)
-        .unwrap_or(true)
-    {
-        let cmd = biorouter::system::install_command("uv").unwrap_or_default();
+    if !std::io::stdin().is_terminal() {
         bail!(
-            "`uv` is required to install .brxt extensions, but it was not found.\n  \
-             Install it:  {}\n  \
-             Then re-run, or run `biorouter doctor` to check prerequisites.",
-            cmd
+            "`biorouter extension configure` needs a terminal so it can read values with echo off.\n  \
+             {} declares: {}",
+            name,
+            vars.iter()
+                .map(|v| v.key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
 
-    // 1. Open and validate the bundle.
-    let file = fs::File::open(&path).with_context(|| format!("opening {}", path.display()))?;
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| anyhow!("Not a valid .brxt (zip) bundle: {}", e))?;
-
-    let names: Vec<String> = (0..archive.len())
-        .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+    // Say which are already set — by NAME. Reading a stored value back to
+    // pre-fill a field would put it on screen, which is the one thing the
+    // echo-off prompt exists to prevent.
+    let configured: Vec<&str> = vars
+        .iter()
+        .filter(|v| biorouter::extension_install::brxt::secret_already_stored(&v.key))
+        .map(|v| v.key.as_str())
         .collect();
-
-    let require = |pred: bool, msg: &str| -> Result<()> {
-        if pred {
-            Ok(())
-        } else {
-            bail!("{}: not a valid .brxt bundle", msg)
-        }
-    };
-    require(
-        names.iter().any(|n| n == "manifest.json"),
-        "Missing manifest.json",
-    )?;
-    require(
-        names.iter().any(|n| n.eq_ignore_ascii_case("readme.md")),
-        "Missing README.md",
-    )?;
-    require(
-        names.iter().any(|n| n == "pyproject.toml"),
-        "Missing pyproject.toml",
-    )?;
-    require(
-        names.iter().any(|n| n.starts_with("src/")),
-        "Missing src/ directory",
-    )?;
-
-    // 2. Parse the manifest.
-    let manifest: BrxtManifest = {
-        let mut entry = archive
-            .by_name("manifest.json")
-            .map_err(|e| anyhow!("Could not read manifest.json: {}", e))?;
-        let mut buf = String::new();
-        entry.read_to_string(&mut buf)?;
-        serde_json::from_str(&buf).map_err(|e| anyhow!("Invalid manifest.json: {}", e))?
-    };
-
-    // 3. Extract into ~/.config/biorouter/extensions/<name>/.
-    let install_dir = extensions_root().join(&manifest.name);
-    fs::create_dir_all(&install_dir)
-        .with_context(|| format!("creating {}", install_dir.display()))?;
-    extract_zip(&mut archive, &install_dir)?;
-
-    println!(
-        "  {} extracted {} {}",
-        style("·").dim(),
-        style(&manifest.display_name).bold(),
-        style(format!("→ {}", install_dir.display())).dim()
-    );
-
-    // 4. Build the Python venv (matches the GUI; requires `uv` on PATH).
-    run_uv_sync(&install_dir)?;
-    println!("  {} built virtual environment (uv sync)", style("·").dim());
-
-    // 5. Resolve env vars: secrets → keyring (+ env_keys), the rest → envs map.
-    let provided_env = parse_kv(&env_flags)?;
-    let provided_secret = parse_kv(&secret_flags)?;
-
-    let mut envs: HashMap<String, String> = HashMap::new();
-    let mut env_keys: Vec<String> = Vec::new();
-    let config = Config::global();
-
-    for var in &manifest.env_vars {
-        if let Some(val) = provided_secret.get(&var.key).or_else(|| {
-            // A declared-secret var passed via --env is still treated as secret.
-            if var.secret {
-                provided_env.get(&var.key)
-            } else {
-                None
-            }
-        }) {
-            config
-                .set_secret(&var.key, &val)
-                .map_err(|e| anyhow!("Failed to store secret '{}': {}", var.key, e))?;
-            env_keys.push(var.key.clone());
-        } else if let Some(val) = provided_env.get(&var.key) {
-            envs.insert(var.key.clone(), val.clone());
-        } else if var.required {
-            println!(
-                "  {} required env var {} not provided. Set it later with `--env {}=...`",
-                style("⚠").yellow(),
-                style(&var.key).yellow(),
-                var.key
-            );
-        }
-    }
-    // Allow ad-hoc envs/secrets not declared in the manifest too.
-    for (k, v) in &provided_env {
-        if !manifest.env_vars.iter().any(|e| &e.key == k) {
-            envs.insert(k.clone(), v.clone());
-        }
-    }
-    for (k, v) in &provided_secret {
-        if !manifest.env_vars.iter().any(|e| &e.key == k) {
-            config.set_secret(k, &v).ok();
-            env_keys.push(k.clone());
-        }
+    if !configured.is_empty() {
+        println!(
+            "  {} already configured: {} {}",
+            style("·").dim(),
+            style(configured.join(", ")).dim(),
+            style("(Enter to keep)").dim()
+        );
     }
 
-    // 6. Register the stdio extension.
-    let config_entry = ExtensionConfig::Stdio {
-        name: manifest.name.clone(),
-        description: manifest.description.clone(),
-        cmd: "uv".to_string(),
-        args: vec![
-            "run".to_string(),
-            "--directory".to_string(),
-            install_dir.display().to_string(),
-            manifest.entry_point.clone(),
-        ],
-        envs: Envs::new(envs),
-        env_keys,
-        timeout: Some(300),
-        bundled: None,
-        available_tools: Vec::new(),
-    };
-    // Issue #56 Task 43 (DR-23): no provenance is recorded here, deliberately.
-    // This subcommand installs a `.brxt` from a local path, which carries no
-    // BAAM registry id — the id exists only where a marketplace install happens,
-    // which today is the desktop's Browse Extensions flow. With nothing to key
-    // on, `classify_extension` falls back to the config-name join, i.e. exactly
-    // the behaviour that shipped before that task. `privacy::provenance::record`
-    // is the writer to call if this path ever learns an id.
-    set_extension(ExtensionEntry {
-        enabled: !no_enable,
-        config: config_entry,
-    });
+    let values = prompt_for_values(&vars)?;
+    if values.is_empty() {
+        println!("  {} nothing changed", style("·").dim());
+        return Ok(());
+    }
 
-    let state = if no_enable {
-        "installed"
-    } else {
-        "installed and enabled"
-    };
+    let written = store_configured_values(&entry, &vars, values)?;
     println!(
         "  {} {} {}",
         style("✓").green(),
-        style(&manifest.display_name).fg(ACCENT).bold(),
-        style(state).dim()
+        style(&name).fg(ACCENT).bold(),
+        style(if written.is_empty() {
+            "settings updated".to_string()
+        } else {
+            format!("configured {}", written.join(", "))
+        })
+        .dim()
     );
     Ok(())
 }
 
-/// Extract every file in the archive under `dest`, guarding against zip-slip.
-fn extract_zip(archive: &mut zip::ZipArchive<fs::File>, dest: &Path) -> Result<()> {
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i)?;
-        let Some(rel) = entry.enclosed_name().map(Path::to_path_buf) else {
-            bail!("Unsafe path in bundle: {}", entry.name());
-        };
-        let out_path = dest.join(&rel);
-        if entry.is_dir() {
-            fs::create_dir_all(&out_path)?;
-            continue;
-        }
-        if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let mut out = fs::File::create(&out_path)
-            .with_context(|| format!("writing {}", out_path.display()))?;
-        std::io::copy(&mut entry, &mut out)?;
-    }
-    Ok(())
+/// Where a `.brxt` extension was unpacked, read off the `--directory` argument
+/// its launch command carries.
+fn brxt_install_dir(config: &ExtensionConfig) -> Option<PathBuf> {
+    let ExtensionConfig::Stdio { args, .. } = config else {
+        return None;
+    };
+    args.iter()
+        .position(|a| a == "--directory")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from)
 }
 
-/// Run `uv sync` in `dir`, surfacing a clear, actionable error if `uv` is
-/// missing or the sync fails.
-fn run_uv_sync(dir: &Path) -> Result<()> {
-    let spinner = cliclack::spinner();
-    spinner.start("building virtual environment (uv sync)...");
-    let output = Command::new("uv").arg("sync").current_dir(dir).output();
-    spinner.stop("");
-
-    match output {
-        Ok(out) if out.status.success() => Ok(()),
-        Ok(out) => {
-            let detail = String::from_utf8_lossy(&out.stderr);
-            // uv puts the root cause and its `help:` dependency-chain line at
-            // the END of stderr, so keep the tail, not the head.
-            let lines: Vec<&str> = detail.trim().lines().collect();
-            let tail = if lines.len() > 15 {
-                format!("…\n{}", lines[lines.len() - 15..].join("\n"))
-            } else {
-                lines.join("\n")
-            };
-            let hint = uv_sync_hint(&detail)
-                .map(|h| format!("\n\nhint: {h}"))
-                .unwrap_or_default();
-            bail!("uv sync failed:\n{}{}", tail, hint)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!(
-                "`uv` was not found on your PATH. Install it from https://docs.astral.sh/uv/ \
-                 and re-run, or extract the bundle and build the venv manually."
-            )
-        }
-        Err(e) => bail!("Failed to run uv sync: {}", e),
-    }
+/// The `env_vars` an installed bundle's manifest declares.
+fn declared_vars(install_dir: &std::path::Path) -> Result<Vec<BrxtEnvVar>> {
+    let manifest_path = install_dir.join("manifest.json");
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&manifest_path)
+            .with_context(|| format!("reading {}", manifest_path.display()))?,
+    )?;
+    Ok(
+        serde_json::from_value(manifest.get("env_vars").cloned().unwrap_or_default())
+            .unwrap_or_default(),
+    )
 }
 
-/// Map well-known `uv sync` failure signatures to an actionable hint appended
-/// below the raw output. Checks run most-specific first.
-fn uv_sync_hint(stderr: &str) -> Option<&'static str> {
-    if stderr.contains("Symbol not found") && stderr.contains("librustc_driver") {
-        // Homebrew's `rust` dynamically links `libLLVM.dylib`; when `llvm` is
-        // upgraded the ABI mismatches and `rustc` aborts. `brew upgrade rust`
-        // does NOT reliably fix this (there may be no rebuilt bottle yet), so
-        // steer users to the self-contained rustup toolchain and tell them to
-        // remove the Homebrew one so it wins on PATH.
-        Some(
-            "your Homebrew Rust toolchain is broken. `rustc` aborts because Homebrew's \
-             `llvm` was upgraded out from under it (a known Homebrew issue). \
-             `brew upgrade rust` usually does NOT fix this. Install the self-contained \
-             rustup toolchain and remove the Homebrew one so it takes priority:\n    \
-             brew uninstall rust\n    \
-             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh\n  \
-             then fully restart Biorouter and retry.",
-        )
-    } else if stderr.contains("cryptography") && cryptography_built_from_source(stderr) {
-        // cryptography ≥49 (2026-06-12) dropped x86_64 macOS wheels, so Intel
-        // Macs must compile it (it is a Rust/maturin project) instead of
-        // downloading a wheel.
-        Some(
-            "`cryptography` ≥49 no longer ships x86_64 (Intel) macOS wheels, so on an \
-             Intel Mac it must be compiled from source, which needs a Rust toolchain. \
-             Install rustup (https://rustup.rs) and retry, or ask the extension author \
-             to cap `cryptography<49` (the last series with Intel-Mac wheels).",
-        )
-    } else if stderr.contains("maturin") || stderr.contains("rustc") {
-        Some(
-            "a dependency has no prebuilt package for your platform, so it was compiled \
-             from source, which needs a working Rust toolchain. Install one via \
-             https://rustup.rs (or repair your existing install) and retry.",
-        )
-    } else if stderr.contains("Failed to build") {
-        Some(
-            "a dependency has no prebuilt package for your platform, so uv tried to \
-             compile it from source. Make sure a compiler toolchain is installed, or ask \
-             the extension author to pin versions that ship prebuilt wheels.",
-        )
-    } else {
-        None
+/// Write the entered values and fold the result back into the config entry:
+/// credential NAMES into `env_keys`, ordinary settings into `envs`.
+///
+/// Returns the credential names written. A key promoted to the credential store
+/// is removed from `envs`, so a value that used to sit in plaintext does not
+/// stay there beside its own replacement.
+fn store_configured_values(
+    entry: &biorouter::config::extensions::ExtensionEntry,
+    vars: &[BrxtEnvVar],
+    values: HashMap<String, String>,
+) -> Result<Vec<String>> {
+    let config = biorouter::config::Config::global();
+    let mut written: Vec<String> = Vec::new();
+    let mut settings: HashMap<String, String> = HashMap::new();
+    for (k, v) in values {
+        if vars.iter().any(|var| var.key == k && var.secret) {
+            config
+                .set_secret(&k, &v)
+                .map_err(|e| anyhow!("Failed to store '{k}': {e}"))?;
+            written.push(k);
+        } else {
+            settings.insert(k, v);
+        }
     }
-}
 
-/// True when stderr indicates `cryptography` was being built from source
-/// (rather than failing for some unrelated reason that merely mentions it).
-fn cryptography_built_from_source(stderr: &str) -> bool {
-    stderr.contains("Failed to build `cryptography")
-        || stderr.contains("Building cryptography")
-        || (stderr.contains("cryptography") && stderr.contains("maturin"))
+    let ExtensionConfig::Stdio {
+        name: cfg_name,
+        description,
+        cmd,
+        args,
+        envs,
+        mut env_keys,
+        timeout,
+        bundled,
+        available_tools,
+    } = entry.config.clone()
+    else {
+        bail!("not a .brxt extension");
+    };
+    let mut env_map = envs.get_env();
+    env_map.extend(settings);
+    for k in &written {
+        if !env_keys.contains(k) {
+            env_keys.push(k.clone());
+        }
+        env_map.remove(k);
+    }
+    env_keys.sort();
+    env_keys.dedup();
+
+    biorouter::config::extensions::set_extension(biorouter::config::extensions::ExtensionEntry {
+        enabled: entry.enabled,
+        config: ExtensionConfig::Stdio {
+            name: cfg_name,
+            description,
+            cmd,
+            args,
+            envs: biorouter::agents::extension::Envs::new(env_map),
+            env_keys,
+            timeout,
+            bundled,
+            available_tools,
+        },
+    });
+    written.sort();
+    Ok(written)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -448,45 +497,74 @@ pub async fn handle_remove(name: String, purge: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::uv_sync_hint;
+    use super::*;
 
+    fn report(state: InstallState) -> InstallReport {
+        InstallReport {
+            install_id: "i-1".to_string(),
+            state,
+            extension_name: Some("spokeagent".to_string()),
+            display_name: Some("SPOKE Agent".to_string()),
+            configured_keys: Vec::new(),
+            skills: Vec::new(),
+            enabled: false,
+        }
+    }
+
+    /// ⚠ **The behaviour this replaced was: warn, then register anyway.** An
+    /// agent running the command read the exit code, reported success, and left
+    /// the user with an extension that starts and cannot authenticate. A
+    /// non-zero exit is the whole fix.
     #[test]
-    fn hint_broken_homebrew_rust() {
-        let stderr = "dyld[28466]: Symbol not found: __ZN4llvm10PGOOptionsC1E...\n\
-                      Referenced from: /usr/local/Cellar/rust/1.89.0_3/lib/librustc_driver-bccb51ff.dylib";
-        let hint = uv_sync_hint(stderr).unwrap();
-        // Must steer to rustup + removing Homebrew rust, since field-testing
-        // showed `brew upgrade rust` does not fix this.
-        assert!(hint.contains("rustup"));
-        assert!(hint.contains("brew uninstall rust"));
-        assert!(hint.contains("does NOT fix"));
+    fn a_missing_credential_fails_the_command_and_says_nothing_was_registered() {
+        let err = report_install(
+            &report(InstallState::NeedsCredentials {
+                keys: vec!["SPOKEAGENT_PASSCODE".to_string()],
+            }),
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("SPOKEAGENT_PASSCODE"), "{err}");
+        assert!(err.contains("NOT registered"), "{err}");
+    }
+
+    /// The refusal is read by whoever ran the command — in an agent-driven
+    /// install, a model. It must not hand them the one call shape that puts the
+    /// credential in `ps` and the shell history.
+    #[test]
+    fn the_refusal_never_recommends_a_credential_on_the_command_line() {
+        let err = report_install(
+            &report(InstallState::NeedsCredentials {
+                keys: vec!["SPOKEAGENT_PASSCODE".to_string()],
+            }),
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            !err.contains("--secret SPOKEAGENT_PASSCODE")
+                && !err.contains("--secret KEY=VALUE")
+                && !err.contains("--env SPOKEAGENT_PASSCODE"),
+            "the refusal recommended a command-line credential: {err}"
+        );
+        assert!(err.contains("--secret-stdin"), "{err}");
+        assert!(err.contains("visible to `ps`"), "{err}");
     }
 
     #[test]
-    fn hint_cryptography_intel_wheel_removed() {
-        let stderr = "× Failed to build `cryptography==49.0.0`\n\
-                      ├─▶ Call to `maturin.build_wheel` failed";
-        let hint = uv_sync_hint(stderr).unwrap();
-        assert!(hint.contains("cryptography<49"));
-        assert!(hint.contains("Intel"));
+    fn a_successful_install_is_not_an_error() {
+        let mut ok = report(InstallState::Attached);
+        ok.enabled = true;
+        assert!(report_install(&ok, true).is_ok());
     }
 
+    /// Reading stdin is opt-in because an interactive run would block on it
+    /// forever.
     #[test]
-    fn hint_rust_toolchain_needed() {
-        let stderr = "error: process didn't exit successfully: `rustc -vV`\n💥 maturin failed";
-        assert!(uv_sync_hint(stderr).unwrap().contains("Rust toolchain"));
-    }
-
-    #[test]
-    fn hint_generic_source_build() {
-        let stderr = "× Failed to build `pymssql==2.3.13`\n├─▶ The build backend returned an error";
-        assert!(uv_sync_hint(stderr)
-            .unwrap()
-            .contains("compile it from source"));
-    }
-
-    #[test]
-    fn no_hint_for_unrelated_failure() {
-        assert!(uv_sync_hint("No solution found when resolving dependencies").is_none());
+    fn stdin_is_not_read_unless_asked_for() {
+        assert!(read_secret_stdin(false).unwrap().is_empty());
     }
 }

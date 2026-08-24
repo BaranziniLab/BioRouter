@@ -56,6 +56,24 @@ pub struct ManageExtensionsParams {
     pub extension_name: String,
 }
 
+/// Install a marketplace extension (#117).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct InstallExtensionParams {
+    /// The BAAM registry `id` of the extension to install, e.g.
+    /// `playwright-agent`. Recorded as provenance so the privacy tier is
+    /// re-derived from a stable id rather than from a renameable config name.
+    pub registry_id: String,
+    /// The `download` URL the registry publishes for that entry. Must be https.
+    pub url: String,
+    /// Enable the extension after installing it. Defaults to true.
+    #[serde(default = "default_true")]
+    pub enable: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReadResourceParams {
     pub uri: String,
@@ -73,6 +91,7 @@ pub const READ_RESOURCE_TOOL_NAME: &str = "read_resource";
 pub const LIST_RESOURCES_TOOL_NAME: &str = "list_resources";
 pub const SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME: &str = "search_available_extensions";
 pub const MANAGE_EXTENSIONS_TOOL_NAME: &str = "manage_extensions";
+pub const INSTALL_EXTENSION_TOOL_NAME: &str = "install_extension";
 pub const MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE: &str = "extensionmanager__manage_extensions";
 
 pub struct ExtensionManagerClient {
@@ -178,6 +197,7 @@ impl ExtensionManagerClient {
                 Available tools:
                 - search_available_extensions: Find extensions available to enable/disable
                 - manage_extensions: Enable or disable extensions
+                - install_extension: Install a marketplace extension the user does not have yet
                 - list_resources: List resources from extensions
                 - read_resource: Read specific resources from extensions
 
@@ -185,6 +205,10 @@ impl ExtensionManagerClient {
                 to discover what extensions can help.
 
                 Use manage_extensions to enable or disable specific extensions by name.
+                Use install_extension when the extension is not installed at all. Never install
+                one by running shell commands, and NEVER ask the user to type an API key,
+                password or token into the chat — install_extension opens Biorouter's own
+                dialog for that, and a credential in a chat message cannot configure anything.
                 Use list_resources and read_resource to work with extension data and resources.
             "#}.to_string()),
         };
@@ -249,6 +273,121 @@ impl ExtensionManagerClient {
             Err(error_data) => Err(ExtensionManagerToolError::OperationFailed {
                 message: error_data.message.to_string(),
             }),
+        }
+    }
+
+    /// Install a marketplace extension, asking the *user* for any credentials.
+    ///
+    /// ⚠ **This tool exists so that the model never has to ask for a secret.**
+    /// Before it, an agent told to "install the Playwright extension" had three
+    /// options and all of them were wrong: tell the user to paste a token into
+    /// the chat, run a shell command with the token in `ps` and the shell
+    /// history, or install without it and report success for something that
+    /// cannot authenticate. The install parks on a credential card the user
+    /// answers in Biorouter's own dialog, and this tool learns only which key
+    /// NAMES were configured.
+    ///
+    /// The report it returns is the same [`InstallReport`] the CLI prints, and
+    /// its shape has nowhere a value can sit — deliberately, because this one is
+    /// serialised straight into a tool result.
+    ///
+    /// [`InstallReport`]: crate::extension_install::InstallReport
+    async fn handle_install_extension(
+        &self,
+        arguments: Option<JsonObject>,
+        session_id: String,
+        cap: crate::privacy::CallCapability,
+        cancel: CancellationToken,
+    ) -> Result<Vec<Content>, ExtensionManagerToolError> {
+        use crate::extension_install::{
+            CredentialPolicy, ExtensionInstallTransaction, InstallSource, InstallState,
+            DEFAULT_CREDENTIAL_TTL,
+        };
+
+        let arguments = arguments.ok_or(ExtensionManagerToolError::MissingParameter {
+            param_name: "arguments".to_string(),
+        })?;
+        let params: InstallExtensionParams =
+            serde_json::from_value(serde_json::Value::Object(arguments))?;
+
+        if !params.url.starts_with("https://") {
+            return Err(ExtensionManagerToolError::OperationFailed {
+                message: format!(
+                    "Refusing to download an extension over a non-https URL: {}",
+                    params.url
+                ),
+            });
+        }
+
+        let mut transaction = ExtensionInstallTransaction::new(InstallSource::Marketplace {
+            registry_id: params.registry_id.clone(),
+            url: params.url.clone(),
+        })
+        .enabled(params.enable);
+        if let Some(weak) = &self.context.extension_manager {
+            transaction = transaction.attach_to(weak.clone());
+        }
+
+        let report = transaction
+            .run(
+                CredentialPolicy::Ask {
+                    session_id: Some(session_id),
+                    owner: None,
+                    ttl: DEFAULT_CREDENTIAL_TTL,
+                },
+                Some(&cancel),
+            )
+            .await;
+
+        // Issue #56 Gate F1. Installing is the user's explicit request and
+        // writes only to disk; ATTACHING loads the server into this chat, which
+        // is the thing a public model may not do to a private extension. So the
+        // gate lands on the attach, not on the install — and when it refuses,
+        // the extension is still correctly installed for a session that may use
+        // it.
+        if matches!(report.state, InstallState::Attached) {
+            if let Some(name) = report.extension_name.as_deref() {
+                let entry = get_extension_entry_by_name(name);
+                if let Some(refusal) = crate::privacy::refusal::extension_enable_refusal(
+                    cap,
+                    name,
+                    entry.as_ref(),
+                    extension_entry_is_persisted(name),
+                ) {
+                    if let Some(manager) = self
+                        .context
+                        .extension_manager
+                        .as_ref()
+                        .and_then(|w| w.upgrade())
+                    {
+                        let _ = manager.remove_extension(name).await;
+                    }
+                    return Ok(vec![Content::text(format!(
+                        "{} is installed, but it was not attached to this chat: {}",
+                        report.display_name.as_deref().unwrap_or(name),
+                        refusal.message
+                    ))]);
+                }
+            }
+        }
+
+        let json = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
+        match &report.state {
+            InstallState::NeedsCredentials { .. } | InstallState::Cancelled => {
+                // Not an error: a person declined or could not be asked. Say so
+                // plainly, and — critically — do NOT suggest asking them for the
+                // value in chat.
+                Ok(vec![Content::text(format!(
+                    "{json}\n\nThe extension was not registered. Do not ask the user to type any \
+                     credential into this chat: a value in a chat message cannot configure \
+                     anything and would expose it. Tell them the Biorouter dialog is waiting, or \
+                     that they can run `biorouter extension configure <name>` at a terminal."
+                ))])
+            }
+            InstallState::Failed { reason } => Err(ExtensionManagerToolError::OperationFailed {
+                message: reason.clone(),
+            }),
+            _ => Ok(vec![Content::text(json)]),
         }
     }
 
@@ -561,6 +700,18 @@ impl McpClientTrait for ExtensionManagerClient {
             MANAGE_EXTENSIONS_TOOL_NAME => {
                 self.handle_manage_extensions(arguments, meta.capability)
                     .await
+            }
+            // Issue #117. Carries the session id because the credential card is
+            // published to that session's queue — a card with no session is a
+            // dialog nobody's chat renders.
+            INSTALL_EXTENSION_TOOL_NAME => {
+                self.handle_install_extension(
+                    arguments,
+                    meta.session_id.clone(),
+                    meta.capability,
+                    _cancellation_token.clone(),
+                )
+                .await
             }
             // Issue #56: these two reach an MCP server, so they carry the
             // capability this call was ADMITTED on into Gate C's sibling guard

@@ -1,11 +1,19 @@
 use crate::state::AppState;
-use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    routing::post,
+    Json, Router,
+};
 use biorouter::agents::approval_relay::{self, ResolveOutcome};
 use biorouter::agents::ConfirmationOutcome;
+use biorouter::extension_install::{cancel_credentials, submit_credentials, SubmitOutcome};
 use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::permission::{Permission, PermissionConfirmation};
+use biorouter_server::auth::{user_action_proof, UserActionProof};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use utoipa::ToSchema;
 
@@ -159,12 +167,140 @@ async fn dismiss_on(session_ids: &[String], request_id: &str) {
     }
 }
 
+/// Answering a credential card (#117).
+///
+/// ⚠ **This request body carries secrets and nothing else in the codebase does.**
+/// The values reach `submit_credentials`, which writes them to the OS credential
+/// store and drops them. Do not add a field to the response that could carry one
+/// back, do not add `#[derive(Debug)]` (see the hand-written impl below), and do
+/// not log the body.
+#[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitSecretsRequest {
+    /// The card id, as published on the `secretRequest` message.
+    id: String,
+    /// What the user typed, keyed by the card's key names.
+    #[serde(default)]
+    values: HashMap<String, String>,
+    /// The user dismissed the dialog. `values` is ignored when this is set.
+    #[serde(default)]
+    cancelled: bool,
+}
+
+/// Redacting, deliberately.
+///
+/// `Debug` is derived on every other request type here, and a derive on this one
+/// would put a passcode into any `tracing` line, panic message or test failure
+/// that happened to format the request. Naming the *keys* keeps the type
+/// debuggable without that ever being possible.
+impl std::fmt::Debug for SubmitSecretsRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut keys: Vec<&str> = self.values.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        f.debug_struct("SubmitSecretsRequest")
+            .field("id", &self.id)
+            .field("keys", &keys)
+            .field("cancelled", &self.cancelled)
+            .finish()
+    }
+}
+
+/// Store the credentials an extension install is parked on, and release it.
+///
+/// The response reports **names only**: `configuredKeys` on success, `missing`
+/// when a required field came back empty. There is nowhere in it a value can
+/// sit, which is what lets the parked install — and therefore the model — be
+/// told the truth about what happened without being told what it was.
+///
+/// Requires the DR-16 proof-of-user header. The model reaches this daemon over
+/// the same HTTP with the same secret key, so without the proof it could satisfy
+/// its own credential card with a value it invented and drive the install past
+/// the one step that exists to involve a person.
+#[utoipa::path(
+    post,
+    path = "/action-required/secrets",
+    request_body = SubmitSecretsRequest,
+    responses(
+        (status = 200, description = "Names of the keys configured, or which required ones are still missing", body = Value),
+        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "The request carried no proof it came from the user"),
+    )
+)]
+pub async fn submit_secrets(
+    State(_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<SubmitSecretsRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    match user_action_proof(&headers) {
+        UserActionProof::Proven => {}
+        UserActionProof::Unproven => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "status": "refused",
+                    "error": UNPROVEN_REFUSAL,
+                })),
+            ))
+        }
+        UserActionProof::NoKeyInstalled => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "status": "refused",
+                    "error": NO_KEY_REFUSAL,
+                })),
+            ))
+        }
+    }
+
+    if request.cancelled {
+        let delivered = cancel_credentials(&request.id);
+        return Ok(Json(serde_json::json!({
+            "status": if delivered { "cancelled" } else { "unknown" },
+        })));
+    }
+
+    Ok(Json(
+        match submit_credentials(&request.id, request.values) {
+            SubmitOutcome::Configured { configured_keys } => serde_json::json!({
+                "status": "configured",
+                "configuredKeys": configured_keys,
+            }),
+            SubmitOutcome::Incomplete { missing } => serde_json::json!({
+                "status": "incomplete",
+                "missing": missing,
+            }),
+            SubmitOutcome::Unknown => serde_json::json!({ "status": "unknown" }),
+            SubmitOutcome::Failed { reason } => serde_json::json!({
+                "status": "failed",
+                "reason": reason,
+            }),
+        },
+    ))
+}
+
+/// ⚠ Written for a MODEL to read, in the register `SESSION_OUT_OF_REACH` uses:
+/// it forecloses a retry and never suggests that typing the value into the chat
+/// could work. A refusal that invited one would be asking the user to do the
+/// exact thing this whole feature exists to stop.
+pub const UNPROVEN_REFUSAL: &str =
+    "Credentials can only be submitted by the person at the keyboard, \
+     through Biorouter's own dialog. Do not retry, and do not ask for the value in chat — \
+     a value in a chat message cannot configure anything and would expose it. \
+     Tell the user the dialog is waiting for them.";
+
+pub const NO_KEY_REFUSAL: &str =
+    "This Biorouter daemon was started without a way to tell a person from a model, \
+     so it cannot accept credentials over HTTP. Configure them at a terminal with \
+     `biorouter extension install <bundle>`, which prompts with echo off.";
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route(
             "/action-required/tool-confirmation",
             post(confirm_tool_action),
         )
+        .route("/action-required/secrets", post(submit_secrets))
         .with_state(state)
 }
 
@@ -291,6 +427,294 @@ mod tests {
             assert_eq!(body_json(response).await["status"], "already_resolved");
 
             approval_relay::forget(&origin);
+        }
+    }
+
+    /// Issue #117. The credential card, over the wire.
+    ///
+    /// These are the assertions the feature's security argument rests on, and
+    /// none of them can be made from inside `biorouter`: only here do a request
+    /// body, an auth header and a response body exist at once.
+    mod secrets_tests {
+        use super::*;
+        use crate::routes::session::diverge_tests::{
+            install_test_user_action_key, TEST_USER_ACTION_KEY,
+        };
+        use axum::{body::Body, http::Request};
+        use biorouter::conversation::message::SecretDestination;
+        use biorouter::extension_install::{park_credentials, BrxtEnvVar, CredentialSpec};
+        use biorouter::pending_user_action::PendingUserActions;
+        use serial_test::serial;
+        use tower::ServiceExt;
+
+        fn var(key: &str, required: bool, secret: bool) -> BrxtEnvVar {
+            BrxtEnvVar {
+                key: key.to_string(),
+                required,
+                auto_propagate: false,
+                default: None,
+                description: String::new(),
+                secret,
+            }
+        }
+
+        fn spec(vars: Vec<BrxtEnvVar>) -> CredentialSpec {
+            CredentialSpec {
+                destination: SecretDestination::ExtensionEnv {
+                    extension_name: "spokeagent".to_string(),
+                },
+                vars,
+            }
+        }
+
+        fn post(body: Value, user_action: Option<&str>) -> Request<Body> {
+            let mut builder = Request::builder()
+                .uri("/action-required/secrets")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("x-secret-key", "test-secret");
+            if let Some(key) = user_action {
+                builder = builder.header("X-User-Action", key);
+            }
+            builder.body(Body::from(body.to_string())).unwrap()
+        }
+
+        async fn body_of(response: axum::response::Response) -> Value {
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+
+        /// The whole point, stated as an assertion: what the user typed goes to
+        /// the credential store, and the answer carries the key's NAME.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial]
+        async fn a_submitted_value_is_never_echoed_back() {
+            install_test_user_action_key();
+            let app = routes(AppState::new().await.unwrap());
+
+            let parked = park_credentials(
+                Some("s-echo"),
+                None,
+                "Configure".to_string(),
+                // Non-secret so the test writes nothing to the machine's
+                // credential store; the response shape is identical either way.
+                spec(vec![var("OMOP_HOST", true, false)]),
+            );
+            let id = parked.id().to_string();
+
+            let response = app
+                .clone()
+                .oneshot(post(
+                    serde_json::json!({
+                        "id": id,
+                        "values": { "OMOP_HOST": "https://omop.internal.example" },
+                    }),
+                    Some(TEST_USER_ACTION_KEY),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+
+            let body = body_of(response).await;
+            assert_eq!(body["status"], "configured");
+            assert_eq!(body["configuredKeys"], serde_json::json!(["OMOP_HOST"]));
+            let rendered = body.to_string();
+            assert!(
+                !rendered.contains("omop.internal.example"),
+                "the response echoed the submitted value back: {rendered}"
+            );
+
+            let (outcome, settings) = parked.wait(std::time::Duration::from_secs(5), None).await;
+            assert!(outcome.is_allowed());
+            // The non-secret setting reaches the install out of band — never
+            // through the conversation transport, and never through the model.
+            assert_eq!(
+                settings.get("OMOP_HOST").map(String::as_str),
+                Some("https://omop.internal.example")
+            );
+        }
+
+        /// DR-16. The model reaches this daemon over the same HTTP with the same
+        /// secret key, so without the proof-of-user header it could satisfy its
+        /// own credential card and drive the install past the one step that
+        /// exists to involve a person.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial]
+        async fn a_request_without_the_proof_of_user_header_is_refused() {
+            install_test_user_action_key();
+            let app = routes(AppState::new().await.unwrap());
+
+            let parked = park_credentials(
+                Some("s-unproven"),
+                None,
+                "Configure".to_string(),
+                spec(vec![var("OMOP_HOST", true, false)]),
+            );
+            let id = parked.id().to_string();
+
+            let response = app
+                .clone()
+                .oneshot(post(
+                    serde_json::json!({ "id": id, "values": { "OMOP_HOST": "x" } }),
+                    None,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+            let error = body_of(response).await["error"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            // ⚠ The refusal is read by a MODEL. It must not send it back to ask
+            // the user for the value in chat, which is the exact failure #117
+            // exists to end.
+            let lowered = error.to_lowercase();
+            assert!(
+                !lowered.contains("ask the user for the value") && !lowered.contains("paste"),
+                "the refusal invited a chat answer: {error}"
+            );
+            assert!(lowered.contains("do not retry"));
+
+            assert!(
+                PendingUserActions::global().is_pending(&id),
+                "a refused submission must leave the install parked"
+            );
+            drop(parked);
+        }
+
+        /// BR-62's property on the credential path: two installs in flight
+        /// cannot answer each other, and a replayed answer lands nowhere.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial]
+        async fn one_dialog_cannot_satisfy_another_installs_request() {
+            install_test_user_action_key();
+            let app = routes(AppState::new().await.unwrap());
+
+            let first = park_credentials(
+                Some("s-one"),
+                None,
+                "One".to_string(),
+                spec(vec![var("ONE_HOST", true, false)]),
+            );
+            let second = park_credentials(
+                Some("s-two"),
+                None,
+                "Two".to_string(),
+                spec(vec![var("TWO_HOST", true, false)]),
+            );
+            let (id_one, id_two) = (first.id().to_string(), second.id().to_string());
+
+            let response = app
+                .clone()
+                .oneshot(post(
+                    serde_json::json!({ "id": id_one, "values": { "ONE_HOST": "a" } }),
+                    Some(TEST_USER_ACTION_KEY),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(body_of(response).await["status"], "configured");
+            assert!(
+                PendingUserActions::global().is_pending(&id_two),
+                "answering one install released another"
+            );
+
+            // A replay of the same id is a no-op, not a second grant, and it
+            // does not fall through onto whatever is parked now.
+            let response = app
+                .clone()
+                .oneshot(post(
+                    serde_json::json!({ "id": id_one, "values": { "ONE_HOST": "b" } }),
+                    Some(TEST_USER_ACTION_KEY),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(body_of(response).await["status"], "unknown");
+            assert!(PendingUserActions::global().is_pending(&id_two));
+
+            let (outcome, _) = first.wait(std::time::Duration::from_secs(5), None).await;
+            assert!(outcome.is_allowed());
+            drop(second);
+        }
+
+        /// A typo is not a rollback: an empty required field leaves the dialog
+        /// open and the install parked, and says which field.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial]
+        async fn an_empty_required_field_leaves_the_dialog_open() {
+            install_test_user_action_key();
+            let app = routes(AppState::new().await.unwrap());
+
+            let parked = park_credentials(
+                Some("s-empty"),
+                None,
+                "Configure".to_string(),
+                spec(vec![var("OMOP_HOST", true, false)]),
+            );
+            let id = parked.id().to_string();
+
+            let response = app
+                .clone()
+                .oneshot(post(
+                    serde_json::json!({ "id": id, "values": { "OMOP_HOST": "   " } }),
+                    Some(TEST_USER_ACTION_KEY),
+                ))
+                .await
+                .unwrap();
+            let body = body_of(response).await;
+            assert_eq!(body["status"], "incomplete");
+            assert_eq!(body["missing"], serde_json::json!(["OMOP_HOST"]));
+            assert!(PendingUserActions::global().is_pending(&id));
+            drop(parked);
+        }
+
+        /// Cancel is a first-class result, and it releases the install so it can
+        /// roll back rather than leaving it parked until the TTL.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial]
+        async fn cancelling_releases_the_install() {
+            install_test_user_action_key();
+            let app = routes(AppState::new().await.unwrap());
+
+            let parked = park_credentials(
+                Some("s-cancel"),
+                None,
+                "Configure".to_string(),
+                spec(vec![var("OMOP_HOST", true, false)]),
+            );
+            let id = parked.id().to_string();
+
+            let response = app
+                .clone()
+                .oneshot(post(
+                    serde_json::json!({ "id": id, "cancelled": true }),
+                    Some(TEST_USER_ACTION_KEY),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(body_of(response).await["status"], "cancelled");
+
+            let (outcome, _) = parked.wait(std::time::Duration::from_secs(5), None).await;
+            assert!(!outcome.is_allowed());
+        }
+
+        /// The redacting `Debug` impl, asserted rather than assumed: a derive
+        /// here would put a passcode into any log line that formatted the body.
+        #[test]
+        fn the_request_debug_impl_names_keys_and_never_values() {
+            let request: SubmitSecretsRequest = serde_json::from_value(serde_json::json!({
+                "id": "card-1",
+                "values": { "SPOKEAGENT_PASSCODE": "hunter2" },
+            }))
+            .unwrap();
+            let rendered = format!("{request:?}");
+            assert!(rendered.contains("SPOKEAGENT_PASSCODE"));
+            assert!(
+                !rendered.contains("hunter2"),
+                "the request Debug impl leaked a value: {rendered}"
+            );
         }
     }
 }

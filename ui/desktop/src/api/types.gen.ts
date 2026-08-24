@@ -2958,6 +2958,32 @@ export type SubWorkflow = {
 };
 
 /**
+ * Answering a credential card (#117).
+ *
+ * ⚠ **This request body carries secrets and nothing else in the codebase does.**
+ * The values reach `submit_credentials`, which writes them to the OS credential
+ * store and drops them. Do not add a field to the response that could carry one
+ * back, do not add `#[derive(Debug)]` (see the hand-written impl below), and do
+ * not log the body.
+ */
+export type SubmitSecretsRequest = {
+    /**
+     * The user dismissed the dialog. `values` is ignored when this is set.
+     */
+    cancelled?: boolean;
+    /**
+     * The card id, as published on the `secretRequest` message.
+     */
+    id: string;
+    /**
+     * What the user typed, keyed by the card's key names.
+     */
+    values?: {
+        [key: string]: string;
+    };
+};
+
+/**
  * A single success check to validate workflow completion, or (BR-48) to gate
  * an interactive chat turn from finishing with unmet conditions.
  *
@@ -3468,6 +3494,31 @@ export type WorkflowToYamlResponse = {
 export type WritePageBody = {
     commit_message: string;
     content: string;
+};
+
+export type SubmitSecretsData = {
+    body: SubmitSecretsRequest;
+    path?: never;
+    query?: never;
+    url: '/action-required/secrets';
+};
+
+export type SubmitSecretsErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+    /**
+     * The request carried no proof it came from the user
+     */
+    403: unknown;
+};
+
+export type SubmitSecretsResponses = {
+    /**
+     * Names of the keys configured, or which required ones are still missing
+     */
+    200: unknown;
 };
 
 export type ConfirmToolActionData = {

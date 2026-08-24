@@ -55,7 +55,11 @@ const awaitsToolConfirmation = (m: Message) =>
   m.content.some(
     (c) =>
       c.type === 'toolConfirmationRequest' ||
-      (c.type === 'actionRequired' && c.data.actionType === 'elicitation')
+      (c.type === 'actionRequired' &&
+        // Issue #117: a credential card parks the turn exactly as an
+        // elicitation does. Omitting it would leave the composer reporting
+        // "still working" while the install sits waiting on a dialog.
+        (c.data.actionType === 'elicitation' || c.data.actionType === 'secretRequest'))
   );
 
 /**

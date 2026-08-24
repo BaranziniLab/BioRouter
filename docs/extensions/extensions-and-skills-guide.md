@@ -110,6 +110,12 @@ Extensions enabled dynamically during a session (via the Extension Manager) are 
 
 BAAM is the Biorouter agent, extension, and skill marketplace. Its catalog is the machine-readable [`landing/registry.json`](../../landing/registry.json), published at <https://biorouter.ucsf.edu/registry.json> and browsable at <https://biorouter.ucsf.edu/baam.html>. Biorouter reads that registry to list and one-click-install extensions (`.brxt` bundles) and skills (`.zip`), so the marketplace is the shortest path to a curated extension — reach for the manual steps above when you are adding something that is not in the catalog.
 
+Marketplace installs never ask you for a file. **Extensions** → **Browse Extensions** → **Add** downloads the bundle, shows you what it contains — name, version, publisher, privacy tier, tool and skill counts, and how many environment variables it needs — and then either installs it or opens a configuration form, depending on what its manifest declares. If the download or the bundle itself fails, the same screen offers **Retry** and **Back to marketplace**. An extension you already have shows **Configure**, which opens its credentials without reinstalling anything.
+
+The **Add Extension** button beside it is the local route, and that one does take a file: drag a `.brxt` onto it, or browse for one.
+
+If an extension needs an API key, passcode or token, Biorouter asks for it in its own dialog and stores it in your operating system's credential store. **Never type a credential into the chat** — it cannot configure anything from there, and it would be visible to every model that reads the conversation. The same is true of the command line: `biorouter extension install` prompts with echo off rather than taking a value as an argument. See [Installing an extension, and where its credentials go](installing-an-extension.md).
+
 ### Developing a custom extension
 
 Extensions are standard MCP servers. You can write one in any language (Python, TypeScript, Rust, etc.) that implements the MCP protocol.
