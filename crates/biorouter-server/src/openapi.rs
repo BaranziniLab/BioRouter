@@ -26,9 +26,9 @@ use biorouter::config::declarative_providers::{
 };
 use biorouter::conversation::message::{
     ActionRequired, ActionRequiredData, FrontendToolRequest, Message, MessageContent,
-    MessageMetadata, MessageProvenance, ProvenanceKind, RedactedThinkingContent,
-    SystemNotificationContent, SystemNotificationType, ThinkingContent, TokenState,
-    ToolConfirmationRequest, ToolRequest, ToolResponse,
+    MessageMetadata, MessageProvenance, ProvenanceKind, RedactedThinkingContent, SecretDestination,
+    SecretKeyRequest, SystemNotificationContent, SystemNotificationType, ThinkingContent,
+    TokenState, ToolConfirmationRequest, ToolRequest, ToolResponse,
 };
 use biorouter::conversation::tool_preview::{ToolPreview, ToolPreviewLine, ToolPreviewLineKind};
 use biorouter::permission::tool_risk::ToolRisk;
@@ -597,6 +597,12 @@ impl utoipa::Modify for ApiKeySecurity {
         ToolConfirmationRequest,
         ActionRequired,
         ActionRequiredData,
+        // #107: referenced by `ActionRequiredData::SecretRequest`. Without both
+        // registered here the generated spec carries a dangling `$ref` and the
+        // TypeScript client generator dies on it rather than emitting a partial
+        // type — the failure is loud, but only at `npm run generate-api`.
+        SecretKeyRequest,
+        SecretDestination,
         ToolPreview,
         ToolPreviewLine,
         ToolPreviewLineKind,

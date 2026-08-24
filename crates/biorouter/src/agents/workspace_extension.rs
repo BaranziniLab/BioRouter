@@ -688,7 +688,11 @@ impl WorkspaceClient {
                 "Wait until one (or all) of the named conversations finishes its \
                  current turn, and report why it ended. Use after spawning \
                  background subagents or injecting turns instead of polling. A \
-                 timeout is not an error.",
+                 timeout is NEVER an error: the reply lists whatever finished and \
+                 whatever is still running, so call it again to keep waiting. The \
+                 wait may be shortened to fit the transport carrying this turn — \
+                 when it is, the reply says the effective wait and the one you \
+                 asked for.",
                 serde_json::to_value(schema_for!(WorkspaceWatchParams)).unwrap(),
                 true,
             ),
@@ -2665,6 +2669,7 @@ impl WorkspaceClient {
         caller_session_id: &str,
         cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Vec<Content>, String> {
         use crate::session_events;
 
@@ -2704,7 +2709,15 @@ impl WorkspaceClient {
             Some("all") => true,
             Some(other) => return Err(format!("unknown mode '{other}' (any | all)")),
         };
-        let timeout = std::time::Duration::from_secs(args.timeout_s.unwrap_or(120).clamp(1, 600));
+        let requested = std::time::Duration::from_secs(args.timeout_s.unwrap_or(120).clamp(1, 600));
+        // #110: what the *transport* allows, which is not always what the schema
+        // advertises. A bridged coding-agent call is held open inside the
+        // child's own MCP client, which applies a hard per-call wall clock and
+        // abandons the request when it elapses — so a wait that outruns it does
+        // not trade latency for completeness, it loses the partial answer too:
+        // the model is told "The operation timed out" instead of being handed
+        // the completions this handler had already collected.
+        let (timeout, clamped_from) = clamp_watch_to_transport(requested);
         let assume_running = args.assume_running.unwrap_or(false);
 
         // Subscribe FIRST, then pre-check. Reversing this loses a completion
@@ -2741,6 +2754,7 @@ impl WorkspaceClient {
             receivers.retain(|(id, _)| !completed.iter().any(|(done, _)| done == id));
         }
 
+        let mut cancelled = false;
         let done_now = if wait_all {
             receivers.is_empty()
         } else {
@@ -2755,7 +2769,8 @@ impl WorkspaceClient {
             } else {
                 completed.len() + 1
             };
-            Self::park_for_completions(receivers, &mut completed, want, timeout).await;
+            cancelled =
+                Self::park_for_completions(receivers, &mut completed, want, timeout, cancel).await;
         }
 
         let still_running: Vec<&String> = args
@@ -2768,7 +2783,9 @@ impl WorkspaceClient {
             &completed,
             &still_running,
             timeout,
+            clamped_from,
             unknown_liveness,
+            cancelled,
         ))])
     }
 
@@ -2780,19 +2797,41 @@ impl WorkspaceClient {
         completed: &mut Vec<(String, String)>,
         want: usize,
         timeout: std::time::Duration,
-    ) {
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> bool {
         use crate::session_events::SessionBusEvent;
 
         let deadline = tokio::time::Instant::now() + timeout;
+        // Cancelled when this function returns, **however** it returns — the
+        // deadline, a cancel, or every watcher exiting.
+        //
+        // ⚠ The watcher tasks own the `Subscription`s, and a `Subscription` only
+        // reclaims its session's 1024-slot event ring when it drops. Without
+        // this the tasks looped on `recv()` for the life of the process after a
+        // watch timed out, pinning a ring slot per watched session per watch —
+        // a leak that got materially worse with #110, because a watch that used
+        // to be killed by the child's 60-second deadline can now legitimately
+        // park for ten minutes.
+        let stop = tokio_util::sync::CancellationToken::new();
+        let _reap_watchers = stop.clone().drop_guard();
+
         // One task per watched session, all feeding one channel: simpler
         // and more obviously correct than a hand-rolled select over a Vec,
         // and 32 short-lived tasks is nothing.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, String)>(WATCH_MAX_SESSIONS);
         for (id, mut receiver) in receivers {
             let tx = tx.clone();
+            let stop = stop.clone();
             tokio::spawn(async move {
                 loop {
-                    match receiver.recv().await {
+                    // `recv` is cancel-safe, so losing this race never drops an
+                    // event that had already resolved.
+                    let event = tokio::select! {
+                        biased;
+                        () = stop.cancelled() => return,
+                        event = receiver.recv() => event,
+                    };
+                    match event {
                         Ok(SessionBusEvent::TurnFinished { reason, .. }) => {
                             let _ = tx.send((id, reason)).await;
                             return;
@@ -2812,15 +2851,31 @@ impl WorkspaceClient {
         }
         drop(tx); // so `rx.recv()` ends if every watcher exits
 
+        // #110: the turn's own token ends the park. Every cancellation
+        // mechanism Biorouter has — Stop, `AppState::cancel_turn`, the websocket
+        // `TurnGuard`, and a bridge lease dropping — reaches a running tool
+        // through it, and a watch that ignored it kept a cancelled turn alive
+        // for the whole wait. That was survivable while the child's own deadline
+        // capped it at a minute; it is not now that a watch may legitimately
+        // park for ten.
+        let mut cancelled = false;
         let _ = tokio::time::timeout_at(deadline, async {
             while completed.len() < want {
-                match rx.recv().await {
-                    Some(entry) => completed.push(entry),
-                    None => break,
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => {
+                        cancelled = true;
+                        break;
+                    }
+                    entry = rx.recv() => match entry {
+                        Some(entry) => completed.push(entry),
+                        None => break,
+                    },
                 }
             }
         })
         .await;
+        cancelled
     }
 
     /// The `workspace_watch` reply: what finished, what is still running, and —
@@ -2829,7 +2884,9 @@ impl WorkspaceClient {
         completed: &[(String, String)],
         still_running: &[&String],
         timeout: std::time::Duration,
+        clamped_from: Option<std::time::Duration>,
         unknown_liveness: usize,
+        cancelled: bool,
     ) -> String {
         let mut report = String::new();
         if completed.is_empty() {
@@ -2872,7 +2929,68 @@ impl WorkspaceClient {
                  (view:\"summary\" for its outcome, view:\"tool_calls\" for what it did).",
             );
         }
+        // #110: a cancelled watch is not a finished one, and saying nothing
+        // would let the caller read "still running" as the answer to a wait that
+        // never happened. The conversations themselves are untouched — what was
+        // cancelled is the turn doing the watching.
+        if cancelled {
+            report.push_str(
+                "\n(The watch was cancelled before its deadline. The conversations above \
+                 were not affected.)",
+            );
+        }
+        // #110: say when the wait was shorter than the one asked for, and why.
+        // A caller that is not told will read "still running" after 60 s as the
+        // answer to the 600-second question it asked, and either give up on a
+        // subagent that is working fine or start polling transcripts. Naming the
+        // effective wait is what makes "watch again" the obvious next move.
+        if let Some(requested) = clamped_from {
+            report.push_str(&format!(
+                "\n(Waited {}s of the {}s requested: this turn's transport ends a single \
+                 tool call at {}s, so the wait was shortened to return this status instead \
+                 of failing. Watch again to keep waiting — the completions above are not \
+                 repeated.)",
+                timeout.as_secs(),
+                requested.as_secs(),
+                timeout.as_secs(),
+            ));
+        }
         report
+    }
+}
+
+/// Shorten a requested wait to what the transport carrying this call allows.
+///
+/// Returns the effective wait and, when it was shortened, the one that was
+/// asked for — so the report can say both rather than silently answering a
+/// different question.
+///
+/// The margin is what the answer itself needs on the wire, and it is subtracted
+/// rather than assumed: a wait equal to the budget finishes at the instant the
+/// request is abandoned, which is the failure with the timing made tight rather
+/// than the failure fixed.
+///
+/// Free and pure so the arithmetic is testable without a bridge; the only input
+/// that varies is the task-local the bridge publishes.
+fn clamp_watch_to_transport(
+    requested: std::time::Duration,
+) -> (std::time::Duration, Option<std::time::Duration>) {
+    const ANSWER_MARGIN: std::time::Duration = std::time::Duration::from_secs(10);
+    let Some(budget) = crate::providers::coding_agent::bridge::bridged_call_budget() else {
+        // Not a bridged call: nothing is holding a socket open, so the schema's
+        // ceiling is the only one that applies.
+        return (requested, None);
+    };
+    let allowed = budget.saturating_sub(ANSWER_MARGIN).max(
+        // A budget smaller than the margin would clamp every wait to zero and
+        // turn `workspace_watch` into a liveness poll. One second is the schema's
+        // own floor.
+        std::time::Duration::from_secs(1),
+    );
+    if requested <= allowed {
+        (requested, None)
+    } else {
+        (allowed, Some(requested))
     }
 }
 
@@ -3224,7 +3342,7 @@ impl McpClientTrait for WorkspaceClient {
         name: &str,
         arguments: Option<JsonObject>,
         meta: McpMeta,
-        _cancellation_token: CancellationToken,
+        cancellation_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
         let caller = &meta.session_id;
         // Issue #56 §7. The capability this call was ADMITTED on, carried from
@@ -3241,7 +3359,13 @@ impl McpClientTrait for WorkspaceClient {
             "workspace_send_prompt" => self.handle_send_prompt(caller, cap, arguments).await,
             "workspace_set_tools" => self.handle_set_tools(caller, cap, arguments).await,
             "workspace_close" => self.handle_close(caller, cap, arguments).await,
-            "workspace_watch" => self.handle_watch(caller, cap, arguments).await,
+            // #110: the only handler here that PARKS, so the only one the turn's
+            // cancel token has anything to reach. Every other tool returns
+            // promptly; a watch may legitimately wait ten minutes.
+            "workspace_watch" => {
+                self.handle_watch(caller, cap, arguments, &cancellation_token)
+                    .await
+            }
             "workspace_open" => self.handle_open(caller, cap, arguments).await,
             "workspace_read_panel" | "workspace_capture_panel" => {
                 self.handle_panel(name, caller, cap, arguments).await
@@ -3488,6 +3612,222 @@ fn gui_detail(gui_result: &serde_json::Value) -> Option<&str> {
 pub(crate) mod tests {
     use super::*;
     use crate::agents::extension::PlatformExtensionContext;
+    use std::time::Duration;
+
+    // ---------------------------------------------------------------------
+    // #110: a wait that outruns the transport
+    // ---------------------------------------------------------------------
+
+    /// Off a bridged call there is nothing holding a socket open, so the
+    /// schema's own ceiling is the only one that applies and the wait is
+    /// answered as asked.
+    #[test]
+    fn an_unbridged_watch_waits_exactly_as_long_as_it_was_asked_to() {
+        let (effective, clamped) = clamp_watch_to_transport(Duration::from_secs(600));
+        assert_eq!(effective, Duration::from_secs(600));
+        assert_eq!(
+            clamped, None,
+            "nothing to explain when nothing was shortened"
+        );
+    }
+
+    /// The bug: a 600-second wait inside a transport that ends the call sooner.
+    /// It must come back SHORTER — and say so — rather than run to 600 and be
+    /// abandoned, which loses the partial answer along with the wait.
+    #[tokio::test]
+    async fn a_bridged_watch_is_shortened_to_fit_its_transport() {
+        let (effective, clamped) =
+            crate::providers::coding_agent::bridge::with_call_budget_for_test(
+                Duration::from_secs(60),
+                async { clamp_watch_to_transport(Duration::from_secs(600)) },
+            )
+            .await;
+        assert_eq!(
+            effective,
+            Duration::from_secs(50),
+            "the margin is what the answer itself needs on the wire"
+        );
+        assert_eq!(clamped, Some(Duration::from_secs(600)));
+        assert!(
+            effective < Duration::from_secs(60),
+            "a wait equal to the budget finishes exactly when the request is \
+             abandoned, which is the same failure with tighter timing"
+        );
+    }
+
+    /// A wait that already fits is left alone, and reports nothing — an
+    /// explanation for a shortening that did not happen is noise the model has
+    /// to reason about.
+    #[tokio::test]
+    async fn a_bridged_watch_that_already_fits_is_untouched() {
+        let (effective, clamped) =
+            crate::providers::coding_agent::bridge::with_call_budget_for_test(
+                Duration::from_secs(600),
+                async { clamp_watch_to_transport(Duration::from_secs(120)) },
+            )
+            .await;
+        assert_eq!(effective, Duration::from_secs(120));
+        assert_eq!(clamped, None);
+    }
+
+    /// A pathologically small budget must not clamp the wait to zero and turn
+    /// `workspace_watch` into a liveness poll that always says "still running".
+    #[tokio::test]
+    async fn a_tiny_budget_still_leaves_a_real_wait() {
+        let (effective, _) = crate::providers::coding_agent::bridge::with_call_budget_for_test(
+            Duration::from_secs(2),
+            async { clamp_watch_to_transport(Duration::from_secs(600)) },
+        )
+        .await;
+        assert!(
+            effective >= Duration::from_secs(1),
+            "the schema's own floor is one second"
+        );
+    }
+
+    /// #110: a cancelled turn must end the park at the instant it lands, not at
+    /// the deadline.
+    ///
+    /// The generous timeout is the assertion: if the token were ignored this
+    /// would sit for ten minutes, so the test would fail by timing out rather
+    /// than by asserting. That is exactly the shape of the bug — a watch that
+    /// kept a cancelled turn alive for its whole wait, which was survivable
+    /// while the child's own 60-second deadline capped it and is not now.
+    #[tokio::test]
+    async fn cancelling_the_turn_ends_a_parked_watch_at_once() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let id = format!("watch-cancel-{:016x}", rand::random::<u64>());
+        let receivers = vec![(id.clone(), crate::session_events::subscribe(&id))];
+        let mut completed: Vec<(String, String)> = Vec::new();
+
+        {
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                cancel.cancel();
+            });
+        }
+
+        let started = std::time::Instant::now();
+        let cancelled = tokio::time::timeout(
+            Duration::from_secs(5),
+            WorkspaceClient::park_for_completions(
+                receivers,
+                &mut completed,
+                1,
+                Duration::from_secs(600),
+                &cancel,
+            ),
+        )
+        .await
+        .expect("a cancelled park must return, not run to its deadline");
+
+        assert!(cancelled, "the caller has to be able to say why it stopped");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "it must end when the cancel lands, not later"
+        );
+        assert!(completed.is_empty(), "nothing finished");
+    }
+
+    /// And a cancelled watch says so, rather than letting the caller read "still
+    /// running" as the answer to a wait that never happened.
+    #[test]
+    fn a_cancelled_watch_reports_that_it_was_cancelled() {
+        let still = "sess-a".to_string();
+        let report =
+            WorkspaceClient::watch_report(&[], &[&still], Duration::from_secs(600), None, 0, true);
+        assert!(report.contains("cancelled"), "{report}");
+        assert!(
+            report.contains("not affected"),
+            "and that the conversations themselves are untouched: {report}"
+        );
+    }
+
+    /// The watcher tasks own the `Subscription`s, and a `Subscription` only
+    /// reclaims its session's event-ring slot when it drops. Before #110 they
+    /// looped on `recv()` for the life of the process after a watch ended, so a
+    /// timed-out watch leaked a slot per watched session — which a ten-minute
+    /// park makes far easier to accumulate.
+    #[tokio::test]
+    async fn a_finished_park_reaps_its_watcher_tasks() {
+        let id = format!("watch-reap-{:016x}", rand::random::<u64>());
+        let receivers = vec![(id.clone(), crate::session_events::subscribe(&id))];
+        let mut completed: Vec<(String, String)> = Vec::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        // A short deadline, so the park ends the way a timed-out watch does.
+        WorkspaceClient::park_for_completions(
+            receivers,
+            &mut completed,
+            1,
+            Duration::from_millis(50),
+            &cancel,
+        )
+        .await;
+
+        // Give the reaped tasks a moment to notice and drop their subscriptions,
+        // then assert the ring is free: a session with no live subscriber
+        // releases its bus entirely.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            crate::session_events::observer_count(&id),
+            0,
+            "the watcher task must have dropped its Subscription when the park ended"
+        );
+    }
+
+    /// The shortening has to be legible. A caller told only "still running"
+    /// after 50 s will read that as the answer to the 600-second question it
+    /// asked — and either abandon a subagent that is working fine or fall back
+    /// to polling transcripts, which is the behaviour `workspace_watch` exists
+    /// to replace.
+    #[test]
+    fn a_shortened_watch_reports_both_the_effective_and_the_requested_wait() {
+        let still = "sess-a".to_string();
+        let report = WorkspaceClient::watch_report(
+            &[],
+            &[&still],
+            Duration::from_secs(50),
+            Some(Duration::from_secs(600)),
+            0,
+            false,
+        );
+        assert!(report.contains("50s"), "the effective wait: {report}");
+        assert!(report.contains("600s"), "and the one asked for: {report}");
+        assert!(
+            report.to_lowercase().contains("watch again"),
+            "and the move that follows from it: {report}"
+        );
+        assert!(
+            !report.to_lowercase().contains("timed out")
+                && !report.to_lowercase().contains("error"),
+            "a timeout is a status, never a failure: {report}"
+        );
+    }
+
+    /// Completions observed before the deadline survive the shortening. Mode
+    /// `all` holds finished targets until every target completes, so a clamp
+    /// that dropped them would lose exactly the work the wait had already paid
+    /// for.
+    #[test]
+    fn a_shortened_watch_keeps_the_completions_it_observed() {
+        let still = "sess-c".to_string();
+        let report = WorkspaceClient::watch_report(
+            &[
+                ("sess-a".to_string(), "finished".to_string()),
+                ("sess-b".to_string(), "finished".to_string()),
+            ],
+            &[&still],
+            Duration::from_secs(50),
+            Some(Duration::from_secs(600)),
+            0,
+            false,
+        );
+        assert!(report.contains("sess-a") && report.contains("sess-b"));
+        assert!(report.contains("sess-c"), "and what is still running");
+        assert!(report.contains("600s"), "and that the wait was shortened");
+    }
 
     /// ⚠ **The one list of idioms that must never come back, for every file
     /// that guards against them.**
@@ -5743,10 +6083,22 @@ pub(crate) mod tests {
         // …and the dispatcher hands each newly gated handler the capability the
         // call was ADMITTED on. Without this the guards above have nothing to
         // ask and the handlers go quietly back to ungated.
+        //
+        // ⚠ The needle stops at `cap,` on purpose. It used to pin the WHOLE
+        // argument list — `(caller, cap, arguments)` — and #110 broke it by
+        // giving `handle_watch` a fourth argument (the turn's cancel token, so a
+        // parked watch is reachable by Stop), a change that threads the
+        // capability exactly as before. A guard that fails on a legitimate
+        // argument gets weakened by the next person in a hurry, and the way it
+        // gets weakened is by deleting the row. Asserting the PROPERTY — this
+        // handler is handed the admitted capability, second, right after the
+        // caller — is what survives a growing signature while still failing the
+        // thing it exists to catch: a handler that stops being given `cap` at
+        // all, or that is given one it re-derived for itself.
         for arm in [
-            "\"workspace_set_tools\" => self.handle_set_tools(caller, cap, arguments)",
-            "\"workspace_close\" => self.handle_close(caller, cap, arguments)",
-            "\"workspace_watch\" => self.handle_watch(caller, cap, arguments)",
+            "\"workspace_set_tools\" => self.handle_set_tools(caller, cap,",
+            "\"workspace_close\" => self.handle_close(caller, cap,",
+            "self.handle_watch(caller, cap,",
         ] {
             assert!(
                 production.contains(arm),

@@ -51,6 +51,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
+use std::time::Duration;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use tokio_util::sync::CancellationToken;
@@ -59,9 +60,64 @@ use crate::agents::extension_manager::ExtensionManager;
 use crate::config::BioRouterMode;
 use crate::conversation::message::ToolRequest;
 use crate::conversation::Conversation;
+use crate::pending_user_action::{
+    PendingUserActions, ToolApprovalRequest, UserActionOutcome, UserActionRequest,
+};
+use crate::permission::tool_risk::ToolRiskRegistry;
 use crate::privacy::CallCapability;
 use crate::session::session_manager::Session;
 use crate::tool_inspection::ToolInspectionManager;
+
+/// What a bridged `tools/call` actually runs, once the gate stack has cleared it.
+///
+/// An abstraction rather than a hardcoded `ExtensionManager` because the bridge
+/// is not only the chat loop's (#109). A knowledge macro, a scheduled workflow or
+/// any other bounded sub-agent has its own small tool surface with its own
+/// dispatcher — the ingest macro's `KbToolDispatch` carries the git transaction
+/// every write in the run must land on — and those tools are not in any
+/// `ExtensionManager` at all.
+///
+/// Before this, the only way to give a child agent tools was the session's whole
+/// extension surface, so a macro running under `claude_code` or `codex` was
+/// handed a `tools` argument its provider discarded. It then narrated the calls
+/// as prose, invented its own results to continue against, and wrote nothing —
+/// after a full model run. The UI's answer was a provider denylist.
+///
+/// Whatever implements this, everything above it is unchanged: the inspectors,
+/// the permission decision, the privacy capability, the vault, the hooks and the
+/// approval round trip all run first, exactly as they do for a chat turn. This
+/// decides only *where the call lands*, never *whether it may*.
+#[async_trait::async_trait]
+pub trait BridgeToolDispatch: Send + Sync {
+    async fn dispatch(
+        &self,
+        session_id: &str,
+        call: CallToolRequestParams,
+        capability: CallCapability,
+        cancel: CancellationToken,
+    ) -> Result<CallToolResult, String>;
+}
+
+#[async_trait::async_trait]
+impl BridgeToolDispatch for ExtensionManager {
+    async fn dispatch(
+        &self,
+        session_id: &str,
+        call: CallToolRequestParams,
+        capability: CallCapability,
+        cancel: CancellationToken,
+    ) -> Result<CallToolResult, String> {
+        let name = call.name.to_string();
+        let result = self
+            .dispatch_tool_call(session_id, call, capability, cancel)
+            .await
+            .map_err(|e| format!("`{name}` failed: {e}"))?;
+        result
+            .result
+            .await
+            .map_err(|e| format!("`{name}` failed: {e}"))
+    }
+}
 
 /// Everything one turn's bridge needs to serve `tools/list` and `tools/call`.
 ///
@@ -71,7 +127,7 @@ use crate::tool_inspection::ToolInspectionManager;
 pub struct BridgeGrant {
     session: Session,
     mode: BioRouterMode,
-    extensions: Arc<ExtensionManager>,
+    dispatcher: Arc<dyn BridgeToolDispatch>,
     inspections: Arc<ToolInspectionManager>,
     /// Sampled ONCE, when the grant is issued, and threaded from there.
     ///
@@ -132,15 +188,112 @@ pub struct BridgeGrant {
     /// credential problem with no credential anywhere near it, on a path where
     /// the same call from the same app works fine under any other provider.
     vault: Option<Arc<crate::agents::vault_refs::VaultRefs>>,
+    /// BR-63's risk grades, so an approval card raised from here says *how*
+    /// dangerous the call is — the same sentence the agent's own card says.
+    ///
+    /// A card that differed from the agent's would be a second, subtly worse
+    /// dialog for the identical decision, and the user would have no way to know
+    /// which one they were looking at.
+    tool_risks: Arc<ToolRiskRegistry>,
+    /// This grant's nonce, stamped by [`issue`] once it has minted one.
+    ///
+    /// Empty until then, and it must be: the nonce is the URL's credential and
+    /// cannot exist before the grant it names. It is here so a parked approval
+    /// can be *owned* by the turn — [`BridgeLease::drop`] cancels by owner, which
+    /// is what stops a panicking turn leaving a child blocked on an HTTP response
+    /// nobody will ever answer.
+    nonce: String,
+}
+
+/// The per-call MCP deadline Biorouter asks each child CLI to apply (#110).
+///
+/// Both CLIs apply a hard per-call wall clock and abandon the request when it
+/// elapses; the default is far shorter than Biorouter's own long-running tools
+/// need. Issue #110 measured Claude Code's at ~60 s against a `workspace_watch`
+/// whose schema advertises waits of up to 600 s — every one of which died at 60
+/// with "The operation timed out", a transport failure the model may retry
+/// rather than an answer it can act on.
+///
+/// So the deadline is configured rather than discovered. Both CLIs expose the
+/// knob per MCP server, which is what makes this reliable rather than a hope:
+///
+/// | CLI | Where |
+/// | --- | --- |
+/// | Claude Code | `timeout` (**milliseconds**) in the `--mcp-config` server entry. Its own help calls it a "hard wall-clock limit per call; progress notifications do not extend it". |
+/// | Codex | `mcp_servers.<name>.tool_timeout_sec` (**seconds**) in the `thread/start` config override. |
+///
+/// Deliberately **above** [`child_tool_call_budget`] rather than equal to it:
+/// the budget is what a call may spend, and the difference is the room the
+/// answer itself needs on the wire.
+pub const CHILD_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(660);
+
+/// How long a bridged `tools/call` may actually spend before it must answer.
+///
+/// Anything on this path that waits must fit *inside* this and answer with a
+/// real result, rather than letting the deadline pass and hoping. A tool that
+/// runs past it does not get more time — it gets an abandoned request, and the
+/// model reads that as a broken server.
+pub fn child_tool_call_budget() -> Duration {
+    Duration::from_secs(600)
+}
+
+/// The longest a bridged call may park on a human before it must answer the
+/// child anyway.
+///
+/// Bounded by [`child_tool_call_budget`] and NOT by
+/// `BIOROUTER_CONFIRMATION_TIMEOUT_SECS`'s hour: the agent's own prompt can wait
+/// an hour because nothing is holding a socket open, and this one cannot,
+/// because a child CLI is. Waiting past the budget does not buy the user more
+/// time — it converts a card they could still answer into a transport error the
+/// model reads as a broken server.
+fn approval_ttl() -> Duration {
+    child_tool_call_budget().saturating_sub(Duration::from_secs(30))
+}
+
+tokio::task_local! {
+    /// How long the bridged tool call running on this task may take (#110).
+    ///
+    /// A task-local because the tools that need it are ordinary MCP handlers
+    /// with no idea what is calling them — `workspace_watch` accepts a
+    /// `timeout_s` up to 600 and must clamp it to what the *transport* allows,
+    /// and it cannot be handed that through a schema every other caller shares.
+    ///
+    /// Absent means "not a bridged call": an ordinary agent turn holds nothing
+    /// open, so nothing needs clamping.
+    static BRIDGED_CALL_BUDGET: Duration;
+}
+
+/// The wall clock the bridged tool call on this task must answer within, or
+/// `None` when this is not a bridged call.
+///
+/// A tool that waits should clamp to this and return a **partial result** at the
+/// deadline. Running past it is not an option that trades latency for
+/// completeness: the child abandons the request and the model is told the
+/// operation timed out, which loses the partial answer as well as the wait.
+pub fn bridged_call_budget() -> Option<Duration> {
+    BRIDGED_CALL_BUDGET.try_with(|d| *d).ok()
+}
+
+/// Run `f` as though it were a bridged tool call with `budget` left.
+///
+/// For the tools that clamp to the budget: `workspace_watch`'s arithmetic is
+/// what #110 is about, and exercising it through a real child CLI would make a
+/// unit test depend on a subscription. The production scope is
+/// [`BridgeGrant::call`] and there is no other.
+pub async fn with_call_budget_for_test<F: std::future::Future>(
+    budget: Duration,
+    f: F,
+) -> F::Output {
+    BRIDGED_CALL_BUDGET.scope(budget, f).await
 }
 
 impl BridgeGrant {
-    /// Ten arguments, and grouping them would make this worse rather than
+    /// Eleven arguments, and grouping them would make this worse rather than
     /// tidier.
     ///
     /// Each one is a distinct thing the agent has to remember to hand over, and
-    /// three of them (the cancel token, the hooks manager, the vault) were
-    /// discovered missing precisely by reading this list against what
+    /// four of them (the cancel token, the hooks manager, the vault, the risk
+    /// registry) were discovered missing precisely by reading this list against what
     /// `Agent::dispatch_tool_call` does. A `BridgeContext` wrapper would hide the
     /// list behind a name and move the omission one file further from the reader
     /// without removing a single field; the flat call site is what makes the
@@ -151,7 +304,7 @@ impl BridgeGrant {
     pub fn new(
         session: Session,
         mode: BioRouterMode,
-        extensions: Arc<ExtensionManager>,
+        dispatcher: Arc<dyn BridgeToolDispatch>,
         inspections: Arc<ToolInspectionManager>,
         capability: CallCapability,
         tools: Vec<Tool>,
@@ -159,11 +312,12 @@ impl BridgeGrant {
         cancel: Option<CancellationToken>,
         hooks: Arc<crate::hooks::HooksManager>,
         vault: Option<Arc<crate::agents::vault_refs::VaultRefs>>,
+        tool_risks: Arc<ToolRiskRegistry>,
     ) -> Self {
         Self {
             session,
             mode,
-            extensions,
+            dispatcher,
             inspections,
             capability,
             tools,
@@ -171,6 +325,8 @@ impl BridgeGrant {
             cancel,
             hooks,
             vault,
+            tool_risks,
+            nonce: String::new(),
         }
     }
 
@@ -283,7 +439,15 @@ impl BridgeGrant {
     /// PreToolUse hooks and still staged whatever they returned.
     pub async fn call(&self, call: CallToolRequestParams) -> Result<CallToolResult, String> {
         let request_id = uuid::Uuid::new_v4().to_string();
-        let outcome = self.dispatch_one(request_id.clone(), call).await;
+        // #110: publish the transport's budget for the duration of the call, so
+        // a tool that waits can clamp to it instead of running past the child's
+        // deadline and losing its partial answer to an abandoned request.
+        let outcome = BRIDGED_CALL_BUDGET
+            .scope(
+                child_tool_call_budget(),
+                self.dispatch_one(request_id.clone(), call),
+            )
+            .await;
         self.discard_staged_hook_context(&request_id);
         outcome
     }
@@ -331,42 +495,149 @@ impl BridgeGrant {
         if !decision.denied.is_empty() {
             return Err(format!("`{name}` was denied by Biorouter's tool policy."));
         }
-        if !decision.needs_approval.is_empty() {
-            return Err(format!(
-                "`{name}` needs a person's approval, and this turn has no way to ask for one. \
-                 Tell the user what you wanted to run and why, and let them approve it."
-            ));
-        }
-
         // What runs is what was APPROVED, taken out of the verdict rather than
         // out of the request the child sent — the same way
         // `handle_approved_and_denied_tools` takes it on the agent's path. Reusing
         // the incoming `call` here would silently undo a hook rewrite that the
         // permission inspector had just judged, which is the whole defect this
         // sequence exists to close, restated one line later.
-        let Some(approved) = decision.approved.into_iter().next() else {
-            return Err(format!("`{name}` was not approved."));
+        //
+        // #107: a call the *user* approves is taken out of `needs_approval` for
+        // the identical reason. That entry is the same post-rewrite request the
+        // inspectors judged and the card showed them, so it — not the child's
+        // original arguments — is what their "allow" was an answer to.
+        let approved = match decision.approved.into_iter().next() {
+            Some(approved) => approved,
+            None => {
+                let Some(pending) = decision.needs_approval.into_iter().next() else {
+                    return Err(format!("`{name}` was not approved."));
+                };
+                self.await_approval(&name, &pending).await?;
+                pending
+            }
         };
         let mut call = approved
             .tool_call
             .map_err(|e| format!("`{name}` was approved but is not a usable call: {e}"))?;
         self.apply_vault(&mut call);
 
-        let result = self
-            .extensions
-            .dispatch_tool_call(
+        self.dispatcher
+            .dispatch(
                 &self.session.id,
                 call,
                 self.capability,
                 self.dispatch_cancel_token(),
             )
             .await
-            .map_err(|e| format!("`{name}` failed: {e}"))?;
+    }
 
-        result
-            .result
-            .await
-            .map_err(|e| format!("`{name}` failed: {e}"))
+    /// Put a `needs_approval` call to a person, and park until they answer.
+    ///
+    /// # What this replaced, and why the old answer was not merely unhelpful
+    ///
+    /// Until #107 this returned a refusal telling the child's model to "tell the
+    /// user what you wanted to run and why, and let them approve it". The model
+    /// did exactly that, and the sentence was false in a way nothing on screen
+    /// revealed: no request id had been minted, so there was no dialog, nothing
+    /// for a client to post to, and no way for the words "approve" typed into
+    /// the chat to resolve anything. The user saw a polite request, granted it,
+    /// and watched the identical refusal come back. The turn could only end in
+    /// confusion.
+    ///
+    /// # The card is the agent's own card
+    ///
+    /// [`crate::pending_user_action`] publishes it into the same session-scoped
+    /// queue the agent loop already drains, carrying the same
+    /// `ActionRequired::ToolConfirmation` payload — including BR-63's risk grade
+    /// and preview — that `handle_approval_tool_requests` yields. So the desktop
+    /// draws the dialog it already had, `POST /action-required/tool-confirmation`
+    /// resolves it through the fallthrough in `Agent::handle_confirmation`, and
+    /// there is one approval UI rather than two that could drift.
+    ///
+    /// # Every way out is bounded
+    ///
+    /// * the user decides — allow or deny;
+    /// * the turn is cancelled, via **the turn's own token** (Stop,
+    ///   `AppState::cancel_turn`, a dropped websocket);
+    /// * the lease drops, because the turn ended for any other reason — the
+    ///   grant's nonce is the park's owner, so [`BridgeLease::drop`] releases it;
+    /// * the TTL elapses, deliberately *shorter* than the child's own per-call
+    ///   deadline (see [`approval_ttl`]).
+    ///
+    /// The last one is the difference between an answer and a hang. Parking past
+    /// the child's deadline does not give the user more time; it converts a card
+    /// they could still answer into "The operation timed out" — a transport
+    /// failure the model may retry, producing a second card for the same call.
+    ///
+    /// Whatever happens, the child gets a **result**, and the text never invites
+    /// an answer that has nowhere to land.
+    async fn await_approval(&self, name: &str, pending: &ToolRequest) -> Result<(), String> {
+        let Ok(call) = pending.tool_call.as_ref() else {
+            return Err(format!("`{name}` needs approval but is not a usable call."));
+        };
+        let arguments = call.arguments.clone().unwrap_or_default();
+        let request = UserActionRequest::ToolApproval(ToolApprovalRequest {
+            tool_name: call.name.to_string(),
+            arguments: arguments.clone(),
+            prompt: Some(format!(
+                "{} asked to run this through Biorouter.",
+                self.child_label()
+            )),
+            risk: Some(self.tool_risks.risk_for(&call.name)),
+            preview: crate::conversation::tool_preview::ToolPreview::for_tool_call(
+                &call.name, &arguments,
+            ),
+        });
+
+        // Owned by the grant's nonce so the lease can release it, scoped to the
+        // session so only that session's loop may surface it (#40).
+        //
+        // ⚠ An EMPTY session id is `None`, not `Some("")`. A workflow with no
+        // chat behind it — a scheduled knowledge macro, a `Session::default()` —
+        // carries one, and `Some("")` would key a queue on the empty string that
+        // every such run in the process would share, which is #40's
+        // cross-session leak with a different key. `None` is the unscoped
+        // fallback the manager already has for exactly this case.
+        let session_scope = (!self.session.id.is_empty()).then_some(self.session.id.as_str());
+        let parked = PendingUserActions::global().park(
+            session_scope,
+            (!self.nonce.is_empty()).then_some(self.nonce.as_str()),
+            request,
+        );
+        let outcome = parked.wait(approval_ttl(), self.cancel.as_ref()).await;
+
+        match outcome {
+            UserActionOutcome::Approved { permission } => {
+                tracing::info!(
+                    tool_name = %name,
+                    ?permission,
+                    "a bridged tool call was approved by the user"
+                );
+                Ok(())
+            }
+            // `AlwaysDeny` and `DenyOnce` read the same to the child: it may not
+            // run this. The *scope* of the refusal is the permission store's
+            // business, not the child's.
+            UserActionOutcome::Denied { .. } => {
+                Err(format!("`{name}` was refused: you did not approve it."))
+            }
+            other => Err(format!(
+                "`{name}` needed a person's approval, and the request {}. \
+                 Do not ask again in this reply — a chat message cannot approve it. \
+                 Say what you wanted to run and why, and stop.",
+                other.refusal_detail()
+            )),
+        }
+    }
+
+    /// What to call the child on the approval card.
+    ///
+    /// The user is being asked to approve a call *they* did not make, so the card
+    /// has to say who did. Read off the session rather than the provider name
+    /// because the grant holds no provider handle — and a generic "the agent"
+    /// would be indistinguishable from Biorouter's own model asking.
+    fn child_label(&self) -> &'static str {
+        "The coding agent"
     }
 
     /// BRSDK encryption: resolve `{{vault:NAME}}` in the call's arguments.
@@ -586,16 +857,34 @@ impl Drop for BridgeLease {
         if let Ok(mut guard) = GRANTS.write() {
             guard.remove(&self.nonce);
         }
+        // #107: revoking the capability is not enough. A call parked on a human
+        // is holding the child's HTTP request open, and the turn that would have
+        // answered it is over — normally, by panic, or by an early return. Left
+        // alone it sits until its TTL, and the card stays on screen offering a
+        // decision that can no longer reach anything. Releasing here means the
+        // child gets a result at the instant the turn ends.
+        let released = PendingUserActions::global().cancel_owner(&self.nonce);
+        if released > 0 {
+            tracing::debug!(
+                released,
+                "released bridged calls parked on a human when their turn ended"
+            );
+        }
     }
 }
 
 /// Register a grant and return its lease, or `None` when there is no HTTP server
 /// to serve it.
-pub fn issue(grant: BridgeGrant) -> Option<BridgeLease> {
+pub fn issue(mut grant: BridgeGrant) -> Option<BridgeLease> {
     let base = base_url()?;
     // 32 hex characters from a v4 uuid: unguessable, and the whole credential.
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let url = format!("{}/tool_bridge/{nonce}", base.trim_end_matches('/'));
+    // #107: the grant learns its own nonce here and nowhere else — the nonce
+    // cannot exist before the grant it names. It is the *owner* of anything the
+    // grant parks on a human, which is what lets the lease below release those
+    // parks when the turn ends.
+    grant.nonce = nonce.clone();
     GRANTS.write().ok()?.insert(nonce.clone(), Arc::new(grant));
     Some(BridgeLease { nonce, url })
 }
@@ -893,6 +1182,7 @@ mod tests {
             Some(turn.clone()),
             hooks,
             None,
+            Arc::new(ToolRiskRegistry::new()),
         ));
 
         let call = CallToolRequestParams {
@@ -1428,7 +1718,7 @@ mod tests {
                 // Auto, so the permission inspector approves and the test measures
                 // the rewrite rather than the approval flow.
                 BioRouterMode::Auto,
-                Arc::clone(&self.extensions),
+                Arc::clone(&self.extensions) as Arc<dyn BridgeToolDispatch>,
                 Arc::new(inspections),
                 test_capability(),
                 vec![],
@@ -1436,6 +1726,7 @@ mod tests {
                 None,
                 hooks,
                 vault,
+                Arc::new(ToolRiskRegistry::new()),
             )
         }
     }
@@ -1648,6 +1939,7 @@ mod tests {
             None,
             no_hooks(),
             None,
+            Arc::new(ToolRiskRegistry::new()),
         )
     }
 
@@ -1660,6 +1952,318 @@ mod tests {
             false,
             Arc::new(tokio::sync::Mutex::new(None)),
         ))
+    }
+
+    // ---------------------------------------------------------------------
+    // #107: a call that needs a person
+    // ---------------------------------------------------------------------
+
+    /// A session with its own id.
+    ///
+    /// `Session::default()` has an EMPTY id, and the action-required queue is
+    /// keyed by session id in a process-global map — so every default-session
+    /// test would share one queue and drain each other's cards. The bug that
+    /// would hide is precisely the one #40 fixed for the agent's own path.
+    fn session_named(id: &str) -> Session {
+        Session {
+            id: id.to_string(),
+            ..Session::default()
+        }
+    }
+
+    /// A grant over the datasql fixture, in a mode whose permission inspector
+    /// routes an unapproved call to `needs_approval`.
+    fn approving_grant(db: &GeneFixture, session: Session) -> Arc<BridgeGrant> {
+        let hooks = no_hooks();
+        Arc::new(BridgeGrant::new(
+            session,
+            BioRouterMode::Approve,
+            Arc::clone(&db.extensions) as Arc<dyn BridgeToolDispatch>,
+            Arc::new(inspections_with(&hooks, false)),
+            test_capability(),
+            vec![],
+            Conversation::new_unvalidated(vec![]),
+            None,
+            hooks,
+            None,
+            Arc::new(ToolRiskRegistry::new()),
+        ))
+    }
+
+    /// The id on the approval card queued for `session_id`, once it appears.
+    ///
+    /// Polls rather than waits on a notify: the card is published from inside a
+    /// spawned `grant.call(...)`, so a single unconditional drain races it.
+    async fn approval_card_id(session_id: &str) -> String {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let drained =
+                    crate::action_required_manager::ActionRequiredManager::global()
+                        .drain_requests(session_id);
+                for message in &drained {
+                    for content in &message.content {
+                        if let crate::conversation::message::MessageContent::ActionRequired(a) =
+                            content
+                        {
+                            if let crate::conversation::message::ActionRequiredData::ToolConfirmation {
+                                id,
+                                ..
+                            } = &a.data
+                            {
+                                return id.clone();
+                            }
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("an approval card must be published for the session")
+    }
+
+    /// The whole of #107: a bridged call that needs approval raises a real card,
+    /// parks, and RUNS once the user allows it.
+    ///
+    /// Before this, the same call came back with "needs a person's approval, and
+    /// this turn has no way to ask for one" — advice to ask in prose, which the
+    /// model followed, for an approval no client could ever deliver.
+    #[tokio::test]
+    async fn an_approval_parks_the_call_and_runs_it_once_allowed() {
+        let db = GeneFixture::new().await;
+        let session = session_named(&format!("approve-ok-{}", uuid::Uuid::new_v4()));
+        let session_id = session.id.clone();
+        let grant = approving_grant(&db, session);
+
+        let call = db.query_for("1");
+        let running = tokio::spawn({
+            let grant = Arc::clone(&grant);
+            async move { grant.call(call).await }
+        });
+
+        let id = approval_card_id(&session_id).await;
+        assert_eq!(
+            PendingUserActions::global().resolve(
+                &id,
+                UserActionOutcome::Approved {
+                    permission: crate::permission::Permission::AllowOnce,
+                },
+            ),
+            crate::pending_user_action::ResolveOutcome::Delivered,
+        );
+
+        let result = tokio::time::timeout(Duration::from_secs(10), running)
+            .await
+            .expect("the approved call must resume promptly, not at its TTL")
+            .expect("the call task must not panic")
+            .expect("an approved call runs");
+        assert_ne!(result.is_error, Some(true), "the tool ran: {result:?}");
+    }
+
+    /// The card the bridge raises is the card the desktop already draws — same
+    /// `ActionRequired::ToolConfirmation` payload, carrying BR-63's risk grade,
+    /// so there is one approval dialog rather than two that can drift.
+    #[tokio::test]
+    async fn the_card_is_the_agents_own_confirmation_shape() {
+        let db = GeneFixture::new().await;
+        let session = session_named(&format!("approve-card-{}", uuid::Uuid::new_v4()));
+        let session_id = session.id.clone();
+        let grant = approving_grant(&db, session);
+
+        let call = db.query_for("2");
+        let running = tokio::spawn({
+            let grant = Arc::clone(&grant);
+            async move { grant.call(call).await }
+        });
+
+        let card = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let drained = crate::action_required_manager::ActionRequiredManager::global()
+                    .drain_requests(&session_id);
+                if let Some(message) = drained.into_iter().next() {
+                    return message;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("a card");
+
+        let mut saw = false;
+        for content in &card.content {
+            if let crate::conversation::message::MessageContent::ActionRequired(a) = content {
+                if let crate::conversation::message::ActionRequiredData::ToolConfirmation {
+                    id,
+                    tool_name,
+                    arguments,
+                    risk,
+                    ..
+                } = &a.data
+                {
+                    saw = true;
+                    assert!(!id.is_empty(), "the card must carry a routable request id");
+                    assert_eq!(tool_name, "datasql__data_query");
+                    assert!(
+                        arguments.contains_key("sql"),
+                        "the user has to see what they are approving"
+                    );
+                    assert!(risk.is_some(), "BR-63's grade must survive the bridge");
+                }
+            }
+        }
+        assert!(
+            saw,
+            "the published message must be a tool-confirmation card"
+        );
+        running.abort();
+    }
+
+    /// A denial comes back as an ordinary tool result the model can act on, and
+    /// its text must not send the model back to ask in prose — the request id is
+    /// gone, so a chat message could not resolve anything.
+    #[tokio::test]
+    async fn a_denial_is_a_result_that_does_not_invite_a_chat_answer() {
+        let db = GeneFixture::new().await;
+        let session = session_named(&format!("approve-deny-{}", uuid::Uuid::new_v4()));
+        let session_id = session.id.clone();
+        let grant = approving_grant(&db, session);
+
+        let call = db.query_for("3");
+        let running = tokio::spawn({
+            let grant = Arc::clone(&grant);
+            async move { grant.call(call).await }
+        });
+
+        let id = approval_card_id(&session_id).await;
+        PendingUserActions::global().resolve(
+            &id,
+            UserActionOutcome::Denied {
+                permission: crate::permission::Permission::DenyOnce,
+            },
+        );
+
+        let refusal = tokio::time::timeout(Duration::from_secs(10), running)
+            .await
+            .expect("a denial must resume the call promptly")
+            .expect("no panic")
+            .expect_err("a denied call must not run");
+        assert!(
+            refusal.contains("did not approve"),
+            "the model must learn it was refused: {refusal}"
+        );
+        assert!(
+            !refusal.contains("let them approve"),
+            "the old text invited an answer that cannot land: {refusal}"
+        );
+    }
+
+    /// The turn's own cancel token releases a parked call — Stop, `cancel_turn`
+    /// and a dropped websocket all reach it through that one token.
+    #[tokio::test]
+    async fn cancelling_the_turn_releases_a_call_parked_on_a_person() {
+        let db = GeneFixture::new().await;
+        let session = session_named(&format!("approve-cancel-{}", uuid::Uuid::new_v4()));
+        let session_id = session.id.clone();
+        let token = CancellationToken::new();
+        let hooks = no_hooks();
+        let grant = Arc::new(BridgeGrant::new(
+            session,
+            BioRouterMode::Approve,
+            Arc::clone(&db.extensions) as Arc<dyn BridgeToolDispatch>,
+            Arc::new(inspections_with(&hooks, false)),
+            test_capability(),
+            vec![],
+            Conversation::new_unvalidated(vec![]),
+            Some(token.clone()),
+            hooks,
+            None,
+            Arc::new(ToolRiskRegistry::new()),
+        ));
+
+        let call = db.query_for("4");
+        let running = tokio::spawn({
+            let grant = Arc::clone(&grant);
+            async move { grant.call(call).await }
+        });
+        // Wait until the card is up, so the cancel lands on a genuinely parked
+        // call rather than before it ever parked.
+        let _ = approval_card_id(&session_id).await;
+        token.cancel();
+
+        let refusal = tokio::time::timeout(Duration::from_secs(10), running)
+            .await
+            .expect("a cancelled turn must release the park immediately, not at its TTL")
+            .expect("no panic")
+            .expect_err("a cancelled approval must not run the tool");
+        assert!(
+            refusal.contains("cancelled"),
+            "the child must be told why: {refusal}"
+        );
+    }
+
+    /// Dropping the lease is the other way a turn ends — a panic, an early
+    /// return, a provider error. It must release the park too, or the child sits
+    /// on an HTTP response nobody will ever answer.
+    #[tokio::test]
+    async fn dropping_the_lease_releases_a_call_parked_on_a_person() {
+        publish_base_url("http://127.0.0.1:65535");
+        let db = GeneFixture::new().await;
+        let session = session_named(&format!("approve-lease-{}", uuid::Uuid::new_v4()));
+        let session_id = session.id.clone();
+        let hooks = no_hooks();
+        let lease = issue(BridgeGrant::new(
+            session,
+            BioRouterMode::Approve,
+            Arc::clone(&db.extensions) as Arc<dyn BridgeToolDispatch>,
+            Arc::new(inspections_with(&hooks, false)),
+            test_capability(),
+            vec![],
+            Conversation::new_unvalidated(vec![]),
+            None,
+            hooks,
+            None,
+            Arc::new(ToolRiskRegistry::new()),
+        ))
+        .expect("a base url is published");
+        let nonce = lease
+            .url()
+            .rsplit('/')
+            .next()
+            .expect("the url ends in the nonce")
+            .to_string();
+        let grant = lookup(&nonce).expect("the grant is live");
+
+        let call = db.query_for("5");
+        let running = tokio::spawn(async move { grant.call(call).await });
+        let _ = approval_card_id(&session_id).await;
+
+        drop(lease);
+
+        let refusal = tokio::time::timeout(Duration::from_secs(10), running)
+            .await
+            .expect("the lease drop must release the park, not leave it to its TTL")
+            .expect("no panic")
+            .expect_err("the tool must not run");
+        assert!(
+            refusal.contains("cancelled"),
+            "the child must be told why: {refusal}"
+        );
+    }
+
+    /// The approval window has to fit INSIDE the child's own per-call deadline.
+    /// Parking past it does not give the user more time — it turns a card they
+    /// could still answer into "The operation timed out", a transport failure the
+    /// model retries, producing a second card for the same call (#110).
+    #[test]
+    fn the_approval_window_fits_inside_the_childs_deadline() {
+        assert!(
+            approval_ttl() < child_tool_call_budget(),
+            "an approval that outlives the transport is a hang, not a prompt"
+        );
+        assert!(
+            approval_ttl() >= Duration::from_secs(30),
+            "a window this short is not a decision, it is a race"
+        );
     }
 
     fn grant_cancelled_by(cancel: Option<CancellationToken>) -> BridgeGrant {
@@ -1677,6 +2281,7 @@ mod tests {
             cancel,
             no_hooks(),
             None,
+            Arc::new(ToolRiskRegistry::new()),
         )
     }
 }

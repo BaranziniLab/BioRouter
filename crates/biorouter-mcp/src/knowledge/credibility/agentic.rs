@@ -406,7 +406,12 @@ fn source_description(input: &SourceInput) -> String {
 // ---------------------------------------------------------------------------
 
 pub async fn classify(input: &SourceInput, completer: Box<dyn Completer>) -> Result<Credibility> {
-    classify_with_dispatch(input, completer, &AgenticToolDispatch::new()).await
+    classify_with_dispatch(
+        input,
+        completer,
+        std::sync::Arc::new(AgenticToolDispatch::new()),
+    )
+    .await
 }
 
 /// Same as [`classify`], but with the tool dispatcher supplied by the caller.
@@ -418,7 +423,7 @@ pub async fn classify(input: &SourceInput, completer: Box<dyn Completer>) -> Res
 pub(crate) async fn classify_with_dispatch(
     input: &SourceInput,
     completer: Box<dyn Completer>,
-    dispatch: &dyn ToolDispatch,
+    dispatch: std::sync::Arc<dyn ToolDispatch>,
 ) -> Result<Credibility> {
     let agent = SubAgent {
         completer,
@@ -576,7 +581,7 @@ mod tests {
             .collect();
         let completer = MockCompleter::new(replies);
         let input = SourceInput::Url("https://example.com/paper".into());
-        let c = classify_with_dispatch(&input, Box::new(completer), &dispatch)
+        let c = classify_with_dispatch(&input, Box::new(completer), std::sync::Arc::new(dispatch))
             .await
             .unwrap();
         // Step budget kicks in → fallback Web tier.

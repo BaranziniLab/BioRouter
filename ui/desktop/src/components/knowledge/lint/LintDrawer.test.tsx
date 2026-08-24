@@ -235,50 +235,36 @@ describe('LintDrawer — the description contract', () => {
  * The obstacle is real and the drawer must stay disabled; what it may not do is
  * misname it.
  */
-describe('LintDrawer — a model the check cannot drive', () => {
+describe('LintDrawer — a coding-agent model is a model like any other (#109)', () => {
   beforeEach(() => {
     mocks.stream = { events: [], status: 'idle', finalResult: null, error: undefined };
   });
 
-  it('names the real obstacle instead of blaming the configuration', () => {
+  it('runs a check on a coding-agent model instead of refusing it', () => {
+    // This drawer used to draw "This model can't run a check" here, because
+    // `resolveIngestModel` refused these providers by name and the drawer read
+    // the resulting `null` as "nothing is configured". Both halves are gone: a
+    // macro turn carries its tools over the MCP bridge, so a check under Claude
+    // Code reads the base for real.
     mocks.modelAndProvider = { currentProvider: 'claude_code', currentModel: 'opus-5' };
     render(<LintDrawer open onOpenChange={() => undefined} />);
 
-    // "No model is configured" is false — there is one, it is bound to the chat
-    // composer, and it works there.
     expect(screen.queryByRole('heading', { name: 'No model is configured' })).toBeNull();
     expect(
-      screen.getByRole('heading', { name: /can’t run a check|cannot run a check/i })
-    ).toBeInTheDocument();
-  });
-
-  it('does not send the user to a picker that has nothing to offer them', () => {
-    mocks.modelAndProvider = { currentProvider: 'codex', currentModel: 'gpt-5.4-codex' };
-    render(<LintDrawer open onOpenChange={() => undefined} />);
-
-    // The Sources rail's model picker filters these providers out, so for this
-    // user it is empty. Sending them there is the dead end, not the fix.
-    expect(screen.queryByText(/Sources rail/i)).toBeNull();
-  });
-
-  it('still refuses to dispatch a run it knows will read nothing', async () => {
-    mocks.modelAndProvider = { currentProvider: 'claude_code', currentModel: 'opus-5' };
-    render(<LintDrawer open onOpenChange={() => undefined} />);
-
-    expect(mocks.start).not.toHaveBeenCalled();
-    const run = screen.getByTestId('knowledge-lint-run');
-    expect(run).toBeDisabled();
-    await userEvent.click(run);
-    expect(mocks.start).not.toHaveBeenCalled();
+      screen.queryByRole('heading', { name: /can’t run a check|cannot run a check/i })
+    ).toBeNull();
+    expect(mocks.start).toHaveBeenCalledWith('/knowledge/bases/kb-1/lint', {
+      model: { provider: 'claude_code', model: 'opus-5' },
+    });
   });
 
   it('keeps saying "no model" when there genuinely is none', () => {
     mocks.modelAndProvider = { currentProvider: null, currentModel: null };
     render(<LintDrawer open onOpenChange={() => undefined} />);
 
-    // The correction must be surgical: a blanket rewrite of this empty state
-    // would start telling a user with no provider at all that their model is
-    // merely the wrong kind.
+    // The one verdict this drawer may reach on its own, and it has to survive
+    // the removal above: a user with no provider at all still needs telling.
     expect(screen.getByRole('heading', { name: 'No model is configured' })).toBeInTheDocument();
+    expect(mocks.start).not.toHaveBeenCalled();
   });
 });

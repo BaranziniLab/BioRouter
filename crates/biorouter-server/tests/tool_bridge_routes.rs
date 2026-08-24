@@ -64,6 +64,7 @@ async fn grant() -> bridge::BridgeGrant {
         None,
         no_hooks(),
         None,
+        Arc::new(biorouter::permission::tool_risk::ToolRiskRegistry::new()),
     )
 }
 
@@ -413,6 +414,20 @@ async fn the_real_codex_provider_reaches_biorouters_tools_over_the_bridge() {
 ///   `BridgeGrant::call` refuses before dispatch ever happens — so an empty
 ///   manager can only ever prove a refusal, never an execution.
 async fn real_developer_grant(working_dir: &std::path::Path) -> bridge::BridgeGrant {
+    real_developer_grant_in(working_dir, BioRouterMode::Auto, Session::default()).await
+}
+
+/// The same grant, in a caller-chosen mode and session.
+///
+/// #107 needs both: `Approve` so the permission inspector actually routes the
+/// call to `needs_approval`, and a session with a real id because the card is
+/// published into a queue keyed by session id — `Session::default()`'s id is the
+/// empty string, which every other default-session test in the process shares.
+async fn real_developer_grant_in(
+    working_dir: &std::path::Path,
+    mode: BioRouterMode,
+    session: Session,
+) -> bridge::BridgeGrant {
     use biorouter::agents::ExtensionConfig;
     use biorouter::config::permission::PermissionManager;
     use biorouter::managed::ManagedPolicy;
@@ -471,8 +486,8 @@ async fn real_developer_grant(working_dir: &std::path::Path) -> bridge::BridgeGr
     )));
 
     bridge::BridgeGrant::new(
-        Session::default(),
-        BioRouterMode::Auto,
+        session,
+        mode,
         extensions,
         Arc::new(inspections),
         CallCapability::public_enforced(),
@@ -486,6 +501,7 @@ async fn real_developer_grant(working_dir: &std::path::Path) -> bridge::BridgeGr
         None,
         no_hooks(),
         None,
+        Arc::new(ToolRiskRegistry::new()),
     )
 }
 
@@ -659,5 +675,639 @@ async fn a_real_biorouter_extension_executes_and_its_output_reaches_the_childs_a
         "the real tool's output never reached the answer. Expected {marker}, answer was: \
          {answer:?}. {}",
         dump()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #107: a bridged call that needs a person, end to end through the real child.
+// ---------------------------------------------------------------------------
+
+/// Wait for the approval card Biorouter published for `session_id`, and return
+/// its request id.
+///
+/// Polls the same queue the desktop's agent loop drains. That is deliberately
+/// not a shortcut: it is the *only* channel the card travels on, so a test that
+/// finds it here is finding the thing the GUI would render, and a card that never
+/// arrives fails this poll rather than passing silently.
+async fn await_published_approval(session_id: &str, within: std::time::Duration) -> String {
+    use biorouter::conversation::message::{ActionRequiredData, MessageContent};
+    tokio::time::timeout(within, async {
+        loop {
+            for message in biorouter::action_required_manager::ActionRequiredManager::global()
+                .drain_requests(session_id)
+            {
+                for content in &message.content {
+                    if let MessageContent::ActionRequired(action) = content {
+                        if let ActionRequiredData::ToolConfirmation { id, tool_name, .. } =
+                            &action.data
+                        {
+                            eprintln!("approval card raised for {tool_name}");
+                            return id.clone();
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("Biorouter must publish an approval card for the bridged call")
+}
+
+/// **The whole of #107, against the real Claude Code.** A bridged tool call that
+/// Biorouter's permission policy routes to `needs_approval` raises a real,
+/// routable approval request, parks the child's HTTP call while a person decides,
+/// and — once approved — runs the tool and returns its output into the child's
+/// answer.
+///
+/// What this proves that the unit tests cannot: the *child* tolerates the park.
+/// Every layer below could be correct and this still fail, because the thing
+/// being waited on is a live HTTP request held open inside the child's own MCP
+/// client, under its own per-call deadline. That is the reason the park has a TTL
+/// shorter than the deadline (`bridge::child_tool_call_budget`) rather than the
+/// hour a chat confirmation may take.
+///
+/// The marker is written to disk and never appears in the prompt, so a model that
+/// hallucinated its way past a refusal cannot produce it — the same
+/// non-fakeability argument as the Auto-mode test above, now with the approval in
+/// the middle.
+#[tokio::test]
+#[serial_test::serial]
+#[ignore = "needs the `claude` CLI installed and signed in; spends the user's own plan quota"]
+async fn a_bridged_call_needing_approval_is_answerable_and_resumes() {
+    let marker = format!("APPROVALPROOF{:016x}", rand::random::<u64>());
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let target = dir.path().join("marker.txt");
+    std::fs::write(&target, format!("{marker}\n")).expect("write the marker file");
+
+    let session_id = format!("approval-e2e-{:016x}", rand::random::<u64>());
+    let session = Session {
+        id: session_id.clone(),
+        ..Session::default()
+    };
+    // Approve mode: the permission inspector routes an ungranted call to
+    // `needs_approval` instead of allowing it outright. Without this the test
+    // would pass with the approval machinery never touched.
+    let grant = real_developer_grant_in(dir.path(), BioRouterMode::Approve, session).await;
+    let advertised: Vec<String> = grant.tools().iter().map(|t| t.name.to_string()).collect();
+    assert!(
+        advertised.iter().any(|n| n == "developer__text_editor"),
+        "the real developer extension must have loaded; got: {advertised:?}"
+    );
+
+    serve_real_bridge().await;
+    let lease = bridge::issue(grant).expect("the base URL is published");
+
+    // The person. Answers as soon as the card appears, which is what the desktop
+    // dialog does when a user clicks Allow.
+    let approver = tokio::spawn({
+        let session_id = session_id.clone();
+        async move {
+            let id =
+                await_published_approval(&session_id, std::time::Duration::from_secs(90)).await;
+            let outcome = biorouter::pending_user_action::PendingUserActions::global().resolve(
+                &id,
+                biorouter::pending_user_action::UserActionOutcome::Approved {
+                    permission: biorouter::permission::Permission::AllowOnce,
+                },
+            );
+            assert_eq!(
+                outcome,
+                biorouter::pending_user_action::ResolveOutcome::Delivered,
+                "the decision must reach the call that is parked on it"
+            );
+        }
+    });
+
+    let config = serde_json::json!({
+        "mcpServers": { "biorouter": { "type": "http", "url": lease.url() } }
+    });
+    let config_path = dir.path().join("mcp.json");
+    std::fs::write(&config_path, config.to_string()).expect("write the bridge config");
+
+    let mut child = tokio::process::Command::new("claude")
+        .args([
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--model",
+            "haiku",
+            "--tools",
+            "",
+            "--setting-sources",
+            "",
+            "--strict-mcp-config",
+            "--permission-mode",
+            "bypassPermissions",
+            "--no-session-persistence",
+            "--system-prompt",
+            "You are Biorouter. Use the tools you are given.",
+        ])
+        .arg("--mcp-config")
+        .arg(&config_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env_remove("ANTHROPIC_API_KEY")
+        .spawn()
+        .expect("the claude CLI runs");
+
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        stdin
+            .write_all(
+                format!(
+                    "Use your text_editor tool with command \"view\" to read the file at {}. \
+                     Then reply with ONLY the single word that file contains, and nothing else.",
+                    target.display()
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write the prompt");
+        stdin.shutdown().await.expect("close stdin");
+    }
+    let output = child.wait_with_output().await.expect("the CLI finishes");
+    approver.await.expect("the approver task must not panic");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let dump = || format!("stdout was:\n{stdout}\nstderr:\n{stderr}");
+    let frames: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .collect();
+
+    let result = frames
+        .iter()
+        .find(|v| v["type"] == "result")
+        .unwrap_or_else(|| panic!("no result frame; {}", dump()));
+    let answer = result["result"].as_str().unwrap_or_default();
+
+    // The park must not have looked like a broken server to the child.
+    assert!(
+        !stdout.contains("operation timed out") && !stdout.contains("Operation timed out"),
+        "the park must fit inside the child's per-call deadline; {}",
+        dump()
+    );
+    // The old refusal must be gone: this is the exact sentence #107 reported.
+    assert!(
+        !stdout.contains("no way to ask for one"),
+        "the bridge still refused instead of asking; {}",
+        dump()
+    );
+    // And the tool ran: the marker exists only on disk.
+    assert!(
+        answer.contains(&marker),
+        "the approved tool's output never reached the answer. Expected {marker}, answer was \
+         {answer:?}. {}",
+        dump()
+    );
+}
+
+/// The other half of the same round trip: **denial** comes back as an ordinary
+/// tool result the child's model reads and acts on, not as a transport failure it
+/// retries — and the text does not send it back to ask in prose, because by then
+/// the request id is gone and a chat message could not resolve anything.
+#[tokio::test]
+#[serial_test::serial]
+#[ignore = "needs the `claude` CLI installed and signed in; spends the user's own plan quota"]
+async fn a_denied_bridged_call_returns_a_result_the_child_can_act_on() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let target = dir.path().join("marker.txt");
+    std::fs::write(&target, "SECRETVALUE\n").expect("write the file");
+
+    let session_id = format!("denial-e2e-{:016x}", rand::random::<u64>());
+    let session = Session {
+        id: session_id.clone(),
+        ..Session::default()
+    };
+    let grant = real_developer_grant_in(dir.path(), BioRouterMode::Approve, session).await;
+    serve_real_bridge().await;
+    let lease = bridge::issue(grant).expect("the base URL is published");
+
+    let denier = tokio::spawn({
+        let session_id = session_id.clone();
+        async move {
+            let id =
+                await_published_approval(&session_id, std::time::Duration::from_secs(90)).await;
+            biorouter::pending_user_action::PendingUserActions::global().resolve(
+                &id,
+                biorouter::pending_user_action::UserActionOutcome::Denied {
+                    permission: biorouter::permission::Permission::DenyOnce,
+                },
+            )
+        }
+    });
+
+    let config = serde_json::json!({
+        "mcpServers": { "biorouter": { "type": "http", "url": lease.url() } }
+    });
+    let config_path = dir.path().join("mcp.json");
+    std::fs::write(&config_path, config.to_string()).expect("write the bridge config");
+
+    let mut child = tokio::process::Command::new("claude")
+        .args([
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--model",
+            "haiku",
+            "--tools",
+            "",
+            "--setting-sources",
+            "",
+            "--strict-mcp-config",
+            "--permission-mode",
+            "bypassPermissions",
+            "--no-session-persistence",
+            "--system-prompt",
+            "You are Biorouter. Use the tools you are given.",
+        ])
+        .arg("--mcp-config")
+        .arg(&config_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env_remove("ANTHROPIC_API_KEY")
+        .spawn()
+        .expect("the claude CLI runs");
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        stdin
+            .write_all(
+                format!(
+                    "Use your text_editor tool with command \"view\" to read {}, then say what \
+                     it contains.",
+                    target.display()
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write the prompt");
+        stdin.shutdown().await.expect("close stdin");
+    }
+    let output = child.wait_with_output().await.expect("the CLI finishes");
+    assert_eq!(
+        denier.await.expect("the denier task must not panic"),
+        biorouter::pending_user_action::ResolveOutcome::Delivered,
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let dump = || {
+        format!(
+            "stdout was:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    };
+    assert!(
+        stdout.contains("did not approve"),
+        "the refusal must reach the child's model as a readable result; {}",
+        dump()
+    );
+    assert!(
+        !stdout.contains("operation timed out") && !stdout.contains("Operation timed out"),
+        "a denial must be a result, not an abandoned request; {}",
+        dump()
+    );
+    assert!(
+        !stdout.contains("SECRETVALUE"),
+        "a denied call must not have run; {}",
+        dump()
+    );
+}
+
+/// #107 through the **real Codex** bridge.
+///
+/// Codex is the harder half and the reason this test exists separately. Its MCP
+/// client is a different implementation with its own per-call deadline, and it
+/// sends no `Authorization` header — the capability rides the URL — so nothing
+/// proven against Claude Code transfers by argument. What has to hold is the
+/// same: the child's `tools/call` stays open while a person decides, and the
+/// decision resumes it into a real execution rather than a timeout.
+///
+/// Driven through `CodexProvider` rather than `codex exec`, for the reason the
+/// test above it records: `exec` cannot answer an approval and would fail for a
+/// reason that has nothing to do with Biorouter's.
+#[tokio::test]
+#[serial_test::serial]
+#[ignore = "needs the `codex` CLI installed and signed in; spends the user's own plan quota"]
+async fn a_bridged_codex_call_needing_approval_is_answerable_and_resumes() {
+    use biorouter::conversation::message::Message;
+    use biorouter::model::ModelConfig;
+    use biorouter::providers::base::Provider;
+    use biorouter::providers::codex::CodexProvider;
+
+    let marker = format!("CODEXAPPROVAL{:016x}", rand::random::<u64>());
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let target = dir.path().join("marker.txt");
+    std::fs::write(&target, format!("{marker}\n")).expect("write the marker file");
+
+    let session_id = format!("codex-approval-e2e-{:016x}", rand::random::<u64>());
+    let session = Session {
+        id: session_id.clone(),
+        ..Session::default()
+    };
+    let grant = real_developer_grant_in(dir.path(), BioRouterMode::Approve, session).await;
+    serve_real_bridge().await;
+    let lease = bridge::issue(grant).expect("the base URL is published");
+
+    let approver = tokio::spawn({
+        let session_id = session_id.clone();
+        async move {
+            let id =
+                await_published_approval(&session_id, std::time::Duration::from_secs(120)).await;
+            biorouter::pending_user_action::PendingUserActions::global().resolve(
+                &id,
+                biorouter::pending_user_action::UserActionOutcome::Approved {
+                    permission: biorouter::permission::Permission::AllowOnce,
+                },
+            )
+        }
+    });
+
+    let provider = CodexProvider::from_env(ModelConfig::new("gpt-5.5").expect("a known model"))
+        .await
+        .expect("the codex CLI is installed");
+    let messages = vec![Message::user().with_text(format!(
+        "Use the developer__text_editor tool with command \"view\" to read the file at {}. \
+         Then reply with ONLY the single word that file contains.",
+        target.display()
+    ))];
+
+    let outcome = bridge::ACTIVE_BRIDGE_URL
+        .scope(
+            Some(lease.url().to_string()),
+            provider.complete(
+                "You are Biorouter. Use the tools you are given.",
+                &messages,
+                &[],
+            ),
+        )
+        .await;
+
+    assert_eq!(
+        approver.await.expect("the approver task must not panic"),
+        biorouter::pending_user_action::ResolveOutcome::Delivered,
+        "Biorouter must have published a card the approver could answer"
+    );
+
+    let (message, _usage) = outcome.expect("the codex turn must not fail");
+    let text = message.as_concat_text();
+    assert!(
+        !text.contains("timed out") && !text.contains("timeout"),
+        "the park must fit inside Codex's own per-call deadline; it said: {text}"
+    );
+    assert!(
+        text.contains(&marker),
+        "the approved tool's output never reached the answer. Expected {marker}, got: {text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #110: a bridged tool call that takes longer than the child's default deadline
+// ---------------------------------------------------------------------------
+
+/// A tool that takes `SLOW_TOOL_SECS` to answer and then returns a marker.
+///
+/// 90 seconds is chosen against the measured failure, not for comfort: issue
+/// #110 recorded every bridged call dying at "almost exactly 60 seconds", so a
+/// tool that answers at 90 can only succeed if the per-server deadline Biorouter
+/// now configures is actually being honoured by the child. A 30-second tool
+/// would pass whether the fix worked or not.
+const SLOW_TOOL_SECS: u64 = 90;
+
+struct SlowDispatch {
+    marker: String,
+}
+
+#[async_trait::async_trait]
+impl bridge::BridgeToolDispatch for SlowDispatch {
+    async fn dispatch(
+        &self,
+        _session_id: &str,
+        _call: rmcp::model::CallToolRequestParams,
+        _capability: CallCapability,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<rmcp::model::CallToolResult, String> {
+        tokio::time::sleep(std::time::Duration::from_secs(SLOW_TOOL_SECS)).await;
+        Ok(rmcp::model::CallToolResult::success(vec![
+            rmcp::model::Content::text(format!(
+                "waited {SLOW_TOOL_SECS}s and finished. marker={}",
+                self.marker
+            )),
+        ]))
+    }
+}
+
+fn slow_tool() -> rmcp::model::Tool {
+    rmcp::model::Tool::new(
+        "workspace__workspace_watch",
+        "Wait for background conversations to finish. A timeout is never an error.",
+        Arc::new(
+            serde_json::from_value(json!({
+                "type": "object",
+                "properties": { "timeout_s": { "type": "integer" } }
+            }))
+            .expect("a valid schema"),
+        ),
+    )
+}
+
+/// A grant over one deliberately slow tool, in Auto mode so nothing asks for a
+/// human and the only thing under test is the transport's patience.
+fn slow_grant(marker: &str) -> bridge::BridgeGrant {
+    use biorouter::config::permission::PermissionManager;
+    use biorouter::managed::ManagedPolicy;
+    use biorouter::permission::permission_inspector::PermissionInspector;
+    use biorouter::permission::tool_risk::ToolRiskRegistry;
+
+    let risks = Arc::new(ToolRiskRegistry::new());
+    let managed = Arc::new(ManagedPolicy::empty());
+    let mut inspections = ToolInspectionManager::new();
+    inspections.add_inspector(Box::new(PermissionInspector::new(
+        Arc::clone(&risks),
+        PermissionManager::instance(),
+        managed,
+        Arc::new(tokio::sync::Mutex::new(None)),
+    )));
+
+    bridge::BridgeGrant::new(
+        Session::default(),
+        BioRouterMode::Auto,
+        Arc::new(SlowDispatch {
+            marker: marker.to_string(),
+        }),
+        Arc::new(inspections),
+        CallCapability::public_enforced(),
+        vec![slow_tool()],
+        Conversation::new_unvalidated(vec![]),
+        None,
+        no_hooks(),
+        None,
+        risks,
+    )
+}
+
+/// **#110 through the real Claude Code.** A bridged call that takes 90 seconds
+/// must come back as a *result*, not as "The operation timed out".
+///
+/// This is the assertion the issue asks for and the one no handler test can
+/// make: `workspace_watch` always built a non-error partial report, and it never
+/// reached the model, because the child's own MCP client applied a ~60-second
+/// hard wall clock and abandoned the request first. What is under test here is
+/// the per-server `timeout` Biorouter now writes into the child's MCP config —
+/// so a regression that dropped that field, or a CLI that stopped honouring it,
+/// fails here rather than in a user's session.
+#[tokio::test]
+#[serial_test::serial]
+#[ignore = "needs the `claude` CLI installed and signed in; spends the user's own plan quota and takes ~2 minutes"]
+async fn a_slow_bridged_call_survives_claude_codes_per_call_deadline() {
+    let marker = format!("SLOWPROOF{:016x}", rand::random::<u64>());
+    serve_real_bridge().await;
+    let lease = bridge::issue(slow_grant(&marker)).expect("the base URL is published");
+
+    // Exactly the config the provider writes, including the timeout field.
+    let config = serde_json::json!({
+        "mcpServers": {
+            "biorouter": {
+                "type": "http",
+                "url": lease.url(),
+                "timeout": bridge::CHILD_TOOL_CALL_TIMEOUT.as_millis() as u64,
+            }
+        }
+    });
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let config_path = dir.path().join("mcp.json");
+    std::fs::write(&config_path, config.to_string()).expect("write the bridge config");
+
+    let started = std::time::Instant::now();
+    let mut child = tokio::process::Command::new("claude")
+        .args([
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--model",
+            "haiku",
+            "--tools",
+            "",
+            "--setting-sources",
+            "",
+            "--strict-mcp-config",
+            "--permission-mode",
+            "bypassPermissions",
+            "--no-session-persistence",
+            "--system-prompt",
+            "You are Biorouter. Use the tools you are given and be patient with slow ones.",
+        ])
+        .arg("--mcp-config")
+        .arg(&config_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env_remove("ANTHROPIC_API_KEY")
+        .spawn()
+        .expect("the claude CLI runs");
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        stdin
+            .write_all(
+                b"Call workspace_watch once with timeout_s 600. It is slow; wait for it. \
+                  Then reply with ONLY the marker value it returned.",
+            )
+            .await
+            .expect("write the prompt");
+        stdin.shutdown().await.expect("close stdin");
+    }
+    let output = child.wait_with_output().await.expect("the CLI finishes");
+    let elapsed = started.elapsed();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let dump = || {
+        format!(
+            "elapsed {}s; stdout was:\n{stdout}\nstderr:\n{}",
+            elapsed.as_secs(),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    };
+
+    // The exact diagnostic #110 reported, in the exact place it appeared.
+    assert!(
+        !stdout.to_lowercase().contains("operation timed out"),
+        "the bridged call was abandoned by the child's MCP client; {}",
+        dump()
+    );
+    assert!(
+        stdout.contains(&marker),
+        "the slow tool's result never reached the model. Expected {marker}. {}",
+        dump()
+    );
+    // And it really did outlive the old ceiling, rather than the tool having
+    // been fast: a pass at 20 seconds would prove nothing about the deadline.
+    assert!(
+        elapsed >= std::time::Duration::from_secs(SLOW_TOOL_SECS),
+        "the run finished before the tool could have; {}",
+        dump()
+    );
+}
+
+/// **#110 through the real Codex.** A different MCP client with its own default
+/// deadline and its own knob (`tool_timeout_sec`, seconds rather than
+/// milliseconds), so nothing proven against Claude Code transfers by argument.
+#[tokio::test]
+#[serial_test::serial]
+#[ignore = "needs the `codex` CLI installed and signed in; spends the user's own plan quota and takes ~2 minutes"]
+async fn a_slow_bridged_call_survives_codexs_per_call_deadline() {
+    use biorouter::conversation::message::Message;
+    use biorouter::model::ModelConfig;
+    use biorouter::providers::base::Provider;
+    use biorouter::providers::codex::CodexProvider;
+
+    let marker = format!("SLOWPROOFCODEX{:016x}", rand::random::<u64>());
+    serve_real_bridge().await;
+    let lease = bridge::issue(slow_grant(&marker)).expect("the base URL is published");
+
+    let provider = CodexProvider::from_env(ModelConfig::new("gpt-5.5").expect("a known model"))
+        .await
+        .expect("the codex CLI is installed");
+    let messages = vec![Message::user().with_text(
+        "Call the workspace__workspace_watch tool once with timeout_s 600. It is slow; wait \
+         for it. Then reply with ONLY the marker value it returned.",
+    )];
+
+    let started = std::time::Instant::now();
+    let outcome = bridge::ACTIVE_BRIDGE_URL
+        .scope(
+            Some(lease.url().to_string()),
+            provider.complete(
+                "You are Biorouter. Use the tools you are given and be patient with slow ones.",
+                &messages,
+                &[],
+            ),
+        )
+        .await;
+    let elapsed = started.elapsed();
+
+    let (message, _usage) = outcome.expect("the codex turn must not fail");
+    let text = message.as_concat_text();
+    assert!(
+        !text.to_lowercase().contains("timed out"),
+        "the bridged call was abandoned by Codex's MCP client after {}s: {text}",
+        elapsed.as_secs()
+    );
+    assert!(
+        text.contains(&marker),
+        "the slow tool's result never reached the model. Expected {marker}, got: {text}"
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_secs(SLOW_TOOL_SECS),
+        "the run finished before the tool could have ({}s)",
+        elapsed.as_secs()
     );
 }

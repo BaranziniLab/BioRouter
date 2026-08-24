@@ -100,6 +100,28 @@ impl ActionRequiredManager {
         &INSTANCE
     }
 
+    /// Queue a request card for `session_id`'s agent loop to drain, and wake it.
+    ///
+    /// The publication half of [`Self::request_and_wait`], split out so
+    /// [`crate::pending_user_action`] can publish a card whose *resolution* it
+    /// owns — a tool-permission approval, or a credential ask whose answer must
+    /// never come back through the conversation transport at all.
+    ///
+    /// One queue, deliberately. This is the only wake seam an agent loop
+    /// watches ([`Self::request_arrived`]) and the only drain that persists a
+    /// request under the right session id; a second channel would make every
+    /// loop race two notifies, which is the exact shape that turned #40 into a
+    /// cross-session prompt leak.
+    ///
+    /// `None` queues it unscoped — deliverable by any session's loop — for the
+    /// callers that genuinely cannot attribute the request.
+    pub fn publish(&self, session_id: Option<&str>, message: Message) {
+        match session_id {
+            Some(session_id) => self.scope(session_id).push(message),
+            None => self.unscoped.push(message),
+        }
+    }
+
     /// Park until the user answers (`Ok(Some(data))`), explicitly cancels
     /// (`Ok(None)`), the timeout elapses, or the channel dies.
     ///
@@ -129,10 +151,7 @@ impl ActionRequiredManager {
             MessageContent::action_required_elicitation(id.clone(), message, schema),
         );
 
-        match session_id {
-            Some(session_id) => self.scope(session_id).push(action_required_message),
-            None => self.unscoped.push(action_required_message),
-        }
+        self.publish(session_id, action_required_message);
 
         let result = match timeout(timeout_duration, rx).await {
             Ok(Ok(user_data)) => Ok(user_data),
@@ -196,10 +215,32 @@ impl ActionRequiredManager {
     async fn deliver(&self, request_id: String, outcome: Option<Value>) -> Result<()> {
         let pending_arc = {
             let pending = self.pending.read().await;
-            pending
-                .get(&request_id)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("Request not found: {}", request_id))?
+            pending.get(&request_id).cloned()
+        };
+        // #107: an elicitation parked through `pending_user_action` is not in
+        // this map — its rendezvous lives in that registry so a bridged call,
+        // which has no `Agent` and no `McpClient`, can raise one. The existing
+        // routes and the CLI answer both kinds through this one function, so
+        // the fallthrough is what stops the newer mechanism needing a second
+        // route that a client would have to know to choose between.
+        let Some(pending_arc) = pending_arc else {
+            use crate::pending_user_action::{
+                PendingUserActions, ResolveOutcome, UserActionOutcome,
+            };
+            let relayed = match outcome {
+                Some(data) => UserActionOutcome::Provided { data },
+                None => UserActionOutcome::Cancelled,
+            };
+            return match PendingUserActions::global().resolve(&request_id, relayed) {
+                ResolveOutcome::Delivered => Ok(()),
+                ResolveOutcome::Rejected => Err(anyhow::anyhow!(
+                    "Request {} does not accept that answer",
+                    request_id
+                )),
+                ResolveOutcome::Unknown => {
+                    Err(anyhow::anyhow!("Request not found: {}", request_id))
+                }
+            };
         };
 
         let mut pending = pending_arc.lock().await;

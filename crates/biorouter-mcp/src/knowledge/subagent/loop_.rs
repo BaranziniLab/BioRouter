@@ -83,6 +83,40 @@ pub enum LlmMessage {
     ToolResults(Vec<ToolResultPart>),
 }
 
+/// One tool call a completer's OWN executor already ran.
+///
+/// The coding-agent providers are the reason this exists: `claude_code` and
+/// `codex` drive a whole agent in a child process, and Biorouter's tools reach
+/// them over an MCP bridge the *provider call* establishes. So the child chooses
+/// and executes the calls inside one `complete`, and by the time this loop sees
+/// a reply the work is done. These are records, not requests.
+#[derive(Debug, Clone)]
+pub struct ExecutedCall {
+    pub id: String,
+    pub name: String,
+    pub args: serde_json::Value,
+    /// What the tool returned, as text.
+    pub output: String,
+    pub is_error: bool,
+}
+
+/// One turn, plus whatever the completer ran on its own account.
+pub struct CompleterTurn {
+    pub reply: LlmReply,
+    /// ⚠ **The loop must not dispatch these.** They have already executed. A
+    /// `kb_write_page` run twice is a second write, not a redraw.
+    pub executed: Vec<ExecutedCall>,
+}
+
+impl From<LlmReply> for CompleterTurn {
+    fn from(reply: LlmReply) -> Self {
+        Self {
+            reply,
+            executed: Vec::new(),
+        }
+    }
+}
+
 /// Minimal LLM capability needed by the sub-agent loop.
 ///
 /// Callers that hold an `Arc<dyn biorouter::providers::base::Provider>` can
@@ -98,6 +132,31 @@ pub trait Completer: Send + Sync {
         messages: &[LlmMessage],
         tools: &[Tool],
     ) -> Result<LlmReply>;
+
+    /// The same turn, with this run's dispatcher reachable from *inside* the
+    /// completer.
+    ///
+    /// The default ignores it, which is right for every completer that returns
+    /// tool calls for the loop to run. It is overridden by the adapter wrapping
+    /// a coding-agent provider (#109): that provider's child executes the tools
+    /// itself, over an MCP bridge established for the duration of the provider
+    /// call — so the dispatcher has to be reachable *during* the call, not after
+    /// it. Without this seam the child was handed a `tools` argument its provider
+    /// discards; the model then narrated every call as prose, invented its own
+    /// `<tool_response>OK` replies to continue against, and wrote nothing.
+    ///
+    /// `Arc`, not `&dyn`: the adapter hands the dispatcher to a bridge grant
+    /// that lives in a process-global registry for the length of the turn, and a
+    /// borrow cannot go there.
+    async fn complete_with_dispatch(
+        &self,
+        system: &str,
+        messages: &[LlmMessage],
+        tools: &[Tool],
+        _dispatch: std::sync::Arc<dyn ToolDispatch>,
+    ) -> Result<CompleterTurn> {
+        Ok(self.complete(system, messages, tools).await?.into())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +314,7 @@ impl SubAgent {
     pub async fn run(
         &self,
         user_message: &str,
-        dispatch: &dyn ToolDispatch,
+        dispatch: std::sync::Arc<dyn ToolDispatch>,
         cancel: Option<&tokio::sync::Notify>,
         event_sink: Option<&tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
     ) -> Result<SubAgentResult> {
@@ -283,11 +342,16 @@ impl SubAgent {
             // reconcile with `max_wall`, and the question a caller asks is "how
             // long may this run take", once.
             let remaining = self.bounds.max_wall.saturating_sub(started.elapsed());
-            let call = self
-                .completer
-                .complete(&self.system_prompt, &messages, &self.tools);
-            let reply = match tokio::time::timeout(remaining, call).await {
-                Ok(reply) => reply?,
+            // #109: the dispatcher goes IN, so a completer whose child executes
+            // the tools itself can reach it during the provider call.
+            let call = self.completer.complete_with_dispatch(
+                &self.system_prompt,
+                &messages,
+                &self.tools,
+                std::sync::Arc::clone(&dispatch),
+            );
+            let turn = match tokio::time::timeout(remaining, call).await {
+                Ok(turn) => turn?,
                 Err(_elapsed) => {
                     let reason = budget_reason(DoneReason::TimeBudgetReached, retrying_vocabulary);
                     let text = if reason == DoneReason::TimeBudgetReached {
@@ -299,6 +363,8 @@ impl SubAgent {
                 }
             };
 
+            let CompleterTurn { reply, executed } = turn;
+
             let step_ev = SubAgentEvent::Step {
                 index: steps,
                 assistant_text: reply.text.clone(),
@@ -307,6 +373,11 @@ impl SubAgent {
                 let _ = tx.send(step_ev.clone());
             }
             events.push(step_ev);
+
+            // #109: calls the completer's child already ran. Recorded as events
+            // so the run log reads the same whichever provider drove it, and
+            // deliberately NOT fed to `dispatch_turn` — they have executed.
+            record_executed(&executed, &mut events, event_sink);
 
             if reply.tool_calls.is_empty() {
                 return Ok(make_result(
@@ -338,7 +409,12 @@ impl SubAgent {
             messages.push(LlmMessage::Assistant(reply.clone()));
 
             let (result_parts, turn_rejected_vocabulary) = self
-                .dispatch_turn(&reply.tool_calls, dispatch, &mut events, event_sink)
+                .dispatch_turn(
+                    &reply.tool_calls,
+                    dispatch.as_ref(),
+                    &mut events,
+                    event_sink,
+                )
                 .await;
             // Only a turn that actually dispatched something updates the flag:
             // a turn of pure prose is not evidence that the model stopped
@@ -459,6 +535,37 @@ impl SubAgent {
             });
         }
         (result_parts, rejected_vocabulary)
+    }
+}
+
+/// Write a completer-executed call into the run log, as the pair the loop's own
+/// dispatch would have written.
+///
+/// The point is that a reader of a run cannot tell — and should not have to —
+/// whether the tool was run by this loop or by a child agent behind the bridge.
+/// Both went through the same gate stack; only the process differs.
+fn record_executed(
+    executed: &[ExecutedCall],
+    events: &mut Vec<SubAgentEvent>,
+    event_sink: Option<&tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
+) {
+    for call in executed {
+        for event in [
+            SubAgentEvent::ToolCall {
+                name: call.name.clone(),
+                args: call.args.clone(),
+            },
+            SubAgentEvent::ToolResult {
+                name: call.name.clone(),
+                ok: !call.is_error,
+                summary: call.output.chars().take(120).collect(),
+            },
+        ] {
+            if let Some(tx) = event_sink {
+                let _ = tx.send(event.clone());
+            }
+            events.push(event);
+        }
     }
 }
 
@@ -695,7 +802,10 @@ mod tests {
             text_reply("all done"),       // step 1: no tool calls → done
         ]);
         let agent = make_agent(completer, 10);
-        let result = agent.run("hello", &EchoDispatch, None, None).await.unwrap();
+        let result = agent
+            .run("hello", std::sync::Arc::new(EchoDispatch), None, None)
+            .await
+            .unwrap();
         assert_eq!(result.reason, DoneReason::NoMoreToolCalls);
         // steps_used reflects the loop counter at the time of Done, which
         // is 1 (incremented after the first tool-dispatch round)
@@ -710,7 +820,10 @@ mod tests {
         let replies: Vec<LlmReply> = (0..35).map(|_| tool_call_reply("kb_search")).collect();
         let completer = MockCompleter::new(replies);
         let agent = make_agent(completer, 5);
-        let result = agent.run("hello", &EchoDispatch, None, None).await.unwrap();
+        let result = agent
+            .run("hello", std::sync::Arc::new(EchoDispatch), None, None)
+            .await
+            .unwrap();
         assert_eq!(result.reason, DoneReason::StepBudgetReached);
         assert!(result.steps_used <= 5);
     }
@@ -756,7 +869,7 @@ mod tests {
             .collect();
         let agent = make_agent(MockCompleter::new(replies), 5);
         let result = agent
-            .run("hello", &VocabularyRefusing, None, None)
+            .run("hello", std::sync::Arc::new(VocabularyRefusing), None, None)
             .await
             .unwrap();
         assert_eq!(result.reason, DoneReason::VocabularyRetriesExhausted);
@@ -775,7 +888,7 @@ mod tests {
         let replies: Vec<LlmReply> = (0..35).map(|_| tool_call_reply("kb_read_page")).collect();
         let agent = make_agent(MockCompleter::new(replies), 5);
         let result = agent
-            .run("hello", &AlwaysFailing, None, None)
+            .run("hello", std::sync::Arc::new(AlwaysFailing), None, None)
             .await
             .unwrap();
         assert_eq!(result.reason, DoneReason::StepBudgetReached);
@@ -810,7 +923,7 @@ mod tests {
         let result = agent
             .run(
                 "hello",
-                &RefuseOnce(std::sync::atomic::AtomicBool::new(true)),
+                std::sync::Arc::new(RefuseOnce(std::sync::atomic::AtomicBool::new(true))),
                 None,
                 None,
             )
@@ -848,7 +961,10 @@ mod tests {
             }
         }
 
-        let result = agent.run("hello", &BigPages, None, None).await.unwrap();
+        let result = agent
+            .run("hello", std::sync::Arc::new(BigPages), None, None)
+            .await
+            .unwrap();
         assert_eq!(result.reason, DoneReason::TokenBudgetReached);
         assert!(
             result.steps_used < 10,
@@ -893,7 +1009,10 @@ mod tests {
                 ..Default::default()
             },
         };
-        let result = agent.run("hello", &EchoDispatch, None, None).await.unwrap();
+        let result = agent
+            .run("hello", std::sync::Arc::new(EchoDispatch), None, None)
+            .await
+            .unwrap();
         assert_eq!(result.reason, DoneReason::TimeBudgetReached);
         assert!(
             result.final_text.contains("waiting for the model"),
@@ -912,7 +1031,12 @@ mod tests {
         let completer = MockCompleter::new(vec![text_reply("never reached")]);
         let agent = make_agent(completer, 30);
         let result = agent
-            .run("hello", &EchoDispatch, Some(&notify), None)
+            .run(
+                "hello",
+                std::sync::Arc::new(EchoDispatch),
+                Some(&notify),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(result.reason, DoneReason::Cancelled);
@@ -944,7 +1068,10 @@ mod tests {
                 ..Default::default()
             },
         };
-        let result = agent.run("go", &EchoDispatch, None, None).await.unwrap();
+        let result = agent
+            .run("go", std::sync::Arc::new(EchoDispatch), None, None)
+            .await
+            .unwrap();
         assert_eq!(result.reason, DoneReason::NoMoreToolCalls);
 
         // calls[0] = first complete() call = [User]  (initial)
@@ -1028,7 +1155,10 @@ mod tests {
         let seen = dispatch.calls.clone();
 
         let agent = make_agent(MockCompleter::new(vec![reply]), 10);
-        let result = agent.run("go", &dispatch, None, None).await.unwrap();
+        let result = agent
+            .run("go", std::sync::Arc::new(dispatch), None, None)
+            .await
+            .unwrap();
 
         assert_eq!(
             *seen.lock().await,
@@ -1056,7 +1186,7 @@ mod tests {
         let agent = make_agent(completer, 10);
 
         let _ = agent
-            .run("test", &EchoDispatch, None, Some(&tx))
+            .run("test", std::sync::Arc::new(EchoDispatch), None, Some(&tx))
             .await
             .unwrap();
 
