@@ -105,9 +105,27 @@ ensure_docker() {
 ensure_mac_dmg_deps() {
   ( cd "$DESK"
     log "installing locked macOS desktop dependencies…"
-    npm ci >/dev/null 2>&1
+    # ⚠ The install output is KEPT. It used to be `npm ci >/dev/null 2>&1`, and a
+    # failing install was then invisible: the run carried on to the `require`
+    # below and died with "appdmg still not loadable", which names the symptom
+    # and hides the cause. A 1.89.5 phase failed exactly that way and the reason
+    # was unrecoverable after the fact, because the only evidence had been sent
+    # to /dev/null. Whatever npm says on failure is the thing worth having.
+    local out
+    if ! out="$(npm ci 2>&1)"; then
+      printf '%s\n' "$out" >&2
+      die "npm ci failed while installing macOS desktop dependencies (output above)"
+    fi
     npm rebuild macos-alias ds-store >/dev/null 2>&1 || true
-    node -e "require('appdmg')" >/dev/null 2>&1 || die "appdmg still not loadable after npm ci"
+    # appdmg is an OPTIONAL dependency of electron-installer-dmg, and npm skips an
+    # optional dep whose install fails rather than failing the install. So a green
+    # `npm ci` does not imply appdmg is present, and this stays a separate check.
+    node -e "require('appdmg')" >/dev/null 2>&1 \
+      || die "appdmg is not loadable after a successful npm ci. It is an optional
+dependency, so npm skipped it silently rather than failing. Check that this is
+hermit's npm (npm $(npm --version), node $(node --version)) and that install
+scripts are permitted -- a newer npm blocks native install scripts by default,
+which drops appdmg without an error."
   )
 }
 
