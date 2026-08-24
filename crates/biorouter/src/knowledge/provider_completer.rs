@@ -15,6 +15,16 @@ use biorouter_mcp::knowledge::subagent::loop_::{
 use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Tool};
 use std::sync::Arc;
 
+/// A fresh [`Completer`] per call.
+///
+/// `IngestArgs::completer` is a `Box<dyn Completer>` and every knowledge macro
+/// **consumes** it, so ingesting a batch needs one per source. A factory rather
+/// than a `Vec` because the count is not known until the caller's paths have
+/// been expanded, and because every element must come off the *one* provider
+/// whose tier and affiliation were reported — see
+/// [`ProviderCompleter::paired_factory`].
+pub type CompleterFactory = Box<dyn Fn() -> Box<dyn Completer> + Send + Sync>;
+
 // ---------------------------------------------------------------------------
 // Adapter
 // ---------------------------------------------------------------------------
@@ -67,6 +77,29 @@ impl ProviderCompleter {
         let tier = provider.tier();
         let affiliation = provider.affiliation();
         (Self::new(provider), tier, affiliation)
+    }
+
+    /// The batch form: a **factory** that mints one completer per call, beside
+    /// the tier and affiliation of the single provider behind all of them.
+    ///
+    /// `IngestArgs::completer` is consumed by the macro, so ingesting N sources
+    /// needs N completers — and every one of them must be the provider whose
+    /// tier and affiliation were reported, or a batch could ratchet a base on
+    /// one model's identity while running on another's. Minting them from one
+    /// captured `Arc` in one expression is what makes that structural rather
+    /// than conventional, exactly as [`Self::paired`] does for the single case.
+    pub fn paired_factory(
+        provider: Arc<dyn Provider>,
+    ) -> (
+        CompleterFactory,
+        crate::privacy::ProviderTier,
+        Option<crate::privacy::affiliation::ModelAffiliation>,
+    ) {
+        let tier = provider.tier();
+        let affiliation = provider.affiliation();
+        let factory: CompleterFactory =
+            Box::new(move || Box::new(Self::new(Arc::clone(&provider))) as Box<dyn Completer>);
+        (factory, tier, affiliation)
     }
 }
 

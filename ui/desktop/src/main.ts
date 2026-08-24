@@ -31,7 +31,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn, type ChildProcess } from 'child_process';
 import AdmZip from 'adm-zip';
-import { safeExtractZip, safeZipEntryTarget } from './utils/safeZip';
+import { safeExtractZip } from './utils/safeZip';
 import 'dotenv/config';
 import { checkServerStatus, startBiorouterd, getBiorouterCliBinaryPath } from './biorouterd';
 import {
@@ -3569,126 +3569,6 @@ ipcMain.handle('brxt:uninstall', async (_event, { extensionName }: { extensionNa
   }
 });
 
-ipcMain.handle('skills:extract-zip', async (_event, { filePath }: { filePath: string }) => {
-  try {
-    const zip = new AdmZip(filePath);
-    const entries = zip.getEntries();
-
-    const TEXT_EXTENSIONS = ['.md', '.txt', '.yaml', '.yml', '.json', '.py', '.sh'];
-
-    // --- Single skill: root SKILL.md ---
-    let skillEntry = entries.find((e) => e.entryName === 'SKILL.md');
-    let prefix = '';
-
-    if (!skillEntry) {
-      // Single skill inside a folder: <slug>/SKILL.md
-      const single = entries.find((e) => /^[^/]+\/SKILL\.md$/.test(e.entryName));
-      if (single) {
-        skillEntry = single;
-        prefix = single.entryName.replace(/\/SKILL\.md$/, '') + '/';
-      }
-    }
-
-    if (skillEntry) {
-      // --- Single skill install ---
-      const parsed = parseFrontmatterFromSkillMd(skillEntry.getData().toString('utf8'));
-      if (!parsed) {
-        return {
-          error: 'SKILL.md must have valid frontmatter with "name" and "description".',
-        };
-      }
-
-      const slug = parsed.name
-        .replace(/[^a-z0-9-_]/gi, '-')
-        .replace(/-{2,}/g, '-')
-        .replace(/^-|-$/g, '')
-        .toLowerCase();
-
-      const files: [string, string][] = [];
-      for (const entry of entries) {
-        if (entry.isDirectory) continue;
-        if (prefix && !entry.entryName.startsWith(prefix)) continue;
-        const relName = prefix ? entry.entryName.slice(prefix.length) : entry.entryName;
-        if (!relName) continue;
-        // zip-slip guard: skip entries whose path would escape the skill dir when
-        // written downstream (installSkill writes `${destFolder}/${relName}`).
-        try {
-          safeZipEntryTarget('/__skill__', relName);
-        } catch {
-          continue;
-        }
-        const ext = path.extname(relName).toLowerCase();
-        if (!TEXT_EXTENSIONS.includes(ext)) continue;
-        files.push([relName, entry.getData().toString('utf8')]);
-      }
-
-      return {
-        isBundle: false as const,
-        files,
-        name: parsed.name,
-        description: parsed.description,
-        slug,
-      };
-    }
-
-    // --- Bundle detection: <bundleName>/<subSlug>/SKILL.md ---
-    const bundleSkillEntries = entries.filter((e) => /^[^/]+\/[^/]+\/SKILL\.md$/.test(e.entryName));
-
-    if (bundleSkillEntries.length === 0) {
-      return { error: 'No SKILL.md found in the ZIP file.' };
-    }
-
-    // Group by bundle folder (first path component)
-    const bundleFolder = bundleSkillEntries[0].entryName.split('/')[0];
-    const bundlePrefix = bundleFolder + '/';
-    const bundleSkills: Array<{ name: string; description: string }> = [];
-
-    for (const entry of bundleSkillEntries) {
-      if (!entry.entryName.startsWith(bundlePrefix)) continue;
-      const parsed = parseFrontmatterFromSkillMd(entry.getData().toString('utf8'));
-      if (parsed) bundleSkills.push(parsed);
-    }
-
-    if (bundleSkills.length === 0) {
-      return { error: 'No valid SKILL.md files found in bundle.' };
-    }
-
-    const bundleFiles: [string, string][] = [];
-    for (const entry of entries) {
-      if (entry.isDirectory) continue;
-      if (!entry.entryName.startsWith(bundlePrefix)) continue;
-      const relName = entry.entryName.slice(bundlePrefix.length);
-      if (!relName) continue;
-      // zip-slip guard: skip entries whose path would escape the skill dir.
-      try {
-        safeZipEntryTarget('/__skill__', relName);
-      } catch {
-        continue;
-      }
-      const ext = path.extname(relName).toLowerCase();
-      if (!TEXT_EXTENSIONS.includes(ext)) continue;
-      bundleFiles.push([relName, entry.getData().toString('utf8')]);
-    }
-
-    const slug = bundleFolder
-      .replace(/[^a-z0-9-_]/gi, '-')
-      .replace(/-{2,}/g, '-')
-      .replace(/^-|-$/g, '')
-      .toLowerCase();
-
-    return {
-      isBundle: true as const,
-      bundleName: bundleFolder,
-      bundleSkills,
-      files: bundleFiles,
-      slug,
-      name: bundleFolder,
-      description: `Bundle of ${bundleSkills.length} skills`,
-    };
-  } catch (err) {
-    return { error: `Failed to read ZIP: ${(err as Error).message}` };
-  }
-});
 
 function handleBrxtFileOpen(filePath: string) {
   // Find the main window (or store for when one is ready)

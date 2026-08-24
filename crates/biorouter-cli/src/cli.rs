@@ -978,13 +978,19 @@ enum ExtensionCommand {
 
 #[derive(Subcommand)]
 enum SkillCommand {
-    /// Install a skill (or bundle) from a .zip
-    #[command(about = "Install a skill from a .zip")]
+    /// Install a skill, or a package of skills, from a .zip or a repository URL
+    #[command(about = "Install a skill or skill package from a .zip or a repository URL")]
     Install {
-        #[arg(help = "Path to a skill .zip")]
-        path: std::path::PathBuf,
-        #[arg(long = "force", help = "Overwrite if already installed")]
+        #[arg(help = "Path to a skill .zip, or a repository URL")]
+        source: String,
+        #[arg(long = "force", help = "Replace it if already installed")]
         force: bool,
+        #[arg(
+            long = "as",
+            value_name = "bundle|individual",
+            help = "How to install a source that could be one package or several separate skills"
+        )]
+        install_as: Option<String>,
     },
 
     /// List installed skills with their enabled/disabled state
@@ -2313,7 +2319,11 @@ async fn handle_extension_subcommand(command: ExtensionCommand) -> Result<()> {
 async fn handle_skill_subcommand(command: SkillCommand) -> Result<()> {
     use crate::commands::skill;
     match command {
-        SkillCommand::Install { path, force } => skill::handle_install(path, force).await,
+        SkillCommand::Install {
+            source,
+            force,
+            install_as,
+        } => skill::handle_install(source, force, install_as).await,
         SkillCommand::List {} => skill::handle_list().await,
         SkillCommand::Enable { name } => skill::handle_enable(name).await,
         SkillCommand::Disable { name } => skill::handle_disable(name).await,

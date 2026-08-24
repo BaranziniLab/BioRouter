@@ -3,6 +3,7 @@ use rmcp::model::{Tool, ToolAnnotations};
 use rmcp::object;
 pub const PLATFORM_MANAGE_SCHEDULE_TOOL_NAME: &str = "platform__manage_schedule";
 pub const PLATFORM_INGEST_CONVERSATION_TOOL_NAME: &str = "platform__ingest_conversation";
+pub const PLATFORM_INGEST_SOURCE_TOOL_NAME: &str = "platform__ingest_source";
 pub const PLATFORM_READ_SESSION_BLOB_TOOL_NAME: &str = "platform__read_session_blob";
 
 /// BR-7: read back a tool result that was too large to keep inline in the
@@ -94,6 +95,89 @@ pub fn ingest_conversation_tool() -> Tool {
     })
 }
 
+/// Tool that folds documents, folders and URLs into a knowledge base through
+/// the **same** transactional ingest macro the desktop's dropzone uses.
+///
+/// It exists because a chat had no way to reach that macro at all: the knowledge
+/// extension offers only low-level primitives, so a model asked to "ingest these
+/// PDFs" hand-rolled extraction and page writes and ended with raw sources and no
+/// curated pages (issue #108). The description below is deliberately emphatic
+/// about not doing that, because the primitives are still there and still
+/// callable.
+pub fn ingest_source_tool() -> Tool {
+    Tool::new(
+        PLATFORM_INGEST_SOURCE_TOOL_NAME.to_string(),
+        indoc! {r#"
+            Ingest documents, folders or URLs into a knowledge base.
+
+            Use this whenever the user asks to "ingest", "digest", "add", "load"
+            or "read into" a knowledge base any file, folder, PDF, paper, note,
+            spreadsheet, page or link. It runs Biorouter's real ingestion
+            pipeline: it stages the raw source, opens a git transaction, runs the
+            bounded knowledge sub-agent to write curated wiki pages, validates
+            them, commits (or aborts and leaves the base untouched), rebuilds the
+            graph, and re-scans what it committed. The result reports, per source,
+            whether curated pages were actually written.
+
+            ALWAYS use this instead of assembling pages yourself. Do NOT extract
+            text, call kb_add_raw_source, and then write pages with kb_write_page
+            in a script: that path has no transaction, no abort on failure and no
+            verification, and it is how ingestion ends with raw files on disk and
+            no knowledge in the base.
+
+            Sources — give either one or a batch:
+              - `sources`: a list. Each entry is a local path, an http(s) URL, or
+                an object with `path`, `url`, or `text` (+ optional `title`).
+              - or a single `path`, `url`, or `text` (+ `title`).
+            A folder or archive path is expanded to the readable files inside it.
+
+            Choose a target with exactly one of:
+              - `kb_id`: an existing knowledge base, or
+              - `new_kb_name`: create a new knowledge base with this display name.
+            If neither is given it uses this chat's primary knowledge base; if the
+            chat has no primary, the error lists the bases you can pass.
+
+            The ingest runs on this chat's model unless you pass `model`. If the
+            chat's model cannot drive the pipeline's tools, this tool says so and
+            ingests nothing — it never moves the work to a different provider on
+            its own.
+        "#}
+        .to_string(),
+        object!({
+            "type": "object",
+            "properties": {
+                "sources": {
+                    "type": "array",
+                    "description": "Sources to ingest. Each entry is a local path or http(s) URL as a string, or an object with one of `path`, `url`, `text` (plus optional `title`).",
+                    "items": {}
+                },
+                "path": {"type": "string", "description": "A single local file or folder to ingest"},
+                "url": {"type": "string", "description": "A single http(s) URL to ingest"},
+                "text": {"type": "string", "description": "A single pasted document to ingest"},
+                "title": {"type": "string", "description": "Title for `text`"},
+                "kb_id": {"type": "string", "description": "Existing knowledge base id to ingest into"},
+                "new_kb_name": {"type": "string", "description": "Display name for a new knowledge base to create and ingest into"},
+                "focus": {"type": "string", "description": "Optional guidance on what to emphasise while digesting"},
+                "model": {
+                    "type": "object",
+                    "description": "Run this ingest on a specific model instead of the chat's. Only when the user asked for it, or when the chat's model cannot drive the pipeline's tools.",
+                    "properties": {
+                        "provider": {"type": "string"},
+                        "model": {"type": "string"}
+                    },
+                    "required": ["provider", "model"]
+                }
+            }
+        }),
+    ).annotate(ToolAnnotations {
+        title: Some("Ingest documents into knowledge base".to_string()),
+        read_only_hint: Some(false),
+        destructive_hint: Some(false),
+        idempotent_hint: Some(false),
+        open_world_hint: Some(false),
+    })
+}
+
 pub fn manage_schedule_tool() -> Tool {
     Tool::new(
         PLATFORM_MANAGE_SCHEDULE_TOOL_NAME.to_string(),
@@ -135,4 +219,71 @@ pub fn manage_schedule_tool() -> Tool {
         idempotent_hint: Some(false),
         open_world_hint: Some(false),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The knowledge extension's own instructions tell the model to reach for
+    /// this tool instead of hand-rolling ingestion out of the `kb_*` primitives
+    /// — which is the failure issue #108 describes. The two live in different
+    /// crates (`biorouter-mcp` cannot depend on `biorouter`), so nothing but
+    /// this assertion keeps the name in that prose from drifting away from the
+    /// constant, and a stale name there is a silent instruction to do the wrong
+    /// thing.
+    #[test]
+    fn the_knowledge_extension_instructions_name_this_tool() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("biorouter-mcp/src/knowledge/instructions.md");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "the audit must not pass vacuously: {} could not be read: {e}",
+                path.display()
+            )
+        });
+        assert!(
+            text.contains(PLATFORM_INGEST_SOURCE_TOOL_NAME),
+            "the knowledge extension's instructions must name `{PLATFORM_INGEST_SOURCE_TOOL_NAME}`"
+        );
+        assert!(
+            text.contains("Do not hand-roll ingestion"),
+            "the instructions must still say NOT to rebuild ingestion from the primitives"
+        );
+    }
+
+    /// Every way a caller may name a source is in the schema. A missing property
+    /// is not a compile error and not a runtime error either — the model simply
+    /// never learns the argument exists.
+    #[test]
+    fn the_ingest_source_schema_offers_a_batch_and_each_single_source_form() {
+        let tool = ingest_source_tool();
+        assert_eq!(tool.name, PLATFORM_INGEST_SOURCE_TOOL_NAME);
+        let props = tool
+            .input_schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("the schema has properties");
+        for key in [
+            "sources",
+            "path",
+            "url",
+            "text",
+            "title",
+            "kb_id",
+            "new_kb_name",
+            "focus",
+            "model",
+        ] {
+            assert!(props.contains_key(key), "the schema must offer `{key}`");
+        }
+        let description = tool.description.as_deref().unwrap_or_default();
+        assert!(
+            description.contains("kb_write_page"),
+            "the description must name the primitive it is replacing, or the model \
+             reaches for it anyway"
+        );
+    }
 }
