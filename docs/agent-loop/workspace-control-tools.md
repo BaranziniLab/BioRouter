@@ -363,6 +363,23 @@ work, and they lose nothing: every completion observed before the deadline is in
 the report, including under `mode: "all"`, so the follow-up watch only names what
 is still running. **A timeout is never an error**, on any transport.
 
+### Cancelling a watch
+
+`workspace_watch` is the only tool in this extension that *parks*, so it is the
+only one the turn's cancel token has anything to reach. It honours it: Stop,
+`AppState::cancel_turn`, a dropped websocket and a bridge lease dropping all end
+the park at the instant they land, and the reply says it was cancelled rather
+than letting "still running" read as the answer to a wait that never happened.
+The watched conversations are untouched — what was cancelled is the turn doing
+the watching.
+
+⚠ Ending the park also **reaps the watcher tasks**, and that is not tidiness. Each
+holds a `session_events::Subscription`, which only reclaims its session's
+1024-slot event ring when it drops; before this they looped for the life of the
+process after a watch ended, leaking a slot per watched session per watch. A wait
+that used to be killed by a child's 60-second deadline can now legitimately park
+for ten minutes, which makes those slots much easier to accumulate.
+
 ### How liveness is decided
 
 Subscription happens **before** the pre-check, so a completion landing in the gap is not lost. Liveness is then three-valued, and the order is a veto rather than a fallback chain:

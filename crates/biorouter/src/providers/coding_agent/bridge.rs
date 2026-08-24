@@ -280,7 +280,10 @@ pub fn bridged_call_budget() -> Option<Duration> {
 /// what #110 is about, and exercising it through a real child CLI would make a
 /// unit test depend on a subscription. The production scope is
 /// [`BridgeGrant::call`] and there is no other.
-pub async fn with_call_budget_for_test<F: std::future::Future>(budget: Duration, f: F) -> F::Output {
+pub async fn with_call_budget_for_test<F: std::future::Future>(
+    budget: Duration,
+    f: F,
+) -> F::Output {
     BRIDGED_CALL_BUDGET.scope(budget, f).await
 }
 

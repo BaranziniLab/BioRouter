@@ -345,6 +345,13 @@ to its 600-second question, and either abandon a subagent that is working fine o
 fall back to polling transcripts, which is the behaviour the tool exists to
 replace.
 
+**And a parked tool must be cancellable.** With the deadline raised, a
+`workspace_watch` can legitimately hold the child's request for ten minutes — so
+a Stop that did not reach it would keep a cancelled turn alive for the whole
+wait. It now honours the turn's token and reaps the watcher tasks holding its
+event-ring subscriptions; see
+[cancelling a watch](../../agent-loop/workspace-control-tools.md#cancelling-a-watch).
+
 ⚠ **Raising the deadline is not the whole fix, and neither half is optional.**
 The clamp is what keeps the guarantee when the configuration is not honoured — an
 older CLI, a future one that renames the field, a user's own `MCP_TOOL_TIMEOUT`.

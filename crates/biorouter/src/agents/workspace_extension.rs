@@ -2475,6 +2475,7 @@ impl WorkspaceClient {
         caller_session_id: &str,
         cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Vec<Content>, String> {
         use crate::session_events;
 
@@ -2514,8 +2515,7 @@ impl WorkspaceClient {
             Some("all") => true,
             Some(other) => return Err(format!("unknown mode '{other}' (any | all)")),
         };
-        let requested =
-            std::time::Duration::from_secs(args.timeout_s.unwrap_or(120).clamp(1, 600));
+        let requested = std::time::Duration::from_secs(args.timeout_s.unwrap_or(120).clamp(1, 600));
         // #110: what the *transport* allows, which is not always what the schema
         // advertises. A bridged coding-agent call is held open inside the
         // child's own MCP client, which applies a hard per-call wall clock and
@@ -2560,6 +2560,7 @@ impl WorkspaceClient {
             receivers.retain(|(id, _)| !completed.iter().any(|(done, _)| done == id));
         }
 
+        let mut cancelled = false;
         let done_now = if wait_all {
             receivers.is_empty()
         } else {
@@ -2574,7 +2575,8 @@ impl WorkspaceClient {
             } else {
                 completed.len() + 1
             };
-            Self::park_for_completions(receivers, &mut completed, want, timeout).await;
+            cancelled =
+                Self::park_for_completions(receivers, &mut completed, want, timeout, cancel).await;
         }
 
         let still_running: Vec<&String> = args
@@ -2589,6 +2591,7 @@ impl WorkspaceClient {
             timeout,
             clamped_from,
             unknown_liveness,
+            cancelled,
         ))])
     }
 
@@ -2600,19 +2603,41 @@ impl WorkspaceClient {
         completed: &mut Vec<(String, String)>,
         want: usize,
         timeout: std::time::Duration,
-    ) {
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> bool {
         use crate::session_events::SessionBusEvent;
 
         let deadline = tokio::time::Instant::now() + timeout;
+        // Cancelled when this function returns, **however** it returns — the
+        // deadline, a cancel, or every watcher exiting.
+        //
+        // ⚠ The watcher tasks own the `Subscription`s, and a `Subscription` only
+        // reclaims its session's 1024-slot event ring when it drops. Without
+        // this the tasks looped on `recv()` for the life of the process after a
+        // watch timed out, pinning a ring slot per watched session per watch —
+        // a leak that got materially worse with #110, because a watch that used
+        // to be killed by the child's 60-second deadline can now legitimately
+        // park for ten minutes.
+        let stop = tokio_util::sync::CancellationToken::new();
+        let _reap_watchers = stop.clone().drop_guard();
+
         // One task per watched session, all feeding one channel: simpler
         // and more obviously correct than a hand-rolled select over a Vec,
         // and 32 short-lived tasks is nothing.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, String)>(WATCH_MAX_SESSIONS);
         for (id, mut receiver) in receivers {
             let tx = tx.clone();
+            let stop = stop.clone();
             tokio::spawn(async move {
                 loop {
-                    match receiver.recv().await {
+                    // `recv` is cancel-safe, so losing this race never drops an
+                    // event that had already resolved.
+                    let event = tokio::select! {
+                        biased;
+                        () = stop.cancelled() => return,
+                        event = receiver.recv() => event,
+                    };
+                    match event {
                         Ok(SessionBusEvent::TurnFinished { reason, .. }) => {
                             let _ = tx.send((id, reason)).await;
                             return;
@@ -2632,15 +2657,31 @@ impl WorkspaceClient {
         }
         drop(tx); // so `rx.recv()` ends if every watcher exits
 
+        // #110: the turn's own token ends the park. Every cancellation
+        // mechanism Biorouter has — Stop, `AppState::cancel_turn`, the websocket
+        // `TurnGuard`, and a bridge lease dropping — reaches a running tool
+        // through it, and a watch that ignored it kept a cancelled turn alive
+        // for the whole wait. That was survivable while the child's own deadline
+        // capped it at a minute; it is not now that a watch may legitimately
+        // park for ten.
+        let mut cancelled = false;
         let _ = tokio::time::timeout_at(deadline, async {
             while completed.len() < want {
-                match rx.recv().await {
-                    Some(entry) => completed.push(entry),
-                    None => break,
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => {
+                        cancelled = true;
+                        break;
+                    }
+                    entry = rx.recv() => match entry {
+                        Some(entry) => completed.push(entry),
+                        None => break,
+                    },
                 }
             }
         })
         .await;
+        cancelled
     }
 
     /// The `workspace_watch` reply: what finished, what is still running, and —
@@ -2651,6 +2692,7 @@ impl WorkspaceClient {
         timeout: std::time::Duration,
         clamped_from: Option<std::time::Duration>,
         unknown_liveness: usize,
+        cancelled: bool,
     ) -> String {
         let mut report = String::new();
         if completed.is_empty() {
@@ -2691,6 +2733,16 @@ impl WorkspaceClient {
             report.push_str(
                 "\nRead a completed conversation with workspace_read_conversation \
                  (view:\"summary\" for its outcome, view:\"tool_calls\" for what it did).",
+            );
+        }
+        // #110: a cancelled watch is not a finished one, and saying nothing
+        // would let the caller read "still running" as the answer to a wait that
+        // never happened. The conversations themselves are untouched — what was
+        // cancelled is the turn doing the watching.
+        if cancelled {
+            report.push_str(
+                "\n(The watch was cancelled before its deadline. The conversations above \
+                 were not affected.)",
             );
         }
         // #110: say when the wait was shorter than the one asked for, and why.
@@ -3096,7 +3148,7 @@ impl McpClientTrait for WorkspaceClient {
         name: &str,
         arguments: Option<JsonObject>,
         meta: McpMeta,
-        _cancellation_token: CancellationToken,
+        cancellation_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
         let caller = &meta.session_id;
         // Issue #56 §7. The capability this call was ADMITTED on, carried from
@@ -3113,7 +3165,13 @@ impl McpClientTrait for WorkspaceClient {
             "workspace_send_prompt" => self.handle_send_prompt(caller, cap, arguments).await,
             "workspace_set_tools" => self.handle_set_tools(caller, cap, arguments).await,
             "workspace_close" => self.handle_close(caller, cap, arguments).await,
-            "workspace_watch" => self.handle_watch(caller, cap, arguments).await,
+            // #110: the only handler here that PARKS, so the only one the turn's
+            // cancel token has anything to reach. Every other tool returns
+            // promptly; a watch may legitimately wait ten minutes.
+            "workspace_watch" => {
+                self.handle_watch(caller, cap, arguments, &cancellation_token)
+                    .await
+            }
             "workspace_open" => self.handle_open(caller, cap, arguments).await,
             // BR-71 decision 22: the spawn tool is advertised here but
             // dispatched by the agent loop (it needs the parent's TaskConfig).
@@ -3370,7 +3428,10 @@ pub(crate) mod tests {
     fn an_unbridged_watch_waits_exactly_as_long_as_it_was_asked_to() {
         let (effective, clamped) = clamp_watch_to_transport(Duration::from_secs(600));
         assert_eq!(effective, Duration::from_secs(600));
-        assert_eq!(clamped, None, "nothing to explain when nothing was shortened");
+        assert_eq!(
+            clamped, None,
+            "nothing to explain when nothing was shortened"
+        );
     }
 
     /// The bug: a 600-second wait inside a transport that ends the call sooner.
@@ -3378,11 +3439,12 @@ pub(crate) mod tests {
     /// abandoned, which loses the partial answer along with the wait.
     #[tokio::test]
     async fn a_bridged_watch_is_shortened_to_fit_its_transport() {
-        let (effective, clamped) = crate::providers::coding_agent::bridge::with_call_budget_for_test(
-            Duration::from_secs(60),
-            async { clamp_watch_to_transport(Duration::from_secs(600)) },
-        )
-        .await;
+        let (effective, clamped) =
+            crate::providers::coding_agent::bridge::with_call_budget_for_test(
+                Duration::from_secs(60),
+                async { clamp_watch_to_transport(Duration::from_secs(600)) },
+            )
+            .await;
         assert_eq!(
             effective,
             Duration::from_secs(50),
@@ -3401,11 +3463,12 @@ pub(crate) mod tests {
     /// to reason about.
     #[tokio::test]
     async fn a_bridged_watch_that_already_fits_is_untouched() {
-        let (effective, clamped) = crate::providers::coding_agent::bridge::with_call_budget_for_test(
-            Duration::from_secs(600),
-            async { clamp_watch_to_transport(Duration::from_secs(120)) },
-        )
-        .await;
+        let (effective, clamped) =
+            crate::providers::coding_agent::bridge::with_call_budget_for_test(
+                Duration::from_secs(600),
+                async { clamp_watch_to_transport(Duration::from_secs(120)) },
+            )
+            .await;
         assert_eq!(effective, Duration::from_secs(120));
         assert_eq!(clamped, None);
     }
@@ -3425,6 +3488,98 @@ pub(crate) mod tests {
         );
     }
 
+    /// #110: a cancelled turn must end the park at the instant it lands, not at
+    /// the deadline.
+    ///
+    /// The generous timeout is the assertion: if the token were ignored this
+    /// would sit for ten minutes, so the test would fail by timing out rather
+    /// than by asserting. That is exactly the shape of the bug — a watch that
+    /// kept a cancelled turn alive for its whole wait, which was survivable
+    /// while the child's own 60-second deadline capped it and is not now.
+    #[tokio::test]
+    async fn cancelling_the_turn_ends_a_parked_watch_at_once() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let id = format!("watch-cancel-{:016x}", rand::random::<u64>());
+        let receivers = vec![(id.clone(), crate::session_events::subscribe(&id))];
+        let mut completed: Vec<(String, String)> = Vec::new();
+
+        {
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                cancel.cancel();
+            });
+        }
+
+        let started = std::time::Instant::now();
+        let cancelled = tokio::time::timeout(
+            Duration::from_secs(5),
+            WorkspaceClient::park_for_completions(
+                receivers,
+                &mut completed,
+                1,
+                Duration::from_secs(600),
+                &cancel,
+            ),
+        )
+        .await
+        .expect("a cancelled park must return, not run to its deadline");
+
+        assert!(cancelled, "the caller has to be able to say why it stopped");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "it must end when the cancel lands, not later"
+        );
+        assert!(completed.is_empty(), "nothing finished");
+    }
+
+    /// And a cancelled watch says so, rather than letting the caller read "still
+    /// running" as the answer to a wait that never happened.
+    #[test]
+    fn a_cancelled_watch_reports_that_it_was_cancelled() {
+        let still = "sess-a".to_string();
+        let report =
+            WorkspaceClient::watch_report(&[], &[&still], Duration::from_secs(600), None, 0, true);
+        assert!(report.contains("cancelled"), "{report}");
+        assert!(
+            report.contains("not affected"),
+            "and that the conversations themselves are untouched: {report}"
+        );
+    }
+
+    /// The watcher tasks own the `Subscription`s, and a `Subscription` only
+    /// reclaims its session's event-ring slot when it drops. Before #110 they
+    /// looped on `recv()` for the life of the process after a watch ended, so a
+    /// timed-out watch leaked a slot per watched session — which a ten-minute
+    /// park makes far easier to accumulate.
+    #[tokio::test]
+    async fn a_finished_park_reaps_its_watcher_tasks() {
+        let id = format!("watch-reap-{:016x}", rand::random::<u64>());
+        let receivers = vec![(id.clone(), crate::session_events::subscribe(&id))];
+        let mut completed: Vec<(String, String)> = Vec::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        // A short deadline, so the park ends the way a timed-out watch does.
+        WorkspaceClient::park_for_completions(
+            receivers,
+            &mut completed,
+            1,
+            Duration::from_millis(50),
+            &cancel,
+        )
+        .await;
+
+        // Give the reaped tasks a moment to notice and drop their subscriptions,
+        // then assert the ring is free: a session with no live subscriber
+        // releases its bus entirely.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            crate::session_events::observer_count(&id),
+            0,
+            "the watcher task must have dropped its Subscription when the park ended"
+        );
+    }
+
     /// The shortening has to be legible. A caller told only "still running"
     /// after 50 s will read that as the answer to the 600-second question it
     /// asked — and either abandon a subagent that is working fine or fall back
@@ -3439,6 +3594,7 @@ pub(crate) mod tests {
             Duration::from_secs(50),
             Some(Duration::from_secs(600)),
             0,
+            false,
         );
         assert!(report.contains("50s"), "the effective wait: {report}");
         assert!(report.contains("600s"), "and the one asked for: {report}");
@@ -3469,6 +3625,7 @@ pub(crate) mod tests {
             Duration::from_secs(50),
             Some(Duration::from_secs(600)),
             0,
+            false,
         );
         assert!(report.contains("sess-a") && report.contains("sess-b"));
         assert!(report.contains("sess-c"), "and what is still running");
