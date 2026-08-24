@@ -944,6 +944,30 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// Whether the `tools` argument of [`Provider::complete`] actually reaches
+    /// the model — i.e. whether this provider can drive a **tool-calling loop
+    /// that Biorouter itself runs**, such as the knowledge sub-agent behind the
+    /// ingest / query / lint macros.
+    ///
+    /// True for every ordinary API provider. False for the coding-agent
+    /// providers (`claude_code`, `codex`), which drive a whole child agent: they
+    /// accept `tools` and do not forward them, because Biorouter's tools reach
+    /// that child over the MCP tool bridge, which only the agent turn loop
+    /// establishes (see `providers::coding_agent::bridge`). A loop *outside*
+    /// that turn hands them tool specs the child never sees, and the run comes
+    /// back with no tool calls — which is indistinguishable from "the model had
+    /// nothing more to do".
+    ///
+    /// ⚠ It is a capability question, never a name check. Ask this, and report
+    /// the mismatch; do not silently substitute a different provider, which
+    /// would move the user's inference onto a different bill.
+    ///
+    /// A provider that gains the ability flips this to `true` and every caller
+    /// follows — there is no second list to update.
+    fn supports_tool_calls(&self) -> bool {
+        true
+    }
+
     /// Get the currently active model name
     /// For regular providers, this returns the configured model
     /// For LeadWorkerProvider, this returns the currently active model (lead or worker)
