@@ -290,6 +290,73 @@ export type CarriedPage = {
     source_path: string;
 };
 
+export type CatalogChangeReason = 'install' | 'uninstall' | 'update' | 'enable' | 'disable' | 'import';
+
+export type CatalogChanged = {
+    extensions?: Array<CatalogExtensionChange>;
+    reason: CatalogChangeReason;
+    /**
+     * Monotonic per-daemon-process counter. A consumer that has applied a
+     * revision >= this may drop the event; one that missed a gap refetches.
+     */
+    revision: number;
+    /**
+     * The session the change was made from, when it was made from one.
+     *
+     * ⚠ Present so a surface can offer "attach to this chat" — **not** a
+     * delivery scope. The change is machine-wide and every session's inventory
+     * is stale after it.
+     */
+    sessionId?: string | null;
+    skills?: Array<CatalogSkillChange>;
+};
+
+/**
+ * What a client gets back from a poll.
+ */
+export type CatalogDelta = {
+    changes?: Array<CatalogChanged>;
+    /**
+     * The current revision. A client stores this and passes it as `since`.
+     */
+    revision: number;
+    /**
+     * The client fell further behind than the buffer holds, so `changes` is
+     * not a complete history. **Refetch the inventory** rather than applying
+     * it.
+     */
+    truncated?: boolean;
+};
+
+export type CatalogEntryChange = 'added' | 'removed' | 'updated' | 'enabled' | 'disabled';
+
+export type CatalogExtensionChange = {
+    /**
+     * Skills that shipped inside this extension's bundle.
+     */
+    bundledSkillIds?: Array<string>;
+    change: CatalogEntryChange;
+    config?: ExtensionConfig | null;
+    displayName?: string | null;
+    enabled: boolean;
+    /**
+     * `name_to_key(name)` — the join every surface already uses, and the only
+     * identifier that survives a display-name change.
+     */
+    key: string;
+    name: string;
+};
+
+export type CatalogSkillChange = {
+    change: CatalogEntryChange;
+    id: string;
+    name?: string | null;
+    /**
+     * The extension whose bundle carried it, when it came from one.
+     */
+    sourceExtensionKey?: string | null;
+};
+
 export type ChangeKind = 'ingest' | 'link' | 'flag' | 'query' | 'lint' | 'restore' | 'manual';
 
 export type ChatRequest = {
@@ -4107,6 +4174,63 @@ export type UpdateWorkingDirResponses = {
      */
     200: unknown;
 };
+
+export type CatalogChangesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * The last revision this client applied. `0` (or absent) means "tell me
+         * the current revision", which is how a fresh client establishes a
+         * baseline without a refetch.
+         */
+        since?: number;
+        /**
+         * How long to park, in milliseconds. Clamped to [`MAX_WAIT`].
+         */
+        timeout_ms?: number | null;
+    };
+    url: '/catalog/changes';
+};
+
+export type CatalogChangesErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+};
+
+export type CatalogChangesResponses = {
+    /**
+     * The catalogue delta since `since`
+     */
+    200: CatalogDelta;
+};
+
+export type CatalogChangesResponse = CatalogChangesResponses[keyof CatalogChangesResponses];
+
+export type CatalogRevisionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/catalog/revision';
+};
+
+export type CatalogRevisionErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+};
+
+export type CatalogRevisionResponses = {
+    /**
+     * The current revision
+     */
+    200: CatalogDelta;
+};
+
+export type CatalogRevisionResponse = CatalogRevisionResponses[keyof CatalogRevisionResponses];
 
 export type CodingAgentsStatusData = {
     body?: never;

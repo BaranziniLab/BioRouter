@@ -147,6 +147,7 @@ pub mod active_work;
 pub mod agent;
 pub mod apps;
 pub mod audio;
+pub mod catalog;
 pub mod coding_agents;
 pub mod config_management;
 pub mod errors;
@@ -184,6 +185,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(reply::routes(state.clone()))
         .merge(reset::routes(state.clone()))
         .merge(action_required::routes(state.clone()))
+        .merge(catalog::routes(state.clone()))
         .merge(agent::routes(state.clone()))
         .merge(apps::routes(state.clone()))
         .merge(audio::routes(state.clone()))

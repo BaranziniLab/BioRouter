@@ -799,6 +799,80 @@
         }
       }
     },
+    "/catalog/changes": {
+      "get": {
+        "tags": [
+          "super::routes::catalog"
+        ],
+        "summary": "Wait for the extension/skill catalogue to change, then say what changed.",
+        "description": "Returns immediately when the caller is already behind. A timeout is not an\nerror: the body carries the current revision and the caller polls again.\n\n⚠ **`truncated` is not advisory.** It means the caller fell further behind\nthan the daemon's buffer holds, so `changes` is a partial history. Applying\nit and believing yourself current is the stale-inventory bug this endpoint\nexists to end, one layer down. Refetch instead.",
+        "operationId": "catalog_changes",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "description": "The last revision this client applied. `0` (or absent) means \"tell me\nthe current revision\", which is how a fresh client establishes a\nbaseline without a refetch.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "timeout_ms",
+            "in": "query",
+            "description": "How long to park, in milliseconds. Clamped to [`MAX_WAIT`].",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true,
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The catalogue delta since `since`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogDelta"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid secret key"
+          }
+        }
+      }
+    },
+    "/catalog/revision": {
+      "get": {
+        "tags": [
+          "super::routes::catalog"
+        ],
+        "summary": "The current catalogue revision, without waiting.",
+        "operationId": "catalog_revision",
+        "responses": {
+          "200": {
+            "description": "The current revision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogDelta"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid secret key"
+          }
+        }
+      }
+    },
     "/coding_agents/status": {
       "get": {
         "tags": [
@@ -5699,6 +5773,154 @@
           },
           "source_path": {
             "type": "string"
+          }
+        }
+      },
+      "CatalogChangeReason": {
+        "type": "string",
+        "enum": [
+          "install",
+          "uninstall",
+          "update",
+          "enable",
+          "disable",
+          "import"
+        ]
+      },
+      "CatalogChanged": {
+        "type": "object",
+        "required": [
+          "revision",
+          "reason"
+        ],
+        "properties": {
+          "extensions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogExtensionChange"
+            }
+          },
+          "reason": {
+            "$ref": "#/components/schemas/CatalogChangeReason"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Monotonic per-daemon-process counter. A consumer that has applied a\nrevision >= this may drop the event; one that missed a gap refetches.",
+            "minimum": 0
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "The session the change was made from, when it was made from one.\n\n⚠ Present so a surface can offer \"attach to this chat\" — **not** a\ndelivery scope. The change is machine-wide and every session's inventory\nis stale after it.",
+            "nullable": true
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogSkillChange"
+            }
+          }
+        }
+      },
+      "CatalogDelta": {
+        "type": "object",
+        "description": "What a client gets back from a poll.",
+        "required": [
+          "revision"
+        ],
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogChanged"
+            }
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The current revision. A client stores this and passes it as `since`.",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "The client fell further behind than the buffer holds, so `changes` is\nnot a complete history. **Refetch the inventory** rather than applying\nit."
+          }
+        }
+      },
+      "CatalogEntryChange": {
+        "type": "string",
+        "enum": [
+          "added",
+          "removed",
+          "updated",
+          "enabled",
+          "disabled"
+        ]
+      },
+      "CatalogExtensionChange": {
+        "type": "object",
+        "required": [
+          "key",
+          "name",
+          "change",
+          "enabled"
+        ],
+        "properties": {
+          "bundledSkillIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Skills that shipped inside this extension's bundle."
+          },
+          "change": {
+            "$ref": "#/components/schemas/CatalogEntryChange"
+          },
+          "config": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ExtensionConfig"
+              }
+            ],
+            "nullable": true
+          },
+          "displayName": {
+            "type": "string",
+            "nullable": true
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string",
+            "description": "`name_to_key(name)` — the join every surface already uses, and the only\nidentifier that survives a display-name change."
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "CatalogSkillChange": {
+        "type": "object",
+        "required": [
+          "id",
+          "change"
+        ],
+        "properties": {
+          "change": {
+            "$ref": "#/components/schemas/CatalogEntryChange"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "sourceExtensionKey": {
+            "type": "string",
+            "description": "The extension whose bundle carried it, when it came from one.",
+            "nullable": true
           }
         }
       },

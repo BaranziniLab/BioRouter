@@ -189,25 +189,137 @@ fn find_entry_by_name<'a>(
         .find(|entry| entry.config.name() == name)
 }
 
+/// Issue #112. The three functions below are the ONLY places this process
+/// writes the extension map, so they are where a catalogue change is announced.
+/// Every inventory in the app — Settings, the composer picker, the running
+/// agent — invalidates from that announcement rather than from a reload key
+/// somebody remembered to bump.
+///
+/// ⚠ A write made by *another* process (`biorouter extension install` in a
+/// terminal, a hand-edited `config.yaml`) reaches none of these. That case is
+/// covered by [`crate::catalog::spawn_config_watcher`], and it is the one the
+/// bug report was actually about.
+fn announce(
+    reason: crate::catalog::CatalogChangeReason,
+    change: crate::catalog::CatalogExtensionChange,
+) {
+    let events = crate::catalog::CatalogEvents::global();
+    events.publish(reason, vec![change], Vec::new(), None);
+    // Refresh the watcher's baseline in the same breath, or it would see this
+    // write two seconds later and announce it a second time.
+    events.sync_snapshot(&get_all_extensions());
+}
+
+/// A config entry reduced to a comparable string, so an identical rewrite can
+/// be told from a real edit.
+fn fingerprint(entry: &ExtensionEntry) -> String {
+    serde_json::to_string(&entry.config).unwrap_or_else(|_| entry.config.name())
+}
+
+fn change_row(
+    key: &str,
+    entry: Option<&ExtensionEntry>,
+    change: crate::catalog::CatalogEntryChange,
+) -> crate::catalog::CatalogExtensionChange {
+    crate::catalog::CatalogExtensionChange {
+        key: key.to_string(),
+        name: entry
+            .map(|e| e.config.name())
+            .unwrap_or_else(|| key.to_string()),
+        display_name: None,
+        change,
+        config: entry.map(|e| e.config.clone()),
+        enabled: entry.map(|e| e.enabled).unwrap_or(false),
+        bundled_skill_ids: Vec::new(),
+    }
+}
+
 pub fn set_extension(entry: ExtensionEntry) {
+    use crate::catalog::{CatalogChangeReason, CatalogEntryChange};
     let mut extensions = get_extensions_map();
     let key = entry.config.key();
+    let previous = extensions.get(&key).cloned();
+    // ⚠ An identical rewrite is not a change. `syncBundledExtensions` and the
+    // capability migrations both re-save entries at every startup, and
+    // announcing those would have every client in the app refetch its whole
+    // inventory on launch for nothing.
+    if let Some(before) = &previous {
+        if before.enabled == entry.enabled && fingerprint(before) == fingerprint(&entry) {
+            extensions.insert(key, entry);
+            save_extensions_map(extensions);
+            return;
+        }
+    }
+    let (reason, change) = match &previous {
+        None => (CatalogChangeReason::Install, CatalogEntryChange::Added),
+        Some(before) if before.enabled != entry.enabled => (
+            if entry.enabled {
+                CatalogChangeReason::Enable
+            } else {
+                CatalogChangeReason::Disable
+            },
+            if entry.enabled {
+                CatalogEntryChange::Enabled
+            } else {
+                CatalogEntryChange::Disabled
+            },
+        ),
+        Some(_) => (CatalogChangeReason::Update, CatalogEntryChange::Updated),
+    };
+    let row = change_row(&key, Some(&entry), change);
     extensions.insert(key, entry);
     save_extensions_map(extensions);
+    announce(reason, row);
 }
 
 pub fn remove_extension(key: &str) {
+    use crate::catalog::{CatalogChangeReason, CatalogEntryChange};
     let mut extensions = get_extensions_map();
-    extensions.shift_remove(key);
+    let Some(removed) = extensions.shift_remove(key) else {
+        // Nothing was there. Announcing a removal would wake every client to
+        // refetch an unchanged inventory.
+        return;
+    };
+    let row = change_row(key, Some(&removed), CatalogEntryChange::Removed);
     save_extensions_map(extensions);
+    announce(
+        CatalogChangeReason::Uninstall,
+        crate::catalog::CatalogExtensionChange {
+            config: None,
+            enabled: false,
+            ..row
+        },
+    );
 }
 
 pub fn set_extension_enabled(key: &str, enabled: bool) {
+    use crate::catalog::{CatalogChangeReason, CatalogEntryChange};
     let mut extensions = get_extensions_map();
-    if let Some(entry) = extensions.get_mut(key) {
-        entry.enabled = enabled;
-        save_extensions_map(extensions);
+    let Some(entry) = extensions.get_mut(key) else {
+        return;
+    };
+    if entry.enabled == enabled {
+        return;
     }
+    entry.enabled = enabled;
+    let row = change_row(
+        key,
+        Some(&entry.clone()),
+        if enabled {
+            CatalogEntryChange::Enabled
+        } else {
+            CatalogEntryChange::Disabled
+        },
+    );
+    save_extensions_map(extensions);
+    announce(
+        if enabled {
+            CatalogChangeReason::Enable
+        } else {
+            CatalogChangeReason::Disable
+        },
+        row,
+    );
 }
 
 pub fn get_all_extensions() -> Vec<ExtensionEntry> {

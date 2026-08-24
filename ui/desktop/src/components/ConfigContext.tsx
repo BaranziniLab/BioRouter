@@ -20,6 +20,8 @@ import {
 } from '../api';
 import { syncBundledExtensions } from './settings/extensions';
 import { userActionHeaders } from '../utils/userAction';
+import { newlyInstalledExtensions, subscribeToCatalog } from '../utils/catalogSubscription';
+import { toastService } from '../toasts';
 import {
   isCapabilityDefaultEnabled,
   shouldDefaultEnableAgentDrafter,
@@ -320,6 +322,44 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
       return [];
     }
   }, []);
+
+  /**
+   * Issue #112. Follow the daemon's extension catalogue for the life of the app.
+   *
+   * ⚠ **The writes this context makes are not the only writes.** `addExtension`
+   * and `removeExtension` below refresh the cache themselves, and for a while
+   * that looked like enough — but `biorouter extension install` runs in a
+   * different process, a deep link and a hand-edited `config.yaml` bypass the
+   * renderer entirely, and an agent installs through the daemon. None of those
+   * touch this provider, so the extension the user just installed had no row in
+   * the composer's picker to toggle, and they were told to open a new chat.
+   *
+   * One long poll, invalidating one cache, feeding every surface that reads it.
+   * The delta itself is deliberately NOT applied: it says something moved, and
+   * this refetches. Applying a partial history and believing yourself current is
+   * the same stale-inventory bug one layer down.
+   */
+  useEffect(() => {
+    return subscribeToCatalog({
+      onChange: (delta) => {
+        void refreshExtensions();
+        void reloadConfigAfterWrite();
+
+        // ⚠ OFFER, never attach. A running chat snapshots the extensions it
+        // started with, and an install made somewhere else — another terminal,
+        // another window — is not that chat's decision to have made. An agent
+        // asked to install one *in* a chat attaches it itself, because there
+        // the user did ask; here they did not, so this says the row is now
+        // there and leaves the click to them.
+        for (const extension of newlyInstalledExtensions(delta)) {
+          toastService.success({
+            title: extension.name,
+            msg: 'Extension installed. Turn it on for this chat from the extensions menu below the composer.',
+          });
+        }
+      },
+    });
+  }, [refreshExtensions, reloadConfigAfterWrite]);
 
   useEffect(() => {
     // Load all configuration data and providers on mount
