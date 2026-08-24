@@ -108,7 +108,7 @@ scripts/release.sh linux 1.80.1        # GUI deb + rpm; run LAST (corrupts node_
 scripts/release.sh cli-linux 1.80.1    # CLI-only deb + rpm, no GUI (biorouter + biorouterd + the web bundle)
 scripts/release.sh mac-manifest 1.80.1 # latest-mac.yml for electron-updater
 scripts/release.sh verify 1.80.1
-scripts/release.sh draft 1.80.1        # draft GitHub release with all 11 assets + notes
+scripts/release.sh draft 1.80.1        # draft GitHub release with all 10 assets + notes
 scripts/release.sh publish 1.80.1      # flip the draft live (gated on the Windows smoke run)
 ```
 
@@ -148,7 +148,7 @@ The detailed manual steps and the reasoning behind each invariant follow.
 - **`verify` checks more than file existence**: alongside the 9 on-disk artifacts it runs `scripts/check-brand-consistency.sh` and `scripts/smoke-test-release-artifacts.sh` (whose `smoke_serve` installs the CLI package, runs `biorouter serve` and drives the whole browser contract), and fails the phase if any of them does. `just check-everything` runs the brand check too — it asserts `"productName": "Biorouter"` and the BR-monogram brand assets, which is why every packaged artifact name above is `Biorouter`, lowercase `r`.
 - **Linux glibc baseline**: the linux backend is cross-compiled on `rust:1.92-bullseye` (glibc 2.31), NOT rolling `rust:latest` (now trixie, glibc 2.39, which yields binaries that fail to start on Debian 12 / Ubuntu 22.04 / RHEL-Rocky 9). The pin lives in `LINUX_RUST_IMG` in `scripts/release.sh`. ⚠ **This line used to say `cli-linux`'s smoke test catches a regression here. It cannot, and that was measured on 2026-08-20**: those containers are `debian:bookworm` (glibc 2.36) and `rockylinux:9` (glibc 2.34), so a floor raised from 2.31 to 2.34 passes every smoke test in the repo and breaks only on the user's older machine. What actually enforces it is `assert_glibc_floor` in `scripts/release.sh`, called from `cmd_linux-backend` — a symbol-table read against `GLIBC_MAX`, which also fails when it can read no symbol at all rather than passing vacuously. `linux-backend` `rm -rf`s the target dir first to force a from-scratch compile against the pinned glibc (cached objects keep stale symbol versions).
 - **Publishing is two steps, and the gate between them is not optional.**
-  - `scripts/release.sh draft <ver>` runs `mac-manifest`, asserts all 11 assets exist (dying on the first missing one), then `gh release create v{ver} --draft --target main --title "Biorouter v{ver}" --notes-file docs/releases/notes/v{ver}.md <11 assets>`.
+  - `scripts/release.sh draft <ver>` runs `mac-manifest`, asserts all 10 assets exist (dying on the first missing one), then `gh release create v{ver} --draft --target main --title "Biorouter v{ver}" --notes-file docs/releases/notes/v{ver}.md <10 assets>`.
   - `scripts/release.sh publish <ver>` re-runs `verify`, refuses unless `v{ver}` already exists **as a draft**, refuses unless `gh run list --workflow release-artifact-smoke.yml` shows a successful run titled `Release artifact smoke v{ver}`, and only then `gh release edit v{ver} --draft=false`.
   - So `all` stops at the draft and prints *"draft created; run the native Windows smoke workflow, then: scripts/release.sh publish {ver}"*. Hand-rolling a `gh release create` bypasses the Windows smoke gate — don't. Verify macOS with `xcrun stapler validate <app>` and `codesign -dv <app>` as well.
 - **Release notes** live at `docs/releases/notes/v{ver}.md`, one file per version.

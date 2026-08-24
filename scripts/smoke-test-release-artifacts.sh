@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DESK="$ROOT/ui/desktop"
-VERSION="${1:?usage: scripts/smoke-test-release-artifacts.sh <version> [all|mac|deb|rpm|cli|headless]}"
+VERSION="${1:?usage: scripts/smoke-test-release-artifacts.sh <version> [all|mac|deb|rpm|cli|serve]}"
 TARGET="${2:-all}"
 
 log() { printf '\033[1;36m[release-smoke]\033[0m %s\n' "$*"; }
