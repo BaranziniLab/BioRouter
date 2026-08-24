@@ -391,6 +391,17 @@ pub fn message_to_markdown(message: &Message, export_all_content: bool) -> Strin
                             .unwrap_or_else(|_| "{}".to_string())
                     ));
                 }
+                // #107: key names only — an export is a document that leaves
+                // the machine, and a credential card carries no value anyway.
+                ActionRequiredData::SecretRequest { prompt, keys, .. } => {
+                    md.push_str(&format!(
+                        "**Action Required** (secret_request): {prompt} [{}]\n\n",
+                        keys.iter()
+                            .map(|k| k.key.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
             },
             MessageContent::Text(text) => {
                 md.push_str(&text.text);
