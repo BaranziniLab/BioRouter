@@ -308,6 +308,41 @@ pub fn routes(state: Arc<AppState>) -> Router {
 mod tests {
     use super::*;
 
+    /// The hand-written `Debug` impl on [`SubmitSecretsRequest`] is the only
+    /// thing keeping a passcode out of a `tracing` line, a panic message, or a
+    /// test failure that happens to format the request. Because it is written
+    /// rather than derived, a later `#[derive(Debug)]` would restore the leak
+    /// while every other test in this file kept passing -- the logs surface is
+    /// the one credential surface with no other assertion on it.
+    #[test]
+    fn the_debug_impl_names_the_keys_and_never_the_values() {
+        let req: SubmitSecretsRequest = serde_json::from_value(serde_json::json!({
+            "id": "card-1",
+            "values": {
+                "SPOKEAGENT_PASSCODE": "hunter2-the-actual-secret",
+                "UCSF_TOKEN": "second-secret-value",
+            },
+            "cancelled": false,
+        }))
+        .unwrap();
+
+        for rendered in [format!("{req:?}"), format!("{req:#?}")] {
+            assert!(
+                !rendered.contains("hunter2-the-actual-secret"),
+                "a credential value reached a Debug rendering: {rendered}"
+            );
+            assert!(
+                !rendered.contains("second-secret-value"),
+                "a credential value reached a Debug rendering: {rendered}"
+            );
+            assert!(
+                rendered.contains("SPOKEAGENT_PASSCODE"),
+                "the key names are what make this type debuggable: {rendered}"
+            );
+            assert!(rendered.contains("card-1"), "the card id should survive: {rendered}");
+        }
+    }
+
     mod integration_tests {
         use super::*;
         use axum::{body::Body, http::Request};
