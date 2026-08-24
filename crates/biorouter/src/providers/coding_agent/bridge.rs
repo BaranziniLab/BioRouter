@@ -498,9 +498,7 @@ impl BridgeGrant {
             (!self.nonce.is_empty()).then_some(self.nonce.as_str()),
             request,
         );
-        let outcome = parked
-            .wait(approval_ttl(), self.cancel.as_ref())
-            .await;
+        let outcome = parked.wait(approval_ttl(), self.cancel.as_ref()).await;
 
         match outcome {
             UserActionOutcome::Approved { permission } => {
@@ -1974,9 +1972,8 @@ mod tests {
 
         let card = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                let drained =
-                    crate::action_required_manager::ActionRequiredManager::global()
-                        .drain_requests(&session_id);
+                let drained = crate::action_required_manager::ActionRequiredManager::global()
+                    .drain_requests(&session_id);
                 if let Some(message) = drained.into_iter().next() {
                     return message;
                 }
@@ -2008,7 +2005,10 @@ mod tests {
                 }
             }
         }
-        assert!(saw, "the published message must be a tool-confirmation card");
+        assert!(
+            saw,
+            "the published message must be a tool-confirmation card"
+        );
         running.abort();
     }
 

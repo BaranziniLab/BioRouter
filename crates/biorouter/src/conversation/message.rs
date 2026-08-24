@@ -280,7 +280,11 @@ impl fmt::Display for MessageContent {
                 // Key names only — `Display` reaches logs and prompt
                 // flattening, and the card carries no value to leak anyway.
                 ActionRequiredData::SecretRequest { keys, .. } => {
-                    write!(f, "[ActionRequired: SecretRequest for {} key(s)]", keys.len())
+                    write!(
+                        f,
+                        "[ActionRequired: SecretRequest for {} key(s)]",
+                        keys.len()
+                    )
                 }
             },
             MessageContent::FrontendToolRequest(r) => match &r.tool_call {

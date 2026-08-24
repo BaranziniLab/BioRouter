@@ -76,9 +76,7 @@ use uuid::Uuid;
 
 use rmcp::model::JsonObject;
 
-use crate::conversation::message::{
-    Message, MessageContent, SecretDestination, SecretKeyRequest,
-};
+use crate::conversation::message::{Message, MessageContent, SecretDestination, SecretKeyRequest};
 use crate::conversation::tool_preview::ToolPreview;
 use crate::permission::tool_risk::ToolRisk;
 use crate::permission::Permission;
@@ -151,18 +149,23 @@ impl UserActionRequest {
     /// transcript. Refusing it here means the guarantee holds for surfaces this
     /// module has never heard of.
     fn accepts(&self, outcome: &UserActionOutcome) -> bool {
-        match (self, outcome) {
-            (_, UserActionOutcome::Cancelled)
-            | (_, UserActionOutcome::TimedOut)
-            | (_, UserActionOutcome::Failed { .. }) => true,
+        matches!(
+            (self, outcome),
+            // Every request can end without an answer.
             (
+                _,
+                UserActionOutcome::Cancelled
+                    | UserActionOutcome::TimedOut
+                    | UserActionOutcome::Failed { .. }
+            ) | (
                 Self::ToolApproval(_),
-                UserActionOutcome::Approved { .. } | UserActionOutcome::Denied { .. },
-            ) => true,
-            (Self::Elicitation(_), UserActionOutcome::Provided { .. }) => true,
-            (Self::Secrets(_), UserActionOutcome::SecretsConfigured { .. }) => true,
-            _ => false,
-        }
+                UserActionOutcome::Approved { .. } | UserActionOutcome::Denied { .. }
+            ) | (Self::Elicitation(_), UserActionOutcome::Provided { .. })
+                | (
+                    Self::Secrets(_),
+                    UserActionOutcome::SecretsConfigured { .. }
+                )
+        )
     }
 }
 
@@ -499,7 +502,17 @@ fn request_message(id: &str, request: &UserActionRequest) -> Message {
             r.destination.clone(),
         ),
     };
-    Message::assistant().with_content(content)
+    // `user_only` for the same reason `handle_approval_tool_requests` marks its
+    // card: a decision prompt is for the person, and a model that read one would
+    // be reading a question it cannot answer. It is belt-and-braces here — the
+    // drain does not persist an ephemeral card and never pushes one into the
+    // conversation — but the flag is what keeps that true if either changes.
+    match request {
+        UserActionRequest::Elicitation(_) => Message::assistant().with_content(content),
+        // An elicitation is deliberately NOT user-only: its answer is part of
+        // the conversation, and the model that raised it has to see both.
+        _ => Message::assistant().with_content(content).user_only(),
+    }
 }
 
 /// Whether `message` is a decision prompt rather than a record.
@@ -705,7 +718,10 @@ mod tests {
     fn a_secrets_card_carries_names_only() {
         let card = request_message("req-1", &secrets());
         let json = serde_json::to_string(&card).expect("serialisable");
-        assert!(json.contains("SPOKEAGENT_PASSCODE"), "the key name is shown");
+        assert!(
+            json.contains("SPOKEAGENT_PASSCODE"),
+            "the key name is shown"
+        );
         assert!(
             !json.contains("hunter2"),
             "nothing in the card can carry a value"

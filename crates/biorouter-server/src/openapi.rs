@@ -26,10 +26,9 @@ use biorouter::config::declarative_providers::{
 };
 use biorouter::conversation::message::{
     ActionRequired, ActionRequiredData, FrontendToolRequest, Message, MessageContent,
-    SecretDestination, SecretKeyRequest,
-    MessageMetadata, MessageProvenance, ProvenanceKind, RedactedThinkingContent,
-    SystemNotificationContent, SystemNotificationType, ThinkingContent, TokenState,
-    ToolConfirmationRequest, ToolRequest, ToolResponse,
+    MessageMetadata, MessageProvenance, ProvenanceKind, RedactedThinkingContent, SecretDestination,
+    SecretKeyRequest, SystemNotificationContent, SystemNotificationType, ThinkingContent,
+    TokenState, ToolConfirmationRequest, ToolRequest, ToolResponse,
 };
 use biorouter::conversation::tool_preview::{ToolPreview, ToolPreviewLine, ToolPreviewLineKind};
 use biorouter::permission::tool_risk::ToolRisk;
