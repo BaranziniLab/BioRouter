@@ -157,6 +157,50 @@ describe('BottomMenuSkillSelection', () => {
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
   });
 
+  /**
+   * The rollback must undo only the toggle that failed.
+   *
+   * ⚠ **Both clicks happen in ONE render**, with no `await` between them, and
+   * that is the whole test. With the previous catalog read from the render
+   * closure rather than from what the hook last committed, both callbacks
+   * capture the same starting catalog — so a refusal on the second restored the
+   * state from before the FIRST, silently undoing on screen a change the daemon
+   * had already accepted. Awaiting between the clicks lets React re-render and
+   * hands the second callback a fresh closure, which hides the defect
+   * completely: the first draft of this test passed against the broken code.
+   */
+  it('a refused second toggle does not undo a first one the daemon accepted', async () => {
+    serve(view({ skills: [skill('alpha'), skill('beta')] }));
+    const disabledAlpha = view({
+      skills: [
+        skill('alpha', {
+          state: {
+            machineEnabled: true,
+            session: 'removed',
+            sessionViaBundle: false,
+            hiddenContext: false,
+            effective: false,
+          },
+        }),
+        skill('beta'),
+      ],
+    });
+    mocks.setSessionSkills.mockImplementation(async (o: { body: { remove: string[] } }) => {
+      if (o.body.remove.includes('beta')) throw new Error('refused');
+      return { data: { catalog: disabledAlpha, sessionAdd: [], sessionRemove: ['alpha'] } };
+    });
+
+    render(<BottomMenuSkillSelection sessionId="20260824_1" />);
+    const [alpha, beta] = await openMenu();
+
+    fireEvent.click(alpha);
+    fireEvent.click(beta);
+
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(beta).toHaveAttribute('aria-checked', 'true'));
+    expect(alpha).toHaveAttribute('aria-checked', 'false');
+  });
+
   it('says "for this chat" only when there is a chat', async () => {
     mocks.setSessionSkills.mockResolvedValue({
       data: { catalog: view(), sessionAdd: [], sessionRemove: ['example-skill'] },
