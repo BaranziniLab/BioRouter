@@ -1185,6 +1185,57 @@ mod tests {
     use super::*;
     use crate::agents::effort::ReasoningEffort;
 
+    /// #110: the bridge config must carry the per-call deadline.
+    ///
+    /// `timeout` is a **millisecond** field that Claude Code's own help calls a
+    /// "hard wall-clock limit per call", and its default abandoned every bridged
+    /// call at ~60 s — turning `workspace_watch`'s advertised 600-second wait,
+    /// and any other slow Biorouter tool, into "The operation timed out" instead
+    /// of the partial result the handler was about to return.
+    ///
+    /// Asserted here as well as in the live test, because a live test needs a
+    /// signed-in CLI and two minutes of a plan's quota: a dropped field should
+    /// fail in `cargo test`, not in a user's session.
+    #[tokio::test]
+    async fn the_bridge_config_carries_the_per_call_deadline() {
+        let written = bridge::ACTIVE_BRIDGE_URL
+            .scope(
+                Some("http://127.0.0.1:9/tool_bridge/deadbeef".to_string()),
+                async {
+                    let file = bridge_mcp_config()
+                        .expect("the config is written")
+                        .expect("a bridge URL is in scope");
+                    std::fs::read_to_string(file.path()).expect("the config is readable")
+                },
+            )
+            .await;
+        let body: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+        let server = &body["mcpServers"]["biorouter"];
+        assert_eq!(server["url"], "http://127.0.0.1:9/tool_bridge/deadbeef");
+        assert_eq!(
+            server["timeout"],
+            bridge::CHILD_TOOL_CALL_TIMEOUT.as_millis() as u64,
+            "milliseconds — Claude Code's unit, not Codex's seconds"
+        );
+        // The unit is easy to get wrong in the direction that looks fine: 660
+        // would be read as two-thirds of a second and abandon every call
+        // instantly, which reads as a broken bridge rather than a wrong number.
+        assert!(
+            server["timeout"].as_u64().unwrap_or(0) > 1000,
+            "a value under a second means the unit was confused: {server}"
+        );
+    }
+
+    /// No bridge means no config file at all — the child then runs tool-less,
+    /// which is the correct degradation for a chat turn.
+    #[tokio::test]
+    async fn no_bridge_url_writes_no_config() {
+        let none = bridge::ACTIVE_BRIDGE_URL
+            .scope(None, async { bridge_mcp_config().expect("no error") })
+            .await;
+        assert!(none.is_none());
+    }
+
     fn provider() -> ClaudeCodeProvider {
         ClaudeCodeProvider {
             command: PathBuf::from("/usr/bin/claude"),

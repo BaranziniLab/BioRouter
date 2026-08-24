@@ -1429,6 +1429,14 @@ for line in sys.stdin:
             with["config"]["mcp_servers"]["biorouter"]["url"],
             "http://127.0.0.1:9/tool_bridge/deadbeef"
         );
+        // #110: and the per-call deadline, in SECONDS — Codex's unit, not Claude
+        // Code's milliseconds. Without it Codex's default abandons any bridged
+        // call that outruns it, and the model is told the operation timed out
+        // rather than handed the partial result the tool had ready.
+        assert_eq!(
+            with["config"]["mcp_servers"]["biorouter"]["tool_timeout_sec"],
+            crate::providers::coding_agent::bridge::CHILD_TOOL_CALL_TIMEOUT.as_secs()
+        );
 
         let without = CodexProvider::thread_params("S", "/tmp", "gpt-5.5", None);
         assert!(
