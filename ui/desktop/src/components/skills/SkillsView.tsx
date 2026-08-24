@@ -1,18 +1,9 @@
-import { isContextSkill } from '../settings/contexts/contexts';
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Button } from '../ui/button';
 import { Switch } from '../ui/switch';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
-import { Plus, Upload, Globe, Trash2 } from '../icons/app-icons';
-import {
-  Skill,
-  SkillBundle,
-  BIOROUTER_SKILLS_DIR,
-  OTHER_SKILL_DIRS,
-  loadSkillsFromDirs,
-  isBuiltinSkill,
-} from './skillUtils';
+import { Plus, Upload, Globe, Trash2, ChevronRight } from '../icons/app-icons';
 import SkillItem from './SkillItem';
 import AddSkillModal from './AddSkillModal';
 import CustomSkillModal from './CustomSkillModal';
@@ -21,166 +12,153 @@ import { toastSuccess, toastError } from '../../toasts';
 import { SearchView } from '../conversation/SearchView';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { ReadableContent } from '../Layout/ReadableContent';
-import {
-  loadSkillOverrides,
-  saveSkillOverrides,
-  setSkillOverride,
-  isSkillEnabled,
-} from '../../store/skillOverrides';
+import { removeSkillPackage } from '../../api';
+import type { CatalogBundle, CatalogSkill } from '../../api';
+import { useSkillCatalog, type SkillCatalogEntry } from './useSkillCatalog';
+
+/**
+ * Settings → Skills.
+ *
+ * ⚠ **The inventory is the daemon's** (#113). This view used to scan
+ * `BIOROUTER_SKILLS_DIR` and `OTHER_SKILL_DIRS` itself — three roots against the
+ * backend's seven — so BiorOffice's Word/Excel/PowerPoint skills and
+ * MarkItDown's converter were loaded by the model and had no row here at all.
+ * There is no scanner left; `useSkillCatalog` fetches, and everything below
+ * groups what it returns.
+ *
+ * Deletion goes to the importer's remover, which renames the directory aside
+ * before deleting it — so a package leaves in one step rather than emptying out
+ * under a catalog scan in flight.
+ */
+type Group = {
+  key: string;
+  title: string;
+  entries: SkillCatalogEntry[];
+  /** Skills an installed extension supplies. Not the user's to delete. */
+  fromExtension: boolean;
+};
 
 export default function SkillsView() {
-  const [bioRouterSkills, setBioRouterSkills] = useState<Skill[]>([]);
-  const [otherSkills, setOtherSkills] = useState<Skill[]>([]);
-  const [bioBundles, setBioBundles] = useState<SkillBundle[]>([]);
-  const [otherBundles, setOtherBundles] = useState<SkillBundle[]>([]);
+  const catalog = useSkillCatalog(null);
+  const { entries, reload, setEnabled } = catalog;
+
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
   const [isBrowseModalOpen, setIsBrowseModalOpen] = useState(false);
-  const [skillToDelete, setSkillToDelete] = useState<Skill | null>(null);
-  const [bundleToDelete, setBundleToDelete] = useState<SkillBundle | null>(null);
-  const [isDeletingSkill, setIsDeletingSkill] = useState(false);
-  const [isDeletingBundle, setIsDeletingBundle] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<SkillCatalogEntry | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [overrideTrigger, setOverrideTrigger] = useState(0);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  const loadSkills = useCallback(async () => {
-    try {
-      const [brResult, otherResult] = await Promise.all([
-        loadSkillsFromDirs([BIOROUTER_SKILLS_DIR]),
-        loadSkillsFromDirs(OTHER_SKILL_DIRS),
-      ]);
-      // ⚠ Filtered HERE, not inside `loadSkillsFromDirs`. That helper is shared
-      // with the composer popup and the workflow pickers, so a filter inside it
-      // would need a per-caller opt-out and would quietly change three surfaces
-      // at once. Contexts are shipped, not installed: they belong in
-      // Settings -> Chat -> Contexts, not in a list of the user's own skills.
-      setBioRouterSkills(brResult.singles.filter((s) => !isContextSkill(s.name)));
-      setBioBundles(brResult.bundles);
-      setOtherSkills(otherResult.singles.filter((s) => !isContextSkill(s.name)));
-      setOtherBundles(otherResult.bundles);
-    } catch {
-      setBioRouterSkills([]);
-      setBioBundles([]);
-      setOtherSkills([]);
-      setOtherBundles([]);
-    }
-  }, []);
+  const toggle = useCallback(
+    async (entry: SkillCatalogEntry, enabled: boolean) => {
+      const result = await setEnabled([entry.key], enabled);
+      if (!result.ok) {
+        toastError({
+          title: displayNameOf(entry),
+          msg: `The change was not saved: ${result.error}`,
+        });
+      }
+    },
+    [setEnabled]
+  );
 
-  useEffect(() => {
-    loadSkills();
-    loadSkillOverrides();
-  }, [loadSkills]);
+  const groups = useMemo((): Group[] => {
+    const match = (entry: SkillCatalogEntry) => {
+      if (!searchTerm) return true;
+      const q = searchTerm.toLowerCase();
+      if (entry.kind === 'single') {
+        return (
+          entry.skill.name.toLowerCase().includes(q) ||
+          entry.skill.description.toLowerCase().includes(q)
+        );
+      }
+      return (
+        entry.bundle.displayName.toLowerCase().includes(q) ||
+        entry.bundle.name.toLowerCase().includes(q) ||
+        entry.bundle.skills.some((name) => name.toLowerCase().includes(q))
+      );
+    };
 
-  const handleToggle = async (skill: Skill, enabled: boolean) => {
-    const previous = isSkillEnabled(skill.name);
-    setSkillOverride(skill.name, enabled);
-    setOverrideTrigger((prev) => prev + 1);
-    try {
-      await saveSkillOverrides();
-    } catch (error) {
-      setSkillOverride(skill.name, previous);
-      setOverrideTrigger((prev) => prev + 1);
-      toastError({
-        title: skill.name,
-        msg: error instanceof Error ? error.message : 'Could not save the skill preference',
-      });
-    }
-  };
-
-  const handleBundleToggle = async (bundle: SkillBundle, enabled: boolean) => {
-    const previous = isSkillEnabled(bundle.bundleName);
-    setSkillOverride(bundle.bundleName, enabled);
-    setOverrideTrigger((prev) => prev + 1);
-    try {
-      await saveSkillOverrides();
-    } catch (error) {
-      setSkillOverride(bundle.bundleName, previous);
-      setOverrideTrigger((prev) => prev + 1);
-      toastError({
-        title: bundle.bundleName,
-        msg: error instanceof Error ? error.message : 'Could not save the bundle preference',
-      });
-    }
-  };
-
-  const filterSkill = (skill: Skill) => {
-    if (!searchTerm) return true;
-    const q = searchTerm.toLowerCase();
-    return skill.name.toLowerCase().includes(q) || skill.description.toLowerCase().includes(q);
-  };
-
-  const filterBundle = (bundle: SkillBundle) => {
-    if (!searchTerm) return true;
-    const q = searchTerm.toLowerCase();
-    return (
-      bundle.bundleName.toLowerCase().includes(q) ||
-      bundle.skills.some(
-        (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
-      )
+    const visible = entries.filter(match);
+    const biorouter = visible.filter((e) => sourceOf(e).kind === 'biorouter');
+    const project = visible.filter((e) => sourceOf(e).kind === 'project');
+    const other = visible.filter((e) =>
+      ['claudeHome', 'agentsHome'].includes(sourceOf(e).kind)
     );
-  };
 
-  const handleOpen = async (skill: Skill) => {
-    await window.electron.openDirectoryInExplorer(skill.folderPath);
-  };
-
-  const handleOpenBundle = async (bundle: SkillBundle) => {
-    await window.electron.openDirectoryInExplorer(bundle.folderPath);
-  };
-
-  const confirmDeleteSkill = async () => {
-    if (!skillToDelete) return;
-    if (isBuiltinSkill(skillToDelete.name)) {
-      toastError({ title: skillToDelete.name, msg: 'Built-in skills cannot be deleted' });
-      setSkillToDelete(null);
-      return;
+    // One group per extension, so a bundled skill says which extension it came
+    // from rather than appearing among the user's own installs.
+    const byExtension = new Map<string, SkillCatalogEntry[]>();
+    for (const entry of visible) {
+      const source = sourceOf(entry);
+      if (source.kind !== 'extension') continue;
+      const label = source.extension ?? source.label;
+      byExtension.set(label, [...(byExtension.get(label) ?? []), entry]);
     }
-    setIsDeletingSkill(true);
-    const skill = skillToDelete;
-    const ok = await window.electron.deleteDirectory(skill.folderPath);
-    setIsDeletingSkill(false);
-    setSkillToDelete(null);
-    if (ok) {
-      setBioRouterSkills((prev) => prev.filter((s) => s.folderPath !== skill.folderPath));
-      setOtherSkills((prev) => prev.filter((s) => s.folderPath !== skill.folderPath));
-      toastSuccess({ title: skill.name, msg: 'Skill deleted' });
-    } else {
-      toastError({ title: 'Delete failed', msg: `Could not delete ${skill.folderPath}` });
-    }
-  };
 
-  const confirmDeleteBundle = async () => {
-    if (!bundleToDelete) return;
-    setIsDeletingBundle(true);
-    const bundle = bundleToDelete;
-    const ok = await window.electron.deleteDirectory(bundle.folderPath);
-    setIsDeletingBundle(false);
-    setBundleToDelete(null);
-    if (ok) {
-      setBioBundles((prev) => prev.filter((b) => b.folderPath !== bundle.folderPath));
-      setOtherBundles((prev) => prev.filter((b) => b.folderPath !== bundle.folderPath));
-      toastSuccess({ title: bundle.bundleName, msg: 'Bundle deleted' });
-    } else {
-      toastError({ title: 'Delete failed', msg: `Could not delete ${bundle.folderPath}` });
+    const out: Group[] = [];
+    if (biorouter.length)
+      out.push({ key: 'biorouter', title: 'Biorouter Skills', entries: biorouter, fromExtension: false });
+    for (const [extension, extensionEntries] of [...byExtension].sort()) {
+      out.push({
+        key: `extension:${extension}`,
+        title: `From ${extension}`,
+        entries: extensionEntries,
+        fromExtension: true,
+      });
     }
-  };
+    if (other.length)
+      out.push({ key: 'other', title: 'Skills From Other Agents', entries: other, fromExtension: false });
+    if (project.length)
+      out.push({ key: 'project', title: 'From This Project', entries: project, fromExtension: false });
+    return out;
+  }, [entries, searchTerm]);
 
-  const handleShare = async (skill: Skill) => {
+  const total = groups.reduce((sum, group) => sum + group.entries.length, 0);
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    setIsDeleting(true);
+    const entry = pendingDelete;
     try {
-      await navigator.clipboard.writeText(skill.content);
-      toastSuccess({ title: skill.name, msg: 'SKILL.md copied to clipboard' });
-    } catch {
-      toastError({ title: 'Copy failed', msg: 'Could not copy to clipboard' });
+      await removeSkillPackage<true>({
+        body: {
+          id: installedIdOf(entry),
+          sourceRoot: sourceRootOf(entry),
+        },
+        throwOnError: true,
+      });
+      toastSuccess({
+        title: displayNameOf(entry),
+        msg: entry.kind === 'bundle' ? 'Package removed' : 'Skill deleted',
+      });
+      await reload(true);
+    } catch (err) {
+      toastError({
+        title: 'Delete failed',
+        msg: err instanceof Error ? err.message : 'Could not remove it',
+      });
+    } finally {
+      setIsDeleting(false);
+      setPendingDelete(null);
     }
   };
 
-  const filteredBR = bioRouterSkills.filter(filterSkill);
-  const filteredOther = otherSkills.filter(filterSkill);
-  const filteredBRBundles = bioBundles.filter(filterBundle);
-  const filteredOtherBundles = otherBundles.filter(filterBundle);
-
-  const totalBR = filteredBR.length + filteredBRBundles.length;
-  const totalOther = filteredOther.length + filteredOtherBundles.length;
+  const installedIds = useMemo(
+    () =>
+      new Set(
+        entries
+          .flatMap((entry) =>
+            entry.kind === 'single'
+              ? [entry.skill.name, lastPathComponent(entry.skill.slug)]
+              : [entry.bundle.name, entry.bundle.displayName]
+          )
+          .map((value) => value.toLowerCase())
+          .filter(Boolean)
+      ),
+    [entries]
+  );
 
   return (
     <MainPanelLayout>
@@ -188,7 +166,6 @@ export default function SkillsView() {
         className="flex flex-col min-w-0 flex-1 overflow-y-auto relative"
         data-search-scroll-area
       >
-        {/* Header */}
         <ReadableContent className="px-8 pt-12 pb-6 border-b border-border-subtle flex-shrink-0">
           <div className="flex flex-col page-transition">
             <h1 className="text-title mb-1">Skills</h1>
@@ -225,89 +202,70 @@ export default function SkillsView() {
           </div>
         </ReadableContent>
 
-        {/* List */}
         <SearchView
           onSearch={(term, _caseSensitive) => setSearchTerm(term)}
           placeholder="Search skills..."
         >
-          <ReadableContent key={overrideTrigger} className="px-8 py-4">
-            {totalBR > 0 && (
-              <>
-                <h2 className="text-caps text-text-muted uppercase mb-3 flex items-center gap-2">
-                  {/* The same decorative marker as the sibling group below.
-                      This one was `bg-background-info` — rgb(30, 95, 191), the
-                      only saturated blue on the page — beside a neutral
-                      `bg-background-strong` dot in exactly the same role, so two
-                      group markers carried different semantics and wildly
-                      different weight for no reason a reader could recover. The
-                      heading text is what distinguishes the groups; the dot is
-                      punctuation, and punctuation does not need a hue. */}
+          <ReadableContent className="px-8 py-4">
+            {groups.map((group) => (
+              <div key={group.key}>
+                <h2 className="text-caps text-text-muted uppercase mt-6 mb-3 flex items-center gap-2 first:mt-0">
+                  {/* Punctuation, not semantics — see the note this replaced:
+                      two group markers once carried different hues in the same
+                      role, which a reader could not recover a meaning for. */}
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-background-strong flex-shrink-0" />
-                  Biorouter Skills ({totalBR})
+                  {group.title} ({group.entries.length})
                 </h2>
                 <div className="biorouter-list-shell">
-                  {filteredBRBundles.map((bundle) => (
-                    <BundleItem
-                      key={bundle.folderPath}
-                      bundle={bundle}
-                      enabled={isSkillEnabled(bundle.bundleName)}
-                      onClick={() => handleOpenBundle(bundle)}
-                      onDelete={() => setBundleToDelete(bundle)}
-                      onToggle={(e) => handleBundleToggle(bundle, e)}
-                    />
-                  ))}
-                  {filteredBR.map((skill) => (
-                    <SkillItem
-                      key={skill.folderPath}
-                      skill={skill}
-                      enabled={isSkillEnabled(skill.name)}
-                      onClick={() => handleOpen(skill)}
-                      onDelete={() => setSkillToDelete(skill)}
-                      onShare={() => handleShare(skill)}
-                      onToggle={(e) => handleToggle(skill, e)}
-                    />
-                  ))}
+                  {group.entries.map((entry) =>
+                    entry.kind === 'bundle' ? (
+                      <BundleRow
+                        key={entry.key}
+                        bundle={entry.bundle}
+                        skills={catalog.skills}
+                        enabled={entry.enabled}
+                        expanded={expanded.has(entry.key)}
+                        onExpandToggle={() =>
+                          setExpanded((current) => {
+                            const next = new Set(current);
+                            if (next.has(entry.key)) next.delete(entry.key);
+                            else next.add(entry.key);
+                            return next;
+                          })
+                        }
+                        onOpen={() =>
+                          void window.electron.openDirectoryInExplorer(entry.bundle.directory)
+                        }
+                        onDelete={group.fromExtension ? undefined : () => setPendingDelete(entry)}
+                        onToggle={(enabled) => void toggle(entry, enabled)}
+                      />
+                    ) : (
+                      <SkillItem
+                        key={entry.key}
+                        skill={entry.skill}
+                        enabled={entry.enabled}
+                        onClick={() =>
+                          void window.electron.openDirectoryInExplorer(entry.skill.directory)
+                        }
+                        onDelete={group.fromExtension ? undefined : () => setPendingDelete(entry)}
+                        onShare={() => void copySkill(entry.skill)}
+                        onToggle={(enabled) => void toggle(entry, enabled)}
+                      />
+                    )
+                  )}
                 </div>
-              </>
-            )}
+              </div>
+            ))}
 
-            {totalOther > 0 && (
-              <>
-                <h2 className="text-caps text-text-muted uppercase mt-6 mb-3 flex items-center gap-2">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-background-strong flex-shrink-0" />
-                  Skills From Other Agents ({totalOther})
-                </h2>
-                <div className="biorouter-list-shell">
-                  {filteredOtherBundles.map((bundle) => (
-                    <BundleItem
-                      key={bundle.folderPath}
-                      bundle={bundle}
-                      enabled={isSkillEnabled(bundle.bundleName)}
-                      onClick={() => handleOpenBundle(bundle)}
-                      onDelete={() => setBundleToDelete(bundle)}
-                      onToggle={(e) => handleBundleToggle(bundle, e)}
-                    />
-                  ))}
-                  {filteredOther.map((skill) => (
-                    <SkillItem
-                      key={skill.folderPath}
-                      skill={skill}
-                      enabled={isSkillEnabled(skill.name)}
-                      onClick={() => handleOpen(skill)}
-                      onDelete={() => setSkillToDelete(skill)}
-                      onShare={() => handleShare(skill)}
-                      onToggle={(e) => handleToggle(skill, e)}
-                    />
-                  ))}
-                </div>
-              </>
-            )}
-
-            {totalBR === 0 && totalOther === 0 && (
+            {total === 0 && (
               <p className="text-body text-text-muted mt-10 text-center">
-                {searchTerm
-                  ? 'No skills match your search.'
-                  : 'No skills found. Add one to get started.'}
+                {catalog.error
+                  ? catalog.error
+                  : catalog.loading
+                    ? 'Loading skills…'
+                    : searchTerm
+                      ? 'No skills match your search.'
+                      : 'No skills found. Add one to get started.'}
               </p>
             )}
           </ReadableContent>
@@ -315,114 +273,211 @@ export default function SkillsView() {
       </div>
 
       {isAddModalOpen && (
-        <AddSkillModal onClose={() => setIsAddModalOpen(false)} onSaved={loadSkills} />
+        <AddSkillModal onClose={() => setIsAddModalOpen(false)} onSaved={() => void reload(true)} />
       )}
       {isCustomModalOpen && (
-        <CustomSkillModal onClose={() => setIsCustomModalOpen(false)} onSaved={loadSkills} />
+        <CustomSkillModal
+          onClose={() => setIsCustomModalOpen(false)}
+          onSaved={() => void reload(true)}
+        />
       )}
       {isBrowseModalOpen && (
         <BrowseSkillsModal
           onClose={() => setIsBrowseModalOpen(false)}
-          onInstalled={loadSkills}
-          installedIds={
-            new Set(
-              [...bioRouterSkills, ...otherSkills]
-                .flatMap((s) => [
-                  s.name.toLowerCase(),
-                  s.folderPath.split('/').pop()?.toLowerCase() ?? '',
-                ])
-                .concat(
-                  [...bioBundles, ...otherBundles].flatMap((b) => [
-                    b.bundleName.toLowerCase(),
-                    b.folderPath.split('/').pop()?.toLowerCase() ?? '',
-                  ])
-                )
-                .filter(Boolean)
-            )
-          }
+          onInstalled={() => void reload(true)}
+          installedIds={installedIds}
         />
       )}
 
       <ConfirmationModal
-        isOpen={skillToDelete !== null}
-        title={`Delete "${skillToDelete?.name}"?`}
-        message="This will permanently remove the skill folder from disk. This action cannot be undone."
-        confirmLabel="Delete"
+        isOpen={pendingDelete !== null}
+        title={
+          pendingDelete?.kind === 'bundle'
+            ? `Delete package "${pendingDelete.bundle.displayName}"?`
+            : `Delete "${pendingDelete ? displayNameOf(pendingDelete) : ''}"?`
+        }
+        message={
+          pendingDelete?.kind === 'bundle'
+            ? `This will permanently remove all ${pendingDelete.bundle.skills.length} skills in this package. This action cannot be undone.`
+            : 'This will permanently remove the skill folder from disk. This action cannot be undone.'
+        }
+        confirmLabel={pendingDelete?.kind === 'bundle' ? 'Delete Package' : 'Delete'}
         cancelLabel="Cancel"
         confirmVariant="destructive"
-        isSubmitting={isDeletingSkill}
-        onConfirm={confirmDeleteSkill}
-        onCancel={() => setSkillToDelete(null)}
-      />
-
-      <ConfirmationModal
-        isOpen={bundleToDelete !== null}
-        title={`Delete bundle "${bundleToDelete?.bundleName}"?`}
-        message={`This will permanently remove all ${bundleToDelete?.skills.length ?? 0} skills in this bundle. This action cannot be undone.`}
-        confirmLabel="Delete Bundle"
-        cancelLabel="Cancel"
-        confirmVariant="destructive"
-        isSubmitting={isDeletingBundle}
-        onConfirm={confirmDeleteBundle}
-        onCancel={() => setBundleToDelete(null)}
+        isSubmitting={isDeleting}
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
       />
     </MainPanelLayout>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Inline bundle row component
-// ---------------------------------------------------------------------------
-interface BundleItemProps {
-  bundle: SkillBundle;
+
+function sourceOf(entry: SkillCatalogEntry) {
+  return entry.kind === 'single' ? entry.skill.source : entry.bundle.source;
+}
+
+function sourceRootOf(entry: SkillCatalogEntry): string {
+  return entry.kind === 'single' ? entry.skill.sourceRoot : entry.bundle.sourceRoot;
+}
+
+function displayNameOf(entry: SkillCatalogEntry): string {
+  return entry.kind === 'single' ? entry.skill.name : entry.bundle.displayName;
+}
+
+/**
+ * The directory name to remove.
+ *
+ * ⚠ The **installed directory**, not the frontmatter name. A skill stored in
+ * `run-gwas/` may declare `name: gwas-pipeline`, and the two are allowed to
+ * differ — removing by the declared name would miss it.
+ */
+function installedIdOf(entry: SkillCatalogEntry): string {
+  return entry.kind === 'single' ? lastPathComponent(entry.skill.slug) : entry.bundle.name;
+}
+
+function lastPathComponent(slug: string): string {
+  return slug.split('/').pop() ?? slug;
+}
+
+async function copySkill(skill: CatalogSkill) {
+  try {
+    const result = await window.electron.readFile(`${skill.directory}/SKILL.md`);
+    if (!result.found || !result.file) throw new Error('SKILL.md could not be read');
+    await navigator.clipboard.writeText(result.file);
+    toastSuccess({ title: skill.name, msg: 'SKILL.md copied to clipboard' });
+  } catch {
+    toastError({ title: 'Copy failed', msg: 'Could not copy to clipboard' });
+  }
+}
+
+interface BundleRowProps {
+  bundle: CatalogBundle;
+  skills: CatalogSkill[];
   enabled: boolean;
-  onClick: () => void;
-  onDelete: () => void;
+  expanded: boolean;
+  onExpandToggle: () => void;
+  onOpen: () => void;
+  onDelete?: () => void;
   onToggle: (enabled: boolean) => void;
 }
 
-function BundleItem({ bundle, enabled, onClick, onDelete, onToggle }: BundleItemProps) {
+/**
+ * One package, expandable.
+ *
+ * #115 asks for "one expandable bundle in the UI with component details"
+ * rather than N unrelated rows — so the row carries the package's own name, its
+ * version and entry point when a manifest declared them, and opens to show each
+ * component with its group.
+ */
+function BundleRow({
+  bundle,
+  skills,
+  enabled,
+  expanded,
+  onExpandToggle,
+  onOpen,
+  onDelete,
+  onToggle,
+}: BundleRowProps) {
+  const members = skills.filter((skill) => skill.bundle === bundle.name);
+  const entryPoint = bundle.package?.entryPoint ?? null;
   return (
-    <div className="biorouter-list-row flex items-start gap-3 px-3 py-3 group">
-      <button
-        type="button"
-        className="flex-1 min-w-0 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
-        onClick={onClick}
-        aria-label={`Open skill bundle ${bundle.bundleName}`}
-      >
-        <div className="flex items-center gap-1.5">
-          <p className="text-label text-text-default">{bundle.bundleName}</p>
-          <span className="text-supporting text-text-subtle">· {bundle.skills.length} skills</span>
-        </div>
-        <p className="text-supporting text-text-subtle mt-1 font-mono">
-          {bundle.skills.map((s) => s.name).join(' · ')}
-        </p>
-      </button>
-      <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
-        <div
-          className="flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
-          onClick={(e) => e.stopPropagation()}
+    <div className="biorouter-list-row px-3 py-3 group">
+      <div className="flex items-start gap-2">
+        <button
+          type="button"
+          onClick={onExpandToggle}
+          className="mt-0.5 flex-shrink-0 cursor-pointer rounded-inner p-0.5 text-text-muted hover:text-text-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+          aria-expanded={expanded}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${bundle.displayName}`}
         >
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-text-danger"
-            onClick={onDelete}
-            title="Delete bundle"
-            aria-label={`Delete skill bundle ${bundle.bundleName}`}
-          >
-            <Trash2 className="h-4 w-4" />
-          </Button>
-        </div>
-        <div onClick={(e) => e.stopPropagation()}>
-          <Switch
-            checked={enabled}
-            onCheckedChange={onToggle}
-            variant="mono"
-            aria-label={`${enabled ? 'Disable' : 'Enable'} ${bundle.bundleName}`}
+          <ChevronRight
+            className={`h-4 w-4 transition-transform duration-[var(--motion-fast)] ${
+              expanded ? 'rotate-90' : ''
+            }`}
           />
+        </button>
+        <button
+          type="button"
+          className="flex-1 min-w-0 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+          onClick={onOpen}
+          aria-label={`Open skill package ${bundle.displayName}`}
+        >
+          <div className="flex items-center gap-1.5 min-w-0">
+            <p className="text-label text-text-default truncate">{bundle.displayName}</p>
+            {bundle.package?.version && (
+              <span className="text-supporting text-text-subtle">{bundle.package.version}</span>
+            )}
+            <span className="text-supporting text-text-subtle">
+              · {bundle.skills.length} skill{bundle.skills.length === 1 ? '' : 's'}
+            </span>
+          </div>
+          {entryPoint && (
+            <p className="text-supporting text-text-subtle mt-0.5">entry point: {entryPoint}</p>
+          )}
+          {!expanded && (
+            <p className="text-supporting text-text-subtle mt-1 font-mono truncate">
+              {bundle.skills.join(' · ')}
+            </p>
+          )}
+        </button>
+        <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
+          {onDelete && (
+            <div
+              className="flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-text-danger"
+                onClick={onDelete}
+                title="Delete package"
+                aria-label={`Delete skill package ${bundle.displayName}`}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
+          <div onClick={(e) => e.stopPropagation()}>
+            <Switch
+              checked={enabled}
+              onCheckedChange={onToggle}
+              variant="mono"
+              aria-label={`${enabled ? 'Disable' : 'Enable'} ${bundle.displayName}`}
+            />
+          </div>
         </div>
       </div>
+
+      {expanded && (
+        <ul className="mt-2 ml-7 flex flex-col gap-1">
+          {members.map((member) => (
+            <li key={member.name} className="min-w-0">
+              <p className="text-supporting text-text-default truncate">
+                {member.name === entryPoint && <span className="text-text-subtle">→ </span>}
+                {member.name}
+                {groupOf(bundle, member.name) && (
+                  <span className="text-text-subtle"> [{groupOf(bundle, member.name)}]</span>
+                )}
+              </p>
+              {member.description && (
+                <p className="text-supporting text-text-subtle truncate">{member.description}</p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
+}
+
+function groupOf(bundle: CatalogBundle, name: string): string | null {
+  const groups = (bundle.package?.groups ?? {}) as Record<string, unknown>;
+  for (const [group, names] of Object.entries(groups)) {
+    if (Array.isArray(names) && names.includes(name)) return group;
+  }
+  return null;
 }
