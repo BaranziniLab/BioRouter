@@ -65,6 +65,11 @@ struct BiorouterComponent {
 ///
 /// `skills` is a path in both, and both spell it with a leading `./` and a
 /// trailing `/` in the wild — normalised in [`normalize_path`].
+///
+/// ⚠ **The two are not interchangeable, which is why the ladder merges.**
+/// HyperFrames ships both, and only the Codex one carries `skills` at all —
+/// its `.claude-plugin/plugin.json` is name, version and prose. Reading a
+/// single rung would have found a package with no components root.
 #[derive(Debug, Deserialize)]
 struct PluginManifest {
     name: Option<String>,
@@ -73,11 +78,30 @@ struct PluginManifest {
     version: Option<String>,
     #[serde(default)]
     skills: Option<serde_json::Value>,
+    /// The vendor's presentation block. Its `displayName` is where a
+    /// human-readable name actually lives in the wild — HyperFrames' is
+    /// "HyperFrames by HeyGen" — while the top-level `displayName` this
+    /// originally read is absent from every real manifest inspected.
+    #[serde(default)]
+    interface: Option<PluginInterface>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PluginInterface {
+    #[serde(rename = "displayName")]
+    display_name: Option<String>,
 }
 
 /// `skills-manifest.json`, as HyperFrames ships it: a source and a component
-/// list. Tolerant about the component shape, which is a bare string in some
-/// repositories and an object in others.
+/// list.
+///
+/// ⚠ **`skills` is a MAP in the real file**, keyed by component name with a
+/// content hash and file count as the value — not the array this originally
+/// assumed. A `Vec` here does not merely miss the names: serde fails the whole
+/// document, `detect` reports "skills-manifest.json is not valid JSON", and the
+/// import is refused outright. The fixture that said otherwise was invented,
+/// and only running the real archive through the real pipeline found it.
+/// [`SkillsList`] now accepts both, plus a bare string list.
 #[derive(Debug, Deserialize)]
 struct SkillsManifest {
     name: Option<String>,
@@ -86,10 +110,32 @@ struct SkillsManifest {
     #[serde(rename = "entryPoint", alias = "entry_point", alias = "router")]
     entry_point: Option<String>,
     #[serde(default)]
-    skills: Vec<serde_json::Value>,
+    skills: SkillsList,
     /// `{"core": ["a"], "on-demand": ["b"]}`, when present.
     #[serde(default)]
     groups: BTreeMap<String, Vec<String>>,
+}
+
+/// The component list, in every shape seen in the wild.
+#[derive(Debug, Default, Deserialize)]
+#[serde(untagged)]
+enum SkillsList {
+    /// `["a", "b"]`, or `[{"name": "a"}, …]`.
+    Array(Vec<serde_json::Value>),
+    /// `{"a": {"hash": …}, "b": {…}}` — HyperFrames' actual shape.
+    Map(BTreeMap<String, serde_json::Value>),
+    #[default]
+    Absent,
+}
+
+impl SkillsList {
+    fn names(&self) -> Vec<String> {
+        match self {
+            SkillsList::Array(items) => items.iter().filter_map(component_name).collect(),
+            SkillsList::Map(map) => map.keys().cloned().collect(),
+            SkillsList::Absent => Vec::new(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,10 +298,14 @@ fn plugin_manifest(
     let parsed: PluginManifest = serde_json::from_str(&entry.text())
         .map_err(|e| anyhow::anyhow!("{path} is not valid JSON: {e}"))?;
     let components_root = parsed.skills.as_ref().and_then(plugin_skills_path);
+    let display_name = parsed
+        .display_name
+        .or_else(|| parsed.interface.and_then(|i| i.display_name))
+        .or_else(|| parsed.name.clone());
     Ok(Some(ManifestFacts {
         evidence: Some(evidence),
-        name: parsed.name.clone(),
-        display_name: parsed.display_name.or(parsed.name),
+        name: parsed.name,
+        display_name,
         version: parsed.version,
         components_root,
         entry_point: None,
@@ -283,7 +333,7 @@ fn skills_manifest(entries: &[Entry]) -> anyhow::Result<Option<ManifestFacts>> {
             components_root: None,
             entry_point: parsed.entry_point,
             groups: parsed.groups,
-            declared: parsed.skills.iter().filter_map(component_name).collect(),
+            declared: parsed.skills.names(),
         }));
     }
     Ok(None)
@@ -311,6 +361,39 @@ mod tests {
         assert_eq!(facts.name.as_deref(), Some("hyperframes"));
         assert_eq!(facts.version.as_deref(), Some("0.8.12"));
         assert_eq!(facts.components_root.as_deref(), Some("skills"));
+    }
+
+    /// The real HyperFrames `skills-manifest.json`, in miniature: `skills` is a
+    /// map keyed by name, and there is no `entryPoint` or `groups` at all.
+    /// Reading it as an array failed the whole document and refused the import.
+    #[test]
+    fn a_skills_manifest_reads_the_map_shape_the_real_file_uses() {
+        let facts = detect(&[entry(
+            "skills-manifest.json",
+            r#"{"source":"heygen-com/hyperframes","skills":{
+                 "hyperframes":{"hash":"5be130da8d7ff59e","files":17},
+                 "media-use":{"hash":"1b0ce647f5c7df95","files":152}}}"#,
+        )])
+        .unwrap();
+        assert_eq!(facts.evidence, Some(Evidence::SkillsManifest));
+        assert_eq!(facts.declared, vec!["hyperframes", "media-use"]);
+        assert_eq!(facts.entry_point, None, "the real file declares none");
+        assert!(facts.groups.is_empty());
+    }
+
+    /// A human-readable name lives in the vendor's `interface` block in every
+    /// real manifest inspected; the top-level `displayName` this first read is
+    /// absent from all of them.
+    #[test]
+    fn a_plugin_manifests_interface_block_supplies_the_display_name() {
+        let facts = detect(&[entry(
+            ".codex-plugin/plugin.json",
+            r#"{"name":"hyperframes","version":"0.8.12","skills":"./skills/",
+                "interface":{"displayName":"HyperFrames by HeyGen"}}"#,
+        )])
+        .unwrap();
+        assert_eq!(facts.name.as_deref(), Some("hyperframes"));
+        assert_eq!(facts.display_name.as_deref(), Some("HyperFrames by HeyGen"));
     }
 
     #[test]

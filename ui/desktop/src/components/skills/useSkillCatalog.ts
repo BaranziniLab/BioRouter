@@ -141,6 +141,18 @@ export function standaloneSkills(view: CatalogView): CatalogSkill[] {
 
 export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
   const [view, setView] = useState<CatalogView>(EMPTY);
+  // ⚠ **The rollback target is a ref, not the render closure's `view`.**
+  // Two toggles can be made before React re-renders, and a callback created in
+  // the first render captures the catalog as it was *then*. So when the second
+  // toggle was refused, the rollback restored the state from before the FIRST —
+  // silently undoing a change the daemon had already accepted, on screen only.
+  // A ref written wherever the catalog is committed is always the last thing
+  // this hook actually published, whatever the render timing.
+  const committed = useRef<CatalogView>(EMPTY);
+  const commit = useCallback((next: CatalogView) => {
+    committed.current = next;
+    setView(next);
+  }, []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Serialises mutations so two fast clicks cannot land out of order and leave
@@ -155,7 +167,7 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
         const response = rescan
           ? await refreshSkillCatalog<true>({ query, throwOnError: true })
           : await skillCatalogHandler<true>({ query, throwOnError: true });
-        setView(response.data);
+        commit(response.data);
         setError(null);
       } catch (err) {
         setError(`Could not read the skill catalog: ${errorText(err)}`);
@@ -163,7 +175,7 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
         setLoading(false);
       }
     },
-    [sessionId]
+    [commit, sessionId]
   );
 
   useEffect(() => {
@@ -191,10 +203,10 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
       if (keys.length === 0) return Promise.resolve({ ok: true });
 
       const run = async (): Promise<SkillMutationResult> => {
-        const previous = view;
+        const previous = committed.current;
         // Optimistic, so the switch does not lag the click — and reverted below
         // if the write is refused.
-        setView(applyOptimistically(previous, keys, enabled, sessionId !== null));
+        commit(applyOptimistically(previous, keys, enabled, sessionId !== null));
 
         try {
           if (sessionId) {
@@ -206,7 +218,7 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
               },
               throwOnError: true,
             });
-            setView(response.data.catalog);
+            commit(response.data.catalog);
           } else {
             keys.forEach((key) => setSkillOverride(key, enabled));
             await saveSkillOverrides();
@@ -216,11 +228,11 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
               query: {},
               throwOnError: true,
             });
-            setView(response.data);
+            commit(response.data);
           }
           return { ok: true };
         } catch (err) {
-          setView(previous);
+          commit(previous);
           if (!sessionId) {
             // Put the in-memory store back in step with the file we failed to
             // write, or the next save would persist this failed edit.
@@ -234,7 +246,10 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
       queue.current = next;
       return next;
     },
-    [sessionId, view]
+    // ⚠ No `view` here — see `committed`. Depending on it would also give
+    // `setEnabled` a new identity on every catalog change, which every caller
+    // then has in ITS dependency array.
+    [commit, sessionId]
   );
 
   const entries = useMemo((): SkillCatalogEntry[] => {
