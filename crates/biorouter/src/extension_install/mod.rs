@@ -19,8 +19,8 @@ pub mod transaction;
 
 pub use brxt::{BrxtBundle, BrxtEnvVar, BrxtManifest, BundledSkill};
 pub use credentials::{
-    cancel_credentials, submit_credentials, CredentialRequests, CredentialSpec, SubmitOutcome,
-    DEFAULT_CREDENTIAL_TTL,
+    cancel_credentials, park_credentials, request_credentials, submit_credentials,
+    CredentialRequests, CredentialSpec, ParkedCredentials, SubmitOutcome, DEFAULT_CREDENTIAL_TTL,
 };
 pub use transaction::{
     CredentialPolicy, ExtensionInstallTransaction, InstallReport, InstallSource, InstallState,

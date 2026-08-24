@@ -165,19 +165,49 @@ impl CredentialRequests {
     }
 }
 
-/// Park a credential card on `session_id` and wait for a person.
+/// A published credential card, before anyone has answered it.
 ///
-/// Returns the outcome the caller must branch on. `owner` groups parks that die
-/// together — an install started by a bridged tool call passes the bridge's
-/// nonce so the card dies with the turn.
-pub async fn request_credentials(
+/// Separate from the wait so a caller — or a test — can learn the id the card
+/// was published under while it is still open. That id is the only handle a
+/// surface needs to answer it.
+pub struct ParkedCredentials {
+    parked: crate::pending_user_action::PendingUserAction,
+}
+
+impl ParkedCredentials {
+    /// The id the answering surface posts back.
+    pub fn id(&self) -> &str {
+        self.parked.id()
+    }
+
+    /// Park until answered, `ttl` elapses, or `cancel` trips.
+    ///
+    /// Returns the outcome and any **non-secret** settings the surface
+    /// collected. A credential is in the OS store by the time this returns and
+    /// is not among them.
+    pub async fn wait(
+        self,
+        ttl: Duration,
+        cancel: Option<&CancellationToken>,
+    ) -> (UserActionOutcome, HashMap<String, String>) {
+        let id = self.parked.id().to_string();
+        let outcome = self.parked.wait(ttl, cancel).await;
+        let settings = CredentialRequests::global().take_settings(&id);
+        CredentialRequests::global().forget(&id);
+        (outcome, settings)
+    }
+}
+
+/// Publish a credential card to `session_id`.
+///
+/// `owner` groups parks that die together — an install started by a bridged tool
+/// call passes the bridge's nonce so the card dies with the turn.
+pub fn park_credentials(
     session_id: Option<&str>,
     owner: Option<&str>,
     prompt: String,
     spec: CredentialSpec,
-    ttl: Duration,
-    cancel: Option<&CancellationToken>,
-) -> (UserActionOutcome, HashMap<String, String>) {
+) -> ParkedCredentials {
     let keys: Vec<SecretKeyRequest> = spec.vars.iter().map(BrxtEnvVar::as_key_request).collect();
     let request = UserActionRequest::Secrets(SecretsRequest {
         prompt,
@@ -186,16 +216,25 @@ pub async fn request_credentials(
     });
 
     let parked = PendingUserActions::global().park(session_id, owner, request);
-    let id = parked.id().to_string();
-    // Registered BEFORE the wait, for the same reason `park` registers before
-    // it publishes: a surface fast enough to answer the card immediately must
-    // find a spec to write against.
-    CredentialRequests::global().register(&id, spec);
+    // Registered BEFORE anyone can answer, for the same reason `park` registers
+    // before it publishes: a surface fast enough to answer the card immediately
+    // must find a spec to write against.
+    CredentialRequests::global().register(parked.id(), spec);
+    ParkedCredentials { parked }
+}
 
-    let outcome = parked.wait(ttl, cancel).await;
-    let settings = CredentialRequests::global().take_settings(&id);
-    CredentialRequests::global().forget(&id);
-    (outcome, settings)
+/// Park a credential card and wait for a person. The transaction's path.
+pub async fn request_credentials(
+    session_id: Option<&str>,
+    owner: Option<&str>,
+    prompt: String,
+    spec: CredentialSpec,
+    ttl: Duration,
+    cancel: Option<&CancellationToken>,
+) -> (UserActionOutcome, HashMap<String, String>) {
+    park_credentials(session_id, owner, prompt, spec)
+        .wait(ttl, cancel)
+        .await
 }
 
 /// Answer a parked credential card: store the values, release the install.

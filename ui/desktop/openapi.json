@@ -13,6 +13,42 @@
     "version": "1.89.4"
   },
   "paths": {
+    "/action-required/secrets": {
+      "post": {
+        "tags": [
+          "super::routes::action_required"
+        ],
+        "summary": "Store the credentials an extension install is parked on, and release it.",
+        "description": "The response reports **names only**: `configuredKeys` on success, `missing`\nwhen a required field came back empty. There is nowhere in it a value can\nsit, which is what lets the parked install — and therefore the model — be\ntold the truth about what happened without being told what it was.\n\nRequires the DR-16 proof-of-user header. The model reaches this daemon over\nthe same HTTP with the same secret key, so without the proof it could satisfy\nits own credential card with a value it invented and drive the install past\nthe one step that exists to involve a person.",
+        "operationId": "submit_secrets",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitSecretsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Names of the keys configured, or which required ones are still missing",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid secret key"
+          },
+          "403": {
+            "description": "The request carried no proof it came from the user"
+          }
+        }
+      }
+    },
     "/action-required/tool-confirmation": {
       "post": {
         "tags": [
@@ -11017,6 +11053,30 @@
               "type": "string"
             },
             "nullable": true
+          }
+        }
+      },
+      "SubmitSecretsRequest": {
+        "type": "object",
+        "description": "Answering a credential card (#117).\n\n⚠ **This request body carries secrets and nothing else in the codebase does.**\nThe values reach `submit_credentials`, which writes them to the OS credential\nstore and drops them. Do not add a field to the response that could carry one\nback, do not add `#[derive(Debug)]` (see the hand-written impl below), and do\nnot log the body.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "description": "The user dismissed the dialog. `values` is ignored when this is set."
+          },
+          "id": {
+            "type": "string",
+            "description": "The card id, as published on the `secretRequest` message."
+          },
+          "values": {
+            "type": "object",
+            "description": "What the user typed, keyed by the card's key names.",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         }
       },
