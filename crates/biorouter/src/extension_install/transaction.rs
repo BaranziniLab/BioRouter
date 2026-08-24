@@ -43,9 +43,7 @@ use super::brxt::{
     extensions_root, run_uv_sync, secret_already_stored, uv_available, uv_missing_message,
     BrxtBundle, BrxtEnvVar, BrxtManifest, BundledSkill,
 };
-use super::credentials::{
-    request_credentials, revoke, CredentialSpec, DEFAULT_CREDENTIAL_TTL,
-};
+use super::credentials::{request_credentials, revoke, CredentialSpec, DEFAULT_CREDENTIAL_TTL};
 
 /// Where the bundle comes from.
 #[derive(Debug, Clone)]
@@ -360,10 +358,7 @@ impl ExtensionInstallTransaction {
                         envs.insert(k, v);
                     }
                     for k in configured_keys {
-                        if manifest
-                            .env_vars
-                            .iter()
-                            .any(|v| v.key == k && v.secret)
+                        if manifest.env_vars.iter().any(|v| v.key == k && v.secret)
                             && !env_keys.contains(&k)
                         {
                             env_keys.push(k.clone());

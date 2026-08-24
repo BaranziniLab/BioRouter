@@ -300,8 +300,12 @@ pub fn submit_credentials(id: &str, values: HashMap<String, String>) -> SubmitOu
                 }
                 let reason = format!("Could not store `{key}` in the credential store: {e}");
                 CredentialRequests::global().forget(id);
-                PendingUserActions::global()
-                    .resolve(id, UserActionOutcome::Failed { reason: reason.clone() });
+                PendingUserActions::global().resolve(
+                    id,
+                    UserActionOutcome::Failed {
+                        reason: reason.clone(),
+                    },
+                );
                 return SubmitOutcome::Failed { reason };
             }
             written_secrets.push(key.clone());
@@ -341,7 +345,8 @@ pub fn submit_credentials(id: &str, values: HashMap<String, String>) -> SubmitOu
 /// Dismiss a parked credential card without values.
 pub fn cancel_credentials(id: &str) -> bool {
     CredentialRequests::global().forget(id);
-    PendingUserActions::global().resolve(id, UserActionOutcome::Cancelled) == ResolveOutcome::Delivered
+    PendingUserActions::global().resolve(id, UserActionOutcome::Cancelled)
+        == ResolveOutcome::Delivered
 }
 
 /// Remove credentials this install wrote. Used by rollback, so a failed or

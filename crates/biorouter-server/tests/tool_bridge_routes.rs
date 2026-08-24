@@ -748,8 +748,7 @@ async fn a_bridged_call_needing_approval_is_answerable_and_resumes() {
     // Approve mode: the permission inspector routes an ungranted call to
     // `needs_approval` instead of allowing it outright. Without this the test
     // would pass with the approval machinery never touched.
-    let grant =
-        real_developer_grant_in(dir.path(), BioRouterMode::Approve, session).await;
+    let grant = real_developer_grant_in(dir.path(), BioRouterMode::Approve, session).await;
     let advertised: Vec<String> = grant.tools().iter().map(|t| t.name.to_string()).collect();
     assert!(
         advertised.iter().any(|n| n == "developer__text_editor"),

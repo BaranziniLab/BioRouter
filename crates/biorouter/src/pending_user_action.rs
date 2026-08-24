@@ -76,9 +76,7 @@ use uuid::Uuid;
 
 use rmcp::model::JsonObject;
 
-use crate::conversation::message::{
-    Message, MessageContent, SecretDestination, SecretKeyRequest,
-};
+use crate::conversation::message::{Message, MessageContent, SecretDestination, SecretKeyRequest};
 use crate::conversation::tool_preview::ToolPreview;
 use crate::permission::tool_risk::ToolRisk;
 use crate::permission::Permission;
@@ -705,7 +703,10 @@ mod tests {
     fn a_secrets_card_carries_names_only() {
         let card = request_message("req-1", &secrets());
         let json = serde_json::to_string(&card).expect("serialisable");
-        assert!(json.contains("SPOKEAGENT_PASSCODE"), "the key name is shown");
+        assert!(
+            json.contains("SPOKEAGENT_PASSCODE"),
+            "the key name is shown"
+        );
         assert!(
             !json.contains("hunter2"),
             "nothing in the card can carry a value"

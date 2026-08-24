@@ -1,4 +1,3 @@
-use biorouter_server::auth::{user_action_proof, UserActionProof};
 use crate::state::AppState;
 use axum::{
     extract::State,
@@ -6,14 +5,15 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use biorouter::extension_install::{cancel_credentials, submit_credentials, SubmitOutcome};
-use std::collections::HashMap;
 use biorouter::agents::approval_relay::{self, ResolveOutcome};
 use biorouter::agents::ConfirmationOutcome;
+use biorouter::extension_install::{cancel_credentials, submit_credentials, SubmitOutcome};
 use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::permission::{Permission, PermissionConfirmation};
+use biorouter_server::auth::{user_action_proof, UserActionProof};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use utoipa::ToSchema;
 
@@ -260,33 +260,37 @@ pub async fn submit_secrets(
         })));
     }
 
-    Ok(Json(match submit_credentials(&request.id, request.values) {
-        SubmitOutcome::Configured { configured_keys } => serde_json::json!({
-            "status": "configured",
-            "configuredKeys": configured_keys,
-        }),
-        SubmitOutcome::Incomplete { missing } => serde_json::json!({
-            "status": "incomplete",
-            "missing": missing,
-        }),
-        SubmitOutcome::Unknown => serde_json::json!({ "status": "unknown" }),
-        SubmitOutcome::Failed { reason } => serde_json::json!({
-            "status": "failed",
-            "reason": reason,
-        }),
-    }))
+    Ok(Json(
+        match submit_credentials(&request.id, request.values) {
+            SubmitOutcome::Configured { configured_keys } => serde_json::json!({
+                "status": "configured",
+                "configuredKeys": configured_keys,
+            }),
+            SubmitOutcome::Incomplete { missing } => serde_json::json!({
+                "status": "incomplete",
+                "missing": missing,
+            }),
+            SubmitOutcome::Unknown => serde_json::json!({ "status": "unknown" }),
+            SubmitOutcome::Failed { reason } => serde_json::json!({
+                "status": "failed",
+                "reason": reason,
+            }),
+        },
+    ))
 }
 
 /// ⚠ Written for a MODEL to read, in the register `SESSION_OUT_OF_REACH` uses:
 /// it forecloses a retry and never suggests that typing the value into the chat
 /// could work. A refusal that invited one would be asking the user to do the
 /// exact thing this whole feature exists to stop.
-pub const UNPROVEN_REFUSAL: &str = "Credentials can only be submitted by the person at the keyboard, \
+pub const UNPROVEN_REFUSAL: &str =
+    "Credentials can only be submitted by the person at the keyboard, \
      through Biorouter's own dialog. Do not retry, and do not ask for the value in chat — \
      a value in a chat message cannot configure anything and would expose it. \
      Tell the user the dialog is waiting for them.";
 
-pub const NO_KEY_REFUSAL: &str = "This Biorouter daemon was started without a way to tell a person from a model, \
+pub const NO_KEY_REFUSAL: &str =
+    "This Biorouter daemon was started without a way to tell a person from a model, \
      so it cannot accept credentials over HTTP. Configure them at a terminal with \
      `biorouter extension install <bundle>`, which prompts with echo off.";
 
@@ -522,9 +526,7 @@ mod tests {
                 "the response echoed the submitted value back: {rendered}"
             );
 
-            let (outcome, settings) = parked
-                .wait(std::time::Duration::from_secs(5), None)
-                .await;
+            let (outcome, settings) = parked.wait(std::time::Duration::from_secs(5), None).await;
             assert!(outcome.is_allowed());
             // The non-secret setting reaches the install out of band — never
             // through the conversation transport, and never through the model.
@@ -562,14 +564,16 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-            let error = body_of(response).await["error"].as_str().unwrap().to_string();
+            let error = body_of(response).await["error"]
+                .as_str()
+                .unwrap()
+                .to_string();
             // ⚠ The refusal is read by a MODEL. It must not send it back to ask
             // the user for the value in chat, which is the exact failure #117
             // exists to end.
             let lowered = error.to_lowercase();
             assert!(
-                !lowered.contains("ask the user for the value")
-                    && !lowered.contains("paste"),
+                !lowered.contains("ask the user for the value") && !lowered.contains("paste"),
                 "the refusal invited a chat answer: {error}"
             );
             assert!(lowered.contains("do not retry"));

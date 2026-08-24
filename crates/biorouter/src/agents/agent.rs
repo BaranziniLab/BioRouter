@@ -9454,7 +9454,11 @@ mod tests {
         );
         let id = parked.id().to_string();
         assert!(
-            !agent.pending_confirmations.lock().unwrap().contains_key(&id),
+            !agent
+                .pending_confirmations
+                .lock()
+                .unwrap()
+                .contains_key(&id),
             "the fixture is only meaningful if this agent never registered it"
         );
         assert!(
@@ -9469,9 +9473,7 @@ mod tests {
             ConfirmationOutcome::Delivered
         );
         assert_eq!(
-            parked
-                .wait(std::time::Duration::from_secs(5), None)
-                .await,
+            parked.wait(std::time::Duration::from_secs(5), None).await,
             UserActionOutcome::Approved {
                 permission: Permission::AllowOnce
             }
@@ -9503,9 +9505,7 @@ mod tests {
             .handle_confirmation(parked.id().to_string(), confirmation(Permission::Cancel))
             .await;
         assert_eq!(
-            parked
-                .wait(std::time::Duration::from_secs(5), None)
-                .await,
+            parked.wait(std::time::Duration::from_secs(5), None).await,
             UserActionOutcome::Cancelled
         );
     }
