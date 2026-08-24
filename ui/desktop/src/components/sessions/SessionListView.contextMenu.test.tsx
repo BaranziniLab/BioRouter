@@ -136,6 +136,56 @@ describe('History row menus', () => {
   });
 
   /**
+   * "Works for user, scheduled, diverged, and subagent rows." The menu is not
+   * gated on kind and must not become so — a subagent run is exactly the row
+   * whose id an agent is most likely to be asked about, and it is the one that
+   * only appears once "Show subagent runs" is on, so it is the one a
+   * kind-dependent regression would hide.
+   *
+   * `chatRowActions` takes no kind at all, which is why this can be asserted
+   * once across all four rather than four times.
+   */
+  it('offers the menu on every kind of row, copying each row’s own id', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          session,
+          { ...session, id: '20260823_3', name: 'Nightly QC', session_type: 'scheduled' },
+          { ...session, id: '20260823_4', name: 'Branch of Excel', diverged_from: '20260823_2' },
+          {
+            ...session,
+            id: '20260823_5',
+            name: 'Subagent: Word research',
+            session_type: 'sub_agent',
+            parent_session_id: '20260823_2',
+          },
+        ],
+      },
+    });
+    await renderHistory();
+    // The subagent row is only fetched and shown once the toggle is on.
+    fireEvent.click(await screen.findByLabelText(/show subagent runs/i));
+    await screen.findByText('Subagent: Word research');
+
+    for (const [label, id] of [
+      ['Excel research', '20260823_2'],
+      ['Nightly QC', '20260823_3'],
+      ['Branch of Excel', '20260823_4'],
+      ['Subagent: Word research', '20260823_5'],
+    ] as const) {
+      fireEvent.contextMenu(screen.getByText(label));
+      const items = await screen.findAllByRole('menuitem');
+      expect(items.map((item) => item.textContent)).toEqual([
+        'Open in new tab',
+        'Open in new window',
+        'Copy conversation ID',
+      ]);
+      fireEvent.click(screen.getByText('Copy conversation ID'));
+      await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(id));
+    }
+  });
+
+  /**
    * The trigger is `asChild` on the row itself. A wrapper element here would sit
    * between `.biorouter-list-shell` and its rows and take the list separators
    * with it — invisible to jsdom, so the structural assertion is the guard.
