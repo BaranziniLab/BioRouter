@@ -55,9 +55,6 @@ function findFirstAvailableModel(models: ModelOption[]): string | null {
   return validModels[0].value;
 }
 
-const formatContext = (value: number | null | undefined) =>
-  typeof value === 'number' ? `${value.toLocaleString()} context` : 'context unknown';
-
 const llamaDownloadLabel = (model: LlamaCppModel | undefined) => {
   switch (model?.download_status) {
     case 'downloaded':
@@ -84,19 +81,6 @@ const llamaFitLabel = (model: LlamaCppModel | undefined) => {
   }
 };
 
-const llamaFallbackLabel = (model: LlamaCppModel | undefined) => {
-  switch (model?.fallback_download_status) {
-    case 'downloaded':
-      return 'Fallback ready';
-    case 'partial':
-      return 'Fallback partial';
-    case 'not_downloaded':
-      return model?.ollama_name ? 'Fallback may download' : null;
-    default:
-      return null;
-  }
-};
-
 const llamaModelOption = (
   modelName: string,
   catalog: Map<string, LlamaCppModel>,
@@ -112,13 +96,17 @@ const llamaModelOption = (
     };
   }
 
+  // THREE facts, not six. This row is ~46 characters wide before it wraps, and
+  // the six-fact version ran to ~110 — two wrapped lines of near-identical grey
+  // text per row, which is what made the list unreadable and (with the old fixed
+  // row height) unclickable. What survives is what a user chooses BY: how big the
+  // download is, whether they already have it, and whether it suits this machine.
+  // The fallback state and the raw `owner/repo:QUANT` spec are diagnostics, not
+  // selection criteria — LocalModelInventory in Settings is where those belong.
   const detail = [
     entry.download_size,
-    formatContext(entry.context_limit),
     llamaDownloadLabel(entry),
-    llamaFallbackLabel(entry),
     llamaFitLabel(entry),
-    entry.ollama_name ?? entry.hf_spec,
   ]
     .filter(Boolean)
     .join(' · ');

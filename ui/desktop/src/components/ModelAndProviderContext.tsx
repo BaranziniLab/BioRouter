@@ -657,7 +657,16 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           }
         }}
       >
-        <DialogContent className="w-[calc(100vw-2rem)] overflow-hidden sm:max-w-[520px]">
+        {/*
+          `max-h` + a scrolling BODY, not just `overflow-hidden`. This sheet's detail
+          block grows with the model (blob path, suitability message, fallback state),
+          and with no height ceiling the dialog centred itself taller than the viewport
+          — putting its own "Warm up" and "Keep previous" buttons off-screen, where they
+          are unreachable rather than merely ugly. The ceiling lives here and the scroll
+          lives on the body below, so the header and footer stay pinned and the footer's
+          controls are always in view. Guarded by ModelAndProviderContext.warmupDialog.test.tsx.
+        */}
+        <DialogContent className="flex max-h-[calc(100vh-4rem)] w-[calc(100vw-2rem)] flex-col overflow-hidden sm:max-w-[520px]">
           <DialogHeader>
             <DialogTitle>Warm up local model</DialogTitle>
             <DialogDescription>
@@ -668,7 +677,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           </DialogHeader>
 
           {llamaWarmupDialog && (
-            <div className="space-y-4 text-sm">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 text-sm">
               <div className="min-w-0 rounded-md border border-border-subtle bg-background-medium p-3">
                 <div className="grid min-w-0 gap-1.5 text-xs">
                   <WarmupDetailRow label="Download">

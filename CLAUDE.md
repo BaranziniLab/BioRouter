@@ -321,22 +321,41 @@ Local ranks before Institutional/Commercial everywhere (GUI onboarding,
 settings provider grid, `biorouter configure`).
 
 - **Provider:** `crates/biorouter/src/providers/llamacpp.rs` — OpenAI-compat
-  HTTP to the sidecar; curated `MODEL_CATALOG` (Qwen3.5 + Gemma 4 families,
-  Q4_K_M from verified `unsloth/*-GGUF` HF repos; default `qwen3.5-4b`).
-  Unlisted models accepted as raw `owner/repo:QUANT` HF specs.
+  HTTP to the sidecar; curated `MODEL_CATALOG` of **Gemma 4 and Qwen3.6**
+  models mirrored from the Ollama library, with Google's QAT GGUFs as the
+  Hugging Face fallback. `default_model_name()` is memory-tiered:
+  `gemma4-12b` at ≥64 GiB, `gemma4` (E4B) below. Unlisted models are accepted
+  as raw `owner/repo:QUANT` HF specs. ⚠ This block claimed a Qwen3.5 catalog
+  defaulting to `qwen3.5-4b` until 2026-08-23; there has never been a
+  `qwen3.5-4b` entry — read `MODEL_CATALOG` rather than trusting a summary.
 - **Sidecar manager:** `crates/biorouter/src/providers/llamacpp_sidecar.rs` —
   binary discovery (`BIOROUTER_LLAMACPP_BIN` → `<exe dir>/llamacpp/` → dev
   repo path → PATH), spawn with `-hf` (models download from Hugging Face into
-  the data dir on first use), `/health` readiness, status snapshots, restart
-  on model switch. Defaults: port 11543, q8_0 KV cache, and a **model-native
-  context window** (`--ctx-size 0`, so it tracks the loaded model; the live
-  window is read back from `/props` and reported for token accounting —
-  `LLAMACPP_CONTEXT_SIZE` pins/caps it, e.g. on memory-constrained machines
-  where a large native window like qwen3.5-4b's 262k is too heavy; 32k is only
-  a fallback when the live value is unreadable). Thinking is **enabled** by
-  default via `--reasoning on` (`LLAMACPP_ENABLE_THINKING=false` → `--reasoning
-  off`). `LLAMACPP_EXTRA_ARGS` for anything else, `LLAMACPP_EXTERNAL_HOST` to
-  use an unmanaged server.
+  the Ollama model store on first use), `/health` readiness, status snapshots,
+  restart on model switch. Defaults: port 11543, q8_0 KV cache, and a
+  **memory-tiered context window** — `default_context_size()` returns 128k at
+  ≥64 GiB of GPU-addressable memory, 64k at ≥16 GiB, else 32k. It is **not**
+  `--ctx-size 0`: a model's native window can be 262k, and allocating that KV
+  cache is slow-to-impossible on a laptop. `LLAMACPP_CONTEXT_SIZE` pins it
+  (`0` means "auto"), and the window the server really allocated is read back
+  from `/props` so the gauge matches reality. Thinking is **off** by default
+  (`--reasoning off`), so short warm-up completions spend their budget on
+  visible content rather than hidden reasoning; `LLAMACPP_ENABLE_THINKING=true`
+  turns it on. `LLAMACPP_EXTRA_ARGS` for anything else, `LLAMACPP_EXTERNAL_HOST`
+  to use an unmanaged server.
+  **Speed:** `--spec-type ngram-simple` is passed by default —
+  self-speculative decoding that drafts from the context, so it needs no draft
+  model, no download and no extra VRAM. Measured on an M4 Max with
+  gemma-4-E4B: **79.7 → 354.4 tok/s** on repetition-heavy agentic generation
+  (quoting tool output, rewriting a file) with free text unchanged at ~82.
+  `ngram-mod` is faster still but costs 2% on free text; `ngram-map-k4v` loses
+  16% and is rejected. `LLAMACPP_SPEC_TYPE=none` disables it. Only Metal/Gemma
+  has been measured — re-benchmark before assuming it holds elsewhere.
+  **Self-heal:** three ordered retries on a dead child (drop optional flags
+  after an argv error → step down the auto context after an OOM → Hugging Face
+  fallback / resume a partial download). While any of them is deciding,
+  `status()` reports `Starting`, **not** `Error` — a terminal status there made
+  the GUI's 1500 ms poller abort startups that were about to recover.
   **Orphan reaping:** statics never drop, so `kill_on_drop` cannot cover
   process exit; spawns are recorded in `<data>/llamacpp/run/<ppid>.pid` and
   the next `ensure()` in any Biorouter process kills children of dead parents.

@@ -109,7 +109,14 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
         // writing provider config mid-sequence instead of finishing the
         // group from beyond the grave.
         // Explicitly setting the (defaulted) port marks the provider configured.
-        await upsert('LLAMACPP_PORT', '11543', false);
+        //
+        // The NUMBER 11543, never the string '11543'. `/config/upsert` writes the
+        // value verbatim, and the backend reads this key back with a typed
+        // `Config::get_param::<usize>()` — serde_yaml does not coerce a quoted
+        // scalar into a `usize`, so `LLAMACPP_PORT: '11543'` deserialised as `Err`
+        // and every call site swallowed it with `.ok()`/`.unwrap_or(DEFAULT)`: the
+        // key saved, and did nothing. Pinned by LlamaServerInlineCard.test.tsx.
+        await upsert('LLAMACPP_PORT', 11543, false);
         if (!mountedRef.current) return;
         await upsert('BIOROUTER_PROVIDER', 'llamacpp', false);
         if (!mountedRef.current) return;

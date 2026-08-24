@@ -314,7 +314,19 @@ describe('LlamaServerInlineCard', () => {
 
     fireEvent.click(await view.findByTestId('llamacpp-connect'));
     await waitFor(() => expect(mockUpsert).toHaveBeenCalledTimes(1));
-    expect(mockUpsert).toHaveBeenCalledWith('LLAMACPP_PORT', '11543', false);
+    // The port goes over the wire as a NUMBER. `/config/upsert` writes what it is
+    // given verbatim and the backend reads the key with a typed
+    // `Config::get_param::<usize>()`; serde_yaml will not coerce `'11543'` into a
+    // `usize`, so a quoted write deserialises as `Err` and is swallowed by the
+    // `.ok()`/`.unwrap_or(DEFAULT)` at every call site — the setting saves and does
+    // nothing. Asserted on the actual argument with `toBe` plus an explicit
+    // `typeof`, because a loose matcher (`expect.anything()`, a truthy check, or a
+    // `/11543/` pattern) is satisfied by the string that IS the bug.
+    const [portKey, portValue, portSecret] = mockUpsert.mock.calls[0] as [string, unknown, boolean];
+    expect(portKey).toBe('LLAMACPP_PORT');
+    expect(portValue).toBe(11543);
+    expect(typeof portValue).toBe('number');
+    expect(portSecret).toBe(false);
 
     // The card unmounts while the FIRST write is still in flight; the two
     // remaining provider/model writes must never happen.
