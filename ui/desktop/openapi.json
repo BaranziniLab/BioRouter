@@ -10443,7 +10443,12 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "The install directory name — `CatalogBundle.name`."
+            "description": "The install directory name — a `CatalogBundle.name`, or the last\ncomponent of a `CatalogSkill.slug`."
+          },
+          "sourceRoot": {
+            "type": "string",
+            "description": "Which skills root it lives under. Omit for the Biorouter one.\n\n⚠ **Validated against [`skill_catalog::roots`], not merely resolved.**\nThis handler deletes a directory tree, so the root is chosen from the\nset the daemon itself enumerated rather than taken from the caller. A\npath the caller invents matches nothing and is refused — which is why\nthis can safely cover `~/.claude/skills` and a project directory, the\ntwo the Skills pane has always offered a Delete for.",
+            "nullable": true
           }
         }
       },
