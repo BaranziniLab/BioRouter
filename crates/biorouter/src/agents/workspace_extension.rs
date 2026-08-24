@@ -5875,10 +5875,22 @@ pub(crate) mod tests {
         // …and the dispatcher hands each newly gated handler the capability the
         // call was ADMITTED on. Without this the guards above have nothing to
         // ask and the handlers go quietly back to ungated.
+        //
+        // ⚠ The needle stops at `cap,` on purpose. It used to pin the WHOLE
+        // argument list — `(caller, cap, arguments)` — and #110 broke it by
+        // giving `handle_watch` a fourth argument (the turn's cancel token, so a
+        // parked watch is reachable by Stop), a change that threads the
+        // capability exactly as before. A guard that fails on a legitimate
+        // argument gets weakened by the next person in a hurry, and the way it
+        // gets weakened is by deleting the row. Asserting the PROPERTY — this
+        // handler is handed the admitted capability, second, right after the
+        // caller — is what survives a growing signature while still failing the
+        // thing it exists to catch: a handler that stops being given `cap` at
+        // all, or that is given one it re-derived for itself.
         for arm in [
-            "\"workspace_set_tools\" => self.handle_set_tools(caller, cap, arguments)",
-            "\"workspace_close\" => self.handle_close(caller, cap, arguments)",
-            "\"workspace_watch\" => self.handle_watch(caller, cap, arguments)",
+            "\"workspace_set_tools\" => self.handle_set_tools(caller, cap,",
+            "\"workspace_close\" => self.handle_close(caller, cap,",
+            "self.handle_watch(caller, cap,",
         ] {
             assert!(
                 production.contains(arm),
