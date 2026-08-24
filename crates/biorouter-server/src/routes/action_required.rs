@@ -339,7 +339,10 @@ mod tests {
                 rendered.contains("SPOKEAGENT_PASSCODE"),
                 "the key names are what make this type debuggable: {rendered}"
             );
-            assert!(rendered.contains("card-1"), "the card id should survive: {rendered}");
+            assert!(
+                rendered.contains("card-1"),
+                "the card id should survive: {rendered}"
+            );
         }
     }
 
