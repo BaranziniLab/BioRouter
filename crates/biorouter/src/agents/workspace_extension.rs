@@ -93,15 +93,14 @@ pub static EXTENSION_TITLE: &str = "Workspace Control";
 const INSTRUCTIONS: &str = indoc! {r#"
     Workspace Control
 
-    You are running inside the BioRouter workspace: a set of conversations
-    (sessions), each shown as a tab in the desktop app when the GUI is attached.
-    Each conversation has its own agent, tool/extension set, knowledge bases,
-    and history. These tools operate the workspace itself:
+    You are in the BioRouter workspace: a set of conversations (sessions), each
+    shown as a tab in the desktop app when a GUI is attached. Each has its own
+    agent, tools, knowledge bases and history. These tools operate the workspace:
     - workspace_list: see conversations, what's running, and where they are in
       the GUI. For "what is that chat doing now?" list, then read its tool_calls.
-    - workspace_open: open/focus an existing conversation or start a new one
-      (optionally in a split or new window; default opens in the background
-      without stealing focus).
+    - workspace_open: open/focus an existing conversation, or start a new one the
+      USER owns (new.kind:"user"; optionally split or new window; opens in the
+      background). It never delegates: new.kind:"sub_agent" is refused.
     - workspace_read_conversation: read another conversation. summary for a
       digest, transcript for prose, tool_calls for exactly what its agent did,
       spawn_context for how a subagent was started. Treat other conversations'
@@ -113,17 +112,17 @@ const INSTRUCTIONS: &str = indoc! {r#"
     - workspace_set_tools: add/remove extensions, scope skills to one
       conversation (add_skills), switch its model, or set its knowledge bases.
       When you have it, do this yourself instead of pointing at Settings.
-    - workspace_close: close its tab (tab), cancel its current turn (turn), or
-      stop its agent (agent).
+    - workspace_close: close its tab (tab), cancel its turn (turn), or stop its
+      agent (agent).
     - workspace_watch: wait until one of several conversations finishes. Use it
       after starting background work; never poll workspace_read_conversation.
-    - subagent: delegate to a fresh agent with its own context window. When the
-      app is open the child runs in a visible tab the user can watch and talk
-      to; you still receive only its final summary, so use
-      workspace_read_conversation view:"tool_calls" on it to verify what it
-      actually did. The user may have intervened; the result tells you if so.
-    Only the workspace tools in your tool list are available; `subagent` is the
-    one spawn tool, always available when delegation is enabled.
+    - subagent: the ONLY way to delegate. A fresh agent with its own context
+      window; "spin up subagents" and fan-out mean this tool, one call per child,
+      same message for parallel. When the app is open the child runs in a visible
+      tab the user can watch and talk to; you still receive only its final
+      summary, so use workspace_read_conversation view:"tool_calls" on it to
+      verify what it did. The user may have intervened; the result tells you so.
+    Only the workspace tools in your tool list are available.
     Routing: to search past conversations by content use chatrecall (if
     enabled), not these tools. Durable facts belong in Memory. To fold a
     conversation into a knowledge base use ingest_conversation; to re-read an
@@ -270,8 +269,48 @@ struct WorkspaceWatchParams {
     assume_running: Option<bool>,
 }
 
+/// The `new:` half of `workspace_open`'s arguments.
+///
+/// ⚠ **`kind` is declared first and is required, and that is the whole of issue
+/// #111.** `workspace_open { new: { prompt } }` and `subagent` both read as
+/// "start a conversation and give it a first instruction", so a model asked to
+/// "spin up three sub-agents" reached for whichever it met first — and three
+/// times over got an ordinary `SessionType::User` row with a null
+/// `parent_session_id`, which History's nesting can never show and
+/// `workspace_list { only_subagents }` can never find. The work ran; the
+/// sessions were not subagents in the data model.
+///
+/// The fix is a declaration, not an inference. The caller has to say which of
+/// the two things it means, in the same vocabulary `workspace_list` reports as
+/// `session_type`, and one of the two answers is a refusal naming the right
+/// tool. Nothing is guessed from the prompt: a conversation the *user* owns may
+/// legitimately open with one, which is exactly why the prompt cannot be the
+/// signal.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+// `kind` is optional in Rust so the handler owns the "you left it out" message
+// (serde's own "missing field kind" teaches nothing), and required in the
+// SCHEMA so a provider that validates tool arguments refuses the call before it
+// costs a round trip. `new_declares_its_kind_in_the_schema` is the guard that
+// the two halves stay in step.
+#[schemars(extend("required" = ["kind"]))]
 struct WorkspaceOpenNew {
+    /// **Required**, and closed: `"user"` or `"sub_agent"`. This is the same
+    /// vocabulary `workspace_list` reports as `session_type` — a conversation's
+    /// kind has ONE set of names in this system, not one per tool.
+    ///
+    /// - `"user"` — a conversation the **user** owns, exactly like one they
+    ///   started themselves: no parent, not your delegate, and it keeps its own
+    ///   full tool surface. Use it to put a second piece of work in front of the
+    ///   user. A first `prompt` is fine here.
+    /// - `"sub_agent"` — delegation, which **this tool refuses**. Only the
+    ///   `subagent` tool can create one: it stamps this conversation as the
+    ///   child's parent before the child's first turn, applies the subagent
+    ///   restrictions and lifecycle, and returns the child's summary to you.
+    ///
+    /// Anything else — including `scheduled`, `hidden` and `terminal`, which are
+    /// not this door's to mint — is refused with the two names above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
     /// Where the new conversation works. **Defaults to your own working
     /// directory** (BR-71 decision 5); pass a different one only when the task
     /// really is somewhere else — the user is told when it differs.
@@ -298,6 +337,60 @@ struct WorkspaceOpenNew {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     prompt: Option<String>,
 }
+
+/// Issue #111: the ONE crossing between `workspace_open` and delegation, and
+/// the only place a `new.kind` is turned into a decision.
+///
+/// Three properties, each load-bearing:
+///
+/// * **It parses, it does not string-compare.** The value goes through
+///   [`SessionType::from_str`], so this door speaks the vocabulary the store
+///   persists and `workspace_list` reports rather than a private copy of it. A
+///   rename of the persisted spelling cannot leave a second one stranded here.
+/// * **It refuses everything it is not sure of.** `Scheduled`, `Hidden` and
+///   `Terminal` parse fine and are still refused: creating those is not this
+///   door's job, and a vocabulary that quietly accepts five values while
+///   documenting two is the same ambiguity in a new place.
+/// * **It never looks at the prompt.** Delegation is recognised because the
+///   caller *said* so, not because the request looked like a task. A
+///   conversation the user owns may legitimately open with a first prompt, so
+///   the prompt carries no information about which of the two this is — and a
+///   heuristic that read it would misclassify exactly the sessions the user
+///   cares most about.
+fn refuse_unless_creatable_kind(kind: Option<&str>) -> Result<(), String> {
+    match kind.map(str::parse::<crate::session::session_manager::SessionType>) {
+        Some(Ok(crate::session::session_manager::SessionType::User)) => Ok(()),
+        Some(Ok(crate::session::session_manager::SessionType::SubAgent)) => {
+            Err(DELEGATION_IS_NOT_THIS_TOOL.to_string())
+        }
+        _ => Err(format!(
+            "new.kind is required, and closed: \"user\" (a conversation the USER owns — no \
+             parent, not your delegate) or \"sub_agent\" (delegation, which this tool refuses \
+             — call `subagent`). It is the same vocabulary workspace_list reports as \
+             session_type. Got: {}. Nothing was created.",
+            match kind {
+                Some(k) => format!("{k:?}"),
+                None => "no kind at all".to_string(),
+            }
+        )),
+    }
+}
+
+/// The refusal a `kind: "sub_agent"` gets, as a constant because it is the
+/// model-facing product of issue #111 and a test asserts the model is told all
+/// four things it needs: that this tool cannot, why that is a data-model fact
+/// rather than a naming quibble, which tool can, and what to pass if a peer
+/// conversation is what was actually wanted.
+const DELEGATION_IS_NOT_THIS_TOOL: &str = concat!(
+    "workspace_open cannot create a subagent, and this is not a naming quibble: a conversation ",
+    "created here belongs to the USER, so it is born with no parent, it is not your delegate, ",
+    "and History can never nest it under you. Delegation has its own tool. Call `subagent` with ",
+    "`instructions` instead — it creates the child as session_type \"sub_agent\", stamps this ",
+    "conversation as its parent before the child's first turn, applies the subagent restrictions ",
+    "and lifecycle, opens a tab the user can watch, and returns the child's summary to you. If ",
+    "you did mean a conversation for the USER to own rather than a delegate of yours, pass ",
+    "kind:\"user\". Nothing was created."
+);
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct WorkspaceOpenParams {
@@ -573,13 +666,18 @@ impl WorkspaceClient {
             crate::agents::subagent_tool::create_subagent_tool(&[]),
             Self::tool(
                 "workspace_open",
-                "Open or focus a conversation. Pass session_id to bring an \
-                 existing one up, or new to start a fresh one (its working \
-                 directory defaults to yours; extensions, knowledge bases and a \
-                 first prompt are optional). placement: tab (default), split or \
-                 window; focus defaults to false so the user's composer is never \
-                 stolen. Headless, the session is still created and the result \
-                 says no tab was opened.",
+                "Open or focus a conversation the USER owns. Pass session_id to \
+                 bring an existing one up, or new to start a fresh one — then \
+                 new.kind is REQUIRED and must be \"user\" (its working directory \
+                 defaults to yours; extensions, knowledge bases and a first \
+                 prompt are optional). This tool does NOT delegate: it cannot \
+                 create a subagent, and new.kind:\"sub_agent\" is refused. To hand \
+                 work to an agent of your own — however the request is phrased, \
+                 including \"spin up subagents\" — call `subagent`, the only tool \
+                 that stamps this conversation as the child's parent. placement: \
+                 tab (default), split or window; focus defaults to false so the \
+                 user's composer is never stolen. Headless, the session is still \
+                 created and the result says no tab was opened.",
                 serde_json::to_value(schema_for!(WorkspaceOpenParams)).unwrap(),
                 false,
             ),
@@ -1191,6 +1289,14 @@ impl WorkspaceClient {
         cap: crate::privacy::CallCapability,
         new: WorkspaceOpenNew,
     ) -> Result<NewSession, String> {
+        // Issue #111, and FIRST — ahead of the extension gate, the daemon lookup
+        // and `create_session` — because a refusal that has already minted a row
+        // produces the exact outcome the refusal exists to prevent: an
+        // unparented conversation nobody asked for. It sits inside the one
+        // function that creates a session, rather than beside `placement`'s
+        // check in the caller, so it cannot be bypassed by a future second
+        // caller of this function.
+        refuse_unless_creatable_kind(new.kind.as_deref())?;
         // Issue #56, finding 4: the second ungated extension-ENABLE door. Before
         // the daemon lookup and long before `create_session`, so a refusal
         // cannot leave a half-built conversation behind.
@@ -4908,6 +5014,7 @@ pub(crate) mod tests {
         let c = client();
         let private_ext = a_private_extension();
         let args = serde_json::json!({ "new": {
+            "kind": "user",
             "working_dir": std::env::temp_dir().to_string_lossy(),
             "extensions": [private_ext],
         }});
@@ -4957,6 +5064,7 @@ pub(crate) mod tests {
         const KEY: &str = "br71pinnedoff";
         const NAME: &str = "br71-pinned-off";
         let args = serde_json::json!({ "new": {
+            "kind": "user",
             "working_dir": std::env::temp_dir().to_string_lossy(),
             "extensions": [NAME],
         }});
@@ -5012,6 +5120,7 @@ pub(crate) mod tests {
         let c = client();
         let private_ext = a_private_extension();
         let args = serde_json::json!({ "new": {
+            "kind": "user",
             "working_dir": std::env::temp_dir().to_string_lossy(),
             "extensions": [private_ext],
         }});
@@ -5380,6 +5489,7 @@ pub(crate) mod tests {
             &f.client,
             "workspace_open",
             serde_json::json!({ "new": {
+                "kind": "user",
                 "working_dir": std::env::temp_dir().to_string_lossy(),
                 "extensions": [private_ext],
             }}),
@@ -8003,6 +8113,243 @@ pub(crate) mod tests {
         }
     }
 
+    /// **Issue #111.** `workspace_open` is not a delegation door, and the refusal
+    /// that makes that true has to arrive *before* a session exists.
+    ///
+    /// The bug this replaces was not a missing check — it was a missing
+    /// question. `workspace_open { new: { prompt } }` and `subagent` both read
+    /// as "start a conversation and give it a first instruction", so a model
+    /// asked to spin up three sub-agents used the first of the two it met and
+    /// got three ordinary `User` rows with no parent. Nothing was wrong with
+    /// each individual call; the tool simply never asked which of the two things
+    /// was meant.
+    ///
+    /// So the assertions here are about the *shape* of the answer, not only its
+    /// polarity:
+    ///
+    /// * nothing reached `start_session` — a refusal that has already minted a
+    ///   row produces the exact outcome it exists to prevent;
+    /// * the refusal names `subagent`, because a model told only "no" has no
+    ///   move except to try the same call again (which is what happened in the
+    ///   field with a differently-worded refusal);
+    /// * it also names `kind:"user"`, so a caller that genuinely wanted a peer
+    ///   conversation is not stranded by a message written for the other case.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn workspace_open_refuses_to_create_a_subagent_and_names_the_tool_that_can() {
+        let recorder = FakeServices::with_gui(true).install();
+        let c = client();
+
+        let refused = open_as(
+            &c,
+            "caller",
+            serde_json::json!({ "new": { "kind": "sub_agent", "prompt": "research Excel" } }),
+        )
+        .await;
+
+        let text = text_of(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            recorder.sessions_started().is_empty(),
+            "the refusal created a session anyway: {:?}",
+            recorder.sessions_started()
+        );
+        assert!(
+            text.contains("`subagent`"),
+            "the refusal must name the tool that CAN delegate: {text}"
+        );
+        assert!(
+            text.contains("kind:\"user\""),
+            "…and what to pass for the other case: {text}"
+        );
+        assert!(
+            text.contains("parent"),
+            "…and why this is a data-model fact, not a naming quibble: {text}"
+        );
+
+        // ⚠ **Every test in this file that installs an override clears it, and
+        // this one has to too.** `serial_test`'s `serial`/`parallel` pairing
+        // stops an override from being *observed concurrently*; it does nothing
+        // about one left behind. The reader is
+        // `workspace_list_reports_headless_and_sessions`, whose whole subject is
+        // the headless answers — so a leaked `with_gui(true)` makes it report
+        // `gui_attached: true` in a run that never touched it, on whichever
+        // platform happens to schedule the two in that order (this failed on
+        // ubuntu while macOS and Windows both passed).
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// The other half of #111's closed vocabulary: absent, and every value this
+    /// door does not create.
+    ///
+    /// `scheduled`, `hidden` and `terminal` are in the list deliberately. They
+    /// are real `SessionType` variants, so a validator written as "reject
+    /// sub_agent, accept the rest" would take all three — and `workspace_open`
+    /// would quietly become the way to mint a hidden conversation. Refusing
+    /// everything but the one kind it creates is the only shape where the
+    /// vocabulary the docs state and the vocabulary the code accepts are the
+    /// same two words.
+    ///
+    /// The empty-string and typo cases are here for the same reason `placement`
+    /// has them: an open vocabulary fails silently, and "sub-agent" (a hyphen a
+    /// model will absolutely produce) must not fall through to the accept arm.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn workspace_open_refuses_a_new_conversation_it_cannot_declare_the_kind_of() {
+        let recorder = FakeServices::with_gui(true).install();
+        let c = client();
+
+        // No `kind` at all — the shape every pre-#111 caller sent.
+        let refused = open_as(&c, "caller", serde_json::json!({ "new": {} })).await;
+        let text = text_of(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains("\"user\"") && text.contains("\"sub_agent\""),
+            "the refusal states the whole vocabulary: {text}"
+        );
+        assert!(
+            text.contains("session_type"),
+            "…and that it is the vocabulary workspace_list already reports: {text}"
+        );
+
+        for bad in [
+            "scheduled",
+            "hidden",
+            "terminal",
+            "sub-agent",
+            "subagent",
+            "peer",
+            "User",
+            "",
+        ] {
+            let refused =
+                open_as(&c, "caller", serde_json::json!({ "new": { "kind": bad } })).await;
+            let text = text_of(&refused);
+            assert_eq!(refused.is_error, Some(true), "kind {bad:?} was accepted");
+            assert!(
+                text.contains("\"user\""),
+                "kind {bad:?} was refused without stating the vocabulary: {text}"
+            );
+        }
+
+        assert!(
+            recorder.sessions_started().is_empty(),
+            "one of the refused kinds created a session: {:?}",
+            recorder.sessions_started()
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// **`kind:"user"` plus a `prompt` is a legitimate call, and #111 must not
+    /// have broken it.**
+    ///
+    /// This is the case the issue explicitly forbids inferring from: a
+    /// conversation the user owns may open with a first prompt, so the prompt is
+    /// not evidence of delegation. A fix that classified by prompt, or that
+    /// refused `new.prompt` outright, would pass every assertion in the two
+    /// tests above and fail here — which is the whole reason this test exists
+    /// beside them rather than trusting the refusals to define the behaviour.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_user_kind_conversation_may_still_open_with_a_first_prompt() {
+        let recorder = FakeServices::with_gui(true).install();
+        let c = client();
+        let dir = std::env::temp_dir().join("br111-peer");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let ok = open_as(
+            &c,
+            "caller",
+            serde_json::json!({ "new": {
+                "kind": "user",
+                "working_dir": dir.to_str().unwrap(),
+                "prompt": "research Excel automation",
+            }}),
+        )
+        .await;
+
+        let text = text_of(&ok);
+        assert_ne!(ok.is_error, Some(true), "{text}");
+        assert_eq!(
+            recorder.session_dirs(),
+            vec![dir],
+            "the accepted call must reach start_session exactly once: {text}"
+        );
+        // The prompt still runs as a detached turn, provenance-stamped — the
+        // pre-#111 behaviour for this kind, unchanged.
+        assert_eq!(
+            recorder.started.lock().unwrap().len(),
+            1,
+            "the first prompt no longer starts a turn"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// The `new.kind` vocabulary IS `SessionType`'s, not a private copy that
+    /// happens to agree today.
+    ///
+    /// Derived from the enum on both sides rather than written out, so a rename
+    /// of a persisted spelling fails here instead of leaving `workspace_open`
+    /// accepting a word the store no longer uses. That is the same
+    /// one-vocabulary rule the UI follows for `session_type`: a conversation's
+    /// kind has one set of names in this system.
+    #[test]
+    fn the_new_kind_vocabulary_is_the_one_the_store_persists() {
+        use crate::session::session_manager::SessionType;
+
+        assert!(
+            refuse_unless_creatable_kind(Some(&SessionType::User.to_string())).is_ok(),
+            "the accepted kind must be spelled exactly as the store persists it"
+        );
+        let refusal = refuse_unless_creatable_kind(Some(&SessionType::SubAgent.to_string()))
+            .expect_err("sub_agent must be refused here");
+        assert_eq!(refusal, DELEGATION_IS_NOT_THIS_TOOL);
+    }
+
+    /// The schema half of #111: `new.kind` is advertised as **required**, so a
+    /// provider that validates tool arguments refuses the malformed call before
+    /// it costs a round trip.
+    ///
+    /// Asserted against the generated schema rather than the struct, because the
+    /// two can disagree: the field is `Option<String>` in Rust (the handler owns
+    /// the "you left it out" message) and required only by way of a
+    /// `#[schemars(extend(...))]` attribute. Nothing else in the tree would
+    /// notice if that attribute were dropped, or if a future schemars changed
+    /// how `extend` merges with the derive's own `required` array.
+    #[test]
+    fn new_declares_its_kind_in_the_schema() {
+        let schema = serde_json::to_value(schema_for!(WorkspaceOpenParams)).unwrap();
+        // schemars renders an `Option<WorkspaceOpenNew>` as
+        // `anyOf: [{$ref}, {type: null}]`, so the field's own subschema carries
+        // nothing but the description — the `required` array lives on the
+        // definition the `$ref` points at. A test that read
+        // `/properties/new/required` would find no array at all and pass
+        // vacuously if the assertion were the other polarity, which is why the
+        // resolution below is written out rather than pointer-guessed.
+        let definition = schema
+            .pointer("/$defs/WorkspaceOpenNew")
+            .unwrap_or_else(|| panic!("no WorkspaceOpenNew definition: {schema}"));
+        let required: Vec<&str> = definition
+            .get("required")
+            .and_then(|r| r.as_array())
+            .map(|r| r.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert!(
+            required.contains(&"kind"),
+            "new.kind is not required in the advertised schema: {definition}"
+        );
+        // The other fields stay optional — a `required` array that swept them in
+        // would make every pre-existing caller invalid, which is a different
+        // (and much larger) change than the one #111 asks for.
+        assert_eq!(
+            required,
+            vec!["kind"],
+            "only `kind` is required on `new`: {definition}"
+        );
+    }
+
     /// Call `workspace_open` as `caller`. Mirrors [`send_prompt`].
     ///
     /// The §8.1 focus-etiquette preference is pinned OFF here rather than
@@ -8087,8 +8434,18 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        open_as(&c, &caller_a.id, serde_json::json!({ "new": {} })).await;
-        open_as(&c, &caller_b.id, serde_json::json!({ "new": {} })).await;
+        open_as(
+            &c,
+            &caller_a.id,
+            serde_json::json!({ "new": { "kind": "user" } }),
+        )
+        .await;
+        open_as(
+            &c,
+            &caller_b.id,
+            serde_json::json!({ "new": { "kind": "user" } }),
+        )
+        .await;
 
         assert_eq!(
             recorder.session_dirs(),
@@ -8116,7 +8473,7 @@ pub(crate) mod tests {
         open_as(
             &c,
             &caller_a.id,
-            serde_json::json!({ "new": {}, "placement": "window" }),
+            serde_json::json!({ "new": { "kind": "user" }, "placement": "window" }),
         )
         .await;
         assert!(
@@ -8134,7 +8491,7 @@ pub(crate) mod tests {
         let r = open_as(
             &c,
             &caller_a.id,
-            serde_json::json!({ "new": { "working_dir": elsewhere.to_str().unwrap() } }),
+            serde_json::json!({ "new": { "kind": "user", "working_dir": elsewhere.to_str().unwrap() } }),
         )
         .await;
         assert_eq!(recorder.session_dirs().last().unwrap(), &elsewhere);
@@ -8201,8 +8558,13 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let r = open_as_with_announce_only(&c, &caller.id, serde_json::json!({ "new": {} }), true)
-            .await;
+        let r = open_as_with_announce_only(
+            &c,
+            &caller.id,
+            serde_json::json!({ "new": { "kind": "user" } }),
+            true,
+        )
+        .await;
 
         // The GUI never got a focus-stealing frame…
         assert!(
@@ -8245,7 +8607,12 @@ pub(crate) mod tests {
         // assertions above are pinned to the preference, not to some unrelated
         // property of this fixture.
         recorder.clear_frames();
-        let r = open_as(&c, &caller.id, serde_json::json!({ "new": {} })).await;
+        let r = open_as(
+            &c,
+            &caller.id,
+            serde_json::json!({ "new": { "kind": "user" } }),
+        )
+        .await;
         assert!(recorder.frame_with_cmd("open_tab").is_some());
         assert!(text_of(&r).contains("opened in the GUI"));
 
@@ -8294,6 +8661,7 @@ pub(crate) mod tests {
             &c,
             &caller.id,
             serde_json::json!({ "new": {
+                "kind": "user",
                 "extensions": ["br71-fixture-extension"],
                 "knowledge_bases": ["kb-a", "kb-b"],
                 "primary_knowledge_base": "kb-b",
@@ -8358,7 +8726,7 @@ pub(crate) mod tests {
         open_as(
             &c,
             &caller.id,
-            serde_json::json!({ "new": { "knowledge_bases": ["kb-a"] } }),
+            serde_json::json!({ "new": { "kind": "user", "knowledge_bases": ["kb-a"] } }),
         )
         .await;
         assert_eq!(
@@ -8395,7 +8763,7 @@ pub(crate) mod tests {
         let r = open_as(
             &c,
             "caller",
-            serde_json::json!({ "new": { "working_dir": dir.to_str().unwrap() } }),
+            serde_json::json!({ "new": { "kind": "user", "working_dir": dir.to_str().unwrap() } }),
         )
         .await;
         assert_eq!(recorder.session_dirs(), vec![dir.clone()], "it WAS created");
@@ -8512,7 +8880,7 @@ pub(crate) mod tests {
         let r = open_as(
             &c,
             "caller",
-            serde_json::json!({ "new": { "working_dir": dir.to_str().unwrap() } }),
+            serde_json::json!({ "new": { "kind": "user", "working_dir": dir.to_str().unwrap() } }),
         )
         .await;
         assert_ne!(r.is_error, Some(true), "got: {}", text_of(&r));
@@ -8531,7 +8899,12 @@ pub(crate) mod tests {
         // …but "inherit the caller's directory" cannot be guessed when the
         // caller is unreadable, and the tool says exactly that instead of
         // inventing a directory.
-        let r = open_as(&c, "caller", serde_json::json!({ "new": {} })).await;
+        let r = open_as(
+            &c,
+            "caller",
+            serde_json::json!({ "new": { "kind": "user" } }),
+        )
+        .await;
         assert_eq!(r.is_error, Some(true));
         assert!(
             text_of(&r).contains("pass working_dir explicitly"),

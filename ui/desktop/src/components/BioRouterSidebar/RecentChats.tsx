@@ -3,6 +3,8 @@ import type { SessionSummary } from '../../api';
 import { ChevronDown, Clock, Folder } from '../icons/app-icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { ChatKindIcon } from '../chats/ChatKindIcon';
+import { ContextMenu, ContextMenuTrigger } from '../ui/context-menu';
+import { ChatRowContextMenuContent } from '../chats/ChatRowContextMenu';
 
 const LOAD_MORE_THRESHOLD_PX = 64;
 const RECENTS_EXPANDED_STORAGE_KEY = 'biorouter:sidebar-recents-expanded';
@@ -172,28 +174,46 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
   const messageLabel = `${session.message_count} ${session.message_count === 1 ? 'message' : 'messages'}`;
   const sessionTimestamp = formatSessionTimestamp(session.updated_at);
 
+  /* #114: these rows were click-only, so the conversation id — the handle every
+     Workspace tool and Chat Recall's exact load already take — could not be got
+     out of the sidebar at all. `openInNewTab` is this row's OWN `onOpen`, name
+     and all, so the menu opens a tab exactly the way clicking does. */
+  const target = {
+    sessionId: session.id,
+    workingDir: session.working_dir,
+    openInNewTab: () => onOpen(session.id, session.name.trim() || undefined, session.user_set_name),
+  };
+
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          data-testid={`recent-chat-${session.id}`}
-          // One click, one real tab. There is no preview/double-click-to-pin
-          // gesture: an already-open chat is deduped by the reducer, so clicking
-          // around Recents can never replace the chat you are reading.
-          // The name goes WITH the click. We are rendering it right here, so
-          // there is no reason for the tab to open on a placeholder and wait
-          // for BaseChat to fetch a session we already listed.
-          onClick={() =>
-            onOpen(session.id, session.name.trim() || undefined, session.user_set_name)
-          }
-          aria-label={accessibleLabel}
-          aria-current={isActive ? 'page' : undefined}
-          className={`relative flex h-8 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover ${
-            isActive ? 'bg-sidebar-active font-medium before:bg-accent-bar' : ''
-          }`}
-        >
-          {/* ⚠ One glyph, two facts. This row used to draw an identical bubble
+    <ContextMenu>
+      <Tooltip>
+        {/* ⚠ Both triggers are `asChild` onto the SAME button, nested. Each Radix
+          trigger merges its handlers onto its single child, so the button ends
+          up carrying the tooltip's hover/focus listeners and the menu's
+          `contextmenu` listener at once — which is what keeps the row one
+          element. Wrapping the button in a div for the second trigger would put
+          a box inside the 2px row rhythm and break `space-y-0.5`. */}
+        <TooltipTrigger asChild>
+          <ContextMenuTrigger asChild>
+            <button
+              type="button"
+              data-testid={`recent-chat-${session.id}`}
+              // One click, one real tab. There is no preview/double-click-to-pin
+              // gesture: an already-open chat is deduped by the reducer, so clicking
+              // around Recents can never replace the chat you are reading.
+              // The name goes WITH the click. We are rendering it right here, so
+              // there is no reason for the tab to open on a placeholder and wait
+              // for BaseChat to fetch a session we already listed.
+              onClick={() =>
+                onOpen(session.id, session.name.trim() || undefined, session.user_set_name)
+              }
+              aria-label={accessibleLabel}
+              aria-current={isActive ? 'page' : undefined}
+              className={`relative flex h-8 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover ${
+                isActive ? 'bg-sidebar-active font-medium before:bg-accent-bar' : ''
+              }`}
+            >
+              {/* ⚠ One glyph, two facts. This row used to draw an identical bubble
               for every kind of chat plus a separate dense dot for privacy — so
               the icon column carried no information and the tier needed its own
               mark. `ChatKindIcon` folds both in: shape says what the chat IS,
@@ -201,43 +221,46 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
 
               The active tint still wins over the tier ink, because "this is the
               chat you are in" is what the sidebar is for. */}
-          <ChatKindIcon
-            session={session}
-            tier={session.privacy_tier}
-            testId={`recent-chat-glyph-${session.id}`}
-            isActive={isActive}
-            className={`h-3.5 w-3.5 ${isActive ? 'text-accent-bar' : 'text-text-subtle'}`}
-          />
-          <span className="min-w-0 flex-1 truncate leading-5">{title}</span>
-          {isRunning && <ActiveChatIndicator sessionId={session.id} />}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent
-        side="right"
-        align="start"
-        sideOffset={8}
-        className="w-56 max-w-[min(14rem,calc(100vw-16px))] px-2 py-1.5 font-normal"
-      >
-        <div data-testid={`recent-chat-summary-${session.id}`}>
-          <p className="line-clamp-2 font-medium text-text-inverse">{title}</p>
-          <div className="mt-2 flex items-start gap-1.5 text-text-inverse/80">
-            <Folder className="mt-0.5 size-3.5 shrink-0" />
-            <span className="sr-only">Working folder: </span>
-            <span className="min-w-0 break-all font-mono text-xs leading-4">
-              {session.working_dir}
-            </span>
-          </div>
-          <div className="mt-2 flex items-center gap-1.5 text-text-inverse/80">
-            <Clock className="size-3.5 shrink-0" />
-            <div>
-              <p>Last worked {formatTimeSinceLastWorked(session.updated_at)}</p>
-              {sessionTimestamp && <p className="mt-0.5 text-xs">{sessionTimestamp}</p>}
+              <ChatKindIcon
+                session={session}
+                tier={session.privacy_tier}
+                testId={`recent-chat-glyph-${session.id}`}
+                isActive={isActive}
+                className={`h-3.5 w-3.5 ${isActive ? 'text-accent-bar' : 'text-text-subtle'}`}
+              />
+              <span className="min-w-0 flex-1 truncate leading-5">{title}</span>
+              {isRunning && <ActiveChatIndicator sessionId={session.id} />}
+            </button>
+          </ContextMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent
+          side="right"
+          align="start"
+          sideOffset={8}
+          className="w-56 max-w-[min(14rem,calc(100vw-16px))] px-2 py-1.5 font-normal"
+        >
+          <div data-testid={`recent-chat-summary-${session.id}`}>
+            <p className="line-clamp-2 font-medium text-text-inverse">{title}</p>
+            <div className="mt-2 flex items-start gap-1.5 text-text-inverse/80">
+              <Folder className="mt-0.5 size-3.5 shrink-0" />
+              <span className="sr-only">Working folder: </span>
+              <span className="min-w-0 break-all font-mono text-xs leading-4">
+                {session.working_dir}
+              </span>
             </div>
+            <div className="mt-2 flex items-center gap-1.5 text-text-inverse/80">
+              <Clock className="size-3.5 shrink-0" />
+              <div>
+                <p>Last worked {formatTimeSinceLastWorked(session.updated_at)}</p>
+                {sessionTimestamp && <p className="mt-0.5 text-xs">{sessionTimestamp}</p>}
+              </div>
+            </div>
+            <p className="mt-2 text-xs text-text-inverse/80">{messageLabel}</p>
           </div>
-          <p className="mt-2 text-xs text-text-inverse/80">{messageLabel}</p>
-        </div>
-      </TooltipContent>
-    </Tooltip>
+        </TooltipContent>
+      </Tooltip>
+      <ChatRowContextMenuContent target={target} />
+    </ContextMenu>
   );
 }
 

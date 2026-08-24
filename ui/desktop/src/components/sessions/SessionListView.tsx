@@ -9,10 +9,8 @@ import {
   Trash2,
   Download,
   Upload,
-  NewWindow,
   Puzzle,
   GitBranch,
-  MessageSquare,
   MoreHorizontal,
   LoaderCircle,
 } from '../icons/app-icons';
@@ -35,6 +33,8 @@ import { SearchHighlighter } from '../../utils/searchHighlighter';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { groupSessionsByDate, type DateGroup } from '../../utils/dateUtils';
 import { groupSessionsByParent, withoutSubagents } from './sessionGrouping';
+import { ChatRowContextMenu } from '../chats/ChatRowContextMenu';
+import { chatRowActions } from '../chats/chatRowActions';
 import { Skeleton } from '../ui/skeleton';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { ImportSessionModal } from './ImportSessionModal';
@@ -314,7 +314,6 @@ const SessionItem = React.memo(function SessionItem({
   onEditClick,
   onDeleteClick,
   onExportClick,
-  onOpenInNewWindow,
   onDeclassifyClick,
 }: {
   session: Session;
@@ -325,7 +324,6 @@ const SessionItem = React.memo(function SessionItem({
   onEditClick: (session: Session) => void;
   onDeleteClick: (session: Session) => void;
   onExportClick: (session: Session, e: React.MouseEvent) => void;
-  onOpenInNewWindow: (session: Session, e: React.MouseEvent) => void;
   onDeclassifyClick: (session: Session) => void;
 }) {
   const handleEditClick = useCallback(
@@ -351,12 +349,27 @@ const SessionItem = React.memo(function SessionItem({
   // The menu's "Open in new tab" is the same call the row's own click makes.
   // It exists because that behaviour was undiscoverable, not because it was
   // missing — so it must stay the SAME path, not a second one that can drift.
-  const handleOpenInNewTabClick = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      onSelectSession(session.id);
-    },
-    [onSelectSession, session.id]
+  const handleOpenInNewTabClick = useCallback(() => {
+    onSelectSession(session.id);
+  }, [onSelectSession, session.id]);
+
+  /**
+   * The three actions this row offers, from the one shared list (#114).
+   *
+   * Both of this row's menus render THIS array: the right-click menu below and
+   * the `⋯` overflow, which already had the first two items. Mapping the same
+   * descriptors into both is what keeps the keyboard path (Tab to `⋯`, Enter)
+   * and the pointer path (right-click) showing the same menu — and it is why
+   * `openInNewTab` is the row's own `onSelectSession` rather than a second
+   * opener the two menus could disagree about.
+   */
+  const rowActions = useMemo(
+    () => ({
+      sessionId: session.id,
+      workingDir: session.working_dir,
+      openInNewTab: handleOpenInNewTabClick,
+    }),
+    [session.id, session.working_dir, handleOpenInNewTabClick]
   );
 
   const handleExportClick = useCallback(
@@ -364,13 +377,6 @@ const SessionItem = React.memo(function SessionItem({
       onExportClick(session, e);
     },
     [onExportClick, session]
-  );
-
-  const handleOpenInNewWindowClick = useCallback(
-    (e: React.MouseEvent) => {
-      onOpenInNewWindow(session, e);
-    },
-    [onOpenInNewWindow, session]
   );
 
   // Get extension names for this session
@@ -381,68 +387,76 @@ const SessionItem = React.memo(function SessionItem({
   const billedTokenEstimate = billedSessionTokenEstimate(session);
 
   return (
-    <div
-      className="biorouter-list-row session-item flex items-center gap-3 py-2 px-4 relative group"
-      ref={(el) => setSessionRef(session.id, el)}
-    >
-      {/* BR-71: the badge lives INSIDE the row, and is derived from the row
+    /* #114: right-click the row for the same three actions the `⋯` overflow
+       carries. The trigger is `asChild` on the row itself, so the row keeps its
+       own class list, its ref registration and its layout — a wrapper element
+       here would sit between `.biorouter-list-shell` and its rows and take the
+       separators with it. Keyboard users reach this with the Menu key or
+       Shift+F10, which dispatch `contextmenu` on the focused element; the `⋯`
+       button is the other keyboard path and shows the identical list. */
+    <ChatRowContextMenu target={rowActions}>
+      <div
+        className="biorouter-list-row session-item flex items-center gap-3 py-2 px-4 relative group"
+        ref={(el) => setSessionRef(session.id, el)}
+      >
+        {/* BR-71: the badge lives INSIDE the row, and is derived from the row
           itself rather than from where it was rendered — so a subagent run
           whose parent is missing from the list is still labelled instead of
           reading as an unexplained bare conversation. */}
-      {session.session_type === 'sub_agent' && (
-        <span
-          data-testid="subagent-badge"
-          title="Subagent run"
-          className="flex-shrink-0 rounded-inner bg-background-code px-1 text-chip text-text-subtle"
-        >
-          sub
-        </span>
-      )}
+        {session.session_type === 'sub_agent' && (
+          <span
+            data-testid="subagent-badge"
+            title="Subagent run"
+            className="flex-shrink-0 rounded-inner bg-background-code px-1 text-chip text-text-subtle"
+          >
+            sub
+          </span>
+        )}
 
-      {/* Title + metadata */}
-      <button
-        type="button"
-        onClick={handleCardClick}
-        className="flex-1 min-w-0 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
-        aria-label={`Open chat ${session.name}`}
-      >
-        {/* This row's SessionItem SHADOWS the exported
+        {/* Title + metadata */}
+        <button
+          type="button"
+          onClick={handleCardClick}
+          className="flex-1 min-w-0 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+          aria-label={`Open chat ${session.name}`}
+        >
+          {/* This row's SessionItem SHADOWS the exported
             components/sessions/SessionItem.tsx — same name, different
             component, both reachable from History. They draw the SAME glyph
             from the SAME resolver, or the marking would depend on which of the
             two a surface happened to mount. */}
-        <div className="flex min-w-0 items-center gap-1.5">
-          <ChatKindIcon session={session} tier={session.privacy_tier} className="h-4 w-4" />
-          <h3 className="text-label truncate">{session.name}</h3>
-        </div>
-        {session.diverged_from && (
-          <div className="flex items-center gap-2 mt-0.5 text-text-muted text-supporting min-w-0">
-            <GitBranch className="w-3 h-3 flex-shrink-0" />
-            <span className="truncate max-w-[320px]">
-              branched from {sessionNameById.get(session.diverged_from) ?? session.diverged_from}
-            </span>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <ChatKindIcon session={session} tier={session.privacy_tier} className="h-4 w-4" />
+            <h3 className="text-label truncate">{session.name}</h3>
           </div>
-        )}
-        <div className="flex items-center gap-3 mt-0.5 text-text-muted text-supporting">
-          {/* A timestamp is one value, so it breaks as one or not at all. It had
+          {session.diverged_from && (
+            <div className="flex items-center gap-2 mt-0.5 text-text-muted text-supporting min-w-0">
+              <GitBranch className="w-3 h-3 flex-shrink-0" />
+              <span className="truncate max-w-[320px]">
+                branched from {sessionNameById.get(session.diverged_from) ?? session.diverged_from}
+              </span>
+            </div>
+          )}
+          <div className="flex items-center gap-3 mt-0.5 text-text-muted text-supporting">
+            {/* A timestamp is one value, so it breaks as one or not at all. It had
               neither `shrink-0` nor `nowrap`, and its min-content is the longest
               WORD — so at 640px the rows broke "3:18 / AM" and "08/06/2026 10:14
               / PM" across two lines, and a list whose rows are then two
               different heights loses its rhythm exactly where it is most
               cramped. The working directory beside it already truncates, which
               is the right thing for that value to do under pressure. */}
-          <div className="flex flex-shrink-0 items-center gap-2 whitespace-nowrap">
-            <Calendar className="w-3 h-3 flex-shrink-0" />
-            <span>{formatMessageTimestamp(Date.parse(session.updated_at) / 1000)}</span>
+            <div className="flex flex-shrink-0 items-center gap-2 whitespace-nowrap">
+              <Calendar className="w-3 h-3 flex-shrink-0" />
+              <span>{formatMessageTimestamp(Date.parse(session.updated_at) / 1000)}</span>
+            </div>
+            <div className="flex items-center gap-2 min-w-0">
+              <Folder className="w-3 h-3 flex-shrink-0" />
+              <span className="truncate max-w-[240px]">{session.working_dir}</span>
+            </div>
           </div>
-          <div className="flex items-center gap-2 min-w-0">
-            <Folder className="w-3 h-3 flex-shrink-0" />
-            <span className="truncate max-w-[240px]">{session.working_dir}</span>
-          </div>
-        </div>
-      </button>
+        </button>
 
-      {/* Right-side stats + hover actions.
+        {/* Right-side stats + hover actions.
           §3.10 "one optical axis per row": each right-hand cluster gets its
           own 20px-high centred box rather than trusting a 32px button and a
           12px glyph to agree on a baseline. The figures are `tabular-nums`
@@ -461,115 +475,120 @@ const SessionItem = React.memo(function SessionItem({
           is what refuses to shrink them below their content. That is the exact
           property this repo normally has to defeat with `min-w-0` — here it is
           the mechanism, so do not "tidy" one in. */}
-      <div className="flex h-5 items-center gap-3 flex-shrink-0">
-        <div className="flex h-5 items-center gap-3 text-supporting text-text-muted font-mono tabular-nums">
-          <div className="flex items-center gap-2">
-            <MessageSquareText className="w-3 h-3" />
-            <span className="min-w-8 text-right whitespace-nowrap">{session.message_count}</span>
-          </div>
-          {billedTokenEstimate && (
-            <div
-              className="flex items-center gap-2"
-              title={
-                billedTokenEstimate.lowerBound
-                  ? 'At least this many tokens; only last-turn usage is available for this older chat'
-                  : 'Billed tokens across every turn, including recorded cache usage'
-              }
-            >
-              <Target className="w-3 h-3" />
-              <span className="sr-only">Billed tokens: </span>
-              <span className="min-w-12 text-right whitespace-nowrap">
-                {formatBilledTokenEstimate(billedTokenEstimate)}
-              </span>
+        <div className="flex h-5 items-center gap-3 flex-shrink-0">
+          <div className="flex h-5 items-center gap-3 text-supporting text-text-muted font-mono tabular-nums">
+            <div className="flex items-center gap-2">
+              <MessageSquareText className="w-3 h-3" />
+              <span className="min-w-8 text-right whitespace-nowrap">{session.message_count}</span>
             </div>
-          )}
-          {extensionNames.length > 0 && (
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                    <Puzzle className="w-3 h-3" />
-                    <span className="min-w-4 text-right whitespace-nowrap">
-                      {extensionNames.length}
-                    </span>
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent side="top" className="max-w-xs">
-                  <div className="text-supporting">
-                    <div className="text-label mb-1">Extensions:</div>
-                    <ul className="list-disc list-inside">
-                      {extensionNames.map((name) => (
-                        <li key={name}>{name}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          )}
-        </div>
-        {/* §3.10: at most three visible actions, all 32px with 16px icons —
+            {billedTokenEstimate && (
+              <div
+                className="flex items-center gap-2"
+                title={
+                  billedTokenEstimate.lowerBound
+                    ? 'At least this many tokens; only last-turn usage is available for this older chat'
+                    : 'Billed tokens across every turn, including recorded cache usage'
+                }
+              >
+                <Target className="w-3 h-3" />
+                <span className="sr-only">Billed tokens: </span>
+                <span className="min-w-12 text-right whitespace-nowrap">
+                  {formatBilledTokenEstimate(billedTokenEstimate)}
+                </span>
+              </div>
+            )}
+            {extensionNames.length > 0 && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                      <Puzzle className="w-3 h-3" />
+                      <span className="min-w-4 text-right whitespace-nowrap">
+                        {extensionNames.length}
+                      </span>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-xs">
+                    <div className="text-supporting">
+                      <div className="text-label mb-1">Extensions:</div>
+                      <ul className="list-disc list-inside">
+                        {extensionNames.map((name) => (
+                          <li key={name}>{name}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
+          </div>
+          {/* §3.10: at most three visible actions, all 32px with 16px icons —
             this is where the 28-vs-32px fork between the outlined trio and
             the delete button ended. Everything else, and every DESTRUCTIVE
             action, lives behind the one `⋯` overflow, so a hover-revealed
             cluster can never put Delete under a stray click. */}
-        <div className="flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                onClick={handleEditClick}
-                variant="outline"
-                shape="round"
-                aria-label={`Edit ${session.name}`}
-              >
-                <Edit2 className="w-4 h-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="top">Edit chat name</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                onClick={handleExportClick}
-                variant="outline"
-                shape="round"
-                aria-label={`Export ${session.name}`}
-              >
-                <Download className="w-4 h-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="top">Export chat</TooltipContent>
-          </Tooltip>
-          <DropdownMenu>
+          <div className="flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
             <Tooltip>
               <TooltipTrigger asChild>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    onClick={(e) => e.stopPropagation()}
-                    variant="outline"
-                    shape="round"
-                    aria-label={`More actions for ${session.name}`}
-                  >
-                    <MoreHorizontal className="w-4 h-4" />
-                  </Button>
-                </DropdownMenuTrigger>
+                <Button
+                  onClick={handleEditClick}
+                  variant="outline"
+                  shape="round"
+                  aria-label={`Edit ${session.name}`}
+                >
+                  <Edit2 className="w-4 h-4" />
+                </Button>
               </TooltipTrigger>
-              <TooltipContent side="top">More actions</TooltipContent>
+              <TooltipContent side="top">Edit chat name</TooltipContent>
             </Tooltip>
-            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-              {/* Clicking the row already opens the session in a tab — this
-                  item is discoverability, not new behaviour, and it calls
-                  the same `onSelectSession` the row's own click does. The
-                  glyph is the one the tab strip uses for a tab. */}
-              <DropdownMenuItem onClick={handleOpenInNewTabClick}>
-                <MessageSquare className="w-4 h-4" />
-                Open in new tab
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={(e) => handleOpenInNewWindowClick(e)}>
-                <NewWindow className="w-4 h-4" />
-                Open in new window
-              </DropdownMenuItem>
-              {/* Issue #56 §12.1. The row's own overflow menu, and the ONLY
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  onClick={handleExportClick}
+                  variant="outline"
+                  shape="round"
+                  aria-label={`Export ${session.name}`}
+                >
+                  <Download className="w-4 h-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">Export chat</TooltipContent>
+            </Tooltip>
+            <DropdownMenu>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      onClick={(e) => e.stopPropagation()}
+                      variant="outline"
+                      shape="round"
+                      aria-label={`More actions for ${session.name}`}
+                    >
+                      <MoreHorizontal className="w-4 h-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top">More actions</TooltipContent>
+              </Tooltip>
+              <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                {/* Clicking the row already opens the session in a tab — the
+                  first item is discoverability, not new behaviour, and it
+                  calls the same `onSelectSession` the row's own click does.
+                  The glyph is the one the tab strip uses for a tab.
+
+                  ⚠ These come from `chatRowActions`, the same array the
+                  right-click menu renders (#114). Spelling them out here
+                  again is how the two menus on ONE row start disagreeing
+                  about what "Open in new tab" does — which is exactly the
+                  drift the note above was already guarding against, now with
+                  a second menu able to cause it. */}
+                {chatRowActions(rowActions).map(({ key, label, icon: Icon, run }) => (
+                  <DropdownMenuItem key={key} onSelect={run}>
+                    <Icon className="w-4 h-4" />
+                    {label}
+                  </DropdownMenuItem>
+                ))}
+                {/* Issue #56 §12.1. The row's own overflow menu, and the ONLY
                   place declassification is offered besides the session
                   page's action bar — deliberately not `SessionNamePill`'s
                   title menu, which is one careless click from the chat
@@ -582,25 +601,26 @@ const SessionItem = React.memo(function SessionItem({
                   an empty one on every public row — was worse than no
                   trigger at all. The menu now always carries the open and
                   delete items, so only the ITEM is gated. */}
-              {session.privacy_tier === 'private' && (
-                <DropdownMenuItem onSelect={() => onDeclassifyClick(session)}>
-                  Make this chat public
+                {session.privacy_tier === 'private' && (
+                  <DropdownMenuItem onSelect={() => onDeclassifyClick(session)}>
+                    Make this chat public
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  variant="destructive"
+                  onClick={handleDeleteClick}
+                  aria-label={`Delete ${session.name}`}
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Delete chat
                 </DropdownMenuItem>
-              )}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                variant="destructive"
-                onClick={handleDeleteClick}
-                aria-label={`Delete ${session.name}`}
-              >
-                <Trash2 className="w-4 h-4" />
-                Delete chat
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </div>
-    </div>
+    </ChatRowContextMenu>
   );
 });
 
@@ -1041,17 +1061,6 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       setDeclassifyTarget(null);
     }, []);
 
-    const handleOpenInNewWindow = useCallback((session: Session, e: React.MouseEvent) => {
-      e.stopPropagation();
-      window.electron.createChatWindow(
-        undefined,
-        session.working_dir,
-        undefined,
-        session.id,
-        'pair'
-      );
-    }, []);
-
     const renderActualContent = () => {
       if (error) {
         // The error state is the empty state with a different cause: same icon
@@ -1127,7 +1136,6 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                         onEditClick={handleEditSession}
                         onDeleteClick={handleDeleteSession}
                         onExportClick={handleExportSession}
-                        onOpenInNewWindow={handleOpenInNewWindow}
                         onDeclassifyClick={handleDeclassifyClick}
                       />
                       {/* One indented block for all of a parent's children, not
@@ -1146,7 +1154,6 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                               onEditClick={handleEditSession}
                               onDeleteClick={handleDeleteSession}
                               onExportClick={handleExportSession}
-                              onOpenInNewWindow={handleOpenInNewWindow}
                               onDeclassifyClick={handleDeclassifyClick}
                             />
                           ))}

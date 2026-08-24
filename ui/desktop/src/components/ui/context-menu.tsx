@@ -1,0 +1,125 @@
+'use client';
+
+import * as React from 'react';
+import * as ContextMenuPrimitive from '@radix-ui/react-context-menu';
+
+import { cn } from '../../utils';
+import { DROPDOWN_ROW_CLASS_NAME } from './dropdown-menu';
+
+/**
+ * The right-click menu, drawn from the SAME surface and row tokens as
+ * `dropdown-menu.tsx`.
+ *
+ * ⚠ **The row string is imported, not restated.** `DROPDOWN_ROW_CLASS_NAME` is
+ * exported for exactly this: §4.5's menu row is one 32px/12px/`text-secondary`
+ * rule, and a second menu that spelled its own padding and type size would
+ * reintroduce the per-call-site drift that export exists to stop. A user who
+ * right-clicks a chat row and a user who opens the same actions from the `⋯`
+ * overflow must see the same menu, or the two entry points read as two
+ * different features.
+ *
+ * Z is `--z-modal-dropdown` (500) for the reason the dropdown gives: the content
+ * is portalled to `<body>`, making it a sibling of any dialog content it was
+ * rendered inside, with no way to detect that host.
+ *
+ * `@radix-ui/react-context-menu` is imported directly, the way
+ * `dropdown-menu.tsx` imports `@radix-ui/react-dropdown-menu` — both arrive
+ * with `@radix-ui/themes` rather than as direct dependencies, so this adds no
+ * package.
+ */
+function ContextMenu({ ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Root>) {
+  return <ContextMenuPrimitive.Root data-slot="context-menu" {...props} />;
+}
+
+/**
+ * The right-click target. Use `asChild` so the menu attaches to the row the
+ * surface already renders instead of wrapping it in a box that changes layout.
+ *
+ * **This is also the keyboard trigger, and deliberately not a second gesture.**
+ * The Menu key and Shift+F10 both dispatch a `contextmenu` event on the focused
+ * element in Chromium, so a keyboard user reaches this menu with the same
+ * binding every other application uses. Inventing an app-specific shortcut
+ * would give the same actions two vocabularies.
+ */
+const ContextMenuTrigger = ContextMenuPrimitive.Trigger;
+
+function ContextMenuContent({
+  className,
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.Content>) {
+  return (
+    <ContextMenuPrimitive.Portal>
+      <ContextMenuPrimitive.Content
+        data-slot="context-menu-content"
+        // ⚠ `no-drag`, and it is load-bearing on exactly one of the three
+        // surfaces: the tab strip sits in the titlebar band, where App.tsx
+        // paints a 32px `-webkit-app-region: drag` rect. This menu opens AT THE
+        // CURSOR rather than anchored below a trigger, so on a tab its top edge
+        // lands inside that rect — and Electron folds app-region rects in DOM
+        // order, so an earlier `drag` rect eats clicks on a higher-z control
+        // whatever the z-index says (issue #74). The portal appends here after
+        // App's tree, so this `no-drag` folds later and wins. The overflow
+        // dropdown in the same band never needed it because it opens downward
+        // from its trigger.
+        className={cn(
+          'no-drag',
+          'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] z-[var(--z-modal-dropdown)] max-h-(--radix-context-menu-content-available-height) min-w-[8rem] origin-(--radix-context-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-container p-1 space-y-0.5',
+          className
+        )}
+        {...props}
+      />
+    </ContextMenuPrimitive.Portal>
+  );
+}
+
+function ContextMenuItem({
+  className,
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.Item>) {
+  return (
+    <ContextMenuPrimitive.Item
+      data-slot="context-menu-item"
+      className={cn(
+        DROPDOWN_ROW_CLASS_NAME,
+        "[&_svg:not([class*='text-'])]:text-text-muted",
+        className
+      )}
+      {...props}
+    />
+  );
+}
+
+function ContextMenuSeparator({
+  className,
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.Separator>) {
+  return (
+    <ContextMenuPrimitive.Separator
+      data-slot="context-menu-separator"
+      className={cn('bg-border-subtle -mx-1 my-1 h-px', className)}
+      {...props}
+    />
+  );
+}
+
+function ContextMenuLabel({
+  className,
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.Label>) {
+  return (
+    <ContextMenuPrimitive.Label
+      data-slot="context-menu-label"
+      className={cn('text-text-muted px-3 py-1.5 text-caps', className)}
+      {...props}
+    />
+  );
+}
+
+export {
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuLabel,
+};

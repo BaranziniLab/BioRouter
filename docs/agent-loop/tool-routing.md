@@ -114,9 +114,11 @@ word "conversation" appearing in the question:
 | The user wants… | Route to | Not to |
 |-----------------|----------|--------|
 | The **content** of a past chat ("what did we conclude about the volcano plot last week?") | `chatrecall` (search by query, or load a session by id) | `workspace_read_conversation` — it reads a session you already identified, it does not search by content |
+| A chat the user names by **exact id** ("what happened in 20260823_2?") — they can copy one from any chat row's right-click menu | `chatrecall`'s **load** mode with that `session_id`, then `workspace_read_conversation` if more than a head/tail is needed | a `chatrecall` *query* on the id or the chat's title. An exact handle was supplied so nothing has to be guessed; a title search can match a different chat and look like it worked |
 | **Live control** of another chat, or a **structured read** of one ("what is that other conversation doing right now?") | `workspace_list`, then `workspace_read_conversation` with `view:"tool_calls"` | a `chatrecall` load, which returns only the first/last few messages |
 | To **change another chat's setup** ("give that other conversation the single-cell skill") | `workspace_set_tools` with `add_skills` / `add_extensions` / `set_knowledge_bases` — do it, session-scoped | telling the user to open Settings, which is machine-wide and is not the ask |
-| To **delegate** a bounded sub-task ("delegate checking the test suite to a subagent I can watch") | `subagent` — the one spawn tool, advertised by the workspace extension | any `workspace_spawn_subagent`; no such tool exists |
+| To **delegate** a bounded sub-task ("delegate checking the test suite to a subagent I can watch", "spin up three sub-agents") | `subagent` — the one spawn tool, advertised by the workspace extension, and the only thing that creates a `sub_agent` session with a parent | `workspace_open { new: { prompt } }`, which creates a conversation **the user** owns with no parent, and which now refuses `new.kind:"sub_agent"` outright ([#111](https://github.com/BaranziniLab/biorouter/issues/111)) |
+| To open **another chat for the user** ("start a separate chat for the figure work") | `workspace_open { new: { kind: "user", … } }` | `subagent`, which makes the new conversation the agent's delegate rather than the user's own |
 | To **wait on background work** ("tell me as soon as one of those three background jobs is done") | `workspace_watch` on the session ids | a `workspace_read_conversation` poll loop — the failure mode the `subagent_status` → `workspace_watch` migration exists to remove |
 | To **remember a durable fact** ("remember that I prefer uv over pip") | Memory (`remember_memory`) | any workspace tool; workspace state is per-conversation and transient |
 | To **fold a conversation into a knowledge base** | `platform__ingest_conversation` | `workspace_read_conversation` followed by a hand-written KB write |
@@ -275,6 +277,7 @@ complements the pre-existing `TOOL_EXEC_START`/`TOOL_EXEC_END` **`debug`** marke
 
 ## Related documentation
 
+- [Session metadata contract](session-metadata-contract.md) — the identity the workspace tools and Chat Recall both resolve ids against, and the rule that separates a delegation from a conversation the user owns.
 - [The agent loop](README.md) — the loop that dispatches every tool call routed by this page.
 - [Extensions and skills](../extensions/extensions-and-skills-guide.md) — how the extensions providing these tools are installed, enabled and described.
 - [Built-in extensions](../extensions/built-in/README.md) — the reference page for each shipped extension named in the tier table.

@@ -100,6 +100,8 @@ This section assumes delegation is available in the session — if asking for a 
 
 Ask for a subagent in plain language ("delegate the QC pass to a subagent") and, whenever the desktop app is open, the child opens in its own background tab carrying a **`sub`** badge and a link back to the conversation that spawned it. Inside that tab you can read the child's transcript as it streams, type into it to steer it mid-run, and stop it from the header.
 
+**Delegation and "open another chat" are different operations, and only one of them makes a subagent.** A subagent is a `sub_agent` session with its parent stamped on it before its first turn; that is what History nests, what the `sub` badge reads, and what "Show subagent runs" reveals. Only the `subagent` tool creates one. `workspace_open` starts a conversation **you** own, born with no parent — useful, but never your agent's delegate — and it refuses outright if asked for a subagent, pointing the agent at the right tool. So if you asked for three subagents and got three ordinary chats, that was [#111](https://github.com/BaranziniLab/biorouter/issues/111), now closed structurally rather than by advice; the full rule is the [session metadata contract](session-metadata-contract.md).
+
 Three things about that tab that people get wrong:
 
 - **Closing it does not kill the child.** Closing is a view operation everywhere in BioRouter. Stop is the kill switch, and a child whose tab you closed is still in History.
@@ -270,6 +272,7 @@ Most of the time the answer is one of the deliberate behaviours above — announ
 
 ## Related documentation
 
+- [Session metadata contract](session-metadata-contract.md) — conversation ID, session kind, parent, and what makes something a subagent run.
 - [Workspace Control extension](../extensions/built-in/workspace.md) — the user-facing reference: the two tiers, what each tool asks you first, the always-confirm rule, and how injected messages are labelled forever.
 - [Workspace Control tool reference](workspace-control-tools.md) — the developer-facing contract for the same eight tools: exact arguments and defaults, every refusal string, the caps and clamps, and the cases where a tool reports success it did not earn.
 - [Subagents](subagents.md) — the glass-box tab in full, steering and stopping a child, and configuring one from a workflow file.
