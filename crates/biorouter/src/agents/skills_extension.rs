@@ -1,5 +1,6 @@
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
+use crate::agents::skill_catalog;
 use crate::config::paths::Paths;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -12,6 +13,7 @@ use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "skills";
@@ -175,6 +177,29 @@ fn hidden_contexts() -> std::collections::HashSet<String> {
     hidden_contexts_in(crate::config::Config::global())
 }
 
+// ---------------------------------------------------------------------------
+// The three inputs `skill_catalog` composes. They are exported from here — the
+// module that owns each one's meaning — rather than reimplemented there, so
+// the interface's switches and the model's catalog can never disagree about
+// what "enabled" means.
+// ---------------------------------------------------------------------------
+
+/// The machine-wide `skills-config.json` `disabled[]` set. Contains **skill
+/// names and bundle names**, which is why a caller must test both.
+pub(crate) fn disabled_skill_names() -> std::collections::HashSet<String> {
+    SkillsClient::get_disabled_skills()
+}
+
+/// The shipped Contexts the user switched off in Settings → Contexts.
+pub(crate) fn hidden_context_names() -> std::collections::HashSet<String> {
+    hidden_contexts()
+}
+
+/// See [`SkillsClient::add_missing_shipped_skills`].
+pub(crate) fn add_missing_shipped_skills(skills: &mut HashMap<String, Skill>) {
+    SkillsClient::add_missing_shipped_skills(skills)
+}
+
 pub fn count_user_skills() -> usize {
     let skills_dir = Paths::config_dir().join("skills");
     std::fs::read_dir(skills_dir)
@@ -261,9 +286,52 @@ struct SkillCatalogItem {
     bundle: Option<String>,
 }
 
+/// Where a `SkillsClient` reads its skills from.
+///
+/// ⚠ **Production is always [`SkillIndex::Live`]**, and that is the whole point
+/// of #113's root cause 3: the client used to hold a `HashMap` discovered in
+/// its constructor, so a skill installed *afterwards* was not in it and no
+/// amount of toggling could make the skill loadable in that conversation.
+/// Reading the process-global catalog on every access means an install reaches
+/// every live conversation at once.
+///
+/// [`SkillIndex::Pinned`] exists for tests, which need a fixed set that does
+/// not depend on the developer's own `~/.config/biorouter/skills` — and cannot
+/// get one from the global catalog without relocating `BIOROUTER_PATH_ROOT`,
+/// a process-wide env var several of these tests would race each other on.
+pub(crate) enum SkillIndex {
+    Live,
+    Pinned(Arc<HashMap<String, Skill>>),
+}
+
+impl SkillIndex {
+    fn skills(&self) -> Arc<HashMap<String, Skill>> {
+        match self {
+            SkillIndex::Live => skill_catalog::current().skills(),
+            SkillIndex::Pinned(skills) => Arc::clone(skills),
+        }
+    }
+
+    /// Mutable access to a pinned set. Test-only, and it panics on `Live`
+    /// rather than silently editing a copy nobody reads.
+    #[cfg(test)]
+    fn pinned_mut(&mut self) -> &mut HashMap<String, Skill> {
+        match self {
+            SkillIndex::Pinned(skills) => Arc::make_mut(skills),
+            SkillIndex::Live => panic!("a live index is the catalog's; pin it first"),
+        }
+    }
+}
+
+impl From<HashMap<String, Skill>> for SkillIndex {
+    fn from(skills: HashMap<String, Skill>) -> Self {
+        SkillIndex::Pinned(Arc::new(skills))
+    }
+}
+
 pub struct SkillsClient {
     info: InitializeResult,
-    skills: HashMap<String, Skill>,
+    skills: SkillIndex,
     /// Retained so the session-scoped skill override can be read from the
     /// session row — the same reason `ChatRecallClient` keeps its context.
     ///
@@ -307,39 +375,45 @@ impl SkillsClient {
 
         install_builtin_skills();
 
-        let directories = Self::get_default_skill_directories()
-            .into_iter()
-            .filter(|d| d.exists())
-            .collect::<Vec<_>>();
-        let mut skills = Self::discover_skills_in_directories(&directories);
-
-        // Guarantee builtin skills are present even if seeding to disk failed
-        // (e.g. read-only config dir) or a user skill shadowed the slug.
-        for (name, content) in shipped_skills() {
-            if !skills.contains_key(*name) {
-                if let Ok((metadata, body)) = Self::parse_frontmatter(content) {
-                    skills.insert(
-                        metadata.name.clone(),
-                        Skill {
-                            metadata,
-                            body,
-                            directory: Paths::config_dir().join("skills").join(name),
-                            supporting_files: Vec::new(),
-                            bundle_name: None,
-                            source_root: Paths::config_dir().join("skills"),
-                        },
-                    );
-                }
-            }
-        }
+        // The catalog is refreshed here rather than merely read, because a
+        // client is constructed when a conversation starts and the seeding
+        // above may just have written the shipped skills to disk.
+        let catalog = skill_catalog::refresh();
 
         let mut client = Self {
             info,
-            skills,
+            skills: SkillIndex::Live,
             context,
         };
-        client.info.instructions = Some(client.generate_instructions());
+        client.info.instructions = Some(Self::generate_instructions(&catalog.skills()));
         Ok(client)
+    }
+
+    /// Guarantee the shipped skills are present even if seeding to disk failed
+    /// (a read-only config dir) or a user skill shadowed the slug.
+    ///
+    /// Lives here, beside the `include_str!` arrays it draws on, and is applied
+    /// by [`skill_catalog::SkillCatalog::scan`] so that *every* view of the
+    /// catalog has them — not only the one a client happened to build.
+    pub(crate) fn add_missing_shipped_skills(skills: &mut HashMap<String, Skill>) {
+        for (name, content) in shipped_skills() {
+            if skills.contains_key(*name) {
+                continue;
+            }
+            if let Ok((metadata, body)) = Self::parse_frontmatter(content) {
+                skills.insert(
+                    metadata.name.clone(),
+                    Skill {
+                        metadata,
+                        body,
+                        directory: Paths::config_dir().join("skills").join(name),
+                        supporting_files: Vec::new(),
+                        bundle_name: None,
+                        source_root: Paths::config_dir().join("skills"),
+                    },
+                );
+            }
+        }
     }
 
     /// Seed (or refresh) the built-in skills under the user's skills directory
@@ -369,42 +443,20 @@ impl SkillsClient {
     /// config skills dir, installed extensions' `skills/` subdirs, and the
     /// working directory's `.claude/skills`, `.biorouter/skills`,
     /// `.agents/skills`. Pub so the CLI scans the exact same roots.
+    ///
+    /// ⚠ **The list itself lives in [`skill_catalog::roots`]**, which also
+    /// records where each root came from. This function is the paths-only view
+    /// of it, kept because the CLI and several tests name it. Adding a root
+    /// here instead of there would give the interface a catalog that omits it —
+    /// which is precisely root cause 2 of #113.
     pub fn get_default_skill_directories() -> Vec<PathBuf> {
-        let mut dirs = Vec::new();
-
-        if let Some(home) = dirs::home_dir() {
-            dirs.push(home.join(".claude/skills"));
-            dirs.push(home.join(".config/agents/skills"));
-        }
-
-        dirs.push(Paths::config_dir().join("skills"));
-
-        // Scan installed .brxt extension skills subdirectories
-        let extensions_dir = Paths::config_dir().join("extensions");
-        if extensions_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&extensions_dir) {
-                for entry in entries.flatten() {
-                    if !entry.path().is_dir() {
-                        continue;
-                    }
-                    let skills_subdir = entry.path().join("skills");
-                    if skills_subdir.is_dir() {
-                        dirs.push(skills_subdir);
-                    }
-                }
-            }
-        }
-
-        if let Ok(working_dir) = std::env::current_dir() {
-            dirs.push(working_dir.join(".claude/skills"));
-            dirs.push(working_dir.join(".biorouter/skills"));
-            dirs.push(working_dir.join(".agents/skills"));
-        }
-
-        dirs
+        skill_catalog::roots()
+            .into_iter()
+            .map(|root| root.path)
+            .collect()
     }
 
-    fn get_disabled_skills() -> std::collections::HashSet<String> {
+    pub(crate) fn get_disabled_skills() -> std::collections::HashSet<String> {
         let config_file = Paths::config_dir().join("skills-config.json");
         let Ok(content) = std::fs::read_to_string(&config_file) else {
             return std::collections::HashSet::new();
@@ -590,14 +642,16 @@ impl SkillsClient {
     /// every extension, and the shared-client hazard documented on
     /// [`SkillsClient`] rules out the cheap alternative of mutating this client
     /// per session.
-    fn generate_instructions(&self) -> String {
-        if self.skills.is_empty() {
+    fn generate_instructions(skills: &HashMap<String, Skill>) -> String {
+        if skills.is_empty() {
             return String::new();
         }
 
-        let skill_count = self
-            .enabled_skill_entries(&crate::agents::session_skills::SessionSkillOverride::default())
-            .len();
+        let skill_count = Self::enabled_skill_entries(
+            skills,
+            &crate::agents::session_skills::SessionSkillOverride::default(),
+        )
+        .len();
 
         if skill_count == 0 {
             return String::new();
@@ -655,14 +709,13 @@ impl SkillsClient {
     /// a switched-off Context stays loadable by exact name (see
     /// [`hidden_contexts_in`] for why that asymmetry is required rather than
     /// merely tolerated).
-    fn enabled_skill_entries(
-        &self,
+    fn enabled_skill_entries<'a>(
+        skills: &'a HashMap<String, Skill>,
         over: &crate::agents::session_skills::SessionSkillOverride,
-    ) -> Vec<(&String, &Skill)> {
+    ) -> Vec<(&'a String, &'a Skill)> {
         let disabled = Self::get_disabled_skills();
         let hidden_contexts = hidden_contexts();
-        let mut skill_list: Vec<_> = self
-            .skills
+        let mut skill_list: Vec<_> = skills
             .iter()
             .filter(|(name, skill)| {
                 // ⚠ Checked BEFORE the session test, not folded into it. That
@@ -676,6 +729,22 @@ impl SkillsClient {
             .collect();
         skill_list.sort_by_key(|(name, _)| *name);
         skill_list
+    }
+
+    /// The enabled catalog's names, for tests that assert on membership.
+    ///
+    /// It reads through [`SkillIndex`] exactly as the tool handlers do, so a
+    /// test cannot accidentally assert against a map the handlers do not use.
+    #[cfg(test)]
+    fn enabled_names(
+        &self,
+        over: &crate::agents::session_skills::SessionSkillOverride,
+    ) -> Vec<String> {
+        let skills = self.skills.skills();
+        Self::enabled_skill_entries(&skills, over)
+            .into_iter()
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     fn parse_pagination(offset: Option<usize>, limit: Option<usize>) -> (usize, usize) {
@@ -775,7 +844,8 @@ impl SkillsClient {
     ) -> Result<Vec<Content>, String> {
         let params: ListSkillsParams = Self::parse_tool_args(arguments)?;
         let (offset, limit) = Self::parse_pagination(params.offset, params.limit);
-        let skill_list = self.enabled_skill_entries(over);
+        let skills = self.skills.skills();
+        let skill_list = Self::enabled_skill_entries(&skills, over);
         let total = skill_list.len();
         let skills = skill_list
             .into_iter()
@@ -800,8 +870,8 @@ impl SkillsClient {
 
         let terms: Vec<&str> = query.split_whitespace().collect();
         let (offset, limit) = Self::parse_pagination(params.offset, params.limit);
-        let mut matches: Vec<_> = self
-            .enabled_skill_entries(over)
+        let skills = self.skills.skills();
+        let mut matches: Vec<_> = Self::enabled_skill_entries(&skills, over)
             .into_iter()
             .filter(|(_, skill)| {
                 let haystack = format!(
@@ -846,9 +916,12 @@ impl SkillsClient {
             .and_then(|v| v.as_str())
             .ok_or("Missing required parameter: name")?;
 
-        // Runtime check: reject disabled skills even mid-session
+        // Runtime check: reject disabled skills even mid-session. `skills` is
+        // read from the live catalog here, so a package installed earlier in
+        // THIS conversation is loadable in it (#113 root cause 3).
+        let skills = self.skills.skills();
         let disabled = Self::get_disabled_skills();
-        if let Some(skill) = self.skills.get(skill_name) {
+        if let Some(skill) = skills.get(skill_name) {
             if !Self::is_skill_enabled_for_session(skill_name, skill, &disabled, over) {
                 return Err(format!(
                     "Skill '{}' is currently disabled. Enable it in Biorouter's Skills settings to use it.",
@@ -857,8 +930,7 @@ impl SkillsClient {
             }
         }
 
-        let skill = self
-            .skills
+        let skill = skills
             .get(skill_name)
             .ok_or_else(|| format!("Skill '{}' not found", skill_name))?;
 
@@ -959,7 +1031,8 @@ impl McpClientTrait for SkillsClient {
         _cancellation_token: CancellationToken,
     ) -> Result<ListToolsResult, Error> {
         let disabled = Self::get_disabled_skills();
-        let has_enabled_skills = self.skills.iter().any(|(name, skill)| {
+        let skills = self.skills.skills();
+        let has_enabled_skills = skills.iter().any(|(name, skill)| {
             !disabled.contains(name)
                 && !skill
                     .bundle_name
@@ -1328,11 +1401,11 @@ Content from dir3
                 },
                 instructions: Some(String::new()),
             },
-            skills,
+            skills: skills.into(),
             context: test_context(),
         };
 
-        let instructions = client.generate_instructions();
+        let instructions = SkillsClient::generate_instructions(&client.skills.skills());
         assert_eq!(instructions, "");
         assert!(instructions.is_empty());
 
@@ -1372,7 +1445,7 @@ Content from dir3
                 },
                 instructions: Some(String::new()),
             },
-            skills,
+            skills: skills.into(),
             context: test_context(),
         };
 
@@ -1428,7 +1501,7 @@ Content
                 },
                 instructions: Some(String::new()),
             },
-            skills,
+            skills: skills.into(),
             context: test_context(),
         };
 
@@ -1496,7 +1569,7 @@ Content
                 },
                 instructions: Some(String::new()),
             },
-            skills,
+            skills: skills.into(),
             context: test_context(),
         };
 
@@ -1575,7 +1648,7 @@ Content
                 },
                 instructions: Some(String::new()),
             },
-            skills,
+            skills: skills.into(),
             context: test_context(),
         };
 
@@ -1656,7 +1729,7 @@ Content
                 },
                 instructions: Some(String::new()),
             },
-            skills,
+            skills: skills.into(),
             context: test_context(),
         };
 
@@ -1788,11 +1861,11 @@ Content
                 },
                 instructions: Some(String::new()),
             },
-            skills,
+            skills: skills.into(),
             context: test_context(),
         };
 
-        let instructions = client.generate_instructions();
+        let instructions = SkillsClient::generate_instructions(&client.skills.skills());
         assert!(!instructions.is_empty());
         assert!(instructions.contains("You have 2 skills available"));
         assert!(instructions.contains("searchSkills"));
@@ -2101,7 +2174,8 @@ Working dir biorouter content
         client.skills = names
             .iter()
             .map(|n| (n.to_string(), fixture_skill(n, root)))
-            .collect();
+            .collect::<HashMap<_, _>>()
+            .into();
         client
     }
 
@@ -2136,7 +2210,7 @@ Working dir biorouter content
             .await
             .unwrap();
         assert_eq!(
-            client.enabled_skill_entries(&over).len(),
+            client.enabled_names(&over).len(),
             2,
             "both fixtures start enabled"
         );
@@ -2154,11 +2228,7 @@ Working dir biorouter content
         let over = crate::agents::session_skills::for_session(&session_manager, &session.id)
             .await
             .unwrap();
-        let names: Vec<String> = client
-            .enabled_skill_entries(&over)
-            .into_iter()
-            .map(|(name, _)| name.clone())
-            .collect();
+        let names: Vec<String> = client.enabled_names(&over);
         assert_eq!(
             names,
             vec!["alpha".to_string()],
@@ -2691,7 +2761,7 @@ Working dir biorouter content
         let temp = TempDir::new().unwrap();
         let session_manager = Arc::new(SessionManager::new(temp.path().to_path_buf()));
         let mut client = client_with(&["alpha"], temp.path(), session_manager);
-        client.skills.insert(
+        client.skills.pinned_mut().insert(
             "about-biorouter".to_string(),
             fixture_skill("about-biorouter", temp.path()),
         );
@@ -2705,13 +2775,7 @@ Working dir biorouter content
         let mut about_off = all_on.clone();
         about_off.insert("CONTEXT_ABOUT_BIOROUTER".to_string(), "false".to_string());
 
-        let names = |client: &SkillsClient, over: &_| -> Vec<String> {
-            client
-                .enabled_skill_entries(over)
-                .into_iter()
-                .map(|(name, _)| name.clone())
-                .collect()
-        };
+        let names = |client: &SkillsClient, over: &_| -> Vec<String> { client.enabled_names(over) };
 
         crate::config::with_config_overrides(all_on, async {
             assert_eq!(
@@ -2719,7 +2783,7 @@ Working dir biorouter content
                 vec!["about-biorouter".to_string(), "alpha".to_string()],
                 "switched on, a Context is in the catalog like any other skill"
             );
-            assert!(client.generate_instructions().contains("2 skills"));
+            assert!(SkillsClient::generate_instructions(&client.skills.skills()).contains("2 skills"));
         })
         .await;
 
@@ -2732,9 +2796,9 @@ Working dir biorouter content
             // The `{skill_count}` sentence is generated from the same list, so
             // the number the model reads has to move with it.
             assert!(
-                client.generate_instructions().contains("1 skills"),
+                SkillsClient::generate_instructions(&client.skills.skills()).contains("1 skills"),
                 "instructions still count the hidden Context: {}",
-                client.generate_instructions()
+                SkillsClient::generate_instructions(&client.skills.skills())
             );
             // listSkills is the catalog the model pages through.
             let listed = client.handle_list_skills(None, &over).await.unwrap();
