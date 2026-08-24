@@ -679,22 +679,29 @@ impl SkillsClient {
     /// bundle names) composed with the session override (`workspace_skills`).
     /// Never writes anything.
     ///
-    /// The session override is keyed by SKILL name only — `workspace_set_tools`
-    /// grants and revokes individual skills — so it is applied on top of the
-    /// existing two-part machine test rather than replacing it.
+    /// ⚠ **Delegates to [`skill_catalog::compose_state`]** rather than
+    /// restating the precedence. This function used to hold its own copy, and
+    /// that copy knew only about skill names — so a per-chat toggle of a
+    /// *bundle* wrote a name this test never matched, and changed nothing.
+    /// One rule, two readers.
+    ///
+    /// `hidden_contexts` is passed empty here because
+    /// [`Self::enabled_skill_entries`] applies that filter itself, ahead of the
+    /// session test, for the reason recorded there.
     fn is_skill_enabled_for_session(
         name: &str,
         skill: &Skill,
         machine_disabled: &std::collections::HashSet<String>,
         over: &crate::agents::session_skills::SessionSkillOverride,
     ) -> bool {
-        if over.add.iter().any(|s| s == name) {
-            return true; // explicit session grant wins over everything
-        }
-        if over.remove.iter().any(|s| s == name) {
-            return false; // explicit session revoke
-        }
-        Self::is_skill_enabled(name, skill, machine_disabled)
+        skill_catalog::compose_state(
+            name,
+            skill.bundle_name.as_deref(),
+            machine_disabled,
+            &std::collections::HashSet::new(),
+            over,
+        )
+        .effective
     }
 
     /// The catalog as one session sees it. `over` is always the caller's — read

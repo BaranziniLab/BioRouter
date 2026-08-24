@@ -59,15 +59,22 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use super::session_skills::SessionSkillOverride;
+use super::session_skills::{OverrideMatch, SessionSkillOverride};
 use super::skills_extension::{self, Skill};
 use crate::config::paths::Paths;
 
-/// Where a root came from. Carried through to the interface so a skill can say
-/// *which* extension supplied it rather than only that it exists.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum SkillRootKind {
+/// Which of the five kinds of root a skill came from.
+///
+/// ⚠ A **unit-variant** enum carrying no data, with the extension name held
+/// beside it in [`SkillSource`] rather than inside an `Extension { .. }`
+/// variant. The variant form is the more natural Rust, and it generates an
+/// internally-tagged object that `serde(flatten)` and `utoipa` disagree about —
+/// the spec emits an `allOf` the TypeScript client cannot narrow. A flat struct
+/// crosses the wire unambiguously, which matters more here than the tidier
+/// type, because this shape IS the contract the picker renders from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum SkillSourceKind {
     /// `~/.claude/skills` — shared with other agents.
     ClaudeHome,
     /// `~/.config/agents/skills` — the portable cross-agent location.
@@ -76,32 +83,49 @@ pub enum SkillRootKind {
     Biorouter,
     /// `~/.config/biorouter/extensions/<extension>/skills` — skills that ship
     /// inside an installed extension bundle.
-    #[serde(rename_all = "camelCase")]
-    Extension { extension: String },
+    Extension,
     /// `<cwd>/.claude/skills`, `<cwd>/.biorouter/skills`, `<cwd>/.agents/skills`.
     Project,
 }
 
-impl SkillRootKind {
-    /// A short human label for the interface's "where from" chip.
-    pub fn label(&self) -> String {
-        match self {
-            SkillRootKind::ClaudeHome => "Claude".to_string(),
-            SkillRootKind::AgentsHome => "Agents".to_string(),
-            SkillRootKind::Biorouter => "Biorouter".to_string(),
-            SkillRootKind::Extension { extension } => extension.clone(),
-            SkillRootKind::Project => "Project".to_string(),
+/// Where a skill came from, as the interface shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSource {
+    pub kind: SkillSourceKind,
+    /// The extension's directory name, when `kind` is `extension`.
+    pub extension: Option<String>,
+    /// A short human label for the "where from" chip — the extension's name
+    /// when it has one, else the root's own.
+    pub label: String,
+}
+
+impl SkillSource {
+    pub fn new(kind: SkillSourceKind, extension: Option<String>) -> Self {
+        let label = match (&kind, &extension) {
+            (SkillSourceKind::Extension, Some(extension)) => extension.clone(),
+            (SkillSourceKind::ClaudeHome, _) => "Claude".to_string(),
+            (SkillSourceKind::AgentsHome, _) => "Agents".to_string(),
+            (SkillSourceKind::Biorouter, _) | (SkillSourceKind::Extension, None) => {
+                "Biorouter".to_string()
+            }
+            (SkillSourceKind::Project, _) => "Project".to_string(),
+        };
+        Self {
+            kind,
+            extension,
+            label,
         }
     }
 }
 
 /// One directory skills are discovered under, with its provenance.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillRoot {
+    #[schema(value_type = String)]
     pub path: PathBuf,
-    #[serde(flatten)]
-    pub kind: SkillRootKind,
+    pub source: SkillSource,
 }
 
 /// Every directory skills are discovered under, in override order (later wins).
@@ -115,17 +139,17 @@ pub fn roots() -> Vec<SkillRoot> {
     if let Some(home) = dirs::home_dir() {
         roots.push(SkillRoot {
             path: home.join(".claude/skills"),
-            kind: SkillRootKind::ClaudeHome,
+            source: SkillSource::new(SkillSourceKind::ClaudeHome, None),
         });
         roots.push(SkillRoot {
             path: home.join(".config/agents/skills"),
-            kind: SkillRootKind::AgentsHome,
+            source: SkillSource::new(SkillSourceKind::AgentsHome, None),
         });
     }
 
     roots.push(SkillRoot {
         path: Paths::config_dir().join("skills"),
-        kind: SkillRootKind::Biorouter,
+        source: SkillSource::new(SkillSourceKind::Biorouter, None),
     });
 
     // Skills bundled inside installed `.brxt` extensions. Sorted, so the
@@ -144,7 +168,7 @@ pub fn roots() -> Vec<SkillRoot> {
                 let extension = entry.file_name().to_string_lossy().to_string();
                 Some(SkillRoot {
                     path: skills_subdir,
-                    kind: SkillRootKind::Extension { extension },
+                    source: SkillSource::new(SkillSourceKind::Extension, Some(extension)),
                 })
             })
             .collect();
@@ -156,7 +180,7 @@ pub fn roots() -> Vec<SkillRoot> {
         for relative in [".claude/skills", ".biorouter/skills", ".agents/skills"] {
             roots.push(SkillRoot {
                 path: working_dir.join(relative),
-                kind: SkillRootKind::Project,
+                source: SkillSource::new(SkillSourceKind::Project, None),
             });
         }
     }
@@ -165,7 +189,7 @@ pub fn roots() -> Vec<SkillRoot> {
 }
 
 /// How one session deviates from the machine-wide answer for a given skill.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionState {
     /// No per-chat opinion; the machine-wide answer stands.
@@ -178,7 +202,7 @@ pub enum SessionState {
 
 /// The composed enablement of one catalog entry, with every input kept
 /// separate so the interface can explain *why* a switch is where it is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillState {
     /// `skills-config.json` (`disabled[]`) says this is on. A bundle child is
@@ -186,6 +210,10 @@ pub struct SkillState {
     pub machine_enabled: bool,
     /// This conversation's deviation.
     pub session: SessionState,
+    /// The deviation was written against the BUNDLE's name, not this skill's.
+    /// Lets the interface explain a member's switch instead of leaving it
+    /// looking arbitrary.
+    pub session_via_bundle: bool,
     /// A shipped **Context** the user switched off in Settings → Contexts. Such
     /// a skill is hidden from the catalog but stays loadable by exact name; see
     /// `skills_extension::hidden_contexts_in`.
@@ -195,7 +223,7 @@ pub struct SkillState {
 }
 
 /// One skill, as the interface and the model both see it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogSkill {
     /// Frontmatter `name` — the identifier every enablement surface keys on.
@@ -204,10 +232,11 @@ pub struct CatalogSkill {
     /// Root-relative logical path, `/`-separated on every platform
     /// (`superpowers/brainstorming`). What `biorouter skill list` prints.
     pub slug: String,
+    #[schema(value_type = String)]
     pub directory: PathBuf,
+    #[schema(value_type = String)]
     pub source_root: PathBuf,
-    #[serde(flatten)]
-    pub source: SkillRootKind,
+    pub source: SkillSource,
     /// The bundle directory this skill sits in, when it is a bundle member.
     pub bundle: Option<String>,
     /// Shipped with Biorouter, so the interface offers no Delete for it.
@@ -216,7 +245,7 @@ pub struct CatalogSkill {
 }
 
 /// A directory of skills installed and removed as one unit.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogBundle {
     /// The bundle directory name. This is the identifier `skills-config.json`
@@ -225,10 +254,11 @@ pub struct CatalogBundle {
     /// The package's own display name when a manifest supplied one, else the
     /// directory name.
     pub display_name: String,
+    #[schema(value_type = String)]
     pub directory: PathBuf,
+    #[schema(value_type = String)]
     pub source_root: PathBuf,
-    #[serde(flatten)]
-    pub source: SkillRootKind,
+    pub source: SkillSource,
     /// Member skill names, sorted.
     pub skills: Vec<String>,
     /// The importer's record, when this bundle was installed as a package.
@@ -239,7 +269,7 @@ pub struct CatalogBundle {
 /// The part of an installed package's record the interface needs. The full
 /// record lives beside the skills as `biorouter-package.json`; see
 /// `crate::agents::skill_package`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageSummary {
     pub id: String,
@@ -254,6 +284,7 @@ pub struct PackageSummary {
     pub entry_point: Option<String>,
     /// Optional named groups, e.g. `core` / `on-demand`.
     #[serde(default)]
+    #[schema(value_type = Object, additional_properties)]
     pub groups: BTreeMap<String, Vec<String>>,
 }
 
@@ -276,8 +307,8 @@ pub struct SkillCatalog {
     skills: Arc<HashMap<String, Skill>>,
     /// Bundle directory name → its provenance and members.
     bundles: BTreeMap<String, BundleRecord>,
-    /// Root kind per root path, for attributing a skill to its source.
-    root_kinds: HashMap<PathBuf, SkillRootKind>,
+    /// Source per root path, for attributing a skill to where it came from.
+    root_sources: HashMap<PathBuf, SkillSource>,
     /// (directory, mtime) pairs whose change means this snapshot is stale.
     watched: Vec<(PathBuf, Option<SystemTime>)>,
 }
@@ -303,9 +334,9 @@ impl SkillCatalog {
         let mut skills = skills_extension::SkillsClient::discover_skills_in_directories(&existing);
         skills_extension::add_missing_shipped_skills(&mut skills);
 
-        let root_kinds: HashMap<PathBuf, SkillRootKind> = roots
+        let root_sources: HashMap<PathBuf, SkillSource> = roots
             .iter()
-            .map(|root| (root.path.clone(), root.kind.clone()))
+            .map(|root| (root.path.clone(), root.source.clone()))
             .collect();
 
         // Bundles are derived from the discovery result rather than from a
@@ -353,7 +384,7 @@ impl SkillCatalog {
             roots,
             skills: Arc::new(skills),
             bundles,
-            root_kinds,
+            root_sources,
             watched,
         }
     }
@@ -375,11 +406,11 @@ impl SkillCatalog {
         })
     }
 
-    fn root_kind(&self, source_root: &Path) -> SkillRootKind {
-        self.root_kinds
+    fn source_of(&self, source_root: &Path) -> SkillSource {
+        self.root_sources
             .get(source_root)
             .cloned()
-            .unwrap_or(SkillRootKind::Biorouter)
+            .unwrap_or_else(|| SkillSource::new(SkillSourceKind::Biorouter, None))
     }
 
     /// The catalog as one conversation sees it.
@@ -409,7 +440,7 @@ impl SkillCatalog {
                     slug: slug_of(&skill.directory, &skill.source_root),
                     directory: skill.directory.clone(),
                     source_root: skill.source_root.clone(),
-                    source: self.root_kind(&skill.source_root),
+                    source: self.source_of(&skill.source_root),
                     bundle: skill.bundle_name.clone(),
                     builtin: skills_extension::is_builtin_skill_name(name),
                     state,
@@ -438,7 +469,7 @@ impl SkillCatalog {
                         .unwrap_or_else(|| name.clone()),
                     directory: record.directory.clone(),
                     source_root: record.source_root.clone(),
-                    source: self.root_kind(&record.source_root),
+                    source: self.source_of(&record.source_root),
                     skills: record.members.clone(),
                     package: record.package.clone(),
                     state,
@@ -458,7 +489,7 @@ impl SkillCatalog {
 /// The serialisable catalog: what `GET /skills/catalog` returns and what the
 /// desktop picker renders. There is no second derivation of any of these
 /// fields on the interface side — that separation is what #113 removed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogView {
     pub generation: u64,
@@ -470,10 +501,17 @@ pub struct CatalogView {
 /// The one composition rule, shared by the model-facing filter and the
 /// interface's switches.
 ///
-/// ⚠ The order matters and mirrors `skills_extension`: a hidden Context is
-/// hidden **before** the session test, because a per-chat grant must not put
-/// back something the user switched off in Settings.
-fn compose_state(
+/// ⚠ **`skills_extension` calls this too** — its
+/// `SkillsClient::is_skill_enabled_for_session` is a thin wrapper over
+/// `compose_state(..).effective`, and that is not tidiness. Two hand-written
+/// copies of a precedence rule is exactly how a switch comes to disagree with
+/// what the model sees, which is the class of bug #113 catalogues. There is one
+/// copy, and both surfaces read it.
+///
+/// The order: a hidden Context is hidden **before** the session test, because a
+/// per-chat grant must not put back something the user switched off in
+/// Settings → Contexts.
+pub(crate) fn compose_state(
     name: &str,
     bundle: Option<&str>,
     machine_disabled: &HashSet<String>,
@@ -484,12 +522,10 @@ fn compose_state(
         && !bundle.is_some_and(|bundle| machine_disabled.contains(bundle));
     let hidden_context = hidden_contexts.contains(name);
 
-    let session = if over.add.iter().any(|s| s == name) {
-        SessionState::Added
-    } else if over.remove.iter().any(|s| s == name) {
-        SessionState::Removed
-    } else {
-        SessionState::Default
+    let (session, via_bundle) = match over.resolve(name, bundle) {
+        OverrideMatch::Added { via_bundle } => (SessionState::Added, via_bundle),
+        OverrideMatch::Removed { via_bundle } => (SessionState::Removed, via_bundle),
+        OverrideMatch::None => (SessionState::Default, false),
     };
 
     let effective = !hidden_context
@@ -502,6 +538,7 @@ fn compose_state(
     SkillState {
         machine_enabled,
         session,
+        session_via_bundle: via_bundle,
         hidden_context,
         effective,
     }
@@ -605,11 +642,15 @@ mod tests {
         .unwrap();
     }
 
-    fn root_at(path: &Path, kind: SkillRootKind) -> SkillRoot {
+    fn root_at(path: &Path, source: SkillSource) -> SkillRoot {
         SkillRoot {
             path: path.to_path_buf(),
-            kind,
+            source,
         }
+    }
+
+    fn biorouter_root() -> SkillSource {
+        SkillSource::new(SkillSourceKind::Biorouter, None)
     }
 
     #[test]
@@ -625,7 +666,7 @@ mod tests {
         fs::create_dir_all(&broken).unwrap();
         fs::write(broken.join("SKILL.md"), "no frontmatter here").unwrap();
 
-        let catalog = SkillCatalog::scan(vec![root_at(&root, SkillRootKind::Biorouter)], 1);
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
         let view = catalog.view(&SessionSkillOverride::default());
 
         assert_eq!(view.bundles.len(), 1);
@@ -641,7 +682,7 @@ mod tests {
         let root = temp.path().join("skills");
         write_skill(&root, "pack/alpha", "alpha", "First");
 
-        let catalog = SkillCatalog::scan(vec![root_at(&root, SkillRootKind::Biorouter)], 1);
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
         let view = catalog.view(&SessionSkillOverride::default());
         let alpha = view.skills.iter().find(|s| s.name == "alpha").unwrap();
         assert_eq!(alpha.slug, "pack/alpha");
@@ -660,25 +701,22 @@ mod tests {
 
         let catalog = SkillCatalog::scan(
             vec![
-                root_at(&user, SkillRootKind::Biorouter),
+                root_at(&user, biorouter_root()),
                 root_at(
                     &extension,
-                    SkillRootKind::Extension {
-                        extension: "BiorOffice".to_string(),
-                    },
+                    SkillSource::new(
+                        SkillSourceKind::Extension,
+                        Some("BiorOffice".to_string()),
+                    ),
                 ),
             ],
             1,
         );
         let view = catalog.view(&SessionSkillOverride::default());
         let word = view.skills.iter().find(|s| s.name == "word").unwrap();
-        assert_eq!(
-            word.source,
-            SkillRootKind::Extension {
-                extension: "BiorOffice".to_string()
-            }
-        );
-        assert_eq!(word.source.label(), "BiorOffice");
+        assert_eq!(word.source.kind, SkillSourceKind::Extension);
+        assert_eq!(word.source.extension.as_deref(), Some("BiorOffice"));
+        assert_eq!(word.source.label, "BiorOffice");
     }
 
     #[test]
@@ -688,7 +726,7 @@ mod tests {
         write_skill(&root, "alpha", "alpha", "First");
         write_skill(&root, "beta", "beta", "Second");
 
-        let catalog = SkillCatalog::scan(vec![root_at(&root, SkillRootKind::Biorouter)], 1);
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
         let over = SessionSkillOverride {
             add: vec![],
             remove: vec!["beta".to_string()],
@@ -723,7 +761,7 @@ mod tests {
         )
         .unwrap();
 
-        let catalog = SkillCatalog::scan(vec![root_at(&root, SkillRootKind::Biorouter)], 1);
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
         let view = catalog.view(&SessionSkillOverride::default());
         let bundle = &view.bundles[0];
         assert_eq!(bundle.name, "hyperframes");
@@ -745,7 +783,7 @@ mod tests {
         let root = temp.path().join("skills");
         write_skill(&root, "pack/alpha", "alpha", "First");
 
-        let catalog = SkillCatalog::scan(vec![root_at(&root, SkillRootKind::Biorouter)], 1);
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
         let view = catalog.view(&SessionSkillOverride::default());
         assert_eq!(view.bundles[0].display_name, "pack");
         assert!(view.bundles[0].package.is_none());
@@ -756,7 +794,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("skills");
         write_skill(&root, "pack/alpha", "alpha", "First");
-        let roots = vec![root_at(&root, SkillRootKind::Biorouter)];
+        let roots = vec![root_at(&root, biorouter_root())];
 
         let catalog = SkillCatalog::scan(roots.clone(), 1);
         assert!(!catalog.is_stale(&roots));
@@ -773,18 +811,16 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("skills");
         write_skill(&root, "alpha", "alpha", "First");
-        let roots = vec![root_at(&root, SkillRootKind::Biorouter)];
+        let roots = vec![root_at(&root, biorouter_root())];
         let catalog = SkillCatalog::scan(roots.clone(), 1);
 
         let extension = temp.path().join("extensions/New/skills");
         fs::create_dir_all(&extension).unwrap();
         let wider = vec![
-            root_at(&root, SkillRootKind::Biorouter),
+            root_at(&root, biorouter_root()),
             root_at(
                 &extension,
-                SkillRootKind::Extension {
-                    extension: "New".to_string(),
-                },
+                SkillSource::new(SkillSourceKind::Extension, Some("New".to_string())),
             ),
         ];
         assert!(
