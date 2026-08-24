@@ -121,11 +121,52 @@ Privacy Gate F1 lands on the **attach**, not on the install: installing is the u
 
 ---
 
+## Staying current: `CatalogChanged` (issue #112)
+
+An install that succeeds on disk is useless if nothing notices. Four inventories read the extension map — `ConfigContext.extensionsList` in the renderer, the Settings list, the composer's picker, and the running agent's `ExtensionManager` — and each used to be repaired by whichever code path happened to write. An install from *outside* the GUI repaired none of them, which is why two correctly installed extensions could not be attached to the chat that had just asked for them.
+
+There is now one event, and every inventory invalidates from it.
+
+```
+  set_extension / remove_extension / set_extension_enabled   (this process)
+  config.yaml changed underneath us                          (any process)
+                         │
+             CatalogEvents::global().publish(..)  → revision += 1
+                         │
+        GET /catalog/changes?since=N   (long poll, parks ~25s)
+                         │
+       ConfigContext ──┬── Settings list
+                       ├── composer picker
+                       └── window `catalog:changed`  → non-React consumers
+```
+
+### What is in it
+
+`CatalogChanged` carries a monotonic `revision`, a `reason`, and per-extension rows keyed by `name_to_key(name)` — the join every surface already uses, and the only identifier that survives a display-name change. A row carries the normalized `config` so a consumer can repair its row without a refetch, `enabled`, and `bundledSkillIds`: the skills that extension's bundle contains.
+
+> ⚠ **The revision is the contract, not the payload.** A consumer that applies `changes` and never refetches drifts the first time two changes race. `truncated` means the client fell further behind than the daemon's buffer holds, and it is an order to refetch, not a warning: applying a partial history and believing yourself current is the same stale-inventory bug one layer down.
+
+### Three things worth knowing
+
+- **The watcher is what makes a CLI install visible.** `biorouter extension install` in another terminal writes `config.yaml` from a different process and reaches none of the in-process choke points. `spawn_config_watcher` stats the file every two seconds and reports only what this process did *not* do — a plain `stat`, not a filesystem-notification API, because it behaves identically on every platform and over the network mounts a shared config directory sometimes lives on.
+- **An identical rewrite publishes nothing.** `syncBundledExtensions` and the capability migrations re-save entries at every startup; announcing those would have every client refetch its whole inventory on every launch.
+- **A daemon restart needs no special case.** The revision resets to 0, so a client holding a higher number sees a *lower* one come back and refetches.
+
+### Offered, not attached
+
+A running chat snapshots the extensions it started with. When an extension appears from somewhere else — another terminal, another window — the row appears in the composer's picker and a toast says so, and the click is the user's. An agent asked to install one *in* a chat attaches it itself, because there the user did ask.
+
+`bundledSkillIds` states what the bundle **contains**, not what has been installed to the skills directory — the Rust install path does not install bundled skills today (the Electron one does). Treat it as "look here", never as "these are present".
+
 ## Tests
 
 ```bash
 cargo test -p biorouter --lib -- extension_install
 cargo test -p biorouter --test extension_install_secrets
+cargo test -p biorouter --lib -- catalog::
+cargo test -p biorouter --test catalog_inventory
+cargo test -p biorouter-server --lib -- routes::catalog
+cd ui/desktop && npx vitest run src/utils/catalogSubscription.test.ts
 cargo test -p biorouter-server --lib -- routes::action_required
 cargo test -p biorouter-cli --lib -- commands::extension   # needs an isolated HOME
 cd ui/desktop && npx vitest run src/components/SecretRequestCard.test.tsx

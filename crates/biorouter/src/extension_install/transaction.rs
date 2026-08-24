@@ -35,7 +35,13 @@ use tracing::{debug, warn};
 
 use crate::agents::extension::{Envs, ExtensionConfig};
 use crate::agents::extension_manager::ExtensionManager;
-use crate::config::extensions::{name_to_key, remove_extension, set_extension, ExtensionEntry};
+use crate::catalog::{
+    CatalogChangeReason, CatalogEntryChange, CatalogEvents, CatalogExtensionChange,
+    CatalogSkillChange,
+};
+use crate::config::extensions::{
+    name_to_key, remove_extension, set_extension_silent, ExtensionEntry,
+};
 use crate::conversation::message::SecretDestination;
 use crate::pending_user_action::UserActionOutcome;
 
@@ -343,11 +349,15 @@ impl ExtensionInstallTransaction {
         env_keys.sort();
         env_keys.dedup();
         let config = compose_config(&manifest, &install_dir, envs, env_keys.clone());
-        set_extension(ExtensionEntry {
+        // Silent, then announced below with the bundle's skills folded in —
+        // `set_extension` cannot see those, and two events for one install
+        // would leave the second as the only complete one.
+        set_extension_silent(ExtensionEntry {
             enabled: self.enable,
             config: config.clone(),
         });
         self.undo.config_key = Some(key.clone());
+        announce_install(&key, &manifest, &config, self.enable, &skills);
         if let InstallSource::Marketplace { registry_id, url } = &self.source {
             record_provenance(&manifest.name, registry_id, url, &install_dir);
         }
@@ -763,6 +773,42 @@ enum Collected {
     },
     Cancelled,
     Refused,
+}
+
+/// Issue #112. Announce the finished install, with the skills its bundle
+/// carried.
+///
+/// `bundled_skill_ids` is what Worktree 5's skill inventory keys off. It states
+/// what the BUNDLE contains — not what has been installed to the skills
+/// directory, which this path does not do — so a consumer treats it as "look
+/// here", never as "these are present".
+fn announce_install(
+    key: &str,
+    manifest: &BrxtManifest,
+    config: &ExtensionConfig,
+    enabled: bool,
+    skills: &[BundledSkill],
+) {
+    let skill_ids: Vec<String> = skills.iter().map(|s| s.slug.clone()).collect();
+    let row = CatalogExtensionChange {
+        key: key.to_string(),
+        name: manifest.name.clone(),
+        display_name: Some(manifest.display_name.clone()),
+        change: CatalogEntryChange::Added,
+        config: Some(config.clone()),
+        enabled,
+        bundled_skill_ids: skill_ids,
+    };
+    let skill_rows: Vec<CatalogSkillChange> = skills
+        .iter()
+        .map(|skill| CatalogSkillChange {
+            id: skill.slug.clone(),
+            name: Some(skill.name.clone()),
+            change: CatalogEntryChange::Added,
+            source_extension_key: Some(key.to_string()),
+        })
+        .collect();
+    CatalogEvents::global().publish(CatalogChangeReason::Install, vec![row], skill_rows, None);
 }
 
 /// Issue #56 Task 43 (DR-23). Record where a marketplace bundle came from, so
