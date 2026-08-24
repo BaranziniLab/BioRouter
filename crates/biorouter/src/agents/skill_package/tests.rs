@@ -177,6 +177,35 @@ fn one_folder_holding_one_skill_is_still_one_skill_not_a_package_of_one() {
     );
 }
 
+/// The same shape reached WITHOUT `strip_wrapper` unwrapping it first.
+///
+/// ⚠ This is the fixture that was missing, and its absence hid a real refusal.
+/// `plan()` above hands `<slug>/SKILL.md` to `strip_wrapper`, which unwraps it
+/// into the root-SKILL.md case — so every synthetic test jumped over the
+/// single-component-under-a-named-folder branch. A zip carrying a `README.md`
+/// beside the folder has no single common root, is not unwrapped, and lands
+/// squarely on it.
+#[test]
+fn one_folder_beside_a_readme_is_still_one_skill_and_needs_no_package_name() {
+    let plan = plan(
+        &[
+            ("my-skill/SKILL.md", skill_md("gwas-pipeline", "Run a GWAS")),
+            ("my-skill/references/notes.md", "notes".to_string()),
+            ("README.md", "# A repository".to_string()),
+        ],
+        WrapperHint::Infer,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(plan.kind, ImportKind::Single);
+    assert_eq!(plan.id, "gwas-pipeline");
+    assert!(plan.files.iter().any(|(path, _)| path == "SKILL.md"));
+    assert!(plan
+        .files
+        .iter()
+        .any(|(path, _)| path == "references/notes.md"));
+}
+
 // ---------------------------------------------------------------------------
 // 3. the canonical BioRouter bundle
 // ---------------------------------------------------------------------------

@@ -84,16 +84,14 @@ pub fn plan_from_entries(
 
     let mut components = collect_components(&members)?;
 
-    let (id, display_name) = resolve_identity(&facts, id_hints, &components_root)?;
-
-    let (entry_point, groups) = apply_manifest_metadata(&facts, &mut components, &id);
-
+    // ⚠ **Before identity, not after.** A single skill in a named folder with
+    // no manifest needs no package name, and resolving one first refused the
+    // import with "this package has no name" — a message about a package the
+    // user never asked for. Found by running a real repository through the
+    // real pipeline; every synthetic fixture reached this shape via
+    // `strip_wrapper`, which unwraps it into the root-SKILL.md case and jumps
+    // over the branch entirely.
     let single_component = components.len() == 1;
-    let evidence = facts
-        .evidence
-        .clone()
-        .unwrap_or_else(|| root_evidence.clone());
-
     // A single component and no manifest is one skill in one folder, not a
     // package of one — installing it as a bundle would put it a level deeper
     // than every other single-skill install.
@@ -111,6 +109,15 @@ pub fn plan_from_entries(
             source,
         );
     }
+
+    let (id, display_name) = resolve_identity(&facts, id_hints, &components_root)?;
+
+    let (entry_point, groups) = apply_manifest_metadata(&facts, &mut components, &id);
+
+    let evidence = facts
+        .evidence
+        .clone()
+        .unwrap_or_else(|| root_evidence.clone());
 
     let ambiguity = ambiguity_for(&facts, &components, &components_root);
 

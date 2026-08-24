@@ -200,6 +200,30 @@ every defect this replaces lived in a seam between two steps — a test that han
 `plan_from_entries` a hand-built entry list jumps straight over the wrapper
 directory, which is the one that mattered most.
 
+⚠ **Run the live test after touching `manifest.rs` or `plan.rs`:**
+
+```bash
+cargo test -p biorouter --test skill_package_live -- --ignored
+```
+
+It downloads the real HyperFrames repository, so it is `#[ignore]`d — and it is
+the only test that can fail for the reason the fixtures cannot. A fixture is a
+statement about what you *think* the world looks like, and a complete synthetic
+matrix passed while **three** real defects survived, all three found in one live
+run:
+
+1. `skills-manifest.json`'s `skills` is a **map** keyed by component name, not
+   an array. A `Vec` did not merely miss the names — serde failed the whole
+   document, and importing HyperFrames was refused with "skills-manifest.json
+   is not valid JSON".
+2. The human-readable name lives in the plugin manifest's `interface` block,
+   not at the top level.
+3. Package identity was resolved *before* the single-skill collapse, so one
+   skill in a named folder with no manifest was refused with "this package has
+   no name" — about a package the user never asked for. Every fixture reached
+   that shape through `strip_wrapper`, which unwraps it into the root-`SKILL.md`
+   case and jumps over the branch.
+
 ## Related documentation
 
 - [The skill catalog](skill-catalog.md) — what happens after an install: discovery, enablement, and per-chat state
