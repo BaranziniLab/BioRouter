@@ -116,7 +116,7 @@ const INSTRUCTIONS: &str = indoc! {r#"
       agent (agent).
     - workspace_watch: wait until one of several conversations finishes. Use it
       after starting background work; never poll workspace_read_conversation.
-    - workspace_read_panel: read what the preview panel shows now — document,
+    - workspace_read_panel: read what the preview panel shows now: document,
       figure, file or live web page. Use it when the user says "this" or "the
       page"; text is cheap and you can act on it.
     - workspace_capture_panel: screenshot it (returns a PNG path) to judge how
