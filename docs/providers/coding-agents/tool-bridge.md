@@ -152,6 +152,20 @@ more time — it converts a card they could still answer into "The operation tim
 failure the model may retry, producing a *second* card for the same call. So the park fits inside
 `bridge::child_tool_call_budget()` and always answers with a result.
 
+### Headless is explicit, not a slow refusal
+
+A run with nobody to ask — `biorouter run -p`, a piped stdin, a scheduled job —
+does not park for the full TTL and then time out. The CLI's existing
+`headless_auto_decision` already answers a tool-confirmation card immediately
+with `DenyOnce` when stdin is not a terminal, and it reaches a *bridged* prompt
+through the same `Agent::handle_confirmation` fallthrough the desktop uses. So
+the child gets a refusal within milliseconds, saying it was not approved.
+
+That matters because of what the alternative looked like. The old text told the
+model to ask the user in prose, and in a headless run there was no user, no
+dialog, and no request id — the model asked, nothing answered, and the turn ended
+having quietly done less than it reported.
+
 ### The refusal texts never invite an unanswerable question
 
 Whatever happens, the child gets an MCP tool **result** with `isError`, not a JSON-RPC error: a
