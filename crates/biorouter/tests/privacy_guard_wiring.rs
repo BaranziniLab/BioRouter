@@ -630,10 +630,17 @@ const REGISTRY: &[Guard] = &[
         sites: &[
             Site {
                 file: "crates/biorouter/src/agents/extension_manager_extension.rs",
-                counts: c(1, 0, 0),
+                counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`check_enable_allowed`, i.e. `extensionmanager__manage_extensions \
-                       {action:\"enable\"}`, which is now the gate plus a not-found branch",
+                what: "TWO enable doors in one file. `check_enable_allowed`, i.e. \
+                       `extensionmanager__manage_extensions {action:\"enable\"}`, which is \
+                       the gate plus a not-found branch; and #117's install tool, which \
+                       gates the ATTACH rather than the install. The second is a door and \
+                       not a duplicate: installing writes bytes to disk and is not an \
+                       enable, so a refusal there must still leave the extension correctly \
+                       installed for a session that may legitimately use it. Gating the \
+                       install instead would have made the privacy answer decide whether \
+                       the download happened",
             },
             Site {
                 file: "crates/biorouter/src/agents/workspace_extension.rs",
