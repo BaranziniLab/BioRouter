@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   providers: vi.fn(),
   getProviderModels: vi.fn(),
   syncBundledExtensions: vi.fn(),
+  catalogChanges: vi.fn(),
 }));
 
 vi.mock('../api', () => ({
@@ -32,6 +33,7 @@ vi.mock('../api', () => ({
   removeExtension: mocks.removeExtension,
   providers: mocks.providers,
   getProviderModels: mocks.getProviderModels,
+  catalogChanges: mocks.catalogChanges,
 }));
 
 vi.mock('./settings/extensions', () => ({
@@ -87,6 +89,9 @@ beforeEach(() => {
   mocks.providers.mockResolvedValue({ data: [] });
   mocks.syncBundledExtensions.mockResolvedValue(undefined);
   mocks.upsertConfig.mockResolvedValue({ data: {} });
+  // The quiet daemon: park and never answer. Any test that wants the catalogue
+  // to move says so itself.
+  mocks.catalogChanges.mockImplementation(() => new Promise(() => {}));
 });
 
 function renderProbe() {
@@ -254,5 +259,156 @@ describe('ConfigContext cache integrity', () => {
     await waitFor(() => expect(screen.getByTestId('upsert-result')).toHaveTextContent('ok'));
     expect(mocks.upsertConfig).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId('provider')).toHaveTextContent('ollama');
+  });
+});
+
+/**
+ * Issue #112's catalogue subscription, against a daemon that has something to
+ * report — which is every daemon whose revision is not zero.
+ *
+ * `GET /catalog/changes?since=0` does NOT park: a caller at revision 0 is
+ * already behind, so the daemon answers immediately with the current revision
+ * and the buffered changes. That is correct, and it is the whole hazard: a
+ * subscription that is torn down and restarted resets its cursor to 0, so the
+ * restart is answered instantly and the handler fires again. If the handler's
+ * own work changes the identity of anything the subscribing effect depends on,
+ * the effect re-subscribes and the two feed each other with a loopback round
+ * trip (~1 ms) as the only brake.
+ *
+ * That is not a slow leak. Chromium allows six sockets per host, `stop()` does
+ * not abort the request already on the wire, and each turn of the loop opens
+ * another — so within a few hundred milliseconds every socket to the daemon is
+ * spoken for and *every other request the renderer makes queues behind them and
+ * never runs*: the model picker's bind, the provider model lists, the
+ * diagnostics bundle, the chat reply. The window looks alive and answers
+ * nothing, which is exactly how it was reported ("the Select Model button froze
+ * without telling me why").
+ *
+ * ⚠ The unit tests next door cannot see this. `catalogSubscription.test.ts`
+ * scripts its poll to park after the last scripted delta *specifically so the
+ * loop cannot spin* — a reasonable thing to do to keep a test fast, and it
+ * makes the runaway structurally unreachable there. The loop only exists once
+ * the module is wired to a React effect, so this is where it has to be pinned.
+ */
+describe('ConfigContext catalogue subscription (#112)', () => {
+  /** A faithful daemon: immediate when the caller is behind, parked when level. */
+  function daemonAtRevision(revision: number) {
+    return ({ query }: { query: { since: number } }) => {
+      if (query.since >= revision) return new Promise(() => {});
+      return Promise.resolve({
+        data: {
+          revision,
+          changes: [
+            {
+              revision,
+              reason: 'install' as const,
+              extensions: [
+                {
+                  key: 'spokeagent',
+                  name: 'SPOKEAgent',
+                  change: 'added' as const,
+                  enabled: true,
+                  bundledSkillIds: [],
+                },
+              ],
+              skills: [],
+            },
+          ],
+          truncated: false,
+        },
+      });
+    };
+  }
+
+  /**
+   * ⚠ `mockResolvedValue` is the wrong tool for this file and it hid the bug.
+   *
+   * It hands every caller back the SAME object, so `setExtensionsList` receives
+   * an array it is already holding, `Object.is` says equal, React bails out of
+   * the update, and nothing downstream re-renders — which is precisely the
+   * re-render the runaway is made of. A real response is parsed from a fresh
+   * body on every call and is never reference-equal to the last one. Modelling
+   * that is what makes this test able to fail.
+   */
+  function freshExtensionsResponse() {
+    mocks.getExtensions.mockImplementation(() =>
+      Promise.resolve({ data: { extensions: [], warnings: [] }, response: { status: 200 } })
+    );
+  }
+
+  it('polls a moved catalogue a bounded number of times, not in a loop', async () => {
+    freshExtensionsResponse();
+    mocks.catalogChanges.mockImplementation(daemonAtRevision(4));
+
+    renderProbe();
+
+    // Let every microtask and timer settle. A correct subscription advances its
+    // cursor to 4 and parks; a subscription that restarts re-asks from 0 and is
+    // answered instantly, forever.
+    for (let i = 0; i < 40; i += 1) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+
+    // Two is the honest ceiling for correct behaviour: the opening poll at
+    // since=0, and the parked poll at since=4 that follows it. The assertion is
+    // loose enough to survive an extra render, and orders of magnitude below
+    // what the runaway produces.
+    expect(mocks.catalogChanges.mock.calls.length).toBeLessThanOrEqual(4);
+  });
+
+  it('advances its cursor, so the poll after a change asks from the new revision', async () => {
+    freshExtensionsResponse();
+    mocks.catalogChanges.mockImplementation(daemonAtRevision(4));
+
+    renderProbe();
+
+    await waitFor(() => expect(mocks.catalogChanges.mock.calls.length).toBeGreaterThan(1));
+
+    // The second poll must carry the revision the first one reported. Asking
+    // from 0 again is the restart this whole describe exists to rule out.
+    const second = mocks.catalogChanges.mock.calls[1][0] as { query: { since: number } };
+    expect(second.query.since).toBe(4);
+  });
+
+  /**
+   * The crash that told us where to look. Under a network failure the generated
+   * client resolves with `{ error, response: undefined }` (see
+   * `api/client/client.gen.ts` — it returns `response: undefined as any` from
+   * the fetch catch), so reading `.status` off it throws a TypeError. Because
+   * the subscription calls `refreshExtensions` with a bare `void`, that
+   * TypeError became an unhandled rejection rather than a handled failure:
+   *
+   *   [UNHANDLED REJECTION] TypeError: Cannot read properties of undefined (reading 'status')
+   *
+   * A backend that cannot be reached must leave the cached list alone and say
+   * so, never throw a type error out of a promise nobody is holding.
+   */
+  it('survives an extension refresh whose fetch never reached the daemon', async () => {
+    mocks.getExtensions.mockResolvedValue({
+      error: new TypeError('Failed to fetch'),
+      response: undefined,
+    });
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (event: PromiseRejectionEvent) => {
+      unhandled.push(event.reason);
+      event.preventDefault();
+    };
+    window.addEventListener('unhandledrejection', onUnhandled);
+
+    try {
+      renderProbe();
+      for (let i = 0; i < 20; i += 1) {
+        await act(async () => {
+          await Promise.resolve();
+        });
+      }
+    } finally {
+      window.removeEventListener('unhandledrejection', onUnhandled);
+    }
+
+    expect(unhandled).toEqual([]);
   });
 });

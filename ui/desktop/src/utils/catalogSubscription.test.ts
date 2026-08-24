@@ -52,6 +52,15 @@ function scripted(deltas: CatalogDelta[]) {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/**
+ * The loop keeps a small floor under one iteration (`MIN_INTERVAL_MS`) so a
+ * subscription answered without parking cannot become a busy wait on the
+ * daemon. These tests are about *sequencing*, not wall-clock, so they hand it a
+ * sleep that resolves at once — the ordering they assert is unchanged, and they
+ * do not have to sit through the floor or encode its value.
+ */
+const immediate = () => Promise.resolve();
+
 afterEach(() => vi.clearAllMocks());
 
 describe('subscribeToCatalog (issue #112)', () => {
@@ -59,7 +68,7 @@ describe('subscribeToCatalog (issue #112)', () => {
     const onChange = vi.fn();
     const { poll, seen } = scripted([delta(1, ['bioroffice']), delta(2, ['markitdown'])]);
 
-    const stop = subscribeToCatalog({ onChange, poll });
+    const stop = subscribeToCatalog({ onChange, poll, sleep: immediate });
     await flush();
     await flush();
     stop();
@@ -115,7 +124,7 @@ describe('subscribeToCatalog (issue #112)', () => {
       delta(1, ['markitdown']),
     ]);
 
-    const stop = subscribeToCatalog({ onChange, poll });
+    const stop = subscribeToCatalog({ onChange, poll, sleep: immediate });
     await flush();
     await flush();
     await flush();

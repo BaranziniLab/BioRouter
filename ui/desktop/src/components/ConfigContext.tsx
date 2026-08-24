@@ -21,6 +21,7 @@ import {
 import { syncBundledExtensions } from './settings/extensions';
 import { userActionHeaders } from '../utils/userAction';
 import { newlyInstalledExtensions, subscribeToCatalog } from '../utils/catalogSubscription';
+import type { CatalogDelta } from '../api';
 import { toastService } from '../toasts';
 import {
   isCapabilityDefaultEnabled,
@@ -229,23 +230,63 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
     [reloadConfigAfterWrite]
   );
 
+  /**
+   * The last extension list we successfully read, as a ref.
+   *
+   * ⚠ **`refreshExtensions` must not close over `extensionsList` as a
+   * dependency**, and the reason is not tidiness — it is the runaway loop that
+   * took the whole renderer down in 1.89.5.
+   *
+   * This function ends by calling `setExtensionsList` with an array parsed
+   * fresh from the response body, so it is never reference-equal to the one in
+   * state and React always commits the update. With `extensionsList` in the
+   * dependency array, *every successful refresh minted a new
+   * `refreshExtensions`* — and the catalogue subscription below listed that
+   * function among its effect dependencies, so every refresh tore the
+   * subscription down and started a new one from `since = 0`. A restart at zero
+   * is answered by the daemon **immediately** rather than parked (the caller is
+   * behind), which re-fired the handler, which refreshed again. Two correct
+   * pieces, feeding each other, with a loopback round trip as the only brake.
+   *
+   * The fallback below is the only thing the old dependency bought, and a ref
+   * serves it exactly as well while keeping this function's identity stable for
+   * the life of the provider.
+   */
+  const extensionsListRef = useRef<FixedExtensionEntry[]>([]);
+  useEffect(() => {
+    extensionsListRef.current = extensionsList;
+  }, [extensionsList]);
+
   const refreshExtensions = useCallback(async () => {
     const result = await apiGetExtensions();
 
-    if (result.response.status === 422) {
+    // ⚠ `result.response` is OPTIONAL in practice, whatever the generated types
+    // say. On a network-level failure the client returns `response: undefined`
+    // (`api/client/client.gen.ts` returns `response: undefined as any` from its
+    // fetch catch), so an unguarded `.status` throws
+    // `TypeError: Cannot read properties of undefined (reading 'status')` —
+    // which is how a backend that merely could not be reached surfaced as an
+    // unhandled rejection rather than as a handled, reported failure.
+    if (result.response?.status === 422) {
       throw new MalformedConfigError();
     }
 
     if (result.error && !result.data) {
       console.log(result.error);
-      return extensionsList;
+      return extensionsListRef.current;
     }
 
-    const extensionResponse: ExtensionResponse = result.data!;
+    if (!result.data) {
+      // No body and no error: nothing was learned, so nothing is published. The
+      // cache keeps what it had rather than being emptied by a failed read.
+      return extensionsListRef.current;
+    }
+
+    const extensionResponse: ExtensionResponse = result.data;
     setExtensionsList(extensionResponse.extensions);
     setExtensionWarnings(extensionResponse.warnings || []);
     return extensionResponse.extensions;
-  }, [extensionsList]);
+  }, []);
 
   const addExtension = useCallback(
     async (name: string, config: ExtensionConfig, enabled: boolean) => {
@@ -339,27 +380,54 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
    * this refetches. Applying a partial history and believing yourself current is
    * the same stale-inventory bug one layer down.
    */
-  useEffect(() => {
-    return subscribeToCatalog({
-      onChange: (delta) => {
-        void refreshExtensions();
-        void reloadConfigAfterWrite();
+  /**
+   * The subscription's handler, held in a ref so the effect below can mount
+   * ONCE and never re-subscribe.
+   *
+   * ⚠ This is belt-and-braces on top of the stable `refreshExtensions` above,
+   * and it is worth having both. Listing callbacks as effect dependencies is
+   * the idiomatic thing to do and reads as obviously correct; what makes it
+   * unsafe *here* is that a re-subscribe is not a cheap no-op but a cursor
+   * reset to zero, which the daemon answers instantly. Anything that costs a
+   * restart must not be re-run because a function identity moved — so the
+   * effect depends on nothing, and the handler is read fresh at call time.
+   */
+  const onCatalogChangeRef = useRef<(delta: CatalogDelta) => void>(() => {});
 
-        // ⚠ OFFER, never attach. A running chat snapshots the extensions it
-        // started with, and an install made somewhere else — another terminal,
-        // another window — is not that chat's decision to have made. An agent
-        // asked to install one *in* a chat attaches it itself, because there
-        // the user did ask; here they did not, so this says the row is now
-        // there and leaves the click to them.
-        for (const extension of newlyInstalledExtensions(delta)) {
-          toastService.success({
-            title: extension.name,
-            msg: 'Extension installed. Turn it on for this chat from the extensions menu below the composer.',
-          });
-        }
-      },
-    });
+  useEffect(() => {
+    onCatalogChangeRef.current = (delta: CatalogDelta) => {
+      // ⚠ `.catch`, not `void`. These are fire-and-forget by intent, but
+      // "nobody is waiting for the result" is not the same as "nobody handles a
+      // failure": a bare `void` on a rejecting promise is an unhandled
+      // rejection, and that is how a merely-unreachable daemon reached the log
+      // as an uncaught TypeError instead of a console warning.
+      refreshExtensions().catch((error: unknown) =>
+        console.warn('Catalogue changed, but the extension list could not be refreshed:', error)
+      );
+      reloadConfigAfterWrite().catch((error: unknown) =>
+        console.warn('Catalogue changed, but the config could not be re-read:', error)
+      );
+
+      // ⚠ OFFER, never attach. A running chat snapshots the extensions it
+      // started with, and an install made somewhere else — another terminal,
+      // another window — is not that chat's decision to have made. An agent
+      // asked to install one *in* a chat attaches it itself, because there
+      // the user did ask; here they did not, so this says the row is now
+      // there and leaves the click to them.
+      for (const extension of newlyInstalledExtensions(delta)) {
+        toastService.success({
+          title: extension.name,
+          msg: 'Extension installed. Turn it on for this chat from the extensions menu below the composer.',
+        });
+      }
+    };
   }, [refreshExtensions, reloadConfigAfterWrite]);
+
+  useEffect(() => {
+    return subscribeToCatalog({ onChange: (delta) => onCatalogChangeRef.current(delta) });
+    // Mount-once, deliberately. See `onCatalogChangeRef` above: a re-subscribe
+    // resets the cursor to zero, and a zero cursor is answered without parking.
+  }, []);
 
   useEffect(() => {
     // Load all configuration data and providers on mount
