@@ -8166,6 +8166,17 @@ pub(crate) mod tests {
             text.contains("parent"),
             "…and why this is a data-model fact, not a naming quibble: {text}"
         );
+
+        // ⚠ **Every test in this file that installs an override clears it, and
+        // this one has to too.** `serial_test`'s `serial`/`parallel` pairing
+        // stops an override from being *observed concurrently*; it does nothing
+        // about one left behind. The reader is
+        // `workspace_list_reports_headless_and_sessions`, whose whole subject is
+        // the headless answers — so a leaked `with_gui(true)` makes it report
+        // `gui_attached: true` in a run that never touched it, on whichever
+        // platform happens to schedule the two in that order (this failed on
+        // ubuntu while macOS and Windows both passed).
+        crate::workspace_services::clear_test_override();
     }
 
     /// The other half of #111's closed vocabulary: absent, and every value this
@@ -8211,12 +8222,8 @@ pub(crate) mod tests {
             "User",
             "",
         ] {
-            let refused = open_as(
-                &c,
-                "caller",
-                serde_json::json!({ "new": { "kind": bad } }),
-            )
-            .await;
+            let refused =
+                open_as(&c, "caller", serde_json::json!({ "new": { "kind": bad } })).await;
             let text = text_of(&refused);
             assert_eq!(refused.is_error, Some(true), "kind {bad:?} was accepted");
             assert!(
@@ -8230,6 +8237,8 @@ pub(crate) mod tests {
             "one of the refused kinds created a session: {:?}",
             recorder.sessions_started()
         );
+
+        crate::workspace_services::clear_test_override();
     }
 
     /// **`kind:"user"` plus a `prompt` is a legitimate call, and #111 must not
@@ -8274,6 +8283,8 @@ pub(crate) mod tests {
             1,
             "the first prompt no longer starts a turn"
         );
+
+        crate::workspace_services::clear_test_override();
     }
 
     /// The `new.kind` vocabulary IS `SessionType`'s, not a private copy that
@@ -8423,8 +8434,18 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        open_as(&c, &caller_a.id, serde_json::json!({ "new": { "kind": "user" } })).await;
-        open_as(&c, &caller_b.id, serde_json::json!({ "new": { "kind": "user" } })).await;
+        open_as(
+            &c,
+            &caller_a.id,
+            serde_json::json!({ "new": { "kind": "user" } }),
+        )
+        .await;
+        open_as(
+            &c,
+            &caller_b.id,
+            serde_json::json!({ "new": { "kind": "user" } }),
+        )
+        .await;
 
         assert_eq!(
             recorder.session_dirs(),
@@ -8537,8 +8558,13 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let r = open_as_with_announce_only(&c, &caller.id, serde_json::json!({ "new": { "kind": "user" } }), true)
-            .await;
+        let r = open_as_with_announce_only(
+            &c,
+            &caller.id,
+            serde_json::json!({ "new": { "kind": "user" } }),
+            true,
+        )
+        .await;
 
         // The GUI never got a focus-stealing frame…
         assert!(
@@ -8581,7 +8607,12 @@ pub(crate) mod tests {
         // assertions above are pinned to the preference, not to some unrelated
         // property of this fixture.
         recorder.clear_frames();
-        let r = open_as(&c, &caller.id, serde_json::json!({ "new": { "kind": "user" } })).await;
+        let r = open_as(
+            &c,
+            &caller.id,
+            serde_json::json!({ "new": { "kind": "user" } }),
+        )
+        .await;
         assert!(recorder.frame_with_cmd("open_tab").is_some());
         assert!(text_of(&r).contains("opened in the GUI"));
 
@@ -8868,7 +8899,12 @@ pub(crate) mod tests {
         // …but "inherit the caller's directory" cannot be guessed when the
         // caller is unreadable, and the tool says exactly that instead of
         // inventing a directory.
-        let r = open_as(&c, "caller", serde_json::json!({ "new": { "kind": "user" } })).await;
+        let r = open_as(
+            &c,
+            "caller",
+            serde_json::json!({ "new": { "kind": "user" } }),
+        )
+        .await;
         assert_eq!(r.is_error, Some(true));
         assert!(
             text_of(&r).contains("pass working_dir explicitly"),
