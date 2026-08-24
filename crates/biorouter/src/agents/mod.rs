@@ -46,6 +46,7 @@ mod session_blob_tool;
 // machine-wide `skills-config.json`.
 pub mod session_skills;
 pub mod skill_catalog;
+pub mod skill_package;
 // Pub so the CLI (`biorouter skill …`) reuses the exact same skill discovery
 // roots and frontmatter parsing as this backend extension, instead of keeping
 // a drifting duplicate (Codex B2 findings 5+6).
