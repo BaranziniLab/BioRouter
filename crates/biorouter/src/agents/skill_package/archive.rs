@@ -53,7 +53,7 @@ pub fn safe_entry_name(raw: &str) -> Result<String> {
         .split('/')
         .filter(|part| !part.is_empty() && *part != ".")
         .collect();
-    if parts.iter().any(|part| *part == "..") {
+    if parts.contains(&"..") {
         bail!("unsafe archive entry path: {raw}");
     }
     if parts.is_empty() {

@@ -176,4 +176,5 @@ saved." with the reason dropped.
 
 - [Skills extension](built-in/skills.md) — the user-facing guide to what a skill is and where to get one
 - [Extensions, skills, and MCP agents](extensions-and-skills-guide.md) — installing and authoring
+- [Skill packages](skill-packages.md) — how a skill or package gets onto disk in the first place
 - [Workspace control](../agent-loop/workspace-control.md) — `workspace_set_tools`, the model's own route to the same per-session state

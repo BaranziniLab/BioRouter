@@ -53,29 +53,19 @@ pub fn plan_from_entries(
                 "the root SKILL.md has no valid frontmatter with `name` and `description`"
             )
         })?;
-        let id = sanitize_package_id(&metadata.name)
-            .or_else(|| id_hints.iter().find_map(|hint| sanitize_package_id(hint)))
-            .ok_or_else(|| anyhow::anyhow!("could not derive a folder name for this skill"))?;
-        return Ok(ImportPlan {
-            kind: ImportKind::Single,
-            display_name: metadata.name.clone(),
-            id,
-            version: facts.version.clone(),
-            entry_point: None,
-            groups: BTreeMap::new(),
-            components: vec![PlannedSkill {
+        return single_plan(
+            PlannedSkill {
                 name: metadata.name,
                 description: metadata.description,
                 directory: String::new(),
                 group: None,
                 entry_point: false,
-            }],
-            evidence: Evidence::SingleSkill,
-            ambiguity: None,
-            shadows: Vec::new(),
-            files: keep_files(&entries, ""),
+            },
+            keep_files(&entries, ""),
+            id_hints,
+            facts.version.clone(),
             source,
-        });
+        );
     }
 
     // ------------------------------------------------------- components root
@@ -92,78 +82,11 @@ pub fn plan_from_entries(
         );
     }
 
-    let mut components = Vec::new();
-    let mut seen: BTreeMap<String, String> = BTreeMap::new();
-    for (directory, entry) in &members {
-        let Ok((metadata, _)) = SkillsClient::parse_frontmatter(&entry.text()) else {
-            // A component whose frontmatter does not parse is one the extension
-            // would never load, so it is not silently carried along as dead
-            // weight inside a package that claims to contain it.
-            continue;
-        };
-        if let Some(first) = seen.get(&metadata.name) {
-            bail!(
-                "this package declares the skill `{}` twice, in `{first}` and `{directory}`. \
-                 A skill's identity is its frontmatter name, so one would permanently shadow \
-                 the other",
-                metadata.name
-            );
-        }
-        seen.insert(metadata.name.clone(), directory.clone());
-        components.push(PlannedSkill {
-            name: metadata.name,
-            description: metadata.description,
-            directory: directory.clone(),
-            group: None,
-            entry_point: false,
-        });
-    }
-    if components.is_empty() {
-        bail!("no SKILL.md in this package has valid frontmatter with `name` and `description`");
-    }
+    let mut components = collect_components(&members)?;
 
-    // ------------------------------------------------------------- identity
-    let declared_name = facts.name.clone().or_else(|| facts.display_name.clone());
-    let id = declared_name
-        .as_deref()
-        .and_then(sanitize_package_id)
-        .or_else(|| id_hints.iter().find_map(|hint| sanitize_package_id(hint)))
-        .or_else(|| {
-            // Last resort: the components' own parent, but never when that is
-            // the generic `skills` — see `sanitize_package_id`.
-            components_root
-                .rsplit('/')
-                .next()
-                .and_then(sanitize_package_id)
-        })
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "this package has no name: no manifest declares one, and nothing in the source \
-                 supplies one either"
-            )
-        })?;
-    let display_name = facts
-        .display_name
-        .clone()
-        .or(declared_name)
-        .unwrap_or_else(|| id.clone());
+    let (id, display_name) = resolve_identity(&facts, id_hints, &components_root)?;
 
-    // ---------------------------------------------------------- entry point
-    let entry_point = resolve_entry_point(&facts, &components, &id);
-    if let Some(entry_point) = entry_point.as_deref() {
-        for component in &mut components {
-            component.entry_point = component.name == entry_point;
-        }
-    }
-
-    // --------------------------------------------------------------- groups
-    let groups = filter_groups(&facts.groups, &components);
-    for component in &mut components {
-        component.group = groups
-            .iter()
-            .find(|(_, names)| names.iter().any(|name| name == &component.name))
-            .map(|(group, _)| group.clone());
-    }
+    let (entry_point, groups) = apply_manifest_metadata(&facts, &mut components, &id);
 
     let single_component = components.len() == 1;
     let evidence = facts
@@ -176,27 +99,17 @@ pub fn plan_from_entries(
     // than every other single-skill install.
     if single_component && facts.evidence.is_none() {
         let component = components.remove(0);
-        let directory = component.directory.clone();
-        let id = sanitize_package_id(&component.name)
-            .or_else(|| id_hints.iter().find_map(|hint| sanitize_package_id(hint)))
-            .unwrap_or(id);
-        return Ok(ImportPlan {
-            kind: ImportKind::Single,
-            display_name: component.name.clone(),
-            id,
-            version: facts.version,
-            entry_point: None,
-            groups: BTreeMap::new(),
-            components: vec![PlannedSkill {
+        let files = keep_files(&entries, &component.directory);
+        return single_plan(
+            PlannedSkill {
                 directory: String::new(),
                 ..component
-            }],
-            evidence: Evidence::SingleSkill,
-            ambiguity: None,
-            shadows: Vec::new(),
-            files: keep_files(&entries, &directory),
+            },
+            files,
+            id_hints,
+            facts.version,
             source,
-        });
+        );
     }
 
     let ambiguity = ambiguity_for(&facts, &components, &components_root);
@@ -228,6 +141,140 @@ pub fn plan_from_entries(
             .collect(),
         source,
     })
+}
+
+/// The package's install-directory name and its display name.
+///
+/// A manifest's declared name wins, then the caller's hints (the repository
+/// name, the archive's stem), then the components' own parent directory — every
+/// one of them through [`sanitize_package_id`], which is what stops an archive
+/// of a bare `skills/` folder installing as a package called "skills".
+fn resolve_identity(
+    facts: &ManifestFacts,
+    id_hints: &[String],
+    components_root: &str,
+) -> Result<(String, String)> {
+    let declared_name = facts.name.clone().or_else(|| facts.display_name.clone());
+    let id = declared_name
+        .as_deref()
+        .and_then(sanitize_package_id)
+        .or_else(|| id_hints.iter().find_map(|hint| sanitize_package_id(hint)))
+        .or_else(|| {
+            components_root
+                .rsplit('/')
+                .next()
+                .and_then(sanitize_package_id)
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "this package has no name: no manifest declares one, and nothing in the source \
+                 supplies one either"
+            )
+        })?;
+    let display_name = facts
+        .display_name
+        .clone()
+        .or(declared_name)
+        .unwrap_or_else(|| id.clone());
+    Ok((id, display_name))
+}
+
+/// Stamp the router and the group memberships onto the components.
+///
+/// Both are what flattening destroys: a package installed as N loose skills has
+/// no way to say which one is read first, or which are core rather than
+/// on-demand.
+fn apply_manifest_metadata(
+    facts: &ManifestFacts,
+    components: &mut [PlannedSkill],
+    id: &str,
+) -> (Option<String>, BTreeMap<String, Vec<String>>) {
+    let entry_point = resolve_entry_point(facts, components, id);
+    if let Some(entry_point) = entry_point.as_deref() {
+        for component in components.iter_mut() {
+            component.entry_point = component.name == entry_point;
+        }
+    }
+
+    let groups = filter_groups(&facts.groups, components);
+    for component in components.iter_mut() {
+        component.group = groups
+            .iter()
+            .find(|(_, names)| names.iter().any(|name| name == &component.name))
+            .map(|(group, _)| group.clone());
+    }
+    (entry_point, groups)
+}
+
+/// One skill, at `<root>/<slug>/SKILL.md`.
+///
+/// Shared by the two ways a source turns out to be a single skill — a root
+/// `SKILL.md`, and one folder holding one skill — so the two cannot come to
+/// disagree about where a single skill is installed.
+fn single_plan(
+    component: PlannedSkill,
+    files: Vec<(String, Vec<u8>)>,
+    id_hints: &[String],
+    version: Option<String>,
+    source: SourceProvenance,
+) -> Result<ImportPlan> {
+    let id = sanitize_package_id(&component.name)
+        .or_else(|| id_hints.iter().find_map(|hint| sanitize_package_id(hint)))
+        .ok_or_else(|| anyhow::anyhow!("could not derive a folder name for this skill"))?;
+    Ok(ImportPlan {
+        kind: ImportKind::Single,
+        display_name: component.name.clone(),
+        id,
+        version,
+        entry_point: None,
+        groups: BTreeMap::new(),
+        components: vec![component],
+        evidence: Evidence::SingleSkill,
+        ambiguity: None,
+        shadows: Vec::new(),
+        files,
+        source,
+    })
+}
+
+/// Parse each member's frontmatter, refusing a package that declares one name
+/// twice.
+///
+/// ⚠ A duplicate is fatal rather than a warning. A skill's identity is its
+/// frontmatter `name`, and discovery keys on it — so of two components
+/// declaring `same-name`, one would permanently shadow the other, silently and
+/// with no way for the user to tell which.
+fn collect_components(members: &[(String, &Entry)]) -> Result<Vec<PlannedSkill>> {
+    let mut components = Vec::new();
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    for (directory, entry) in members {
+        let Ok((metadata, _)) = SkillsClient::parse_frontmatter(&entry.text()) else {
+            // A component whose frontmatter does not parse is one the extension
+            // would never load, so it is not silently carried along as dead
+            // weight inside a package that claims to contain it.
+            continue;
+        };
+        if let Some(first) = seen.get(&metadata.name) {
+            bail!(
+                "this package declares the skill `{}` twice, in `{first}` and `{directory}`. \
+                 A skill's identity is its frontmatter name, so one would permanently shadow \
+                 the other",
+                metadata.name
+            );
+        }
+        seen.insert(metadata.name.clone(), directory.clone());
+        components.push(PlannedSkill {
+            name: metadata.name,
+            description: metadata.description,
+            directory: directory.clone(),
+            group: None,
+            entry_point: false,
+        });
+    }
+    if components.is_empty() {
+        bail!("no SKILL.md in this package has valid frontmatter with `name` and `description`");
+    }
+    Ok(components)
 }
 
 /// Where the components live, and what told us.
