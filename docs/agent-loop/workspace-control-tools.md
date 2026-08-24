@@ -25,6 +25,7 @@ This page uses the bare names for readability.
 | Argument | Behaviour on an unrecognised value |
 |---|---|
 | `workspace_open.placement` | **Refused** — `unknown placement "…" — use "tab" (default), "split" or "window"` |
+| `workspace_open.new.kind` | **Refused**, before anything is created — `sub_agent` gets its own refusal naming the `subagent` tool, and anything else (including absent) gets the two-value vocabulary |
 | `subagent.placement` | **Refused**, before a child session is created (same message) |
 | `workspace_close.scope` | **Refused** — `unknown scope '…' (tab \| turn \| agent)` |
 | `workspace_send_prompt.mode` | **Refused** — `unknown mode '…' (turn \| steer \| note)` |
@@ -384,7 +385,23 @@ Opens or focuses a conversation, and is the only tool that creates one.
 | `placement` | string | `"tab"` | `tab` \| `split` \| `window`. Closed vocabulary, validated **before** anything is created. |
 | `focus` | bool | `false` | Defaults to false so a new tab never steals the composer. |
 
-`new` carries `working_dir`, `extensions`, `knowledge_bases`, `primary_knowledge_base`, `prompt`. Passing both `session_id` and `new` is an error (`pass either session_id OR new, not both`); passing neither is an error too.
+`new` carries `kind` (**required**), `working_dir`, `extensions`, `knowledge_bases`, `primary_knowledge_base`, `prompt`. Passing both `session_id` and `new` is an error (`pass either session_id OR new, not both`); passing neither is an error too.
+
+### `new.kind`, and why this tool cannot delegate
+
+`new.kind` is a required, closed vocabulary in the **same** spelling `workspace_list` reports as `session_type` — a conversation's kind has one set of names in the system, not one per tool:
+
+| Value | Result |
+|---|---|
+| `"user"` | Creates a conversation the **user** owns: `session_type: user`, no parent. This is the only kind this tool creates. |
+| `"sub_agent"` | **Refused**, with a result that names the `subagent` tool, says what only that tool can do (stamp this conversation as the child's parent before its first turn, apply the subagent restrictions and lifecycle), and tells the caller to pass `kind:"user"` if a peer conversation was actually meant. |
+| anything else — `scheduled`, `hidden`, `terminal`, a typo, or absent | Refused, stating the two values above. |
+
+This exists because of [#111](https://github.com/BaranziniLab/biorouter/issues/111). `workspace_open { new: { prompt } }` and `subagent` both read as "start a conversation and give it a first instruction", so an explicit request to spin up three sub-agents produced three ordinary `user` rows with a null `parent_session_id` — sessions History's nesting could never show and `workspace_list { only_subagents }` could never find. The work ran; the sessions were not subagents in the data model.
+
+The fix is a **declaration, not an inference**. Nothing is read from the prompt: a conversation the user owns may legitimately open with a first prompt, so a heuristic on the prompt would misclassify exactly the conversations that matter most. And nothing is reclassified retroactively — an existing unparented `user` session stays one whatever its title looks like.
+
+The check runs as the **first statement of `open_new_session`**, ahead of the extension gate, the daemon lookup and `create_session`. A refusal that had already minted a row would produce the exact outcome the refusal exists to prevent.
 
 ### Creating
 
@@ -417,7 +434,7 @@ Headless: `Session {id} ready (gui_attached: false — no tab opened; the sessio
 
 ### When to reach for it
 
-To start parallel work the user should be able to see, and to bring an existing conversation forward. Note that there is no separate "focus" call — `workspace_open { session_id }` always sends `open_tab` and relies on the reducer's dedupe/adopt rule to focus an existing tab.
+To start parallel work **the user** should be able to see, and to bring an existing conversation forward. Not to delegate: delegation is `subagent`, whatever the request is phrased as. Note that there is no separate "focus" call — `workspace_open { session_id }` always sends `open_tab` and relies on the reducer's dedupe/adopt rule to focus an existing tab.
 
 ---
 
@@ -503,6 +520,7 @@ Two names are retired and pinned as such by `RETIRED_TOOL_NAMES`: `subagent_stat
 
 ## Related documentation
 
+- [Session metadata contract](session-metadata-contract.md) — the ID, kind, parent and subagent-run identity every one of these tools resolves against.
 - [Workspace control](workspace-control.md) — the task-oriented guide: laying work out across tabs, panes and windows, and the caps you meet in practice.
 - [Workspace Control extension](../extensions/built-in/workspace.md) — the user-facing guide: the two tiers, how to enable the full surface, the confirmation card, focus etiquette, and the CLI capability table.
 - [Subagents](subagents.md) — the glass-box tab, `human_intervened`, and what closing a child's tab does and does not do.
