@@ -68,6 +68,57 @@ use crate::privacy::CallCapability;
 use crate::session::session_manager::Session;
 use crate::tool_inspection::ToolInspectionManager;
 
+/// What a bridged `tools/call` actually runs, once the gate stack has cleared it.
+///
+/// An abstraction rather than a hardcoded `ExtensionManager` because the bridge
+/// is not only the chat loop's (#109). A knowledge macro, a scheduled workflow or
+/// any other bounded sub-agent has its own small tool surface with its own
+/// dispatcher — the ingest macro's `KbToolDispatch` carries the git transaction
+/// every write in the run must land on — and those tools are not in any
+/// `ExtensionManager` at all.
+///
+/// Before this, the only way to give a child agent tools was the session's whole
+/// extension surface, so a macro running under `claude_code` or `codex` was
+/// handed a `tools` argument its provider discarded. It then narrated the calls
+/// as prose, invented its own results to continue against, and wrote nothing —
+/// after a full model run. The UI's answer was a provider denylist.
+///
+/// Whatever implements this, everything above it is unchanged: the inspectors,
+/// the permission decision, the privacy capability, the vault, the hooks and the
+/// approval round trip all run first, exactly as they do for a chat turn. This
+/// decides only *where the call lands*, never *whether it may*.
+#[async_trait::async_trait]
+pub trait BridgeToolDispatch: Send + Sync {
+    async fn dispatch(
+        &self,
+        session_id: &str,
+        call: CallToolRequestParams,
+        capability: CallCapability,
+        cancel: CancellationToken,
+    ) -> Result<CallToolResult, String>;
+}
+
+#[async_trait::async_trait]
+impl BridgeToolDispatch for ExtensionManager {
+    async fn dispatch(
+        &self,
+        session_id: &str,
+        call: CallToolRequestParams,
+        capability: CallCapability,
+        cancel: CancellationToken,
+    ) -> Result<CallToolResult, String> {
+        let name = call.name.to_string();
+        let result = self
+            .dispatch_tool_call(session_id, call, capability, cancel)
+            .await
+            .map_err(|e| format!("`{name}` failed: {e}"))?;
+        result
+            .result
+            .await
+            .map_err(|e| format!("`{name}` failed: {e}"))
+    }
+}
+
 /// Everything one turn's bridge needs to serve `tools/list` and `tools/call`.
 ///
 /// Deliberately a snapshot rather than a handle back to the `Agent`: the provider
@@ -76,7 +127,7 @@ use crate::tool_inspection::ToolInspectionManager;
 pub struct BridgeGrant {
     session: Session,
     mode: BioRouterMode,
-    extensions: Arc<ExtensionManager>,
+    dispatcher: Arc<dyn BridgeToolDispatch>,
     inspections: Arc<ToolInspectionManager>,
     /// Sampled ONCE, when the grant is issued, and threaded from there.
     ///
@@ -199,7 +250,7 @@ impl BridgeGrant {
     pub fn new(
         session: Session,
         mode: BioRouterMode,
-        extensions: Arc<ExtensionManager>,
+        dispatcher: Arc<dyn BridgeToolDispatch>,
         inspections: Arc<ToolInspectionManager>,
         capability: CallCapability,
         tools: Vec<Tool>,
@@ -212,7 +263,7 @@ impl BridgeGrant {
         Self {
             session,
             mode,
-            extensions,
+            dispatcher,
             inspections,
             capability,
             tools,
@@ -408,21 +459,14 @@ impl BridgeGrant {
             .map_err(|e| format!("`{name}` was approved but is not a usable call: {e}"))?;
         self.apply_vault(&mut call);
 
-        let result = self
-            .extensions
-            .dispatch_tool_call(
+        self.dispatcher
+            .dispatch(
                 &self.session.id,
                 call,
                 self.capability,
                 self.dispatch_cancel_token(),
             )
             .await
-            .map_err(|e| format!("`{name}` failed: {e}"))?;
-
-        result
-            .result
-            .await
-            .map_err(|e| format!("`{name}` failed: {e}"))
     }
 
     /// Put a `needs_approval` call to a person, and park until they answer.
@@ -1612,7 +1656,7 @@ mod tests {
                 // Auto, so the permission inspector approves and the test measures
                 // the rewrite rather than the approval flow.
                 BioRouterMode::Auto,
-                Arc::clone(&self.extensions),
+                Arc::clone(&self.extensions) as Arc<dyn BridgeToolDispatch>,
                 Arc::new(inspections),
                 test_capability(),
                 vec![],
@@ -1872,7 +1916,7 @@ mod tests {
         Arc::new(BridgeGrant::new(
             session,
             BioRouterMode::Approve,
-            Arc::clone(&db.extensions),
+            Arc::clone(&db.extensions) as Arc<dyn BridgeToolDispatch>,
             Arc::new(inspections_with(&hooks, false)),
             test_capability(),
             vec![],
@@ -2063,7 +2107,7 @@ mod tests {
         let grant = Arc::new(BridgeGrant::new(
             session,
             BioRouterMode::Approve,
-            Arc::clone(&db.extensions),
+            Arc::clone(&db.extensions) as Arc<dyn BridgeToolDispatch>,
             Arc::new(inspections_with(&hooks, false)),
             test_capability(),
             vec![],
@@ -2108,7 +2152,7 @@ mod tests {
         let lease = issue(BridgeGrant::new(
             session,
             BioRouterMode::Approve,
-            Arc::clone(&db.extensions),
+            Arc::clone(&db.extensions) as Arc<dyn BridgeToolDispatch>,
             Arc::new(inspections_with(&hooks, false)),
             test_capability(),
             vec![],

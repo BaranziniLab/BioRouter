@@ -40,6 +40,7 @@ pub mod testprovider;
 pub mod tetrate;
 #[cfg(test)]
 mod tier_tests;
+pub mod tool_turn;
 pub mod toolshim;
 pub mod usage_estimator;
 pub mod utils;
