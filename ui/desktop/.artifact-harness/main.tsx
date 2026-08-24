@@ -10,13 +10,16 @@ import { createRoot } from 'react-dom/client';
 import ArtifactViewer from '../src/components/artifacts/ArtifactViewer';
 import type { ArtifactSource } from '../src/components/artifacts/artifactTypes';
 import { ThemeProvider } from '../src/contexts/ThemeContext';
+import { IMAGE_MIME_TYPES } from '../src/utils/imageFormats';
 import './harness.css';
 
+// Text MIME types only. Images come from the SHARED table the main process
+// uses, so the harness cannot claim support the app does not have — which is
+// the whole point of this file existing.
 const MIME: Record<string, string> = {
   csv: 'text/csv',
   html: 'text/html',
   md: 'text/markdown',
-  png: 'image/png',
   r: 'text/x-r',
   tsv: 'text/tab-separated-values',
 };
@@ -67,10 +70,16 @@ async function readFixture(path: string) {
     return { kind: 'error', title: name, path, error: `HTTP ${response.status}`, found: false };
   }
   const ext = extOf(name);
-  const mimeType = MIME[ext] ?? 'text/plain';
+  const imageMime = IMAGE_MIME_TYPES[ext];
+  const mimeType = imageMime ?? MIME[ext] ?? 'text/plain';
 
-  if (mimeType.startsWith('image/')) {
+  if (imageMime) {
     const buffer = await response.arrayBuffer();
+    // TIFF is handed over as bytes, exactly as the main process does: the
+    // renderer has to decode it before anything can be shown.
+    if (imageMime === 'image/tiff') {
+      return { kind: 'image', title: name, path, mimeType, bytes: buffer, size: buffer.byteLength, found: true };
+    }
     let binary = '';
     new Uint8Array(buffer).forEach((byte) => (binary += String.fromCharCode(byte)));
     return {
@@ -82,6 +91,13 @@ async function readFixture(path: string) {
       size: buffer.byteLength,
       found: true,
     };
+  }
+
+  // Anything the app would treat as an opaque binary, so the harness can show
+  // the format-specific refusal card rather than only the happy paths.
+  if (['doc', 'ppt', 'xls', 'odt', 'ods', 'odp', 'rtf', 'pages', 'numbers', 'key', 'heic'].includes(ext)) {
+    const buffer = await response.arrayBuffer();
+    return { kind: 'binary', title: name, path, mimeType: 'application/octet-stream', size: buffer.byteLength, found: true };
   }
 
   const text = await response.text();
@@ -107,6 +123,13 @@ Object.defineProperty(window, 'electron', {
     on: () => () => undefined,
     off: () => undefined,
     getConfig: () => ({}),
+    // Region capture happens in the main process (a compositor grab, the only
+    // thing that can see into a sandboxed frame). The harness reports the rect
+    // instead so the overlay's arithmetic is visible in a real browser.
+    captureRegion: async (rect: { x: number; y: number; width: number; height: number }) => {
+      (window as unknown as { __lastCapture?: unknown }).__lastCapture = rect;
+      return { path: '/tmp/harness-capture.png', width: rect.width, height: rect.height };
+    },
   },
 });
 
@@ -151,6 +174,16 @@ const ARTIFACTS: { label: string; make: () => Promise<ArtifactSource> }[] = [
     'lib.rs',
     'app.ts',
     'volcano.png',
+    // The formats this panel gained: three Chromium already decoded and the
+    // panel refused for no reason, one that needs a real decoder, and two it
+    // declines by name rather than with a shrug.
+    'sample.avif',
+    'sample.bmp',
+    'sample.ico',
+    'sample.svg',
+    'sample.tiff',
+    'report.doc',
+    'deck.key',
   ].map((name) => ({
     label: name,
     make: async (): Promise<ArtifactSource> => ({ kind: 'file', title: name, path: `/w/${name}` }),
@@ -202,6 +235,10 @@ function Harness() {
             artifact={artifact}
             onClose={() => setArtifact(null)}
             onOpenArtifact={setArtifact}
+            // A session id is what enables the annotate control — it is
+            // chat-only, so a read-only transcript never shows it. The harness
+            // stands in for a chat so the region-select can be swept here too.
+            sessionId="harness-session"
           />
         ) : (
           <div style={{ padding: 24, fontSize: 13 }}>Pick an artifact.</div>

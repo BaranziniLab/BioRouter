@@ -804,7 +804,7 @@ pub(crate) fn is_spawn_tool_call(tool_name: &str) -> bool {
 /// cross-checks it against `WorkspaceClient::get_tools()` in both directions, so
 /// an eighth tool added there fails this crate's suite instead of quietly
 /// becoming reachable inside a delegation tree.
-const WORKSPACE_TOOL_NAMES: [&str; 7] = [
+const WORKSPACE_TOOL_NAMES: [&str; 9] = [
     "workspace_list",
     "workspace_open",
     "workspace_read_conversation",
@@ -812,6 +812,11 @@ const WORKSPACE_TOOL_NAMES: [&str; 7] = [
     "workspace_set_tools",
     "workspace_close",
     "workspace_watch",
+    // Reading another conversation's screen is the same class of reach as
+    // reading its transcript, so a subagent is refused both for the same
+    // reason: it must not inspect the workspace it was spawned into.
+    "workspace_read_panel",
+    "workspace_capture_panel",
 ];
 
 pub(crate) fn is_workspace_tool_refused_for(

@@ -45,6 +45,7 @@ import {
 } from '../components/chatGroups/chatGroupsTypes';
 import { useRunningChats, defaultChatStreamRegistry } from '../hooks/chatStreamStore';
 import { subscribeSessionNameChanges } from '../utils/sessionNameSync';
+import { runPanelCommand } from '../components/chatGroups/panelCommands';
 import {
   registerWorkspaceCommands,
   drainPendingWorkspaceCommands,
@@ -318,7 +319,15 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
   }, [state]);
 
   useEffect(() => {
-    const runPlan = (cmd: WorkspaceCommand): WorkspaceCommandResult => {
+    const runPlan = (
+      cmd: WorkspaceCommand
+    ): WorkspaceCommandResult | Promise<WorkspaceCommandResult> => {
+      // Panel reads are answered by the panel itself, not by the tab planner —
+      // they change no layout, and the accessor is registered per session by
+      // the chat that owns the panel.
+      if (cmd.cmd === 'read_panel' || cmd.cmd === 'capture_panel') {
+        return runPanelCommand(cmd);
+      }
       const plan = planWorkspaceCommand(cmd, stateRef.current);
       // The plan is the WHOLE answer — nothing here is deferred to a later tick.
       // A split used to be finished off in a `queueMicrotask` that re-read

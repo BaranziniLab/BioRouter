@@ -1,4 +1,5 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
+import { annotationContextText, onArtifactAnnotation } from '../utils/annotationChannel';
 import { ArrowUp, ChevronsDownUp, Plus, X } from './icons/app-icons';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { useComposerToolbarCollapsed } from './bottom_menu/useComposerToolbarCollapsed';
@@ -754,6 +755,55 @@ export default function ChatInput({
     };
     window.addEventListener('restore-chat-input', handler);
     return () => window.removeEventListener('restore-chat-input', handler);
+  }, [sessionId]);
+
+  // A region the user selected in the preview panel arrives here as an already
+  // written PNG. It joins `pastedImages` rather than getting a channel of its
+  // own, so it inherits the whole staged-attachment contract for free — the
+  // thumbnail strip, the hover-remove, the per-message cap, the vision-model
+  // gate, and the path→base64 conversion at submit. A parallel mechanism would
+  // have had to re-earn every one of those.
+  useEffect(() => {
+    return onArtifactAnnotation(sessionId, (annotation) => {
+      // Deliberately NOT gated on vision support the way `handlePaste` is.
+      // A paste can be incidental; dragging a rectangle cannot, and silently
+      // dropping it would look like a broken feature. Staging it instead makes
+      // the existing `visionMismatch` bar appear, which says the model cannot
+      // read images and lets the user remove the chip or switch models.
+      const id = `annotation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      setPastedImages((current) => {
+        if (current.length >= MAX_IMAGES_PER_MESSAGE) return current;
+        return [...current, { id, dataUrl: '', filePath: annotation.imagePath, isLoading: true }];
+      });
+      // The thumbnail is read back from the file the main process wrote; the
+      // panel never had the bytes in the first place.
+      void window.electron
+        ?.readTempImageAsBase64(annotation.imagePath)
+        .then(({ data, mimeType }) => {
+          setPastedImages((current) =>
+            current.map((image) =>
+              image.id === id
+                ? { ...image, dataUrl: `data:${mimeType};base64,${data}`, isLoading: false }
+                : image
+            )
+          );
+        })
+        .catch(() => {
+          setPastedImages((current) =>
+            current.map((image) =>
+              image.id === id
+                ? { ...image, isLoading: false, error: 'Could not read the region' }
+                : image
+            )
+          );
+        });
+
+      setDisplayValue((current) => {
+        const context = annotationContextText(annotation);
+        return current.trim() ? `${current.trimEnd()}\n\n${context}\n` : `${context}\n`;
+      });
+      textAreaRef.current?.focus();
+    });
   }, [sessionId]);
 
   // (The `insert-chat-input` channel used to live here. Its only dispatcher was

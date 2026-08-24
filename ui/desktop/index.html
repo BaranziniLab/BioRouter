@@ -15,7 +15,7 @@
       `wss:` is blanket where `ws:` is loopback-only, mirroring this policy's own
       cleartext-vs-TLS asymmetry for http (`http://127.0.0.1:*` vs blanket `https:`).
     -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* https: wss:; object-src 'none'; font-src 'self' data: https:; media-src 'self' mediastream:; form-action 'none'; base-uri 'self'; manifest-src 'self'; worker-src 'self'; frame-src 'self' blob: https: http:;"/>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; img-src 'self' data: blob: https:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* https: wss:; object-src 'none'; font-src 'self' data: https:; media-src 'self' mediastream:; form-action 'none'; base-uri 'self'; manifest-src 'self'; worker-src 'self'; frame-src 'self' blob: https: http:;"/>
     <title>Biorouter</title>
     <script>
       // Initialize theme before any content loads

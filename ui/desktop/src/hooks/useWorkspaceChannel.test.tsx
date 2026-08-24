@@ -77,6 +77,9 @@ describe('useWorkspaceChannel', () => {
       });
     });
     expect(applied).toEqual(['open_tab']);
+    // The reply now leaves on a microtask: handlers may be async, because a
+    // panel capture cannot be anything else.
+    await act(async () => {});
     const reply = ws.sent.map((s) => JSON.parse(s)).find((f) => f.type === 'workspace_result');
     expect(reply).toMatchObject({ request_id: 'wsreq-1', ok: true, detail: 'done' });
   });
@@ -103,6 +106,7 @@ describe('useWorkspaceChannel', () => {
         }),
       });
     });
+    await act(async () => {});
     const reply = ws.sent.map((s) => JSON.parse(s)).find((f) => f.type === 'workspace_result');
     expect(reply).toMatchObject({ request_id: 'wsreq-boom', ok: false });
     expect(reply.detail).toContain('boom');

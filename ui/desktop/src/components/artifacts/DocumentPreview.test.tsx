@@ -34,7 +34,10 @@ const getPdfPage = vi.fn(async () => ({
   cleanup: cleanupPdfPage,
 }));
 const destroyPdf = vi.fn(async () => undefined);
-const getPdfDocument = vi.fn(() => ({
+// Typed parameter, not `()`, so the asset-configuration test can read
+// `mock.calls[0][0]` — with no declared argument the tuple is empty and
+// inspecting the options object is a type error.
+const getPdfDocument = vi.fn((_options: Record<string, unknown>) => ({
   promise: Promise.resolve({ numPages: 2, getPage: getPdfPage, destroy: destroyPdf }),
   destroy: destroyPdf,
 }));
@@ -48,16 +51,28 @@ const renderPresentation = vi.fn(async (_data: ArrayBuffer, container: HTMLEleme
 });
 
 vi.mock('docx-preview', () => ({ renderAsync: renderDocx }));
-vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
+// The non-legacy entry point, and `workerPort` rather than `workerSrc` — both
+// deliberate. jsdom has no Worker, so the component's `new Worker(...)` is
+// stubbed in the setup below.
+vi.mock('pdfjs-dist', () => ({
   getDocument: getPdfDocument,
-  GlobalWorkerOptions: { workerSrc: '' },
+  GlobalWorkerOptions: { workerPort: null },
 }));
-vi.mock('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url', () => ({ default: 'pdf.worker.mjs' }));
 vi.mock('xlsx-preview', () => ({ xlsx2Html: renderWorkbook }));
 vi.mock('@aiden0z/pptx-renderer', () => ({
   PptxViewer: { open: renderPresentation },
   RECOMMENDED_ZIP_LIMITS: {},
 }));
+
+// jsdom implements no Worker. `PdfPreview` constructs one for pdf.js's
+// `workerPort`, so without this every PDF test throws before it renders.
+class StubWorker {
+  terminate() {}
+  postMessage() {}
+  addEventListener() {}
+  removeEventListener() {}
+}
+vi.stubGlobal('Worker', StubWorker);
 
 function documentFile(format: ArtifactDocumentFormat) {
   return {
@@ -105,6 +120,28 @@ describe('DocumentPreview', () => {
     expect(await screen.findByLabelText('Page 1 of 2')).toBeVisible();
     expect(screen.getByLabelText('Page 2 of 2')).toBeVisible();
     await waitFor(() => expect(getPdfPage).toHaveBeenCalledTimes(2));
+  });
+
+  // The regression this guards is not cosmetic and does not announce itself.
+  // pdf.js 6 loads its JPEG 2000 and JBIG2 decoders from `wasmUrl`; without it
+  // a scanned or medical PDF renders with its images silently missing — no
+  // error, no placeholder. The panel shipped that way. `cMapUrl` is the same
+  // shape of failure for CJK glyphs.
+  it('gives pdf.js its offline decoders, cmaps, fonts and colour profiles', async () => {
+    render(<DocumentPreview file={documentFile('pdf')} resolvedTheme="light" isResizing={false} />);
+    await screen.findByLabelText('preview.pdf PDF preview');
+
+    expect(getPdfDocument).toHaveBeenCalledTimes(1);
+    const options = getPdfDocument.mock.calls[0][0];
+
+    for (const key of ['wasmUrl', 'cMapUrl', 'standardFontDataUrl', 'iccUrl']) {
+      const value = options[key];
+      expect(value, `${key} must be configured`).toEqual(expect.any(String));
+      // pdf.js throws "Invalid factory url … must include trailing slash"
+      // rather than degrading, so this is a hard failure at load, not a nicety.
+      expect(String(value).endsWith('/'), `${key} must end in a trailing slash`).toBe(true);
+    }
+    expect(options.cMapPacked).toBe(true);
   });
 
   it('renders Word documents as pages fitted to the preview width', async () => {

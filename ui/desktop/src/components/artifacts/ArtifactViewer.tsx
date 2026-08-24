@@ -14,6 +14,9 @@ import { useTheme, useThemeFamily } from '../../contexts/ThemeContext';
 import { CODE_FONT_FAMILY, codeThemesByFamily } from '../../styles/codeTheme';
 import { cn } from '../../utils';
 import { injectArtifactBrowserCsp } from '../../utils/artifactSecurity';
+import { sendArtifactAnnotation } from '../../utils/annotationChannel';
+import { describeUnsupportedFormat } from '../../utils/formatSupport';
+import { isImageExtension } from '../../utils/imageFormats';
 import {
   isTabCycleEvent,
   tabCycleOffset,
@@ -24,6 +27,7 @@ import {
 import {
   ChevronDown,
   ChevronRight,
+  Camera,
   Code,
   ExternalLink,
   Eye,
@@ -47,7 +51,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
+import AnnotationOverlay, { type SelectedRegion } from './AnnotationOverlay';
 import DocumentPreview from './DocumentPreview';
+import WebPagePreview from './WebPagePreview';
 import NotebookPreview from './NotebookPreview';
 import type {
   ArtifactFileEntry,
@@ -60,6 +66,7 @@ import {
   basenameFromPath,
   dirnameFromPath,
   extensionFromPath,
+  imageSourceForPreview,
   isDelimitedPath,
   isMarkdownPath,
   languageFromPath,
@@ -113,6 +120,13 @@ interface ArtifactViewerProps {
   onOpenArtifact: (artifact: ArtifactSource) => void;
   onResizeStart?: (event: PointerEvent<HTMLDivElement>) => void;
   onRenderError?: (error: ArtifactRenderError) => void;
+  /**
+   * The chat this panel belongs to. Chat-only, exactly like `onRenderError`:
+   * a read-only transcript passes nothing, so the annotate control never
+   * appears there — annotating a saved session would attach a region to a
+   * conversation that is not running.
+   */
+  sessionId?: string;
   className?: string;
   style?: CSSProperties;
 }
@@ -250,7 +264,7 @@ function iconForArtifact(artifact: ArtifactSource | null) {
   if (artifact.kind === 'externalUrl') return Globe;
   if (artifact.kind === 'file') {
     const ext = artifact.path.split('.').pop()?.toLowerCase();
-    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext || '')) return Image;
+    if (isImageExtension(ext)) return Image;
     if (['html', 'htm'].includes(ext || '')) return Globe;
     if (['js', 'ts', 'tsx', 'jsx', 'py', 'rs', 'sql', 'json', 'yaml', 'yml'].includes(ext || '')) {
       return Code;
@@ -275,6 +289,7 @@ export default function ArtifactViewer({
   onOpenArtifact,
   onResizeStart,
   onRenderError,
+  sessionId,
   className,
   style,
 }: ArtifactViewerProps) {
@@ -290,6 +305,20 @@ export default function ArtifactViewer({
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
   const lastRenderErrorKeyRef = useRef<string | null>(null);
   const trustedFrameRef = useRef<HTMLIFrameElement | null>(null);
+  /**
+   * URLs the user has explicitly chosen to browse inside the panel.
+   *
+   * Kept as *opt-in state* rather than a property of the artifact, because that
+   * is what makes agent-initiated navigation impossible: an `externalUrl`
+   * artifact can arrive from an MCP resource link with no transcript card and
+   * auto-open, so the live view has to be reachable only through a click that a
+   * person made. Scoped to this panel instance and deliberately not persisted —
+   * reopening a session should not silently start loading pages.
+   */
+  const [browsingUrls, setBrowsingUrls] = useState<ReadonlySet<string>>(() => new Set());
+  const [isAnnotating, setIsAnnotating] = useState(false);
+  const previewBodyRef = useRef<HTMLDivElement | null>(null);
+
   const pendingNavigationKeyRef = useRef<string | null>(null);
   const draggedTabIdRef = useRef<string | null>(null);
   const tabPointerGestureRef = useRef<{
@@ -311,6 +340,47 @@ export default function ArtifactViewer({
   const showTabOverflowMenu = useTabStripOverflow(tabListRef, tabState.tabs.length);
   const activeTab = tabState.tabs.find((tab) => tab.id === tabState.activeTabId) ?? null;
   const activeArtifact = activeTab?.artifact ?? null;
+
+  /**
+   * Turn a selected region into an attachment on the composer.
+   *
+   * The rectangle is in the preview body's own coordinates; `capturePage`
+   * wants page coordinates, so the body's position is added back. The capture
+   * is a compositor grab in the main process, which is the only thing that can
+   * see into the sandboxed `srcdoc` frames most artifacts render in — a
+   * DOM-walking screenshot library would return an empty box for a figure.
+   */
+  const captureAnnotation = useCallback(
+    async (region: SelectedRegion) => {
+      setIsAnnotating(false);
+      const body = previewBodyRef.current;
+      if (!body || !sessionId) return;
+      const bodyRect = body.getBoundingClientRect();
+      const shot = await window.electron?.captureRegion({
+        x: bodyRect.left + region.x,
+        y: bodyRect.top + region.y,
+        width: region.width,
+        height: region.height,
+        label: 'annotation',
+      });
+      if (!shot) return;
+      sendArtifactAnnotation({
+        sessionId,
+        imagePath: shot.path,
+        sourceTitle: activeArtifact?.title ?? 'Preview',
+        sourceLocator:
+          activeArtifact?.kind === 'file'
+            ? activeArtifact.path
+            : activeArtifact?.kind === 'externalUrl'
+              ? activeArtifact.url
+              : undefined,
+        width: region.width,
+        height: region.height,
+      });
+    },
+    [activeArtifact, sessionId]
+  );
+
   const activeSourceKey = activeArtifact ? artifactSourceKey(activeArtifact) : null;
 
   const openArtifactInTab = useCallback(
@@ -785,6 +855,28 @@ export default function ArtifactViewer({
             </DropdownMenuContent>
           </DropdownMenu>
         )}
+        {sessionId && (
+          // Annotation is available on EVERY preview kind, not just one. Codex
+          // shipped commenting in its browser but not its document pane, and
+          // the open issue against that names our exact case: a researcher
+          // reads a generated report and cannot point at anything in it. For
+          // this audience the report IS the artifact.
+          <button
+            type="button"
+            data-testid="artifact-annotate"
+            aria-pressed={isAnnotating}
+            onClick={() => setIsAnnotating((current) => !current)}
+            className={cn(
+              HEADER_ACTION_BUTTON_CLASS,
+              'relative z-50 ml-0.5 shrink-0',
+              isAnnotating && 'bg-background-accent text-text-on-accent'
+            )}
+            aria-label={isAnnotating ? 'Cancel region selection' : 'Send a region to the chat'}
+            title={isAnnotating ? 'Cancel region selection' : 'Send a region to the chat'}
+          >
+            <Camera className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
         {activeArtifact.kind !== 'mcpResource' && (
           <button
             type="button"
@@ -813,12 +905,24 @@ export default function ArtifactViewer({
 
       {/* De-boxed (design spec H): no gutter, no card, no border, no shadow. The
           preview sits directly on the panel ground — panel → strip → content. */}
-      <div id="artifact-preview-content" className="relative z-0 min-h-0 flex-1 overflow-hidden">
+      <div
+        id="artifact-preview-content"
+        ref={previewBodyRef}
+        className="relative z-0 min-h-0 flex-1 overflow-hidden"
+      >
         {isResizing && (
           <div
             data-testid="artifact-resize-shield"
             aria-hidden="true"
             className="absolute inset-0 z-50 cursor-col-resize"
+          />
+        )}
+        {isAnnotating && (
+          <AnnotationOverlay
+            onCancel={() => setIsAnnotating(false)}
+            onSelect={(region) => {
+              void captureAnnotation(region);
+            }}
           />
         )}
         <ArtifactPreviewBody
@@ -828,6 +932,10 @@ export default function ArtifactViewer({
           isResizing={isResizing}
           trustedFrameRef={trustedFrameRef}
           onOpenArtifactInTab={openArtifactInTab}
+          isBrowsingUrl={
+            activeArtifact.kind === 'externalUrl' && browsingUrls.has(activeArtifact.url)
+          }
+          onStartBrowsing={(url) => setBrowsingUrls((current) => new Set(current).add(url))}
         />
       </div>
     </aside>
@@ -872,6 +980,8 @@ function ArtifactPreviewBody({
   isResizing,
   trustedFrameRef,
   onOpenArtifactInTab,
+  isBrowsingUrl,
+  onStartBrowsing,
 }: {
   preview: PreviewState;
   artifact: ArtifactSource;
@@ -879,6 +989,9 @@ function ArtifactPreviewBody({
   isResizing: boolean;
   trustedFrameRef: React.RefObject<HTMLIFrameElement | null>;
   onOpenArtifactInTab: (artifact: ArtifactSource) => void;
+  /** The user has clicked "Open here" for this URL in this tab. */
+  isBrowsingUrl: boolean;
+  onStartBrowsing?: (url: string) => void;
 }) {
   if (preview.kind === 'loading') {
     return (
@@ -911,22 +1024,54 @@ function ArtifactPreviewBody({
   }
 
   if (preview.kind === 'externalUrl') {
+    // Live pages open **only** on a deliberate click, never automatically.
+    //
+    // This card is the whole boundary between "the user browsed somewhere" and
+    // "something else navigated the user's app". An MCP resource link with an
+    // http(s) URI already becomes an artifact with no transcript card and can
+    // auto-open; if that path rendered a live view directly, any extension
+    // could make an arbitrary site load and execute here. One click is cheap
+    // for the user and structurally impossible for the agent.
+    if (isBrowsingUrl) {
+      return (
+        <WebPagePreview
+          key={preview.url}
+          url={preview.url}
+          // The native view has no shared z-index with the DOM, so it has to be
+          // hidden while the resize shield is up or it paints straight over it.
+          isSuspended={isResizing}
+          onOpenExternal={(url) => void window.electron.openExternal(url)}
+        />
+      );
+    }
+
     return (
       <div className="flex h-full items-center justify-center bg-background-medium p-6">
         <div className="w-full max-w-lg rounded-container border border-border-subtle bg-background-default p-5 text-center shadow-popover">
           <Globe className="mx-auto mb-3 h-6 w-6 text-text-muted" aria-hidden="true" />
-          <div className="text-label text-text-default">External preview</div>
+          <div className="text-label text-text-default">External page</div>
           <div className="mt-1 break-all text-supporting text-text-muted">{preview.url}</div>
-          {/* A button inside the card: one step down the ladder from its
+          {/* Buttons inside the card: one step down the ladder from its
               `rounded-container` host. */}
-          <button
-            type="button"
-            onClick={() => void window.electron.openExternal(preview.url)}
-            className="mt-4 inline-flex h-8 items-center gap-2 rounded-element border border-border-subtle bg-background-default px-3 text-label text-text-default transition-colors hover:bg-overlay-hover"
-          >
-            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-            Open in default browser
-          </button>
+          <div className="mt-4 flex items-center justify-center gap-2">
+            <button
+              type="button"
+              data-testid="artifact-open-here"
+              onClick={() => onStartBrowsing?.(preview.url)}
+              className="inline-flex h-8 items-center gap-2 rounded-element border border-border-subtle bg-background-default px-3 text-label text-text-default transition-colors hover:bg-overlay-hover"
+            >
+              <Globe className="h-3.5 w-3.5" aria-hidden="true" />
+              Open here
+            </button>
+            <button
+              type="button"
+              onClick={() => void window.electron.openExternal(preview.url)}
+              className="inline-flex h-8 items-center gap-2 rounded-element border border-border-subtle bg-background-default px-3 text-label text-text-default transition-colors hover:bg-overlay-hover"
+            >
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              Open in default browser
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -954,13 +1099,7 @@ function ArtifactPreviewBody({
   }
 
   if (file.kind === 'image') {
-    // The image is the content, so it sits on the panel ground with a gutter —
-    // no tinted well behind it, no radius pretending it is a card.
-    return (
-      <div className="flex h-full items-center justify-center overflow-auto p-4">
-        <img src={file.dataUrl} alt={file.title} className="max-h-full max-w-full object-contain" />
-      </div>
-    );
+    return <ImageFilePreview key={file.path} file={file} />;
   }
 
   if (file.kind === 'document') {
@@ -986,20 +1125,31 @@ function ArtifactPreviewBody({
   if (file.kind === 'binary') {
     // Text-decodable files already fall through to the plain-text preview below
     // (see isTextArtifact in the main process). Reaching here means the bytes are
-    // genuinely binary (or the file is too large), so there is nothing to show —
-    // tell the user plainly and offer to open it in its default app.
+    // genuinely binary (or the file is too large), so there is nothing to show.
+    //
+    // Where we know *which* format this is and why we decline it, say so. One
+    // generic sentence for a .doc, a .heic and a .key leaves the user unable to
+    // tell whether their file is broken, the app is broken, or the format was
+    // never supported.
+    const unsupported = describeUnsupportedFormat(extensionFromPath(file.path));
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-body text-text-muted">
         <File className="h-8 w-8" aria-hidden="true" />
         <div className="text-label text-text-default">{basenameFromPath(file.path)}</div>
         <div>
-          {file.mimeType} · {formatBytes(file.size)}
+          {unsupported ? `${unsupported.label} · ` : `${file.mimeType} · `}
+          {formatBytes(file.size)}
         </div>
         {/* `leading-relaxed` deliberately overrides the inherited text-body
             line-height for this wrapped paragraph. */}
         <p className="max-w-xs leading-relaxed">
-          This file can’t be previewed here. Open it in the app your system uses for this file type.
+          {unsupported
+            ? unsupported.reason
+            : 'This file can’t be previewed here. Open it in the app your system uses for this file type.'}
         </p>
+        {unsupported?.suggestion && (
+          <p className="max-w-xs leading-relaxed text-text-subtle">{unsupported.suggestion}</p>
+        )}
         <button
           type="button"
           onClick={() => window.electron.openDirectoryInExplorer(file.path)}
@@ -1341,6 +1491,9 @@ function DirectoryTreePreview({
             isResizing={isResizing}
             trustedFrameRef={selectedFrameRef}
             onOpenArtifactInTab={onOpenArtifactInTab}
+            // A directory tree only ever selects files, never URLs, so there is
+            // no live page to be browsing here.
+            isBrowsingUrl={false}
           />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
@@ -1362,6 +1515,102 @@ function DirectoryTreePreview({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ImageFilePreview({
+  file: preview,
+}: {
+  file: Extract<ArtifactFilePreview, { kind: 'image' }>;
+}) {
+  // The src is derived in an effect, not inline, because a large image arrives
+  // as bytes and becomes a `blob:` URL that has to be revoked. Building it
+  // during render would mint a fresh URL on every re-render and leak all but
+  // the last.
+  const [src, setSrc] = useState('');
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+    let revoke: (() => void) | null = null;
+    let cancelled = false;
+
+    // TIFF has no decoder in any browser, so it is decoded here before display.
+    // Done in the renderer, lazily, exactly like the four document renderers
+    // beside it — the alternative was a daemon round-trip, which would give
+    // image preview a failure mode (daemon down, no picture) that it does not
+    // have today.
+    if (preview.mimeType === 'image/tiff' && preview.bytes) {
+      const bytes = preview.bytes;
+      void import('utif2')
+        .then(async (UTIF) => {
+          if (cancelled) return;
+          const pages = UTIF.decode(bytes);
+          if (!pages.length) throw new Error('no pages');
+          // The first page only. Multi-page TIFF is real in microscopy and
+          // deserves a page control; showing page 1 is the honest first step,
+          // not a claim to have handled the stack.
+          UTIF.decodeImage(bytes, pages[0]);
+          const rgba = UTIF.toRGBA8(pages[0]);
+          const canvas = document.createElement('canvas');
+          canvas.width = pages[0].width;
+          canvas.height = pages[0].height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) throw new Error('no 2d context');
+          ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), canvas.width, canvas.height), 0, 0);
+          const blob = await new Promise<Blob | null>((resolve) =>
+            canvas.toBlob(resolve, 'image/png')
+          );
+          if (!blob || cancelled) return;
+          const url = URL.createObjectURL(blob);
+          revoke = () => URL.revokeObjectURL(url);
+          setSrc(url);
+        })
+        .catch(() => {
+          if (!cancelled) setFailed(true);
+        });
+      return () => {
+        cancelled = true;
+        revoke?.();
+        setSrc('');
+      };
+    }
+
+    const source = imageSourceForPreview(preview);
+    revoke = source.revoke;
+    setSrc(source.src);
+    return () => {
+      cancelled = true;
+      revoke?.();
+      setSrc('');
+    };
+  }, [preview]);
+
+  if (failed) {
+    return (
+      <ArtifactErrorState
+        // By the time this renders the format was one we claim to handle —
+        // natively, or through the TIFF decoder, or through the OS. So the
+        // honest reading is a bad file, not a missing feature.
+        message="This image could not be decoded. It may be truncated or corrupt."
+        path={preview.path}
+      />
+    );
+  }
+
+  // The image is the content, so it sits on the panel ground with a gutter —
+  // no tinted well behind it, no radius pretending it is a card.
+  return (
+    <div className="flex h-full items-center justify-center overflow-auto p-4">
+      {src ? (
+        <img
+          src={src}
+          alt={preview.title}
+          onError={() => setFailed(true)}
+          className="max-h-full max-w-full object-contain"
+        />
+      ) : null}
     </div>
   );
 }

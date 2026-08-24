@@ -116,13 +116,19 @@ const INSTRUCTIONS: &str = indoc! {r#"
       agent (agent).
     - workspace_watch: wait until one of several conversations finishes. Use it
       after starting background work; never poll workspace_read_conversation.
+    - workspace_read_panel: read what the preview panel shows now — document,
+      figure, file or live web page. Use it when the user says "this" or "the
+      page"; text is cheap and you can act on it.
+    - workspace_capture_panel: screenshot it (returns a PNG path) to judge how
+      something LOOKS. You cannot act on a screenshot.
     - subagent: the ONLY way to delegate. A fresh agent with its own context
       window; "spin up subagents" and fan-out mean this tool, one call per child,
       same message for parallel. When the app is open the child runs in a visible
       tab the user can watch and talk to; you still receive only its final
       summary, so use workspace_read_conversation view:"tool_calls" on it to
       verify what it did. The user may have intervened; the result tells you so.
-    Only the workspace tools in your tool list are available.
+    Only the workspace tools in your tool list are available; `subagent` is the
+    one spawn tool, always available when delegation is enabled.
     Routing: to search past conversations by content use chatrecall (if
     enabled), not these tools. Durable facts belong in Memory. To fold a
     conversation into a knowledge base use ingest_conversation; to re-read an
@@ -393,6 +399,16 @@ const DELEGATION_IS_NOT_THIS_TOOL: &str = concat!(
 );
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct WorkspacePanelParams {
+    /// The conversation whose preview panel to read. Defaults to the caller's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    /// `workspace_read_panel` only: how much text to return (default 20000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_chars: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct WorkspaceOpenParams {
     /// Open/focus an existing conversation. Mutually exclusive with `new`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -605,6 +621,25 @@ impl WorkspaceClient {
     /// mirror of this function is the one place either guard can rot silently.
     pub fn get_tools() -> Vec<Tool> {
         vec![
+            Self::tool(
+                "workspace_read_panel",
+                "Read what the preview panel is currently showing: the rendered \
+                 document, figure, file or live web page. **Prefer this over \
+                 workspace_capture_panel** — text is cheaper and can be acted \
+                 on, where a screenshot can only be looked at. Returns nothing \
+                 readable for an image; capture it instead.",
+                serde_json::to_value(schema_for!(WorkspacePanelParams)).unwrap(),
+                true,
+            ),
+            Self::tool(
+                "workspace_capture_panel",
+                "Screenshot the preview panel, saved as a PNG whose path is \
+                 returned. Use it to judge how something LOOKS — a figure, a \
+                 rendered page, a layout. You cannot act on a screenshot: to \
+                 find or change content, use workspace_read_panel.",
+                serde_json::to_value(schema_for!(WorkspacePanelParams)).unwrap(),
+                true,
+            ),
             Self::tool(
                 "workspace_list",
                 "List conversations in the workspace: id, name, type, running \
@@ -1196,6 +1231,59 @@ impl WorkspaceClient {
     /// share. A future revision that lets this tool move an *existing*
     /// conversation's directory inherits the whole #44 problem and must go
     /// through `try_update_working_dir_if_empty` plus the route's turn guard.
+    /// `workspace_read_panel` and `workspace_capture_panel`.
+    ///
+    /// Two channels with an explicit division of labour, and the tool
+    /// descriptions say so out loud: **text to act on, pixels to judge by**.
+    /// A structured read is both cheaper and actionable, where a screenshot can
+    /// only be looked at — so the read is the default and the capture is for
+    /// "does this look right", which is the one question text cannot answer.
+    ///
+    /// Both are reads of a conversation's screen, so they take the same privacy
+    /// gate as `workspace_read_conversation`: a public-capability caller must
+    /// not read a private session's panel.
+    async fn handle_panel(
+        &self,
+        tool: &str,
+        caller_session_id: &str,
+        cap: crate::privacy::CallCapability,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args: WorkspacePanelParams = parse_args(arguments)?;
+        let session_id = args
+            .session_id
+            .unwrap_or_else(|| caller_session_id.to_string());
+
+        // Same gate, and deliberately BEFORE reaching the GUI: resolving what
+        // is on a private session's screen must not itself be the way to see it.
+        self.refuse_unless_visible(cap, &session_id).await?;
+
+        let mut frame = serde_json::json!({
+            "type": "workspace",
+            "cmd": if tool == "workspace_read_panel" { "read_panel" } else { "capture_panel" },
+            "session_id": session_id,
+        });
+        if let Some(max_chars) = args.max_chars {
+            frame["max_chars"] = serde_json::json!(max_chars);
+        }
+
+        // Routed to the window holding that session rather than to whichever
+        // window happens to be focused — the panel belongs to a tab, and
+        // focus-based routing answers about the wrong screen (issue #78).
+        let services = workspace_services::get();
+        let services = services.as_ref().ok_or_else(|| {
+            "no GUI is attached, so there is no preview panel to read".to_string()
+        })?;
+        let reply = services
+            .gui_command_near(frame, true, &session_id)
+            .await
+            .map_err(|err| format!("could not reach the GUI: {err}"))?;
+
+        Ok(vec![Content::text(
+            serde_json::to_string_pretty(&reply).unwrap_or_else(|_| reply.to_string()),
+        )])
+    }
+
     async fn handle_open(
         &self,
         caller_session_id: &str,
@@ -3155,6 +3243,9 @@ impl McpClientTrait for WorkspaceClient {
             "workspace_close" => self.handle_close(caller, cap, arguments).await,
             "workspace_watch" => self.handle_watch(caller, cap, arguments).await,
             "workspace_open" => self.handle_open(caller, cap, arguments).await,
+            "workspace_read_panel" | "workspace_capture_panel" => {
+                self.handle_panel(name, caller, cap, arguments).await
+            }
             // BR-71 decision 22: the spawn tool is advertised here but
             // dispatched by the agent loop (it needs the parent's TaskConfig).
             // Reachable only if that interception is ever removed.
@@ -3709,7 +3800,13 @@ pub(crate) mod tests {
         let info = c.get_info().unwrap();
         let instructions = info.instructions.as_deref().unwrap();
         assert!(instructions.contains("chatrecall"));
-        assert!(instructions.len() <= 2500, "injection budget (§6)");
+        // §6 injection budget. Raised 2500 → 2800 when the panel pair landed:
+        // this text is injected on EVERY turn, so the number exists to force a
+        // decision rather than to be nudged. The decision here was that an
+        // agent which cannot be told it may look at the user's screen cannot
+        // use the feature at all, and that both entries earn their line —
+        // they were cut to two lines each first, not after.
+        assert!(instructions.len() <= 2800, "injection budget (§6)");
         // The "no tool that is unimplemented AT A PHASE GATE may be named"
         // assertion that used to live here named `workspace_open` specifically
         // and was true only up to Task 24, which registers it. The general form
@@ -5582,18 +5679,19 @@ pub(crate) mod tests {
         );
 
         // §7 column C, at every handler that names another conversation:
-        // read_conversation, open (existing), send_prompt, set_tools, close, and
-        // watch. An exact count, so a SEVENTH tool that names a conversation
-        // cannot be added without either wiring the gate or editing this number
-        // — which is the moment to think about it.
+        // read_conversation, open (existing), send_prompt, set_tools, close,
+        // watch, and the panel pair (which share one handler, hence one call
+        // site for two tools). An exact count, so a further tool that names a
+        // conversation cannot be added without either wiring the gate or
+        // editing this number — which is the moment to think about it.
         assert_eq!(
             production
                 .matches("self.refuse_unless_visible(cap,")
                 .count(),
-            6,
-            "the number of §7-gated call sites changed. Six tools name another \
-             conversation; if a seventh arrived it needs the gate, and if one was \
-             removed this count needs to shrink deliberately."
+            7,
+            "the number of §7-gated call sites changed. Seven handlers name \
+             another conversation; if an eighth arrived it needs the gate, and if \
+             one was removed this count needs to shrink deliberately."
         );
 
         // Gate F1, at the two doors that ENABLE an extension.
@@ -8024,6 +8122,8 @@ pub(crate) mod tests {
             "workspace_send_prompt",
             "workspace_set_tools",
             "workspace_watch",
+            "workspace_read_panel",
+            "workspace_capture_panel",
         ] {
             assert!(
                 names.iter().any(|n| n == expected),
@@ -8039,7 +8139,13 @@ pub(crate) mod tests {
                 "instructions omit {name}"
             );
         }
-        assert!(instructions.len() <= 2500, "injection budget (§6)");
+        // §6 injection budget. Raised 2500 → 2800 when the panel pair landed:
+        // this text is injected on EVERY turn, so the number exists to force a
+        // decision rather than to be nudged. The decision here was that an
+        // agent which cannot be told it may look at the user's screen cannot
+        // use the feature at all, and that both entries earn their line —
+        // they were cut to two lines each first, not after.
+        assert!(instructions.len() <= 2800, "injection budget (§6)");
     }
 
     #[tokio::test]
@@ -9121,10 +9227,12 @@ pub(crate) mod tests {
             vec![
                 // The merged spawn tool keeps its bare name (decision 22).
                 "subagent".to_string(),
+                "workspace_capture_panel".to_string(),
                 "workspace_close".to_string(),
                 "workspace_list".to_string(),
                 "workspace_open".to_string(),
                 "workspace_read_conversation".to_string(),
+                "workspace_read_panel".to_string(),
                 "workspace_send_prompt".to_string(),
                 "workspace_set_tools".to_string(),
                 "workspace_watch".to_string(),
@@ -9158,7 +9266,13 @@ pub(crate) mod tests {
                 "instructions name `{tool}`, which get_tools() does not register"
             );
         }
-        assert!(instructions.len() <= 2500, "injection budget (§6)");
+        // §6 injection budget. Raised 2500 → 2800 when the panel pair landed:
+        // this text is injected on EVERY turn, so the number exists to force a
+        // decision rather than to be nudged. The decision here was that an
+        // agent which cannot be told it may look at the user's screen cannot
+        // use the feature at all, and that both entries earn their line —
+        // they were cut to two lines each first, not after.
+        assert!(instructions.len() <= 2800, "injection budget (§6)");
     }
 
     #[test]

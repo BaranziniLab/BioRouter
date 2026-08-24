@@ -14,3 +14,5 @@ src/platform/windows/bin/git/
 # Signing credentials
 .env.signing
 src/web/
+# Copied from pdfjs-dist at build time by vite-plugins/pdfjsAssets.mts
+/public/pdfjs/

@@ -130,7 +130,7 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
     // Nothing is queued: a live provider claimed the registry.
     let result: WorkspaceCommandResult | undefined;
     act(() => {
-      result = applyWorkspaceCommand(openTab('s-daemon'));
+      result = applyWorkspaceCommand(openTab('s-daemon')) as WorkspaceCommandResult;
     });
     expect(result).toEqual(expect.objectContaining({ ok: true }));
     await waitFor(() => expect(screen.getByTestId('sessions').textContent).toContain('s-daemon'));
@@ -154,7 +154,7 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
     // production for this one case.
     mount();
     act(() => {
-      applyWorkspaceCommand(openTab('s-a'));
+      applyWorkspaceCommand(openTab('s-a')) as WorkspaceCommandResult;
     });
     await waitFor(() => expect(screen.getByTestId('panes').textContent).toBe('s-a'));
 
@@ -168,7 +168,7 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
             session_id: 's-split',
             placement: 'split',
             focus: true,
-          });
+          }) as WorkspaceCommandResult;
           resolve();
         }, 0)
       );
@@ -190,7 +190,7 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
 
   it('drains commands that arrived before any provider was mounted', async () => {
     // The Settings-page case: a frame lands with no chat surface up.
-    const queued = applyWorkspaceCommand(openTab('s-early'));
+    const queued = applyWorkspaceCommand(openTab('s-early')) as WorkspaceCommandResult;
     expect(queued.ok).toBe(false);
     mount();
     await waitFor(() => expect(screen.getByTestId('sessions').textContent).toContain('s-early'));
@@ -205,7 +205,7 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
         session_id: 's-child',
         badge: 'subagent',
         parent_session_id: 's-parent',
-      });
+      }) as WorkspaceCommandResult;
     });
     // This is the assertion that catches the `useMemo` dependency-array omission:
     // with `tabAnnotations` missing from the deps, the state updates and the
@@ -236,7 +236,7 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
         cmd: 'annotate_tab',
         session_id: 's-nowhere',
         badge: 'subagent',
-      });
+      }) as WorkspaceCommandResult;
     });
     await waitFor(() => expect(screen.getByTestId('badges').textContent).toContain('subagent'));
     expect(mocks.observeSession).not.toHaveBeenCalled();
@@ -244,7 +244,7 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
     // (b) a refused open_tab. Six panes is the ceiling, and only a real drag can
     // build them — each move splits one tab off the first pane into a new one.
     act(() => {
-      for (let i = 0; i < MAX_GROUPS; i++) applyWorkspaceCommand(openTab(`s-${i}`));
+      for (let i = 0; i < MAX_GROUPS; i++) applyWorkspaceCommand(openTab(`s-${i}`)) as WorkspaceCommandResult;
     });
     await waitFor(() => expect(screen.getByTestId('sessions').textContent).toContain('s-5'));
     for (let i = 1; i < MAX_GROUPS; i++) {
@@ -270,7 +270,7 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
         session_id: 's-refused',
         placement: 'split',
         focus: true,
-      });
+      }) as WorkspaceCommandResult;
     });
     expect(refused?.ok).toBe(false);
     expect(screen.getByTestId('sessions').textContent).not.toContain('s-refused');
@@ -283,7 +283,7 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
     // tab is the moment the entry stops being able to mean anything.
     mount();
     act(() => {
-      applyWorkspaceCommand(openTab('s-badged'));
+      applyWorkspaceCommand(openTab('s-badged')) as WorkspaceCommandResult;
     });
     await waitFor(() => expect(screen.getByTestId('sessions').textContent).toContain('s-badged'));
     act(() => {
@@ -292,7 +292,7 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
         cmd: 'annotate_tab',
         session_id: 's-badged',
         badge: 'subagent',
-      });
+      }) as WorkspaceCommandResult;
     });
     await waitFor(() => expect(screen.getByTestId('badges').textContent).toContain('s-badged'));
 
@@ -306,17 +306,17 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
         cmd: 'annotate_tab',
         session_id: 's-pending',
         badge: 'subagent',
-      });
+      }) as WorkspaceCommandResult;
     });
     await waitFor(() => expect(screen.getByTestId('badges').textContent).toContain('s-pending'));
 
     act(() => {
-      applyWorkspaceCommand({ type: 'workspace', cmd: 'close_tab', session_id: 's-badged' });
+      applyWorkspaceCommand({ type: 'workspace', cmd: 'close_tab', session_id: 's-badged' }) as WorkspaceCommandResult;
     });
     await waitFor(() => expect(screen.getByTestId('badges').textContent).not.toContain('s-badged'));
     // Unrelated commits keep happening; the pending annotation is still there.
     act(() => {
-      applyWorkspaceCommand(openTab('s-unrelated'));
+      applyWorkspaceCommand(openTab('s-unrelated')) as WorkspaceCommandResult;
     });
     await waitFor(() =>
       expect(screen.getByTestId('sessions').textContent).toContain('s-unrelated')
@@ -333,14 +333,14 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
     // daemon ever opened.
     mount();
     act(() => {
-      applyWorkspaceCommand(openTab('s-observed'));
+      applyWorkspaceCommand(openTab('s-observed')) as WorkspaceCommandResult;
     });
     await waitFor(() => expect(screen.getByTestId('sessions').textContent).toContain('s-observed'));
     expect(mocks.observeSession).toHaveBeenCalled();
     expect(mocks.stopObserving).not.toHaveBeenCalled();
 
     act(() => {
-      applyWorkspaceCommand({ type: 'workspace', cmd: 'close_tab', session_id: 's-observed' });
+      applyWorkspaceCommand({ type: 'workspace', cmd: 'close_tab', session_id: 's-observed' }) as WorkspaceCommandResult;
     });
     await waitFor(() =>
       expect(screen.getByTestId('sessions').textContent).not.toContain('s-observed')
@@ -351,7 +351,7 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
   it('relays open_window to the main process instead of opening a tab', async () => {
     mount();
     act(() => {
-      applyWorkspaceCommand({ type: 'workspace', cmd: 'open_window', session_id: 's-win' });
+      applyWorkspaceCommand({ type: 'workspace', cmd: 'open_window', session_id: 's-win' }) as WorkspaceCommandResult;
     });
     await waitFor(() => expect(mocks.createChatWindow).toHaveBeenCalled());
     // The session id goes in the resume-session position (4th arg).
@@ -369,7 +369,7 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
         session_id: 's-x',
         level: 'info',
         message: 'An agent wants to show you something',
-      });
+      }) as WorkspaceCommandResult;
     });
     await waitFor(() =>
       expect(mocks.info).toHaveBeenCalledWith(
@@ -403,7 +403,7 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
           cmd: 'notify',
           level,
           message: `at ${String(level)}`,
-        });
+        }) as WorkspaceCommandResult;
       });
       await waitFor(() =>
         expect(expected).toHaveBeenCalledWith(

@@ -25,6 +25,26 @@ function installElectronMock() {
       openArtifactInBrowser: vi.fn(),
       openDirectoryInExplorer: vi.fn(),
       openExternal: vi.fn(),
+      // The live browser is a native view owned by the main process, so jsdom
+      // can only ever assert the *contract* — that a view is asked for, with
+      // the right URL, at the right moment. The pixels are verified in a real
+      // Electron run, not here.
+      embeddedBrowser: {
+        create: vi.fn(async (_viewId: string, url: string) => ({
+          url,
+          title: '',
+          canGoBack: false,
+          canGoForward: false,
+          isLoading: true,
+          error: null,
+        })),
+        setBounds: vi.fn(async () => undefined),
+        setVisible: vi.fn(async () => undefined),
+        navigate: vi.fn(async () => true),
+        control: vi.fn(async () => true),
+        destroy: vi.fn(async () => undefined),
+        onState: vi.fn().mockReturnValue(() => undefined),
+      },
       broadcastThemeChange: vi.fn(),
       on: vi.fn().mockReturnValue(() => undefined),
     },
@@ -87,10 +107,51 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    expect(await screen.findByText('External preview')).toBeInTheDocument();
+    expect(await screen.findByText('External page')).toBeInTheDocument();
     expect(screen.queryByRole('iframe')).not.toBeInTheDocument();
+    // Nothing has loaded: arriving at a URL artifact must never start a page.
+    expect(screen.queryByTestId('embedded-browser-slot')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /open in default browser/i }));
     expect(window.electron.openExternal).toHaveBeenCalledWith('https://example.test/report.html');
+  });
+
+  // PP-03. This click is the entire boundary between "the user browsed
+  // somewhere" and "something else navigated the user's app". An MCP resource
+  // link with an http(s) URI already becomes an artifact with no transcript
+  // card and can auto-open, so if the live view rendered without a deliberate
+  // click, any extension could make an arbitrary site load and execute here.
+  it('opens a live page only after the user clicks Open here', async () => {
+    installElectronMock();
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{
+            kind: 'externalUrl',
+            title: 'UCSF',
+            url: 'https://www.ucsf.edu/',
+          }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    await screen.findByText('External page');
+    expect(window.electron.embeddedBrowser.create).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByTestId('artifact-open-here'));
+
+    expect(await screen.findByTestId('embedded-browser-slot')).toBeInTheDocument();
+    expect(window.electron.embeddedBrowser.create).toHaveBeenCalledWith(
+      expect.any(String),
+      'https://www.ucsf.edu/'
+    );
+    // A real browsing context, not a frame: the page must be reachable by
+    // clicking and typing, which an iframe cannot deliver for half these sites.
+    expect(screen.queryByRole('iframe')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled();
+    expect(screen.getByLabelText('Address')).toHaveValue('https://www.ucsf.edu/');
   });
 
   it('renders HTML artifacts in a side viewer frame with title-only header', async () => {

@@ -65,6 +65,17 @@ interface SaveDataUrlResponse {
   error?: string;
 }
 
+// Mirrors `utils/embeddedBrowser.ts`. Declared here rather than imported because
+// preload is bundled separately and must not pull in main-process modules.
+type EmbeddedBrowserState = {
+  url: string;
+  title: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  isLoading: boolean;
+  error: string | null;
+};
+
 type ArtifactFileEntry = {
   name: string;
   path: string;
@@ -311,6 +322,32 @@ type ElectronAPI = {
   recordWorkflowHash: (workflow: Workflow) => Promise<boolean>;
   openDirectoryInExplorer: (directoryPath: string) => Promise<boolean>;
   launchApp: (app: BioRouterApp) => Promise<void>;
+  captureRegion: (payload: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    label?: string;
+  }) => Promise<{ path: string; width: number; height: number } | null>;
+  embeddedBrowser: {
+    create: (viewId: string, url: string) => Promise<EmbeddedBrowserState | null>;
+    setBounds: (
+      viewId: string,
+      bounds: { x: number; y: number; width: number; height: number }
+    ) => Promise<void>;
+    setVisible: (viewId: string, visible: boolean) => Promise<void>;
+    navigate: (viewId: string, url: string) => Promise<boolean>;
+    control: (viewId: string, action: 'back' | 'forward' | 'reload' | 'stop') => Promise<boolean>;
+    destroy: (viewId: string) => Promise<void>;
+    readText: (
+      viewId: string,
+      maxChars: number
+    ) => Promise<{ url: string; title: string; text: string } | null>;
+    capture: (viewId: string) => Promise<{ path: string } | null>;
+    onState: (
+      callback: (payload: { viewId: string; state: EmbeddedBrowserState }) => void
+    ) => () => void;
+  };
   openArtifactInBrowser: (payload: {
     html: string;
     title?: string;
@@ -659,6 +696,39 @@ const electronAPI: ElectronAPI = {
   openDirectoryInExplorer: (directoryPath: string) =>
     ipcRenderer.invoke('open-directory-in-explorer', directoryPath),
   launchApp: (app: BioRouterApp) => ipcRenderer.invoke('launch-app', app),
+  captureRegion: (payload: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    label?: string;
+  }) => ipcRenderer.invoke('capture-region', payload),
+  embeddedBrowser: {
+    create: (viewId: string, url: string) =>
+      ipcRenderer.invoke('embedded-browser:create', { viewId, url }),
+    setBounds: (viewId: string, bounds: { x: number; y: number; width: number; height: number }) =>
+      ipcRenderer.invoke('embedded-browser:set-bounds', { viewId, bounds }),
+    setVisible: (viewId: string, visible: boolean) =>
+      ipcRenderer.invoke('embedded-browser:set-visible', { viewId, visible }),
+    navigate: (viewId: string, url: string) =>
+      ipcRenderer.invoke('embedded-browser:navigate', { viewId, url }),
+    control: (viewId: string, action: 'back' | 'forward' | 'reload' | 'stop') =>
+      ipcRenderer.invoke('embedded-browser:control', { viewId, action }),
+    destroy: (viewId: string) => ipcRenderer.invoke('embedded-browser:destroy', { viewId }),
+    readText: (viewId: string, maxChars: number) =>
+      ipcRenderer.invoke('embedded-browser:read-text', { viewId, maxChars }),
+    capture: (viewId: string) => ipcRenderer.invoke('embedded-browser:capture', { viewId }),
+    onState: (callback: (payload: { viewId: string; state: EmbeddedBrowserState }) => void) => {
+      const wrapped = (
+        _event: unknown,
+        payload: { viewId: string; state: EmbeddedBrowserState }
+      ) => callback(payload);
+      ipcRenderer.on('embedded-browser:state', wrapped);
+      return () => {
+        ipcRenderer.removeListener('embedded-browser:state', wrapped);
+      };
+    },
+  },
   openArtifactInBrowser: (payload: { html: string; title?: string; theme?: 'light' | 'dark' }) =>
     ipcRenderer.invoke('open-artifact-in-browser', payload),
   prepareArtifactHtml: (payload: { html: string }) =>

@@ -12,6 +12,7 @@ import { ItemIcon } from './ItemIcon';
 import BuiltInBadge from './ui/BuiltInBadge';
 import { CommandType, getActive, getSessionExtensions, getSlashCommands, listBases } from '../api';
 import { getInitialWorkingDir } from '../utils/workingDir';
+import { IMAGE_EXTENSIONS } from '../utils/imageFormats';
 import { labelledRefTag, refTag, type RefKind } from '../utils/resourceRefs';
 import { useConfig } from './ConfigContext';
 import { ALL_SKILL_DIRS, loadSkillsFromDirs } from './skills/skillUtils';
@@ -419,17 +420,9 @@ const MentionPopover = forwardRef<
               'editorconfig',
               'prettierrc',
               'eslintrc',
-              // Images and assets
-              'png',
-              'jpg',
-              'jpeg',
-              'gif',
-              'svg',
-              'ico',
-              'webp',
-              'bmp',
-              'tiff',
-              'tif',
+              // Images — spread from the panel's own list so a mention can never
+              // offer a format the preview panel will refuse to render.
+              ...IMAGE_EXTENSIONS,
               // Vector and design items
               'ai',
               'eps',

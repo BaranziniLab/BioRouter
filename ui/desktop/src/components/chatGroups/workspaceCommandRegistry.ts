@@ -12,7 +12,15 @@
  */
 export type WorkspaceCommand = {
   type: 'workspace';
-  cmd: 'open_tab' | 'activate_tab' | 'close_tab' | 'open_window' | 'notify' | 'annotate_tab';
+  cmd:
+    | 'open_tab'
+    | 'activate_tab'
+    | 'close_tab'
+    | 'open_window'
+    | 'notify'
+    | 'annotate_tab'
+    | 'read_panel'
+    | 'capture_panel';
   session_id?: string;
   placement?: 'tab' | 'split' | 'window';
   focus?: boolean;
@@ -21,10 +29,34 @@ export type WorkspaceCommand = {
   badge?: string;
   parent_session_id?: string;
   request_id?: string;
+  /** `read_panel`: how much text to return. */
+  max_chars?: number;
 };
 
-export type WorkspaceCommandResult = { ok: boolean; detail?: string };
-export type WorkspaceCommandHandler = (cmd: WorkspaceCommand) => WorkspaceCommandResult;
+/**
+ * `data` carries anything richer than a sentence — a panel's text, a capture's
+ * path.
+ *
+ * The daemon side needed no change to accept it: `apply_inbound_frame` resolves
+ * the parked tool call with the **whole** frame, so extra fields have always
+ * survived; the renderer simply never sent any.
+ */
+export type WorkspaceCommandResult = {
+  ok: boolean;
+  detail?: string;
+  data?: Record<string, unknown>;
+};
+
+/**
+ * Handlers may be async.
+ *
+ * They could not be before, and that was the blocker for anything involving a
+ * capture: `capturePage` is inherently asynchronous, as is reading a live
+ * page's text out of a separate `WebContents`.
+ */
+export type WorkspaceCommandHandler = (
+  cmd: WorkspaceCommand
+) => WorkspaceCommandResult | Promise<WorkspaceCommandResult>;
 
 let handler: WorkspaceCommandHandler | null = null;
 let pending: WorkspaceCommand[] = [];
@@ -37,7 +69,9 @@ export function registerWorkspaceCommands(next: WorkspaceCommandHandler): () => 
 }
 
 /** Apply now if a provider is mounted; otherwise queue and report deferral. */
-export function applyWorkspaceCommand(cmd: WorkspaceCommand): WorkspaceCommandResult {
+export function applyWorkspaceCommand(
+  cmd: WorkspaceCommand
+): WorkspaceCommandResult | Promise<WorkspaceCommandResult> {
   if (handler) return handler(cmd);
   pending.push(cmd);
   return { ok: false, detail: 'no chat surface mounted; queued' };

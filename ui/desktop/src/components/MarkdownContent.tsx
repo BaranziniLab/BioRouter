@@ -20,6 +20,7 @@ import { wrapHTMLInCodeBlock } from '../utils/htmlSecurity';
 import type { ArtifactFilePreview, ArtifactSource } from './artifacts/artifactTypes';
 import {
   basenameFromPath,
+  imageSourceForPreview,
   looksLikePreviewableFile,
   pathFromArtifactHref,
   resolveArtifactPath,
@@ -254,6 +255,9 @@ const MarkdownImage = memo(function MarkdownImage({
     }
 
     let cancelled = false;
+    // A large image arrives as bytes and becomes a `blob:` URL that has to be
+    // revoked, so the cleanup below owns whatever this effect minted.
+    let revokeSrc: (() => void) | null = null;
     setResolvedSrc(null);
     setFailed(false);
     const read = window.electron?.readArtifactFile;
@@ -264,8 +268,15 @@ const MarkdownImage = memo(function MarkdownImage({
     void read(source.path)
       .then((preview: ArtifactFilePreview) => {
         if (cancelled) return;
-        if (preview && preview.kind === 'image' && typeof preview.dataUrl === 'string') {
-          setResolvedSrc(preview.dataUrl);
+        if (preview && preview.kind === 'image') {
+          const { src, revoke } = imageSourceForPreview(preview);
+          if (!src) {
+            setFailed(true);
+            revoke();
+            return;
+          }
+          revokeSrc = revoke;
+          setResolvedSrc(src);
         } else {
           setFailed(true);
         }
@@ -275,6 +286,7 @@ const MarkdownImage = memo(function MarkdownImage({
       });
     return () => {
       cancelled = true;
+      revokeSrc?.();
     };
   }, [source]);
 

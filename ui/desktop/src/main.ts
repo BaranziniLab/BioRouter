@@ -123,6 +123,20 @@ import {
   wrapArtifactForBrowser,
 } from './utils/artifactSecurity';
 import { readGitArtifactTree } from './utils/artifactGit';
+import {
+  captureEmbeddedBrowser,
+  controlEmbeddedBrowser,
+  createEmbeddedBrowser,
+  destroyEmbeddedBrowser,
+  destroyEmbeddedBrowsersForWindow,
+  navigateEmbeddedBrowser,
+  readEmbeddedBrowserText,
+  setEmbeddedBrowserBounds,
+  setEmbeddedBrowserVisible,
+  type EmbeddedBrowserBounds,
+} from './utils/embeddedBrowser';
+import { heicToPng } from './utils/heicConvert';
+import { IMAGE_BLOB_URL_THRESHOLD_BYTES, IMAGE_MIME_TYPES } from './utils/imageFormats';
 import { recordExtensionProvenance } from './utils/extensionProvenance';
 import { fetchRegistryWithLastGood } from './utils/registryCache';
 import { readArtifactDirectoryTree } from './utils/artifactDirectory';
@@ -308,41 +322,45 @@ function rendererEntryUrl(): URL {
     : pathToFileURL(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
 }
 
+// Image entries are spread in from `utils/imageFormats` rather than written out
+// here. This map is the one that decides `kind: 'image'` (via the
+// `startsWith('image/')` test in the artifact read handler), so a format missing
+// from it is a format the panel silently treats as an opaque binary — which is
+// exactly how `bmp`, `ico` and `avif` came to be unsupported despite Chromium
+// having decoded all three for years.
+const ARTIFACT_MIME_TYPES: Record<string, string> = {
+  ...Object.fromEntries(
+    Object.entries(IMAGE_MIME_TYPES).map(([extension, mime]) => [`.${extension}`, mime])
+  ),
+  '.css': 'text/css',
+  '.csv': 'text/csv',
+  '.htm': 'text/html',
+  '.html': 'text/html',
+  '.js': 'text/javascript',
+  '.json': 'application/json',
+  '.ipynb': 'application/x-ipynb+json',
+  '.md': 'text/markdown',
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.py': 'text/x-python',
+  '.r': 'text/x-r',
+  '.rs': 'text/rust',
+  '.sh': 'text/x-shellscript',
+  '.sql': 'application/sql',
+  '.toml': 'text/toml',
+  '.ts': 'text/typescript',
+  '.tsx': 'text/typescript',
+  '.txt': 'text/plain',
+  '.xml': 'application/xml',
+  '.yaml': 'application/yaml',
+  '.yml': 'application/yaml',
+};
+
 function mimeTypeForArtifactPath(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
-  const mimeTypes: Record<string, string> = {
-    '.css': 'text/css',
-    '.csv': 'text/csv',
-    '.gif': 'image/gif',
-    '.htm': 'text/html',
-    '.html': 'text/html',
-    '.jpeg': 'image/jpeg',
-    '.jpg': 'image/jpeg',
-    '.js': 'text/javascript',
-    '.json': 'application/json',
-    '.ipynb': 'application/x-ipynb+json',
-    '.md': 'text/markdown',
-    '.pdf': 'application/pdf',
-    '.png': 'image/png',
-    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    '.py': 'text/x-python',
-    '.r': 'text/x-r',
-    '.rs': 'text/rust',
-    '.sh': 'text/x-shellscript',
-    '.sql': 'application/sql',
-    '.svg': 'image/svg+xml',
-    '.toml': 'text/toml',
-    '.ts': 'text/typescript',
-    '.tsx': 'text/typescript',
-    '.txt': 'text/plain',
-    '.webp': 'image/webp',
-    '.xml': 'application/xml',
-    '.yaml': 'application/yaml',
-    '.yml': 'application/yaml',
-  };
-  return mimeTypes[ext] || 'application/octet-stream';
+  return ARTIFACT_MIME_TYPES[ext] || 'application/octet-stream';
 }
 
 function documentFormatForArtifactPath(filePath: string) {
@@ -1528,6 +1546,10 @@ const createChat = async (
     // A closed window stops being a merge target on the very next pointermove
     // (design §6), and cannot be left holding a caret nobody will clear.
     forgetWindowFromTabDrag(windowId, 'window closed');
+
+    // Embedded browser views are children of this window's contentView, not of
+    // the React tree, so nothing in the renderer unmounts them.
+    destroyEmbeddedBrowsersForWindow(mainWindow);
 
     // Clean up pending initial message
     pendingInitialMessages.delete(windowId);
@@ -2956,6 +2978,126 @@ ipcMain.handle('read-file', async (_event, filePath) => {
   }
 });
 
+
+
+/**
+ * A PNG of a rectangle of this window, written to the temp dir.
+ *
+ * `capturePage` is a **compositor** grab, not a DOM walk, and that is the whole
+ * reason this exists: the artifact preview is a `srcdoc` iframe sandboxed
+ * without `allow-same-origin`, and the embedded browser is a separate native
+ * view — neither is reachable by html2canvas or any of its relatives, which
+ * re-render the DOM from the host's side. Verified against this exact Electron:
+ * a lime rect painted inside a sandboxed frame comes back lime.
+ *
+ * The bytes go to a file rather than across IPC because the same image has to
+ * reach the agent, and the workspace channel caps an inbound frame at 128 KiB.
+ */
+ipcMain.handle(
+  'capture-region',
+  async (
+    event,
+    payload: { x: number; y: number; width: number; height: number; label?: string }
+  ) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) return null;
+    const width = Math.round(payload?.width ?? 0);
+    const height = Math.round(payload?.height ?? 0);
+    if (width <= 0 || height <= 0) return null;
+
+    const image = await window.webContents.capturePage({
+      x: Math.round(payload.x),
+      y: Math.round(payload.y),
+      width,
+      height,
+    });
+    // A hidden-then-navigated view yields a zero-byte image and does NOT
+    // reject, so the empty case has to be checked rather than assumed.
+    if (image.isEmpty()) return null;
+
+    const dir = await ensureTempDirExists();
+    const safeLabel = (payload.label ?? 'region').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 24);
+    const filePath = path.join(
+      dir,
+      `capture-${safeLabel || 'region'}-${crypto.randomBytes(6).toString('hex')}.png`
+    );
+    await fs.writeFile(filePath, image.toPNG(), { mode: 0o600 });
+    const size = image.getSize();
+    return { path: filePath, width: size.width, height: size.height };
+  }
+);
+
+// ── Embedded browser (the artifact panel's live web view) ────────────────────
+//
+// Every handler resolves the owning window from the *event sender* rather than
+// taking a window id from the renderer, so one window can never drive another's
+// view. The view id is renderer-supplied but is only ever used as a map key.
+ipcMain.handle(
+  'embedded-browser:create',
+  (event, payload: { viewId: string; url: string }) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window || typeof payload?.viewId !== 'string') return null;
+    return createEmbeddedBrowser(window, payload.viewId, payload.url, (state) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('embedded-browser:state', { viewId: payload.viewId, state });
+      }
+    });
+  }
+);
+
+ipcMain.handle(
+  'embedded-browser:set-bounds',
+  (_event, payload: { viewId: string; bounds: EmbeddedBrowserBounds }) => {
+    setEmbeddedBrowserBounds(payload.viewId, payload.bounds);
+  }
+);
+
+ipcMain.handle(
+  'embedded-browser:set-visible',
+  (_event, payload: { viewId: string; visible: boolean }) => {
+    setEmbeddedBrowserVisible(payload.viewId, payload.visible);
+  }
+);
+
+ipcMain.handle('embedded-browser:navigate', (_event, payload: { viewId: string; url: string }) =>
+  navigateEmbeddedBrowser(payload.viewId, payload.url)
+);
+
+ipcMain.handle(
+  'embedded-browser:control',
+  (_event, payload: { viewId: string; action: 'back' | 'forward' | 'reload' | 'stop' }) =>
+    controlEmbeddedBrowser(payload.viewId, payload.action)
+);
+
+
+/**
+ * Text and pixels from the embedded browser.
+ *
+ * ⚠ These exist *separately* from `capture-region` because a `WebContentsView`
+ * is its own `WebContents`, a sibling native layer rather than part of the host
+ * page. `capturePage` on the window composites the window's own document —
+ * including sandboxed iframes, which is verified — but **not** a child view. A
+ * live page therefore has to be captured through its own contents.
+ */
+ipcMain.handle(
+  'embedded-browser:read-text',
+  async (_event, payload: { viewId: string; maxChars?: number }) =>
+    readEmbeddedBrowserText(payload.viewId, Math.max(0, payload.maxChars ?? 20_000))
+);
+
+ipcMain.handle('embedded-browser:capture', async (_event, payload: { viewId: string }) => {
+  const png = await captureEmbeddedBrowser(payload.viewId);
+  if (!png) return null;
+  const dir = await ensureTempDirExists();
+  const filePath = path.join(dir, `capture-page-${crypto.randomBytes(6).toString('hex')}.png`);
+  await fs.writeFile(filePath, png, { mode: 0o600 });
+  return { path: filePath };
+});
+
+ipcMain.handle('embedded-browser:destroy', (_event, payload: { viewId: string }) => {
+  destroyEmbeddedBrowser(payload.viewId);
+});
+
 ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
   const expandedPath = expandBiorouterPath(filePath);
   const resolvedPath = path.resolve(expandedPath);
@@ -3024,12 +3166,42 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
     }
 
     if (mimeType.startsWith('image/')) {
+      // HEIC has no decoder in any browser, so it is converted here through the
+      // OS's own — the one route that carries neither a copyleft obligation nor
+      // HEVC patent exposure. Where that is unavailable the preview falls
+      // through to a card that names the format, which is more useful than a
+      // broken image.
+      if (mimeType === 'image/heic' || mimeType === 'image/heif') {
+        const png = await heicToPng(resolvedPath);
+        if (png) {
+          return {
+            kind: 'image',
+            title,
+            path: resolvedPath,
+            mimeType: 'image/png',
+            bytes: Uint8Array.from(png).buffer,
+            size: stats.size,
+            found: true,
+          };
+        }
+        return { kind: 'binary', title, path: resolvedPath, mimeType, size: stats.size, found: true };
+      }
+
+      // Small images travel as a data URL because a `blob:` needs revoking and
+      // that bookkeeping is not worth it for an icon. Large ones travel as raw
+      // bytes: base64 would cost ~4/3 of the file as a JS string, twice.
+      // TIFF always takes the bytes path — the renderer has to decode it before
+      // anything can be shown, so a data URL would be pure waste.
+      const asBytes =
+        stats.size > IMAGE_BLOB_URL_THRESHOLD_BYTES || mimeType === 'image/tiff';
       return {
         kind: 'image',
         title,
         path: resolvedPath,
         mimeType,
-        dataUrl: `data:${mimeType};base64,${buffer.toString('base64')}`,
+        ...(asBytes
+          ? { bytes: Uint8Array.from(buffer).buffer }
+          : { dataUrl: `data:${mimeType};base64,${buffer.toString('base64')}` }),
         size: stats.size,
         found: true,
       };
@@ -4818,7 +4990,13 @@ async function appMain() {
       ? ARTIFACT_WRAPPER_CSP
       : "default-src 'self';" +
         "style-src 'self' 'unsafe-inline';" +
-        "script-src 'self';" +
+        // `wasm-unsafe-eval`, NOT `unsafe-eval`. pdf.js 6 ships its JPEG 2000,
+        // JBIG2 and colour-management decoders as WebAssembly, and Chromium
+        // blocks WASM outright unless this token is present. It does NOT permit
+        // `eval` or `new Function`; pdf.js dropped its need for those in
+        // 5.7.284, so the older advice to add `unsafe-eval` is stale and would
+        // widen this policy for nothing.
+        "script-src 'self' 'wasm-unsafe-eval';" +
         "img-src 'self' data: blob: https:;" +
         `connect-src ${buildConnectSrc()};` +
         "object-src 'none';" +
