@@ -1,9 +1,14 @@
-//! `biorouter skill` subcommands — install a skill (or skill bundle) from a
-//! `.zip`, list installed skills with their enabled state, enable/disable a
-//! skill without removing it, and remove one. Mirrors the desktop GUI's
-//! skill-zip flow: a single skill is `SKILL.md` (optionally under one folder);
-//! a bundle is `<bundle>/<slug>/SKILL.md`. Text files are written under
-//! `~/.config/biorouter/skills/<slug>/`, where they are auto-discovered.
+//! `biorouter skill` subcommands — install a skill or skill package from a
+//! `.zip` or a repository URL, list installed skills with their enabled state,
+//! enable/disable a skill without removing it, and remove one.
+//!
+//! ⚠ **Install and remove go through
+//! `biorouter::agents::skill_package`**, the one import pipeline the daemon,
+//! the interface and the marketplace also use. This module used to carry its
+//! own archive parser — a near-copy of the daemon's, recognising three shapes
+//! by counting slashes — and the two drifted, which is how a repository archive
+//! came to install as one flattened skill per `SKILL.md` in the terminal and in
+//! the app alike (#115). It was deleted rather than kept in step.
 //!
 //! Discovery and frontmatter parsing are the backend's own
 //! (`biorouter::agents::skills_extension::SkillsClient`) — same roots
@@ -20,7 +25,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -29,184 +33,123 @@ use biorouter::config::paths::Paths;
 use console::{style, Color};
 
 const ACCENT: Color = Color::Color256(137);
-const TEXT_EXTENSIONS: &[&str] = &["md", "txt", "yaml", "yml", "json", "py", "sh"];
 
 fn skills_root() -> PathBuf {
     Paths::config_dir().join("skills")
-}
-
-/// Parse the `name` and `description` out of a `SKILL.md` frontmatter block,
-/// with the backend's exact parsing semantics (YAML first, its lenient
-/// fallback second) so install accepts precisely what the agent will load.
-fn parse_frontmatter(content: &str) -> Option<(String, String)> {
-    SkillsClient::parse_frontmatter(content)
-        .ok()
-        .map(|(meta, _body)| (meta.name, meta.description))
-}
-
-fn slugify(name: &str) -> String {
-    let mut out = String::new();
-    let mut prev_dash = false;
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-            out.push(c.to_ascii_lowercase());
-            prev_dash = c == '-';
-        } else if !prev_dash {
-            out.push('-');
-            prev_dash = true;
-        }
-    }
-    out.trim_matches('-').to_string()
-}
-
-fn is_text(name: &str) -> bool {
-    Path::new(name)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| TEXT_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
-        .unwrap_or(false)
-}
-
-fn read_entry(archive: &mut zip::ZipArchive<fs::File>, name: &str) -> Result<String> {
-    let mut entry = archive.by_name(name)?;
-    let mut buf = String::new();
-    entry.read_to_string(&mut buf)?;
-    Ok(buf)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // install
 // ──────────────────────────────────────────────────────────────────────────────
 
-pub async fn handle_install(path: PathBuf, force: bool) -> Result<()> {
-    if !path.exists() {
-        bail!("File not found: {}", path.display());
-    }
-    let file = fs::File::open(&path).with_context(|| format!("opening {}", path.display()))?;
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| anyhow!("Not a valid .zip file: {}", e))?;
+/// `biorouter skill install <path-or-url>`.
+///
+/// ⚠ **The same pipeline the daemon, the interface and the marketplace use**
+/// (`biorouter::agents::skill_package`). This function used to carry its own
+/// depth-counting archive parser — a near-copy of the daemon's, and it drifted
+/// from it — which is why a repository archive installed as one flattened skill
+/// per `SKILL.md` here and in the app alike (#115).
+pub async fn handle_install(source: String, force: bool, choice: Option<String>) -> Result<()> {
+    use biorouter::agents::skill_package::{self, ImportSource};
 
-    let names: Vec<String> = (0..archive.len())
-        .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
-        .collect();
-
-    // --- Single skill: root SKILL.md, or one folder deep <slug>/SKILL.md ---
-    let (skill_md, prefix) = if names.iter().any(|n| n == "SKILL.md") {
-        (Some("SKILL.md".to_string()), String::new())
-    } else if let Some(single) = names
-        .iter()
-        .find(|n| n.matches('/').count() == 1 && n.ends_with("/SKILL.md"))
-    {
-        let prefix = single.trim_end_matches("SKILL.md").to_string();
-        (Some(single.clone()), prefix)
+    let import_source = if source.starts_with("http://") || source.starts_with("https://") {
+        ImportSource::Url {
+            url: source.clone(),
+            reference: None,
+        }
     } else {
-        (None, String::new())
+        let path = PathBuf::from(&source);
+        if !path.exists() {
+            bail!("File not found: {}", path.display());
+        }
+        ImportSource::Archive { path }
     };
 
-    if let Some(skill_md) = skill_md {
-        let content = read_entry(&mut archive, &skill_md)?;
-        let (name, description) = parse_frontmatter(&content)
-            .ok_or_else(|| anyhow!("SKILL.md must have frontmatter with name and description"))?;
-        let slug = slugify(&name);
-        let dest = skills_root().join(&slug);
-        ensure_writable(&dest, force)?;
+    let fetched = skill_package::fetch(&import_source).await?;
+    let plan =
+        skill_package::plan_from_entries(fetched.entries, &fetched.id_hints, fetched.source)?;
 
-        let written = write_files(&mut archive, &names, &prefix, &dest)?;
-        report_single(&name, &description, &slug, &dest, written);
-        return Ok(());
-    }
-
-    // --- Bundle: <bundle>/<slug>/SKILL.md ---
-    let bundle_entries: Vec<&String> = names
-        .iter()
-        .filter(|n| n.matches('/').count() == 2 && n.ends_with("/SKILL.md"))
-        .collect();
-    if bundle_entries.is_empty() {
-        bail!("No SKILL.md found in the zip.");
-    }
-    let bundle_folder = bundle_entries[0].split('/').next().unwrap().to_string();
-    let bundle_prefix = format!("{}/", bundle_folder);
-
-    let mut sub_skills: Vec<(String, String)> = Vec::new();
-    for entry in &bundle_entries {
-        if !entry.starts_with(&bundle_prefix) {
-            continue;
+    // A terminal has no dialog, so an unanswered question is printed and the
+    // command stops. It is NOT resolved by picking one — that is the flattening
+    // this replaced.
+    let plans = match (choice.as_deref(), plan.ambiguity.clone()) {
+        (Some("bundle"), _) => vec![plan.as_bundle()],
+        (Some("individual"), _) => {
+            let keep: Vec<String> = plan.components.iter().map(|c| c.name.clone()).collect();
+            plan.into_individual(&keep)
         }
-        let content = read_entry(&mut archive, entry)?;
-        if let Some(meta) = parse_frontmatter(&content) {
-            sub_skills.push(meta);
-        }
-    }
-    if sub_skills.is_empty() {
-        bail!("No valid SKILL.md files found in bundle.");
-    }
-
-    let slug = slugify(&bundle_folder);
-    let dest = skills_root().join(&slug);
-    ensure_writable(&dest, force)?;
-    let written = write_files(&mut archive, &names, &bundle_prefix, &dest)?;
-
-    println!(
-        "  {} installed skill bundle {} {}",
-        style("✓").green(),
-        style(&slug).fg(ACCENT).bold(),
-        style(format!("({} skills, {} files)", sub_skills.len(), written)).dim()
-    );
-    for (name, _desc) in &sub_skills {
-        println!("    {} {}", style("·").dim(), style(name).dim());
-    }
-    Ok(())
-}
-
-fn ensure_writable(dest: &Path, force: bool) -> Result<()> {
-    if dest.exists() {
-        if !force {
+        (Some(other), _) => bail!("--as must be 'bundle' or 'individual', not '{other}'"),
+        (None, Some(ambiguity)) => {
+            println!("  {} {}", style("?").yellow().bold(), ambiguity.reason);
+            for name in &ambiguity.components {
+                println!("    {} {}", style("·").dim(), style(name).dim());
+            }
             bail!(
-                "Skill already installed at {}. Re-run with --force to overwrite.",
-                dest.display()
+                "Re-run with `--as bundle` to install them as one package, or `--as individual` \
+                 to install them separately."
             );
         }
-        fs::remove_dir_all(dest).ok();
+        (None, None) => vec![plan],
+    };
+
+    let root = skills_root();
+    for plan in &plans {
+        if !force && plan.destination(&root).exists() {
+            bail!(
+                "Already installed at {}. Re-run with --force to replace it.",
+                plan.destination(&root).display()
+            );
+        }
+    }
+
+    for plan in &plans {
+        let installed = skill_package::install(plan, &root)?;
+        match installed.kind {
+            skill_package::ImportKind::Single => {
+                let component = &plan.components[0];
+                report_single(
+                    &component.name,
+                    &component.description,
+                    &installed.id,
+                    &installed.directory,
+                    plan.files.len(),
+                );
+            }
+            skill_package::ImportKind::Bundle => {
+                println!(
+                    "  {} installed skill package {} {}",
+                    style(if installed.replaced { "↻" } else { "✓" }).green(),
+                    style(&installed.display_name).fg(ACCENT).bold(),
+                    style(format!(
+                        "({} skills, {} files)",
+                        installed.skills.len(),
+                        plan.files.len()
+                    ))
+                    .dim()
+                );
+                for component in &plan.components {
+                    let marker = if component.entry_point { "→" } else { "·" };
+                    let group = component
+                        .group
+                        .as_deref()
+                        .map(|g| format!(" [{g}]"))
+                        .unwrap_or_default();
+                    println!(
+                        "    {} {}{}",
+                        style(marker).dim(),
+                        style(&component.name).dim(),
+                        style(group).dim()
+                    );
+                }
+                println!(
+                    "    {} {}",
+                    style("path:").dim(),
+                    style(installed.directory.display()).dim()
+                );
+            }
+        }
     }
     Ok(())
-}
-
-/// Write every text file under `prefix` into `dest`, stripping the prefix.
-fn write_files(
-    archive: &mut zip::ZipArchive<fs::File>,
-    names: &[String],
-    prefix: &str,
-    dest: &Path,
-) -> Result<usize> {
-    let mut count = 0;
-    for name in names {
-        if name.ends_with('/') {
-            continue;
-        }
-        if !prefix.is_empty() && !name.starts_with(prefix) {
-            continue;
-        }
-        let rel = if prefix.is_empty() {
-            name.as_str()
-        } else {
-            name.strip_prefix(prefix).unwrap_or(name)
-        };
-        if rel.is_empty() || !is_text(rel) {
-            continue;
-        }
-        // Guard against zip-slip via the resolved path staying under `dest`.
-        let out_path = dest.join(rel);
-        if !out_path.starts_with(dest) {
-            bail!("Unsafe path in zip: {}", name);
-        }
-        if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let content = read_entry(archive, name)?;
-        fs::write(&out_path, content)?;
-        count += 1;
-    }
-    Ok(count)
 }
 
 fn report_single(name: &str, description: &str, slug: &str, dest: &Path, files: usize) {
@@ -852,22 +795,18 @@ fn enable_with(skills: &[InstalledSkill], path: &Path, query: &str) -> Result<()
 // remove
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Remove an installed skill or package, and every component with it.
+///
+/// Goes through the shared remover, which renames the directory aside before
+/// deleting it — so it leaves the catalog's view in one step rather than
+/// emptying out underneath a scan in flight.
 pub async fn handle_remove(slug: String) -> Result<()> {
-    let dest = skills_root().join(&slug);
-    if !dest.starts_with(skills_root()) {
-        bail!("Invalid skill name.");
-    }
-    if !dest.exists() {
-        bail!(
-            "No skill installed at {}. Run `biorouter skill list`.",
-            dest.display()
-        );
-    }
-    fs::remove_dir_all(&dest)?;
+    let removed = biorouter::agents::skill_package::remove(&slug, &skills_root())
+        .map_err(|e| anyhow!("{e:#}. Run `biorouter skill list`."))?;
     println!(
-        "  {} removed skill {}",
+        "  {} removed {}",
         style("✓").green(),
-        style(&slug).bold()
+        style(&removed.display_name).bold()
     );
     Ok(())
 }

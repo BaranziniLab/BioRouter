@@ -364,25 +364,6 @@ type ElectronAPI = {
     | { error: string }
   >;
   uninstallBrxtExtension: (extensionName: string) => Promise<{ success: true } | { error: string }>;
-  extractSkillZip: (filePath: string) => Promise<
-    | {
-        isBundle: false;
-        files: [string, string][];
-        name: string;
-        description: string;
-        slug: string;
-      }
-    | {
-        isBundle: true;
-        bundleName: string;
-        bundleSkills: Array<{ name: string; description: string }>;
-        files: [string, string][];
-        slug: string;
-        name: string;
-        description: string;
-      }
-    | { error: string }
-  >;
   /**
    * Issue #56 Task 43 (DR-23). `registrySource` carries the BAAM registry `id`
    * the bundle came from, so the install can record provenance beside the
@@ -744,7 +725,6 @@ const electronAPI: ElectronAPI = {
   ) => ipcRenderer.invoke('brxt:install', { filePath, extensionName, registrySource }),
   uninstallBrxtExtension: (extensionName: string) =>
     ipcRenderer.invoke('brxt:uninstall', { extensionName }),
-  extractSkillZip: (filePath: string) => ipcRenderer.invoke('skills:extract-zip', { filePath }),
   fetchRegistry: () => ipcRenderer.invoke('registry:fetch'),
   downloadRegistryAsset: (url: string) => ipcRenderer.invoke('registry:download', { url }),
   checkDependencies: (opts?: { force?: boolean }) => ipcRenderer.invoke('dep:check', opts),

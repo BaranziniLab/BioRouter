@@ -485,10 +485,6 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
           success: false,
           error: 'Could not uninstall extension on the headless server',
         },
-      extractSkillZip: async (filePath: string) =>
-        (await headlessPost(headlessConfig.headlessBaseUrl, '/skills/extract-zip', {
-          filePath,
-        })) ?? { success: false, error: 'Could not extract ZIP on the headless server' },
       downloadRegistryAsset: async (url: string) =>
         (await headlessPost(headlessConfig.headlessBaseUrl, '/registry/download', {
           url,

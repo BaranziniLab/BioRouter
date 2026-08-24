@@ -2,13 +2,12 @@
 //!
 //! # Why the path is still called `headless`
 //!
-//! These sixteen routes were served by a separate binary, `biorouter-headless`,
+//! These routes were served by a separate binary, `biorouter-headless`,
 //! which sat in front of the daemon: it served the single-page application,
 //! reverse-proxied `/api/*` to `biorouterd`, and answered `/headless/*` itself
 //! with a re-implementation of the Electron preload's IPC surface — browse the
 //! filesystem, read and write a file, keep the interface's own settings,
-//! install a `.brxt` extension bundle, unpack a skill zip, fetch a marketplace
-//! asset. The daemon now serves the interface itself (see
+//! install a `.brxt` extension bundle, fetch a marketplace asset. The daemon now serves the interface itself (see
 //! [`crate::routes::web_ui`]) and that binary is retired, so the handlers moved
 //! here.
 //!
@@ -123,9 +122,6 @@ const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// How long `uv sync` may run while installing an extension bundle.
 const UV_SYNC_TIMEOUT: Duration = Duration::from_secs(600);
-
-/// Extensions whose contents a skill archive may hand back as text.
-const TEXT_EXTENSIONS: &[&str] = &["md", "txt", "yaml", "yml", "json", "py", "sh"];
 
 /// Hosts a marketplace asset may be fetched from.
 const REGISTRY_DOWNLOAD_HOSTS: &[&str] = &[
@@ -939,18 +935,6 @@ fn random_suffix() -> String {
     format!("{nanos:x}")
 }
 
-async fn skills_extract_zip(Json(request): Json<FilePathRequest>) -> Response {
-    let path = match PathGuard::current().resolve(&request.file_path) {
-        Ok(path) => path,
-        Err(refusal) => return refusal.into_response(),
-    };
-    Json(match extract_skill_zip(&path) {
-        Ok(value) => value,
-        Err(e) => serde_json::json!({ "error": e }),
-    })
-    .into_response()
-}
-
 async fn brxt_validate(Json(request): Json<FilePathRequest>) -> Response {
     let path = match PathGuard::current().resolve(&request.file_path) {
         Ok(path) => path,
@@ -1093,148 +1077,8 @@ fn parse_skill_frontmatter(content: &str) -> Option<(String, String)> {
     }
 }
 
-fn slugify(value: &str) -> String {
-    let mut slug = String::new();
-    let mut last_dash = false;
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            slug.push(ch.to_ascii_lowercase());
-            last_dash = false;
-        } else if ch == '-' {
-            if !last_dash {
-                slug.push('-');
-                last_dash = true;
-            }
-        } else if !last_dash {
-            slug.push('-');
-            last_dash = true;
-        }
-    }
-    slug.trim_matches('-').to_string()
-}
-
-fn is_text_file(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            TEXT_EXTENSIONS
-                .iter()
-                .any(|allowed| extension.eq_ignore_ascii_case(allowed))
-        })
-}
-
 fn entry_text(entry: &ArchiveEntry) -> String {
     String::from_utf8_lossy(&entry.data).to_string()
-}
-
-fn extract_skill_zip(path: &Path) -> Result<serde_json::Value, String> {
-    let entries = read_archive(path)?;
-    if let Some(skill_entry) = entries.iter().find(|entry| entry.name == "SKILL.md") {
-        return extract_single_skill(&entries, skill_entry, "");
-    }
-    if let Some(skill_entry) = entries.iter().find(|entry| {
-        let parts: Vec<_> = entry.name.split('/').collect();
-        parts.len() == 2 && parts[1] == "SKILL.md"
-    }) {
-        let prefix = skill_entry
-            .name
-            .strip_suffix("SKILL.md")
-            .unwrap_or_default();
-        return extract_single_skill(&entries, skill_entry, prefix);
-    }
-    extract_skill_bundle(&entries)
-}
-
-fn extract_single_skill(
-    entries: &[ArchiveEntry],
-    skill_entry: &ArchiveEntry,
-    prefix: &str,
-) -> Result<serde_json::Value, String> {
-    let Some((name, description)) = parse_skill_frontmatter(&entry_text(skill_entry)) else {
-        return Err(
-            "SKILL.md must have valid frontmatter with \"name\" and \"description\".".to_string(),
-        );
-    };
-    let mut files = Vec::new();
-    for entry in entries {
-        if entry.is_dir || !entry.name.starts_with(prefix) {
-            continue;
-        }
-        let rel_name = entry.name.strip_prefix(prefix).unwrap_or(&entry.name);
-        if rel_name.is_empty() || safe_entry_name(rel_name).is_err() || !is_text_file(rel_name) {
-            continue;
-        }
-        files.push(serde_json::json!([rel_name, entry_text(entry)]));
-    }
-    Ok(serde_json::json!({
-        "isBundle": false,
-        "files": files,
-        "name": name,
-        "description": description,
-        "slug": slugify(&name),
-    }))
-}
-
-fn extract_skill_bundle(entries: &[ArchiveEntry]) -> Result<serde_json::Value, String> {
-    let skill_entries: Vec<_> = entries
-        .iter()
-        .filter(|entry| {
-            let parts: Vec<_> = entry.name.split('/').collect();
-            parts.len() == 3 && parts[2] == "SKILL.md"
-        })
-        .collect();
-    if skill_entries.is_empty() {
-        return Err("No SKILL.md found in the ZIP file.".to_string());
-    }
-
-    let bundle_folder = skill_entries[0]
-        .name
-        .split('/')
-        .next()
-        .unwrap_or_default()
-        .to_string();
-    let bundle_prefix = format!("{bundle_folder}/");
-    let mut bundle_skills = Vec::new();
-    for entry in skill_entries {
-        if !entry.name.starts_with(&bundle_prefix) {
-            continue;
-        }
-        if let Some((name, description)) = parse_skill_frontmatter(&entry_text(entry)) {
-            bundle_skills.push(serde_json::json!({
-                "name": name,
-                "description": description,
-            }));
-        }
-    }
-    if bundle_skills.is_empty() {
-        return Err("No valid SKILL.md files found in bundle.".to_string());
-    }
-
-    let mut files = Vec::new();
-    for entry in entries {
-        if entry.is_dir || !entry.name.starts_with(&bundle_prefix) {
-            continue;
-        }
-        let rel_name = entry
-            .name
-            .strip_prefix(&bundle_prefix)
-            .unwrap_or(&entry.name);
-        if rel_name.is_empty() || safe_entry_name(rel_name).is_err() || !is_text_file(rel_name) {
-            continue;
-        }
-        files.push(serde_json::json!([rel_name, entry_text(entry)]));
-    }
-
-    Ok(serde_json::json!({
-        "isBundle": true,
-        "bundleName": bundle_folder,
-        "bundleSkills": bundle_skills,
-        "files": files,
-        "slug": slugify(&bundle_folder),
-        "name": bundle_folder,
-        "description": format!("Bundle of {} skills", bundle_skills.len()),
-    }))
 }
 
 fn validate_brxt_bundle(path: &Path) -> Result<serde_json::Value, String> {
@@ -1458,7 +1302,6 @@ pub fn routes(_state: Arc<AppState>) -> Router {
             get(settings_read).post(settings_write),
         )
         .route("/headless/registry/download", post(registry_download))
-        .route("/headless/skills/extract-zip", post(skills_extract_zip))
         .route("/headless/brxt/validate", post(brxt_validate))
         .route("/headless/brxt/install", post(brxt_install))
         .route("/headless/brxt/uninstall", post(brxt_uninstall))
@@ -1824,7 +1667,6 @@ mod tests {
             "/headless/health",
             "/headless/settings",
             "/headless/registry/download",
-            "/headless/skills/extract-zip",
             "/headless/brxt/validate",
             "/headless/brxt/install",
             "/headless/brxt/uninstall",
