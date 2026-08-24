@@ -4483,6 +4483,292 @@
         ]
       }
     },
+    "/skills/catalog": {
+      "get": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "The canonical catalog: every root, every skill, every bundle, and the",
+        "description": "composed enablement for one conversation.",
+        "operationId": "skill_catalog_handler",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Compose the machine-wide catalog with this conversation's override.\nOmit for the machine-wide view — what a new chat would start with.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "description": "Rescan the filesystem before answering, instead of reusing the cached\nsnapshot. The interface sets this after an install it did not perform\nitself (a marketplace click, a `.brxt` drop) and after a `CatalogChanged`\nnotice, since a change made by another process may land inside the\nsnapshot's one-second mtime window.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "500": {
+            "description": "This conversation's skill state is unreadable"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/packages/install": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Import a skill package, atomically, and refresh the catalog.",
+        "operationId": "install_skill_package",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Installed, or a question to answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The source could not be read or installed"
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "410": {
+            "description": "That preview has expired"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/packages/preview": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Look at a source without installing anything.",
+        "operationId": "preview_skill_package",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What an install would do",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The source could not be read"
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "410": {
+            "description": "That preview has expired"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/packages/remove": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Remove an installed package or single skill, and every component with it.",
+        "operationId": "remove_skill_package",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemovePackageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageSummary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "404": {
+            "description": "No such package"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/refresh": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Rescan the filesystem and publish a new catalog to every live conversation.",
+        "description": "The endpoint an install calls — a marketplace skill, a dropped `.zip`, a\n`.brxt` extension whose `skills/` subdirectory becomes a new root, or\nworktree 4's `CatalogChanged` notice. It rescans unconditionally rather than\nconsulting mtimes, because the caller already knows something changed.",
+        "operationId": "refresh_skill_catalog",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Compose the machine-wide catalog with this conversation's override.\nOmit for the machine-wide view — what a new chat would start with.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "description": "Rescan the filesystem before answering, instead of reusing the cached\nsnapshot. The interface sets this after an install it did not perform\nitself (a marketplace click, a `.brxt` drop) and after a `CatalogChanged`\nnotice, since a change made by another process may land inside the\nsnapshot's one-second mtime window.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The freshly scanned catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "500": {
+            "description": "This conversation's skill state is unreadable"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/skills/session": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Enable or disable skills for one conversation, and hand back what the model",
+        "description": "will see on its next turn.",
+        "operationId": "set_session_skills",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionSkillsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionSkillsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid or missing secret key"
+          },
+          "404": {
+            "description": "No such conversation"
+          },
+          "500": {
+            "description": "The override could not be persisted"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/status": {
       "get": {
         "tags": [
@@ -5507,6 +5793,27 @@
           }
         }
       },
+      "Ambiguity": {
+        "type": "object",
+        "description": "Why the caller has to choose, and what the choices are.",
+        "required": [
+          "reason",
+          "components"
+        ],
+        "properties": {
+          "components": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The component names the caller is choosing among."
+          },
+          "reason": {
+            "type": "string",
+            "description": "One sentence for the dialog."
+          }
+        }
+      },
       "Annotations": {
         "type": "object",
         "properties": {
@@ -5776,6 +6083,56 @@
           }
         }
       },
+      "CatalogBundle": {
+        "type": "object",
+        "description": "A directory of skills installed and removed as one unit.",
+        "required": [
+          "name",
+          "displayName",
+          "directory",
+          "sourceRoot",
+          "source",
+          "skills",
+          "state"
+        ],
+        "properties": {
+          "directory": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string",
+            "description": "The package's own display name when a manifest supplied one, else the\ndirectory name."
+          },
+          "name": {
+            "type": "string",
+            "description": "The bundle directory name. This is the identifier `skills-config.json`\nlists to disable the whole bundle."
+          },
+          "package": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PackageSummary"
+              }
+            ],
+            "nullable": true
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Member skill names, sorted."
+          },
+          "source": {
+            "$ref": "#/components/schemas/SkillSource"
+          },
+          "sourceRoot": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SkillState"
+          }
+        }
+      },
       "CatalogChangeReason": {
         "type": "string",
         "enum": [
@@ -5900,6 +6257,54 @@
           }
         }
       },
+      "CatalogSkill": {
+        "type": "object",
+        "description": "One skill, as the interface and the model both see it.",
+        "required": [
+          "name",
+          "description",
+          "slug",
+          "directory",
+          "sourceRoot",
+          "source",
+          "builtin",
+          "state"
+        ],
+        "properties": {
+          "builtin": {
+            "type": "boolean",
+            "description": "Shipped with Biorouter, so the interface offers no Delete for it."
+          },
+          "bundle": {
+            "type": "string",
+            "description": "The bundle directory this skill sits in, when it is a bundle member.",
+            "nullable": true
+          },
+          "description": {
+            "type": "string"
+          },
+          "directory": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "Frontmatter `name` — the identifier every enablement surface keys on."
+          },
+          "slug": {
+            "type": "string",
+            "description": "Root-relative logical path, `/`-separated on every platform\n(`superpowers/brainstorming`). What `biorouter skill list` prints."
+          },
+          "source": {
+            "$ref": "#/components/schemas/SkillSource"
+          },
+          "sourceRoot": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SkillState"
+          }
+        }
+      },
       "CatalogSkillChange": {
         "type": "object",
         "required": [
@@ -5921,6 +6326,41 @@
             "type": "string",
             "description": "The extension whose bundle carried it, when it came from one.",
             "nullable": true
+          }
+        }
+      },
+      "CatalogView": {
+        "type": "object",
+        "description": "The serialisable catalog: what `GET /skills/catalog` returns and what the\ndesktop picker renders. There is no second derivation of any of these\nfields on the interface side — that separation is what #113 removed.",
+        "required": [
+          "generation",
+          "roots",
+          "skills",
+          "bundles"
+        ],
+        "properties": {
+          "bundles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogBundle"
+            }
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "roots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillRoot"
+            }
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogSkill"
+            }
           }
         }
       },
@@ -6836,6 +7276,19 @@
           }
         }
       },
+      "Evidence": {
+        "type": "string",
+        "description": "Which rung of the detection ladder decided the shape. Reported so a preview\ncan explain itself, and so a test can assert that the *manifest* decided\nrather than the structure happening to agree with it.",
+        "enum": [
+          "biorouterManifest",
+          "codexPlugin",
+          "claudePlugin",
+          "skillsManifest",
+          "skillsDirectory",
+          "structuralInference",
+          "singleSkill"
+        ]
+      },
       "ExtensionConfig": {
         "oneOf": [
           {
@@ -7521,6 +7974,187 @@
           }
         }
       },
+      "ImportChoice": {
+        "type": "string",
+        "enum": [
+          "bundle",
+          "individual"
+        ]
+      },
+      "ImportKind": {
+        "type": "string",
+        "description": "Which shape the importer decided on.",
+        "enum": [
+          "single",
+          "bundle"
+        ]
+      },
+      "ImportPreview": {
+        "type": "object",
+        "description": "The serialisable half of a plan — everything except the file bytes.",
+        "required": [
+          "kind",
+          "id",
+          "displayName",
+          "groups",
+          "components",
+          "evidence",
+          "source",
+          "shadows",
+          "fileCount"
+        ],
+        "properties": {
+          "ambiguity": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Ambiguity"
+              }
+            ],
+            "nullable": true
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlannedSkill"
+            }
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "entryPoint": {
+            "type": "string",
+            "nullable": true
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/Evidence"
+          },
+          "fileCount": {
+            "type": "integer",
+            "description": "How many files would be written.",
+            "minimum": 0
+          },
+          "groups": {
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ImportKind"
+          },
+          "shadows": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceProvenance"
+          },
+          "version": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "ImportRequest": {
+        "type": "object",
+        "description": "What to import, in the two forms a caller has.\n\nOne request type for a pasted repository URL, an agent's tool call, a local\n`.zip` and a marketplace asset, because giving each of those its own\nresolution is how the four came to disagree in the first place.",
+        "properties": {
+          "choice": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ImportChoice"
+              }
+            ],
+            "nullable": true
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Which components to keep when `choice` is `individual`."
+          },
+          "filePath": {
+            "type": "string",
+            "description": "A `.zip` on the machine the daemon runs on.",
+            "nullable": true
+          },
+          "planId": {
+            "type": "string",
+            "description": "Answer to a previous preview's question, by its `planId`.",
+            "nullable": true
+          },
+          "reference": {
+            "type": "string",
+            "description": "Branch, tag or commit. Overrides a ref in the URL.",
+            "nullable": true
+          },
+          "url": {
+            "type": "string",
+            "description": "`https://github.com/owner/repo`, a `/tree/<ref>` URL, or a direct\narchive URL on an allowed host.",
+            "nullable": true
+          }
+        }
+      },
+      "ImportResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "installed",
+              "preview",
+              "status"
+            ],
+            "properties": {
+              "installed": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/InstalledPackage"
+                },
+                "description": "One entry per installed unit: a bundle is one, \"install these\nseparately\" is one each."
+              },
+              "preview": {
+                "$ref": "#/components/schemas/ImportPreview"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "installed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "planId",
+              "preview",
+              "status"
+            ],
+            "properties": {
+              "planId": {
+                "type": "string",
+                "description": "Pass this back with a `choice` to answer."
+              },
+              "preview": {
+                "$ref": "#/components/schemas/ImportPreview"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "needsChoice"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "The answer to an import request: either it happened, or somebody has to\nchoose first.\n\n⚠ **`NeedsChoice` is a 200, not an error.** It is a legitimate outcome the\ncaller is expected to act on — the issue's \"real pending user-input state\" —\nand an agent that saw a 4xx would reasonably retry the same call rather than\nasking the person the question it was handed.",
+        "discriminator": {
+          "propertyName": "status"
+        }
+      },
       "ImportSessionRequest": {
         "type": "object",
         "required": [
@@ -7587,6 +8221,54 @@
           "sessionId": {
             "type": "string",
             "nullable": true
+          }
+        }
+      },
+      "InstalledPackage": {
+        "type": "object",
+        "description": "What an install did.",
+        "required": [
+          "id",
+          "displayName",
+          "kind",
+          "skills",
+          "directory",
+          "replaced",
+          "catalogGeneration"
+        ],
+        "properties": {
+          "catalogGeneration": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The catalog generation after the refresh, so a caller can tell whether\nit is looking at an inventory that already includes this.",
+            "minimum": 0
+          },
+          "directory": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "entryPoint": {
+            "type": "string",
+            "nullable": true
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ImportKind"
+          },
+          "replaced": {
+            "type": "boolean",
+            "description": "True when this replaced an existing install of the same id."
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Component skill names, in the order they were installed."
           }
         }
       },
@@ -9255,6 +9937,55 @@
           }
         }
       },
+      "PackageSummary": {
+        "type": "object",
+        "description": "The part of an installed package's record the interface needs. The full\nrecord lives beside the skills as `biorouter-package.json`; see\n`crate::agents::skill_package`.",
+        "required": [
+          "id",
+          "displayName"
+        ],
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "entryPoint": {
+            "type": "string",
+            "description": "The router/entry-point skill a manifest declared, by frontmatter name.",
+            "nullable": true
+          },
+          "groups": {
+            "type": "object",
+            "description": "Optional named groups, e.g. `core` / `on-demand`."
+          },
+          "id": {
+            "type": "string"
+          },
+          "installedAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "installer": {
+            "type": "string",
+            "nullable": true
+          },
+          "resolvedCommit": {
+            "type": "string",
+            "nullable": true
+          },
+          "sourceRef": {
+            "type": "string",
+            "nullable": true
+          },
+          "sourceUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "version": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
       "PageContent": {
         "type": "object",
         "required": [
@@ -9351,6 +10082,38 @@
           "userVisible": {
             "type": "boolean",
             "description": "Whether this row is HIDDEN from the transcript. It is not a rendering\ninstruction, and reading it as one double-draws.\n\n`false` is the model-only plumbing a turn stores but deliberately\nkeeps out of the transcript (the BR-47 post-edit diagnostics, the\nloop-guard / stall / budget nudges, hook context). Publishing it\n*with* the flag is what separates \"you are deliberately not being\nshown this row\" from \"you were never told it exists\" — the client can\nname the id without drawing anything for it. That direction is exact:\n`false` means the row must not appear in the transcript.\n\n`true` means only \"not hidden\" — NOT \"draw this\". The content may\nalready have been delivered inside a `Message` frame, and on a\ntool-bearing turn it has been: one streamed reply is stored as a\nrebuilt thinking row plus one `tool_use` row per request, each built\nfrom `Message::assistant()` / `Message::new` and so carrying the\ndefault `user_visible: true`, while the client was shown that same\ncontent once already as the reply itself. A client that drew every\n`true` row would render the same tool request twice.\n\nThis frame is for ACCOUNTING — naming rows so `expectedMessageIds`\ncan be complete. The transcript still comes from `Message` frames\nalone."
+          }
+        }
+      },
+      "PlannedSkill": {
+        "type": "object",
+        "description": "One component of a planned import.",
+        "required": [
+          "name",
+          "description",
+          "directory",
+          "entryPoint"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "directory": {
+            "type": "string",
+            "description": "Directory name under the package root. Taken from the source layout so\na manifest referring to `skills/media-use` still resolves after install."
+          },
+          "entryPoint": {
+            "type": "boolean",
+            "description": "The router the package declares as its way in."
+          },
+          "group": {
+            "type": "string",
+            "description": "The manifest's group for this component, e.g. `core` / `on-demand`.",
+            "nullable": true
+          },
+          "name": {
+            "type": "string",
+            "description": "The frontmatter `name`, preserved exactly."
           }
         }
       },
@@ -9961,6 +10724,18 @@
           },
           "session_id": {
             "type": "string"
+          }
+        }
+      },
+      "RemovePackageRequest": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The install directory name — `CatalogBundle.name`."
           }
         }
       },
@@ -10821,6 +11596,68 @@
           }
         }
       },
+      "SessionSkillsRequest": {
+        "type": "object",
+        "description": "Add and remove are applied to **this** conversation only.",
+        "required": [
+          "sessionId"
+        ],
+        "properties": {
+          "add": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Skill (or bundle) names to enable for this conversation, even where the\nmachine-wide preference has them off."
+          },
+          "remove": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Skill (or bundle) names to disable for this conversation, even where the\nmachine-wide preference has them on."
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        }
+      },
+      "SessionSkillsResponse": {
+        "type": "object",
+        "description": "The catalog after the write, plus the override that produced it.\n\nReturning the whole catalog rather than an acknowledgement is deliberate: it\nis what lets the interface render confirmed state instead of the optimistic\nstate it just guessed, and it collapses the toggle-then-refetch race that\ntwo concurrent toggles would otherwise lose.",
+        "required": [
+          "catalog",
+          "sessionAdd",
+          "sessionRemove"
+        ],
+        "properties": {
+          "catalog": {
+            "$ref": "#/components/schemas/CatalogView"
+          },
+          "sessionAdd": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The persisted `workspace_skills/v1` value, echoed so a caller can tell a\nper-chat deviation from a machine-wide default without re-deriving it."
+          },
+          "sessionRemove": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SessionState": {
+        "type": "string",
+        "description": "How one session deviates from the machine-wide answer for a given skill.",
+        "enum": [
+          "default",
+          "added",
+          "removed"
+        ]
+      },
       "SessionSummary": {
         "type": "object",
         "required": [
@@ -11131,6 +11968,87 @@
           }
         }
       },
+      "SkillRoot": {
+        "type": "object",
+        "description": "One directory skills are discovered under, with its provenance.",
+        "required": [
+          "path",
+          "source"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SkillSource"
+          }
+        }
+      },
+      "SkillSource": {
+        "type": "object",
+        "description": "Where a skill came from, as the interface shows it.",
+        "required": [
+          "kind",
+          "label"
+        ],
+        "properties": {
+          "extension": {
+            "type": "string",
+            "description": "The extension's directory name, when `kind` is `extension`.",
+            "nullable": true
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SkillSourceKind"
+          },
+          "label": {
+            "type": "string",
+            "description": "A short human label for the \"where from\" chip — the extension's name\nwhen it has one, else the root's own."
+          }
+        }
+      },
+      "SkillSourceKind": {
+        "type": "string",
+        "description": "Which of the five kinds of root a skill came from.\n\n⚠ A **unit-variant** enum carrying no data, with the extension name held\nbeside it in [`SkillSource`] rather than inside an `Extension { .. }`\nvariant. The variant form is the more natural Rust, and it generates an\ninternally-tagged object that `serde(flatten)` and `utoipa` disagree about —\nthe spec emits an `allOf` the TypeScript client cannot narrow. A flat struct\ncrosses the wire unambiguously, which matters more here than the tidier\ntype, because this shape IS the contract the picker renders from.",
+        "enum": [
+          "claudeHome",
+          "agentsHome",
+          "biorouter",
+          "extension",
+          "project"
+        ]
+      },
+      "SkillState": {
+        "type": "object",
+        "description": "The composed enablement of one catalog entry, with every input kept\nseparate so the interface can explain *why* a switch is where it is.",
+        "required": [
+          "machineEnabled",
+          "session",
+          "sessionViaBundle",
+          "hiddenContext",
+          "effective"
+        ],
+        "properties": {
+          "effective": {
+            "type": "boolean",
+            "description": "What the model actually sees: the composition of the three above."
+          },
+          "hiddenContext": {
+            "type": "boolean",
+            "description": "A shipped **Context** the user switched off in Settings → Contexts. Such\na skill is hidden from the catalog but stays loadable by exact name; see\n`skills_extension::hidden_contexts_in`."
+          },
+          "machineEnabled": {
+            "type": "boolean",
+            "description": "`skills-config.json` (`disabled[]`) says this is on. A bundle child is\noff when either its own name or its bundle's name is listed."
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionState"
+          },
+          "sessionViaBundle": {
+            "type": "boolean",
+            "description": "The deviation was written against the BUNDLE's name, not this skill's.\nLets the interface explain a member's switch instead of leaving it\nlooking arbitrary."
+          }
+        }
+      },
       "SlashCommand": {
         "type": "object",
         "required": [
@@ -11197,6 +12115,31 @@
           },
           "title": {
             "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "SourceProvenance": {
+        "type": "object",
+        "description": "What a resolved import came from, kept so an update knows where to look and\na user can see what they installed.",
+        "properties": {
+          "installer": {
+            "type": "string",
+            "description": "`repository` | `archive` | `marketplace` | `cli` | `agent`.",
+            "nullable": true
+          },
+          "reference": {
+            "type": "string",
+            "description": "The branch, tag or commit that was asked for.",
+            "nullable": true
+          },
+          "resolvedCommit": {
+            "type": "string",
+            "description": "The immutable commit the archive actually came from, when the host tells\nus (GitHub returns it in `ETag`).",
+            "nullable": true
           },
           "url": {
             "type": "string",

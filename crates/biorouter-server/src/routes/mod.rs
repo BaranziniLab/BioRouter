@@ -163,6 +163,7 @@ pub mod session_events;
 pub mod session_reach;
 pub mod setup;
 pub mod shell;
+pub mod skills;
 pub mod status;
 pub mod tool_bridge;
 pub mod tunnel;
@@ -203,6 +204,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         // authentication at all; inside `configure` they take `check_token`
         // like everything else. See `routes::shell`.
         .merge(shell::routes(state.clone()))
+        .merge(skills::routes(state.clone()))
         // No secret-key gate: the path carries a single-turn capability nonce, and
         // Codex sends no Authorization header at all, so a header scheme would
         // authenticate one client and not the other. See the module header.

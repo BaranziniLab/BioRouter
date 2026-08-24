@@ -374,6 +374,17 @@ impl Provider for LeadWorkerProvider {
         )
     }
 
+    /// The same conservative fold on the tool-calling capability, and for the
+    /// same reason `tier` is folded: a turn lands on the lead *or* the worker,
+    /// so the pair can only drive a Biorouter-run tool loop if **both** halves
+    /// can. Leaving it on the trait default would advertise the capability of
+    /// whichever half happened to be asked, and a run that fell through to the
+    /// other one would come back with no tool calls and look like a model that
+    /// had nothing to do.
+    fn supports_tool_calls(&self) -> bool {
+        self.lead_provider.supports_tool_calls() && self.worker_provider.supports_tool_calls()
+    }
+
     /// The third override that exists because `get_name()` answers for the lead.
     ///
     /// **Either** half, and the asymmetry with `tier`'s `least` and
@@ -635,6 +646,66 @@ impl Provider for LeadWorkerProvider {
 
 #[cfg(test)]
 mod tests {
+    /// Issue #108. A turn lands on the lead *or* the worker, so the pair can
+    /// drive a Biorouter-run tool loop only if BOTH halves can — the same
+    /// conservative fold `tier` takes, and for the same reason. On the trait
+    /// default the composite would report whichever half was asked, and a run
+    /// that fell through to the other one would come back empty.
+    #[test]
+    fn the_composite_can_call_tools_only_when_both_halves_can() {
+        use super::LeadWorkerProvider;
+        use crate::model::ModelConfig;
+        use crate::providers::base::Provider;
+        use crate::providers::claude_code::ClaudeCodeProvider;
+        use crate::providers::ollama::OllamaProvider;
+        use std::sync::Arc;
+
+        // Real providers on both sides: the fact under test is what production
+        // `supports_tool_calls` returns, not what a stub was told to return.
+        // A real provider, built the way a declarative JSON file builds one —
+        // `from_custom_config` rather than `from_env`, which is async and reads
+        // the user's config. Not a stub: production `supports_tool_calls` is the
+        // fact under test.
+        let config = crate::config::declarative_providers::DeclarativeProviderConfig {
+            name: "ingest-fixture".to_string(),
+            engine: crate::config::declarative_providers::ProviderEngine::Ollama,
+            display_name: "Ingest fixture".to_string(),
+            description: None,
+            api_key_env: "NOT_USED".to_string(),
+            base_url: "http://localhost:11434".to_string(),
+            models: vec![],
+            headers: None,
+            timeout_seconds: None,
+            supports_streaming: None,
+        };
+        let can: Arc<dyn Provider> = Arc::new(
+            OllamaProvider::from_custom_config(ModelConfig::new_or_fail("qwen3"), config)
+                .expect("a declarative ollama provider must construct"),
+        );
+        let cannot: Arc<dyn Provider> = Arc::new(ClaudeCodeProvider::for_tests(
+            std::path::PathBuf::from("/usr/bin/claude"),
+            "claude-sonnet-4-6",
+        ));
+        assert!(can.supports_tool_calls());
+        assert!(!cannot.supports_tool_calls());
+
+        for (lead, worker, expected) in [
+            (&can, &can, true),
+            (&can, &cannot, false),
+            (&cannot, &can, false),
+            (&cannot, &cannot, false),
+        ] {
+            let composite = LeadWorkerProvider::new(Arc::clone(lead), Arc::clone(worker), Some(3));
+            assert_eq!(
+                composite.supports_tool_calls(),
+                expected,
+                "lead={} worker={}",
+                lead.get_name(),
+                worker.get_name()
+            );
+        }
+    }
+
     use super::*;
     use crate::conversation::message::{Message, MessageContent};
     use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};

@@ -20,6 +20,7 @@ pub mod extension_manager;
 pub mod extension_manager_extension;
 pub mod final_output_tool;
 pub mod goal;
+pub mod knowledge_source_tool;
 pub mod knowledge_tool;
 mod large_response_handler;
 pub mod mcp_client;
@@ -45,6 +46,8 @@ mod session_blob_tool;
 // BR-71 decision (c): per-session skill enablement, kept strictly out of the
 // machine-wide `skills-config.json`.
 pub mod session_skills;
+pub mod skill_catalog;
+pub mod skill_package;
 // Pub so the CLI (`biorouter skill …`) reuses the exact same skill discovery
 // roots and frontmatter parsing as this backend extension, instead of keeping
 // a drifting duplicate (Codex B2 findings 5+6).

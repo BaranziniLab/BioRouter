@@ -3,14 +3,31 @@
 You can create and maintain personal knowledge bases backed by markdown
 knowledge folders + git history. Use these primitive tools to read and write the knowledge folder.
 
+## Ingesting a document, folder or link: use `platform__ingest_source`
+
+To add a **document** to a knowledge base — a PDF, paper, note, spreadsheet, web page,
+folder of files, or pasted text — call `platform__ingest_source`. It takes one source or
+a batch and runs Biorouter's real ingestion pipeline: it stages the raw source, opens a
+git transaction, runs a bounded sub-agent to write curated knowledge pages, validates
+them, commits (or aborts and leaves the base untouched), rebuilds the graph, and
+verifies what it committed. It reports, per source, whether curated pages actually exist.
+
+**Do not hand-roll ingestion out of the primitives below.** Extracting text yourself,
+calling `kb_add_raw_source`, and then writing pages with `kb_write_page` in a script has
+no transaction, no abort on failure and no verification — and it is how ingestion ends
+with raw files on disk and nothing in the knowledge graph. The primitives are for
+*editing* a base, not for absorbing a document into one.
+
 Common operations:
 
 - `kb_list_bases` — see which knowledge bases are visible to this session.
 - `kb_create_base` — create a new one. Takes a `format` — see "Two formats" below.
-- `kb_add_raw_source` — ingest a URL or pasted text. The result is filed under
-  `raw/<source-id>/` with `source.md` and `meta.yaml`; credibility is auto-classified.
-  This does NOT create knowledge pages — read the source and write knowledge pages with
-  `kb_write_page` to integrate the source into the knowledge graph.
+- `kb_add_raw_source` — file a URL or pasted text under `raw/<source-id>/` with
+  `source.md` and `meta.yaml`; credibility is auto-classified. **This does NOT create
+  knowledge pages, and it is not how you ingest a document** — use
+  `platform__ingest_source` for that, which does this step and then the curation,
+  transactionally. Reach for this tool alone only when the user wants the raw material
+  filed *without* being digested.
 - `kb_list_pages` / `kb_read_page` / `kb_write_page` — knowledge CRUD.
 - `kb_validate_page` — check a page against its base's format **before** writing it.
   Writes nothing; returns diagnostics, each with a stable rule id, a severity, the page

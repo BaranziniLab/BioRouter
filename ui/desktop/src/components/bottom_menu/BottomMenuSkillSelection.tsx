@@ -1,5 +1,4 @@
-import { isContextSkill } from '../settings/contexts/contexts';
-import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Layers } from '../icons/app-icons';
 import {
   DropdownMenu,
@@ -9,20 +8,7 @@ import {
 } from '../ui/dropdown-menu';
 import { Input } from '../ui/input';
 import { Switch } from '../ui/switch';
-import {
-  loadSkillOverrides,
-  saveSkillOverrides,
-  setSkillOverride,
-  isSkillEnabled,
-  getSkillOverrides,
-} from '../../store/skillOverrides';
-import {
-  Skill,
-  SkillBundle,
-  ALL_SKILL_DIRS,
-  loadSkillsFromDirs,
-  isBuiltinSkill,
-} from '../skills/skillUtils';
+import { useSkillCatalog, type SkillCatalogEntry } from '../skills/useSkillCatalog';
 import { toastService } from '../../toasts';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
@@ -31,187 +17,109 @@ interface BottomMenuSkillSelectionProps {
   sessionId: string | null;
 }
 
-type SkillEntry =
-  | { kind: 'single'; skill: Skill; enabled: boolean }
-  | { kind: 'bundle'; bundle: SkillBundle; enabled: boolean };
-
+/**
+ * The composer's skill menu.
+ *
+ * ⚠ **Every toggle here goes to the daemon and waits for its answer** (#113).
+ * The session branch used to write React state and raise a success toast
+ * reading "<skill> enabled for this chat" without calling anything — no
+ * request, no `extension_data` write, no catalog refresh, no live agent. The
+ * switch moved, the toast was green, and the next turn saw the same skills as
+ * before. A control that reports intent as if it were state is worse than no
+ * control, so the toast is raised only on a confirmed write, and a refusal puts
+ * the switch back.
+ *
+ * The inventory is fetched rather than scanned, for the reason recorded on
+ * `useSkillCatalog`: this component's own three-root scan omitted skills
+ * bundled inside installed extensions, which the backend has always loaded.
+ */
 export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelectionProps) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
-  const [allSkills, setAllSkills] = useState<Skill[]>([]);
-  const [allBundles, setAllBundles] = useState<SkillBundle[]>([]);
-  const [hubUpdateTrigger, setHubUpdateTrigger] = useState(0);
-  const [sessionOverrides, setSessionOverrides] = useState<Map<string, boolean>>(new Map());
-  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const saveGenerationRef = useRef(0);
-  const isHubView = !sessionId;
+  const catalog = useSkillCatalog(sessionId);
+  const { entries, reload, setEnabled } = catalog;
+  const scope = sessionId ? 'for this chat' : 'in new chats';
 
-  const loadAll = useCallback(() => {
-    return loadSkillOverrides().then(() => {
-      return loadSkillsFromDirs(ALL_SKILL_DIRS).then(({ singles, bundles }) => {
-        // ⚠ Contexts ship with the app, so they are not what a user means by
-        // "skills enabled". Filtering here fixes the chip count, the
-        // Enable/Disable-all counts and all four toasts at once, because every
-        // one of them derives from this array. Filtering inside
-        // `loadSkillsFromDirs` instead would silently change the workflow
-        // pickers too, which share that helper.
-        setAllSkills(singles.filter((skill) => !isContextSkill(skill.name)));
-        setAllBundles(bundles);
-      });
-    });
-  }, []);
-
+  // Opening the menu is the cheapest honest moment to notice an install made
+  // elsewhere — a marketplace click, `biorouter skill install` in a terminal —
+  // so it asks the daemon to rescan rather than trusting the cached snapshot.
   useEffect(() => {
-    loadAll();
-  }, [loadAll]);
+    if (isOpen) void reload(true);
+  }, [isOpen, reload]);
 
-  useEffect(() => {
-    if (isOpen) {
-      loadAll().then(() => setHubUpdateTrigger((prev) => prev + 1));
-    }
-  }, [isOpen, loadAll]);
-
-  const persistOverrides = useCallback(() => {
-    const generation = ++saveGenerationRef.current;
-    const save = saveQueueRef.current.catch(() => undefined).then(() => saveSkillOverrides());
-    saveQueueRef.current = save;
-    void save.catch(async () => {
-      toastService.error({
-        title: 'Skill update failed',
-        msg: 'The skill preference could not be saved.',
-      });
-      if (generation !== saveGenerationRef.current) return;
-      const restored = await loadSkillOverrides();
-      if (restored && generation === saveGenerationRef.current) {
-        setHubUpdateTrigger((prev) => prev + 1);
-      }
-    });
-  }, []);
-
-  const handleToggle = useCallback(
-    (key: string, displayName: string) => {
-      if (isHubView) {
-        const currentEnabled = isSkillEnabled(key);
-        setSkillOverride(key, !currentEnabled);
-        setHubUpdateTrigger((prev) => prev + 1);
-        persistOverrides();
+  const applyToggle = useCallback(
+    async (keys: string[], enabled: boolean, describe: (count: number) => string) => {
+      const result = await setEnabled(keys, enabled);
+      if (result.ok) {
         toastService.success({
-          title: 'Skill updated',
-          msg: `${displayName} will be ${!currentEnabled ? 'enabled' : 'disabled'} in new chats`,
+          title: keys.length === 1 ? 'Skill updated' : 'Skills updated',
+          msg: describe(keys.length),
         });
         return;
       }
-
-      // Session view: local state only
-      const currentEnabled = sessionOverrides.has(key)
-        ? sessionOverrides.get(key)!
-        : isSkillEnabled(key);
-      const newEnabled = !currentEnabled;
-      setSessionOverrides((prev) => {
-        const next = new Map(prev);
-        next.set(key, newEnabled);
-        return next;
-      });
-      toastService.success({
-        title: 'Skill updated',
-        msg: `${displayName} ${newEnabled ? 'enabled' : 'disabled'} for this chat`,
+      // The reason travels back with the result rather than through hook
+      // state, which this callback's captured render would have read stale.
+      toastService.error({
+        title: 'Skill update failed',
+        msg: `The change was not saved: ${result.error}`,
       });
     },
-    [isHubView, persistOverrides, sessionOverrides]
+    [setEnabled]
   );
 
-  const entries = useMemo((): SkillEntry[] => {
-    const hubOverrides = getSkillOverrides();
-    const resolveEnabled = (key: string): boolean => {
-      if (!isHubView && sessionOverrides.has(key)) return sessionOverrides.get(key)!;
-      if (hubOverrides.has(key)) return hubOverrides.get(key)!;
-      return true;
-    };
-
-    const singles: SkillEntry[] = allSkills.map((skill) => ({
-      kind: 'single',
-      skill,
-      enabled: resolveEnabled(skill.name),
-    }));
-
-    const bundles: SkillEntry[] = allBundles.map((bundle) => ({
-      kind: 'bundle',
-      bundle,
-      enabled: resolveEnabled(bundle.bundleName),
-    }));
-
-    return [...bundles, ...singles];
-    // hubUpdateTrigger intentionally triggers re-evaluation when hub overrides change
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allSkills, allBundles, isHubView, sessionOverrides, hubUpdateTrigger]);
+  const handleToggle = useCallback(
+    (key: string, displayName: string, currentlyEnabled: boolean) => {
+      void applyToggle(
+        [key],
+        !currentlyEnabled,
+        () => `${displayName} ${!currentlyEnabled ? 'enabled' : 'disabled'} ${scope}`
+      );
+    },
+    [applyToggle, scope]
+  );
 
   const filteredEntries = useMemo(() => {
     const q = searchQuery.toLowerCase();
     if (!q) return entries;
-    return entries.filter((e) => {
-      if (e.kind === 'single') {
+    return entries.filter((entry) => {
+      if (entry.kind === 'single') {
         return (
-          e.skill.name.toLowerCase().includes(q) || e.skill.description.toLowerCase().includes(q)
+          entry.skill.name.toLowerCase().includes(q) ||
+          entry.skill.description.toLowerCase().includes(q)
         );
       }
       return (
-        e.bundle.bundleName.toLowerCase().includes(q) ||
-        e.bundle.skills.some(
-          (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
-        )
+        entry.bundle.displayName.toLowerCase().includes(q) ||
+        entry.bundle.name.toLowerCase().includes(q) ||
+        entry.bundle.skills.some((name) => name.toLowerCase().includes(q))
       );
     });
   }, [entries, searchQuery]);
 
-  const sortedEntries = useMemo(() => {
-    return [...filteredEntries].sort((a, b) => {
-      const nameA = a.kind === 'single' ? a.skill.name : a.bundle.bundleName;
-      const nameB = b.kind === 'single' ? b.skill.name : b.bundle.bundleName;
-      return nameA.localeCompare(nameB);
-    });
-  }, [filteredEntries]);
-
   const activeCount = useMemo(() => entries.filter((e) => e.enabled).length, [entries]);
-
   const visibleEnabledCount = useMemo(
-    () => sortedEntries.filter((e) => e.enabled).length,
-    [sortedEntries]
+    () => filteredEntries.filter((e) => e.enabled).length,
+    [filteredEntries]
   );
 
   const handleBulkToggle = useCallback(() => {
-    if (sortedEntries.length === 0) {
-      return;
-    }
-
+    if (filteredEntries.length === 0) return;
     const targetEnabled = visibleEnabledCount === 0;
-    const targets = sortedEntries.filter((e) => e.enabled !== targetEnabled);
-    if (targets.length === 0) {
-      return;
-    }
+    const keys = filteredEntries.filter((e) => e.enabled !== targetEnabled).map((e) => e.key);
+    if (keys.length === 0) return;
+    void applyToggle(
+      keys,
+      targetEnabled,
+      (count) =>
+        `${count} skill${count === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} ${scope}`
+    );
+  }, [applyToggle, filteredEntries, scope, visibleEnabledCount]);
 
-    const keys = targets.map((e) => (e.kind === 'single' ? e.skill.name : e.bundle.bundleName));
-
-    if (isHubView) {
-      keys.forEach((k) => setSkillOverride(k, targetEnabled));
-      setHubUpdateTrigger((prev) => prev + 1);
-      persistOverrides();
-      toastService.success({
-        title: 'Skills updated',
-        msg: `${keys.length} skill${keys.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} in new chats`,
-      });
-      return;
-    }
-
-    setSessionOverrides((prev) => {
-      const next = new Map(prev);
-      keys.forEach((k) => next.set(k, targetEnabled));
-      return next;
-    });
-    toastService.success({
-      title: 'Skills updated',
-      msg: `${keys.length} skill${keys.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} for this chat`,
-    });
-  }, [isHubView, persistOverrides, sortedEntries, visibleEnabledCount]);
+  const emptyMessage = () => {
+    if (catalog.error) return catalog.error;
+    if (catalog.loading) return 'Loading skills…';
+    return searchQuery ? 'No skills found' : 'No skills available';
+  };
 
   return (
     <DropdownMenu
@@ -256,79 +164,92 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
             className="h-8"
             autoFocus
           />
-          {sortedEntries.length > 0 && (
+          {filteredEntries.length > 0 && (
             <button
               type="button"
               onClick={handleBulkToggle}
               className="mt-1.5 cursor-pointer text-supporting text-text-default/70 underline-offset-2 hover:text-text-default hover:underline"
             >
               {visibleEnabledCount === 0
-                ? `Enable all (${sortedEntries.length})`
+                ? `Enable all (${filteredEntries.length})`
                 : `Disable all (${visibleEnabledCount})`}
             </button>
           )}
         </div>
         <div className="max-h-[400px] overflow-y-auto">
-          {sortedEntries.length === 0 ? (
+          {filteredEntries.length === 0 ? (
             <div className="px-3 py-4 text-center text-secondary text-text-muted">
-              {searchQuery ? 'No skills found' : 'No skills available'}
+              {emptyMessage()}
             </div>
           ) : (
-            sortedEntries.map((entry) => {
-              if (entry.kind === 'single') {
-                const { skill, enabled } = entry;
-                return (
-                  <DropdownMenuCheckboxItem
-                    key={skill.folderPath}
-                    checked={enabled}
-                    showIndicator={false}
-                    onCheckedChange={() => handleToggle(skill.name, skill.name)}
-                    onSelect={(event) => event.preventDefault()}
-                    className="flex cursor-pointer items-center justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium"
-                    title={skill.description || skill.name}
-                  >
-                    <div className="flex items-center gap-1.5 min-w-0 pr-2">
-                      <div className="font-medium text-text-default truncate">
-                        {skill.name}
-                      </div>
-                      {isBuiltinSkill(skill.name) && <BuiltInBadge />}
-                    </div>
-                    <div className="pointer-events-none" aria-hidden="true">
-                      <Switch checked={enabled} variant="mono" tabIndex={-1} aria-hidden="true" />
-                    </div>
-                  </DropdownMenuCheckboxItem>
-                );
-              }
-
-              // Bundle entry
-              const { bundle, enabled } = entry;
-              const subNames = bundle.skills.map((s) => s.name).join(', ');
-              return (
-                <DropdownMenuCheckboxItem
-                  key={bundle.folderPath}
-                  checked={enabled}
-                  showIndicator={false}
-                  onCheckedChange={() => handleToggle(bundle.bundleName, bundle.bundleName)}
-                  onSelect={(event) => event.preventDefault()}
-                  className="flex cursor-pointer items-start justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium"
-                  title={`Bundle: ${subNames}`}
-                >
-                  <div className="flex-1 min-w-0 pr-2">
-                    <div className="font-medium text-text-default">
-                      {bundle.bundleName}
-                      <span className="ml-1 text-supporting text-text-subtle">bundle</span>
-                    </div>
-                    <div className="text-supporting text-text-subtle truncate">{subNames}</div>
-                  </div>
-                  <div className="pointer-events-none mt-0.5 flex-shrink-0" aria-hidden="true">
-                    <Switch checked={enabled} variant="mono" tabIndex={-1} aria-hidden="true" />
-                  </div>
-                </DropdownMenuCheckboxItem>
-              );
-            })
+            filteredEntries.map((entry) => <SkillRow key={entry.key} entry={entry} onToggle={handleToggle} />)
           )}
         </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );
 };
+
+function SkillRow({
+  entry,
+  onToggle,
+}: {
+  entry: SkillCatalogEntry;
+  onToggle: (key: string, displayName: string, currentlyEnabled: boolean) => void;
+}) {
+  if (entry.kind === 'single') {
+    const { skill, enabled } = entry;
+    // `label` is the extension's own name when the skill was bundled inside one
+    // — the piece of provenance the picker could not show while it scanned
+    // only three roots and never saw those skills at all.
+    const from = skill.source.kind === 'extension' ? skill.source.label : null;
+    return (
+      <DropdownMenuCheckboxItem
+        checked={enabled}
+        showIndicator={false}
+        onCheckedChange={() => onToggle(entry.key, skill.name, enabled)}
+        onSelect={(event) => event.preventDefault()}
+        className="flex cursor-pointer items-center justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium"
+        title={skill.description || skill.name}
+      >
+        <div className="flex items-center gap-1.5 min-w-0 pr-2">
+          <div className="font-medium text-text-default truncate">{skill.name}</div>
+          {skill.builtin && <BuiltInBadge />}
+          {from && <span className="text-supporting text-text-subtle truncate">{from}</span>}
+        </div>
+        <div className="pointer-events-none" aria-hidden="true">
+          <Switch checked={enabled} variant="mono" tabIndex={-1} aria-hidden="true" />
+        </div>
+      </DropdownMenuCheckboxItem>
+    );
+  }
+
+  const { bundle, enabled } = entry;
+  const subNames = bundle.skills.join(', ');
+  const entryPoint = bundle.package?.entryPoint ?? null;
+  return (
+    <DropdownMenuCheckboxItem
+      checked={enabled}
+      showIndicator={false}
+      onCheckedChange={() => onToggle(entry.key, bundle.displayName, enabled)}
+      onSelect={(event) => event.preventDefault()}
+      className="flex cursor-pointer items-start justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium"
+      title={`Bundle: ${subNames}`}
+    >
+      <div className="flex-1 min-w-0 pr-2">
+        <div className="font-medium text-text-default">
+          {bundle.displayName}
+          <span className="ml-1 text-supporting text-text-subtle">
+            {bundle.skills.length} skill{bundle.skills.length === 1 ? '' : 's'}
+          </span>
+        </div>
+        <div className="text-supporting text-text-subtle truncate">
+          {entryPoint ? `entry point: ${entryPoint} · ${subNames}` : subNames}
+        </div>
+      </div>
+      <div className="pointer-events-none mt-0.5 flex-shrink-0" aria-hidden="true">
+        <Switch checked={enabled} variant="mono" tabIndex={-1} aria-hidden="true" />
+      </div>
+    </DropdownMenuCheckboxItem>
+  );
+}
