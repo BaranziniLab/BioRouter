@@ -1,14 +1,20 @@
-import { Skill, BIOROUTER_SKILLS_DIR, isBuiltinSkill } from './skillUtils';
 import { Button } from '../ui/button';
 import { Switch } from '../ui/switch';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import { Copy, Trash2, FolderDot } from '../icons/app-icons';
+import type { CatalogSkill } from '../../api';
 
 interface SkillItemProps {
-  skill: Skill;
+  skill: CatalogSkill;
   enabled: boolean;
   onClick: () => void;
-  onDelete: () => void;
+  /**
+   * Omitted where the skill is not the user's to delete: one Biorouter ships
+   * and re-seeds on every start, or one an installed extension supplies. A
+   * delete that succeeds and silently reverts is worse than no button — the
+   * lesson `BUILTIN_SKILL_NAMES` was written for, applied to a second case.
+   */
+  onDelete?: () => void;
   onShare: () => void;
   onToggle: (enabled: boolean) => void;
 }
@@ -21,7 +27,9 @@ export default function SkillItem({
   onShare,
   onToggle,
 }: SkillItemProps) {
-  const builtin = isBuiltinSkill(skill.name);
+  // ⚠ From the daemon, not from the hand-synced `BUILTIN_SKILL_NAMES` copy.
+  // Rust owns the seeder, so Rust owns the answer.
+  const builtin = skill.builtin;
   return (
     <div className="biorouter-list-row flex items-start gap-3 px-3 py-3 group">
       <button
@@ -30,13 +38,15 @@ export default function SkillItem({
         onClick={onClick}
         aria-label={`Open skill ${skill.name}`}
       >
-        <div className="flex items-center gap-1.5">
-          <p className="text-label text-text-default">{skill.name}</p>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <p className="text-label text-text-default truncate">{skill.name}</p>
           {builtin && <BuiltInBadge />}
         </div>
         <p className="text-supporting text-text-muted mt-0.5 line-clamp-1">{skill.description}</p>
-        {skill.sourceDir !== BIOROUTER_SKILLS_DIR && (
-          <p className="text-supporting text-text-subtle mt-0.5 font-mono">{skill.sourceDir}</p>
+        {skill.source.kind !== 'biorouter' && (
+          <p className="text-supporting text-text-subtle mt-0.5 font-mono truncate">
+            {skill.sourceRoot}
+          </p>
         )}
       </button>
       <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
@@ -62,7 +72,7 @@ export default function SkillItem({
           >
             <Copy className="h-4 w-4" />
           </Button>
-          {!builtin && (
+          {onDelete && !builtin && (
             <Button
               variant="ghost"
               size="sm"

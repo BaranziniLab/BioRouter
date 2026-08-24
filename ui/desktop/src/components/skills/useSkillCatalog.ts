@@ -118,6 +118,27 @@ function isPickerSkill(skill: CatalogSkill): boolean {
   return !isContextSkill(skill.name);
 }
 
+/**
+ * The catalog once, for a caller that is not a React component.
+ *
+ * Same endpoint, same answer as the hook. It exists so a one-shot loader — the
+ * `@`-mention list, the workflow resource picker — does not have to keep its
+ * own filesystem scan around, which is what left both of them blind to
+ * extension-bundled skills.
+ */
+export async function fetchSkillCatalog(sessionId?: string | null): Promise<CatalogView> {
+  const response = await skillCatalogHandler<true>({
+    query: sessionId ? { session_id: sessionId } : {},
+    throwOnError: true,
+  });
+  return response.data;
+}
+
+/** Standalone skills — bundle members are reached through their bundle. */
+export function standaloneSkills(view: CatalogView): CatalogSkill[] {
+  return view.skills.filter((skill) => !skill.bundle && !isContextSkill(skill.name));
+}
+
 export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
   const [view, setView] = useState<CatalogView>(EMPTY);
   // ⚠ **The rollback target is a ref, not the render closure's `view`.**

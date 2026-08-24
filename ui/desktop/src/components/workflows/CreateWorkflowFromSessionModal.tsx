@@ -10,7 +10,7 @@ import { WorkflowParameter } from './shared/workflowFormSchema';
 import { toastError } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
 import type { ExtensionConfig, Manifest } from '../../api';
-import { ALL_SKILL_DIRS, loadSkillsFromDirs } from '../skills/skillUtils';
+import { fetchSkillCatalog, standaloneSkills } from '../skills/useSkillCatalog';
 import type { WorkflowResourceItem } from './shared/WorkflowResourcePicker';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
 import { storeSubscriptionCleanup } from '../../utils/storeSubscription';
@@ -127,16 +127,18 @@ export default function CreateWorkflowFromSessionModal({
         setDefaultKnowledgeBaseId(defaultId);
       });
 
-      loadSkillsFromDirs(ALL_SKILL_DIRS)
-        .then(({ singles, bundles }) => {
+      // The daemon's catalog, so a skill bundled inside an installed extension
+      // can be attached to a workflow like any other (#113).
+      fetchSkillCatalog()
+        .then((view) => {
           if (cancelled) return;
-          const bundleItems: WorkflowResourceItem[] = bundles.map((bundle) => ({
-            id: bundle.bundleName,
-            label: bundle.bundleName,
-            description: bundle.skills.map((skill) => skill.name).join(', '),
+          const bundleItems: WorkflowResourceItem[] = view.bundles.map((bundle) => ({
+            id: bundle.name,
+            label: bundle.displayName,
+            description: bundle.skills.join(', '),
             badge: 'bundle',
           }));
-          const singleItems: WorkflowResourceItem[] = singles.map((skill) => ({
+          const singleItems: WorkflowResourceItem[] = standaloneSkills(view).map((skill) => ({
             id: skill.name,
             label: skill.name,
             description: skill.description,
