@@ -409,7 +409,12 @@ impl SubAgent {
             messages.push(LlmMessage::Assistant(reply.clone()));
 
             let (result_parts, turn_rejected_vocabulary) = self
-                .dispatch_turn(&reply.tool_calls, dispatch.as_ref(), &mut events, event_sink)
+                .dispatch_turn(
+                    &reply.tool_calls,
+                    dispatch.as_ref(),
+                    &mut events,
+                    event_sink,
+                )
                 .await;
             // Only a turn that actually dispatched something updates the flag:
             // a turn of pure prose is not evidence that the model stopped
@@ -797,7 +802,10 @@ mod tests {
             text_reply("all done"),       // step 1: no tool calls → done
         ]);
         let agent = make_agent(completer, 10);
-        let result = agent.run("hello", std::sync::Arc::new(EchoDispatch), None, None).await.unwrap();
+        let result = agent
+            .run("hello", std::sync::Arc::new(EchoDispatch), None, None)
+            .await
+            .unwrap();
         assert_eq!(result.reason, DoneReason::NoMoreToolCalls);
         // steps_used reflects the loop counter at the time of Done, which
         // is 1 (incremented after the first tool-dispatch round)
@@ -812,7 +820,10 @@ mod tests {
         let replies: Vec<LlmReply> = (0..35).map(|_| tool_call_reply("kb_search")).collect();
         let completer = MockCompleter::new(replies);
         let agent = make_agent(completer, 5);
-        let result = agent.run("hello", std::sync::Arc::new(EchoDispatch), None, None).await.unwrap();
+        let result = agent
+            .run("hello", std::sync::Arc::new(EchoDispatch), None, None)
+            .await
+            .unwrap();
         assert_eq!(result.reason, DoneReason::StepBudgetReached);
         assert!(result.steps_used <= 5);
     }
@@ -950,7 +961,10 @@ mod tests {
             }
         }
 
-        let result = agent.run("hello", std::sync::Arc::new(BigPages), None, None).await.unwrap();
+        let result = agent
+            .run("hello", std::sync::Arc::new(BigPages), None, None)
+            .await
+            .unwrap();
         assert_eq!(result.reason, DoneReason::TokenBudgetReached);
         assert!(
             result.steps_used < 10,
@@ -995,7 +1009,10 @@ mod tests {
                 ..Default::default()
             },
         };
-        let result = agent.run("hello", std::sync::Arc::new(EchoDispatch), None, None).await.unwrap();
+        let result = agent
+            .run("hello", std::sync::Arc::new(EchoDispatch), None, None)
+            .await
+            .unwrap();
         assert_eq!(result.reason, DoneReason::TimeBudgetReached);
         assert!(
             result.final_text.contains("waiting for the model"),
@@ -1014,7 +1031,12 @@ mod tests {
         let completer = MockCompleter::new(vec![text_reply("never reached")]);
         let agent = make_agent(completer, 30);
         let result = agent
-            .run("hello", std::sync::Arc::new(EchoDispatch), Some(&notify), None)
+            .run(
+                "hello",
+                std::sync::Arc::new(EchoDispatch),
+                Some(&notify),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(result.reason, DoneReason::Cancelled);
@@ -1046,7 +1068,10 @@ mod tests {
                 ..Default::default()
             },
         };
-        let result = agent.run("go", std::sync::Arc::new(EchoDispatch), None, None).await.unwrap();
+        let result = agent
+            .run("go", std::sync::Arc::new(EchoDispatch), None, None)
+            .await
+            .unwrap();
         assert_eq!(result.reason, DoneReason::NoMoreToolCalls);
 
         // calls[0] = first complete() call = [User]  (initial)
@@ -1130,7 +1155,10 @@ mod tests {
         let seen = dispatch.calls.clone();
 
         let agent = make_agent(MockCompleter::new(vec![reply]), 10);
-        let result = agent.run("go", std::sync::Arc::new(dispatch), None, None).await.unwrap();
+        let result = agent
+            .run("go", std::sync::Arc::new(dispatch), None, None)
+            .await
+            .unwrap();
 
         assert_eq!(
             *seen.lock().await,

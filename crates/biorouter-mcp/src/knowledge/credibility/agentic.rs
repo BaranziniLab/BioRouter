@@ -406,7 +406,12 @@ fn source_description(input: &SourceInput) -> String {
 // ---------------------------------------------------------------------------
 
 pub async fn classify(input: &SourceInput, completer: Box<dyn Completer>) -> Result<Credibility> {
-    classify_with_dispatch(input, completer, std::sync::Arc::new(AgenticToolDispatch::new())).await
+    classify_with_dispatch(
+        input,
+        completer,
+        std::sync::Arc::new(AgenticToolDispatch::new()),
+    )
+    .await
 }
 
 /// Same as [`classify`], but with the tool dispatcher supplied by the caller.

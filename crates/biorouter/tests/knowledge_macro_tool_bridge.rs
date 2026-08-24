@@ -31,9 +31,7 @@ use rmcp::model::Tool;
 use biorouter::conversation::message::Message;
 use biorouter::knowledge::provider_completer::ProviderCompleter;
 use biorouter::model::ModelConfig;
-use biorouter::providers::base::{
-    MessageStream, Provider, ProviderMetadata, ProviderUsage, Usage,
-};
+use biorouter::providers::base::{MessageStream, Provider, ProviderMetadata, ProviderUsage, Usage};
 use biorouter::providers::coding_agent::bridge;
 use biorouter::providers::coding_agent::mirror;
 use biorouter::providers::errors::ProviderError;
@@ -230,7 +228,12 @@ async fn a_macro_run_under_a_coding_agent_executes_its_own_tools() {
     let logged: Vec<&SubAgentEvent> = result
         .events
         .iter()
-        .filter(|e| matches!(e, SubAgentEvent::ToolCall { .. } | SubAgentEvent::ToolResult { .. }))
+        .filter(|e| {
+            matches!(
+                e,
+                SubAgentEvent::ToolCall { .. } | SubAgentEvent::ToolResult { .. }
+            )
+        })
         .collect();
     assert_eq!(logged.len(), 2, "one call and one result: {logged:?}");
     assert!(matches!(

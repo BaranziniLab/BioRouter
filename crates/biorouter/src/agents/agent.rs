@@ -4890,8 +4890,8 @@ impl Agent {
             // #109: the bridge dispatches through a trait now, so a knowledge
             // macro or a scheduled workflow can bridge its OWN small tool
             // surface. A chat turn's surface is the session's extensions, which
-            // is what this coercion says.
-            Arc::clone(&self.extension_manager) as Arc<dyn coding_agent_bridge::BridgeToolDispatch>,
+            // is what this named coercion says.
+            crate::providers::tool_turn::session_tools(Arc::clone(&self.extension_manager)),
             Arc::clone(&self.tool_inspection_manager),
             capability,
             bridged,
