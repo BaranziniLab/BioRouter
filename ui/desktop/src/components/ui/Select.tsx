@@ -72,7 +72,18 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         option: ({ isFocused, isSelected, isDisabled }) => {
           // 32px rows at 8px inset — the shared menu-row geometry (§3.8), which
           // is also what makes the option row and the trigger above it agree.
-          const base = 'flex h-8 items-center rounded-element px-2 text-body cursor-pointer';
+          //
+          // `min-h-8`, NOT `h-8`. A fixed height is only correct while every option
+          // is one line. `formatOptionLabel` call sites (the model picker) render a
+          // title plus a wrapped detail line — ~65px of content — and a fixed 32px
+          // box does not clip it, because the option is `overflow: visible`: it
+          // SPILLS over the rows beneath. The spilled content still hit-tests, so
+          // `elementFromPoint` at row N's centre returns row N-1 and the user
+          // silently selects the model above the one they clicked. `min-h` keeps
+          // the 32px rung for single-line rows and lets a two-line row own its
+          // real height. Guarded by Select.optionGeometry.test.ts.
+          const base =
+            'flex min-h-8 items-center rounded-element px-2 py-1 text-body cursor-pointer';
           if (isDisabled) return `${base} opacity-50 cursor-not-allowed pointer-events-none`;
           if (isSelected) {
             // A selected row is emphasised, not inverted. It used to fill with

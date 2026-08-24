@@ -213,6 +213,24 @@ pub async fn run() -> Result<()> {
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;
+
+    // Take the llama-server sidecar down with us.
+    //
+    // The sidecar is a child process owned by a `OnceLock` static, and statics
+    // never drop — so tokio's `kill_on_drop` cannot cover process exit, and a
+    // llama-server holding 5-20 GB of weights and KV cache outlived every app
+    // quit. Nothing reclaimed it until the NEXT `ensure()` in some future
+    // Biorouter process ran `reap_orphans`, which meant quitting the app left
+    // the memory pinned indefinitely.
+    //
+    // This is the graceful path only, and that is fine: the pidfile written at
+    // spawn is what covers SIGKILL, a panic, or a crash, and `reap_orphans`
+    // still collects those on the next launch. This just stops the common case
+    // — an ordinary quit — from relying on that later sweep.
+    biorouter::providers::llamacpp_sidecar::global()
+        .stop()
+        .await;
+
     info!("server shutdown complete");
     Ok(())
 }

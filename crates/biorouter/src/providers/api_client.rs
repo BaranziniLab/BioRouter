@@ -48,10 +48,25 @@ fn tune_client_builder(
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(15);
+    // The read timeout is a STALL detector, so it must never be tighter than the
+    // budget the caller actually asked for. It used to be a flat 300 s while the
+    // llamacpp provider passes `timeout` = LLAMACPP_TIMEOUT (600 s by default),
+    // which meant a local turn died at five minutes with a *network* error while
+    // llama-server was healthily working. That mattered because a local model
+    // sends no bytes at all during prefill — a cold agent bootstrap is ~20 s of
+    // silence on a fast Mac and minutes on a slow one, and a first run adds a
+    // multi-GB download — so "no bytes yet" is the normal case here, not a stall.
+    // Worse, the resulting timeout classified as transient and was retried three
+    // more times against a single-slot server still generating the abandoned
+    // request, so each retry queued behind the last.
+    //
+    // An explicit BIOROUTER_HTTP_READ_TIMEOUT_SECS is still honoured verbatim —
+    // if an operator asks for a tighter stall detector they get one. Only the
+    // DEFAULT is lifted to cover the caller's own timeout.
     let read = std::env::var("BIOROUTER_HTTP_READ_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(300);
+        .unwrap_or_else(|| 300.max(timeout.as_secs()));
     builder
         .timeout(timeout)
         .connect_timeout(Duration::from_secs(connect))

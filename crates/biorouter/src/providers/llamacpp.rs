@@ -12,9 +12,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::conversation::message::MessageContent;
 use anyhow::Result;
 use async_trait::async_trait;
-use rmcp::model::Tool;
+use rmcp::model::{Content, RawContent, Tool};
+use std::ops::Deref;
 use url::Url;
 
 use super::api_client::{ApiClient, AuthMethod, AuthProvider};
@@ -187,6 +189,58 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         speed_hint: "Moderate, dense 27B",
     },
 ];
+
+/// Text substituted for an image the local server cannot see.
+const IMAGE_UNSUPPORTED_NOTE: &str = "[An image was provided here, but the local Llama Server \
+model is running without a multimodal projector and cannot see images. Describe the image in \
+text, or switch to a vision-capable model, to work with it.]";
+
+/// Replace every image in the conversation with a short text note.
+///
+/// The sidecar launches llama-server with `--no-mmproj`, so the running model
+/// has no multimodal projector and cannot accept images at all. Nothing on the
+/// send path enforced that: a screenshot (which arrives as an IMAGE inside a
+/// tool response, and which the OpenAI formatter then re-emits as a separate
+/// user message) was serialized into the request and the server rejected it.
+/// The 5xx classified as retryable, so the turn burned three more retries
+/// before surfacing an opaque server error — the user asked "what's on screen?"
+/// and got a network-ish failure with no hint that the model is text-only.
+///
+/// Substituting a note keeps the turn coherent and tells the model — and
+/// through it the user — exactly what happened and what to do instead. When
+/// `--no-mmproj` is eventually dropped for projector-capable models, this
+/// becomes conditional on the model's real capability rather than unconditional.
+fn strip_images(messages: &[Message]) -> Vec<Message> {
+    messages
+        .iter()
+        .map(|message| {
+            let mut out = message.clone();
+            out.content = message
+                .content
+                .iter()
+                .map(|content| match content {
+                    MessageContent::Image(_) => MessageContent::text(IMAGE_UNSUPPORTED_NOTE),
+                    MessageContent::ToolResponse(response) => {
+                        let mut response = response.clone();
+                        if let Ok(result) = &mut response.tool_result {
+                            result.content = result
+                                .content
+                                .iter()
+                                .map(|item| match item.deref() {
+                                    RawContent::Image(_) => Content::text(IMAGE_UNSUPPORTED_NOTE),
+                                    _ => item.clone(),
+                                })
+                                .collect();
+                        }
+                        MessageContent::ToolResponse(response)
+                    }
+                    other => other.clone(),
+                })
+                .collect();
+            out
+        })
+        .collect()
+}
 
 pub fn recommended_model_for_memory_gib(gib: u64) -> &'static str {
     if gib >= 64 {
@@ -558,6 +612,8 @@ impl Provider for LlamaCppProvider {
 
         let client = self.ensure_client(&model_config.model_name).await?;
 
+        // The sidecar runs with `--no-mmproj`, so images cannot reach the model.
+        let messages = &strip_images(messages);
         let payload = create_request(
             model_config,
             system,
@@ -628,6 +684,7 @@ impl Provider for LlamaCppProvider {
 
         let client = self.ensure_client(&self.model.model_name).await?;
 
+        let messages = &strip_images(messages);
         let payload = create_request(
             &self.model,
             system,
@@ -954,6 +1011,84 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A screenshot reaches the provider as an IMAGE inside a tool response.
+    /// The sidecar runs `--no-mmproj`, so that image cannot be seen; sending it
+    /// produced a 5xx that classified as retryable, burning three more retries
+    /// before surfacing an opaque error. Both shapes must become text.
+    #[test]
+    fn images_are_replaced_with_an_explanatory_note() {
+        use crate::conversation::message::ToolResponse;
+        use rmcp::model::CallToolResult;
+
+        let image = Content::image("aGVsbG8=".to_string(), "image/png".to_string());
+        let with_image = Message::user()
+            .with_text("what is on screen?")
+            .with_image("aGVsbG8=", "image/png");
+        let tool_msg = Message::user().with_content(MessageContent::ToolResponse(ToolResponse {
+            id: "call_1".to_string(),
+            tool_result: Ok(CallToolResult::success(vec![
+                Content::text("here is the screen"),
+                image,
+            ])),
+            metadata: None,
+        }));
+
+        let stripped = strip_images(&[with_image, tool_msg]);
+
+        // No bare image content survives.
+        assert!(
+            !stripped
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .any(|c| matches!(c, MessageContent::Image(_))),
+            "a bare image survived stripping"
+        );
+
+        // No image survives INSIDE a tool response either — this is the one the
+        // screenshot case actually takes, and the one a naive fix misses.
+        let tool_images = stripped
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|c| match c {
+                MessageContent::ToolResponse(r) => r.tool_result.as_ref().ok(),
+                _ => None,
+            })
+            .flat_map(|r| r.content.iter())
+            .filter(|item| matches!(&item.raw, RawContent::Image(_)))
+            .count();
+        assert_eq!(tool_images, 0, "an image survived inside a tool response");
+
+        // The surrounding text is preserved, and the note explains the failure.
+        // Collect from BOTH levels: `MessageContent`'s Display does not render a
+        // tool response's inner items, so a Display-only sweep would silently
+        // miss whether the tool's own text survived — and would still pass.
+        let mut all = Vec::new();
+        for message in &stripped {
+            for content in &message.content {
+                match content {
+                    MessageContent::ToolResponse(r) => {
+                        if let Ok(result) = &r.tool_result {
+                            for item in &result.content {
+                                if let RawContent::Text(t) = &item.raw {
+                                    all.push(t.text.clone());
+                                }
+                            }
+                        }
+                    }
+                    other => all.push(other.to_string()),
+                }
+            }
+        }
+        let all = all.join(" ");
+        assert!(all.contains("what is on screen?"), "user text was dropped");
+        assert!(all.contains("here is the screen"), "tool text was dropped");
+        assert_eq!(
+            all.matches("cannot see images").count(),
+            2,
+            "both the bare image and the tool-response image need a note: {all}"
+        );
     }
 
     #[test]

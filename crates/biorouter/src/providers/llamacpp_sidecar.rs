@@ -15,6 +15,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
@@ -37,6 +38,13 @@ pub const LLAMA_SERVER_BUILD: &str = "b9611";
 /// Default port the managed sidecar listens on (loopback only).
 pub const LLAMACPP_DEFAULT_PORT: u16 = 11543;
 pub const LLAMACPP_AGENT_CONTEXT_SIZE: usize = 65_536;
+
+/// Set once llama-server has rejected an optional flag, so the rest of the
+/// process stops emitting it. See `retry_without_optional_flags`.
+static OPTIONAL_FLAGS_DISABLED: AtomicBool = AtomicBool::new(false);
+
+/// Default `--spec-type`. See the rationale and the benchmark table in `build_args`.
+pub const DEFAULT_SPEC_TYPE: &str = "ngram-simple";
 const LOG_TAIL_LINES: usize = 60;
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const STATUS_PROBE_TIMEOUT: Duration = Duration::from_millis(800);
@@ -163,6 +171,16 @@ struct Inner {
     automatic_context_size: bool,
     partial_download_restart_attempted: bool,
     warmed_model: Option<String>,
+    /// True only while `wait_ready` has seen the child die and has not yet
+    /// finished deciding whether one of its three self-heal paths applies.
+    ///
+    /// Without this, `status()` reports `SidecarState::Error` for the ~0.5-1.3 s
+    /// window between the death and the respawn — and the GUI's 1500 ms status
+    /// poller kills the whole warm-up on sight, so the recovery that was about
+    /// to happen never runs. The user sees "failed to install model" on a
+    /// startup that would have succeeded at a lower context or from the Hugging
+    /// Face fallback. See `status()`.
+    restarting: bool,
 }
 
 /// Singleton manager for the llama-server sidecar.
@@ -190,6 +208,7 @@ pub fn global() -> &'static LlamaSidecar {
             automatic_context_size: false,
             partial_download_restart_attempted: false,
             warmed_model: None,
+            restarting: false,
         }),
         startup: Mutex::new(()),
     })
@@ -631,6 +650,22 @@ pub fn default_context_size() -> usize {
     }
 }
 
+/// Value for `--spec-type`, or `None` to omit the flag entirely.
+pub fn configured_spec_type() -> Option<String> {
+    if OPTIONAL_FLAGS_DISABLED.load(Ordering::Relaxed) {
+        return None;
+    }
+    let configured = crate::config::Config::global()
+        .get_param::<String>("LLAMACPP_SPEC_TYPE")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .unwrap_or_else(|| DEFAULT_SPEC_TYPE.to_string());
+    if configured.is_empty() || configured.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    Some(configured)
+}
+
 fn explicit_context_size() -> Option<usize> {
     crate::config::Config::global()
         .get_param::<usize>("LLAMACPP_CONTEXT_SIZE")
@@ -656,6 +691,42 @@ fn next_lower_auto_context_size(ctx_size: usize) -> Option<usize> {
         n if n > 32_768 => Some(32_768),
         _ => None,
     }
+}
+
+/// True when llama-server rejected an argument rather than failing to run.
+///
+/// This is the safety net for every *accelerating* flag the sidecar adds (today
+/// `--spec-type`): llama.cpp releases many times a day with no semver, and
+/// CLAUDE.md's standing warning is that a pin bump can rename or drop a flag.
+/// Without this, a dropped flag turns into "local models stopped working
+/// entirely" — the process dies instantly at argv parse time, which looks
+/// nothing like a flag problem. With it, the sidecar drops the optional flag and
+/// respawns, so the worst case is losing the speedup, not losing inference.
+/// A cheap fingerprint of the log tail, used to tell "still working" from
+/// "wedged". Combines the line count with the last line, so both a new line and
+/// a rewritten progress line (llama.cpp's download percentage overwrites one
+/// line) register as progress, while a genuinely stalled server produces the
+/// same marker on every poll.
+fn progress_marker(tail: &Arc<StdMutex<VecDeque<String>>>) -> String {
+    let guard = tail.lock().unwrap_or_else(|e| e.into_inner());
+    format!(
+        "{}:{}",
+        guard.len(),
+        guard.back().map(String::as_str).unwrap_or("")
+    )
+}
+
+fn looks_like_unsupported_argument(log: &str) -> bool {
+    let log = log.to_ascii_lowercase();
+    [
+        "invalid argument",
+        "unknown argument",
+        "unrecognized argument",
+        "error while handling argument",
+        "invalid value for",
+    ]
+    .iter()
+    .any(|needle| log.contains(needle))
 }
 
 fn looks_like_memory_failure(log: &str) -> bool {
@@ -776,6 +847,27 @@ fn build_args(source: &LaunchSource, alias: &str, port: u16, ctx_size: usize) ->
         .unwrap_or(false);
     args.push("--reasoning".to_string());
     args.push(if thinking { "on" } else { "off" }.to_string());
+    // Self-speculative decoding. The `ngram-*` family drafts from patterns already
+    // present in the context, so unlike draft-model speculation it needs no second
+    // GGUF, no download, no extra VRAM and no tokenizer pairing — it is free.
+    //
+    // Measured on an M4 Max with gemma-4-E4B q4_0, agentic task / free text:
+    //   none          79.7 / 82.4 tok/s   (what we shipped)
+    //   ngram-cache  113.8 / 82.4
+    //   ngram-simple 354.4 / 82.8   <- chosen: 4.4x, and free text is unchanged
+    //   ngram-mod    397.3 / 80.6        faster, but costs 2% on free text
+    //   ngram-map-k4v 378.4 / 69.1       disqualified: -16% on free text
+    // The agentic case — re-emitting text already in context (quoting a tool
+    // result, rewriting a file, echoing a schema) — is most of what an agent does.
+    //
+    // Set LLAMACPP_SPEC_TYPE to another value to change it, or to "none"/"" to
+    // pass nothing. Only Metal/Gemma has been measured; if a platform or family
+    // regresses, that key is the escape hatch, and `unsupported_argument` below
+    // recovers automatically if a future llama.cpp drops the flag.
+    if let Some(spec) = configured_spec_type() {
+        args.push("--spec-type".to_string());
+        args.push(spec);
+    }
     if let Ok(extra) = config.get_param::<String>("LLAMACPP_EXTRA_ARGS") {
         args.extend(sanitize_extra_args(&extra));
     }
@@ -1162,6 +1254,12 @@ impl LlamaSidecar {
         inner.port = Some(port);
         inner.model = Some(model.to_string());
         inner.model_source = Some(source.clone());
+        // A fresh spawn ends any restart-in-progress. `wait_ready` clears this on
+        // every path it owns, but it does not own cancellation: if the task
+        // awaiting readiness is dropped between the flag being set and cleared,
+        // the flag would otherwise stay true and `status()` would report
+        // `Starting` forever for a process that is actually dead.
+        inner.restarting = false;
         // New model: the previous model's window no longer applies; it is
         // re-read from /props once this one is ready.
         inner.context_size = None;
@@ -1177,6 +1275,19 @@ impl LlamaSidecar {
     pub async fn wait_ready(&self, timeout: Duration) -> Result<u16> {
         let _startup = self.startup.lock().await;
         let mut deadline = tokio::time::Instant::now() + timeout;
+        // The timeout is a NO-PROGRESS budget, not a total one. A first run
+        // downloads the weights — 3 to 24 GB from Hugging Face depending on the
+        // catalog entry — and on an ordinary connection that alone can outlast
+        // the 3600 s ceiling every caller passes. Failing then reports "timed
+        // out waiting for the local model" at a moment when the download is
+        // healthily progressing, and throws away everything fetched so far.
+        //
+        // llama-server narrates the download and the load on stderr, which
+        // `push_log` feeds into `log_tail`, so a changing tail is a reliable
+        // liveness signal. Every time it moves we extend the budget; the
+        // deadline therefore only bites on a server that has genuinely gone
+        // quiet.
+        let mut last_progress: Option<String> = None;
         loop {
             let (port, dead, tail) = {
                 let mut inner = self.inner.lock().await;
@@ -1195,15 +1306,14 @@ impl LlamaSidecar {
 
             if dead {
                 let tail = log_tail_joined(&tail, 10);
-                if self.retry_with_lower_auto_context(&tail).await? {
-                    deadline = tokio::time::Instant::now() + timeout;
-                    continue;
-                }
-                if self.retry_with_huggingface_fallback(&tail).await? {
-                    deadline = tokio::time::Instant::now() + timeout;
-                    continue;
-                }
-                if self.retry_partial_huggingface_download_once().await? {
+                // Publish "restarting" BEFORE evaluating the retry paths. Each of
+                // them re-takes `inner`, so the lock is released in between, and
+                // that gap is exactly when the GUI's poller used to observe a
+                // terminal Error and abort a recoverable startup.
+                self.inner.lock().await.restarting = true;
+                let retried = self.try_self_heal(&tail).await;
+                self.inner.lock().await.restarting = false;
+                if retried? {
                     deadline = tokio::time::Instant::now() + timeout;
                     continue;
                 }
@@ -1218,16 +1328,103 @@ impl LlamaSidecar {
                 }
                 return Ok(port);
             }
+            // Any movement in the log means the server is still working.
+            let marker = progress_marker(&tail);
+            if last_progress.as_deref() != Some(marker.as_str()) {
+                last_progress = Some(marker);
+                deadline = tokio::time::Instant::now() + timeout;
+            }
+
             if tokio::time::Instant::now() >= deadline {
                 let last = last_log(&tail).unwrap_or_default();
                 self.inner.lock().await.last_error = Some(last.clone());
                 return Err(anyhow!(
-                    "llama-server did not become ready within {}s (last output: {last})",
+                    "llama-server made no progress for {}s (last output: {last})",
                     timeout.as_secs()
                 ));
             }
             tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
         }
+    }
+
+    /// The three self-heal paths, in order, as one unit so `wait_ready` can hold
+    /// the `restarting` flag across all of them. Returns `Ok(true)` when one of
+    /// them respawned the server and the caller should keep waiting.
+    async fn try_self_heal(&self, tail: &str) -> Result<bool> {
+        if self.retry_without_optional_flags(tail).await? {
+            return Ok(true);
+        }
+        if self.retry_with_lower_auto_context(tail).await? {
+            return Ok(true);
+        }
+        if self.retry_with_huggingface_fallback(tail).await? {
+            return Ok(true);
+        }
+        if self.retry_partial_huggingface_download_once().await? {
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Drop optional accelerating flags and respawn, once, when llama-server
+    /// rejected an argument. Process-wide and sticky: binary support does not
+    /// change while we are running, so re-learning it on every spawn would mean
+    /// one guaranteed crash per model switch.
+    async fn retry_without_optional_flags(&self, startup_log: &str) -> Result<bool> {
+        if !looks_like_unsupported_argument(startup_log)
+            || OPTIONAL_FLAGS_DISABLED.load(Ordering::Relaxed)
+        {
+            return Ok(false);
+        }
+        let mut inner = self.inner.lock().await;
+        let Some(model) = inner.model.clone() else {
+            return Ok(false);
+        };
+        let Some(launch_source) = inner.launch_source.clone() else {
+            return Ok(false);
+        };
+        let Some(port) = inner.port else {
+            return Ok(false);
+        };
+        let ctx_size = inner
+            .requested_context_size
+            .unwrap_or_else(default_context_size);
+
+        // Flip the switch BEFORE respawning: `build_args` reads it.
+        OPTIONAL_FLAGS_DISABLED.store(true, Ordering::Relaxed);
+
+        inner.child = None;
+        clear_pidfile();
+        let binary = find_binary().ok_or_else(|| {
+            anyhow!(
+                "llama-server binary not found. It ships with the Biorouter desktop app; for \
+                 CLI-only installs, install llama.cpp (e.g. `brew install llama.cpp`) or set \
+                 BIOROUTER_LLAMACPP_BIN to a llama-server path."
+            )
+        })?;
+        let cache_dir = model_cache_dir();
+        std::fs::create_dir_all(&cache_dir)?;
+        tracing::warn!(
+            "llama-server rejected an optional argument while loading {model}; retrying without \
+             optional acceleration flags"
+        );
+        let child = spawn_child_with_launch_source(
+            &mut inner,
+            &binary,
+            &cache_dir,
+            &model,
+            launch_source,
+            port,
+            ctx_size,
+        )?;
+        inner.child = Some(child);
+        inner.context_size = None;
+        inner.warmed_model = None;
+        push_log(
+            &inner.log_tail,
+            "Retrying without optional acceleration flags after an argument error".to_string(),
+        );
+        Ok(true)
     }
 
     async fn retry_with_lower_auto_context(&self, startup_log: &str) -> Result<bool> {
@@ -1448,7 +1645,17 @@ impl LlamaSidecar {
 
         if had_child && !running {
             finish_log_tasks(&mut inner.log_tasks).await;
-            status.state = SidecarState::Error;
+            // A dead child is only an ERROR once `wait_ready` has ruled out all
+            // three self-heal paths. While it is still deciding, this is a
+            // restart in progress — report it as `Starting`, which every caller
+            // already treats as "keep waiting", so an automatic step-down to a
+            // lower context (or a Hugging Face fallback) is allowed to complete
+            // instead of being aborted by a status poll.
+            status.state = if inner.restarting {
+                SidecarState::Starting
+            } else {
+                SidecarState::Error
+            };
             status.warmed = false;
             status.detail = Some(
                 inner
@@ -1856,6 +2063,132 @@ mod tests {
             32_768,
         );
         assert!(args.join(" ").contains("--reasoning on"));
+    }
+
+    /// The readiness budget is a NO-PROGRESS budget. A first run downloads
+    /// several GB, which outlasts the wall-clock ceiling every caller passes,
+    /// so the marker has to move whenever llama-server narrates anything —
+    /// including a rewritten progress line, which does not change the line
+    /// count.
+    #[test]
+    fn progress_marker_moves_on_new_and_on_rewritten_lines() {
+        let tail: Arc<StdMutex<VecDeque<String>>> = Arc::new(StdMutex::new(VecDeque::new()));
+        let empty = progress_marker(&tail);
+
+        push_log(&tail, "downloading 10%".to_string());
+        let first = progress_marker(&tail);
+        assert_ne!(empty, first, "a first line must count as progress");
+
+        // A new line.
+        push_log(&tail, "loading model".to_string());
+        let second = progress_marker(&tail);
+        assert_ne!(first, second, "a new line must count as progress");
+
+        // Same line count, different content — llama.cpp's download percentage
+        // overwrites one line, and a count-only marker would read that as a
+        // stall and time out a healthy multi-GB download.
+        {
+            let mut guard = tail.lock().unwrap();
+            let last = guard.back_mut().unwrap();
+            *last = "loading model (42%)".to_string();
+        }
+        let third = progress_marker(&tail);
+        assert_ne!(
+            second, third,
+            "a rewritten last line must count as progress"
+        );
+
+        // A genuinely quiet server yields a stable marker, which is what lets
+        // the deadline still fire on a wedged process.
+        assert_eq!(third, progress_marker(&tail), "no change must be stable");
+    }
+
+    #[test]
+    fn build_args_enables_self_speculative_decoding_by_default() {
+        let _guard = env_lock::lock_env([("LLAMACPP_SPEC_TYPE", None::<&str>)]);
+        OPTIONAL_FLAGS_DISABLED.store(false, Ordering::Relaxed);
+        let args = build_args(
+            &LaunchSource::HuggingFace("owner/repo:Q4_K_M".to_string()),
+            "m",
+            11543,
+            32_768,
+        );
+        // Measured 4.4x on agentic (repetition-heavy) generation with no
+        // free-text cost; see the table in `build_args`. It must be ON by
+        // default — shipping it behind an opt-in nobody sets is the same as
+        // not shipping it.
+        assert!(
+            args.join(" ")
+                .contains(&format!("--spec-type {DEFAULT_SPEC_TYPE}")),
+            "expected default --spec-type in {args:?}"
+        );
+    }
+
+    #[test]
+    fn build_args_omits_spec_type_when_disabled() {
+        // "none" is the documented escape hatch for a platform or model family
+        // that regresses. It must emit NO flag at all, not `--spec-type none`.
+        for value in ["none", "NONE", ""] {
+            let _guard = env_lock::lock_env([("LLAMACPP_SPEC_TYPE", Some(value))]);
+            OPTIONAL_FLAGS_DISABLED.store(false, Ordering::Relaxed);
+            let args = build_args(
+                &LaunchSource::HuggingFace("owner/repo:Q4_K_M".to_string()),
+                "m",
+                11543,
+                32_768,
+            );
+            assert!(
+                !args.iter().any(|a| a == "--spec-type"),
+                "expected no --spec-type for {value:?}, got {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_args_drops_spec_type_once_the_binary_has_rejected_it() {
+        let _guard = env_lock::lock_env([("LLAMACPP_SPEC_TYPE", None::<&str>)]);
+        OPTIONAL_FLAGS_DISABLED.store(true, Ordering::Relaxed);
+        let args = build_args(
+            &LaunchSource::HuggingFace("owner/repo:Q4_K_M".to_string()),
+            "m",
+            11543,
+            32_768,
+        );
+        OPTIONAL_FLAGS_DISABLED.store(false, Ordering::Relaxed);
+        assert!(
+            !args.iter().any(|a| a == "--spec-type"),
+            "a rejected flag must not be re-emitted: {args:?}"
+        );
+    }
+
+    #[test]
+    fn unsupported_argument_is_told_apart_from_a_memory_failure() {
+        // The distinction decides WHICH self-heal runs: dropping the optional
+        // flag, or stepping the context down. Confusing them means a pin bump
+        // that renames a flag silently halves the user's context window
+        // instead of restoring inference.
+        for log in [
+            "error: invalid argument: --spec-type",
+            "error: unknown argument: --spec-type",
+            "error while handling argument \"--spec-type\"",
+            "invalid value for --spec-type",
+        ] {
+            assert!(looks_like_unsupported_argument(log), "should match: {log}");
+            assert!(
+                !looks_like_memory_failure(log),
+                "argv error must not read as a memory failure: {log}"
+            );
+        }
+        for log in [
+            "ggml_backend_metal_buffer: failed to allocate buffer",
+            "llama_model_load: error loading model: out of memory",
+        ] {
+            assert!(
+                !looks_like_unsupported_argument(log),
+                "memory failure must not read as an argv error: {log}"
+            );
+            assert!(looks_like_memory_failure(log), "should match: {log}");
+        }
     }
 
     #[test]

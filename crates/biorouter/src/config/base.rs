@@ -781,10 +781,37 @@ impl Config {
         }
 
         let values = self.load()?;
-        values
+        let raw = values
             .get(key)
-            .ok_or_else(|| ConfigError::NotFound(key.to_string()))
-            .and_then(|v| Ok(serde_yaml::from_value(v.clone())?))
+            .ok_or_else(|| ConfigError::NotFound(key.to_string()))?;
+
+        match serde_yaml::from_value::<T>(raw.clone()) {
+            Ok(parsed) => Ok(parsed),
+            // The env branch above repairs `"11543"` into a number before
+            // deserializing; this branch did not, and the asymmetry was a silent
+            // data-loss bug. The settings UI writes every field as a quoted
+            // string, so `LLAMACPP_PORT: '11543'`, `LLAMACPP_CONTEXT_SIZE: '0'`
+            // and `LLAMACPP_ENABLE_THINKING: 'false'` all land quoted; a typed
+            // `get_param::<usize>()` then failed and every caller swallowed the
+            // error with `.ok()` or `.unwrap_or(default)`. The setting appeared
+            // to save and did nothing.
+            //
+            // Repairing on READ (rather than only on write) is what heals the
+            // configs already on disk — a write-side fix alone leaves them inert
+            // until the user retypes each field.
+            //
+            // Deliberately only on the failure path: a key that already
+            // deserializes correctly never reaches here, so a string key whose
+            // value merely looks numeric (`AWS_PROFILE: '12345'`) still parses
+            // as a string on the first attempt and is untouched.
+            Err(direct_err) => {
+                let Some(text) = raw.as_str() else {
+                    return Err(direct_err.into());
+                };
+                let coerced = Self::parse_env_value(text)?;
+                serde_json::from_value(coerced).map_err(|_| direct_err.into())
+            }
+        }
     }
 
     /// Set a configuration value in the config file (non-secret).
@@ -1215,6 +1242,59 @@ mod tests {
         assert_eq!(value, "env_value");
 
         Ok(())
+    }
+
+    /// The settings UI writes every provider field as a quoted string, so a
+    /// numeric or boolean key lands on disk as `LLAMACPP_PORT: '11543'`. A typed
+    /// `get_param::<usize>()` used to fail on that, and every caller swallowed
+    /// the error with `.ok()` / `.unwrap_or(default)` — the setting appeared to
+    /// save and did nothing. The env-var branch of `get_param` had always
+    /// repaired this via `parse_env_value`; only the config-FILE branch did not.
+    #[test]
+    #[serial]
+    fn quoted_scalars_in_the_config_file_still_parse_as_their_real_type() -> Result<(), ConfigError>
+    {
+        let config = new_test_config();
+
+        // Exactly the four shapes the Llama Server settings pane writes.
+        config.set_param("LLAMACPP_PORT", "11543")?;
+        config.set_param("LLAMACPP_CONTEXT_SIZE", "0")?;
+        config.set_param("LLAMACPP_TIMEOUT", "600")?;
+        config.set_param("LLAMACPP_ENABLE_THINKING", "false")?;
+
+        assert_eq!(config.get_param::<usize>("LLAMACPP_PORT")?, 11543);
+        assert_eq!(config.get_param::<usize>("LLAMACPP_CONTEXT_SIZE")?, 0);
+        assert_eq!(config.get_param::<u64>("LLAMACPP_TIMEOUT")?, 600);
+        assert!(!config.get_param::<bool>("LLAMACPP_ENABLE_THINKING")?);
+
+        Ok(())
+    }
+
+    /// The repair above must run ONLY on the failure path. A string-typed key
+    /// whose value merely looks numeric has to survive as a string — coercing it
+    /// would corrupt real settings (an AWS profile named "12345", a numeric
+    /// account id, a version string).
+    #[test]
+    #[serial]
+    fn a_string_key_that_looks_numeric_is_not_coerced() -> Result<(), ConfigError> {
+        let config = new_test_config();
+        config.set_param("AWS_PROFILE", "12345")?;
+        config.set_param("SOME_VERSION", "2024")?;
+
+        assert_eq!(config.get_param::<String>("AWS_PROFILE")?, "12345");
+        assert_eq!(config.get_param::<String>("SOME_VERSION")?, "2024");
+        Ok(())
+    }
+
+    /// A genuinely unparseable value must report the ORIGINAL type error, not a
+    /// confusing secondary parse failure — the caller needs to know the key was
+    /// the wrong type, not that some fallback parser also gave up.
+    #[test]
+    #[serial]
+    fn an_uncoercible_value_still_errors() {
+        let config = new_test_config();
+        config.set_param("LLAMACPP_PORT", "not-a-port").unwrap();
+        assert!(config.get_param::<usize>("LLAMACPP_PORT").is_err());
     }
 
     #[test]
