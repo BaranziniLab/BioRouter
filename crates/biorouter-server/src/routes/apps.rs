@@ -3624,6 +3624,18 @@ async fn handle_kb_frame(
             let kb = kb_id.clone();
             tokio::spawn(async move {
                 bridge.emit_frame(json!({ "type":"kb_progress", "reqId": req, "stage":"queued" }));
+                let lock_cancel = CancellationToken::new();
+                let _write_guard = match svc.lock_kb_cancellable(&kb, Some(&lock_cancel)).await {
+                    Ok(guard) => guard,
+                    Err(error) => {
+                        bridge.emit_frame(json!({
+                            "type":"kb_result",
+                            "reqId": req,
+                            "error": error.to_string(),
+                        }));
+                        return;
+                    }
+                };
                 bridge
                     .emit_frame(json!({ "type":"kb_progress", "reqId": req, "stage":"digesting" }));
                 match svc.add_raw_source(&kb, input, None).await {
@@ -5625,7 +5637,8 @@ async fn handle_action_required(
     };
 
     agent
-        .handle_confirmation(
+        .handle_confirmation_for_session(
+            session_id,
             id.clone(),
             PermissionConfirmation {
                 principal_type: PrincipalType::Tool,
@@ -8436,6 +8449,39 @@ mod tests {
                 }
             }
             panic!("no kb_result for {req}");
+        }
+
+        #[tokio::test]
+        async fn br_kb_ingest_joins_the_shared_kb_write_lock() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let svc = std::sync::Arc::new(KnowledgeService::new(tmp.path().to_path_buf()));
+            svc.create_base("kbx", "KBX", None).unwrap();
+            let cfg = cfg_with(vec![knowledge_src(&["kbx"], false)], Some("kbx"));
+            let bridge = biorouter_mcp::agent_drafter::control::UiBridge::new();
+            let (mut rx, _tok) = bridge.attach();
+            let existing_writer = svc.lock_kb("kbx").await.unwrap();
+
+            super::super::handle_kb_frame(
+                &bridge,
+                &svc,
+                Some(&cfg),
+                KbCaller::new(true, Default::default()),
+                "ingest",
+                &serde_json::json!({ "kb_id": "kbx", "text": "serialized source" }),
+                "locked-ingest",
+            )
+            .await;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            while let Ok(frame) = rx.try_recv() {
+                assert_ne!(
+                    frame["type"], "kb_result",
+                    "ingest completed while another writer retained the KB lock: {frame}"
+                );
+            }
+
+            drop(existing_writer);
+            let result = await_kb_result(&mut rx, "locked-ingest").await;
+            assert!(result.get("error").is_none(), "{result}");
         }
 
         /// CP3, and the reason a manifest grant is not a privacy control: the

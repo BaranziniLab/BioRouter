@@ -76,6 +76,7 @@ pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
     ("BEDROCK_INITIAL_RETRY_INTERVAL_MS", "retry policy"),
     ("BEDROCK_BACKOFF_MULTIPLIER", "retry policy"),
     ("BEDROCK_MAX_RETRY_INTERVAL_MS", "retry policy"),
+    ("BEDROCK_OPERATION_TIMEOUT_SECS", "transport timeout"),
 ];
 
 /// The files whose `get_param` reads the scan covers: every provider file Task
@@ -170,10 +171,10 @@ mod tests {
         // of the two lists. Adding a config read to any of them fails this test
         // until someone decides whether it determines capability. That is the
         // checkable list: it does not depend on anyone remembering a rule.
-        let scanned = scan_get_param_keys(); // 22 today
+        let scanned = scan_get_param_keys(); // 23 today
         assert_eq!(
             scanned.len(),
-            22,
+            23,
             "the tier-input files' config surface changed: {scanned:?}"
         );
         for key in &scanned {

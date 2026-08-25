@@ -178,7 +178,7 @@ fn parse_header(header: &str) -> (ChangeKind, String) {
 }
 
 pub struct Txn {
-    pub branch: String,
+    pub(crate) branch: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,6 +259,9 @@ impl std::error::Error for KnowledgeWriteFailure {}
 
 impl GitRepo {
     pub fn begin_txn(&self, label: &str) -> Result<Txn> {
+        if !matches!(self.inner.head()?.shorthand(), Some("main" | "master")) {
+            anyhow::bail!("knowledge repository is not ready to begin a transaction");
+        }
         let id = uuid::Uuid::new_v4();
         let branch = format!("txn/{label}-{id}", label = slugify(label));
         let head = self.inner.head()?.peel_to_commit()?;
@@ -267,7 +270,8 @@ impl GitRepo {
         Ok(Txn { branch })
     }
 
-    pub fn commit_on_txn(&self, _txn: &Txn, message: &str) -> Result<String> {
+    pub fn commit_on_txn(&self, txn: &Txn, message: &str) -> Result<String> {
+        self.require_txn_head(&txn.branch)?;
         // Same as commit_all but caller already on the txn branch.
         let mut index = self.inner.index()?;
         stage_all(&mut index)?;
@@ -343,6 +347,7 @@ impl GitRepo {
         summary: &str,
         delta: Option<&str>,
     ) -> Result<String> {
+        self.require_txn_head(&txn.branch)?;
         // Squash-merge txn branch onto main as one commit.
         let main = self
             .inner
@@ -391,6 +396,7 @@ impl GitRepo {
     }
 
     pub fn abort_txn(&self, txn: &Txn) -> Result<()> {
+        self.require_txn_head(&txn.branch)?;
         let main = self
             .inner
             .find_branch("main", git2::BranchType::Local)
@@ -411,6 +417,57 @@ impl GitRepo {
         self.inner
             .find_branch(&txn.branch, git2::BranchType::Local)?
             .delete()?;
+        Ok(())
+    }
+
+    /// Recover a transaction left checked out by a process crash. A live
+    /// transaction retains the KB file lock, so reaching this method after
+    /// acquiring that lock proves there is no live owner; no age heuristic or
+    /// timeout is needed.
+    pub fn recover_orphaned_txn(&self) -> Result<bool> {
+        let head = self.inner.head()?;
+        let checked_out = head
+            .name()
+            .and_then(|name| name.strip_prefix("refs/heads/txn/"))
+            .map(|suffix| format!("txn/{suffix}"));
+        drop(head);
+        let mut recovered = false;
+        if let Some(branch) = checked_out {
+            self.abort_txn(&Txn { branch })?;
+            recovered = true;
+        }
+
+        let orphaned = self
+            .inner
+            .branches(Some(git2::BranchType::Local))?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|(branch, _)| branch.name().ok().flatten().map(str::to_string))
+            .filter(|branch| branch.starts_with("txn/"))
+            .collect::<Vec<_>>();
+        for branch in orphaned {
+            self.inner
+                .find_branch(&branch, git2::BranchType::Local)?
+                .delete()?;
+            recovered = true;
+        }
+        Ok(recovered)
+    }
+
+    fn require_txn_head(&self, branch: &str) -> Result<()> {
+        if branch
+            .strip_prefix("txn/")
+            .is_none_or(|suffix| suffix.is_empty())
+        {
+            anyhow::bail!("knowledge transaction is not active");
+        }
+        let expected = format!("refs/heads/{branch}");
+        let head = self.inner.head()?;
+        if head.name() != Some(expected.as_str()) {
+            anyhow::bail!("knowledge transaction is not active");
+        }
+        self.inner
+            .find_branch(branch, git2::BranchType::Local)
+            .map_err(|_| anyhow::anyhow!("knowledge transaction is not active"))?;
         Ok(())
     }
 
@@ -577,7 +634,8 @@ impl GitRepo {
 impl GitRepo {
     /// Commit on the currently-checked-out branch. Used by store::write_page
     /// when a txn is active and the caller has already switched HEAD.
-    pub fn commit_on_txn_in_progress(&self, message: &str) -> Result<String> {
+    pub fn commit_on_txn_in_progress(&self, branch: &str, message: &str) -> Result<String> {
+        self.require_txn_head(branch)?;
         let mut index = self.inner.index()?;
         stage_all(&mut index)?;
         index.write()?;
@@ -704,6 +762,27 @@ mod tests {
             !dir.path().join("doom.md").exists(),
             "working tree restored"
         );
+    }
+
+    #[test]
+    fn transaction_mutations_require_a_txn_branch_and_exact_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = GitRepo::init(dir.path()).unwrap();
+        std::fs::write(dir.path().join("seed.md"), "seed").unwrap();
+        repo.commit_all(ChangeKind::Manual, "seed", None).unwrap();
+        let txn = repo.begin_txn("guarded").unwrap();
+
+        repo.inner.set_head("refs/heads/main").unwrap();
+        assert!(repo.commit_on_txn(&txn, "wrong head").is_err());
+        assert!(repo.abort_txn(&txn).is_err());
+        assert!(repo
+            .commit_on_txn_in_progress("main", "caller branch")
+            .is_err());
+
+        repo.inner
+            .set_head(&format!("refs/heads/{}", txn.branch))
+            .unwrap();
+        repo.abort_txn(&txn).unwrap();
     }
 
     /// Aborting must not silently delete the newest pages **from the graph**.

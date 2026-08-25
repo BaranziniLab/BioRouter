@@ -300,7 +300,7 @@ pub fn submit_credentials(id: &str, values: HashMap<String, String>) -> SubmitOu
                 }
                 let reason = format!("Could not store `{key}` in the credential store: {e}");
                 CredentialRequests::global().forget(id);
-                PendingUserActions::global().resolve(
+                PendingUserActions::global().resolve_trusted_sessionless_secret(
                     id,
                     UserActionOutcome::Failed {
                         reason: reason.clone(),
@@ -324,7 +324,7 @@ pub fn submit_credentials(id: &str, values: HashMap<String, String>) -> SubmitOu
         }
     }
 
-    match PendingUserActions::global().resolve(
+    match PendingUserActions::global().resolve_trusted_sessionless_secret(
         id,
         UserActionOutcome::SecretsConfigured {
             configured_keys: configured_keys.clone(),
@@ -345,7 +345,8 @@ pub fn submit_credentials(id: &str, values: HashMap<String, String>) -> SubmitOu
 /// Dismiss a parked credential card without values.
 pub fn cancel_credentials(id: &str) -> bool {
     CredentialRequests::global().forget(id);
-    PendingUserActions::global().resolve(id, UserActionOutcome::Cancelled)
+    PendingUserActions::global()
+        .resolve_trusted_sessionless_secret(id, UserActionOutcome::Cancelled)
         == ResolveOutcome::Delivered
 }
 
@@ -431,7 +432,7 @@ mod tests {
         assert!(registry.is_pending(&id), "the install must still be parked");
 
         CredentialRequests::global().forget(&id);
-        registry.resolve(&id, UserActionOutcome::Cancelled);
+        registry.resolve_trusted_sessionless_secret(&id, UserActionOutcome::Cancelled);
         drop(parked);
     }
 
@@ -476,7 +477,7 @@ mod tests {
         );
 
         CredentialRequests::global().forget(&id_b);
-        registry.resolve(&id_b, UserActionOutcome::Cancelled);
+        registry.resolve_trusted_sessionless_secret(&id_b, UserActionOutcome::Cancelled);
         drop(first);
         drop(second);
     }

@@ -16,6 +16,7 @@ use super::{
     ollama::OllamaProvider,
     openai::OpenAiProvider,
     openrouter::OpenRouterProvider,
+    provider_binding::ProviderRestoreBinding,
     provider_registry::ProviderRegistry,
     snowflake::SnowflakeProvider,
     tetrate::TetrateProvider,
@@ -203,21 +204,27 @@ async fn create_lead_worker_from_env(
 
     let worker_model_config = create_worker_model_config(default_model)?;
 
-    create_lead_worker_from_persisted(
-        PersistedProviderConfig::LeadWorkerV2 {
-            lead_provider: lead_provider_name,
-            lead_model: lead_model_config,
-            worker_provider: default_provider_name.to_string(),
-            worker_model: worker_model_config,
-            lead_turns,
-            failure_threshold,
-            fallback_turns,
-            config_generation: uuid::Uuid::new_v4().to_string(),
-            routing_state: LeadWorkerRoutingState::default(),
-        },
-        get_registry().await,
+    let registry = get_registry().await;
+    let lead_provider = create_provider_from_binding(
+        ProviderRestoreBinding::registry(lead_provider_name, lead_model_config),
+        registry,
     )
-    .await
+    .await?;
+    let worker_provider = create_provider_from_binding(
+        ProviderRestoreBinding::registry(default_provider_name.to_string(), worker_model_config),
+        registry,
+    )
+    .await?;
+
+    Ok(Arc::new(LeadWorkerProvider::new_with_settings_and_state(
+        lead_provider,
+        worker_provider,
+        lead_turns,
+        failure_threshold,
+        fallback_turns,
+        uuid::Uuid::new_v4().to_string(),
+        LeadWorkerRoutingState::default(),
+    )))
 }
 
 async fn create_lead_worker_from_persisted(
@@ -225,10 +232,8 @@ async fn create_lead_worker_from_persisted(
     registry: &RwLock<ProviderRegistry>,
 ) -> Result<Arc<dyn Provider>> {
     let PersistedProviderConfig::LeadWorkerV2 {
-        lead_provider,
-        lead_model,
-        worker_provider,
-        worker_model,
+        lead,
+        worker,
         lead_turns,
         failure_threshold,
         fallback_turns,
@@ -250,25 +255,8 @@ async fn create_lead_worker_from_persisted(
         "persisted lead/worker fallback exceeds configured fallback turns"
     );
 
-    let (lead_constructor, worker_constructor) = {
-        let guard = registry.read().unwrap();
-        let lead = guard
-            .entries
-            .get(&lead_provider)
-            .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", lead_provider))?
-            .constructor
-            .clone();
-        let worker = guard
-            .entries
-            .get(&worker_provider)
-            .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", worker_provider))?
-            .constructor
-            .clone();
-        (lead, worker)
-    };
-
-    let lead_provider = lead_constructor(lead_model).await?;
-    let worker_provider = worker_constructor(worker_model).await?;
+    let lead_provider = create_provider_from_binding(lead, registry).await?;
+    let worker_provider = create_provider_from_binding(worker, registry).await?;
 
     Ok(Arc::new(LeadWorkerProvider::new_with_settings_and_state(
         lead_provider,
@@ -281,13 +269,72 @@ async fn create_lead_worker_from_persisted(
     )))
 }
 
+async fn create_provider_from_binding(
+    binding: ProviderRestoreBinding,
+    registry: &RwLock<ProviderRegistry>,
+) -> Result<Arc<dyn Provider>> {
+    binding.validate()?;
+    match binding {
+        ProviderRestoreBinding::Registry {
+            provider_name,
+            model,
+        } => {
+            let constructor = registry
+                .read()
+                .unwrap()
+                .entries
+                .get(&provider_name)
+                .ok_or_else(|| anyhow::anyhow!("Unknown provider: {provider_name}"))?
+                .constructor
+                .clone();
+            constructor(model).await
+        }
+        ProviderRestoreBinding::VersaAzure {
+            model,
+            endpoint,
+            deployment,
+            api_version,
+            credential_source,
+        } => Ok(Arc::new(VersaAzureProvider::from_resolved(
+            model,
+            endpoint,
+            deployment,
+            api_version,
+            credential_source,
+        )?)),
+        #[cfg(feature = "aws-providers")]
+        ProviderRestoreBinding::VersaBedrock {
+            model,
+            endpoint,
+            region,
+            retry,
+            operation_timeout_secs,
+        } => Ok(Arc::new(
+            VersaBedrockProvider::from_resolved(
+                model,
+                endpoint,
+                region,
+                retry,
+                operation_timeout_secs,
+            )
+            .await?,
+        )),
+        #[cfg(not(feature = "aws-providers"))]
+        ProviderRestoreBinding::VersaBedrock { .. } => {
+            anyhow::bail!("Versa Bedrock support is not available in this build")
+        }
+        ProviderRestoreBinding::Codex { model, command } => {
+            Ok(Arc::new(CodexProvider::from_resolved(model, command)?))
+        }
+        ProviderRestoreBinding::ClaudeCode { model, command } => {
+            Ok(Arc::new(ClaudeCodeProvider::from_resolved(model, command)?))
+        }
+    }
+}
+
 fn create_worker_model_config(default_model: &ModelConfig) -> Result<ModelConfig> {
-    let mut worker_config = ModelConfig::new_or_fail(&default_model.model_name)
-        .with_context_limit(default_model.context_limit)
-        .with_temperature(default_model.temperature)
-        .with_max_tokens(default_model.max_tokens)
-        .with_toolshim(default_model.toolshim)
-        .with_toolshim_model(default_model.toolshim_model.clone());
+    let mut worker_config =
+        crate::providers::lead_worker::model_config_without_restore_marker(default_model.clone());
 
     let global_config = crate::config::Config::global();
 
@@ -390,6 +437,10 @@ pub(crate) mod tests {
                 false,
             );
         }))
+    }
+
+    fn restore_test_binding(provider_name: &str, model_name: &str) -> ProviderRestoreBinding {
+        ProviderRestoreBinding::registry(provider_name.to_string(), restore_test_model(model_name))
     }
 
     async fn cold_restore(
@@ -894,10 +945,8 @@ pub(crate) mod tests {
         ] {
             let original = create_lead_worker_from_persisted(
                 PersistedProviderConfig::LeadWorkerV2 {
-                    lead_provider: "versa_azure".into(),
-                    lead_model: restore_test_model("gpt-5.2"),
-                    worker_provider: worker_provider.into(),
-                    worker_model: restore_test_model(worker_model),
+                    lead: restore_test_binding("versa_azure", "gpt-5.2"),
+                    worker: restore_test_binding(worker_provider, worker_model),
                     lead_turns: 4,
                     failure_threshold: 3,
                     fallback_turns: 2,
@@ -927,13 +976,13 @@ pub(crate) mod tests {
                     .unwrap()
                     .unwrap();
             let PersistedProviderConfig::LeadWorkerV2 {
-                lead_provider,
-                worker_provider: restored_worker,
+                lead,
+                worker,
                 config_generation,
                 ..
             } = restored_config;
-            assert_eq!(lead_provider, "versa_azure");
-            assert_eq!(restored_worker, worker_provider);
+            assert_eq!(lead.provider_name(), "versa_azure");
+            assert_eq!(worker.provider_name(), worker_provider);
             assert_eq!(config_generation, format!("static-{worker_provider}"));
 
             let restored = restored.as_lead_worker().unwrap();
@@ -963,10 +1012,8 @@ pub(crate) mod tests {
             ] {
                 let parent = create_lead_worker_from_persisted(
                     PersistedProviderConfig::LeadWorkerV2 {
-                        lead_provider: lead_provider.into(),
-                        lead_model: restore_test_model(lead_model),
-                        worker_provider: worker_provider.into(),
-                        worker_model: restore_test_model(worker_model),
+                        lead: restore_test_binding(lead_provider, lead_model),
+                        worker: restore_test_binding(worker_provider, worker_model),
                         lead_turns: 2,
                         failure_threshold: 2,
                         fallback_turns: 2,
@@ -1040,10 +1087,8 @@ pub(crate) mod tests {
         ] {
             let original = create_lead_worker_from_persisted(
                 PersistedProviderConfig::LeadWorkerV2 {
-                    lead_provider: "versa_azure".into(),
-                    lead_model: restore_test_model("gpt-5.2"),
-                    worker_provider: worker_provider.into(),
-                    worker_model: restore_test_model(worker_model),
+                    lead: restore_test_binding("versa_azure", "gpt-5.2"),
+                    worker: restore_test_binding(worker_provider, worker_model),
                     lead_turns: 2,
                     failure_threshold: 2,
                     fallback_turns: 2,
@@ -1087,10 +1132,8 @@ pub(crate) mod tests {
         ] {
             let original = create_lead_worker_from_persisted(
                 PersistedProviderConfig::LeadWorkerV2 {
-                    lead_provider: "versa_azure".into(),
-                    lead_model: restore_test_model("gpt-5.2"),
-                    worker_provider: worker_provider.into(),
-                    worker_model: restore_test_model(worker_model),
+                    lead: restore_test_binding("versa_azure", "gpt-5.2"),
+                    worker: restore_test_binding(worker_provider, worker_model),
                     lead_turns: 2,
                     failure_threshold: 2,
                     fallback_turns: 3,
@@ -1183,6 +1226,44 @@ pub(crate) mod tests {
 
         let result = create_worker_model_config(&default_model).unwrap();
         assert_eq!(result.context_limit, Some(expected_limit));
+    }
+
+    #[test]
+    fn worker_model_preserves_every_field_except_the_restore_marker_and_context_override() {
+        let _guard = env_lock::lock_env([
+            ("BIOROUTER_WORKER_CONTEXT_LIMIT", Some("64000")),
+            ("BIOROUTER_CONTEXT_LIMIT", None),
+        ]);
+        let mut default_model = restore_test_model("worker-model");
+        default_model.temperature = Some(0.4);
+        default_model.max_tokens = Some(4_096);
+        default_model.toolshim = true;
+        default_model.toolshim_model = Some("tool-model".into());
+        default_model.fast_model = Some("fast-model".into());
+        default_model.reasoning_effort = Some(crate::agents::effort::ReasoningEffort::Deep);
+        default_model.request_params = Some(std::collections::HashMap::from([
+            ("keep".into(), serde_json::json!({"nested": true})),
+            (
+                crate::providers::provider_binding::RESTORE_CONFIG_KEY.into(),
+                serde_json::json!({"type": "old"}),
+            ),
+        ]));
+
+        let worker = create_worker_model_config(&default_model).unwrap();
+        assert_eq!(worker.context_limit, Some(64_000));
+        assert_eq!(worker.temperature, default_model.temperature);
+        assert_eq!(worker.max_tokens, default_model.max_tokens);
+        assert_eq!(worker.toolshim, default_model.toolshim);
+        assert_eq!(worker.toolshim_model, default_model.toolshim_model);
+        assert_eq!(worker.fast_model, default_model.fast_model);
+        assert_eq!(worker.reasoning_effort, default_model.reasoning_effort);
+        assert_eq!(
+            worker.request_params,
+            Some(std::collections::HashMap::from([(
+                "keep".into(),
+                serde_json::json!({"nested": true}),
+            )]))
+        );
     }
 
     #[tokio::test]

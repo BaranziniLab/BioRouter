@@ -450,18 +450,43 @@ const WATCH_MAX_SESSIONS: usize = 32;
 const WATCH_RESULT_MAX_CHARS: usize = 12_000;
 const WATCH_RESULTS_TOTAL_MAX_CHARS: usize = 48_000;
 
-fn bounded_watch_reason(reason: String) -> String {
+struct CollectionClaim {
+    handle: std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>,
+    generation: u64,
+}
+
+impl CollectionClaim {
+    fn commit(&self) -> bool {
+        self.handle
+            .mark_current_result_collected_if_generation(self.generation)
+    }
+}
+
+struct RenderedWatchReason {
+    text: String,
+    complete: bool,
+}
+
+fn bounded_watch_reason(reason: String) -> RenderedWatchReason {
     if reason.chars().count() <= WATCH_RESULT_MAX_CHARS {
-        return reason;
+        return RenderedWatchReason {
+            text: reason,
+            complete: true,
+        };
     }
     let mut bounded: String = reason.chars().take(WATCH_RESULT_MAX_CHARS).collect();
     bounded.push_str(
         "\n… result shortened in this watch; use workspace_read_conversation for the full text",
     );
-    bounded
+    RenderedWatchReason {
+        text: bounded,
+        complete: false,
+    }
 }
 
-fn background_watch_reason(result: &crate::agents::subagent_result::SubagentResult) -> String {
+fn background_watch_reason(
+    result: &crate::agents::subagent_result::SubagentResult,
+) -> RenderedWatchReason {
     bounded_watch_reason(format!(
         "background subagent {}:\n{}",
         result.status.as_str(),
@@ -498,13 +523,48 @@ fn retained_background_result_is_current(
     handle.result_is_current()
 }
 
+fn current_background_result(
+    handle: &std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>,
+) -> Option<(
+    crate::agents::subagent_result::SubagentResult,
+    CollectionClaim,
+)> {
+    let generation = handle.child_turn_generation();
+    if handle.is_running()
+        || handle.continuation_pending()
+        || !retained_background_result_is_current(handle)
+    {
+        return None;
+    }
+    let result = handle.result()?;
+    if handle.child_turn_generation() != generation
+        || handle.is_running()
+        || handle.continuation_pending()
+        || !retained_background_result_is_current(handle)
+    {
+        return None;
+    }
+    Some((
+        result,
+        CollectionClaim {
+            handle: std::sync::Arc::clone(handle),
+            generation,
+        },
+    ))
+}
+
+struct ConversationProjection {
+    body: String,
+    collection: Option<CollectionClaim>,
+}
+
 fn read_conversation_body(
     caller_session_id: &str,
     args: &WorkspaceReadParams,
     view: &str,
     session: &crate::session::session_manager::Session,
     messages: &[crate::conversation::message::Message],
-) -> Result<String, String> {
+) -> Result<ConversationProjection, String> {
     // BR-45 range: slice from the named msg_uid (message ids ARE the durable
     // uids — #41 add_message_adopting_uid), then apply `last` as a tail.
     let from_start = match &args.from_msg_uid {
@@ -520,18 +580,25 @@ fn read_conversation_body(
         _ => ranged,
     };
 
-    match view {
-        "tool_calls" => Ok(project_tool_calls(tail)),
-        "summary" => Ok(read_conversation_summary(
-            caller_session_id,
-            &args.session_id,
-            session,
-            messages,
-        )),
-        "spawn_context" => project_spawn_context(messages)
-            .ok_or_else(|| "this session has no recorded spawn context".to_string()),
-        _ => Ok(project_transcript(tail)),
-    }
+    let projected = match view {
+        "tool_calls" => ConversationProjection {
+            body: project_tool_calls(tail),
+            collection: None,
+        },
+        "summary" => {
+            read_conversation_summary(caller_session_id, &args.session_id, session, messages)
+        }
+        "spawn_context" => ConversationProjection {
+            body: project_spawn_context(messages)
+                .ok_or_else(|| "this session has no recorded spawn context".to_string())?,
+            collection: None,
+        },
+        _ => ConversationProjection {
+            body: project_transcript(tail),
+            collection: None,
+        },
+    };
+    Ok(projected)
 }
 
 fn read_conversation_summary(
@@ -539,26 +606,36 @@ fn read_conversation_summary(
     target_session_id: &str,
     session: &crate::session::session_manager::Session,
     messages: &[crate::conversation::message::Message],
-) -> String {
+) -> ConversationProjection {
     let mut summary = project_summary(session, messages);
     let Some(handle) = background_subagent_for(caller_session_id, target_session_id) else {
-        return summary;
+        return ConversationProjection {
+            body: summary,
+            collection: None,
+        };
     };
-    let newer_turn_is_active = workspace_services::get()
-        .as_ref()
-        .is_some_and(|services| services.is_turn_active(target_session_id));
     if handle.is_running() {
         summary.push_str(&format!(
             "\n\nBackground subagent is still running ({}s elapsed).",
             handle.elapsed().as_secs()
         ));
-    } else if !newer_turn_is_active && retained_background_result_is_current(&handle) {
-        if let Some(result) = handle.result() {
-            summary.push_str("\n\n--- Background result ---\n");
-            summary.push_str(&result.to_agent_text());
-        }
+        return ConversationProjection {
+            body: summary,
+            collection: None,
+        };
     }
-    summary
+    let Some((result, collection)) = current_background_result(&handle) else {
+        return ConversationProjection {
+            body: summary,
+            collection: None,
+        };
+    };
+    summary.push_str("\n\n--- Background result ---\n");
+    summary.push_str(&result.to_agent_text());
+    ConversationProjection {
+        body: summary,
+        collection: Some(collection),
+    }
 }
 
 // This cap is model-facing pagination, not the production large-response
@@ -584,33 +661,6 @@ fn clip_read_conversation_body(body: String, max_chars: usize) -> (String, bool)
     )
 }
 
-fn collect_full_read_result(
-    caller_session_id: &str,
-    args: &WorkspaceReadParams,
-    view: &str,
-    body_fully_returned: bool,
-) {
-    let result_bearing_view = view == "summary"
-        || (view == "transcript" && args.last.is_none() && args.from_msg_uid.is_none());
-    if !body_fully_returned || !result_bearing_view {
-        return;
-    }
-    let Some(handle) = background_subagent_for(caller_session_id, &args.session_id) else {
-        return;
-    };
-    let completed_generation = handle.child_turn_generation();
-    let services = workspace_services::get();
-    let newer_turn_is_active = services
-        .as_ref()
-        .is_some_and(|services| services.is_turn_active(&args.session_id));
-    let latest_generation_is_known_finished = retained_background_result_is_current(&handle)
-        || services.as_ref().is_some_and(|_| !newer_turn_is_active);
-    if !handle.is_running() && !handle.continuation_pending() && latest_generation_is_known_finished
-    {
-        handle.mark_collected_if_generation(completed_generation);
-    }
-}
-
 struct WatchedBackground {
     handle: std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>,
     child_generation_at_subscribe: u64,
@@ -619,10 +669,31 @@ struct WatchedBackground {
 struct WatchedCompletion {
     id: String,
     reason: String,
-    collection: Option<(
-        std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>,
-        u64,
-    )>,
+    collection: Option<CollectionClaim>,
+}
+
+impl WatchedCompletion {
+    fn lifecycle(id: String, reason: String) -> Self {
+        let reason = bounded_watch_reason(reason);
+        Self {
+            id,
+            reason: reason.text,
+            collection: None,
+        }
+    }
+
+    fn background(
+        id: String,
+        result: &crate::agents::subagent_result::SubagentResult,
+        collection: CollectionClaim,
+    ) -> Self {
+        let reason = background_watch_reason(result);
+        Self {
+            id,
+            reason: reason.text,
+            collection: reason.complete.then_some(collection),
+        }
+    }
 }
 
 struct ReplacementWatchState {
@@ -691,29 +762,18 @@ impl ReplacementWatchState {
 struct ReplacementEventWatch {
     state: ReplacementWatchState,
     background_handle: Option<std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>>,
-    replacement_generation: Option<u64>,
 }
 
 impl ReplacementEventWatch {
     fn completion(&self, id: String, reason: String) -> WatchedCompletion {
-        let collection = self
-            .background_handle
-            .as_ref()
-            .zip(self.replacement_generation)
-            .map(|(handle, generation)| (std::sync::Arc::clone(handle), generation));
-        WatchedCompletion {
-            id,
-            reason,
-            collection,
-        }
+        WatchedCompletion::lifecycle(id, reason)
     }
 }
 
 enum BackgroundWatchPlan {
     Completed {
-        reason: String,
-        handle: std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>,
-        generation: u64,
+        result: crate::agents::subagent_result::SubagentResult,
+        collection: CollectionClaim,
     },
     Events(ReplacementEventWatch),
 }
@@ -732,27 +792,20 @@ async fn prepare_background_watch(
                 unscoped_terminal: None,
             },
             background_handle: None,
-            replacement_generation: None,
         }));
     };
 
     let handle = background.handle;
-    let result = tokio::select! {
+    let _result = tokio::select! {
         biased;
         () = stop.cancelled() => return None,
         result = handle.wait_until_complete() => result,
     };
-    let completed_generation = handle.child_turn_generation();
-    if retained_background_result_is_current(&handle) {
-        return Some(BackgroundWatchPlan::Completed {
-            reason: background_watch_reason(&result),
-            handle,
-            generation: completed_generation,
-        });
+    if let Some((result, collection)) = current_background_result(&handle) {
+        return Some(BackgroundWatchPlan::Completed { result, collection });
     }
 
     let superseded_turn_id = handle.superseded_turn_id();
-    let replacement_generation = handle.superseded_child_turn_generation().wrapping_add(1);
     let replacement_started =
         background.child_generation_at_subscribe > handle.superseded_child_turn_generation();
     let waiting_for_replacement =
@@ -766,7 +819,6 @@ async fn prepare_background_watch(
             unscoped_terminal: None,
         },
         background_handle: Some(handle),
-        replacement_generation: Some(replacement_generation),
     }))
 }
 
@@ -812,18 +864,9 @@ async fn watch_one_completion(
         return;
     };
     let mut watch = match plan {
-        BackgroundWatchPlan::Completed {
-            reason,
-            handle,
-            generation,
-        } => {
-            let _ = tx
-                .send(WatchedCompletion {
-                    id,
-                    reason,
-                    collection: Some((handle, generation)),
-                })
-                .await;
+        BackgroundWatchPlan::Completed { result, collection } => {
+            let completion = WatchedCompletion::background(id, &result, collection);
+            let _ = tx.send(completion).await;
             return;
         }
         BackgroundWatchPlan::Events(watch) => watch,
@@ -1543,13 +1586,21 @@ impl WorkspaceClient {
             .as_ref()
             .map(|c| c.messages().to_vec())
             .unwrap_or_default();
-        let body = read_conversation_body(caller_session_id, &args, view, &session, &messages)?;
-        let (body, body_fully_returned) = clip_read_conversation_body(body, max_chars);
-        collect_full_read_result(caller_session_id, &args, view, body_fully_returned);
-        Ok(vec![Content::text(format!(
+        let projection =
+            read_conversation_body(caller_session_id, &args, view, &session, &messages)?;
+        let (body, body_fully_returned) = clip_read_conversation_body(projection.body, max_chars);
+        let rendered = format!(
             "Session {} ({}, {:?})\n\n{}",
             session.id, session.name, session.session_type, body
-        ))])
+        );
+        if body_fully_returned {
+            if let Some(collection) = projection.collection {
+                if crate::agents::large_response_handler::text_will_remain_inline(&rendered).await {
+                    collection.commit();
+                }
+            }
+        }
+        Ok(vec![Content::text(rendered)])
     }
 
     /// PER-CALLER-SESSION cap on concurrently injected detached turns (§5
@@ -3102,6 +3153,31 @@ impl WorkspaceClient {
         Ok(())
     }
 
+    fn subscribe_watch_receivers(
+        caller_session_id: &str,
+        session_ids: &[String],
+    ) -> Vec<(
+        String,
+        crate::session_events::Subscription,
+        Option<WatchedBackground>,
+    )> {
+        session_ids
+            .iter()
+            .map(|id| {
+                let background = background_subagent_for(caller_session_id, id).filter(|handle| {
+                    handle.is_running()
+                        || handle.continuation_pending()
+                        || !handle.latest_generation_collected()
+                });
+                let background = background.map(|handle| WatchedBackground {
+                    child_generation_at_subscribe: handle.child_turn_generation(),
+                    handle,
+                });
+                (id.clone(), crate::session_events::subscribe(id), background)
+            })
+            .collect()
+    }
+
     async fn handle_watch(
         &self,
         caller_session_id: &str,
@@ -3110,8 +3186,6 @@ impl WorkspaceClient {
         arguments: Option<JsonObject>,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Vec<Content>, String> {
-        use crate::session_events;
-
         let args: WorkspaceWatchParams = parse_args(arguments)?;
         Self::validate_watch_request(&args)?;
         // Issue #56, finding 15: an ACTIVITY ORACLE over conversations §7 will
@@ -3164,57 +3238,42 @@ impl WorkspaceClient {
         // ring. Holding `Subscription` here is what keeps a watch on an idle or
         // made-up id from pinning that ring for the life of the process.
         let services = workspace_services::get();
-        let mut receivers: Vec<(
-            String,
-            session_events::Subscription,
-            Option<WatchedBackground>,
-        )> = Vec::with_capacity(args.session_ids.len());
-        for id in &args.session_ids {
-            let background = background_subagent_for(caller_session_id, id).filter(|handle| {
-                handle.is_running()
-                    || handle.continuation_pending()
-                    || !handle.latest_generation_collected()
-            });
-            let events = session_events::subscribe(id);
-            let background = background.map(|handle| WatchedBackground {
-                child_generation_at_subscribe: handle.child_turn_generation(),
-                handle,
-            });
-            receivers.push((id.clone(), events, background));
-        }
+        let mut receivers = Self::subscribe_watch_receivers(caller_session_id, &args.session_ids);
 
-        let mut completed: Vec<(String, String)> = Vec::new();
+        // Observation is not collection. Claims remain attached until the
+        // final report proves it rendered them completely and will stay inline.
+        let mut completed: Vec<WatchedCompletion> = Vec::new();
         // How many watched ids we could not resolve at all — reported at the end
         // so a headless timeout does not read as "they are all still working".
         let mut unknown_liveness = 0usize;
         if !assume_running {
             for (id, _, background) in &receivers {
                 if let Some(background) = background.as_ref() {
-                    let completed_generation = background.handle.child_turn_generation();
-                    if let Some(result) = retained_background_result_is_current(&background.handle)
-                        .then(|| background.handle.result())
-                        .flatten()
+                    if let Some((result, collection)) =
+                        current_background_result(&background.handle)
                     {
-                        if background
-                            .handle
-                            .mark_collected_if_generation(completed_generation)
-                        {
-                            completed.push((id.clone(), background_watch_reason(&result)));
-                            continue;
-                        }
+                        completed.push(WatchedCompletion::background(
+                            id.clone(),
+                            &result,
+                            collection,
+                        ));
+                        continue;
                     }
                 }
                 match session_liveness(services.as_ref(), caller_session_id, id) {
                     // Only a POSITIVE idle answer short-circuits. `Unknown`
                     // parks — see `SessionLiveness`.
                     SessionLiveness::Idle => {
-                        completed.push((id.clone(), "already idle".to_string()));
+                        completed.push(WatchedCompletion::lifecycle(
+                            id.clone(),
+                            "already idle".to_string(),
+                        ));
                     }
                     SessionLiveness::Running => {}
                     SessionLiveness::Unknown => unknown_liveness += 1,
                 }
             }
-            receivers.retain(|(id, _, _)| !completed.iter().any(|(done, _)| done == id));
+            receivers.retain(|(id, _, _)| !completed.iter().any(|done| &done.id == id));
         }
 
         let mut cancelled = false;
@@ -3239,29 +3298,36 @@ impl WorkspaceClient {
         let still_running: Vec<&String> = args
             .session_ids
             .iter()
-            .filter(|id| !completed.iter().any(|(done, _)| done == *id))
+            .filter(|id| !completed.iter().any(|done| &done.id == *id))
             .collect();
 
-        Ok(vec![Content::text(Self::watch_report(
+        let report = Self::watch_report(
             &completed,
             &still_running,
             timeout,
             clamped_from,
             unknown_liveness,
             cancelled,
-        ))])
+        );
+        if !report.collections.is_empty() {
+            let remains_inline =
+                crate::agents::large_response_handler::text_will_remain_inline(&report.text).await;
+            report.commit_collections_if_inline(remains_inline);
+        }
+        Ok(vec![Content::text(report.text)])
     }
 
     /// Park until `want` conversations have published a terminal event, or the
     /// deadline passes — whichever comes first. A timeout is not an error; the
-    /// caller reports whatever arrived.
+    /// caller reports whatever arrived. Parking only observes completions;
+    /// [`Self::watch_report`] decides which exact claims were actually rendered.
     async fn park_for_completions(
         receivers: Vec<(
             String,
             crate::session_events::Subscription,
             Option<WatchedBackground>,
         )>,
-        completed: &mut Vec<(String, String)>,
+        completed: &mut Vec<WatchedCompletion>,
         want: usize,
         timeout: std::time::Duration,
         cancel: &tokio_util::sync::CancellationToken,
@@ -3311,12 +3377,7 @@ impl WorkspaceClient {
                         break;
                     }
                     entry = rx.recv() => match entry {
-                        Some(entry) => {
-                            if let Some((handle, generation)) = entry.collection {
-                                handle.mark_collected_if_generation(generation);
-                            }
-                            completed.push((entry.id, entry.reason));
-                        }
+                        Some(entry) => completed.push(entry),
                         None => break,
                     },
                 }
@@ -3328,15 +3389,16 @@ impl WorkspaceClient {
 
     /// The `workspace_watch` reply: what finished, what is still running, and —
     /// when nothing finished — whether we were even able to tell.
-    fn watch_report(
-        completed: &[(String, String)],
+    fn watch_report<'a>(
+        completed: &'a [WatchedCompletion],
         still_running: &[&String],
         timeout: std::time::Duration,
         clamped_from: Option<std::time::Duration>,
         unknown_liveness: usize,
         cancelled: bool,
-    ) -> String {
+    ) -> RenderedWatchReport<'a> {
         let mut report = String::new();
+        let mut collections = Vec::new();
         if completed.is_empty() {
             report.push_str(&format!(
                 "No conversation finished within {}s. Still running: {}. \
@@ -3361,14 +3423,17 @@ impl WorkspaceClient {
             report.push_str("Completed:\n");
             let mut result_chars = 0usize;
             let mut omitted = 0usize;
-            for (index, (id, reason)) in completed.iter().enumerate() {
-                let entry_chars = id.chars().count() + reason.chars().count();
+            for (index, entry) in completed.iter().enumerate() {
+                let entry_chars = entry.id.chars().count() + entry.reason.chars().count();
                 if result_chars + entry_chars > WATCH_RESULTS_TOTAL_MAX_CHARS {
                     omitted = completed.len() - index;
                     break;
                 }
-                report.push_str(&format!("- {id} ({reason})\n"));
+                report.push_str(&format!("- {} ({})\n", entry.id, entry.reason));
                 result_chars += entry_chars;
+                if let Some(collection) = &entry.collection {
+                    collections.push(collection);
+                }
             }
             if omitted > 0 {
                 report.push_str(&format!(
@@ -3416,7 +3481,29 @@ impl WorkspaceClient {
                 timeout.as_secs(),
             ));
         }
-        report
+        RenderedWatchReport {
+            text: report,
+            collections,
+        }
+    }
+}
+
+struct RenderedWatchReport<'a> {
+    text: String,
+    collections: Vec<&'a CollectionClaim>,
+}
+
+impl RenderedWatchReport<'_> {
+    fn commit_collections(&self) {
+        for collection in &self.collections {
+            collection.commit();
+        }
+    }
+
+    fn commit_collections_if_inline(&self, remains_inline: bool) {
+        if remains_inline {
+            self.commit_collections();
+        }
     }
 }
 
@@ -4170,7 +4257,7 @@ pub(crate) mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let id = format!("watch-cancel-{:016x}", rand::random::<u64>());
         let receivers = vec![(id.clone(), crate::session_events::subscribe(&id), None)];
-        let mut completed: Vec<(String, String)> = Vec::new();
+        let mut completed: Vec<WatchedCompletion> = Vec::new();
 
         {
             let cancel = cancel.clone();
@@ -4208,7 +4295,8 @@ pub(crate) mod tests {
     fn a_cancelled_watch_reports_that_it_was_cancelled() {
         let still = "sess-a".to_string();
         let report =
-            WorkspaceClient::watch_report(&[], &[&still], Duration::from_secs(600), None, 0, true);
+            WorkspaceClient::watch_report(&[], &[&still], Duration::from_secs(600), None, 0, true)
+                .text;
         assert!(report.contains("cancelled"), "{report}");
         assert!(
             report.contains("not affected"),
@@ -4225,7 +4313,7 @@ pub(crate) mod tests {
     async fn a_finished_park_reaps_its_watcher_tasks() {
         let id = format!("watch-reap-{:016x}", rand::random::<u64>());
         let receivers = vec![(id.clone(), crate::session_events::subscribe(&id), None)];
-        let mut completed: Vec<(String, String)> = Vec::new();
+        let mut completed: Vec<WatchedCompletion> = Vec::new();
         let cancel = tokio_util::sync::CancellationToken::new();
 
         // A short deadline, so the park ends the way a timed-out watch does.
@@ -4264,7 +4352,8 @@ pub(crate) mod tests {
             Some(Duration::from_secs(600)),
             0,
             false,
-        );
+        )
+        .text;
         assert!(report.contains("50s"), "the effective wait: {report}");
         assert!(report.contains("600s"), "and the one asked for: {report}");
         assert!(
@@ -4287,15 +4376,16 @@ pub(crate) mod tests {
         let still = "sess-c".to_string();
         let report = WorkspaceClient::watch_report(
             &[
-                ("sess-a".to_string(), "finished".to_string()),
-                ("sess-b".to_string(), "finished".to_string()),
+                WatchedCompletion::lifecycle("sess-a".to_string(), "finished".to_string()),
+                WatchedCompletion::lifecycle("sess-b".to_string(), "finished".to_string()),
             ],
             &[&still],
             Duration::from_secs(50),
             Some(Duration::from_secs(600)),
             0,
             false,
-        );
+        )
+        .text;
         assert!(report.contains("sess-a") && report.contains("sess-b"));
         assert!(report.contains("sess-c"), "and what is still running");
         assert!(report.contains("600s"), "and that the wait was shortened");
@@ -9018,13 +9108,27 @@ pub(crate) mod tests {
         .await;
         assert!(!cancelled);
         assert_eq!(second_completed.len(), 1);
-        assert_eq!(second_completed[0].0, child);
+        assert_eq!(second_completed[0].id, child);
         assert!(second_completed[0]
-            .1
+            .reason
             .contains("completed after lease expiry"));
         assert!(
+            !handle.latest_generation_collected(),
+            "parking is observational until the completion is rendered"
+        );
+        let report = WorkspaceClient::watch_report(
+            &second_completed,
+            &[],
+            std::time::Duration::from_secs(1),
+            None,
+            0,
+            false,
+        );
+        assert!(report.text.contains("completed after lease expiry"));
+        report.commit_collections();
+        assert!(
             handle.latest_generation_collected(),
-            "the later watch commits collection only after accepting the result"
+            "the later watch commits only after fully rendering the result"
         );
     }
 
@@ -9084,6 +9188,171 @@ pub(crate) mod tests {
         assert!(
             handle.latest_generation_collected(),
             "returning the full completed result must release parent supervision"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_never_collects_an_idle_but_stale_background_generation() {
+        use crate::agents::subagent_handle::{self, BackgroundSubagent};
+        use crate::agents::subagent_result::SubagentResult;
+
+        let c = client();
+        let child = seeded_target(&c, "read-stale-idle-child").await;
+        let handle =
+            BackgroundSubagent::register("caller", &child, "stale read", CancellationToken::new());
+        handle.complete(SubagentResult::from_error("obsolete retained outcome"));
+        subagent_handle::begin_child_turn(&child);
+
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_id": child,
+            "view": "summary"
+        }))
+        .unwrap();
+        let read = c
+            .call_tool(
+                "workspace_read_conversation",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(!text_of(&read).contains("obsolete retained outcome"));
+        assert!(
+            !handle.latest_generation_collected(),
+            "daemon idleness is not proof that the stale generation was projected"
+        );
+    }
+
+    #[test]
+    fn an_exact_collection_claim_cannot_collect_a_successor_generation() {
+        use crate::agents::subagent_handle::{self, BackgroundSubagent};
+        use crate::agents::subagent_result::SubagentResult;
+
+        let child = unique_id("claim-successor-race");
+        let handle = BackgroundSubagent::register(
+            "claim-successor-parent",
+            &child,
+            "claim race",
+            CancellationToken::new(),
+        );
+        handle.complete(SubagentResult::from_error("exact old result"));
+        let (_, claim) = current_background_result(&handle).expect("current result claim");
+        subagent_handle::begin_child_turn(&child);
+
+        assert!(!claim.commit());
+        assert!(!handle.latest_generation_collected());
+    }
+
+    #[test]
+    fn a_per_entry_shortened_watch_result_never_collects() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        use crate::agents::subagent_result::SubagentResult;
+
+        let child = unique_id("watch-entry-shortened");
+        let handle = BackgroundSubagent::register(
+            "watch-entry-shortened-parent",
+            &child,
+            "large result",
+            CancellationToken::new(),
+        );
+        handle.complete(SubagentResult::from_error(
+            "x".repeat(WATCH_RESULT_MAX_CHARS + 1),
+        ));
+        let (result, claim) = current_background_result(&handle).expect("current result claim");
+        let completed = vec![WatchedCompletion::background(child, &result, claim)];
+        let report = WorkspaceClient::watch_report(
+            &completed,
+            &[],
+            std::time::Duration::from_secs(1),
+            None,
+            0,
+            false,
+        );
+
+        assert!(report.text.contains("result shortened in this watch"));
+        report.commit_collections();
+        assert!(
+            !handle.latest_generation_collected(),
+            "an individually clipped result is only a preview"
+        );
+    }
+
+    #[test]
+    fn aggregate_omission_collects_only_entries_that_were_rendered() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        use crate::agents::subagent_result::SubagentResult;
+
+        let mut handles = Vec::new();
+        let mut completed = Vec::new();
+        for index in 0..5 {
+            let child = unique_id(&format!("watch-aggregate-{index}"));
+            let handle = BackgroundSubagent::register(
+                "watch-aggregate-parent",
+                &child,
+                "aggregate result",
+                CancellationToken::new(),
+            );
+            handle.complete(SubagentResult::from_error("y".repeat(11_000)));
+            let (result, claim) = current_background_result(&handle).expect("current result claim");
+            completed.push(WatchedCompletion::background(child, &result, claim));
+            handles.push(handle);
+        }
+
+        let report = WorkspaceClient::watch_report(
+            &completed,
+            &[],
+            std::time::Duration::from_secs(1),
+            None,
+            0,
+            false,
+        );
+        assert!(report.text.contains("omitted from this watch"));
+        let rendered: Vec<bool> = completed
+            .iter()
+            .map(|entry| report.text.contains(&entry.id))
+            .collect();
+        report.commit_collections();
+
+        assert!(rendered.iter().any(|included| !included));
+        for (handle, included) in handles.iter().zip(rendered) {
+            assert_eq!(
+                handle.latest_generation_collected(),
+                included,
+                "collection must exactly match aggregate rendering"
+            );
+        }
+    }
+
+    #[test]
+    fn a_preview_only_downstream_result_defers_every_rendered_claim() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        use crate::agents::subagent_result::SubagentResult;
+
+        let child = unique_id("watch-downstream-preview");
+        let handle = BackgroundSubagent::register(
+            "watch-downstream-preview-parent",
+            &child,
+            "preview result",
+            CancellationToken::new(),
+        );
+        handle.complete(SubagentResult::from_error("complete result"));
+        let (result, claim) = current_background_result(&handle).expect("current result claim");
+        let completed = vec![WatchedCompletion::background(child, &result, claim)];
+        let report = WorkspaceClient::watch_report(
+            &completed,
+            &[],
+            std::time::Duration::from_secs(1),
+            None,
+            0,
+            false,
+        );
+
+        report.commit_collections_if_inline(false);
+        assert!(
+            !handle.latest_generation_collected(),
+            "offload or preview-only delivery must leave supervision active"
         );
     }
 
@@ -9164,13 +9433,21 @@ pub(crate) mod tests {
         .await;
 
         assert!(!cancelled);
-        assert_eq!(
-            completed,
-            vec![(child, "replacement turn finished".to_string())]
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].id, child);
+        assert_eq!(completed[0].reason, "replacement turn finished");
+        let report = WorkspaceClient::watch_report(
+            &completed,
+            &[],
+            std::time::Duration::from_secs(5),
+            None,
+            0,
+            false,
         );
+        report.commit_collections();
         assert!(
-            handle.latest_generation_collected(),
-            "watching the replacement terminal collects that exact generation"
+            !handle.latest_generation_collected(),
+            "a lifecycle-only replacement terminal is not the retained result"
         );
     }
 
@@ -9230,12 +9507,11 @@ pub(crate) mod tests {
         .await;
 
         assert!(!cancelled);
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].id, child);
         assert_eq!(
-            completed,
-            vec![(
-                child,
-                "replacement turn finished after subscribe".to_string()
-            )]
+            completed[0].reason,
+            "replacement turn finished after subscribe"
         );
     }
 
@@ -9315,10 +9591,9 @@ pub(crate) mod tests {
         .await;
 
         assert!(!cancelled);
-        assert_eq!(
-            completed,
-            vec![(child, "replacement terminal after lost start".to_string())]
-        );
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].id, child);
+        assert_eq!(completed[0].reason, "replacement terminal after lost start");
     }
 
     #[tokio::test]
@@ -9397,12 +9672,11 @@ pub(crate) mod tests {
         .await;
 
         assert!(!cancelled);
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].id, child);
         assert_eq!(
-            completed,
-            vec![(
-                child,
-                "replacement terminal after retained original".to_string()
-            )]
+            completed[0].reason,
+            "replacement terminal after retained original"
         );
     }
 

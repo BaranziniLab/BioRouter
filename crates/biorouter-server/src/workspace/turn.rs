@@ -254,6 +254,12 @@ where
         .is_err()
     {
         tracing::error!("turn: task terminated unexpectedly");
+        biorouter::agents::subagent_handle::record_child_turn_terminal(
+            &session_id,
+            biorouter::agents::SubagentResult::from_error(
+                "Child turn terminated unexpectedly before it could publish a result",
+            ),
+        );
         publish_turn_error(
             &session_id,
             "The model turn ended unexpectedly. Please retry.".to_string(),
@@ -307,6 +313,12 @@ pub async fn run_turn(
             request_session_id = %session_id,
             guard_session_id = %turn_guard.session_id(),
             "turn: refusing to run with another session's guard"
+        );
+        biorouter::agents::subagent_handle::record_child_turn_terminal(
+            &session_id,
+            biorouter::agents::SubagentResult::from_error(
+                "Child turn was refused because its runtime guard belonged to another session",
+            ),
         );
         return;
     }
@@ -671,6 +683,7 @@ async fn run_turn_body(
         )
     });
 
+    biorouter::agents::subagent_handle::open_parent_continuation_admission(&session_id);
     session_events::publish(&session_id, SessionBusEvent::TurnStarted { turn_id });
 
     // One terminal event per turn, always. Every exit path below publishes
@@ -699,6 +712,12 @@ async fn run_turn_body(
     )
     .await
     else {
+        biorouter::agents::subagent_handle::record_child_turn_terminal(
+            &session_id,
+            biorouter::agents::SubagentResult::from_error(
+                "Child turn failed during setup before its provider could start",
+            ),
+        );
         return;
     };
 
@@ -709,6 +728,12 @@ async fn run_turn_body(
         Ok(stream) => stream,
         Err(e) => {
             tracing::error!("turn: failed to start reply stream: {e:?}");
+            biorouter::agents::subagent_handle::record_child_turn_terminal(
+                &session_id,
+                biorouter::agents::SubagentResult::from_error(
+                    "Child turn failed before its provider stream could start",
+                ),
+            );
             publish_turn_error(
                 &session_id,
                 e.to_string(),
@@ -721,8 +746,21 @@ async fn run_turn_body(
         }
     };
 
-    let terminal_error =
-        drive_stream(&session_id, &mut stream, &cancel_token, &mut all_messages).await;
+    let terminal_error = drive_stream(
+        &session_id,
+        &mut stream,
+        &cancel_token,
+        &mut all_messages,
+        Some(agent.as_ref()),
+    )
+    .await;
+
+    record_child_turn_outcome(
+        &session_id,
+        terminal_error,
+        cancel_token.is_cancelled(),
+        &all_messages,
+    );
 
     spawn_session_rename(&agent, &session_id);
 
@@ -736,6 +774,26 @@ async fn run_turn_body(
         all_messages.len(),
     )
     .await;
+}
+
+fn record_child_turn_outcome(
+    session_id: &str,
+    terminal_error: bool,
+    cancelled: bool,
+    all_messages: &Conversation,
+) {
+    let child_result = if terminal_error {
+        biorouter::agents::SubagentResult::from_error(
+            "Child turn ended with an error; inspect its conversation for the classified cause",
+        )
+    } else if cancelled {
+        biorouter::agents::SubagentResult::from_error(
+            "Child turn was explicitly cancelled before it reached a normal terminal result",
+        )
+    } else {
+        biorouter::agents::SubagentResult::from_conversation(all_messages, None, true)
+    };
+    biorouter::agents::subagent_handle::record_child_turn_terminal(session_id, child_result);
 }
 
 /// Publish one `TurnError` frame for `session_id`.
@@ -779,11 +837,99 @@ fn publish_turn_error(
 ///
 /// Events are published in stream order, never reordered, filtered or
 /// coalesced; see [`run_turn`]'s stated non-goal 2 for why that is load-bearing.
+async fn settle_accepted_interrupts(
+    session_id: &str,
+    all_messages: &mut Conversation,
+    agent: &biorouter::agents::Agent,
+) -> anyhow::Result<()> {
+    biorouter::agents::subagent_handle::begin_parent_closing(session_id);
+    for message in agent
+        .settle_carried_over_soft_interrupts(session_id)
+        .await?
+    {
+        all_messages.push(message.clone());
+        session_events::publish(
+            session_id,
+            SessionBusEvent::Agent(AgentEvent::Message(message)),
+        );
+    }
+    Ok(())
+}
+
+async fn drain_delegated_work_after_forced_exit(
+    session_id: &str,
+    all_messages: &mut Conversation,
+    agent: &biorouter::agents::Agent,
+    cancel_token: &CancellationToken,
+) -> anyhow::Result<()> {
+    while let Some(message) = agent
+        .next_native_supervision_message_after_forced_exit(session_id, Some(cancel_token.clone()))
+        .await?
+    {
+        all_messages.push(message.clone());
+        session_events::publish(
+            session_id,
+            SessionBusEvent::Agent(AgentEvent::Message(message)),
+        );
+    }
+    Ok(())
+}
+
+async fn publish_stream_failure(
+    session_id: &str,
+    error: anyhow::Error,
+    all_messages: &mut Conversation,
+    agent: Option<&biorouter::agents::Agent>,
+    cancel_token: &CancellationToken,
+) {
+    if let Some(agent) = agent {
+        if let Err(settlement_error) =
+            settle_accepted_interrupts(session_id, all_messages, agent).await
+        {
+            tracing::error!("turn: failed to settle accepted interrupts: {settlement_error}");
+            publish_turn_error(
+                session_id,
+                settlement_error.to_string(),
+                "interrupt_settlement_failed",
+                TurnErrorScope::Session,
+                false,
+                None,
+            );
+            return;
+        }
+        if let Err(supervision_error) =
+            drain_delegated_work_after_forced_exit(session_id, all_messages, agent, cancel_token)
+                .await
+        {
+            tracing::error!("turn: failed to supervise delegated work: {supervision_error}");
+            publish_turn_error(
+                session_id,
+                supervision_error.to_string(),
+                "delegated_supervision_failed",
+                TurnErrorScope::Session,
+                false,
+                None,
+            );
+            return;
+        }
+    }
+    tracing::error!("turn: stream error: {error}");
+    publish_turn_error(
+        session_id,
+        error.to_string(),
+        "inference_error",
+        TurnErrorScope::Inference,
+        false,
+        None,
+    );
+}
+
 async fn drive_stream<S>(
     session_id: &str,
     stream: &mut S,
     cancel_token: &CancellationToken,
     all_messages: &mut Conversation,
+    agent: Option<&biorouter::agents::Agent>,
 ) -> bool
 where
     S: futures::Stream<Item = anyhow::Result<AgentEvent>> + Unpin,
@@ -806,6 +952,22 @@ where
         let item = tokio::select! {
             _ = cancel_token.cancelled() => {
                 tracing::info!("turn: cancelled");
+                if let Some(agent) = agent {
+                    if let Err(error) =
+                        settle_accepted_interrupts(session_id, all_messages, agent).await
+                    {
+                        tracing::error!("turn: failed to settle accepted interrupts: {error}");
+                        publish_turn_error(
+                            session_id,
+                            error.to_string(),
+                            "interrupt_settlement_failed",
+                            TurnErrorScope::Session,
+                            false,
+                            None,
+                        );
+                        return true;
+                    }
+                }
                 break;
             }
             item = stream.next() => item,
@@ -867,15 +1029,7 @@ where
                 // here would give one code two unrelated meanings, separable
                 // only by `scope`, and would silently re-bucket every log and
                 // dashboard keyed on `code` the moment Task 8 lands.
-                tracing::error!("turn: stream error: {e}");
-                publish_turn_error(
-                    session_id,
-                    e.to_string(),
-                    "inference_error",
-                    TurnErrorScope::Inference,
-                    false,
-                    None,
-                );
+                publish_stream_failure(session_id, e, all_messages, agent, cancel_token).await;
                 return true;
             }
         }
@@ -999,6 +1153,7 @@ mod tests {
     use biorouter::conversation::message::Message;
     use biorouter::session::session_manager::SessionType;
     use biorouter::session_events::{self, SessionBusEvent};
+    use serial_test::serial;
     use tokio_util::sync::CancellationToken;
 
     /// NOTE — two things about every test in this module:
@@ -1409,7 +1564,7 @@ mod tests {
         })]);
 
         let terminal_error =
-            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all).await;
+            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all, None).await;
         assert!(terminal_error, "an abort ends the turn on an error");
 
         let seen = drain(&mut rx).await;
@@ -1477,7 +1632,7 @@ mod tests {
         ]);
 
         let terminal_error =
-            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all).await;
+            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all, None).await;
         assert!(!terminal_error);
 
         let seen = drain(&mut rx).await;
@@ -1754,7 +1909,7 @@ mod tests {
 
         let terminal_error = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            drive_stream(sid, &mut stream, &cancel, &mut all),
+            drive_stream(sid, &mut stream, &cancel, &mut all, None),
         )
         .await
         .expect("a cancelled turn must escape a stalled agent stream");
@@ -1768,6 +1923,177 @@ mod tests {
             seen.is_empty(),
             "the loop publishes nothing of its own on cancel: {seen:?}"
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn cancellation_settles_an_accepted_interrupt_before_dropping_the_stream() {
+        use biorouter::agents::{Agent, AgentConfig, InterruptRefused, TurnId};
+        use biorouter::config::permission::PermissionManager;
+        use biorouter::config::BioRouterMode;
+        use biorouter::conversation::message::{MessageProvenance, ProvenanceKind};
+        use biorouter::session::SessionManager;
+
+        let data_dir = tempfile::TempDir::new().unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
+        let session = session_manager
+            .create_session(
+                work_dir.path().to_path_buf(),
+                "cancelled accepted interrupt".into(),
+                SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            Arc::clone(&session_manager),
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+        agent.open_for_turn(TurnId::new("turn-cancel-settlement"));
+        let provenance = MessageProvenance {
+            kind: ProvenanceKind::UserDirect,
+            from_session_id: Some("parent-session".into()),
+            from_session_name: Some("Parent".into()),
+        };
+        agent
+            .try_queue_soft_interrupt("please preserve this".into(), Some(provenance.clone()))
+            .expect("the running turn must accept the interrupt");
+
+        let mut rx = session_events::subscribe(&session.id);
+        let mut all = Conversation::new_unvalidated(Vec::new());
+        let mut stream = futures::stream::pending::<anyhow::Result<AgentEvent>>();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let terminal_error =
+            drive_stream(&session.id, &mut stream, &cancel, &mut all, Some(&agent)).await;
+
+        assert!(!terminal_error);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all.messages()[0].as_concat_text(), "please preserve this");
+        assert_eq!(
+            all.messages()[0].metadata.provenance,
+            Some(provenance.clone())
+        );
+        let seen = drain(&mut rx).await;
+        assert!(matches!(
+            seen.as_slice(),
+            [SessionBusEvent::Agent(AgentEvent::Message(message))]
+                if message.as_concat_text() == "please preserve this"
+                    && message.metadata.provenance == Some(provenance.clone())
+        ));
+
+        let stored = session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(stored.messages().len(), 1);
+        assert_eq!(stored.messages()[0].metadata.provenance, Some(provenance));
+        assert!(agent
+            .settle_carried_over_soft_interrupts(&session.id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(matches!(
+            agent.try_queue_soft_interrupt("too late".into(), None),
+            Err(InterruptRefused::TurnEnded)
+        ));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn a_stream_error_settles_an_accepted_interrupt_before_the_error_terminal() {
+        use biorouter::agents::{Agent, AgentConfig, InterruptRefused, TurnId};
+        use biorouter::config::permission::PermissionManager;
+        use biorouter::config::BioRouterMode;
+        use biorouter::conversation::message::{MessageProvenance, ProvenanceKind};
+        use biorouter::session::SessionManager;
+
+        let data_dir = tempfile::TempDir::new().unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
+        let session = session_manager
+            .create_session(
+                work_dir.path().to_path_buf(),
+                "errored accepted interrupt".into(),
+                SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            Arc::clone(&session_manager),
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+        let delegated = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            &session.id,
+            "stream-error-child",
+            "stream error child",
+            CancellationToken::new(),
+        );
+        biorouter::agents::subagent_handle::begin_child_turn("stream-error-child");
+        delegated.complete(biorouter::agents::SubagentResult::from_error(
+            "terminal under stream-error supervision",
+        ));
+        agent.open_for_turn(TurnId::new("turn-error-settlement"));
+        let provenance = MessageProvenance {
+            kind: ProvenanceKind::UserDirect,
+            from_session_id: Some("parent-session".into()),
+            from_session_name: Some("Parent".into()),
+        };
+        agent
+            .try_queue_soft_interrupt("preserve before error".into(), Some(provenance.clone()))
+            .expect("the running turn must accept the interrupt");
+
+        let mut rx = session_events::subscribe(&session.id);
+        let mut all = Conversation::new_unvalidated(Vec::new());
+        let mut stream = futures::stream::iter(vec![Err(anyhow::anyhow!("provider hung up"))]);
+        let terminal_error = drive_stream(
+            &session.id,
+            &mut stream,
+            &CancellationToken::new(),
+            &mut all,
+            Some(&agent),
+        )
+        .await;
+
+        assert!(terminal_error);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all.messages()[0].as_concat_text(), "preserve before error");
+        assert_eq!(all.messages()[0].metadata.provenance, Some(provenance));
+        assert!(all.messages()[1]
+            .as_concat_text()
+            .contains("terminal under stream-error supervision"));
+        let seen = drain(&mut rx).await;
+        assert!(
+            matches!(
+                seen.as_slice(),
+                [
+                    SessionBusEvent::Agent(AgentEvent::Message(interrupt)),
+                    SessionBusEvent::Agent(AgentEvent::Message(delegated_result)),
+                    SessionBusEvent::TurnError { code, .. }
+                ] if interrupt.as_concat_text() == "preserve before error"
+                    && delegated_result.as_concat_text().contains("terminal under stream-error supervision")
+                    && code == "inference_error"
+            ),
+            "unexpected bus events: {seen:#?}"
+        );
+        let stored = session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(stored.messages().len(), 2);
+        assert!(delegated.latest_generation_collected());
+        assert!(matches!(
+            agent.try_queue_soft_interrupt("too late".into(), None),
+            Err(InterruptRefused::TurnEnded)
+        ));
     }
 
     /// A mid-stream inference failure keeps `/reply`'s wire code.
@@ -1789,7 +2115,7 @@ mod tests {
         let mut stream = futures::stream::iter(vec![Err(anyhow::anyhow!("provider hung up"))]);
 
         let terminal_error =
-            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all).await;
+            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all, None).await;
         assert!(terminal_error, "a stream error ends the turn on an error");
 
         let seen = drain(&mut rx).await;

@@ -53,9 +53,10 @@ describe('sessionCache', () => {
       })
     );
     const request = fetchMock.mock.calls[0][1];
-    expect(JSON.parse(request?.body as string)).toEqual({
+    expect(JSON.parse(request?.body as string)).toMatchObject({
       session_id: cachedSession.id,
       load_model_and_extensions: true,
+      continuation_owner_id: expect.any(String),
     });
   });
 });

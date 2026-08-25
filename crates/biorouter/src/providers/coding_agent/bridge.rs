@@ -2146,7 +2146,8 @@ mod tests {
 
         let id = approval_card_id(&session_id).await;
         assert_eq!(
-            PendingUserActions::global().resolve(
+            PendingUserActions::global().resolve_in_session(
+                &session_id,
                 &id,
                 UserActionOutcome::Approved {
                     permission: crate::permission::Permission::AllowOnce,
@@ -2238,7 +2239,8 @@ mod tests {
         });
 
         let id = approval_card_id(&session_id).await;
-        PendingUserActions::global().resolve(
+        PendingUserActions::global().resolve_in_session(
+            &session_id,
             &id,
             UserActionOutcome::Denied {
                 permission: crate::permission::Permission::DenyOnce,

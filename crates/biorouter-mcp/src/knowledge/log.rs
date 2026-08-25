@@ -178,8 +178,8 @@ pub fn append(
 
     let repo = GitRepo::open(kb_root)?;
     let kind_str = kind_slug(kind);
-    let sha = if let Some(_branch) = txn_branch {
-        repo.commit_on_txn_in_progress(&format!("log: {kind_str} | {summary}"))?
+    let sha = if let Some(branch) = txn_branch {
+        repo.commit_on_txn_in_progress(branch, &format!("log: {kind_str} | {summary}"))?
     } else {
         repo.commit_all(kind, summary, delta)?
     };

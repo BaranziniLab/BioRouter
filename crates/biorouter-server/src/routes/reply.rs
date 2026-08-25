@@ -1,6 +1,6 @@
 use crate::state::{
     AppState, CancelTurnAttempt, CancelledTurn, ContinuationAdmission, ContinuationCancelAttempt,
-    ContinuationLeaseAbandonment, ContinuationLeaseFailure, TurnBeginFailure,
+    ContinuationLeaseAbandonment, ContinuationLeaseFailure, ContinuationRecovery, TurnBeginFailure,
 };
 use crate::turn_stream::TurnStream;
 use axum::{
@@ -1338,6 +1338,9 @@ fn continuation_lease_failure_response(
         ContinuationLeaseFailure::CrossSession => "continuation_lease_session_mismatch",
         ContinuationLeaseFailure::Replayed => "continuation_lease_already_resolved",
         ContinuationLeaseFailure::MissingSuccessorTurnId => "continuation_lease_requires_turn_id",
+        ContinuationLeaseFailure::OwnedByAnother => "continuation_owned_by_another_client",
+        ContinuationLeaseFailure::AdmissionInProgress => "continuation_admission_in_progress",
+        ContinuationLeaseFailure::ParentClosing => "parent_turn_closing",
     };
     (
         StatusCode::CONFLICT,
@@ -1728,30 +1731,15 @@ pub async fn interrupt(
     if !state.is_turn_active(&req.session_id) {
         return Err(StatusCode::CONFLICT);
     }
-    // BR-71 §4.5: a steer typed into a subagent's tab is a human intervention
-    // the parent must hear about, so stamp it `user_direct`. Read the session
-    // BEFORE `get_agent_for_route`, which takes `req.session_id` by value — a
-    // `&req.session_id` afterwards is E0382.
-    //
-    // An unreadable session yields `None`, not a 500. Queueing a steer is a
-    // purely in-memory operation on an agent that is demonstrably running; the
-    // store read exists only to decide provenance, and a session we cannot read
-    // is simply not provably a subagent. Making it fatal would turn a working
-    // steer into an error for every caller whose row is missing or racing a
-    // write — a new failure mode on a path that never touched the store before.
-    let provenance = state
-        .session_manager()
-        .get_session(&req.session_id, false)
-        .await
-        .ok()
-        .filter(|session| {
-            session.session_type == biorouter::session::session_manager::SessionType::SubAgent
-        })
-        .map(|_| biorouter::conversation::message::MessageProvenance {
-            kind: biorouter::conversation::message::ProvenanceKind::UserDirect,
-            from_session_id: None,
-            from_session_name: None,
-        });
+    // User-action authentication above is the authority for this attribution.
+    // Keep it independent of the session store: a live agent can legitimately
+    // outlast or race its durable row, but an accepted human steer must never
+    // lose its provenance because that auxiliary lookup failed.
+    let provenance = Some(biorouter::conversation::message::MessageProvenance {
+        kind: biorouter::conversation::message::ProvenanceKind::UserDirect,
+        from_session_id: None,
+        from_session_name: None,
+    });
     let agent = state.get_agent_for_route(req.session_id).await?;
     match agent.try_queue_soft_interrupt(req.text, provenance) {
         Ok(turn_id) => Ok((
@@ -1784,6 +1772,11 @@ pub struct CancelTurnRequest {
     /// must keep supervising across the gap between the two turns.
     #[serde(default)]
     pub continuation_pending: bool,
+    /// Stable, per-window identifier for recovering a Stop-and-Send admission
+    /// after a renderer reload. It is an ownership label, not a credential;
+    /// user-action proof and the opaque lease remain the authorities.
+    #[serde(default)]
+    pub continuation_owner_id: Option<String>,
 }
 
 /// Response body for the addressable cancel route.
@@ -1812,10 +1805,45 @@ pub struct CancelTurnConflictResponse {
     pub active_turn_id: String,
 }
 
+/// The two fail-closed 409 shapes returned by `/agent/cancel`.
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(untagged)]
+pub enum CancelTurnConflict {
+    TurnMismatch(CancelTurnConflictResponse),
+    Continuation(ContinuationLeaseErrorResponse),
+}
+
 #[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct AbandonContinuationLeaseRequest {
     pub session_id: String,
     pub continuation_lease: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoverContinuationAction {
+    TakeOver,
+    Abandon,
+}
+
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct RecoverContinuationRequest {
+    pub session_id: String,
+    /// Exact retired generation shown by `ResumeAgentResponse.pending_continuation`.
+    pub superseded_turn_id: String,
+    /// Stable per-window owner returned only to that same window on resume.
+    pub continuation_owner_id: String,
+    pub action: RecoverContinuationAction,
+}
+
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct RecoverContinuationResponse {
+    pub resolution: String,
+    pub superseded_turn_id: String,
+    /// Present only after this caller explicitly takes ownership. Group
+    /// abandonment never returns another window's opaque lease.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_lease: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
@@ -1830,6 +1858,10 @@ enum CancelTurnFailure {
         active_turn_id: String,
     },
     ContinuationRequiresExpectedTurn,
+    ContinuationRequiresOwner,
+    ContinuationOwnerConflict,
+    ContinuationAdmissionInProgress,
+    ParentClosing,
     SettlementTimeout,
 }
 
@@ -1848,8 +1880,9 @@ impl<'a> ContinuationAdmissionRollback<'a> {
         if let Some(mark) = admission.mark() {
             mark.commit();
         }
-        self.state.commit_continuation_lease(admission.token());
-        Some(admission.token().to_string())
+        self.state
+            .commit_continuation_lease(admission.token())
+            .then(|| admission.token().to_string())
     }
 }
 
@@ -1880,6 +1913,16 @@ impl IntoResponse for CancelTurnFailure {
             )
                 .into_response(),
             Self::ContinuationRequiresExpectedTurn => StatusCode::BAD_REQUEST.into_response(),
+            Self::ContinuationRequiresOwner => StatusCode::BAD_REQUEST.into_response(),
+            Self::ContinuationOwnerConflict => {
+                continuation_lease_failure_response(ContinuationLeaseFailure::OwnedByAnother)
+            }
+            Self::ContinuationAdmissionInProgress => {
+                continuation_lease_failure_response(ContinuationLeaseFailure::AdmissionInProgress)
+            }
+            Self::ParentClosing => {
+                continuation_lease_failure_response(ContinuationLeaseFailure::ParentClosing)
+            }
             Self::SettlementTimeout => StatusCode::GATEWAY_TIMEOUT.into_response(),
         }
     }
@@ -1919,9 +1962,10 @@ const CANCEL_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(30);
     request_body = CancelTurnRequest,
     responses(
         (status = 200, description = "Cancel processed; `cancelled` reports whether a turn was running", body = CancelTurnResponse),
+        (status = 400, description = "Stop-and-Send requires an exact turn id and a valid stable continuation owner id"),
         (status = 401, description = "Unauthorized - invalid secret key"),
         (status = 403, description = "The request was not proven to come from the user"),
-        (status = 409, description = "A different turn generation is now active; it was not cancelled", body = CancelTurnConflictResponse),
+        (status = 409, description = "A different turn generation is active, another client owns the continuation, or its admission is still settling", body = CancelTurnConflict),
         (status = 504, description = "The cancelled turn did not release the session lock before the safety bound"),
         (status = 500, description = "Internal server error")
     )
@@ -1975,6 +2019,78 @@ pub async fn abandon_continuation_lease(
     }
 }
 
+fn valid_continuation_owner_id(owner_id: &str) -> bool {
+    !owner_id.is_empty()
+        && owner_id.len() <= 128
+        && owner_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.'))
+}
+
+#[utoipa::path(
+    post,
+    path = "/agent/continuation/recover",
+    tag = "workspace",
+    request_body = RecoverContinuationRequest,
+    responses(
+        (status = 200, description = "The exact pending continuation was taken over or its whole claim group was abandoned", body = RecoverContinuationResponse),
+        (status = 400, description = "The continuation owner id is missing or invalid"),
+        (status = 403, description = "The session is out of reach or the request was not proven to come from the user"),
+        (status = 409, description = "The exact continuation generation was already resolved", body = ContinuationLeaseErrorResponse)
+    )
+)]
+pub async fn recover_continuation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<RecoverContinuationRequest>,
+) -> axum::response::Response {
+    if !biorouter_server::auth::is_user_action(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if !valid_continuation_owner_id(&req.continuation_owner_id) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    if let Err(refusal) = crate::routes::session_reach::session_reach(
+        state.session_manager(),
+        &req.session_id,
+        &headers,
+    )
+    .await
+    {
+        return refusal.into_response();
+    }
+    let recovered = match req.action {
+        RecoverContinuationAction::TakeOver => state.recover_continuation_for_owner(
+            &req.session_id,
+            &req.superseded_turn_id,
+            &req.continuation_owner_id,
+        ),
+        RecoverContinuationAction::Abandon => {
+            state.abandon_continuation_group(&req.session_id, &req.superseded_turn_id)
+        }
+    };
+    match recovered {
+        Ok(ContinuationRecovery::Recovered {
+            continuation_lease,
+            superseded_turn_id,
+        }) => Json(RecoverContinuationResponse {
+            resolution: "taken_over".to_string(),
+            superseded_turn_id,
+            continuation_lease: Some(continuation_lease),
+        })
+        .into_response(),
+        Ok(ContinuationRecovery::Abandoned { superseded_turn_id }) => {
+            Json(RecoverContinuationResponse {
+                resolution: "abandoned".to_string(),
+                superseded_turn_id,
+                continuation_lease: None,
+            })
+            .into_response()
+        }
+        Err(failure) => continuation_lease_failure_response(failure),
+    }
+}
+
 enum CancelAdmission {
     Active {
         turn: CancelledTurn,
@@ -2010,7 +2126,12 @@ fn admit_continuation_cancel(
         .expected_turn_id
         .as_deref()
         .ok_or(CancelTurnFailure::ContinuationRequiresExpectedTurn)?;
-    match state.cancel_turn_for_continuation(&req.session_id, expected_turn_id) {
+    let owner_id = req
+        .continuation_owner_id
+        .as_deref()
+        .filter(|owner_id| valid_continuation_owner_id(owner_id))
+        .ok_or(CancelTurnFailure::ContinuationRequiresOwner)?;
+    match state.cancel_turn_for_continuation_owned(&req.session_id, expected_turn_id, owner_id) {
         ContinuationCancelAttempt::Cancelled { turn, admission } => Ok(CancelAdmission::Active {
             turn,
             continuation: Some(admission),
@@ -2039,6 +2160,13 @@ fn admit_continuation_cancel(
         ContinuationCancelAttempt::TurnMismatch { active_turn_id } => {
             Err(turn_mismatch_failure(req, active_turn_id))
         }
+        ContinuationCancelAttempt::OwnerConflict => {
+            Err(CancelTurnFailure::ContinuationOwnerConflict)
+        }
+        ContinuationCancelAttempt::AdmissionInProgress => {
+            Err(CancelTurnFailure::ContinuationAdmissionInProgress)
+        }
+        ContinuationCancelAttempt::ParentClosing => Err(CancelTurnFailure::ParentClosing),
     }
 }
 
@@ -2153,6 +2281,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
             "/agent/continuation/abandon",
             post(abandon_continuation_lease),
         )
+        .route("/agent/continuation/recover", post(recover_continuation))
         .with_state(state)
 }
 
@@ -4159,6 +4288,18 @@ mod tests {
             state.try_begin_turn_idempotent(session_id, CancellationToken::new(), None)
         }
 
+        #[tokio::test]
+        async fn parent_closing_continuation_conflict_has_a_stable_typed_code() {
+            let response =
+                continuation_lease_failure_response(ContinuationLeaseFailure::ParentClosing);
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: ContinuationLeaseErrorResponse = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body.error, "parent_turn_closing");
+        }
+
         #[tokio::test(flavor = "multi_thread")]
         async fn test_reply_endpoint() {
             install_test_user_action_key();
@@ -4289,10 +4430,18 @@ mod tests {
         }
 
         #[tokio::test(flavor = "multi_thread")]
-        async fn test_interrupt_accepts_steer_while_turn_in_flight() {
+        async fn interrupt_without_a_stored_row_drains_exact_user_direct_provenance() {
             install_test_user_action_key();
             let state = AppState::new().await.unwrap();
             let _guard = begin_turn(&state, "steering-session").expect("turn lock acquired");
+            assert!(
+                state
+                    .session_manager()
+                    .get_session("steering-session", false)
+                    .await
+                    .is_err(),
+                "this regression test requires a live turn with no durable session row"
+            );
             // #69: acceptance is the *agent loop's* to give, so the session's
             // agent has to be in the accepting state a running loop puts it in.
             // The server's turn lock alone is no longer enough.
@@ -4319,6 +4468,24 @@ mod tests {
                 agent.has_soft_interrupts(),
                 "the steer must be queued on the session's agent"
             );
+            match agent.close_and_drain() {
+                biorouter::agents::Drained::Some(queued) => {
+                    assert_eq!(queued.len(), 1);
+                    assert_eq!(queued[0].text, "actually, use R");
+                    assert_eq!(
+                        queued[0].provenance,
+                        Some(biorouter::conversation::message::MessageProvenance {
+                            kind: biorouter::conversation::message::ProvenanceKind::UserDirect,
+                            from_session_id: None,
+                            from_session_name: None,
+                        }),
+                        "the authenticated steer must remain exactly user-direct even without a stored session row"
+                    );
+                }
+                biorouter::agents::Drained::Empty => {
+                    panic!("the accepted steer must be queued on the live agent")
+                }
+            }
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -4443,6 +4610,8 @@ mod tests {
                         expected_turn_id: expected_turn_id.map(str::to_string),
                         wait_for_idle,
                         continuation_pending,
+                        continuation_owner_id: continuation_pending
+                            .then(|| "test-window-owner".to_string()),
                     })
                     .unwrap(),
                 ))
@@ -5015,6 +5184,7 @@ mod tests {
                 expected_turn_id: Some(guard.turn_id().to_string()),
                 wait_for_idle: true,
                 continuation_pending: true,
+                continuation_owner_id: Some("wedged-test-owner".to_string()),
             };
 
             let failure = cancel_turn_bounded(&state, &req, Duration::from_millis(25))

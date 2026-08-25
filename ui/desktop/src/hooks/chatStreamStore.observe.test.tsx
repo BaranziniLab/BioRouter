@@ -470,12 +470,13 @@ describe('ChatStreamController.observeSession — who owns the socket', () => {
 
       expect(mocks.cancelTurn).toHaveBeenCalledWith(
         expect.objectContaining({
-          body: {
+          body: expect.objectContaining({
             session_id: 'obs-exact-stop',
             expected_turn_id: 'turn-observed-child',
             wait_for_idle: true,
             continuation_pending: true,
-          },
+            continuation_owner_id: expect.any(String),
+          }),
         })
       );
       expect(observerSignal.aborted).toBe(true);

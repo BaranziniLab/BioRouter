@@ -519,7 +519,8 @@ async fn a_factory_completer_routes_approval_to_the_originating_chat() {
 
     let request_id = routed_approval_id(&session_id, &unrelated_session_id).await;
     assert_eq!(
-        PendingUserActions::global().resolve(
+        PendingUserActions::global().resolve_in_session(
+            &session_id,
             &request_id,
             UserActionOutcome::Approved {
                 permission: Permission::AllowOnce,

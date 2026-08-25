@@ -38,7 +38,12 @@ import { errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
 import { reasoningEffortForRequest } from '../store/reasoningEffort';
 import { userActionHeaders } from '../utils/userAction';
-import { abandonContinuationLease as abandonContinuationLeaseRequest } from '../utils/continuationLease';
+import {
+  abandonContinuationLease as abandonContinuationLeaseRequest,
+  getContinuationOwnerId,
+  recoverContinuationGroup,
+  type ContinuationRecoveryAction,
+} from '../utils/continuationLease';
 import type { ChatTurnErrorData, TurnErrorScope } from '../types/turnError';
 import type { PendingSteer } from '../utils/trailingActivity';
 
@@ -141,7 +146,17 @@ type StreamFrameEnvelope = {
 
 type ResumeInitializationEnvelope = {
   initializing?: boolean | null;
+  pending_continuation?: {
+    ownership?: 'owned' | 'foreign' | 'settling' | null;
+    superseded_turn_id?: string | null;
+    continuation_lease?: string | null;
+  } | null;
 };
+
+export interface PendingContinuationView {
+  ownership: 'owned' | 'foreign' | 'settling';
+  supersededTurnId: string;
+}
 
 type CancelTurnMismatch = {
   mismatch: true;
@@ -157,6 +172,40 @@ type StreamDrainOptions = {
 
 function isInitializingResume(value: unknown): boolean {
   return (value as ResumeInitializationEnvelope | null | undefined)?.initializing === true;
+}
+
+function resumePendingContinuation(value: unknown): {
+  view: PendingContinuationView;
+  continuationLease: string | null;
+} | null {
+  const pending = (value as ResumeInitializationEnvelope | null | undefined)?.pending_continuation;
+  if (
+    !pending ||
+    (pending.ownership !== 'owned' &&
+      pending.ownership !== 'foreign' &&
+      pending.ownership !== 'settling') ||
+    typeof pending.superseded_turn_id !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    view: {
+      ownership: pending.ownership,
+      supersededTurnId: pending.superseded_turn_id,
+    },
+    continuationLease:
+      pending.ownership === 'owned' && typeof pending.continuation_lease === 'string'
+        ? pending.continuation_lease
+        : null,
+  };
+}
+
+function resumeRequestBody(sessionId: string, loadModelAndExtensions: boolean) {
+  return {
+    session_id: sessionId,
+    load_model_and_extensions: loadModelAndExtensions,
+    continuation_owner_id: getContinuationOwnerId(),
+  };
 }
 
 function cancelTurnMismatch(error: unknown): CancelTurnMismatch | null {
@@ -379,6 +428,8 @@ export interface ChatStreamSnapshot {
    * never outlive the thing it describes.
    */
   pendingSteer?: PendingSteer;
+  /** A durable Stop-and-Send gap discovered from the daemon on resume. */
+  pendingContinuation?: PendingContinuationView;
   /**
    * Whether this session's agent — model provider + extensions — has finished
    * loading on the backend. The transcript paints before this flips (see
@@ -577,6 +628,7 @@ class ChatStreamController {
   /** Tokens awaiting an authoritative abandonment acknowledgement. */
   private pendingLeaseAbandons = new Set<string>();
   private leaseAbandonmentInFlight = new Map<string, Promise<boolean>>();
+  private continuationRecoveryInFlight: Promise<void> | null = null;
   /** A closed tab must abandon a lease that arrives after its close raced the cancel response. */
   private ownershipReleased = false;
   /**
@@ -859,14 +911,12 @@ class ChatStreamController {
     const operation = (async () => {
       try {
         const response = await resumeAgent({
-          body: {
-            session_id: this.sessionId,
-            load_model_and_extensions: false,
-          },
+          body: resumeRequestBody(this.sessionId, false),
           headers: await userActionHeaders(),
           throwOnError: true,
         });
         if (!this.observing || this.observedTurnGeneration !== generation) return;
+        this.notePendingContinuation(response.data);
         this.noteChildInitialization(isInitializingResume(response.data));
         // A frame or user takeover that changed the pointer while the request
         // was in flight is newer local evidence; never overwrite it.
@@ -1215,6 +1265,28 @@ class ChatStreamController {
     void this.ensureAgentLoaded();
   }
 
+  private notePendingContinuation(value: unknown): void {
+    const pending = resumePendingContinuation(value);
+    if (!pending) {
+      if (!this.continuationLease) {
+        this.updateSnapshot((prev) =>
+          prev.pendingContinuation ? { ...prev, pendingContinuation: undefined } : prev
+        );
+      }
+      return;
+    }
+
+    // A cancel response that landed after this resume was issued is newer local
+    // evidence. Never let that stale response replace a lease this window just
+    // acquired with a foreign-ownership gate.
+    if (this.continuationLease && !pending.continuationLease) return;
+    if (pending.continuationLease) {
+      this.continuationLease = pending.continuationLease;
+      this.continuationLeaseTurnId = null;
+    }
+    this.updateSnapshot((prev) => ({ ...prev, pendingContinuation: pending.view }));
+  }
+
   /**
    * Load the agent — model provider + extensions — for this session, once.
    *
@@ -1237,14 +1309,12 @@ class ChatStreamController {
       let initializing = false;
       try {
         const response = await resumeAgent({
-          body: {
-            session_id: this.sessionId,
-            load_model_and_extensions: true,
-          },
+          body: resumeRequestBody(this.sessionId, true),
           headers: await userActionHeaders(),
           throwOnError: true,
         });
         const resumeData = response.data;
+        this.notePendingContinuation(resumeData);
         initializing = isInitializingResume(resumeData);
         this.noteChildInitialization(initializing, false);
         const initializationError = resumeData?.initialization_error;
@@ -1376,14 +1446,12 @@ class ChatStreamController {
           // contributing a few hundred bytes to what the user reads. The user
           // came here to read the conversation; give them the conversation.
           const response = await resumeAgent({
-            body: {
-              session_id: this.sessionId,
-              load_model_and_extensions: false,
-            },
+            body: resumeRequestBody(this.sessionId, false),
             headers: await userActionHeaders(),
             throwOnError: true,
           });
           const resumeData = response.data;
+          this.notePendingContinuation(resumeData);
           this.noteChildInitialization(isInitializingResume(resumeData));
           const loadedSession = resumeData?.session;
 
@@ -1573,15 +1641,13 @@ class ChatStreamController {
   private async adoptQueuedInitializingChild(message: Message, streamId: number): Promise<boolean> {
     try {
       const response = await resumeAgent({
-        body: {
-          session_id: this.sessionId,
-          load_model_and_extensions: false,
-        },
+        body: resumeRequestBody(this.sessionId, false),
         headers: await userActionHeaders(),
         throwOnError: true,
       });
       if (this.activeStreamId !== streamId) return true;
       const data = response.data;
+      this.notePendingContinuation(data);
       if (data?.session?.session_type !== 'sub_agent') return false;
 
       const initializing = isInitializingResume(data);
@@ -2075,6 +2141,9 @@ class ChatStreamController {
         if (this.continuationLease === token) {
           this.continuationLease = null;
           this.continuationLeaseTurnId = null;
+          this.updateSnapshot((prev) =>
+            prev.pendingContinuation ? { ...prev, pendingContinuation: undefined } : prev
+          );
         }
         return true;
       } catch (error) {
@@ -2120,7 +2189,49 @@ class ChatStreamController {
     this.continuationLease = null;
     this.continuationLeaseTurnId = null;
     this.pendingLeaseAbandons.delete(token);
+    this.updateSnapshot((prev) =>
+      prev.pendingContinuation ? { ...prev, pendingContinuation: undefined } : prev
+    );
   }
+
+  recoverPendingContinuation = (action: ContinuationRecoveryAction): Promise<void> => {
+    if (this.continuationRecoveryInFlight) return this.continuationRecoveryInFlight;
+    const pending = this.snapshot.pendingContinuation;
+    if (!pending) return Promise.resolve();
+    const operation = (async () => {
+      const response = await recoverContinuationGroup(
+        this.sessionId,
+        pending.supersededTurnId,
+        action
+      );
+      if (action === 'abandon') {
+        this.continuationLease = null;
+        this.continuationLeaseTurnId = null;
+        this.updateSnapshot((prev) => ({ ...prev, pendingContinuation: undefined }));
+        return;
+      }
+      if (!response.continuation_lease) {
+        throw new Error('Continuation takeover did not return a lease');
+      }
+      this.continuationLease = response.continuation_lease;
+      this.continuationLeaseTurnId = null;
+      this.updateSnapshot((prev) => ({
+        ...prev,
+        pendingContinuation: {
+          ownership: 'owned',
+          supersededTurnId: response.superseded_turn_id,
+        },
+      }));
+    })();
+    this.continuationRecoveryInFlight = operation;
+    const clearRecovery = () => {
+      if (this.continuationRecoveryInFlight === operation) {
+        this.continuationRecoveryInFlight = null;
+      }
+    };
+    void operation.then(clearRecovery, clearRecovery);
+    return operation;
+  };
 
   /** Release renderer ownership without cancelling a daemon turn already running. */
   releaseOwnership = (): void => {
@@ -2511,6 +2622,8 @@ class ChatStreamController {
       this.snapshot.chatState !== ChatState.LoadingConversation &&
       !this.stopInFlight &&
       !this.stopPending &&
+      this.snapshot.pendingContinuation?.ownership !== 'foreign' &&
+      this.snapshot.pendingContinuation?.ownership !== 'settling' &&
       // BR-71: an OBSERVER's subscription is not a turn in flight. Reading it
       // as one silently drops every message typed into a daemon-opened tab —
       // the takeover §4.3 promises ("until the tab detaches or the user takes
@@ -2803,6 +2916,9 @@ class ChatStreamController {
         expected_turn_id: turnId,
         wait_for_idle: true,
         continuation_pending: continuationPending,
+        ...(continuationPending
+          ? { continuation_owner_id: getContinuationOwnerId() }
+          : {}),
       };
       const result = await cancelTurn({
         body,
@@ -2825,6 +2941,13 @@ class ChatStreamController {
         } else {
           this.continuationLease = lease;
           this.continuationLeaseTurnId = null;
+          this.updateSnapshot((prev) => ({
+            ...prev,
+            pendingContinuation: {
+              ownership: 'owned',
+              supersededTurnId: turnId,
+            },
+          }));
         }
         return true;
       }

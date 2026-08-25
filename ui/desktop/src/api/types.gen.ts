@@ -278,6 +278,11 @@ export type CancelActiveWorkResponse = {
 };
 
 /**
+ * The two fail-closed 409 shapes returned by `/agent/cancel`.
+ */
+export type CancelTurnConflict = CancelTurnConflictResponse | ContinuationLeaseErrorResponse;
+
+/**
  * A generation-conditional cancel addressed a different active turn.
  */
 export type CancelTurnConflictResponse = {
@@ -290,6 +295,12 @@ export type CancelTurnConflictResponse = {
  * Request body for the addressable cancel route.
  */
 export type CancelTurnRequest = {
+    /**
+     * Stable, per-window identifier for recovering a Stop-and-Send admission
+     * after a renderer reload. It is an ownership label, not a credential;
+     * user-action proof and the opaque lease remain the authorities.
+     */
+    continuation_owner_id?: string | null;
     /**
      * The caller will submit a replacement turn after cancellation settles.
      * This is distinct from ordinary Stop because a delegated child's parent
@@ -2359,6 +2370,17 @@ export type ParseWorkflowResponse = {
     workflow: Workflow;
 };
 
+export type PendingContinuationOwnership = 'owned' | 'foreign' | 'settling';
+
+export type PendingContinuationRef = {
+    /**
+     * Returned only to the same stable owner after the lease is fully live.
+     */
+    continuation_lease?: string | null;
+    ownership: PendingContinuationOwnership;
+    superseded_turn_id: string;
+};
+
 /**
  * Enum representing the possible permission levels for a tool.
  */
@@ -2749,6 +2771,31 @@ export type ReadResourceResponse = {
  */
 export type ReasoningEffort = 'quick' | 'normal' | 'deep';
 
+export type RecoverContinuationAction = 'take_over' | 'abandon';
+
+export type RecoverContinuationRequest = {
+    action: RecoverContinuationAction;
+    /**
+     * Stable per-window owner returned only to that same window on resume.
+     */
+    continuation_owner_id: string;
+    session_id: string;
+    /**
+     * Exact retired generation shown by `ResumeAgentResponse.pending_continuation`.
+     */
+    superseded_turn_id: string;
+};
+
+export type RecoverContinuationResponse = {
+    /**
+     * Present only after this caller explicitly takes ownership. Group
+     * abandonment never returns another window's opaque lease.
+     */
+    continuation_lease?: string | null;
+    resolution: string;
+    superseded_turn_id: string;
+};
+
 export type RedactedThinkingContent = {
     data: string;
 };
@@ -2855,6 +2902,11 @@ export type RestoreResponse = {
 };
 
 export type ResumeAgentRequest = {
+    /**
+     * Stable per-window label used only to rehydrate that same window's
+     * pending Stop-and-Send lease. It is not an authentication credential.
+     */
+    continuation_owner_id?: string | null;
     load_model_and_extensions: boolean;
     session_id: string;
 };
@@ -2869,6 +2921,7 @@ export type ResumeAgentResponse = {
      * or submitting a turn through a generic placeholder agent.
      */
     initializing: boolean;
+    pending_continuation?: PendingContinuationRef | null;
     session: Session;
 };
 
@@ -4201,6 +4254,10 @@ export type CancelTurnData = {
 
 export type CancelTurnErrors = {
     /**
+     * Stop-and-Send requires an exact turn id and a valid stable continuation owner id
+     */
+    400: unknown;
+    /**
      * Unauthorized - invalid secret key
      */
     401: unknown;
@@ -4209,9 +4266,9 @@ export type CancelTurnErrors = {
      */
     403: unknown;
     /**
-     * A different turn generation is now active; it was not cancelled
+     * A different turn generation is active, another client owns the continuation, or its admission is still settling
      */
-    409: CancelTurnConflictResponse;
+    409: CancelTurnConflict;
     /**
      * Internal server error
      */
@@ -4261,6 +4318,39 @@ export type AbandonContinuationLeaseResponses = {
 };
 
 export type AbandonContinuationLeaseResponse2 = AbandonContinuationLeaseResponses[keyof AbandonContinuationLeaseResponses];
+
+export type RecoverContinuationData = {
+    body: RecoverContinuationRequest;
+    path?: never;
+    query?: never;
+    url: '/agent/continuation/recover';
+};
+
+export type RecoverContinuationErrors = {
+    /**
+     * The continuation owner id is missing or invalid
+     */
+    400: unknown;
+    /**
+     * The session is out of reach or the request was not proven to come from the user
+     */
+    403: unknown;
+    /**
+     * The exact continuation generation was already resolved
+     */
+    409: ContinuationLeaseErrorResponse;
+};
+
+export type RecoverContinuationError = RecoverContinuationErrors[keyof RecoverContinuationErrors];
+
+export type RecoverContinuationResponses = {
+    /**
+     * The exact pending continuation was taken over or its whole claim group was abandoned
+     */
+    200: RecoverContinuationResponse;
+};
+
+export type RecoverContinuationResponse2 = RecoverContinuationResponses[keyof RecoverContinuationResponses];
 
 export type AgentCrossAffiliationGrantData = {
     body: CrossAffiliationGrantRequest;

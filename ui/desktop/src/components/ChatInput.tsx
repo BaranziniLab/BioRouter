@@ -265,6 +265,8 @@ interface ChatInputProps {
   setChatState?: (state: ChatState) => void;
   onStop?: (continuationPending?: boolean) => boolean | void | Promise<boolean | void>;
   onAbandonContinuation?: () => void | Promise<void>;
+  /** Keep composed text editable but prevent submission until an ownership gate resolves. */
+  submissionBlocked?: boolean;
   /** BR-61 soft interrupt: inject text into the turn that is already running
    * (no cancel, no lost work). Resolves false when there was nothing to steer,
    * in which case the caller must send/queue the text normally. */
@@ -325,6 +327,7 @@ export default function ChatInput({
   setChatState,
   onStop,
   onAbandonContinuation,
+  submissionBlocked = false,
   onSteer,
   commandHistory = [],
   initialValue = '',
@@ -1957,7 +1960,7 @@ export default function ChatInput({
         return;
       }
 
-      if (canSubmit) {
+      if (canSubmit && !submissionBlocked) {
         performSubmit();
       }
     }
@@ -1971,6 +1974,7 @@ export default function ChatInput({
     }
     const canSubmit =
       !isLoading &&
+      !submissionBlocked &&
       (displayValue.trim() ||
         (currentModelSupportsVision &&
           pastedImages.some((img) => img.filePath && !img.error && !img.isLoading)) ||
@@ -2032,6 +2036,7 @@ export default function ChatInput({
     isAnyImageLoading ||
     isAnyDroppedFileLoading ||
     chatState === ChatState.RestartingAgent ||
+    submissionBlocked ||
     visionMismatch;
 
   // Queue management functions - no storage persistence, only in-memory

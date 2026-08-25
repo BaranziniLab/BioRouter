@@ -83,6 +83,7 @@ use super::coding_agent::{
     CodingAgentKind,
 };
 use super::errors::ProviderError;
+use super::provider_binding::{AbsoluteCommandPath, ProviderRestoreBinding};
 use crate::config::search_path::SearchPaths;
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
@@ -163,6 +164,11 @@ impl ClaudeCodeProvider {
             )
         })?;
 
+        Self::from_resolved(model, AbsoluteCommandPath::resolve(command)?)
+    }
+
+    pub(crate) fn from_resolved(model: ModelConfig, command: AbsoluteCommandPath) -> Result<Self> {
+        let command = AbsoluteCommandPath::new(command.into_path_buf())?.into_path_buf();
         Ok(Self {
             command,
             model,
@@ -1288,6 +1294,13 @@ impl Provider for ClaudeCodeProvider {
         &self.name
     }
 
+    fn restore_binding(&self) -> ProviderRestoreBinding {
+        ProviderRestoreBinding::ClaudeCode {
+            model: super::provider_binding::model_without_restore_marker(self.model.clone()),
+            command: AbsoluteCommandPath::from_resolved(self.command.clone()),
+        }
+    }
+
     fn get_model_config(&self) -> ModelConfig {
         self.model.clone()
     }
@@ -1402,6 +1415,19 @@ impl Provider for ClaudeCodeProvider {
 mod tests {
     use super::*;
     use crate::agents::effort::ReasoningEffort;
+
+    #[test]
+    fn restore_binding_pins_the_resolved_claude_command() {
+        let command = std::env::current_exe().unwrap();
+        let provider = ClaudeCodeProvider::from_resolved(
+            ModelConfig::new_or_fail("claude-sonnet-4-6"),
+            AbsoluteCommandPath::new(command.clone()).unwrap(),
+        )
+        .unwrap();
+        let encoded = serde_json::to_value(provider.restore_binding()).unwrap();
+        assert_eq!(encoded["kind"], "claude_code");
+        assert_eq!(encoded["command"], serde_json::json!(command));
+    }
 
     /// #110: the bridge config must carry the per-call deadline.
     ///

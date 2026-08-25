@@ -302,10 +302,11 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/reply.rs",
-                counts: c(1, 1, 0),
+                counts: c(2, 2, 0),
                 kind: SiteKind::Guard,
                 what: "`POST /reply`, which runs an agent turn with tools inside the named \
-                       session and strictly dominates the rest of the list",
+                       session, plus the explicit continuation takeover and group-abandon \
+                       recovery mutation",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",

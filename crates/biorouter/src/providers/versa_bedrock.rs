@@ -19,6 +19,9 @@ use super::formats::bedrock::{
     classify_bedrock_converse_error, classify_bedrock_converse_stream_error, from_bedrock_message,
     from_bedrock_usage, map_bedrock_stop_reason, to_bedrock_message, to_bedrock_tool_config,
 };
+use super::provider_binding::{
+    model_without_restore_marker, PersistedRetryConfig, ProviderRestoreBinding, SecretFreeEndpoint,
+};
 
 pub const VERSA_BEDROCK_DOC_LINK: &str = "http://biorouter.ucsf.edu/docs";
 pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-6-v1";
@@ -76,34 +79,15 @@ pub struct VersaBedrockProvider {
     /// process-globally with `std::env::set_var`.
     #[serde(skip)]
     resolved_endpoint: String,
+    #[serde(skip)]
+    region: String,
+    #[serde(skip)]
+    operation_timeout_secs: Option<u64>,
 }
 
 impl VersaBedrockProvider {
     pub async fn from_env(model: ModelConfig) -> Result<Self> {
         let config = crate::config::Config::global();
-
-        // Required UCSF-issued credentials. Stored as secrets in Biorouter config.
-        let access_key_id: String = config
-            .get_secret::<String>("VERSA_BEDROCK_ACCESS_KEY_ID")
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "VERSA_BEDROCK_ACCESS_KEY_ID is not configured. \
-                     Add it under Versa API Bedrock in Settings."
-                )
-            })?;
-        let secret_access_key: String = config
-            .get_secret::<String>("VERSA_BEDROCK_SECRET_ACCESS_KEY")
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "VERSA_BEDROCK_SECRET_ACCESS_KEY is not configured. \
-                     Add it under Versa API Bedrock in Settings."
-                )
-            })?;
-        if access_key_id.trim().is_empty() || secret_access_key.trim().is_empty() {
-            return Err(anyhow::anyhow!(
-                "Versa Bedrock access key id / secret access key is empty"
-            ));
-        }
 
         // Endpoint: configurable, but always falls back to the UCSF MuleSoft proxy
         // so a fresh install with just the key + secret works out of the box.
@@ -134,22 +118,74 @@ impl VersaBedrockProvider {
             })
             .unwrap_or_else(|| VERSA_BEDROCK_DEFAULT_REGION.to_string());
 
-        // Build credentials explicitly. This bypasses the AWS default credential
-        // chain (profile files, IMDS, env vars), so users who only set the
-        // access key + secret in Biorouter — and have nothing in ~/.aws — still
-        // get a working setup.
+        let retry_config = Self::load_retry_config(config);
+        let operation_timeout_secs = Self::load_operation_timeout_secs(config);
+
+        Self::from_resolved(
+            model,
+            SecretFreeEndpoint::new(endpoint_url)?,
+            region,
+            PersistedRetryConfig {
+                max_retries: retry_config.max_retries,
+                initial_interval_ms: retry_config.initial_interval_ms,
+                backoff_multiplier: retry_config.backoff_multiplier,
+                max_interval_ms: retry_config.max_interval_ms,
+            },
+            operation_timeout_secs,
+        )
+        .await
+    }
+
+    pub(crate) async fn from_resolved(
+        model: ModelConfig,
+        endpoint: SecretFreeEndpoint,
+        region: String,
+        retry: PersistedRetryConfig,
+        operation_timeout_secs: Option<u64>,
+    ) -> Result<Self> {
+        let binding = ProviderRestoreBinding::VersaBedrock {
+            model: model.clone(),
+            endpoint: endpoint.clone(),
+            region: region.clone(),
+            retry: retry.clone(),
+            operation_timeout_secs,
+        };
+        binding.validate()?;
+
+        let config = crate::config::Config::global();
+        let access_key_id: String = config
+            .get_secret::<String>("VERSA_BEDROCK_ACCESS_KEY_ID")
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "VERSA_BEDROCK_ACCESS_KEY_ID is not configured. \
+                     Add it under Versa API Bedrock in Settings."
+                )
+            })?;
+        let secret_access_key: String = config
+            .get_secret::<String>("VERSA_BEDROCK_SECRET_ACCESS_KEY")
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "VERSA_BEDROCK_SECRET_ACCESS_KEY is not configured. \
+                     Add it under Versa API Bedrock in Settings."
+                )
+            })?;
+        anyhow::ensure!(
+            !access_key_id.trim().is_empty() && !secret_access_key.trim().is_empty(),
+            "Versa Bedrock access key id / secret access key is empty"
+        );
+
         let credentials =
             Credentials::new(access_key_id, secret_access_key, None, None, "VersaBedrock");
-
         let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .credentials_provider(credentials)
-            .region(aws_config::Region::new(region))
-            .endpoint_url(endpoint_url.clone());
-        // Bound a hung/stalled endpoint so a turn can't wait forever (see
-        // `bedrock_timeout_config`). Without this, a proxy that accepts the
-        // connection but never answers freezes the agent with no error.
-        if let Some(timeout_config) = super::formats::bedrock::bedrock_timeout_config(config) {
-            loader = loader.timeout_config(timeout_config);
+            .region(aws_config::Region::new(region.clone()))
+            .endpoint_url(endpoint.as_str());
+        if let Some(secs) = operation_timeout_secs {
+            loader = loader.timeout_config(
+                aws_smithy_types::timeout::TimeoutConfig::builder()
+                    .operation_timeout(std::time::Duration::from_secs(secs))
+                    .build(),
+            );
         }
         let sdk_config = loader.load().await;
 
@@ -161,14 +197,21 @@ impl VersaBedrockProvider {
             .map_err(|e| anyhow::anyhow!("Failed to load Versa Bedrock credentials: {}", e))?;
 
         let client = Client::new(&sdk_config);
-        let retry_config = Self::load_retry_config(config);
+        let retry_config = RetryConfig {
+            max_retries: retry.max_retries,
+            initial_interval_ms: retry.initial_interval_ms,
+            backoff_multiplier: retry.backoff_multiplier,
+            max_interval_ms: retry.max_interval_ms,
+        };
 
         Ok(Self {
             client,
             model,
             retry_config,
             name: Self::metadata().name,
-            resolved_endpoint: endpoint_url,
+            resolved_endpoint: endpoint.into_string(),
+            region,
+            operation_timeout_secs,
         })
     }
 
@@ -191,6 +234,19 @@ impl VersaBedrockProvider {
             backoff_multiplier,
             max_interval_ms,
         }
+    }
+
+    fn load_operation_timeout_secs(config: &crate::config::Config) -> Option<u64> {
+        let secs = config
+            .get_param::<u64>("BEDROCK_OPERATION_TIMEOUT_SECS")
+            .ok()
+            .or_else(|| {
+                std::env::var("BEDROCK_OPERATION_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|value| value.trim().parse::<u64>().ok())
+            })
+            .unwrap_or(super::formats::bedrock::BEDROCK_DEFAULT_OPERATION_TIMEOUT_SECS);
+        (secs != 0).then_some(secs)
     }
 
     async fn converse(
@@ -313,6 +369,22 @@ impl Provider for VersaBedrockProvider {
 
     fn get_name(&self) -> &str {
         &self.name
+    }
+
+    fn restore_binding(&self) -> ProviderRestoreBinding {
+        ProviderRestoreBinding::VersaBedrock {
+            model: model_without_restore_marker(self.model.clone()),
+            endpoint: SecretFreeEndpoint::new(self.resolved_endpoint.clone())
+                .expect("resolved Versa Bedrock endpoint must remain valid"),
+            region: self.region.clone(),
+            retry: PersistedRetryConfig {
+                max_retries: self.retry_config.max_retries,
+                initial_interval_ms: self.retry_config.initial_interval_ms,
+                backoff_multiplier: self.retry_config.backoff_multiplier,
+                max_interval_ms: self.retry_config.max_interval_ms,
+            },
+            operation_timeout_secs: self.operation_timeout_secs,
+        }
     }
 
     fn tier(&self) -> ProviderTier {
@@ -446,6 +518,10 @@ mod tests {
             retry_config: RetryConfig::default(),
             name: "versa_bedrock".to_string(),
             resolved_endpoint: endpoint.to_string(),
+            region: VERSA_BEDROCK_DEFAULT_REGION.to_string(),
+            operation_timeout_secs: Some(
+                crate::providers::formats::bedrock::BEDROCK_DEFAULT_OPERATION_TIMEOUT_SECS,
+            ),
         }
     }
 
@@ -475,9 +551,76 @@ mod tests {
                 retry_config: RetryConfig::default(),
                 name: "versa_bedrock".to_string(),
                 resolved_endpoint: endpoint.to_string(),
+                region: VERSA_BEDROCK_DEFAULT_REGION.to_string(),
+                operation_timeout_secs: Some(
+                    crate::providers::formats::bedrock::BEDROCK_DEFAULT_OPERATION_TIMEOUT_SECS,
+                ),
             },
             captured,
         )
+    }
+
+    #[tokio::test]
+    async fn restore_binding_keeps_route_and_transport_policy_without_credentials() {
+        let endpoint = "https://versa-bedrock.invalid/exact-route";
+        let provider = provider_at(endpoint).await;
+        let encoded = serde_json::to_value(provider.restore_binding()).unwrap();
+        assert_eq!(encoded["kind"], "versa_bedrock");
+        assert_eq!(encoded["endpoint"], endpoint);
+        assert_eq!(encoded["region"], VERSA_BEDROCK_DEFAULT_REGION);
+        assert_eq!(
+            encoded["operation_timeout_secs"],
+            crate::providers::formats::bedrock::BEDROCK_DEFAULT_OPERATION_TIMEOUT_SECS
+        );
+        let text = encoded.to_string();
+        assert!(!text.contains("test-access-key"));
+        assert!(!text.contains("test-secret-key"));
+    }
+
+    #[tokio::test]
+    async fn restore_reloads_rotated_credentials_and_fails_closed_when_they_are_missing() {
+        use std::collections::HashMap;
+
+        async fn restore_with(access_key: &str, secret_key: &str) -> Result<VersaBedrockProvider> {
+            crate::config::with_config_overrides(
+                HashMap::from([
+                    ("VERSA_BEDROCK_ACCESS_KEY_ID".into(), access_key.into()),
+                    ("VERSA_BEDROCK_SECRET_ACCESS_KEY".into(), secret_key.into()),
+                ]),
+                VersaBedrockProvider::from_resolved(
+                    ModelConfig::new_or_fail(VERSA_BEDROCK_DEFAULT_MODEL),
+                    SecretFreeEndpoint::new("https://versa-bedrock.invalid/exact".into()).unwrap(),
+                    VERSA_BEDROCK_DEFAULT_REGION.into(),
+                    PersistedRetryConfig {
+                        max_retries: 6,
+                        initial_interval_ms: 2_000,
+                        backoff_multiplier: 2.0,
+                        max_interval_ms: 120_000,
+                    },
+                    Some(300),
+                ),
+            )
+            .await
+        }
+
+        let missing = restore_with("", "").await;
+        assert!(missing.is_err());
+
+        let first = restore_with("first-access-sentinel", "first-secret-sentinel")
+            .await
+            .unwrap();
+        let second = restore_with("second-access-sentinel", "second-secret-sentinel")
+            .await
+            .unwrap();
+        let first = serde_json::to_value(first.restore_binding()).unwrap();
+        let second = serde_json::to_value(second.restore_binding()).unwrap();
+        assert_eq!(
+            first, second,
+            "credential rotation must not change the binding"
+        );
+        let encoded = second.to_string();
+        assert!(!encoded.contains("second-access-sentinel"));
+        assert!(!encoded.contains("second-secret-sentinel"));
     }
 
     fn assert_inference_wire(

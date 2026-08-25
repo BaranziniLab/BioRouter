@@ -729,6 +729,16 @@ pub trait Provider: Send + Sync {
     /// Get the name of this provider instance
     fn get_name(&self) -> &str;
 
+    /// A secret-free recipe for reconstructing this exact resolved provider.
+    /// Built-ins with mutable routes or commands override this; registry-backed
+    /// providers retain their name and complete model configuration.
+    fn restore_binding(&self) -> crate::providers::provider_binding::ProviderRestoreBinding {
+        crate::providers::provider_binding::ProviderRestoreBinding::registry(
+            self.get_name().to_string(),
+            self.get_model_config(),
+        )
+    }
+
     /// The least-private component of what this **instance** actually resolved.
     ///
     /// An instance method, never a lookup on `get_name()`: `get_name()` on a

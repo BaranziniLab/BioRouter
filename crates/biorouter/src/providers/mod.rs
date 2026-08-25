@@ -30,6 +30,7 @@ pub mod ollama;
 pub mod openai;
 pub mod openrouter;
 pub mod pricing;
+pub(crate) mod provider_binding;
 pub mod provider_registry;
 pub mod provider_test;
 pub(crate) mod retry;

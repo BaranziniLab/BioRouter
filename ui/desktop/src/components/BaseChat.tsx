@@ -1181,6 +1181,7 @@ function BaseChatContent({
     submitElicitationResponse,
     stopStreaming,
     abandonContinuation,
+    recoverPendingContinuation,
     steer,
     sessionLoadError,
     turnError,
@@ -1189,6 +1190,7 @@ function BaseChatContent({
     turnStartedAt,
     lastMessageAt,
     pendingSteer,
+    pendingContinuation,
     agentReady,
     notifications: toolCallNotifications,
     pendingToolCalls,
@@ -1851,6 +1853,53 @@ function BaseChatContent({
         'biorouter-composer-view-transition'
       )}
     >
+      {pendingContinuation && (
+        <div
+          role="status"
+          className="mx-3 mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/70 px-3 py-2 text-sm"
+        >
+          <span>
+            {pendingContinuation.ownership === 'owned'
+              ? 'A previous Stop & send is ready. Re-enter the message you want to send; Biorouter will not guess or resend lost composer text.'
+              : pendingContinuation.ownership === 'settling'
+                ? 'A previous Stop & send is still settling. Recover it explicitly or abandon the stopped-turn continuation.'
+                : 'Another window owns a pending Stop & send. Take it over here or abandon the stopped-turn continuation before sending.'}
+          </span>
+          <div className="flex shrink-0 gap-2">
+            {pendingContinuation.ownership !== 'owned' && (
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => {
+                  void recoverPendingContinuation('take_over').catch((error) => {
+                    toastError({
+                      title: 'Could not recover Stop & send',
+                      msg: errorMessage(error),
+                    });
+                  });
+                }}
+              >
+                Take over
+              </Button>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                void recoverPendingContinuation('abandon').catch((error) => {
+                  toastError({
+                    title: 'Could not abandon Stop & send',
+                    msg: errorMessage(error),
+                  });
+                });
+              }}
+            >
+              Abandon
+            </Button>
+          </div>
+        </div>
+      )}
       <ChatInput
         sessionId={sessionId}
         handleSubmit={handleFormSubmit}
@@ -1858,6 +1907,10 @@ function BaseChatContent({
         setChatState={setChatState}
         onStop={stopStreaming}
         onAbandonContinuation={abandonContinuation}
+        submissionBlocked={
+          pendingContinuation?.ownership === 'foreign' ||
+          pendingContinuation?.ownership === 'settling'
+        }
         onSteer={steer}
         commandHistory={commandHistory}
         initialValue={initialPrompt}

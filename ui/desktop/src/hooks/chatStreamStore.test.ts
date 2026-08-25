@@ -3,7 +3,7 @@ import { ChatState } from '../types/chatState';
 import { ChatStreamRegistry, NOTIFY_FALLBACK_MS, isRunningState } from './chatStreamStore';
 import type { Message, MessageEvent, Session, TokenState } from '../api';
 import { cancelTurn, editMessage, getSession, interrupt, reply, resumeAgent } from '../api';
-import { abandonContinuationLease } from '../utils/continuationLease';
+import { abandonContinuationLease, recoverContinuationGroup } from '../utils/continuationLease';
 
 vi.mock('../api', async () => {
   return {
@@ -23,6 +23,8 @@ vi.mock('../api', async () => {
 });
 vi.mock('../utils/continuationLease', () => ({
   abandonContinuationLease: vi.fn(async () => undefined),
+  getContinuationOwnerId: vi.fn(() => 'test-window-owner'),
+  recoverContinuationGroup: vi.fn(),
 }));
 
 // Issue #56 Task 58 / #47. `POST /reply` and `GET /sessions/{id}` now resolve
@@ -131,6 +133,7 @@ beforeEach(() => {
   vi.mocked(editMessage).mockReset();
   vi.mocked(abandonContinuationLease).mockReset();
   vi.mocked(abandonContinuationLease).mockResolvedValue(undefined);
+  vi.mocked(recoverContinuationGroup).mockReset();
   vi.mocked(cancelTurn).mockResolvedValue({
     data: { cancelled: true, settled: true, continuation_lease: 'lease-default' },
   } as never);
@@ -1464,6 +1467,80 @@ describe('ChatStreamRegistry', () => {
     ).toBe('lease-barrier');
   });
 
+  it('rehydrates only its owner-bound lease and never resends lost composer text', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: {
+        session: session('lease-rehydrated'),
+        pending_continuation: {
+          ownership: 'owned',
+          superseded_turn_id: 'turn-stopped',
+          continuation_lease: 'lease-rehydrated-token',
+        },
+      },
+    } as never);
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never);
+
+    const controller = registry.getController('lease-rehydrated');
+    await controller.loadSession();
+    expect(reply).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().pendingContinuation).toEqual({
+      ownership: 'owned',
+      supersededTurnId: 'turn-stopped',
+    });
+
+    await expect(controller.handleSubmit('message re-entered by the user')).resolves.toBe(true);
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(reply).mock.calls[0][0].body).toMatchObject({
+      continuation_lease: 'lease-rehydrated-token',
+    });
+  });
+
+  it('gates a foreign continuation until explicit takeover', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: {
+        session: session('lease-foreign'),
+        pending_continuation: {
+          ownership: 'foreign',
+          superseded_turn_id: 'turn-foreign-stopped',
+        },
+      },
+    } as never);
+    vi.mocked(recoverContinuationGroup).mockResolvedValue({
+      resolution: 'taken_over',
+      superseded_turn_id: 'turn-foreign-stopped',
+      continuation_lease: 'lease-taken-over',
+    });
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never);
+
+    const controller = registry.getController('lease-foreign');
+    await controller.loadSession();
+    await expect(controller.handleSubmit('must stay in composer')).resolves.toBe(false);
+    expect(reply).not.toHaveBeenCalled();
+
+    await controller.recoverPendingContinuation('take_over');
+    expect(recoverContinuationGroup).toHaveBeenCalledWith(
+      'lease-foreign',
+      'turn-foreign-stopped',
+      'take_over'
+    );
+    await expect(controller.handleSubmit('explicitly re-entered after takeover')).resolves.toBe(
+      true
+    );
+    expect(vi.mocked(reply).mock.calls[0][0].body).toMatchObject({
+      continuation_lease: 'lease-taken-over',
+    });
+  });
+
   it('abandons the lease when the replacement reply is authoritatively refused', async () => {
     const registry = new ChatStreamRegistry();
     const original = createControlledStream();
@@ -1648,6 +1725,7 @@ describe('ChatStreamRegistry', () => {
       expected_turn_id: originalTurnId,
       wait_for_idle: true,
       continuation_pending: true,
+      continuation_owner_id: 'test-window-owner',
     });
     await expect(controller.handleSubmit('must wait for the lease')).resolves.toBe(false);
     expect(reply).toHaveBeenCalledTimes(1);
@@ -1710,6 +1788,7 @@ describe('ChatStreamRegistry', () => {
       expected_turn_id: originalTurnId,
       wait_for_idle: true,
       continuation_pending: true,
+      continuation_owner_id: 'test-window-owner',
     });
     expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
   });

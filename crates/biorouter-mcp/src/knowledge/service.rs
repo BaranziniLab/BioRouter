@@ -1003,12 +1003,18 @@ impl KnowledgeService {
         }
 
         let lock_path = self.kb_lock_path(kb_id);
+        let kb_root = paths::kb_root(&self.root, kb_id);
         let waiter_cancel = cancel
             .map(CancellationToken::child_token)
             .unwrap_or_default();
         let cancel_waiter_on_drop = CancelOnDrop(waiter_cancel.clone());
         let acquire = tokio::task::spawn_blocking(move || {
-            FileLockGuard::acquire_cancellable(&lock_path, !existing, &waiter_cancel)
+            let file_guard =
+                FileLockGuard::acquire_cancellable(&lock_path, !existing, &waiter_cancel)?;
+            if kb_root.join(".git").is_dir() {
+                GitRepo::open(&kb_root)?.recover_orphaned_txn()?;
+            }
+            Ok::<_, anyhow::Error>(file_guard)
         });
         let file_guard = acquire
             .await
@@ -1900,8 +1906,8 @@ impl KnowledgeService {
         } else {
             (format!("ingested {source_id}"), "+1 source")
         };
-        let committed = if let Some(_branch) = txn_branch {
-            repo.commit_on_txn_in_progress(&summary)
+        let committed = if let Some(branch) = txn_branch {
+            repo.commit_on_txn_in_progress(branch, &summary)
         } else {
             repo.commit_all(
                 crate::knowledge::types::ChangeKind::Ingest,
@@ -3052,7 +3058,9 @@ impl KnowledgeService {
         let repo = GitRepo::open(&kb_root)?;
         let summary = format!("restore to {}", commit_sha.get(..7).unwrap_or(commit_sha));
         let sha = repo.restore_to(commit_sha, &summary)?;
-        self.rebuild_graph_cache(kb_id)?;
+        if let Err(error) = self.rebuild_graph_cache(kb_id) {
+            return Err(KnowledgeWriteFailure::committed("knowledge restore", &sha, error).into());
+        }
         Ok(sha)
     }
 
@@ -3909,6 +3917,29 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn acquiring_the_kb_lock_recovers_a_crash_orphan_without_a_timeout() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let kb = svc.root().join("k");
+        let repo = GitRepo::open(&kb).unwrap();
+        let txn = repo.begin_txn("orphan").unwrap();
+        std::fs::write(kb.join("orphan.md"), "uncommitted after crash").unwrap();
+        repo.commit_on_txn(&txn, "orphaned write").unwrap();
+        drop(repo);
+
+        let _guard = svc.lock_kb("k").await.unwrap();
+        assert!(!kb.join("orphan.md").exists());
+        let recovered = git2::Repository::open(&kb).unwrap();
+        assert!(recovered
+            .find_branch(&txn.branch, git2::BranchType::Local)
+            .is_err());
+        assert!(matches!(
+            recovered.head().unwrap().shorthand(),
+            Some("main" | "master")
+        ));
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn a_queued_file_lock_never_blocks_the_tokio_worker() {
         let (_dir, svc) = svc();
@@ -4426,6 +4457,42 @@ mod tests {
             history_after_restore[0].kind,
             crate::knowledge::types::ChangeKind::Restore
         );
+    }
+
+    #[tokio::test]
+    async fn restore_cache_failure_reports_the_committed_phase_and_sha() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let target = svc.list_history("k", 10).unwrap()[0].commit_sha.clone();
+        svc.add_raw_source(
+            "k",
+            convert::SourceInput::Text {
+                text: "later state".into(),
+                title: Some("later".into()),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let kb = svc.root().join("k");
+        crate::knowledge::graph::fail_cache_writes(&kb, 1);
+
+        let error = svc
+            .restore_state_async("k", &target, None)
+            .await
+            .expect_err("the injected post-commit refresh must be reported");
+        let failure = error
+            .downcast_ref::<KnowledgeWriteFailure>()
+            .expect("restore retains its durable outcome as a typed failure");
+        assert_eq!(
+            failure.phase,
+            crate::knowledge::git::KnowledgeWriteFailurePhase::Committed
+        );
+        let commit_sha = failure
+            .commit_sha
+            .as_deref()
+            .expect("a committed restore carries its exact sha");
+        assert_eq!(svc.list_history("k", 10).unwrap()[0].commit_sha, commit_sha);
     }
 
     #[test]

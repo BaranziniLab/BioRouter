@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use futures::stream::BoxStream;
+use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{stream, Stream, StreamExt, TryStreamExt};
 use uuid::Uuid;
 
@@ -885,6 +885,86 @@ fn delegated_work_supervision_prompt(parent_session_id: &str) -> Option<String> 
     ))
 }
 
+struct NativeSupervisionClaim {
+    handle: Arc<crate::agents::subagent_handle::BackgroundSubagent>,
+    generation: u64,
+    result: crate::agents::subagent_result::SubagentResult,
+}
+
+enum NativeSupervisionWake {
+    Ready(NativeSupervisionClaim),
+    Complete,
+    Cancelled,
+}
+
+async fn next_native_supervision_claim(
+    parent_session_id: &str,
+    cancel_token: &Option<CancellationToken>,
+) -> NativeSupervisionWake {
+    loop {
+        let mut observed = Vec::new();
+        for handle in crate::agents::subagent_handle::list_for_session(parent_session_id) {
+            let version = handle.state_version();
+            if handle.latest_generation_collected() && !handle.continuation_pending() {
+                continue;
+            }
+            let generation = handle.child_turn_generation();
+            if !handle.continuation_pending() {
+                if let Some(terminal) = handle.terminal_generation() {
+                    if terminal.generation == generation {
+                        return NativeSupervisionWake::Ready(NativeSupervisionClaim {
+                            handle,
+                            generation,
+                            result: terminal.result,
+                        });
+                    }
+                }
+            }
+            observed.push((handle, version));
+        }
+
+        if observed.is_empty() {
+            return NativeSupervisionWake::Complete;
+        }
+
+        let changes = FuturesUnordered::new();
+        for (handle, version) in observed {
+            changes.push(async move {
+                handle.wait_for_state_change(version).await;
+            });
+        }
+        tokio::pin!(changes);
+        tokio::select! {
+            biased;
+            _ = async {
+                match cancel_token.as_ref() {
+                    Some(token) => token.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => return NativeSupervisionWake::Cancelled,
+            _ = changes.next() => {}
+        }
+    }
+}
+
+fn native_supervision_message(claim: &NativeSupervisionClaim) -> Result<Message> {
+    let serialized = serde_json::to_string_pretty(&claim.result)?;
+    let framed = crate::conversation::message::frame_workspace_injection(
+        Some(&claim.handle.title),
+        &serialized,
+    );
+    Ok(Message::assistant()
+        .with_text(format!(
+            "Delegated subagent {} ({}, generation {}) reached a terminal result:\n{}",
+            claim.handle.title, claim.handle.child_session_id, claim.generation, framed,
+        ))
+        .with_provenance(crate::conversation::message::MessageProvenance {
+            kind: ProvenanceKind::AgentInjection,
+            from_session_id: Some(claim.handle.child_session_id.clone()),
+            from_session_name: Some(claim.handle.title.clone()),
+        }))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum StructuredFinalOutputAction {
     Emit(String),
@@ -1536,6 +1616,22 @@ async fn persist_steering_message(
     Ok((steer, published))
 }
 
+async fn persist_carried_over_interrupts(
+    session_manager: &SessionManager,
+    session_id: &str,
+    pending: Vec<QueuedInterrupt>,
+) -> Result<Vec<Message>> {
+    let mut messages = Vec::with_capacity(pending.len());
+    for queued in pending {
+        let mut message = soft_interrupt_message(queued);
+        session_manager
+            .add_message_adopting_uid(session_id, &mut message)
+            .await?;
+        messages.push(message);
+    }
+    Ok(messages)
+}
+
 /// The ids of this signed turn's tool requests that have an executable
 /// counterpart and a response slot, in the provider-authored order the signed
 /// assistant block fixes.
@@ -2160,7 +2256,7 @@ pub enum InterruptRefused {
 enum LiveSteerOutcome {
     Delivered(Vec<Message>),
     Disabled,
-    Cancelled,
+    Cancelled(Vec<Message>),
 }
 
 impl std::fmt::Display for InterruptRefused {
@@ -2198,9 +2294,9 @@ enum ToolAudience {
 /// reply loop performs, without running a reply loop.
 #[derive(Debug)]
 pub enum Drained {
-    /// Items were taken; the turn stays open and must loop again to consume them.
+    /// Items were taken before the turn closed.
     Some(Vec<QueuedInterrupt>),
-    /// Nothing queued; the queue is now closed and the loop may exit.
+    /// Nothing was queued when the turn closed.
     Empty,
 }
 
@@ -3253,13 +3349,13 @@ impl Agent {
                     // may have observed the first item before cancellation, but
                     // storing the user's message is correct in either case and
                     // avoids an unsafe blind retry after an unknown ack state.
-                    for queued in pending[index..].iter().cloned() {
-                        let mut message = soft_interrupt_message(queued);
-                        session_manager
-                            .add_message_adopting_uid(session_id, &mut message)
-                            .await?;
-                    }
-                    return Ok(LiveSteerOutcome::Cancelled);
+                    let carried_over = persist_carried_over_interrupts(
+                        session_manager,
+                        session_id,
+                        pending[index..].to_vec(),
+                    )
+                    .await?;
+                    return Ok(LiveSteerOutcome::Cancelled(carried_over));
                 },
                 acknowledgement = acknowledged => acknowledgement,
             };
@@ -3285,10 +3381,98 @@ impl Agent {
         Ok(LiveSteerOutcome::Delivered(delivered))
     }
 
+    fn close_and_take_for_turn(&self, expected_turn: &TurnId) -> Vec<QueuedInterrupt> {
+        let mut q = self.lock_interrupts();
+        if q.turn.as_ref() != Some(expected_turn) {
+            return Vec::new();
+        }
+        q.accepting = false;
+        q.turn = None;
+        std::mem::take(&mut q.queued)
+    }
+
+    fn close_and_take_current_turn(&self) -> Vec<QueuedInterrupt> {
+        let mut q = self.lock_interrupts();
+        q.accepting = false;
+        q.turn = None;
+        std::mem::take(&mut q.queued)
+    }
+
+    async fn settle_soft_interrupts_for_turn(
+        &self,
+        expected_turn: &TurnId,
+        session_id: &str,
+    ) -> Result<Vec<Message>> {
+        persist_carried_over_interrupts(
+            &self.config.session_manager,
+            session_id,
+            self.close_and_take_for_turn(expected_turn),
+        )
+        .await
+    }
+
+    /// Close the active interrupt window and make every already-accepted item
+    /// durable. The detached turn runner calls this before dropping a cancelled
+    /// reply stream, whose lazy tail can no longer perform the settlement.
+    /// Repeated calls are harmless: the first call clears the turn and queue in
+    /// the same critical section, so later calls return no messages.
+    pub async fn settle_carried_over_soft_interrupts(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<Message>> {
+        persist_carried_over_interrupts(
+            &self.config.session_manager,
+            session_id,
+            self.close_and_take_current_turn(),
+        )
+        .await
+    }
+
+    pub async fn next_native_supervision_message_after_forced_exit(
+        &self,
+        session_id: &str,
+        cancel_token: Option<CancellationToken>,
+    ) -> Result<Option<Message>> {
+        loop {
+            match next_native_supervision_claim(session_id, &cancel_token).await {
+                NativeSupervisionWake::Ready(claim) => {
+                    let mut message = native_supervision_message(&claim)?;
+                    if !claim
+                        .handle
+                        .mark_terminal_generation_collected_if_generation(claim.generation)
+                    {
+                        warn!(
+                            child_session_id = %claim.handle.child_session_id,
+                            generation = claim.generation,
+                            "delegated result changed before native supervision could collect it"
+                        );
+                        continue;
+                    }
+                    let persisted = self
+                        .config
+                        .session_manager
+                        .add_message_adopting_uid(session_id, &mut message)
+                        .await;
+                    if persisted.is_err() {
+                        claim
+                            .handle
+                            .rollback_terminal_generation_collection(claim.generation);
+                    }
+                    persisted?;
+                    return Ok(Some(message));
+                }
+                NativeSupervisionWake::Complete | NativeSupervisionWake::Cancelled => {
+                    return Ok(None)
+                }
+            }
+        }
+    }
+
     /// Take everything and, only if there was nothing, close in the same critical
-    /// section (#69). That is what makes the exit atomic: after `Drained::Empty`
-    /// no further interrupt can be accepted, so nothing can arrive between the
-    /// check and the exit.
+    /// section (#69). A non-empty result intentionally keeps the turn accepting:
+    /// the normal completion path requeues those items and continues so the model
+    /// can apply them. Safety and cancellation exits use the unconditional exact-
+    /// turn close above and carry the items into the durable transcript instead.
     pub fn close_and_drain(&self) -> Drained {
         let mut q = self.lock_interrupts();
         let taken = std::mem::take(&mut q.queued);
@@ -5289,6 +5473,7 @@ impl Agent {
     /// belong to one iteration of the reply loop.
     async fn issue_tool_bridge(
         &self,
+        iteration_provider: &Arc<dyn Provider>,
         session: &Session,
         conversation: &Conversation,
         tools: &[Tool],
@@ -5301,18 +5486,16 @@ impl Agent {
         // child was the ordinary case, not the corner one. `tier()` and
         // `affiliation()` already had to be instance methods for exactly this, and
         // `uses_tool_bridge` is the third override beside them.
-        let uses_bridge = {
-            let guard = self.provider.lock().await;
-            guard.as_ref().map(|p| p.uses_tool_bridge())?
-        };
-        if !uses_bridge {
+        if !iteration_provider.uses_tool_bridge() {
             return None;
         }
 
         // Sampled once, here, and carried in the grant. A bridged call is a call,
         // and `CallCapability` exists so a call's privacy capability is fixed
         // before it runs rather than re-read while it runs.
-        let capability = crate::privacy::CallCapability::sample(&self.provider).await;
+        let pinned_provider: SharedProvider =
+            Arc::new(Mutex::new(Some(Arc::clone(iteration_provider))));
+        let capability = crate::privacy::CallCapability::sample(&pinned_provider).await;
 
         let workspace_target = resolve_bundled_extension(Self::SPAWN_EXTENSION);
         let trusted_workspace = if let Some(target) = workspace_target.as_ref() {
@@ -5333,7 +5516,6 @@ impl Agent {
 
         let delegation_available = coding_agent_bridge_can_delegate(tools, trusted_workspace);
         let subagent = if delegation_available {
-            let provider = self.provider().await.ok()?;
             let mut extensions = self.get_extension_configs().await;
             extensions.retain(|extension| {
                 trusted_knowledge
@@ -5344,7 +5526,7 @@ impl Agent {
             Some(BridgedSubagentContext {
                 agent_config: self.config.clone(),
                 task_config: TaskConfig::new(
-                    provider,
+                    Arc::clone(iteration_provider),
                     &session.id,
                     &session.working_dir,
                     extensions,
@@ -6371,6 +6553,29 @@ impl Agent {
         request_id: String,
         confirmation: PermissionConfirmation,
     ) -> ConfirmationOutcome {
+        self.handle_confirmation_in_session(None, request_id, confirmation)
+            .await
+    }
+
+    /// Handle a confirmation posted from the exact session whose surface
+    /// rendered it. This is the only entry that may resolve a bridged call's
+    /// process-global pending action.
+    pub async fn handle_confirmation_for_session(
+        &self,
+        session_id: &str,
+        request_id: String,
+        confirmation: PermissionConfirmation,
+    ) -> ConfirmationOutcome {
+        self.handle_confirmation_in_session(Some(session_id), request_id, confirmation)
+            .await
+    }
+
+    async fn handle_confirmation_in_session(
+        &self,
+        session_id: Option<&str>,
+        request_id: String,
+        confirmation: PermissionConfirmation,
+    ) -> ConfirmationOutcome {
         let sender = self
             .pending_confirmations
             .lock()
@@ -6419,7 +6624,18 @@ impl Agent {
                         permission: confirmation.permission,
                     },
                 };
-                match PendingUserActions::global().resolve(&request_id, relayed) {
+                let Some(session_id) = session_id else {
+                    debug!(
+                        "Ignoring confirmation for request {}: no exact session was supplied",
+                        request_id
+                    );
+                    return ConfirmationOutcome::Unknown;
+                };
+                match PendingUserActions::global().resolve_in_session(
+                    session_id,
+                    &request_id,
+                    relayed,
+                ) {
                     ResolveOutcome::Delivered => ConfirmationOutcome::Delivered,
                     ResolveOutcome::Rejected | ResolveOutcome::Unknown => {
                         debug!(
@@ -6466,7 +6682,7 @@ impl Agent {
             });
         if let Some((id, user_data)) = elicitation_response {
             if let Err(e) = ActionRequiredManager::global()
-                .submit_response(id.clone(), user_data)
+                .submit_response(&session_config.id, id.clone(), user_data)
                 .await
             {
                 // No live request is waiting on this id. The usual cause
@@ -7349,7 +7565,12 @@ impl Agent {
             // real consumer, and anything a previous turn left behind is dropped
             // with a warning instead of ambushing this one.
             let this_turn = TurnId::mint();
+            crate::agents::subagent_handle::open_parent_continuation_admission(
+                &session_config.id,
+            );
             self.open_for_turn(this_turn.clone());
+            let mut native_supervision_required = false;
+            let mut deferred_turn_abort: Option<(TurnAbortCode, String)> = None;
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -7402,6 +7623,8 @@ impl Agent {
                 // budget-exhaustion stop is distinguishable from a normal completion.
                 tracing::debug!("agent action {}/{} this turn", turns_taken, max_turns);
                 if turns_taken > max_turns {
+                    crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+                    native_supervision_required = true;
                     emit_loop_safety(
                         LoopSafetyKind::TurnLimitStop,
                         &session_config.id,
@@ -7419,6 +7642,8 @@ impl Agent {
                     break;
                 }
                 if tool_calls_taken > max_tool_calls {
+                    crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+                    native_supervision_required = true;
                     emit_loop_safety(
                         LoopSafetyKind::ToolCallLimitStop,
                         &session_config.id,
@@ -7439,6 +7664,8 @@ impl Agent {
                 // kept going. End the turn rather than let a confirmed loop run to
                 // the `max_turns` cap.
                 if stall_deadline.is_some_and(|deadline| turns_taken > deadline) {
+                    crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+                    native_supervision_required = true;
                     let reason = stall_watch
                         .last_reason()
                         .unwrap_or("repeating the same actions without progress")
@@ -7462,6 +7689,8 @@ impl Agent {
                 // it kept working past its grace window. End the reply rather than
                 // let it spend the budget over again.
                 if budget_deadline.is_some_and(|deadline| turns_taken > deadline) {
+                    crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+                    native_supervision_required = true;
                     let snapshot = budget.snapshot_at(reply_started.elapsed());
                     warn!(
                         elapsed_seconds = snapshot.elapsed_seconds,
@@ -7696,6 +7925,7 @@ impl Agent {
                 // inside the awaited call and therefore inside this scope.
                 let bridge_lease = self
                     .issue_tool_bridge(
+                        &iteration_provider,
                         &session,
                         &conversation_with_moim,
                         &tools,
@@ -7824,7 +8054,13 @@ impl Agent {
                                     }
                                 }
                                 LiveSteerOutcome::Disabled => live_steer_sender = None,
-                                LiveSteerOutcome::Cancelled => break,
+                                LiveSteerOutcome::Cancelled(messages) => {
+                                    for message in messages {
+                                        conversation.push(message.clone());
+                                        yield AgentEvent::Message(message);
+                                    }
+                                    break;
+                                }
                             }
                             continue;
                         }
@@ -8825,7 +9061,9 @@ impl Agent {
                 }
 
                 if let Some((code, message)) = pending_turn_abort.take() {
-                    yield AgentEvent::TurnAborted { code, message };
+                    crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+                    native_supervision_required = true;
+                    deferred_turn_abort = Some((code, message));
                     break;
                 }
 
@@ -9074,24 +9312,33 @@ impl Agent {
                 tokio::task::yield_now().await;
             }
 
-            // #69: the loop is over on every path that reaches here — including
-            // the aborts that break out above `close_and_drain` (cancel, budget,
-            // stall, max_turns). Close the queue so a steer aimed at this turn is
-            // refused rather than accepted into a session with nothing running.
-            // A steer that got in first is reported (it is about to be dropped by
-            // the next `open_for_turn`); it cannot be answered, because there is
-            // no loop left to answer it. An early-cancelled consumer can drop this
-            // stream before this line, in which case the next turn's
-            // `open_for_turn` is what clears the queue.
-            if let Drained::Some(stranded) = self.close_and_drain() {
-                warn!(
-                    count = stranded.len(),
-                    turn = %this_turn,
-                    "turn ended before its queued soft interrupts could be injected"
-                );
-                // Closed for good: re-taking the (now empty) queue flips
-                // `accepting` off, which the non-empty branch above left on.
-                let _ = self.close_and_drain();
+            crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+
+            // Close and take in one critical section. Anything accepted before
+            // this close is carried into the durable transcript and emitted to
+            // observers even when a safety stop won before the next provider
+            // boundary. Anything arriving after the close is refused.
+            for message in self
+                .settle_soft_interrupts_for_turn(&this_turn, &session_config.id)
+                .await?
+            {
+                yield AgentEvent::Message(message);
+            }
+
+            if native_supervision_required {
+                while let Some(message) = self
+                    .next_native_supervision_message_after_forced_exit(
+                        &session_config.id,
+                        cancel_token.clone(),
+                    )
+                    .await?
+                {
+                    yield AgentEvent::Message(message);
+                }
+            }
+
+            if let Some((code, message)) = deferred_turn_abort {
+                yield AgentEvent::TurnAborted { code, message };
             }
 
             // BR-12: the turn is complete — the agent loop drained and control is
@@ -10040,7 +10287,7 @@ mod tests {
         let id = queued_elicitation_id(&drained)
             .expect("the request message carries the elicitation id");
         ActionRequiredManager::global()
-            .submit_cancellation(id)
+            .submit_cancellation(SESSION, id)
             .await
             .unwrap();
 
@@ -10112,7 +10359,7 @@ mod tests {
         let id = queued_elicitation_id(&drained_by_b)
             .expect("session B's request must still be deliverable to B");
         ActionRequiredManager::global()
-            .submit_cancellation(id)
+            .submit_cancellation(SESSION_B, id)
             .await
             .unwrap();
         let outcome = tokio::time::timeout(Duration::from_secs(2), waiter)
@@ -10133,7 +10380,7 @@ mod tests {
     /// #107: a bridged call's prompt lives in the process-global registry, not
     /// in this agent's map — it was raised on an axum task with no `Agent` in
     /// scope. The desktop posts both kinds of decision to the same route, so
-    /// `handle_confirmation` has to reach both. Without the fallthrough the
+    /// the session-scoped handler has to reach both. Without the fallthrough the
     /// route answers `unknown` and the child stays parked to its TTL.
     #[tokio::test]
     async fn a_confirmation_reaches_a_bridged_prompt_this_agent_never_registered() {
@@ -10168,7 +10415,11 @@ mod tests {
 
         assert_eq!(
             agent
-                .handle_confirmation(id.clone(), confirmation(Permission::AllowOnce))
+                .handle_confirmation_for_session(
+                    "bridged-sess",
+                    id.clone(),
+                    confirmation(Permission::AllowOnce),
+                )
                 .await,
             ConfirmationOutcome::Delivered
         );
@@ -10202,7 +10453,11 @@ mod tests {
             }),
         );
         agent
-            .handle_confirmation(parked.id().to_string(), confirmation(Permission::Cancel))
+            .handle_confirmation_for_session(
+                "bridged-sess",
+                parked.id().to_string(),
+                confirmation(Permission::Cancel),
+            )
             .await;
         assert_eq!(
             parked.wait(std::time::Duration::from_secs(5), None).await,
@@ -10672,6 +10927,8 @@ mod tests {
 
     #[tokio::test]
     async fn live_interrupt_is_persisted_only_after_provider_acknowledges_it() {
+        use crate::conversation::message::{MessageProvenance, ProvenanceKind};
+
         let temp = tempfile::TempDir::new().unwrap();
         let sm = std::sync::Arc::new(crate::session::SessionManager::new(
             temp.path().to_path_buf(),
@@ -10692,7 +10949,14 @@ mod tests {
         ));
         agent.open_for_turn(TurnId::new("turn-live-steer"));
         agent
-            .try_queue_soft_interrupt("change course now".into(), None)
+            .try_queue_soft_interrupt(
+                "change course now".into(),
+                Some(MessageProvenance {
+                    kind: ProvenanceKind::UserDirect,
+                    from_session_id: Some("parent-session".into()),
+                    from_session_name: Some("Parent".into()),
+                }),
+            )
             .unwrap();
         let (sender, mut receiver) = provider_steer_channel();
         let provider = tokio::spawn(async move {
@@ -10713,12 +10977,21 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert!(!agent.has_soft_interrupts());
         let stored = sm.get_session(&session.id, true).await.unwrap();
-        assert!(stored
-            .conversation
-            .unwrap()
+        let stored_conversation = stored.conversation.unwrap();
+        let stored_message = stored_conversation
             .messages()
             .iter()
-            .any(|message| message.as_concat_text() == "change course now"));
+            .find(|message| message.as_concat_text() == "change course now")
+            .expect("the acknowledged steer must be durable");
+        assert_eq!(
+            stored_message.metadata.provenance,
+            Some(MessageProvenance {
+                kind: ProvenanceKind::UserDirect,
+                from_session_id: Some("parent-session".into()),
+                from_session_name: Some("Parent".into()),
+            }),
+            "the durable copy must retain exact user-direct provenance"
+        );
     }
 
     #[tokio::test]
@@ -10813,7 +11086,10 @@ mod tests {
             .deliver_live_interrupts(&sender, &sm, &session.id, &Some(cancel))
             .await
             .unwrap();
-        assert!(matches!(outcome, LiveSteerOutcome::Cancelled));
+        let LiveSteerOutcome::Cancelled(messages) = outcome else {
+            panic!("cancelled live steering must be carried over")
+        };
+        assert_eq!(messages.len(), 2);
         assert!(!agent.has_soft_interrupts());
         let stored = sm.get_session(&session.id, true).await.unwrap();
         let texts: Vec<_> = stored
@@ -10944,6 +11220,38 @@ mod tests {
             }
             Drained::Empty => panic!("the queued steer must be drained by its own turn"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn exact_turn_close_is_atomic_and_idempotent() {
+        let agent = test_agent().await;
+        let turn = TurnId::new("turn-atomic-close");
+        agent.open_for_turn(turn.clone());
+        agent
+            .try_queue_soft_interrupt("accepted before close".into(), None)
+            .expect("the active turn accepts before closing");
+
+        let taken = agent.close_and_take_for_turn(&turn);
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].text, "accepted before close");
+        assert!(matches!(
+            agent.try_queue_soft_interrupt("after close".into(), None),
+            Err(InterruptRefused::TurnEnded)
+        ));
+        assert!(
+            agent.close_and_take_for_turn(&turn).is_empty(),
+            "a second settlement cannot duplicate the accepted item"
+        );
+
+        agent.open_for_turn(TurnId::new("successor-turn"));
+        assert!(
+            agent.close_and_take_for_turn(&turn).is_empty(),
+            "a stale exact-turn close cannot consume a successor turn"
+        );
+        assert!(matches!(
+            agent.try_queue_soft_interrupt("successor input".into(), None),
+            Ok(turn) if turn.as_str() == "successor-turn"
+        ));
     }
 
     /// An `Agent` over a throwaway session store with exactly ONE loaded
@@ -11110,6 +11418,7 @@ mod tests {
             .conversation
             .clone()
             .unwrap_or_else(Conversation::empty);
+        let iteration_provider = agent.provider().await.expect("the pinned provider");
 
         for missing_collector in CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS {
             assert!(
@@ -11131,7 +11440,13 @@ mod tests {
             );
 
             let lease = agent
-                .issue_tool_bridge(&session, &conversation, &restricted_surface, None)
+                .issue_tool_bridge(
+                    &iteration_provider,
+                    &session,
+                    &conversation,
+                    &restricted_surface,
+                    None,
+                )
                 .await
                 .expect("a coding-agent provider still needs a bridge");
             let nonce = lease
@@ -11148,6 +11463,41 @@ mod tests {
                 "the bridge advertised an uncollectable subagent without {missing_collector}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn coding_agent_bridge_eligibility_uses_the_pinned_iteration_provider() {
+        coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let pinned_non_bridge: Arc<dyn Provider> =
+            Arc::new(BridgedChildProvider { name: "anthropic" });
+        agent
+            .update_provider(
+                Arc::new(BridgedChildProvider { name: "codex" }),
+                &session_id,
+            )
+            .await
+            .expect("bind a different live provider");
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, true)
+            .await
+            .expect("read the bridge parent");
+        let conversation = session
+            .conversation
+            .clone()
+            .unwrap_or_else(Conversation::empty);
+        let tools = agent.list_tools(&session_id, None).await;
+
+        assert!(
+            agent
+                .issue_tool_bridge(&pinned_non_bridge, &session, &conversation, &tools, None,)
+                .await
+                .is_none(),
+            "a later provider swap must not make a non-bridged iteration eligible"
+        );
     }
 
     #[test]
@@ -11404,6 +11754,125 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn native_supervision_waits_on_events_for_the_exact_terminal_generation() {
+        let parent = format!("native-supervision-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("native-supervision-child-{}", uuid::Uuid::new_v4());
+        let handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "event-driven child",
+            CancellationToken::new(),
+        );
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        let expected_generation = handle.child_turn_generation();
+        crate::agents::subagent_handle::begin_parent_closing(&parent);
+
+        let child_for_completion = child.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            crate::agents::subagent_handle::record_child_turn_terminal(
+                &child_for_completion,
+                crate::agents::subagent_result::SubagentResult::from_error("event-driven terminal"),
+            );
+        });
+
+        let wake = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            next_native_supervision_claim(&parent, &None),
+        )
+        .await
+        .expect("test safety deadline");
+        let NativeSupervisionWake::Ready(claim) = wake else {
+            panic!("the terminal event must produce a collection claim")
+        };
+        assert_eq!(claim.generation, expected_generation);
+        assert!(claim.result.summary.contains("event-driven terminal"));
+        assert!(handle.mark_terminal_generation_collected_if_generation(claim.generation));
+        assert!(matches!(
+            next_native_supervision_claim(&parent, &None).await,
+            NativeSupervisionWake::Complete
+        ));
+        crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
+    }
+
+    #[tokio::test]
+    async fn native_supervision_ignores_the_superseded_result_and_collects_the_replacement() {
+        let parent = format!("native-replacement-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("native-replacement-child-{}", uuid::Uuid::new_v4());
+        let handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "replacement child",
+            CancellationToken::new(),
+        );
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        crate::agents::subagent_handle::record_child_turn_terminal(
+            &child,
+            crate::agents::subagent_result::SubagentResult::from_error("superseded result"),
+        );
+        let original_generation = handle.child_turn_generation();
+        let continuation = crate::agents::subagent_handle::mark_continuation_pending(&child);
+        continuation.commit();
+        crate::agents::subagent_handle::begin_parent_closing(&parent);
+
+        let child_for_replacement = child.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            crate::agents::subagent_handle::begin_child_turn(&child_for_replacement);
+            tokio::task::yield_now().await;
+            crate::agents::subagent_handle::record_child_turn_terminal(
+                &child_for_replacement,
+                crate::agents::subagent_result::SubagentResult::from_error("replacement result"),
+            );
+        });
+
+        let wake = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            next_native_supervision_claim(&parent, &None),
+        )
+        .await
+        .expect("test safety deadline");
+        let NativeSupervisionWake::Ready(claim) = wake else {
+            panic!("the replacement terminal must produce a collection claim")
+        };
+        assert!(claim.generation > original_generation);
+        assert!(claim.result.summary.contains("replacement result"));
+        assert!(!claim.result.summary.contains("superseded result"));
+        assert!(handle.mark_terminal_generation_collected_if_generation(claim.generation));
+        assert!(matches!(
+            next_native_supervision_claim(&parent, &None).await,
+            NativeSupervisionWake::Complete
+        ));
+        crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
+    }
+
+    #[tokio::test]
+    async fn explicit_cancellation_is_the_only_native_supervision_escape() {
+        let parent = format!("native-cancel-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("native-cancel-child-{}", uuid::Uuid::new_v4());
+        let _handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "never finishing child",
+            CancellationToken::new(),
+        );
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        crate::agents::subagent_handle::begin_parent_closing(&parent);
+        let cancel = CancellationToken::new();
+        let trip = cancel.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            trip.cancel();
+        });
+
+        assert!(matches!(
+            next_native_supervision_claim(&parent, &Some(cancel)).await,
+            NativeSupervisionWake::Cancelled
+        ));
+        crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
+    }
+
     #[test]
     #[serial_test::parallel(workspace_services)]
     fn every_parent_exit_gate_tracks_running_background_children() {
@@ -11505,13 +11974,11 @@ mod tests {
             .into_iter()
             .zip([first_session_id, second_session_id])
         {
+            let iteration_provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+                name: provider_name,
+            });
             agent
-                .update_provider(
-                    Arc::new(BridgedChildProvider {
-                        name: provider_name,
-                    }),
-                    &session_id,
-                )
+                .update_provider(Arc::clone(&iteration_provider), &session_id)
                 .await
                 .expect("bind the coding-agent-shaped provider");
 
@@ -11532,8 +11999,15 @@ mod tests {
                 .conversation
                 .clone()
                 .unwrap_or_else(Conversation::empty);
+            agent
+                .update_provider(
+                    Arc::new(BridgedChildProvider { name: "anthropic" }),
+                    &session_id,
+                )
+                .await
+                .expect("simulate a provider swap after the iteration was pinned");
             let lease = agent
-                .issue_tool_bridge(&session, &conversation, &tools, None)
+                .issue_tool_bridge(&iteration_provider, &session, &conversation, &tools, None)
                 .await
                 .expect("coding-agent providers need a live grant");
             let nonce = lease
@@ -13649,11 +14123,18 @@ mod gate_a_bind_tests {
                 .unwrap()
                 .expect("the newer composite restore marker remains durable");
         let PersistedProviderConfig::LeadWorkerV2 {
-            worker_provider,
+            worker,
             config_generation,
             ..
         } = persisted;
-        assert_eq!(worker_provider, "claude_code");
+        let crate::providers::provider_binding::ProviderRestoreBinding::Registry {
+            provider_name,
+            ..
+        } = worker
+        else {
+            panic!("the worker remains a registry-backed Claude provider")
+        };
+        assert_eq!(provider_name, "claude_code");
         assert_eq!(config_generation, replacement_generation);
         assert!(Arc::ptr_eq(
             &expected_live,

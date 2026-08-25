@@ -396,6 +396,10 @@ pub struct UpdateWorkingDirRequest {
 pub struct ResumeAgentRequest {
     session_id: String,
     load_model_and_extensions: bool,
+    /// Stable per-window label used only to rehydrate that same window's
+    /// pending Stop-and-Send lease. It is not an authentication credential.
+    #[serde(default)]
+    continuation_owner_id: Option<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -492,6 +496,29 @@ pub struct ResumeAgentResponse {
     /// removes the class. Absent means the session is idle.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_turn: Option<ActiveTurnRef>,
+    /// A Stop-and-Send admission whose exact retired generation still awaits a
+    /// successor. The opaque token is present only when this resume request's
+    /// stable owner id matches the recorded owner; foreign windows receive only
+    /// enough metadata to offer explicit takeover or group abandonment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_continuation: Option<PendingContinuationRef>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingContinuationOwnership {
+    Owned,
+    Foreign,
+    Settling,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct PendingContinuationRef {
+    pub ownership: PendingContinuationOwnership,
+    pub superseded_turn_id: String,
+    /// Returned only to the same stable owner after the lease is fully live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_lease: Option<String>,
 }
 
 /// A pointer to a live turn, handed to a client that needs to attach to it.
@@ -677,6 +704,91 @@ async fn start_agent(
     Ok(Json(session))
 }
 
+fn validate_continuation_owner_id(owner_id: Option<&str>) -> Result<(), ErrorResponse> {
+    let invalid = owner_id.is_some_and(|owner_id| {
+        owner_id.is_empty()
+            || owner_id.len() > 128
+            || !owner_id.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.')
+            })
+    });
+    if invalid {
+        return Err(ErrorResponse {
+            message: "Invalid continuation owner id".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
+    Ok(())
+}
+
+async fn load_resumed_agent_extensions(
+    state: &AppState,
+    payload: &ResumeAgentRequest,
+    session: &Session,
+    child_initializing: bool,
+) -> (
+    Option<Vec<ExtensionLoadResult>>,
+    Option<AgentInitializationError>,
+) {
+    if child_initializing || !payload.load_model_and_extensions {
+        return (None, None);
+    }
+
+    let agent = match state.get_agent_for_route(payload.session_id.clone()).await {
+        Ok(agent) => agent,
+        Err(status) => {
+            tracing::error!(
+                "Failed to prepare agent for session {}: {}",
+                payload.session_id,
+                status
+            );
+            return (
+                None,
+                Some(AgentInitializationError {
+                    code: "agent_unavailable".into(),
+                    message: "Biorouter could not prepare the model agent for this session.".into(),
+                    retryable: status.is_server_error(),
+                }),
+            );
+        }
+    };
+
+    if let Err(error) = agent.restore_persisted_provider_if_missing(session).await {
+        tracing::error!(
+            "Failed to restore provider for session {}: {}",
+            payload.session_id,
+            error
+        );
+        return (
+            None,
+            Some(AgentInitializationError {
+                code: "provider_restore_failed".into(),
+                message: error.to_string(),
+                retryable: false,
+            }),
+        );
+    }
+
+    let results =
+        if let Some(results) = state.take_extension_loading_task(&payload.session_id).await {
+            tracing::debug!(
+                "Using background extension loading results for session {}",
+                payload.session_id
+            );
+            state
+                .remove_extension_loading_task(&payload.session_id)
+                .await;
+            results
+        } else {
+            tracing::debug!(
+                "No background task found, loading extensions for session {}",
+                payload.session_id
+            );
+            agent.load_extensions_from_session(session).await
+        };
+    (Some(results), None)
+}
+
 #[utoipa::path(
     post,
     path = "/agent/resume",
@@ -693,6 +805,7 @@ async fn resume_agent(
     headers: HeaderMap,
     Json(payload): Json<ResumeAgentRequest>,
 ) -> Result<Json<ResumeAgentResponse>, ErrorResponse> {
+    validate_continuation_owner_id(payload.continuation_owner_id.as_deref())?;
     crate::routes::session_reach::session_reach(
         state.session_manager(),
         &payload.session_id,
@@ -703,7 +816,6 @@ async fn resume_agent(
     let session =
         read_resume_session(state.session_manager(), &payload.session_id, &headers).await?;
 
-    let mut initialization_error = None;
     // A queued background child has a durable session row but not yet its
     // delegated runtime profile. Constructing a generic cached Agent here would
     // expose the wrong tools/provider and let a reply race for its initial turn.
@@ -711,67 +823,32 @@ async fn resume_agent(
     // exact live Agent once its permit and atomic profile are ready.
     let child_initializing = session.session_type == SessionType::SubAgent
         && biorouter::agents::subagent_handle::is_child_initializing(&payload.session_id);
-    let extension_results = if child_initializing {
-        None
-    } else if payload.load_model_and_extensions {
-        match state.get_agent_for_route(payload.session_id.clone()).await {
-            Ok(agent) => match agent.restore_persisted_provider_if_missing(&session).await {
-                Ok(()) => {
-                    let extension_results = if let Some(results) =
-                        state.take_extension_loading_task(&payload.session_id).await
-                    {
-                        tracing::debug!(
-                            "Using background extension loading results for session {}",
-                            payload.session_id
-                        );
-                        state
-                            .remove_extension_loading_task(&payload.session_id)
-                            .await;
-                        results
-                    } else {
-                        tracing::debug!(
-                            "No background task found, loading extensions for session {}",
-                            payload.session_id
-                        );
-                        agent.load_extensions_from_session(&session).await
-                    };
-                    Some(extension_results)
-                }
-                Err(error) => {
-                    tracing::error!(
-                        "Failed to restore provider for session {}: {}",
-                        payload.session_id,
-                        error
-                    );
-                    initialization_error = Some(AgentInitializationError {
-                        code: "provider_restore_failed".into(),
-                        message: error.to_string(),
-                        retryable: false,
-                    });
-                    None
-                }
-            },
-            Err(status) => {
-                tracing::error!(
-                    "Failed to prepare agent for session {}: {}",
-                    payload.session_id,
-                    status
-                );
-                initialization_error = Some(AgentInitializationError {
-                    code: "agent_unavailable".into(),
-                    message: "Biorouter could not prepare the model agent for this session.".into(),
-                    retryable: status.is_server_error(),
-                });
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let (extension_results, initialization_error) =
+        load_resumed_agent_extensions(&state, &payload, &session, child_initializing).await;
 
     let active_turn = state
         .active_turn_id(&payload.session_id)
         .map(|turn_id| ActiveTurnRef { turn_id });
+    let pending_continuation = state
+        .pending_continuation_for_owner(
+            &payload.session_id,
+            payload.continuation_owner_id.as_deref(),
+        )
+        .map(|pending| PendingContinuationRef {
+            ownership: match pending.ownership {
+                crate::state::PendingContinuationOwnership::Owned => {
+                    PendingContinuationOwnership::Owned
+                }
+                crate::state::PendingContinuationOwnership::Foreign => {
+                    PendingContinuationOwnership::Foreign
+                }
+                crate::state::PendingContinuationOwnership::Settling => {
+                    PendingContinuationOwnership::Settling
+                }
+            },
+            superseded_turn_id: pending.superseded_turn_id,
+            continuation_lease: pending.continuation_lease,
+        });
 
     Ok(Json(ResumeAgentResponse {
         session,
@@ -779,6 +856,7 @@ async fn resume_agent(
         extension_results,
         initialization_error,
         active_turn,
+        pending_continuation,
     }))
 }
 
@@ -2300,6 +2378,20 @@ mod resume_update_security_tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
     use tower::ServiceExt;
+
+    #[test]
+    fn foreign_pending_continuation_never_serializes_an_opaque_lease() {
+        let pending = PendingContinuationRef {
+            ownership: PendingContinuationOwnership::Foreign,
+            superseded_turn_id: "turn-stopped".to_string(),
+            continuation_lease: None,
+        };
+
+        let value = serde_json::to_value(pending).unwrap();
+        assert_eq!(value["ownership"], "foreign");
+        assert_eq!(value["superseded_turn_id"], "turn-stopped");
+        assert!(value.get("continuation_lease").is_none());
+    }
 
     struct RecordingSessionReader {
         session: Session,

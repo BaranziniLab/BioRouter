@@ -121,9 +121,9 @@ pub fn write_page(
     }
     write_atomically(&abs, content.as_bytes())?;
 
-    let committed = if let Some(_branch) = txn_branch {
+    let committed = if let Some(branch) = txn_branch {
         // Caller has already switched HEAD to the txn branch via begin_txn.
-        repo.commit_on_txn_in_progress(commit_message)
+        repo.commit_on_txn_in_progress(branch, commit_message)
     } else {
         repo.commit_all(ChangeKind::Manual, commit_message, None)
     };

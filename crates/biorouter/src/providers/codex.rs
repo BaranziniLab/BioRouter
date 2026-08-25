@@ -49,6 +49,7 @@ use super::coding_agent::{
     self, bridge, codex_stream, discovery, env as agent_env, mirror, transcript, CodingAgentKind,
 };
 use super::errors::ProviderError;
+use super::provider_binding::{AbsoluteCommandPath, ProviderRestoreBinding};
 use crate::agents::effort::ReasoningEffort;
 use crate::config::search_path::SearchPaths;
 use crate::conversation::message::{Message, MessageContent};
@@ -233,6 +234,11 @@ impl CodexProvider {
                 KIND.command_config_key(),
             )
         })?;
+        Self::from_resolved(model, AbsoluteCommandPath::resolve(command)?)
+    }
+
+    pub(crate) fn from_resolved(model: ModelConfig, command: AbsoluteCommandPath) -> Result<Self> {
+        let command = AbsoluteCommandPath::new(command.into_path_buf())?.into_path_buf();
         Ok(Self {
             command,
             model,
@@ -1329,6 +1335,13 @@ impl Provider for CodexProvider {
         &self.name
     }
 
+    fn restore_binding(&self) -> ProviderRestoreBinding {
+        ProviderRestoreBinding::Codex {
+            model: super::provider_binding::model_without_restore_marker(self.model.clone()),
+            command: AbsoluteCommandPath::from_resolved(self.command.clone()),
+        }
+    }
+
     fn get_model_config(&self) -> ModelConfig {
         self.model.clone()
     }
@@ -1437,6 +1450,19 @@ impl Provider for CodexProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restore_binding_pins_the_resolved_codex_command() {
+        let command = std::env::current_exe().unwrap();
+        let provider = CodexProvider::from_resolved(
+            ModelConfig::new_or_fail("gpt-5.5"),
+            AbsoluteCommandPath::new(command.clone()).unwrap(),
+        )
+        .unwrap();
+        let encoded = serde_json::to_value(provider.restore_binding()).unwrap();
+        assert_eq!(encoded["kind"], "codex");
+        assert_eq!(encoded["command"], serde_json::json!(command));
+    }
 
     /// Only a `chatgpt` account is the subscription. Everything else is metered,
     /// and a metered run is refused rather than billed quietly.

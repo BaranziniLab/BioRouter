@@ -765,12 +765,14 @@ async fn a_bridged_call_needing_approval_is_answerable_and_resumes() {
         async move {
             let id =
                 await_published_approval(&session_id, std::time::Duration::from_secs(90)).await;
-            let outcome = biorouter::pending_user_action::PendingUserActions::global().resolve(
-                &id,
-                biorouter::pending_user_action::UserActionOutcome::Approved {
-                    permission: biorouter::permission::Permission::AllowOnce,
-                },
-            );
+            let outcome = biorouter::pending_user_action::PendingUserActions::global()
+                .resolve_in_session(
+                    &session_id,
+                    &id,
+                    biorouter::pending_user_action::UserActionOutcome::Approved {
+                        permission: biorouter::permission::Permission::AllowOnce,
+                    },
+                );
             assert_eq!(
                 outcome,
                 biorouter::pending_user_action::ResolveOutcome::Delivered,
@@ -893,7 +895,8 @@ async fn a_denied_bridged_call_returns_a_result_the_child_can_act_on() {
         async move {
             let id =
                 await_published_approval(&session_id, std::time::Duration::from_secs(90)).await;
-            biorouter::pending_user_action::PendingUserActions::global().resolve(
+            biorouter::pending_user_action::PendingUserActions::global().resolve_in_session(
+                &session_id,
                 &id,
                 biorouter::pending_user_action::UserActionOutcome::Denied {
                     permission: biorouter::permission::Permission::DenyOnce,
@@ -1021,7 +1024,8 @@ async fn a_bridged_codex_call_needing_approval_is_answerable_and_resumes() {
         async move {
             let id =
                 await_published_approval(&session_id, std::time::Duration::from_secs(120)).await;
-            biorouter::pending_user_action::PendingUserActions::global().resolve(
+            biorouter::pending_user_action::PendingUserActions::global().resolve_in_session(
+                &session_id,
                 &id,
                 biorouter::pending_user_action::UserActionOutcome::Approved {
                     permission: biorouter::permission::Permission::AllowOnce,

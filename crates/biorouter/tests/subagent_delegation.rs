@@ -284,6 +284,11 @@ async fn collect_delegations(
         watch_text.contains("Completed:"),
         "workspace_watch did not collect the delegated batch: {watch_text}"
     );
+    let parent_turn_text = messages
+        .iter()
+        .map(Message::as_concat_text)
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let mut collected = HashMap::new();
     for receipt in receipts {
@@ -304,11 +309,29 @@ async fn collect_delegations(
         let result = handle
             .result()
             .unwrap_or_else(|| panic!("{} has no terminal result", receipt.child_session_id));
+        let collected_before_watch = parent_turn_text.contains(&result.summary);
         assert!(
-            watch_text.contains(&receipt.child_session_id) && watch_text.contains(&result.summary),
-            "workspace_watch did not return the exact result for {}: {watch_text}",
+            watch_text.contains(&receipt.child_session_id),
+            "workspace_watch omitted {}: {watch_text}",
             receipt.child_session_id
         );
+        if collected_before_watch {
+            assert!(
+                parent_turn_text.contains(&result.summary),
+                "native parent supervision collected {} without injecting its exact result",
+                receipt.child_session_id
+            );
+            assert!(
+                watch_text.contains(&result.summary) || watch_text.contains("already idle"),
+                "a previously collected child was neither repeated nor identified as idle: {watch_text}"
+            );
+        } else {
+            assert!(
+                watch_text.contains(&result.summary),
+                "workspace_watch did not return the exact result for {}: {watch_text}",
+                receipt.child_session_id
+            );
+        }
 
         let read = workspace_call(
             &workspace,

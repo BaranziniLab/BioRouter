@@ -258,6 +258,9 @@
               }
             }
           },
+          "400": {
+            "description": "Stop-and-Send requires an exact turn id and a valid stable continuation owner id"
+          },
           "401": {
             "description": "Unauthorized - invalid secret key"
           },
@@ -265,11 +268,11 @@
             "description": "The request was not proven to come from the user"
           },
           "409": {
-            "description": "A different turn generation is now active; it was not cancelled",
+            "description": "A different turn generation is active, another client owns the continuation, or its admission is still settling",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CancelTurnConflictResponse"
+                  "$ref": "#/components/schemas/CancelTurnConflict"
                 }
               }
             }
@@ -315,6 +318,52 @@
           },
           "409": {
             "description": "The lease is invalid or belongs to another session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContinuationLeaseErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent/continuation/recover": {
+      "post": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "recover_continuation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoverContinuationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The exact pending continuation was taken over or its whole claim group was abandoned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoverContinuationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The continuation owner id is missing or invalid"
+          },
+          "403": {
+            "description": "The session is out of reach or the request was not proven to come from the user"
+          },
+          "409": {
+            "description": "The exact continuation generation was already resolved",
             "content": {
               "application/json": {
                 "schema": {
@@ -6140,6 +6189,17 @@
           }
         }
       },
+      "CancelTurnConflict": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/CancelTurnConflictResponse"
+          },
+          {
+            "$ref": "#/components/schemas/ContinuationLeaseErrorResponse"
+          }
+        ],
+        "description": "The two fail-closed 409 shapes returned by `/agent/cancel`."
+      },
       "CancelTurnConflictResponse": {
         "type": "object",
         "description": "A generation-conditional cancel addressed a different active turn.",
@@ -6167,6 +6227,11 @@
           "session_id"
         ],
         "properties": {
+          "continuation_owner_id": {
+            "type": "string",
+            "description": "Stable, per-window identifier for recovering a Stop-and-Send admission\nafter a renderer reload. It is an ownership label, not a credential;\nuser-action proof and the opaque lease remain the authorities.",
+            "nullable": true
+          },
           "continuation_pending": {
             "type": "boolean",
             "description": "The caller will submit a replacement turn after cancellation settles.\nThis is distinct from ordinary Stop because a delegated child's parent\nmust keep supervising across the gap between the two turns."
@@ -10229,6 +10294,34 @@
           }
         }
       },
+      "PendingContinuationOwnership": {
+        "type": "string",
+        "enum": [
+          "owned",
+          "foreign",
+          "settling"
+        ]
+      },
+      "PendingContinuationRef": {
+        "type": "object",
+        "required": [
+          "ownership",
+          "superseded_turn_id"
+        ],
+        "properties": {
+          "continuation_lease": {
+            "type": "string",
+            "description": "Returned only to the same stable owner after the lease is fully live.",
+            "nullable": true
+          },
+          "ownership": {
+            "$ref": "#/components/schemas/PendingContinuationOwnership"
+          },
+          "superseded_turn_id": {
+            "type": "string"
+          }
+        }
+      },
       "PermissionLevel": {
         "type": "string",
         "description": "Enum representing the possible permission levels for a tool.",
@@ -10872,6 +10965,58 @@
           "deep"
         ]
       },
+      "RecoverContinuationAction": {
+        "type": "string",
+        "enum": [
+          "take_over",
+          "abandon"
+        ]
+      },
+      "RecoverContinuationRequest": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "superseded_turn_id",
+          "continuation_owner_id",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/RecoverContinuationAction"
+          },
+          "continuation_owner_id": {
+            "type": "string",
+            "description": "Stable per-window owner returned only to that same window on resume."
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "superseded_turn_id": {
+            "type": "string",
+            "description": "Exact retired generation shown by `ResumeAgentResponse.pending_continuation`."
+          }
+        }
+      },
+      "RecoverContinuationResponse": {
+        "type": "object",
+        "required": [
+          "resolution",
+          "superseded_turn_id"
+        ],
+        "properties": {
+          "continuation_lease": {
+            "type": "string",
+            "description": "Present only after this caller explicitly takes ownership. Group\nabandonment never returns another window's opaque lease.",
+            "nullable": true
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "superseded_turn_id": {
+            "type": "string"
+          }
+        }
+      },
       "RedactedThinkingContent": {
         "type": "object",
         "required": [
@@ -11169,6 +11314,11 @@
           "load_model_and_extensions"
         ],
         "properties": {
+          "continuation_owner_id": {
+            "type": "string",
+            "description": "Stable per-window label used only to rehydrate that same window's\npending Stop-and-Send lease. It is not an authentication credential.",
+            "nullable": true
+          },
           "load_model_and_extensions": {
             "type": "boolean"
           },
@@ -11210,6 +11360,14 @@
           "initializing": {
             "type": "boolean",
             "description": "True only while a delegated child is queued before its exact runtime\nprofile has been installed. Clients must wait instead of fetching tools\nor submitting a turn through a generic placeholder agent."
+          },
+          "pending_continuation": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PendingContinuationRef"
+              }
+            ],
+            "nullable": true
           },
           "session": {
             "$ref": "#/components/schemas/Session"

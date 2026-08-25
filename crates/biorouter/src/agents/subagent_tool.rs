@@ -4111,12 +4111,12 @@ mod tests {
         .unwrap()
         .unwrap();
         let crate::providers::lead_worker::PersistedProviderConfig::LeadWorkerV2 {
-            lead_model,
-            worker_model,
+            lead,
+            worker,
             ..
         } = persisted;
         assert!(
-            [lead_model.temperature, worker_model.temperature]
+            [lead.model().temperature, worker.model().temperature]
                 .into_iter()
                 .all(|temperature| temperature == Some(0.25)),
             "the selected half can change between turns, so both must receive the override"

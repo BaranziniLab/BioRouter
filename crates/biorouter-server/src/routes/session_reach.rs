@@ -807,6 +807,13 @@ mod tests {
                 "the turn lock, whose 409 says whether this chat is busy",
             ),
             (
+                reply_rs,
+                "pub async fn recover_continuation",
+                "session_reach(",
+                "recover_continuation_for_owner(",
+                "the pending continuation ownership state",
+            ),
+            (
                 session_rs,
                 "async fn get_session(",
                 "session_reach(",

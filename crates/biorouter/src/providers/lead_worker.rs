@@ -9,6 +9,10 @@ use super::base::{
     ProviderUsage,
 };
 use super::errors::ProviderError;
+use super::provider_binding::{
+    model_without_restore_marker as strip_restore_marker, ProviderRestoreBinding,
+    RESTORE_CONFIG_KEY,
+};
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
 use crate::privacy::affiliation::ModelAffiliation;
@@ -16,11 +20,8 @@ use crate::privacy::ProviderTier;
 use rmcp::model::Tool;
 use rmcp::model::{Content, RawContent};
 
-// Kept inside the already-durable ModelConfig so old session schemas remain
-// readable. The wrapper never forwards this config to either provider.
-const RESTORE_CONFIG_KEY: &str = "__biorouter_provider_restore";
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct LeadWorkerRoutingState {
     #[serde(default)]
     pub(crate) turn_count: usize,
@@ -36,13 +37,11 @@ pub(crate) struct LeadWorkerRoutingState {
 /// binary rejects a shape it cannot reproduce instead of silently using the lead
 /// for both halves.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum PersistedProviderConfig {
     LeadWorkerV2 {
-        lead_provider: String,
-        lead_model: ModelConfig,
-        worker_provider: String,
-        worker_model: ModelConfig,
+        lead: ProviderRestoreBinding,
+        worker: ProviderRestoreBinding,
         lead_turns: usize,
         failure_threshold: usize,
         fallback_turns: usize,
@@ -64,6 +63,12 @@ impl PersistedProviderConfig {
 
         serde_json::from_value(value.clone())
             .context("invalid persisted provider configuration")
+            .and_then(|persisted: Self| {
+                let Self::LeadWorkerV2 { lead, worker, .. } = &persisted;
+                lead.validate()?;
+                worker.validate()?;
+                Ok(persisted)
+            })
             .map(Some)
     }
 
@@ -74,13 +79,9 @@ impl PersistedProviderConfig {
     }
 
     fn with_temperature(mut self, temperature: f32) -> Self {
-        let Self::LeadWorkerV2 {
-            lead_model,
-            worker_model,
-            ..
-        } = &mut self;
-        lead_model.temperature = Some(temperature);
-        worker_model.temperature = Some(temperature);
+        let Self::LeadWorkerV2 { lead, worker, .. } = &mut self;
+        lead.model_mut().temperature = Some(temperature);
+        worker.model_mut().temperature = Some(temperature);
         self
     }
 
@@ -93,8 +94,8 @@ impl PersistedProviderConfig {
     }
 
     fn to_model_config(&self) -> ModelConfig {
-        let Self::LeadWorkerV2 { lead_model, .. } = self;
-        let mut model = lead_model.clone();
+        let Self::LeadWorkerV2 { lead, .. } = self;
+        let mut model = lead.model().clone();
         model
             .request_params
             .get_or_insert_with(Default::default)
@@ -107,14 +108,8 @@ impl PersistedProviderConfig {
     }
 }
 
-pub(crate) fn model_config_without_restore_marker(mut model: ModelConfig) -> ModelConfig {
-    if let Some(params) = model.request_params.as_mut() {
-        params.remove(RESTORE_CONFIG_KEY);
-        if params.is_empty() {
-            model.request_params = None;
-        }
-    }
-    model
+pub(crate) fn model_config_without_restore_marker(model: ModelConfig) -> ModelConfig {
+    strip_restore_marker(model)
 }
 
 pub(crate) fn model_config_with_composite_temperature(
@@ -213,13 +208,9 @@ impl LeadWorkerProvider {
         config_generation: String,
         routing_state: LeadWorkerRoutingState,
     ) -> Self {
-        let lead_model = model_config_without_restore_marker(lead_provider.get_model_config());
-        let worker_model = model_config_without_restore_marker(worker_provider.get_model_config());
         let persisted_provider_config = PersistedProviderConfig::LeadWorkerV2 {
-            lead_provider: lead_provider.get_name().to_string(),
-            lead_model,
-            worker_provider: worker_provider.get_name().to_string(),
-            worker_model,
+            lead: lead_provider.restore_binding(),
+            worker: worker_provider.restore_binding(),
             lead_turns,
             failure_threshold,
             fallback_turns,

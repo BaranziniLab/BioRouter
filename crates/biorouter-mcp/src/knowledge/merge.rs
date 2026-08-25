@@ -1438,7 +1438,10 @@ fn write_everything(
     // ONE commit on the transaction branch, staging everything above — so the
     // whole merge is a single tree that `commit_txn` can squash or `abort_txn`
     // can discard.
-    repo.commit_on_txn_in_progress(&format!("merge {} into this base", plan.source_kb_id))?;
+    repo.commit_on_txn_in_progress(
+        &txn.branch,
+        &format!("merge {} into this base", plan.source_kb_id),
+    )?;
 
     let violations = verify_snapshot(dst_root, &plan.snapshot)?;
     anyhow::ensure!(

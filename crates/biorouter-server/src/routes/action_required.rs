@@ -84,7 +84,8 @@ pub async fn confirm_tool_action(
         return match approval_relay::resolve(&ask, permission, &request.session_id) {
             ResolveOutcome::Resolved { decision, notify } => {
                 let outcome = origin
-                    .handle_confirmation(
+                    .handle_confirmation_for_session(
+                        &ask.session_id,
                         ask.request_id.clone(),
                         PermissionConfirmation {
                             principal_type: request.principal_type,
@@ -113,9 +114,11 @@ pub async fn confirm_tool_action(
     }
 
     // Not a delegated ask: the pre-Task-36b path, unchanged.
-    let agent = state.get_agent_for_route(request.session_id).await?;
+    let posted_session_id = request.session_id;
+    let agent = state.get_agent_for_route(posted_session_id.clone()).await?;
     let outcome = agent
-        .handle_confirmation(
+        .handle_confirmation_for_session(
+            &posted_session_id,
             request.id.clone(),
             PermissionConfirmation {
                 principal_type: request.principal_type,
@@ -401,6 +404,104 @@ mod tests {
                 .await
                 .unwrap();
             serde_json::from_slice(&bytes).unwrap()
+        }
+
+        fn parked_approval(session_id: &str) -> biorouter::pending_user_action::PendingUserAction {
+            use biorouter::pending_user_action::{
+                PendingUserActions, ToolApprovalRequest, UserActionRequest,
+            };
+
+            PendingUserActions::global().park(
+                Some(session_id),
+                None,
+                UserActionRequest::ToolApproval(ToolApprovalRequest {
+                    tool_name: "developer__shell".to_string(),
+                    arguments: serde_json::Map::new(),
+                    prompt: None,
+                    risk: None,
+                    preview: None,
+                }),
+            )
+        }
+
+        fn unique_session(prefix: &str) -> String {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            format!("{prefix}-{}-{sequence}", std::process::id())
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_foreign_confirmation_is_unknown_and_the_owner_can_still_answer() {
+            use biorouter::pending_user_action::{PendingUserActions, UserActionOutcome};
+
+            let owner = unique_session("owner");
+            let foreign = unique_session("foreign");
+            let parked = parked_approval(&owner);
+            let id = parked.id().to_string();
+            let app = routes(AppState::new().await.unwrap());
+
+            let response = app
+                .clone()
+                .oneshot(post("allow_once", &id, &foreign))
+                .await
+                .unwrap();
+            assert_eq!(body_json(response).await["status"], "unknown");
+            assert!(
+                PendingUserActions::global().is_pending(&id),
+                "a foreign post must leave the real waiter parked"
+            );
+
+            let response = app.oneshot(post("allow_once", &id, &owner)).await.unwrap();
+            assert_eq!(body_json(response).await["status"], "delivered");
+            assert!(matches!(
+                parked.wait(std::time::Duration::from_secs(5), None).await,
+                UserActionOutcome::Approved { .. }
+            ));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_authorized_relay_resolves_using_the_origin_session() {
+            use biorouter::pending_user_action::UserActionOutcome;
+
+            let origin_session = unique_session("origin");
+            let relay_session = unique_session("relay");
+            let parked = parked_approval(&origin_session);
+            let origin = approval_relay::AskId {
+                session_id: origin_session.clone(),
+                request_id: parked.id().to_string(),
+            };
+            let tool_request = biorouter::conversation::message::ToolRequest {
+                id: origin.request_id.clone(),
+                tool_call: Ok(rmcp::model::CallToolRequestParams {
+                    meta: None,
+                    name: "developer__shell".into(),
+                    arguments: Some(serde_json::Map::new()),
+                    task: None,
+                }),
+                metadata: None,
+                tool_meta: None,
+            };
+            approval_relay::register(
+                origin.clone(),
+                approval_relay::AskKey::for_request(&tool_request).unwrap(),
+                approval_relay::AskClass::Delegable,
+                relay_session.clone(),
+                "/relay-test".to_string(),
+            );
+            approval_relay::add_surface(&origin, &origin_session);
+            approval_relay::add_surface(&origin, &relay_session);
+            let app = routes(AppState::new().await.unwrap());
+
+            let response = app
+                .oneshot(post("allow_once", &origin.request_id, &relay_session))
+                .await
+                .unwrap();
+            assert_eq!(body_json(response).await["status"], "delivered");
+            assert!(matches!(
+                parked.wait(std::time::Duration::from_secs(5), None).await,
+                UserActionOutcome::Approved { .. }
+            ));
+            approval_relay::forget(&origin);
         }
 
         /// BR-71 Task 36b, A-4/A-5 **on the wire**. Everything else about the

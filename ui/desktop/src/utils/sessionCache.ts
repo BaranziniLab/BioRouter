@@ -1,6 +1,7 @@
 import type { ResumeAgentResponse, Session } from '../api';
 import { getApiUrl } from '../config';
 import { userActionHeaders } from './userAction';
+import { getContinuationOwnerId } from './continuationLease';
 
 /**
  * In-memory cache for session data
@@ -48,6 +49,7 @@ export async function loadSession(sessionId: string, forceRefresh = false): Prom
         body: JSON.stringify({
           session_id: sessionId,
           load_model_and_extensions: true,
+          continuation_owner_id: getContinuationOwnerId(),
         }),
       });
 

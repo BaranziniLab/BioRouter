@@ -6,6 +6,7 @@ use crate::knowledge::{
     types::{ChangeKind, Manifest},
 };
 use anyhow::Result;
+use dashmap::DashMap;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo},
@@ -14,9 +15,12 @@ use rmcp::{
     tool, tool_router, ErrorData, RoleServer, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, collections::HashSet};
+use std::{cmp::Ordering, collections::HashSet, sync::Arc};
+use tokio::sync::Mutex;
 
 const SESSION_ID_META_KEY: &str = "biorouter-session-id";
+const TRANSACTION_UNAVAILABLE: &str =
+    "knowledge transaction is not available for this session and knowledge base";
 
 /// Both axes of the caller's identity — the tier bit and the affiliation — read
 /// from ONE request meta at one instant (issue #56 DR-26).
@@ -167,6 +171,30 @@ pub struct KnowledgeServer {
     tool_router: ToolRouter<Self>,
     service: KnowledgeService,
     instructions: String,
+    transactions: KnowledgeTransactionCoordinator,
+}
+
+#[derive(Clone, Default)]
+struct KnowledgeTransactionCoordinator {
+    active: Arc<DashMap<String, ActiveKnowledgeTransactionSlot>>,
+}
+
+type ActiveKnowledgeTransactionSlot = Arc<Mutex<Option<ActiveKnowledgeTransaction>>>;
+
+struct ActiveKnowledgeTransaction {
+    handle: String,
+    session_id: String,
+    txn: crate::knowledge::git::Txn,
+    _write_guard: crate::knowledge::service::KnowledgeWriteGuard,
+}
+
+impl KnowledgeTransactionCoordinator {
+    fn slot(&self, kb_id: &str) -> ActiveKnowledgeTransactionSlot {
+        self.active
+            .entry(kb_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(None)))
+            .clone()
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -293,12 +321,18 @@ pub struct WritePageParams {
     pub path: String,
     pub content: String,
     pub commit_message: String,
+    /// Opaque handle returned by `kb_begin_txn`. Omit for a standalone commit.
+    #[serde(default)]
+    pub txn: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddRawSourceParams {
     pub kb_id: String,
     pub source: RawSourceInput,
+    /// Opaque handle returned by `kb_begin_txn`. Omit for a standalone commit.
+    #[serde(default)]
+    pub txn: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -386,6 +420,9 @@ pub struct AppendLogParams {
     pub summary: String,
     #[serde(default)]
     pub delta: Option<String>,
+    /// Opaque handle returned by `kb_begin_txn`. Omit for a standalone commit.
+    #[serde(default)]
+    pub txn: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -437,6 +474,7 @@ impl KnowledgeServer {
             tool_router: Self::tool_router(),
             service: KnowledgeService::new_default()?,
             instructions: include_str!("instructions.md").to_string(),
+            transactions: KnowledgeTransactionCoordinator::default(),
         })
     }
 
@@ -446,6 +484,61 @@ impl KnowledgeServer {
 
     fn session_id(context: Option<&RequestContext<RoleServer>>) -> Option<&str> {
         context.and_then(Self::session_id_from_context)
+    }
+
+    fn transaction_session_id(context: &RequestContext<RoleServer>) -> Result<String, ErrorData> {
+        Self::session_id_from_context(context)
+            .filter(|session_id| !session_id.is_empty())
+            .map(ToOwned::to_owned)
+            .ok_or_else(transaction_unavailable)
+    }
+
+    fn active_transaction_branch<'a>(
+        active: &'a Option<ActiveKnowledgeTransaction>,
+        handle: &str,
+        session_id: &str,
+    ) -> Result<&'a str, ErrorData> {
+        active
+            .as_ref()
+            .filter(|txn| txn.handle == handle && txn.session_id == session_id)
+            .map(|txn| txn.txn.branch.as_str())
+            .ok_or_else(transaction_unavailable)
+    }
+
+    async fn assert_transaction_admission(
+        &self,
+        tool: &str,
+        kb_id: &str,
+        args: Option<&rmcp::model::JsonObject>,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        let supports_handle = matches!(
+            tool,
+            "kb_write_page" | "kb_add_raw_source" | "kb_append_log"
+        );
+        if !supports_handle && !matches!(tool, "kb_restore_state" | "kb_merge") {
+            return Ok(());
+        }
+        let slot = self.transactions.slot(kb_id);
+        let active = slot.lock().await;
+        let handle = if supports_handle {
+            args.and_then(|args| args.get("txn"))
+                .and_then(|txn| txn.as_str())
+        } else {
+            None
+        };
+        match handle {
+            Some(handle) => {
+                Self::active_transaction_branch(
+                    &active,
+                    handle,
+                    &Self::transaction_session_id(context)?,
+                )?;
+                Ok(())
+            }
+            None if active.is_some() => Err(transaction_unavailable()),
+            None => Ok(()),
+        }
     }
 
     /// Issue #56. The capability the daemon admitted this call on, PUBLIC unless
@@ -1004,6 +1097,7 @@ impl KnowledgeServer {
     pub async fn kb_write_page(
         &self,
         p: Parameters<WritePageParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         // Issue #26: reject contract violations as INVALID_PARAMS (the error
@@ -1020,14 +1114,37 @@ impl KnowledgeServer {
                 None,
             ));
         }
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let slot = self.transactions.slot(&p.kb_id);
+        let active = slot.lock().await;
+        let txn_branch = match p.txn.as_deref() {
+            Some(handle) => Some(
+                Self::active_transaction_branch(
+                    &active,
+                    handle,
+                    &Self::transaction_session_id(&context)?,
+                )?
+                .to_string(),
+            ),
+            None if active.is_some() => return Err(transaction_unavailable()),
+            None => None,
+        };
+        let _write_guard = if txn_branch.is_none() {
+            Some(
+                self.service
+                    .lock_kb_cancellable(&p.kb_id, Some(&context.ct))
+                    .await
+                    .map_err(into_err)?,
+            )
+        } else {
+            None
+        };
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let sha = crate::knowledge::store::write_page(
             &kb_root,
             &p.path,
             &p.content,
             &p.commit_message,
-            None,
+            txn_branch.as_deref(),
         )
         .map_err(into_err)?;
         // Keep the derived graph cache in sync after a page write. Without
@@ -1061,12 +1178,41 @@ impl KnowledgeServer {
     pub async fn kb_add_raw_source(
         &self,
         p: Parameters<AddRawSourceParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let slot = self.transactions.slot(&p.kb_id);
+        let active = slot.lock().await;
+        let txn_branch = match p.txn.as_deref() {
+            Some(handle) => Some(
+                Self::active_transaction_branch(
+                    &active,
+                    handle,
+                    &Self::transaction_session_id(&context)?,
+                )?
+                .to_string(),
+            ),
+            None if active.is_some() => return Err(transaction_unavailable()),
+            None => None,
+        };
+        let _write_guard = if txn_branch.is_none() {
+            Some(
+                self.service
+                    .lock_kb_cancellable(&p.kb_id, Some(&context.ct))
+                    .await
+                    .map_err(into_err)?,
+            )
+        } else {
+            None
+        };
         let res = self
             .service
-            .add_raw_source(&p.kb_id, p.source.into(), None)
+            .add_raw_source_cancelled_by(
+                &p.kb_id,
+                p.source.into(),
+                txn_branch.as_deref(),
+                Some(&context.ct),
+            )
             .await
             .map_err(into_err)?;
         ok_json(&serde_json::json!({
@@ -1120,11 +1266,17 @@ impl KnowledgeServer {
     pub async fn kb_restore_state(
         &self,
         p: Parameters<RestoreParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
+        let slot = self.transactions.slot(&p.kb_id);
+        let active = slot.lock().await;
+        if active.is_some() {
+            return Err(transaction_unavailable());
+        }
         let sha = self
             .service
-            .restore_state_async(&p.kb_id, &p.commit_sha, None)
+            .restore_state_async(&p.kb_id, &p.commit_sha, Some(&context.ct))
             .await
             .map_err(into_err)?;
         ok_json(&serde_json::json!({ "ok": true, "new_commit_sha": sha }))
@@ -1134,53 +1286,79 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_begin_txn",
-        description = "Open a transactional working branch on a knowledge base. Returns the txn handle (branch name) for use with subsequent mutating primitives."
+        description = "Open a knowledge transaction for this session. Returns an opaque txn handle for subsequent write, add-source, append-log, commit, or abort calls."
     )]
     pub async fn kb_begin_txn(
         &self,
         p: Parameters<BeginTxnParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let session_id = Self::transaction_session_id(&context)?;
+        let slot = self.transactions.slot(&p.kb_id);
+        let mut active = slot.lock().await;
+        if active.is_some() {
+            return Err(transaction_unavailable());
+        }
+        let write_guard = self
+            .service
+            .lock_kb_cancellable(&p.kb_id, Some(&context.ct))
+            .await
+            .map_err(into_err)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let repo = crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
         let txn = repo.begin_txn(&p.label).map_err(into_err)?;
-        ok_json(&serde_json::json!({ "txn": txn.branch }))
+        let handle = uuid::Uuid::new_v4().to_string();
+        *active = Some(ActiveKnowledgeTransaction {
+            handle: handle.clone(),
+            session_id,
+            txn,
+            _write_guard: write_guard,
+        });
+        ok_json(&serde_json::json!({ "txn": handle }))
     }
 
     #[tool(
         name = "kb_commit_txn",
-        description = "Squash-merge a transaction branch onto the main history with the given kind/summary/delta."
+        description = "Commit this session's opaque transaction handle as one history entry. A handle is consumed by the first commit or abort attempt."
     )]
     pub async fn kb_commit_txn(
         &self,
         p: Parameters<CommitTxnParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let session_id = Self::transaction_session_id(&context)?;
+        let slot = self.transactions.slot(&p.kb_id);
+        let mut active = slot.lock().await;
+        Self::active_transaction_branch(&active, &p.txn, &session_id)?;
+        let active = active.take().ok_or_else(transaction_unavailable)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let repo = crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
-        let txn = crate::knowledge::git::Txn { branch: p.txn };
         let sha = repo
-            .commit_txn(&txn, p.kind, &p.summary, p.delta.as_deref())
+            .commit_txn(&active.txn, p.kind, &p.summary, p.delta.as_deref())
             .map_err(into_err)?;
         ok_json(&serde_json::json!({ "commit_sha": sha }))
     }
 
     #[tool(
         name = "kb_abort_txn",
-        description = "Discard a transaction branch and restore the working tree to main."
+        description = "Abort this session's opaque transaction handle and restore the working tree. A handle is consumed by the first commit or abort attempt."
     )]
     pub async fn kb_abort_txn(
         &self,
         p: Parameters<AbortTxnParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let session_id = Self::transaction_session_id(&context)?;
+        let slot = self.transactions.slot(&p.kb_id);
+        let mut active = slot.lock().await;
+        Self::active_transaction_branch(&active, &p.txn, &session_id)?;
+        let active = active.take().ok_or_else(transaction_unavailable)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let repo = crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
-        let txn = crate::knowledge::git::Txn { branch: p.txn };
-        repo.abort_txn(&txn).map_err(into_err)?;
+        repo.abort_txn(&active.txn).map_err(into_err)?;
         ok_json(&serde_json::json!({ "ok": true }))
     }
 
@@ -1269,13 +1447,42 @@ impl KnowledgeServer {
     pub async fn kb_append_log(
         &self,
         p: Parameters<AppendLogParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let slot = self.transactions.slot(&p.kb_id);
+        let active = slot.lock().await;
+        let txn_branch = match p.txn.as_deref() {
+            Some(handle) => Some(
+                Self::active_transaction_branch(
+                    &active,
+                    handle,
+                    &Self::transaction_session_id(&context)?,
+                )?
+                .to_string(),
+            ),
+            None if active.is_some() => return Err(transaction_unavailable()),
+            None => None,
+        };
+        let _write_guard = if txn_branch.is_none() {
+            Some(
+                self.service
+                    .lock_kb_cancellable(&p.kb_id, Some(&context.ct))
+                    .await
+                    .map_err(into_err)?,
+            )
+        } else {
+            None
+        };
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
-        let sha =
-            crate::knowledge::log::append(&kb_root, p.kind, &p.summary, p.delta.as_deref(), None)
-                .map_err(into_err)?;
+        let sha = crate::knowledge::log::append(
+            &kb_root,
+            p.kind,
+            &p.summary,
+            p.delta.as_deref(),
+            txn_branch.as_deref(),
+        )
+        .map_err(into_err)?;
         ok_json(&serde_json::json!({ "ok": true, "commit_sha": sha }))
     }
 
@@ -1576,6 +1783,17 @@ impl KnowledgeServer {
         // `kb_id` by the time this runs; asking again there is free and asking
         // for `source_kb_id` is the half CP1 structurally cannot do.
         let caller = CallerIdentity::from_context(Some(context));
+        let transaction_slot = (!dry_run).then(|| self.transactions.slot(&p.kb_id));
+        let transaction_state = match transaction_slot.as_ref() {
+            Some(slot) => Some(slot.lock().await),
+            None => None,
+        };
+        if transaction_state
+            .as_ref()
+            .is_some_and(|active| active.is_some())
+        {
+            return Err(transaction_unavailable());
+        }
         let report = self
             .service
             .merge_bases(
@@ -1621,11 +1839,10 @@ impl ServerHandler for KnowledgeServer {
         })
     }
 
-    /// Issue #56, design §9.3 B4 as ruled. ONE seam for all twenty-one `kb_*`
-    /// tools, including the EIGHT that take no `RequestContext` and therefore
-    /// cannot learn the caller's capability inside their own body — among them
-    /// `kb_write_page`, `kb_add_raw_source` and `kb_append_log`, i.e. every
-    /// content-bearing write there is.
+    /// Issue #56, design §9.3 B4 as ruled. ONE seam for every `kb_*` tool,
+    /// including handlers that do not otherwise need caller metadata. The
+    /// transaction-aware writes now take a `RequestContext` for session binding,
+    /// but the privacy decision remains here so new write paths cannot bypass it.
     ///
     /// This is `#[tool_handler]`'s generated body plus the gate: the last two
     /// statements are exactly what the macro emitted.
@@ -1650,6 +1867,8 @@ impl ServerHandler for KnowledgeServer {
             // an ABSENT id to the session's primary, because `gated_kb_id`
             // resolves it exactly as the tool will.
             self.assert_kb_reachable(&kb_id, &caller)?;
+            self.assert_transaction_admission(&name, &kb_id, request.arguments.as_ref(), &context)
+                .await?;
             if KB_RATCHETING_TOOLS.contains(&name.as_str()) {
                 // BEFORE the write: a raise that only lands on success leaves
                 // content in a base whose tier never moved if the write panics
@@ -1718,6 +1937,10 @@ fn ok_json<T: Serialize>(v: &T) -> Result<CallToolResult, ErrorData> {
 
 fn into_err(e: anyhow::Error) -> ErrorData {
     ErrorData::internal_error(format!("{e:#}"), None)
+}
+
+fn transaction_unavailable() -> ErrorData {
+    ErrorData::invalid_request(TRANSACTION_UNAVAILABLE, None)
 }
 
 /// "That is not one of your knowledge bases", built from the ids the caller may
@@ -1792,6 +2015,7 @@ mod tests {
             tool_router: KnowledgeServer::tool_router(),
             service,
             instructions: String::new(),
+            transactions: KnowledgeTransactionCoordinator::default(),
         }
     }
 
@@ -2072,17 +2296,20 @@ mod tests {
         let server = server_with_root(tmp.path().to_path_buf());
         server.service.create_base("kb", "KB", None)?;
 
-        let err = server
-            .kb_write_page(rmcp::handler::server::wrapper::Parameters(
-                WritePageParams {
-                    kb_id: "kb".to_string(),
-                    path: "raw/x/source.md".to_string(),
-                    content: "body".to_string(),
-                    commit_message: "try to edit a raw source".to_string(),
-                },
-            ))
-            .await
-            .expect_err("raw/ writes must be rejected");
+        let err = call_tool_as_session(
+            &server,
+            "kb_write_page",
+            serde_json::json!({
+                "kb_id": "kb",
+                "path": "raw/x/source.md",
+                "content": "body",
+                "commit_message": "try to edit a raw source",
+            }),
+            Some("session-a"),
+            Private,
+        )
+        .await
+        .expect_err("raw/ writes must be rejected");
 
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(
@@ -2121,17 +2348,22 @@ mod tests {
         )?;
         server.service.rebuild_graph_cache("kb")?;
         crate::knowledge::graph::fail_cache_writes(&kb, 1);
-        let params = WritePageParams {
-            kb_id: "kb".to_string(),
-            path: "knowledge/concept/b.md".to_string(),
-            content: valid_page("concept", "b", "B"),
-            commit_message: "add B".to_string(),
-        };
+        let params = serde_json::json!({
+            "kb_id": "kb",
+            "path": "knowledge/concept/b.md",
+            "content": valid_page("concept", "b", "B"),
+            "commit_message": "add B",
+        });
 
-        let error = server
-            .kb_write_page(rmcp::handler::server::wrapper::Parameters(params.clone()))
-            .await
-            .expect_err("the injected post-commit refresh must be reported");
+        let error = call_tool_as_session(
+            &server,
+            "kb_write_page",
+            params.clone(),
+            Some("session-a"),
+            Private,
+        )
+        .await
+        .expect_err("the injected post-commit refresh must be reported");
         assert!(error.message.contains("committed in commit"), "{error:?}");
         assert!(error.message.contains("do not retry"), "{error:?}");
         assert!(kb.join("knowledge/concept/b.md").exists());
@@ -2141,8 +2373,7 @@ mod tests {
         );
         let history_len = GitRepo::open(&kb)?.log(10)?.len();
 
-        server
-            .kb_write_page(rmcp::handler::server::wrapper::Parameters(params))
+        call_tool_as_session(&server, "kb_write_page", params, Some("session-a"), Private)
             .await
             .expect("an identical retry reuses the durable page");
         assert_eq!(GitRepo::open(&kb)?.log(10)?.len(), history_len);
@@ -2152,6 +2383,164 @@ mod tests {
             .nodes
             .iter()
             .any(|node| node.path == "knowledge/concept/b.md"));
+        Ok(())
+    }
+
+    async fn begin_transaction_handle(
+        server: &KnowledgeServer,
+        kb_id: &str,
+        session_id: &str,
+    ) -> String {
+        let begin = call_tool_as_session(
+            server,
+            "kb_begin_txn",
+            serde_json::json!({ "kb_id": kb_id, "label": "curate" }),
+            Some(session_id),
+            Private,
+        )
+        .await;
+        json_of(&begin)["txn"]
+            .as_str()
+            .expect("begin returns an opaque handle")
+            .to_string()
+    }
+
+    fn transaction_write_args(kb_id: &str, txn: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "kb_id": kb_id,
+            "path": "knowledge/note/a.md",
+            "content": valid_page("Note", "A", "body"),
+            "commit_message": "write A",
+            "txn": txn,
+        })
+    }
+
+    #[tokio::test]
+    async fn transaction_handles_are_session_bound_opaque_and_non_oracular() {
+        let (server, _tmp, _root) = migrated_server_with_bases(&["kb", "other"]);
+        let handle = begin_transaction_handle(&server, "kb", "session-a").await;
+        uuid::Uuid::parse_str(&handle).expect("the handle is an opaque UUID");
+        assert!(!handle.starts_with("txn/"));
+
+        let wrong_handle = call_tool_as_session(
+            &server,
+            "kb_write_page",
+            transaction_write_args("kb", Some("txn/caller-constructed")),
+            Some("session-a"),
+            Private,
+        )
+        .await
+        .expect_err("caller-constructed branches are not handles");
+        let wrong_session = call_tool_as_session(
+            &server,
+            "kb_write_page",
+            transaction_write_args("kb", Some(&handle)),
+            Some("session-b"),
+            Private,
+        )
+        .await
+        .expect_err("a handle belongs to exactly one session");
+        let wrong_kb = call_tool_as_session(
+            &server,
+            "kb_write_page",
+            transaction_write_args("other", Some(&handle)),
+            Some("session-a"),
+            Private,
+        )
+        .await
+        .expect_err("a handle belongs to exactly one knowledge base");
+        let missing_handle = call_tool_as_session(
+            &server,
+            "kb_write_page",
+            transaction_write_args("kb", None),
+            Some("session-a"),
+            Private,
+        )
+        .await
+        .expect_err("standalone writes cannot enter an active transaction");
+        for error in [&wrong_session, &wrong_kb, &missing_handle] {
+            assert_eq!(error.code, wrong_handle.code);
+            assert_eq!(error.message, wrong_handle.message);
+        }
+        call_tool_as_session(
+            &server,
+            "kb_abort_txn",
+            serde_json::json!({ "kb_id": "kb", "txn": handle }),
+            Some("session-a"),
+            Private,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn one_handle_drives_all_transactional_writes_and_is_consumed() -> anyhow::Result<()> {
+        let (server, _tmp, root) = migrated_server_with_bases(&["kb"]);
+        let handle = begin_transaction_handle(&server, "kb", "session-a").await;
+        call_tool_as_session(
+            &server,
+            "kb_write_page",
+            transaction_write_args("kb", Some(&handle)),
+            Some("session-a"),
+            Private,
+        )
+        .await?;
+        call_tool_as_session(
+            &server,
+            "kb_add_raw_source",
+            serde_json::json!({
+                "kb_id": "kb",
+                "source": { "kind": "text", "text": "source body", "title": "source" },
+                "txn": handle.clone(),
+            }),
+            Some("session-a"),
+            Private,
+        )
+        .await?;
+        call_tool_as_session(
+            &server,
+            "kb_append_log",
+            serde_json::json!({
+                "kb_id": "kb",
+                "kind": "manual",
+                "summary": "curated",
+                "txn": handle.clone(),
+            }),
+            Some("session-a"),
+            Private,
+        )
+        .await?;
+        call_tool_as_session(
+            &server,
+            "kb_commit_txn",
+            serde_json::json!({
+                "kb_id": "kb",
+                "txn": handle.clone(),
+                "summary": "curated transaction",
+                "kind": "manual",
+            }),
+            Some("session-a"),
+            Private,
+        )
+        .await?;
+
+        assert!(root.join("kb/knowledge/note/a.md").exists());
+        assert_eq!(GitRepo::open(&root.join("kb"))?.log(20)?.len(), 2);
+        let replay = call_tool_as_session(
+            &server,
+            "kb_commit_txn",
+            serde_json::json!({
+                "kb_id": "kb",
+                "txn": handle,
+                "summary": "replay",
+                "kind": "manual",
+            }),
+            Some("session-a"),
+            Private,
+        )
+        .await
+        .expect_err("a terminal call consumes the handle");
+        assert_eq!(replay.message, TRANSACTION_UNAVAILABLE);
         Ok(())
     }
 

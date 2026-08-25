@@ -33,7 +33,7 @@
 //!   it gates *only* that parameter: collecting a detached child is done with
 //!   the workspace tools, which are advertised on their own terms.
 
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -105,17 +105,26 @@ pub enum InitialInputDisposition {
     Duplicate,
 }
 
+#[derive(Debug, Clone)]
+pub struct TerminalGeneration {
+    pub generation: u64,
+    pub result: SubagentResult,
+}
+
 /// A detached subagent run the parent can poll.
 pub struct BackgroundSubagent {
     pub id: String,
     pub parent_session_id: String,
     pub child_session_id: String,
     pub title: String,
+    parent_closing: Arc<AtomicBool>,
     started: Instant,
     cancel: CancellationToken,
     /// `None` until the run finishes; then the full result envelope. Using a
     /// watch channel means `wait` is a real await, not a poll loop.
     result: watch::Sender<Option<SubagentResult>>,
+    terminal_generation: watch::Sender<Option<TerminalGeneration>>,
+    state_version: watch::Sender<u64>,
     /// Whether this handle still represents the child's latest turn. A later
     /// turn invalidates the retained result explicitly; persisted message
     /// counts cannot safely identify generations because the spawn-context row
@@ -177,16 +186,28 @@ impl BackgroundSubagent {
         cancel: CancellationToken,
         runtime_ready: bool,
     ) -> Arc<Self> {
+        let parent_session_id = parent_session_id.into();
+        let mut handles = HANDLES.lock().expect("subagent handle registry poisoned");
+        let parent_closing = handles
+            .iter()
+            .find(|handle| handle.parent_session_id == parent_session_id)
+            .map(|handle| Arc::clone(&handle.parent_closing))
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
         let id = format!("sub_{}", NEXT_HANDLE_ID.fetch_add(1, Ordering::SeqCst));
         let (result, _) = watch::channel(None);
+        let (terminal_generation, _) = watch::channel(None);
+        let (state_version, _) = watch::channel(0);
         let handle = Arc::new(Self {
             id,
-            parent_session_id: parent_session_id.into(),
+            parent_session_id,
             child_session_id: child_session_id.into(),
             title: title.into(),
+            parent_closing,
             started: Instant::now(),
             cancel,
             result,
+            terminal_generation,
+            state_version,
             result_is_current: std::sync::atomic::AtomicBool::new(true),
             initial_turn_started: std::sync::atomic::AtomicBool::new(false),
             initial_run: Mutex::new(InitialRunState {
@@ -198,7 +219,6 @@ impl BackgroundSubagent {
             continuation_pending: Mutex::new(ContinuationPendingState::default()),
         });
 
-        let mut handles = HANDLES.lock().expect("subagent handle registry poisoned");
         handles.push(handle.clone());
         prune_locked(&mut handles, &handle.parent_session_id);
         handle
@@ -218,7 +238,47 @@ impl BackgroundSubagent {
         state.finished = true;
         state.pending_user_inputs.clear();
         drop(state);
-        self.result.send_replace(Some(result));
+        let _continuation = self
+            .continuation_pending
+            .lock()
+            .expect("subagent continuation state poisoned");
+        self.result.send_replace(Some(result.clone()));
+        self.terminal_generation
+            .send_replace(Some(TerminalGeneration {
+                generation: self.child_turn_generation(),
+                result,
+            }));
+        self.signal_state_change();
+    }
+
+    fn signal_state_change(&self) {
+        self.state_version
+            .send_modify(|version| *version = version.wrapping_add(1));
+    }
+
+    pub fn state_version(&self) -> u64 {
+        *self.state_version.borrow()
+    }
+
+    pub async fn wait_for_state_change(&self, observed: u64) -> u64 {
+        let mut receiver = self.state_version.subscribe();
+        let current = *receiver.borrow_and_update();
+        if current != observed {
+            return current;
+        }
+        loop {
+            if receiver.changed().await.is_err() {
+                return *receiver.borrow();
+            }
+            let current = *receiver.borrow_and_update();
+            if current != observed {
+                return current;
+            }
+        }
+    }
+
+    pub fn terminal_generation(&self) -> Option<TerminalGeneration> {
+        self.terminal_generation.borrow().clone()
     }
 
     pub fn result_is_current(&self) -> bool {
@@ -258,7 +318,87 @@ impl BackgroundSubagent {
             return false;
         }
         *collected = Some(generation);
+        drop(collected);
+        self.signal_state_change();
         true
+    }
+
+    /// Collect an exact retained result, never an idle lifecycle state or a
+    /// generation already reserved for Stop-and-Send replacement.
+    ///
+    /// The continuation lock makes its admission atomic with
+    /// `mark_continuation_pending_for_turn`. The generation is checked again
+    /// after taking the collection lock because `begin_child_turn` advances it
+    /// under that lock before invalidating the retained result.
+    pub fn mark_current_result_collected_if_generation(&self, generation: u64) -> bool {
+        let continuation = self
+            .continuation_pending
+            .lock()
+            .expect("subagent continuation state poisoned");
+        if continuation.committed
+            || continuation.reservations > 0
+            || self.is_running()
+            || !self.result_is_current()
+            || self.child_turn_generation() != generation
+        {
+            return false;
+        }
+        let mut collected = self
+            .collected_generation
+            .lock()
+            .expect("subagent collection state poisoned");
+        if self.child_turn_generation() != generation || !self.result_is_current() {
+            return false;
+        }
+        *collected = Some(generation);
+        drop(collected);
+        drop(continuation);
+        self.signal_state_change();
+        true
+    }
+
+    pub fn mark_terminal_generation_collected_if_generation(&self, generation: u64) -> bool {
+        let continuation = self
+            .continuation_pending
+            .lock()
+            .expect("subagent continuation state poisoned");
+        if continuation.committed
+            || continuation.reservations > 0
+            || self.child_turn_generation() != generation
+            || self
+                .terminal_generation()
+                .is_none_or(|terminal| terminal.generation != generation)
+        {
+            return false;
+        }
+        let mut collected = self
+            .collected_generation
+            .lock()
+            .expect("subagent collection state poisoned");
+        if self.child_turn_generation() != generation
+            || self
+                .terminal_generation()
+                .is_none_or(|terminal| terminal.generation != generation)
+        {
+            return false;
+        }
+        *collected = Some(generation);
+        drop(collected);
+        drop(continuation);
+        self.signal_state_change();
+        true
+    }
+
+    pub fn rollback_terminal_generation_collection(&self, generation: u64) {
+        let mut collected = self
+            .collected_generation
+            .lock()
+            .expect("subagent collection state poisoned");
+        if self.child_turn_generation() == generation && *collected == Some(generation) {
+            *collected = None;
+            drop(collected);
+            self.signal_state_change();
+        }
     }
 
     pub fn superseded_turn_id(&self) -> Option<String> {
@@ -289,6 +429,7 @@ impl BackgroundSubagent {
     /// and finishes with whatever it produced so far.
     pub fn cancel(&self) {
         self.cancel.cancel();
+        self.signal_state_change();
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -466,6 +607,48 @@ pub fn cancel_initializing_child(child_session_id: &str) -> bool {
     true
 }
 
+pub fn open_parent_continuation_admission(parent_session_id: &str) {
+    let handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    for handle in handles
+        .iter()
+        .filter(|handle| handle.parent_session_id == parent_session_id)
+    {
+        handle.parent_closing.store(false, Ordering::Release);
+        handle.signal_state_change();
+    }
+}
+
+pub fn begin_parent_closing(parent_session_id: &str) {
+    let handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    for handle in handles
+        .iter()
+        .filter(|handle| handle.parent_session_id == parent_session_id)
+    {
+        handle.parent_closing.store(true, Ordering::Release);
+        handle.signal_state_change();
+    }
+}
+
+pub fn record_child_turn_terminal(child_session_id: &str, result: SubagentResult) {
+    let handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    for handle in handles
+        .iter()
+        .filter(|handle| handle.child_session_id == child_session_id)
+    {
+        let _continuation = handle
+            .continuation_pending
+            .lock()
+            .expect("subagent continuation state poisoned");
+        handle
+            .terminal_generation
+            .send_replace(Some(TerminalGeneration {
+                generation: handle.child_turn_generation(),
+                result: result.clone(),
+            }));
+        handle.signal_state_change();
+    }
+}
+
 /// Mark the start of a real provider turn in a child session.
 ///
 /// A detached registration is ineligible until [`mark_initial_runtime_ready`]
@@ -487,13 +670,15 @@ pub fn begin_child_turn(child_session_id: &str) {
         {
             continue;
         }
-        let next_generation = {
-            let _collection = handle
-                .collected_generation
-                .lock()
-                .expect("subagent collection state poisoned");
-            handle.child_turn_generation.fetch_add(1, Ordering::AcqRel) + 1
-        };
+        let mut state = handle
+            .continuation_pending
+            .lock()
+            .expect("subagent continuation state poisoned");
+        let _collection = handle
+            .collected_generation
+            .lock()
+            .expect("subagent collection state poisoned");
+        let next_generation = handle.child_turn_generation.fetch_add(1, Ordering::AcqRel) + 1;
         let is_initial_running_turn =
             handle.is_running() && !handle.initial_turn_started.swap(true, Ordering::AcqRel);
         if is_initial_running_turn {
@@ -501,38 +686,27 @@ pub fn begin_child_turn(child_session_id: &str) {
             // server publishes the initial TurnStarted but before the agent
             // reaches this hook. That initial turn is still the superseded
             // generation, not the promised replacement.
-            let mut state = handle
-                .continuation_pending
-                .lock()
-                .expect("subagent continuation state poisoned");
             if state.committed || state.reservations > 0 {
                 state.superseded_generation = next_generation;
             }
+            drop(state);
+            handle.signal_state_change();
             continue;
         }
-        let was_pending = {
-            let mut state = handle
-                .continuation_pending
-                .lock()
-                .expect("subagent continuation state poisoned");
-            let pending = state.committed || state.reservations > 0;
-            if pending {
-                state.generation = state.generation.wrapping_add(1);
-                state.reservations = 0;
-                state.committed = false;
-            }
-            pending
-        };
+        let was_pending = state.committed || state.reservations > 0;
+        if was_pending {
+            state.generation = state.generation.wrapping_add(1);
+            state.reservations = 0;
+            state.committed = false;
+        }
         if !was_pending {
-            let mut state = handle
-                .continuation_pending
-                .lock()
-                .expect("subagent continuation state poisoned");
             state.generation = state.generation.wrapping_add(1);
             state.superseded_generation = next_generation.saturating_sub(1);
             state.superseded_turn_id = None;
         }
         handle.result_is_current.store(false, Ordering::Release);
+        drop(state);
+        handle.signal_state_change();
     }
 }
 
@@ -545,6 +719,7 @@ pub fn begin_child_turn(child_session_id: &str) {
 #[derive(Clone)]
 pub struct ContinuationPendingMark {
     handles: Vec<ContinuationReservation>,
+    refused_parent_closing: bool,
 }
 
 #[derive(Clone)]
@@ -578,6 +753,10 @@ impl ContinuationPendingMark {
     pub fn is_empty(&self) -> bool {
         self.handles.is_empty()
     }
+
+    pub fn refused_parent_closing(&self) -> bool {
+        self.refused_parent_closing
+    }
 }
 
 impl ContinuationReservation {
@@ -608,6 +787,8 @@ impl ContinuationReservation {
                 .store(state.result_was_current, Ordering::Release);
             state.superseded_turn_id = None;
         }
+        drop(state);
+        self.handle.signal_state_change();
     }
 }
 
@@ -625,6 +806,14 @@ pub fn mark_continuation_pending_for_turn(
     superseded_turn_id: Option<String>,
 ) -> ContinuationPendingMark {
     let handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    if handles.iter().any(|handle| {
+        handle.child_session_id == child_session_id && handle.parent_closing.load(Ordering::Acquire)
+    }) {
+        return ContinuationPendingMark {
+            handles: Vec::new(),
+            refused_parent_closing: true,
+        };
+    }
     let mut marked = Vec::new();
     for handle in handles
         .iter()
@@ -648,8 +837,13 @@ pub fn mark_continuation_pending_for_turn(
             generation: state.generation,
             resolution: Arc::new(AtomicU8::new(0)),
         });
+        drop(state);
+        handle.signal_state_change();
     }
-    ContinuationPendingMark { handles: marked }
+    ContinuationPendingMark {
+        handles: marked,
+        refused_parent_closing: false,
+    }
 }
 
 /// Explicitly abandon an admitted continuation, for example when
@@ -690,6 +884,8 @@ fn abandon_continuation_matching(child_session_id: &str, superseded_turn_id: Opt
                 .result_is_current
                 .store(state.result_was_current, Ordering::Release);
             abandoned = true;
+            drop(state);
+            handle.signal_state_change();
         }
     }
     abandoned
@@ -984,6 +1180,28 @@ mod tests {
         assert_eq!(result.summary, "finished without an internal deadline");
     }
 
+    #[tokio::test]
+    async fn lifecycle_wait_wakes_for_continuation_and_terminal_transitions() {
+        let handle = new_handle("parent-lifecycle-events");
+        begin_child_turn(&handle.child_session_id);
+        let initial_version = handle.state_version();
+
+        let mark = mark_continuation_pending(&handle.child_session_id);
+        let after_reservation = handle.wait_for_state_change(initial_version).await;
+        assert_ne!(after_reservation, initial_version);
+        mark.rollback();
+        let after_rollback = handle.wait_for_state_change(after_reservation).await;
+        assert_ne!(after_rollback, after_reservation);
+
+        record_child_turn_terminal(&handle.child_session_id, done("terminal result"));
+        let after_terminal = handle.wait_for_state_change(after_rollback).await;
+        assert_ne!(after_terminal, after_rollback);
+        assert_eq!(
+            handle.terminal_generation().unwrap().result.summary,
+            "terminal result"
+        );
+    }
+
     #[test]
     fn finished_handles_are_pruned_but_running_ones_are_kept() {
         let parent = "parent-prune";
@@ -1261,5 +1479,58 @@ mod tests {
         first.rollback();
         assert!(handle.continuation_pending());
         assert!(!handle.result_is_current());
+    }
+
+    #[test]
+    fn parent_closing_refuses_continuation_without_mutating_the_handle() {
+        let parent = "parent-closing-barrier";
+        let handle = new_handle(parent);
+        begin_child_turn(&handle.child_session_id);
+        handle.complete(done("original result"));
+
+        begin_parent_closing(parent);
+        let refused = mark_continuation_pending(&handle.child_session_id);
+        assert!(refused.is_empty());
+        assert!(refused.refused_parent_closing());
+        assert!(!handle.continuation_pending());
+        assert!(handle.result_is_current());
+
+        let late_child = format!("late-{}", handle.child_session_id);
+        let late_handle = BackgroundSubagent::register(
+            parent,
+            &late_child,
+            "registered after close",
+            CancellationToken::new(),
+        );
+        begin_child_turn(&late_child);
+        let late_refused = mark_continuation_pending(&late_child);
+        assert!(late_refused.refused_parent_closing());
+        assert!(!late_handle.continuation_pending());
+
+        open_parent_continuation_admission(parent);
+        let admitted = mark_continuation_pending(&handle.child_session_id);
+        assert!(!admitted.is_empty());
+        assert!(!admitted.refused_parent_closing());
+        admitted.rollback();
+    }
+
+    #[test]
+    fn terminal_collection_is_exact_to_the_generation_that_finished() {
+        let handle = new_handle("parent-terminal-generation");
+        begin_child_turn(&handle.child_session_id);
+        let first_generation = handle.child_turn_generation();
+        record_child_turn_terminal(&handle.child_session_id, done("first result"));
+
+        begin_child_turn(&handle.child_session_id);
+        let second_generation = handle.child_turn_generation();
+        assert_ne!(first_generation, second_generation);
+        assert!(
+            !handle.mark_terminal_generation_collected_if_generation(first_generation),
+            "a stale terminal cannot collect its successor"
+        );
+
+        record_child_turn_terminal(&handle.child_session_id, done("second result"));
+        assert!(handle.mark_terminal_generation_collected_if_generation(second_generation));
+        assert!(handle.latest_generation_collected());
     }
 }
