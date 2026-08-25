@@ -116,8 +116,10 @@ const DISABLED_CHILD_FEATURES: &[&str] = &[
 ///
 /// Codex merges `thread/start.config` into `$CODEX_HOME/config.toml`; it does
 /// not replace the user's configured MCP servers. Pointing the child at this
-/// empty home is therefore the enforcement boundary. The auth file is linked,
-/// not read or copied, so its contents never pass through Biorouter memory.
+/// empty home is therefore the enforcement boundary. The auth file is linked
+/// where the platform permits it. Windows cannot hard-link across volumes, so
+/// that case uses the OS copy operation into the same ephemeral home; its
+/// contents still never pass through a Biorouter-owned buffer.
 fn isolated_codex_home(source_home: &Path) -> Result<tempfile::TempDir, ProviderError> {
     let isolated = tempfile::Builder::new()
         .prefix("biorouter-codex-home-")
@@ -155,7 +157,10 @@ fn link_codex_auth(source: &Path, target: &Path) -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn link_codex_auth(source: &Path, target: &Path) -> std::io::Result<()> {
-    std::fs::hard_link(source, target)
+    match std::fs::hard_link(source, target) {
+        Ok(()) => Ok(()),
+        Err(_) => std::fs::copy(source, target).map(|_| ()),
+    }
 }
 
 /// Each window must match what `MODEL_CONTEXT_WINDOWS` declares, because

@@ -142,7 +142,7 @@ defaults, and each is pinned by a test.
 | `ephemeral` | `true` | No Codex session files. BioRouter owns the transcript, for the same reason as `--no-session-persistence` above. |
 | `baseInstructions` | BioRouter's system prompt | Replaces Codex's own preamble, which measured ~15k input tokens on a trivial prompt. |
 | `config.mcp_servers.biorouter.url` | The bridge URL, when the turn has one | The streamable-HTTP MCP form, which needs no second process. |
-| `CODEX_HOME` | Ephemeral directory containing only a link to the existing `auth.json` | Prevents the child's config merge from loading personal MCP servers without reading or copying the subscription credential. |
+| `CODEX_HOME` | Ephemeral directory containing only the existing `auth.json` as a link, or a temporary OS-level copy on Windows when source and temp are on different volumes | Prevents the child's config merge from loading personal MCP servers. The Windows fallback never places credential bytes in a BioRouter-owned buffer and disappears with the isolated home. |
 | app-server flags | `--strict-config` plus explicit feature disables | Fails closed on an unsupported isolation setting and removes shell, browser, plugin, image, nested-agent, and other local model-controlled capabilities. |
 | `cwd` | The process working directory | BioRouter's own, not the session's. The `Provider` trait has no session in scope (`providers/base.rs`, `complete_with_model` takes a system prompt, messages and tools), which is the same reason the bridge URL has to travel as a task-local. |
 
