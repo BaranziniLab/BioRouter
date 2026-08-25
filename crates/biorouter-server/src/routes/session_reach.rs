@@ -798,28 +798,32 @@ mod tests {
         let agent_rs = include_str!("agent.rs");
         let events_rs = include_str!("session_events.rs");
         let status_rs = include_str!("status.rs");
-        for (src, func, first_touch, what) in [
+        for (src, func, gate_call, first_touch, what) in [
             (
                 reply_rs,
                 "pub async fn reply",
-                "try_begin_turn_idempotent(",
+                "session_reach(",
+                "try_begin_turn_idempotent_with_continuation(",
                 "the turn lock, whose 409 says whether this chat is busy",
             ),
             (
                 session_rs,
                 "async fn get_session(",
+                "session_reach(",
                 "get_session(&session_id, true)",
                 "the transcript read",
             ),
             (
                 session_rs,
                 "async fn export_session(",
+                "session_reach(",
                 "export_session(&session_id)",
                 "the transcript read, under another name",
             ),
             (
                 events_rs,
                 "pub async fn observe_session_events(",
+                "session_reach(",
                 "session_events::subscribe(",
                 "the bus subscription, which would outlive the refusal, and the \
                  full-conversation snapshot frame right behind it",
@@ -827,25 +831,28 @@ mod tests {
             (
                 status_rs,
                 "async fn diagnostics(",
+                "session_reach(",
                 "generate_diagnostics(",
                 "the diagnostics bundle, whose `session.json` IS the transcript",
             ),
             (
                 agent_rs,
                 "async fn agent_add_extension",
+                "authorize_agent_control(",
                 "get_agent(",
                 "the agent fetch, which creates one if absent",
             ),
             (
                 agent_rs,
                 "async fn update_working_dir",
+                "session_reach(",
                 "try_begin_turn_idempotent(",
                 "the turn lock, whose 409 says whether this chat is busy",
             ),
         ] {
             let handler = body_of(src, func);
-            let gate = handler.find("session_reach(").unwrap_or_else(|| {
-                panic!("{func} does not consult the session-reach gate (`session_reach(`)")
+            let gate = handler.find(gate_call).unwrap_or_else(|| {
+                panic!("{func} does not consult its session-reach gate (`{gate_call}`)")
             });
             let touch = handler
                 .find(first_touch)

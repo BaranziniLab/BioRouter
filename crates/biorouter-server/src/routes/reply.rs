@@ -1,4 +1,7 @@
-use crate::state::AppState;
+use crate::state::{
+    AppState, CancelTurnAttempt, CancelledTurn, ContinuationAdmission, ContinuationCancelAttempt,
+    ContinuationLeaseAbandonment, ContinuationLeaseFailure, TurnBeginFailure,
+};
 use crate::turn_stream::TurnStream;
 use axum::{
     extract::{DefaultBodyLimit, State},
@@ -107,6 +110,12 @@ pub struct ChatRequest {
     /// `POST /agent/resume`'s `active_turn`.
     #[serde(default)]
     turn_id: Option<String>,
+    /// Opaque admission minted by an exact-generation Stop-and-Send. A live
+    /// lease is required while that superseded child generation remains under
+    /// parent supervision, and is consumed atomically with this successor's
+    /// turn lock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    continuation_lease: Option<String>,
     /// Attach only from this per-turn sequence number, when `turn_id` names a
     /// turn already in flight.
     ///
@@ -1225,6 +1234,14 @@ fn attach_names_a_missing_turn(
     if request.from_seq.is_none() {
         return false;
     }
+    // A continuation lease is stronger evidence than the attach heuristic: it
+    // proves this exact successor has not been admitted yet. If the first POST
+    // was lost before reaching the daemon, its retry must consume the lease and
+    // start the successor; if it did reach the daemon, the consumed lease and
+    // idempotency key below can only reattach to that same turn.
+    if request.continuation_lease.is_some() {
+        return false;
+    }
     let known = request
         .turn_id
         .as_deref()
@@ -1307,6 +1324,30 @@ fn turn_conflict_response(
         .into_response()
 }
 
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct ContinuationLeaseErrorResponse {
+    pub error: String,
+}
+
+fn continuation_lease_failure_response(
+    failure: ContinuationLeaseFailure,
+) -> axum::response::Response {
+    let error = match failure {
+        ContinuationLeaseFailure::Required => "continuation_lease_required",
+        ContinuationLeaseFailure::Invalid => "invalid_continuation_lease",
+        ContinuationLeaseFailure::CrossSession => "continuation_lease_session_mismatch",
+        ContinuationLeaseFailure::Replayed => "continuation_lease_already_resolved",
+        ContinuationLeaseFailure::MissingSuccessorTurnId => "continuation_lease_requires_turn_id",
+    };
+    (
+        StatusCode::CONFLICT,
+        Json(ContinuationLeaseErrorResponse {
+            error: error.to_string(),
+        }),
+    )
+        .into_response()
+}
+
 /// One `workflow_runs` counter per workflow *run*, not per turn: the
 /// `mark_workflow_run_if_absent` gate is what keeps a ten-turn workflow from
 /// reporting ten runs, and it is a session-scoped latch, so this must stay a
@@ -1348,6 +1389,7 @@ async fn record_workflow_run(state: &Arc<AppState>, session_id: &str, request: &
                                       replayed from `from_seq` and then followed live",
          body = MessageEvent,
          content_type = "text/event-stream"),
+        (status = 202, description = "A proven user reply was retained as steering for a delegated child that is still initializing"),
         (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
                                       the named chat is private (or absent, and an unproven caller \
                                       is told the same thing for both) and the request carried no \
@@ -1394,16 +1436,43 @@ pub async fn reply(
     // establish that fact. Refuse before the turn lock or any write unless the
     // desktop's user-action proof is present; public user sessions retain their
     // existing machine-client behavior.
-    if !biorouter_server::auth::is_user_action(&headers)
-        && state
-            .session_manager()
-            .get_session(&request.session_id, false)
-            .await
-            .is_ok_and(|session| {
-                session.session_type == biorouter::session::session_manager::SessionType::SubAgent
-            })
-    {
+    let user_action = biorouter_server::auth::is_user_action(&headers);
+    let target_session = state
+        .session_manager()
+        .get_session(&request.session_id, false)
+        .await
+        .ok();
+    let is_subagent = target_session.as_ref().is_some_and(|session| {
+        session.session_type == biorouter::session::session_manager::SessionType::SubAgent
+    });
+    let initializing_child =
+        biorouter::agents::subagent_handle::is_child_initializing(&request.session_id);
+    if !user_action && (is_subagent || initializing_child) {
         return StatusCode::FORBIDDEN.into_response();
+    }
+
+    // A background child exists before it receives a concurrency permit. A
+    // user reply in that interval is steering for the delegated initial turn;
+    // starting a generic interactive turn here would steal that turn and make
+    // the parent's retained result historical. Buffer the exact message under
+    // the handle's initialization lock instead. Once the atomic runtime profile
+    // is installed, the delegated runner drains it into its initial prompt.
+    if user_action && request.continuation_lease.is_none() {
+        let queued_message = crate::workspace::turn::stamp_user_direct_if_subagent(
+            request.user_message.clone(),
+            biorouter::session::session_manager::SessionType::SubAgent,
+        );
+        match biorouter::agents::subagent_handle::queue_initializing_child_input(
+            &request.session_id,
+            request.turn_id.clone(),
+            queued_message,
+        ) {
+            biorouter::agents::subagent_handle::InitialInputDisposition::Queued
+            | biorouter::agents::subagent_handle::InitialInputDisposition::Duplicate => {
+                return StatusCode::ACCEPTED.into_response();
+            }
+            biorouter::agents::subagent_handle::InitialInputDisposition::NotInitializing => {}
+        }
     }
 
     // Turn *duration* is the runner's (`emit_completion_metrics`); this handler
@@ -1445,13 +1514,14 @@ pub async fn reply(
     // is the difference between "your turn is still running, sorry" and "here it
     // is, from the beginning". A 409 now means only what it says: a genuinely
     // DIFFERENT turn is in the way.
-    let turn_guard = match state.try_begin_turn_idempotent(
+    let turn_guard = match state.try_begin_turn_idempotent_with_continuation(
         &session_id,
         cancel_token.clone(),
         request.turn_id.clone(),
+        request.continuation_lease.as_deref(),
     ) {
         Ok(guard) => guard,
-        Err(conflict) if conflict.duplicate => {
+        Err(TurnBeginFailure::Conflict(conflict)) if conflict.duplicate => {
             tracing::info!(
                 session_id = %session_id,
                 turn_id = %conflict.running_turn_id,
@@ -1472,7 +1542,12 @@ pub async fn reply(
                 conflict.finished,
             );
         }
-        Err(conflict) => return turn_conflict_response(&session_id, &conflict),
+        Err(TurnBeginFailure::Conflict(conflict)) => {
+            return turn_conflict_response(&session_id, &conflict);
+        }
+        Err(TurnBeginFailure::ContinuationLease(failure)) => {
+            return continuation_lease_failure_response(failure);
+        }
     };
 
     record_workflow_run(&state, &session_id, &request).await;
@@ -1695,6 +1770,20 @@ pub async fn interrupt(
 #[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct CancelTurnRequest {
     pub session_id: String,
+    /// Cancel only this turn generation. A stale Stop request must never cancel
+    /// a successor that started in the same session after the UI queued it.
+    #[serde(default)]
+    pub expected_turn_id: Option<String>,
+    /// Wait until the exact cancelled turn has released the session lock before
+    /// acknowledging. Stop-and-Send callers use this as their submission
+    /// barrier; ordinary Stop callers retain the immediate acknowledgement.
+    #[serde(default)]
+    pub wait_for_idle: bool,
+    /// The caller will submit a replacement turn after cancellation settles.
+    /// This is distinct from ordinary Stop because a delegated child's parent
+    /// must keep supervising across the gap between the two turns.
+    #[serde(default)]
+    pub continuation_pending: bool,
 }
 
 /// Response body for the addressable cancel route.
@@ -1705,7 +1794,105 @@ pub struct CancelTurnResponse {
     pub cancelled: bool,
     /// The id of the turn that was cancelled, when there was one.
     pub turn_id: Option<String>,
+    /// True only after the cancelled turn's guard has retired. An idle session
+    /// is already settled. An immediate cancellation acknowledgement may be
+    /// `false` while the agent loop is still unwinding.
+    pub settled: bool,
+    /// Opaque exact-generation admission for the replacement `/reply`.
+    /// Present only for a settled Stop-and-Send request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_lease: Option<String>,
 }
+
+/// A generation-conditional cancel addressed a different active turn.
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct CancelTurnConflictResponse {
+    pub mismatch: bool,
+    pub expected_turn_id: String,
+    pub active_turn_id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct AbandonContinuationLeaseRequest {
+    pub session_id: String,
+    pub continuation_lease: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct AbandonContinuationLeaseResponse {
+    pub resolution: String,
+}
+
+#[derive(Debug)]
+enum CancelTurnFailure {
+    TurnMismatch {
+        expected_turn_id: String,
+        active_turn_id: String,
+    },
+    ContinuationRequiresExpectedTurn,
+    SettlementTimeout,
+}
+
+struct ContinuationAdmissionRollback<'a> {
+    state: &'a AppState,
+    admission: Option<ContinuationAdmission>,
+}
+
+impl<'a> ContinuationAdmissionRollback<'a> {
+    fn new(state: &'a AppState, admission: Option<ContinuationAdmission>) -> Self {
+        Self { state, admission }
+    }
+
+    fn commit(&mut self) -> Option<String> {
+        let admission = self.admission.take()?;
+        if let Some(mark) = admission.mark() {
+            mark.commit();
+        }
+        self.state.commit_continuation_lease(admission.token());
+        Some(admission.token().to_string())
+    }
+}
+
+impl Drop for ContinuationAdmissionRollback<'_> {
+    fn drop(&mut self) {
+        if let Some(admission) = self.admission.take() {
+            if let Some(mark) = admission.mark() {
+                mark.rollback();
+            }
+            self.state.rollback_continuation_lease(admission.token());
+        }
+    }
+}
+
+impl IntoResponse for CancelTurnFailure {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Self::TurnMismatch {
+                expected_turn_id,
+                active_turn_id,
+            } => (
+                StatusCode::CONFLICT,
+                Json(CancelTurnConflictResponse {
+                    mismatch: true,
+                    expected_turn_id,
+                    active_turn_id,
+                }),
+            )
+                .into_response(),
+            Self::ContinuationRequiresExpectedTurn => StatusCode::BAD_REQUEST.into_response(),
+            Self::SettlementTimeout => StatusCode::GATEWAY_TIMEOUT.into_response(),
+        }
+    }
+}
+
+/// Safety bound for a cancellation completion barrier.
+///
+/// Cancellation should normally retire the guard immediately, including from a
+/// tool-permission wait. A broken provider or tool must not park the HTTP request
+/// forever, though: after this bound the route returns 504, never a 200 that
+/// could make Stop-and-Send submit a replacement while the old turn still owns
+/// the session lock.
+const CANCEL_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Hard cancel: trip the cancellation token of the turn in flight for this
 /// session (BR-62).
@@ -1721,7 +1908,9 @@ pub struct CancelTurnResponse {
 /// double-clicked Stop button, a cancel that raced the turn's own completion) is
 /// a 200 with `cancelled: false`, never an error. A cancel that reports failure
 /// because the thing was already stopped is exactly the unreliability this BR
-/// exists to remove.
+/// exists to remove. When `expected_turn_id` names an older generation and a
+/// successor is active, the route instead fails closed with 409 and leaves that
+/// successor untouched.
 #[utoipa::path(
     post,
     path = "/agent/cancel",
@@ -1732,6 +1921,8 @@ pub struct CancelTurnResponse {
         (status = 200, description = "Cancel processed; `cancelled` reports whether a turn was running", body = CancelTurnResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
         (status = 403, description = "The request was not proven to come from the user"),
+        (status = 409, description = "A different turn generation is now active; it was not cancelled", body = CancelTurnConflictResponse),
+        (status = 504, description = "The cancelled turn did not release the session lock before the safety bound"),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -1739,29 +1930,215 @@ pub async fn cancel_turn(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(req): Json<CancelTurnRequest>,
-) -> Result<Json<CancelTurnResponse>, StatusCode> {
+) -> axum::response::Response {
     if !biorouter_server::auth::is_user_action(&headers) {
-        return Err(StatusCode::FORBIDDEN);
+        return StatusCode::FORBIDDEN.into_response();
     }
-    match state.cancel_turn(&req.session_id) {
-        Some(turn_id) => {
-            tracing::info!("Cancelled turn {} for session {}", turn_id, req.session_id);
-            Ok(Json(CancelTurnResponse {
-                cancelled: true,
+    match cancel_turn_bounded(&state, &req, CANCEL_SETTLEMENT_TIMEOUT).await {
+        Ok(response) => Json(response).into_response(),
+        Err(failure) => failure.into_response(),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/agent/continuation/abandon",
+    tag = "workspace",
+    request_body = AbandonContinuationLeaseRequest,
+    responses(
+        (status = 200, description = "The continuation lease is abandoned or was already resolved", body = AbandonContinuationLeaseResponse),
+        (status = 403, description = "The request was not proven to come from the user"),
+        (status = 409, description = "The lease is invalid or belongs to another session", body = ContinuationLeaseErrorResponse)
+    )
+)]
+pub async fn abandon_continuation_lease(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<AbandonContinuationLeaseRequest>,
+) -> axum::response::Response {
+    if !biorouter_server::auth::is_user_action(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match state.abandon_continuation_lease(&req.session_id, &req.continuation_lease) {
+        Ok(resolution) => {
+            let resolution = match resolution {
+                ContinuationLeaseAbandonment::Abandoned => "abandoned",
+                ContinuationLeaseAbandonment::AlreadyAbandoned => "already_abandoned",
+                ContinuationLeaseAbandonment::AlreadyConsumed => "already_consumed",
+            };
+            Json(AbandonContinuationLeaseResponse {
+                resolution: resolution.to_string(),
+            })
+            .into_response()
+        }
+        Err(failure) => continuation_lease_failure_response(failure),
+    }
+}
+
+enum CancelAdmission {
+    Active {
+        turn: CancelledTurn,
+        continuation: Option<ContinuationAdmission>,
+    },
+    Complete(CancelTurnResponse),
+}
+
+fn idle_cancel_response() -> CancelTurnResponse {
+    CancelTurnResponse {
+        cancelled: false,
+        turn_id: None,
+        settled: true,
+        continuation_lease: None,
+    }
+}
+
+fn turn_mismatch_failure(req: &CancelTurnRequest, active_turn_id: String) -> CancelTurnFailure {
+    CancelTurnFailure::TurnMismatch {
+        expected_turn_id: req
+            .expected_turn_id
+            .clone()
+            .expect("a turn mismatch requires an expected turn id"),
+        active_turn_id,
+    }
+}
+
+fn admit_continuation_cancel(
+    state: &AppState,
+    req: &CancelTurnRequest,
+) -> Result<CancelAdmission, CancelTurnFailure> {
+    let expected_turn_id = req
+        .expected_turn_id
+        .as_deref()
+        .ok_or(CancelTurnFailure::ContinuationRequiresExpectedTurn)?;
+    match state.cancel_turn_for_continuation(&req.session_id, expected_turn_id) {
+        ContinuationCancelAttempt::Cancelled { turn, admission } => Ok(CancelAdmission::Active {
+            turn,
+            continuation: Some(admission),
+        }),
+        ContinuationCancelAttempt::Retired { turn_id, admission } => {
+            let mut admission = ContinuationAdmissionRollback::new(state, Some(admission));
+            tracing::debug!(
+                session_id = req.session_id,
+                turn_id,
+                "Continuation admitted for an already-retired turn"
+            );
+            Ok(CancelAdmission::Complete(CancelTurnResponse {
+                cancelled: false,
                 turn_id: Some(turn_id),
+                settled: true,
+                continuation_lease: admission.commit(),
             }))
         }
-        None => {
+        ContinuationCancelAttempt::Idle => {
+            tracing::debug!(
+                "Cancel for session {} found no addressable turn generation",
+                req.session_id
+            );
+            Ok(CancelAdmission::Complete(idle_cancel_response()))
+        }
+        ContinuationCancelAttempt::TurnMismatch { active_turn_id } => {
+            Err(turn_mismatch_failure(req, active_turn_id))
+        }
+    }
+}
+
+fn admit_ordinary_cancel(
+    state: &AppState,
+    req: &CancelTurnRequest,
+) -> Result<CancelAdmission, CancelTurnFailure> {
+    match state.cancel_turn_waitable(&req.session_id, req.expected_turn_id.as_deref()) {
+        CancelTurnAttempt::Cancelled(turn) => Ok(CancelAdmission::Active {
+            turn,
+            continuation: None,
+        }),
+        CancelTurnAttempt::Idle => {
+            if req.expected_turn_id.is_none()
+                && biorouter::agents::subagent_handle::cancel_initializing_child(&req.session_id)
+            {
+                tracing::info!(
+                    session_id = req.session_id,
+                    "Cancelled delegated child before its initial runtime became ready"
+                );
+                return Ok(CancelAdmission::Complete(CancelTurnResponse {
+                    cancelled: true,
+                    turn_id: None,
+                    settled: true,
+                    continuation_lease: None,
+                }));
+            }
             tracing::debug!(
                 "Cancel for session {} found no turn in flight",
                 req.session_id
             );
-            Ok(Json(CancelTurnResponse {
-                cancelled: false,
-                turn_id: None,
-            }))
+            Ok(CancelAdmission::Complete(idle_cancel_response()))
+        }
+        CancelTurnAttempt::TurnMismatch { active_turn_id } => {
+            Err(turn_mismatch_failure(req, active_turn_id))
         }
     }
+}
+
+fn admit_cancel(
+    state: &AppState,
+    req: &CancelTurnRequest,
+) -> Result<CancelAdmission, CancelTurnFailure> {
+    if req.continuation_pending {
+        admit_continuation_cancel(state, req)
+    } else {
+        admit_ordinary_cancel(state, req)
+    }
+}
+
+async fn await_cancel_settlement(
+    turn: &CancelledTurn,
+    req: &CancelTurnRequest,
+    settlement_timeout: Duration,
+) -> Result<(), CancelTurnFailure> {
+    if (req.wait_for_idle || req.continuation_pending)
+        && tokio::time::timeout(settlement_timeout, turn.wait_until_settled())
+            .await
+            .is_err()
+        && !turn.is_settled()
+    {
+        tracing::warn!(
+            session_id = req.session_id,
+            turn_id = turn.turn_id(),
+            timeout_secs = settlement_timeout.as_secs_f64(),
+            "cancelled turn did not release its session lock before the safety bound"
+        );
+        return Err(CancelTurnFailure::SettlementTimeout);
+    }
+    Ok(())
+}
+
+async fn cancel_turn_bounded(
+    state: &AppState,
+    req: &CancelTurnRequest,
+    settlement_timeout: Duration,
+) -> Result<CancelTurnResponse, CancelTurnFailure> {
+    let (turn, continuation_admission) = match admit_cancel(state, req)? {
+        CancelAdmission::Active { turn, continuation } => (turn, continuation),
+        CancelAdmission::Complete(response) => return Ok(response),
+    };
+    let mut continuation_admission =
+        ContinuationAdmissionRollback::new(state, continuation_admission);
+
+    tracing::info!(
+        "Cancelled turn {} for session {}",
+        turn.turn_id(),
+        req.session_id
+    );
+
+    await_cancel_settlement(&turn, req, settlement_timeout).await?;
+
+    let continuation_lease = continuation_admission.commit();
+
+    Ok(CancelTurnResponse {
+        cancelled: true,
+        turn_id: Some(turn.turn_id().to_string()),
+        settled: turn.is_settled(),
+        continuation_lease,
+    })
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {
@@ -1772,6 +2149,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         )
         .route("/interrupt", post(interrupt))
         .route("/agent/cancel", post(cancel_turn))
+        .route(
+            "/agent/continuation/abandon",
+            post(abandon_continuation_lease),
+        )
         .with_state(state)
 }
 
@@ -3800,6 +4181,7 @@ mod tests {
                         workflow_version: None,
                         reasoning_effort: None,
                         turn_id: None,
+                        continuation_lease: None,
                         from_seq: None,
                     })
                     .unwrap(),
@@ -3838,6 +4220,7 @@ mod tests {
                         workflow_version: None,
                         reasoning_effort: None,
                         turn_id: None,
+                        continuation_lease: None,
                         from_seq: None,
                     })
                     .unwrap(),
@@ -3876,6 +4259,7 @@ mod tests {
                         workflow_version: None,
                         reasoning_effort: None,
                         turn_id: None,
+                        continuation_lease: None,
                         from_seq: None,
                     })
                     .unwrap(),
@@ -4025,6 +4409,28 @@ mod tests {
         }
 
         fn cancel_request(session_id: &str) -> Request<Body> {
+            cancel_request_for_turn(session_id, None, false)
+        }
+
+        fn cancel_request_for_turn(
+            session_id: &str,
+            expected_turn_id: Option<&str>,
+            wait_for_idle: bool,
+        ) -> Request<Body> {
+            cancel_request_for_turn_with_continuation(
+                session_id,
+                expected_turn_id,
+                wait_for_idle,
+                false,
+            )
+        }
+
+        fn cancel_request_for_turn_with_continuation(
+            session_id: &str,
+            expected_turn_id: Option<&str>,
+            wait_for_idle: bool,
+            continuation_pending: bool,
+        ) -> Request<Body> {
             Request::builder()
                 .uri("/agent/cancel")
                 .method("POST")
@@ -4034,6 +4440,9 @@ mod tests {
                 .body(Body::from(
                     serde_json::to_string(&CancelTurnRequest {
                         session_id: session_id.to_string(),
+                        expected_turn_id: expected_turn_id.map(str::to_string),
+                        wait_for_idle,
+                        continuation_pending,
                     })
                     .unwrap(),
                 ))
@@ -4062,6 +4471,7 @@ mod tests {
                         workflow_name: None,
                         workflow_version: None,
                         turn_id: turn_id.map(str::to_string),
+                        continuation_lease: None,
                         reasoning_effort: None,
                         from_seq: None,
                     })
@@ -4105,6 +4515,88 @@ mod tests {
             );
         }
 
+        #[tokio::test(flavor = "multi_thread")]
+        async fn reply_to_a_queued_child_is_buffered_without_claiming_its_initial_turn() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let temp = tempfile::TempDir::new().unwrap();
+            let session = state
+                .session_manager()
+                .create_session(
+                    temp.path().to_path_buf(),
+                    "queued-child".into(),
+                    biorouter::session::session_manager::SessionType::SubAgent,
+                )
+                .await
+                .unwrap();
+            let handle =
+                biorouter::agents::subagent_handle::BackgroundSubagent::register_initializing(
+                    "queued-parent",
+                    session.id.clone(),
+                    "delegated work",
+                    CancellationToken::new(),
+                );
+
+            let response = routes(Arc::clone(&state))
+                .oneshot(reply_request(&session.id, Some("queued-user-turn")))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            let retry = routes(Arc::clone(&state))
+                .oneshot(reply_request(&session.id, Some("queued-user-turn")))
+                .await
+                .unwrap();
+            assert_eq!(retry.status(), StatusCode::ACCEPTED);
+            assert!(!state.is_turn_active(&session.id));
+            biorouter::agents::subagent_handle::begin_child_turn(&session.id);
+            assert_eq!(handle.child_turn_generation(), 0);
+            assert!(handle.result_is_current());
+
+            let pending =
+                biorouter::agents::subagent_handle::mark_initial_runtime_ready(&session.id);
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].as_concat_text(), "hello");
+            assert_eq!(
+                pending[0].metadata.provenance.as_ref().unwrap().kind,
+                biorouter::conversation::message::ProvenanceKind::UserDirect
+            );
+            biorouter::agents::subagent_handle::begin_child_turn(&session.id);
+            assert_eq!(handle.child_turn_generation(), 1);
+            assert!(handle.result_is_current());
+            handle.complete(
+                biorouter::agents::subagent_result::SubagentResult::from_error("test cleanup"),
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn cancel_reaches_a_queued_child_that_has_no_daemon_turn() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let child = "queued-child-cancel-route";
+            let handle =
+                biorouter::agents::subagent_handle::BackgroundSubagent::register_initializing(
+                    "queued-parent-cancel-route",
+                    child,
+                    "delegated work",
+                    CancellationToken::new(),
+                );
+
+            let response = routes(Arc::clone(&state))
+                .oneshot(cancel_request(child))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = json_body(response).await;
+            assert_eq!(body["cancelled"], serde_json::json!(true));
+            assert!(body["turn_id"].is_null());
+            assert_eq!(body["settled"], serde_json::json!(true));
+            assert!(handle.is_cancelled());
+            handle.complete(
+                biorouter::agents::subagent_result::SubagentResult::from_error("test cleanup"),
+            );
+        }
+
         /// BR-62: a turn can now be stopped by session id, without the caller
         /// holding the SSE socket.
         #[tokio::test(flavor = "multi_thread")]
@@ -4127,6 +4619,254 @@ mod tests {
                 token.is_cancelled(),
                 "the running turn's token must be tripped"
             );
+            assert_eq!(body["settled"], serde_json::json!(false));
+        }
+
+        /// Stop-and-Send must not receive its 200 until the exact cancelled
+        /// guard has released the session lock. Tripping the token is only the
+        /// start of cancellation, not proof that a replacement can begin.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn cancel_waits_for_the_exact_turn_guard_to_retire() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let token = CancellationToken::new();
+            let guard = state
+                .try_begin_turn_idempotent("wait-cancel", token.clone(), None)
+                .expect("turn lock acquired");
+            let turn_id = guard.turn_id().to_string();
+
+            let response_task =
+                tokio::spawn(routes(Arc::clone(&state)).oneshot(cancel_request_for_turn(
+                    "wait-cancel",
+                    Some(&turn_id),
+                    true,
+                )));
+
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !token.is_cancelled() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the request must trip the token before it waits");
+            assert!(
+                !response_task.is_finished(),
+                "the route acknowledged before the guard released the lock"
+            );
+
+            drop(guard);
+            let response = tokio::time::timeout(Duration::from_secs(2), response_task)
+                .await
+                .expect("the exact guard's drop must release the waiter")
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = json_body(response).await;
+            assert_eq!(body["cancelled"], serde_json::json!(true));
+            assert_eq!(body["turn_id"], serde_json::json!(turn_id));
+            assert_eq!(body["settled"], serde_json::json!(true));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn stop_and_send_marks_the_exact_child_before_cancellation_settles() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let token = CancellationToken::new();
+            let guard = state
+                .try_begin_turn_idempotent("continuation-child", token.clone(), None)
+                .unwrap();
+            let turn_id = guard.turn_id().to_string();
+            let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+                "continuation-parent",
+                "continuation-child",
+                "original delegated turn",
+                CancellationToken::new(),
+            );
+            biorouter::agents::subagent_handle::begin_child_turn("continuation-child");
+            handle.complete(
+                biorouter::agents::subagent_result::SubagentResult::from_error(
+                    "original completion",
+                ),
+            );
+
+            let response_task = tokio::spawn(routes(Arc::clone(&state)).oneshot(
+                cancel_request_for_turn_with_continuation(
+                    "continuation-child",
+                    Some(&turn_id),
+                    true,
+                    true,
+                ),
+            ));
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !token.is_cancelled() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+
+            assert!(handle.continuation_pending());
+            assert!(!handle.result_is_current());
+            assert!(!response_task.is_finished());
+
+            drop(guard);
+            let response = response_task.await.unwrap().unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = json_body(response).await;
+            let lease = body["continuation_lease"]
+                .as_str()
+                .expect("Stop-and-Send must return its exact-generation lease");
+            assert!(handle.continuation_pending());
+
+            let successor = state
+                .try_begin_turn_idempotent_with_continuation(
+                    "continuation-child",
+                    CancellationToken::new(),
+                    Some("replacement-turn".into()),
+                    Some(lease),
+                )
+                .expect("the exact lease admits its successor");
+            biorouter::agents::subagent_handle::begin_child_turn("continuation-child");
+            assert!(!handle.continuation_pending());
+            drop(successor);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn dropped_cancel_wait_rolls_back_the_continuation_mark() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let token = CancellationToken::new();
+            let guard = state
+                .try_begin_turn_idempotent("dropped-continuation-child", token.clone(), None)
+                .unwrap();
+            let turn_id = guard.turn_id().to_string();
+            let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+                "dropped-continuation-parent",
+                "dropped-continuation-child",
+                "delegated turn",
+                CancellationToken::new(),
+            );
+            biorouter::agents::subagent_handle::begin_child_turn("dropped-continuation-child");
+            handle.complete(
+                biorouter::agents::subagent_result::SubagentResult::from_error("original result"),
+            );
+
+            let response_task = tokio::spawn(routes(Arc::clone(&state)).oneshot(
+                cancel_request_for_turn_with_continuation(
+                    "dropped-continuation-child",
+                    Some(&turn_id),
+                    true,
+                    true,
+                ),
+            ));
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !token.is_cancelled() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(handle.continuation_pending());
+
+            response_task.abort();
+            let _ = response_task.await;
+            assert!(!handle.continuation_pending());
+            assert!(handle.result_is_current());
+            drop(guard);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn ordinary_stop_and_generation_mismatch_never_mark_a_continuation() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let first_token = CancellationToken::new();
+            let first = state
+                .try_begin_turn_idempotent("ordinary-stop-child", first_token, None)
+                .unwrap();
+            let first_id = first.turn_id().to_string();
+            let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+                "ordinary-stop-parent",
+                "ordinary-stop-child",
+                "delegated turn",
+                CancellationToken::new(),
+            );
+            biorouter::agents::subagent_handle::begin_child_turn("ordinary-stop-child");
+
+            let response = routes(Arc::clone(&state))
+                .oneshot(cancel_request_for_turn(
+                    "ordinary-stop-child",
+                    Some(&first_id),
+                    false,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(!handle.continuation_pending());
+            assert!(handle.result_is_current());
+            drop(first);
+
+            let successor = state
+                .try_begin_turn_idempotent("ordinary-stop-child", CancellationToken::new(), None)
+                .unwrap();
+            let response = routes(Arc::clone(&state))
+                .oneshot(cancel_request_for_turn_with_continuation(
+                    "ordinary-stop-child",
+                    Some(&first_id),
+                    true,
+                    true,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            assert!(!handle.continuation_pending());
+            assert!(handle.result_is_current());
+            drop(successor);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn exact_retired_turn_keeps_continuation_pending_across_the_start_gap() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let retired = begin_turn(&state, "retired-continuation-child").unwrap();
+            let retired_id = retired.turn_id().to_string();
+            drop(retired);
+            let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+                "retired-continuation-parent",
+                "retired-continuation-child",
+                "delegated turn",
+                CancellationToken::new(),
+            );
+            biorouter::agents::subagent_handle::begin_child_turn("retired-continuation-child");
+            handle.complete(
+                biorouter::agents::subagent_result::SubagentResult::from_error("original result"),
+            );
+
+            let response = routes(Arc::clone(&state))
+                .oneshot(cancel_request_for_turn_with_continuation(
+                    "retired-continuation-child",
+                    Some(&retired_id),
+                    true,
+                    true,
+                ))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = json_body(response).await;
+            assert_eq!(body["cancelled"], serde_json::json!(false));
+            assert_eq!(body["settled"], serde_json::json!(true));
+            let lease = body["continuation_lease"]
+                .as_str()
+                .expect("the retained exact generation must mint a lease");
+            assert!(handle.continuation_pending());
+            assert!(!handle.result_is_current());
+            assert_eq!(
+                state
+                    .abandon_continuation_lease("retired-continuation-child", lease)
+                    .unwrap(),
+                ContinuationLeaseAbandonment::Abandoned
+            );
+            assert!(!handle.continuation_pending());
         }
 
         /// Cancelling an idle session is a success no-op, not an error — a Stop
@@ -4144,6 +4884,168 @@ mod tests {
             let body = json_body(response).await;
             assert_eq!(body["cancelled"], serde_json::json!(false));
             assert_eq!(body["turn_id"], serde_json::Value::Null);
+            assert_eq!(body["settled"], serde_json::json!(true));
+        }
+
+        /// Waiting is idempotent when the addressed generation already retired:
+        /// there is no guard left to await and no successor to touch.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn cancel_wait_is_immediately_settled_when_the_session_is_idle() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let response = routes(state)
+                .oneshot(cancel_request_for_turn(
+                    "already-idle",
+                    Some("turn-that-ended"),
+                    true,
+                ))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = json_body(response).await;
+            assert_eq!(body["cancelled"], serde_json::json!(false));
+            assert_eq!(body["settled"], serde_json::json!(true));
+        }
+
+        /// A delayed Stop request for turn A must never kill turn B after A has
+        /// already retired. The generation check and token lookup are one atomic
+        /// registry operation, so the mismatch is fail-closed.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn stale_cancel_cannot_kill_a_successor() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let first = begin_turn(&state, "successor-session").unwrap();
+            let first_turn_id = first.turn_id().to_string();
+            drop(first);
+
+            let successor_token = CancellationToken::new();
+            let successor = state
+                .try_begin_turn_idempotent("successor-session", successor_token.clone(), None)
+                .unwrap();
+            let successor_turn_id = successor.turn_id().to_string();
+
+            let response = routes(Arc::clone(&state))
+                .oneshot(cancel_request_for_turn(
+                    "successor-session",
+                    Some(&first_turn_id),
+                    true,
+                ))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            let body = json_body(response).await;
+            assert_eq!(body["mismatch"], serde_json::json!(true));
+            assert_eq!(body["expected_turn_id"], first_turn_id);
+            assert_eq!(body["active_turn_id"], successor_turn_id);
+            assert!(
+                !successor_token.is_cancelled(),
+                "a stale generation-conditional cancel tripped the successor"
+            );
+            assert!(state.is_turn_active("successor-session"));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn expected_generation_mismatches_a_different_retained_generation() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let first = begin_turn(&state, "retired-mismatch-session").unwrap();
+            let first_turn_id = first.turn_id().to_string();
+            drop(first);
+            let second = state
+                .try_begin_turn_idempotent(
+                    "retired-mismatch-session",
+                    CancellationToken::new(),
+                    Some("second-client-turn".into()),
+                )
+                .unwrap();
+            let second_turn_id = second.turn_id().to_string();
+            drop(second);
+
+            let response = routes(Arc::clone(&state))
+                .oneshot(cancel_request_for_turn_with_continuation(
+                    "retired-mismatch-session",
+                    Some(&first_turn_id),
+                    true,
+                    true,
+                ))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            let body = json_body(response).await;
+            assert_eq!(body["mismatch"], serde_json::json!(true));
+            assert_eq!(body["expected_turn_id"], first_turn_id);
+            assert_eq!(body["active_turn_id"], second_turn_id);
+
+            let response = routes(Arc::clone(&state))
+                .oneshot(cancel_request_for_turn(
+                    "retired-mismatch-session",
+                    Some(&first_turn_id),
+                    true,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+        }
+
+        /// The safety bound is an error barrier, never an optimistic 200. This
+        /// test uses the same core path with a short bound so the suite does not
+        /// spend the production thirty seconds proving it exists.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_cancel_wait_timeout_is_gateway_timeout_not_false_success() {
+            let state = AppState::new().await.unwrap();
+            let token = CancellationToken::new();
+            let guard = state
+                .try_begin_turn_idempotent("wedged-cancel", token.clone(), None)
+                .unwrap();
+            let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+                "wedged-cancel-parent",
+                "wedged-cancel",
+                "delegated turn",
+                CancellationToken::new(),
+            );
+            biorouter::agents::subagent_handle::begin_child_turn("wedged-cancel");
+            handle.complete(
+                biorouter::agents::subagent_result::SubagentResult::from_error("original result"),
+            );
+            let req = CancelTurnRequest {
+                session_id: "wedged-cancel".to_string(),
+                expected_turn_id: Some(guard.turn_id().to_string()),
+                wait_for_idle: true,
+                continuation_pending: true,
+            };
+
+            let failure = cancel_turn_bounded(&state, &req, Duration::from_millis(25))
+                .await
+                .expect_err("the held guard must reach the safety bound");
+            assert_eq!(
+                failure.into_response().status(),
+                StatusCode::GATEWAY_TIMEOUT,
+                "a safety timeout must be non-200 so the client cannot submit early"
+            );
+            assert!(token.is_cancelled(), "the cancellation still starts");
+            assert!(
+                state.is_turn_active("wedged-cancel"),
+                "the held guard proves a 200 would have been false"
+            );
+            assert!(!handle.continuation_pending());
+            assert!(
+                handle.result_is_current(),
+                "a failed cancellation barrier must restore the collectable original result"
+            );
+            drop(guard);
+        }
+
+        #[test]
+        fn legacy_cancel_body_defaults_to_immediate_unconditional_ack() {
+            let req: CancelTurnRequest =
+                serde_json::from_value(serde_json::json!({"session_id": "legacy"})).unwrap();
+            assert_eq!(req.session_id, "legacy");
+            assert!(req.expected_turn_id.is_none());
+            assert!(!req.wait_for_idle);
+            assert!(!req.continuation_pending);
         }
 
         #[tokio::test(flavor = "multi_thread")]

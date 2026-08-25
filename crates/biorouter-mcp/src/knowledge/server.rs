@@ -287,7 +287,7 @@ pub struct ReadPageParams {
     pub path: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct WritePageParams {
     pub kb_id: String,
     pub path: String,
@@ -949,7 +949,24 @@ impl KnowledgeServer {
         // The autofix path stays where a caller can be held to it: `biorouter kb
         // lint --fix` and `POST /knowledge/bases/{id}/lint`, both of which name a
         // provider and therefore have a tier to ratchet with.
-        let report = crate::knowledge::macros::lint::scan(&kb_root).map_err(into_err)?;
+        let cancel = context.ct;
+        let lock = self
+            .service
+            .lock_kb_cancellable(&kb_id, Some(&cancel))
+            .await
+            .map_err(into_err)?;
+        let scan_root = kb_root.clone();
+        let scan_cancel = cancel.clone();
+        let (_lock, report) = tokio::task::spawn_blocking(move || {
+            let report = crate::knowledge::macros::lint::scan_with_cancellation(
+                &scan_root,
+                Some(&scan_cancel),
+            )?;
+            Ok::<_, anyhow::Error>((lock, report))
+        })
+        .await
+        .map_err(|error| into_err(anyhow::anyhow!("knowledge lint scan task failed: {error}")))?
+        .map_err(into_err)?;
         // `Manifest::profile`, never `Manifest::format` — the field reads `Okf`
         // on every base written before Stage 3, so reporting it would tell the
         // caller a legacy base is OKF and leave the empty `okf.*` list looking
@@ -1019,9 +1036,21 @@ impl KnowledgeServer {
         // create time, and the "Refresh graph" button only re-reads that
         // cache. add_raw_source already rebuilds for the GUI ingest path; do
         // the same here so chat-curated KBs visualize their pages/links.
-        self.service
-            .rebuild_graph_cache(&p.kb_id)
-            .map_err(into_err)?;
+        if let Err(error) = self.service.rebuild_graph_cache(&p.kb_id) {
+            let failure: anyhow::Error = match sha.as_deref() {
+                Some(commit_sha) => crate::knowledge::git::KnowledgeWriteFailure::committed(
+                    format!("page write to {}", p.path),
+                    commit_sha,
+                    error,
+                )
+                .into(),
+                None => anyhow::anyhow!(
+                    "page {} already matched durable content, but its graph cache could not be refreshed: {error:#}. The cache will be re-derived on its next read",
+                    p.path
+                ),
+            };
+            return Err(into_err(failure));
+        }
         ok_json(&serde_json::json!({ "commit_sha": sha }))
     }
 
@@ -1058,7 +1087,11 @@ impl KnowledgeServer {
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         let kb_id = self.kb_id_or_primary(p.kb_id, Some(&context))?;
-        let g = self.service.get_graph(&kb_id).map_err(into_err)?;
+        let g = self
+            .service
+            .get_graph_async(&kb_id)
+            .await
+            .map_err(into_err)?;
         ok_json(&g)
     }
 
@@ -1091,7 +1124,8 @@ impl KnowledgeServer {
         let p = p.0;
         let sha = self
             .service
-            .restore_state(&p.kb_id, &p.commit_sha)
+            .restore_state_async(&p.kb_id, &p.commit_sha, None)
+            .await
             .map_err(into_err)?;
         ok_json(&serde_json::json!({ "ok": true, "new_commit_sha": sha }))
     }
@@ -1647,7 +1681,8 @@ impl ServerHandler for KnowledgeServer {
                 // `every_tool_that_ratchets_the_tier_also_records_the_callers_institution`
                 // drives every ratcheting tool through this seam and pins it.
                 self.service
-                    .raise_tier_and_affiliation(&kb_id, caller.private, &caller.affiliation)
+                    .raise_tier_and_affiliation_async(&kb_id, caller.private, &caller.affiliation)
+                    .await
                     .map_err(into_err)?;
             }
             // Issue #56, review round 5. PIN what was checked. Without this the
@@ -1714,6 +1749,7 @@ fn not_a_member(kb_id: &str, visible: &[String], session_id: Option<&str>) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::knowledge::git::GitRepo;
     // Every page these tests write goes through the one fixture builder, so
     // that when the page format tightens the change lands there and not in
     // twenty tests that are about tiers and paths (DR-19).
@@ -2069,6 +2105,56 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn committed_page_refresh_failure_removes_old_cache_and_retry_does_not_recommit(
+    ) -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let server = server_with_root(tmp.path().to_path_buf());
+        server.service.create_base("kb", "KB", None)?;
+        let kb = crate::knowledge::paths::kb_root(server.service.root(), "kb");
+        crate::knowledge::store::write_page(
+            &kb,
+            "knowledge/concept/a.md",
+            &valid_page("concept", "a", "A"),
+            "add A",
+            None,
+        )?;
+        server.service.rebuild_graph_cache("kb")?;
+        crate::knowledge::graph::fail_cache_writes(&kb, 1);
+        let params = WritePageParams {
+            kb_id: "kb".to_string(),
+            path: "knowledge/concept/b.md".to_string(),
+            content: valid_page("concept", "b", "B"),
+            commit_message: "add B".to_string(),
+        };
+
+        let error = server
+            .kb_write_page(rmcp::handler::server::wrapper::Parameters(params.clone()))
+            .await
+            .expect_err("the injected post-commit refresh must be reported");
+        assert!(error.message.contains("committed in commit"), "{error:?}");
+        assert!(error.message.contains("do not retry"), "{error:?}");
+        assert!(kb.join("knowledge/concept/b.md").exists());
+        assert!(
+            !crate::knowledge::graph::cache_path(&kb).exists(),
+            "an older cache survived the failed rebuild"
+        );
+        let history_len = GitRepo::open(&kb)?.log(10)?.len();
+
+        server
+            .kb_write_page(rmcp::handler::server::wrapper::Parameters(params))
+            .await
+            .expect("an identical retry reuses the durable page");
+        assert_eq!(GitRepo::open(&kb)?.log(10)?.len(), history_len);
+        assert!(server
+            .service
+            .get_graph("kb")?
+            .nodes
+            .iter()
+            .any(|node| node.path == "knowledge/concept/b.md"));
+        Ok(())
+    }
+
     // ---- Issue #56, decision (2)(b): where a MODEL's export comes to rest ----
     //
     // ⚠ DEVIATION from the task text, recorded rather than hidden. The task
@@ -2350,6 +2436,27 @@ mod tests {
         caller: Caller,
         affiliation: &CallerAffiliation,
     ) -> Result<CallToolResult, ErrorData> {
+        call_tool_as_full_with_cancellation(
+            srv,
+            name,
+            args,
+            session_id,
+            caller,
+            affiliation,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+    }
+
+    async fn call_tool_as_full_with_cancellation(
+        srv: &KnowledgeServer,
+        name: &str,
+        args: serde_json::Value,
+        session_id: Option<&str>,
+        caller: Caller,
+        affiliation: &CallerAffiliation,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<CallToolResult, ErrorData> {
         use tokio::io::AsyncReadExt as _;
 
         let (mut client, server_side) = tokio::io::duplex(64 * 1024);
@@ -2381,7 +2488,7 @@ mod tests {
             );
         }
         let context = RequestContext {
-            ct: Default::default(),
+            ct: cancel,
             id: rmcp::model::NumberOrString::Number(1),
             meta,
             extensions: Default::default(),
@@ -3264,6 +3371,111 @@ mod tests {
             before,
             crate::knowledge::store::list_pages(&root.join("lit"), None).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn kb_lint_waits_until_a_partial_transaction_is_gone() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&[]);
+        call_tool_as(
+            &srv,
+            "kb_create_base",
+            serde_json::json!({ "id": "lit", "name": "Lit", "format": "biookf" }),
+            Public,
+        )
+        .await
+        .unwrap();
+
+        let lock = srv.service.lock_kb("lit").await.unwrap();
+        let kb_root = root.join("lit");
+        let repo = GitRepo::open(&kb_root).unwrap();
+        let txn = repo.begin_txn("partial-lint-fixture").unwrap();
+        crate::knowledge::store::write_page(
+            &kb_root,
+            "knowledge/molecule/transient.md",
+            "---\ntype: Molecules\nidentifier: Transient\n---\n\n# Transient\n",
+            "partial transaction page",
+            Some(&txn.branch),
+        )
+        .unwrap();
+
+        let lint_server = srv.clone();
+        let mut lint = tokio::spawn(async move {
+            call_tool_as(
+                &lint_server,
+                "kb_lint",
+                serde_json::json!({"kb_id": "lit"}),
+                Public,
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut lint)
+                .await
+                .is_err(),
+            "kb_lint bypassed the KB transaction queue"
+        );
+
+        repo.abort_txn(&txn).unwrap();
+        drop(lock);
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), lint)
+            .await
+            .expect("lint should resume after the transaction lock is released")
+            .unwrap();
+        let out = json_of(&result);
+        let rules = out["diagnostics"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|diagnostic| diagnostic["rule"].as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            !rules.contains(&crate::knowledge::biookf::lint::RULE_TYPE_INVALID),
+            "lint observed the aborted transaction's transient page: {out}"
+        );
+        assert!(
+            !kb_root.join("knowledge/molecule/transient.md").exists(),
+            "the transaction fixture did not abort cleanly"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_kb_lint_while_it_waits_for_the_transaction_queue_returns() {
+        let (srv, _tmp, _root) = migrated_server_with_bases(&["lit"]);
+        let lock = srv.service.lock_kb("lit").await.unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let call_cancel = cancel.clone();
+        let lint_server = srv.clone();
+        let mut lint = tokio::spawn(async move {
+            call_tool_as_full_with_cancellation(
+                &lint_server,
+                "kb_lint",
+                serde_json::json!({"kb_id": "lit"}),
+                None,
+                Public,
+                &CallerAffiliation::Unstated,
+                call_cancel,
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut lint)
+                .await
+                .is_err(),
+            "kb_lint completed without waiting for the held KB lock"
+        );
+        cancel.cancel();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), lint)
+            .await
+            .expect("cancellation should interrupt the KB lock wait")
+            .unwrap();
+        let error = result.expect_err("a cancelled lint must not return a report");
+        assert!(error.message.contains("cancelled"), "{error:?}");
+
+        drop(lock);
     }
 
     /// A KB-less `kb_lint` lints the session's primary, like every other

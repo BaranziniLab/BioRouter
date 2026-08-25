@@ -903,10 +903,17 @@ impl Config {
         primary: &str,
         maybe_secret: &[&str],
     ) -> Result<HashMap<String, String>, ConfigError> {
-        let use_env = env::var(primary.to_uppercase()).is_ok();
+        let primary_env_key = primary.to_uppercase();
+        let use_overrides = override_lookup(&primary_env_key).is_some();
+        let use_env = !use_overrides && env::var(&primary_env_key).is_ok();
         let get_value = |key: &str| -> Result<String, ConfigError> {
-            if use_env {
-                env::var(key.to_uppercase()).map_err(|_| ConfigError::NotFound(key.to_string()))
+            let env_key = key.to_uppercase();
+            if use_overrides {
+                override_lookup(&env_key)
+                    .or_else(|| env::var(&env_key).ok())
+                    .ok_or_else(|| ConfigError::NotFound(key.to_string()))
+            } else if use_env {
+                env::var(env_key).map_err(|_| ConfigError::NotFound(key.to_string()))
             } else {
                 self.get_secret(key)
             }
@@ -2042,6 +2049,66 @@ mod tests {
         // Outside the scope the real env value resolves again.
         assert_eq!(config.get_secret::<String>(key).unwrap(), "real-env-value");
         std::env::remove_var(env_key);
+    }
+
+    #[tokio::test]
+    async fn task_local_secret_bundle_never_falls_through_to_keyring() {
+        struct PanicsOnRead;
+
+        impl KeyringBlobStore for PanicsOnRead {
+            fn get(&self, _username: &str) -> Result<String, keyring::Error> {
+                panic!("task-local credential detection must not read the keyring")
+            }
+
+            fn set(&self, _username: &str, _value: &str) -> Result<(), keyring::Error> {
+                unreachable!()
+            }
+
+            fn delete(&self, _username: &str) -> Result<(), keyring::Error> {
+                unreachable!()
+            }
+        }
+
+        let config_file = NamedTempFile::new().unwrap();
+        let config = Config {
+            config_path: config_file.path().to_path_buf(),
+            secrets: SecretStorage::Keyring {
+                service: "biorouter-test".to_string(),
+            },
+            guard: Mutex::new(()),
+            secrets_cache: Mutex::new(None),
+            test_keyring_store: Some(std::sync::Arc::new(PanicsOnRead)),
+        };
+        let overrides = HashMap::from([
+            (
+                "TASK_OVERRIDE_BUNDLE_PRIMARY".to_string(),
+                "candidate-primary".to_string(),
+            ),
+            (
+                "TASK_OVERRIDE_BUNDLE_SECONDARY".to_string(),
+                "candidate-secondary".to_string(),
+            ),
+        ]);
+
+        let secrets = with_config_overrides(overrides, async {
+            config
+                .get_secrets(
+                    "TASK_OVERRIDE_BUNDLE_PRIMARY",
+                    &[
+                        "TASK_OVERRIDE_BUNDLE_SECONDARY",
+                        "TASK_OVERRIDE_BUNDLE_MISSING",
+                    ],
+                )
+                .unwrap()
+        })
+        .await;
+
+        assert_eq!(secrets["TASK_OVERRIDE_BUNDLE_PRIMARY"], "candidate-primary");
+        assert_eq!(
+            secrets["TASK_OVERRIDE_BUNDLE_SECONDARY"],
+            "candidate-secondary"
+        );
+        assert!(!secrets.contains_key("TASK_OVERRIDE_BUNDLE_MISSING"));
     }
 
     #[test]

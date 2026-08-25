@@ -22,7 +22,7 @@ use crate::knowledge::service::KnowledgeService;
 ///
 /// What is *not* acceptable is either of them failing quietly, which is what
 /// `let _ =` bought.
-pub(crate) fn refresh_base(svc: &KnowledgeService, kb_id: &str) {
+fn refresh_base_blocking(svc: &KnowledgeService, kb_id: &str) {
     if let Err(e) = svc.migrate_schema_if_needed(kb_id) {
         tracing::warn!(
             "knowledge: could not migrate schema.md for '{kb_id}', continuing on the \
@@ -34,4 +34,25 @@ pub(crate) fn refresh_base(svc: &KnowledgeService, kb_id: &str) {
     if let Err(e) = svc.rebuild_graph_cache(kb_id) {
         tracing::warn!("knowledge: could not rebuild the graph cache for '{kb_id}': {e:#}");
     }
+}
+
+/// Async macro entry point for the blocking schema/cache repair pass. Macro
+/// callers hold the KB guard across this await, so no graph read or writer can
+/// observe the base between the two repairs.
+pub(crate) async fn refresh_base(svc: &KnowledgeService, kb_id: &str) -> anyhow::Result<()> {
+    let svc = svc.clone();
+    let kb_id = kb_id.to_string();
+    tokio::task::spawn_blocking(move || refresh_base_blocking(&svc, &kb_id))
+        .await
+        .map_err(|error| anyhow::anyhow!("knowledge refresh task failed: {error}"))
+}
+
+pub(crate) fn ensure_not_cancelled(
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+    phase: &str,
+) -> anyhow::Result<()> {
+    if cancel.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+        anyhow::bail!("knowledge operation cancelled before {phase}");
+    }
+    Ok(())
 }

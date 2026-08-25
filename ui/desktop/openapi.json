@@ -173,7 +173,7 @@
             "description": "Unauthorized - invalid secret key"
           },
           "403": {
-            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user"
+            "description": "Refused by a privacy or subagent-control boundary: the named chat is private/absent, or is a subagent, and the request carried no proof it came from the user"
           },
           "409": {
             "description": "Refused by a privacy boundary (issue #56, DR-16): a private extension cannot be attached to a chat running on a public model"
@@ -235,7 +235,7 @@
           "workspace"
         ],
         "summary": "Hard cancel: trip the cancellation token of the turn in flight for this",
-        "description": "session (BR-62).\n\nBefore this route, cancelling meant dropping the SSE socket — the only thing\nthat closed `tx` and tripped the token — so a turn could not be stopped by a\nsecond client, the CLI, or a script, and `/agent/stop` merely evicted the\nagent from the LRU while the in-flight reply task ran on happily against its\nown `Arc<Agent>`. Tripping the token unwinds the agent loop at its next\nboundary and unblocks a tool-permission prompt it may be parked on.\n\nDeliberately **idempotent**: cancelling a session with no turn in flight (a\ndouble-clicked Stop button, a cancel that raced the turn's own completion) is\na 200 with `cancelled: false`, never an error. A cancel that reports failure\nbecause the thing was already stopped is exactly the unreliability this BR\nexists to remove.",
+        "description": "session (BR-62).\n\nBefore this route, cancelling meant dropping the SSE socket — the only thing\nthat closed `tx` and tripped the token — so a turn could not be stopped by a\nsecond client, the CLI, or a script, and `/agent/stop` merely evicted the\nagent from the LRU while the in-flight reply task ran on happily against its\nown `Arc<Agent>`. Tripping the token unwinds the agent loop at its next\nboundary and unblocks a tool-permission prompt it may be parked on.\n\nDeliberately **idempotent**: cancelling a session with no turn in flight (a\ndouble-clicked Stop button, a cancel that raced the turn's own completion) is\na 200 with `cancelled: false`, never an error. A cancel that reports failure\nbecause the thing was already stopped is exactly the unreliability this BR\nexists to remove. When `expected_turn_id` names an older generation and a\nsuccessor is active, the route instead fails closed with 409 and leaves that\nsuccessor untouched.",
         "operationId": "cancel_turn",
         "requestBody": {
           "content": {
@@ -264,8 +264,64 @@
           "403": {
             "description": "The request was not proven to come from the user"
           },
+          "409": {
+            "description": "A different turn generation is now active; it was not cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelTurnConflictResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error"
+          },
+          "504": {
+            "description": "The cancelled turn did not release the session lock before the safety bound"
+          }
+        }
+      }
+    },
+    "/agent/continuation/abandon": {
+      "post": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "abandon_continuation_lease",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbandonContinuationLeaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The continuation lease is abandoned or was already resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AbandonContinuationLeaseResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request was not proven to come from the user"
+          },
+          "409": {
+            "description": "The lease is invalid or belongs to another session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContinuationLeaseErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -445,6 +501,12 @@
           "401": {
             "description": "Unauthorized - invalid secret key"
           },
+          "403": {
+            "description": "The session is out of reach, or the target is a subagent and the request lacks user-action proof"
+          },
+          "409": {
+            "description": "Subagent extension grants are immutable for the lifetime of the delegated child"
+          },
           "424": {
             "description": "Agent not initialized"
           },
@@ -483,6 +545,9 @@
           },
           "401": {
             "description": "Unauthorized - invalid secret key"
+          },
+          "403": {
+            "description": "The session is out of reach, or the target is a subagent and the request lacks user-action proof"
           },
           "404": {
             "description": "Session not found"
@@ -615,6 +680,9 @@
           "401": {
             "description": "Unauthorized - invalid secret key"
           },
+          "403": {
+            "description": "The session is out of reach, or the target is a subagent and the request lacks user-action proof"
+          },
           "404": {
             "description": "Session not found"
           },
@@ -741,6 +809,9 @@
           },
           "401": {
             "description": "Unauthorized - invalid secret key"
+          },
+          "403": {
+            "description": "The session is out of reach, or the target is a subagent and the request lacks user-action proof"
           },
           "409": {
             "description": "Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user (body = plain text)",
@@ -2458,6 +2529,9 @@
           },
           "400": {
             "description": "Bad request"
+          },
+          "500": {
+            "description": "Write outcome uncertain or post-commit cache refresh failed"
           }
         }
       }
@@ -3209,6 +3283,9 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "A proven user reply was retained as steering for a delegated child that is still initializing"
           },
           "403": {
             "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)"
@@ -5408,6 +5485,32 @@
   },
   "components": {
     "schemas": {
+      "AbandonContinuationLeaseRequest": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "continuation_lease"
+        ],
+        "properties": {
+          "continuation_lease": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "AbandonContinuationLeaseResponse": {
+        "type": "object",
+        "required": [
+          "resolution"
+        ],
+        "properties": {
+          "resolution": {
+            "type": "string"
+          }
+        }
+      },
       "ActionRequired": {
         "type": "object",
         "required": [
@@ -6037,6 +6140,26 @@
           }
         }
       },
+      "CancelTurnConflictResponse": {
+        "type": "object",
+        "description": "A generation-conditional cancel addressed a different active turn.",
+        "required": [
+          "mismatch",
+          "expected_turn_id",
+          "active_turn_id"
+        ],
+        "properties": {
+          "active_turn_id": {
+            "type": "string"
+          },
+          "expected_turn_id": {
+            "type": "string"
+          },
+          "mismatch": {
+            "type": "boolean"
+          }
+        }
+      },
       "CancelTurnRequest": {
         "type": "object",
         "description": "Request body for the addressable cancel route.",
@@ -6044,8 +6167,21 @@
           "session_id"
         ],
         "properties": {
+          "continuation_pending": {
+            "type": "boolean",
+            "description": "The caller will submit a replacement turn after cancellation settles.\nThis is distinct from ordinary Stop because a delegated child's parent\nmust keep supervising across the gap between the two turns."
+          },
+          "expected_turn_id": {
+            "type": "string",
+            "description": "Cancel only this turn generation. A stale Stop request must never cancel\na successor that started in the same session after the UI queued it.",
+            "nullable": true
+          },
           "session_id": {
             "type": "string"
+          },
+          "wait_for_idle": {
+            "type": "boolean",
+            "description": "Wait until the exact cancelled turn has released the session lock before\nacknowledging. Stop-and-Send callers use this as their submission\nbarrier; ordinary Stop callers retain the immediate acknowledgement."
           }
         }
       },
@@ -6053,12 +6189,22 @@
         "type": "object",
         "description": "Response body for the addressable cancel route.",
         "required": [
-          "cancelled"
+          "cancelled",
+          "settled"
         ],
         "properties": {
           "cancelled": {
             "type": "boolean",
             "description": "True when a running turn was found and its cancellation token tripped.\nFalse means there was nothing to cancel — which is a success, not an error."
+          },
+          "continuation_lease": {
+            "type": "string",
+            "description": "Opaque exact-generation admission for the replacement `/reply`.\nPresent only for a settled Stop-and-Send request.",
+            "nullable": true
+          },
+          "settled": {
+            "type": "boolean",
+            "description": "True only after the cancelled turn's guard has retired. An idle session\nis already settled. An immediate cancellation acknowledgement may be\n`false` while the agent loop is still unwinding."
           },
           "turn_id": {
             "type": "string",
@@ -6392,6 +6538,11 @@
           "session_id"
         ],
         "properties": {
+          "continuation_lease": {
+            "type": "string",
+            "description": "Opaque admission minted by an exact-generation Stop-and-Send. A live\nlease is required while that superseded child generation remains under\nparent supervision, and is consumed atomically with this successor's\nturn lock.",
+            "nullable": true
+          },
           "conversation_so_far": {
             "type": "array",
             "items": {
@@ -6633,6 +6784,17 @@
             ]
           }
         ]
+      },
+      "ContinuationLeaseErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
       },
       "Conversation": {
         "type": "array",
@@ -11018,7 +11180,8 @@
       "ResumeAgentResponse": {
         "type": "object",
         "required": [
-          "session"
+          "session",
+          "initializing"
         ],
         "properties": {
           "active_turn": {
@@ -11043,6 +11206,10 @@
               }
             ],
             "nullable": true
+          },
+          "initializing": {
+            "type": "boolean",
+            "description": "True only while a delegated child is queued before its exact runtime\nprofile has been installed. Clients must wait instead of fetching tools\nor submitting a turn through a generic placeholder agent."
           },
           "session": {
             "$ref": "#/components/schemas/Session"

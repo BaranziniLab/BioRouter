@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 use rmcp::model::Content;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use super::knowledge_tool::{build_model_ref_provider, kb_caller, resolve_target_kb};
 use super::Agent;
@@ -54,6 +55,7 @@ impl Agent {
         &self,
         arguments: Value,
         session: &Session,
+        cancel: Option<CancellationToken>,
     ) -> ToolResult<Vec<Content>> {
         let svc = KnowledgeService::new_default().map_err(internal)?;
 
@@ -67,7 +69,9 @@ impl Agent {
         let kb_id = resolve_target_kb(&svc, &arguments, &session.id, &kb_caller(chat_capability))
             .map_err(invalid_params)?;
 
-        let chosen = self.choose_ingest_model(&arguments, session).await?;
+        let chosen = self
+            .choose_ingest_model(&arguments, session, cancel.clone())
+            .await?;
 
         let report = ingest_sources(
             &svc,
@@ -86,7 +90,7 @@ impl Agent {
                     .map(str::to_string),
                 bounds: ingest_bounds(),
                 event_sink: None,
-                cancel: None,
+                cancel,
                 model_label: chosen.label,
             },
         )
@@ -107,6 +111,7 @@ impl Agent {
         &self,
         arguments: &Value,
         session: &Session,
+        cancel: Option<CancellationToken>,
     ) -> Result<ChosenModel, rmcp::model::ErrorData> {
         if biorouter_mcp::knowledge::test_mode::env_enabled() {
             // The third of the named test-mode exemptions (the HTTP route's
@@ -155,7 +160,8 @@ impl Agent {
             return Err(invalid_params(refusal));
         }
 
-        let (completer, capability, affiliation) = ProviderCompleter::paired_factory(provider);
+        let (completer, capability, affiliation) =
+            ProviderCompleter::paired_factory(provider, Some(session.id.clone()), cancel);
         Ok(ChosenModel {
             completer,
             capability,

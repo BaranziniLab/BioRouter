@@ -1067,6 +1067,7 @@ async fn execute_subagent(
             &task_config.parent_session_id,
             &params,
             task_config.privacy_tier,
+            task_config.provider.as_ref(),
         )
         .await?;
         return Ok(spawn_background_subagent(
@@ -1104,6 +1105,7 @@ async fn execute_subagent(
         &task_config.parent_session_id,
         &params,
         task_config.privacy_tier,
+        task_config.provider.as_ref(),
     )
     .await?;
 
@@ -1202,6 +1204,15 @@ pub(crate) fn subagent_session_label(params: &SubagentParams) -> String {
 /// window: History can group it, and the workspace tools can resolve its parent,
 /// even for a child that dies before its first turn.
 ///
+/// A composite's forked provider configuration is also stamped during birth.
+/// Detached children may wait in the concurrency queue before an Agent exists
+/// to call `update_provider`; persisting the fork here makes the child row
+/// authoritative for its own generation and initial routing snapshot
+/// throughout that window. The provider write still goes through Gate A after
+/// the classification stamp. Ordinary providers keep the existing bind-on-start
+/// behavior because their live instance, not a reconstructed snapshot, is the
+/// state the child run must preserve.
+///
 /// The stamp fails the spawn with `?` here, while the identical stamp inside
 /// `persist_spawn_context` only warns. That split is a decision, not an
 /// oversight: at this point nothing has been spent, and `create_session` on the
@@ -1217,6 +1228,7 @@ async fn create_subagent_session(
     parent_session_id: &str,
     params: &SubagentParams,
     privacy_tier: crate::privacy::SessionClassification,
+    provider: &dyn crate::providers::base::Provider,
 ) -> Result<crate::session::Session, ErrorData> {
     let internal = |e: &dyn std::fmt::Display| ErrorData {
         code: ErrorCode::INTERNAL_ERROR,
@@ -1260,6 +1272,39 @@ async fn create_subagent_session(
     // Keep the in-memory copy honest with the row we just wrote.
     session.parent_session_id = Some(parent_session_id.to_string());
     session.privacy_tier = privacy_tier;
+    if provider.as_lead_worker().is_some() {
+        let provider_name = provider.get_name().to_string();
+        let model_config = provider.get_model_config();
+        let model_config_json = serde_json::to_string(&model_config).map_err(|e| internal(&e))?;
+        let outcome = config
+            .session_manager
+            .storage()
+            .bind_provider_if_allowed(
+                &session.id,
+                &provider_name,
+                &model_config_json,
+                provider.tier().is_private(),
+            )
+            .await
+            .map_err(|e| internal(&e))?;
+        match outcome {
+            crate::session::session_manager::BindOutcome::Bound => {
+                session.provider_name = Some(provider_name);
+                session.model_config = Some(model_config);
+            }
+            crate::session::session_manager::BindOutcome::RefusedByPrivacy => {
+                let reason = format!(
+                    "provider '{}' was refused by the child session's privacy classification",
+                    provider_name
+                );
+                return Err(internal(&reason));
+            }
+            crate::session::session_manager::BindOutcome::NoSuchSession => {
+                let reason = format!("child session '{}' disappeared during creation", session.id);
+                return Err(internal(&reason));
+            }
+        }
+    }
 
     Ok(session)
 }
@@ -1433,7 +1478,7 @@ async fn spawn_background_subagent(
     let summary = params.summary;
     let title = background_title(&workflow);
     let cancel = CancellationToken::new();
-    let handle = BackgroundSubagent::register(
+    let handle = BackgroundSubagent::register_initializing(
         task_config.parent_session_id.clone(),
         child_session_id.clone(),
         // The title is no longer spliced into the assistant-facing text (it
@@ -1661,216 +1706,76 @@ fn build_adhoc_workflow(params: &SubagentParams) -> Result<Workflow> {
     Ok(workflow)
 }
 
-/// Resolve the child's provider, classification and extension set from the
-/// parent's `TaskConfig` and what the spawning model asked for.
-///
-/// **The whole of issue #56's spawn matrix (§8.2, R4, DR-19, DR-31) is decided
-/// here**, before a child session row exists, and every one of its decisions
-/// hangs off one read of DR-15's master toggle. `pub` for that reason and no other: the
-/// toggle's behavioural gate
-/// (`crates/biorouter/tests/privacy_toggle.rs`) is an integration binary — a
-/// separate process, so that flipping a process-global atomic cannot disarm the
-/// crate's own privacy tests — and an integration binary can only see what is
-/// public. Left private, the decisions this function makes had no
-/// both-directions assertion anywhere in the tree.
-///
-/// ⚠ **DR-31 narrows `settings.provider`, and callers should know the price.**
-/// A child may be moved to any model with the SAME affiliation as the parent —
-/// a UCSF chat can swap `versa_azure` for `versa_bedrock` — but not to one with
-/// a different affiliation, so a UCSF chat can no longer spawn onto `llamacpp`.
-/// The route there is a new chat on that model, started by the user.
-pub async fn apply_settings_overrides(
-    mut task_config: TaskConfig,
-    params: &SubagentParams,
-) -> Result<TaskConfig> {
-    // Issue #56 §8.2. The PARENT's capability, read before any override below
-    // can replace the instance it is a property of.
-    //
-    // `tier()` on a composite is `least()` over its components, so a lead/worker
-    // parent contributes the reach it actually has, not the reach of its lead.
-    //
-    // This is the `Arc` the parent held when its `TaskConfig` was built, not a
-    // re-read of its live binding, so a user who switches the parent's model
-    // mid-turn leaves an in-flight spawn deciding against the older instance.
-    // Deliberately not chased: the window is one turn and user-initiated, and
-    // BOTH stale directions fail closed — a stale Private parent refuses the
-    // public child DR-19 forbids, a stale Public parent refuses the private
-    // child R4 forbids. Re-reading the live binding would trade that for a
-    // race in which the tier used to authorise the spawn is not the tier the
-    // prompt was composed under, which is the worse of the two.
-    let parent_cap = task_config.provider.tier();
-
-    // DR-31: the PARENT's affiliation, read here for the same reason and at the
-    // same instant as its tier — before any override below can replace the
-    // instance both are properties of.
-    //
-    // ⚠ **The fold, not the lead.** `Provider::affiliation` on a lead/worker
-    // pair is `providers::composite_affiliation(lead, worker)`, which is the
-    // MEET of the two halves and is exactly what a composite is covered by: the
-    // transcript goes to both endpoints, so both institutions' agreements are in
-    // play, and `Local` is the fold's IDENTITY rather than an absorbing element.
-    // Reading `get_name()` — or either half — would answer for the lead alone,
-    // which is the same mistake `tier()` already had to override for. A
-    // `Local`-lead / `ucsf`-worker pair is covered by `ucsf`, and a check that
-    // read the lead would refuse the `ucsf` child it is entitled to.
-    let parent_affiliation = task_config.provider.affiliation();
-
-    // DR-15's master opt-out. ONE read for this whole function, taken beside the
-    // parent capability it qualifies, and used by every decision below — R4's
-    // refusal, DR-19's refusal, DR-31's affiliation refusal and the
-    // private-extension filter — so a spawn cannot be refused on one rule while
-    // another silently keeps applying.
-    //
-    // A direct read, not a `CallCapability`: `apply_settings_overrides` runs on
-    // the spawn path, which builds a whole new agent rather than dispatching a
-    // tool, and has no admitted capability to inherit.
-    //
-    // ⚠ `task_config.privacy_tier` is NOT gated, and what it carries is only
-    // HALF of the child's classification: the floor its own capability
-    // establishes. It cannot carry the other half here, because the parent's
-    // classification lives in the parent's ROW and this function is given a
-    // `TaskConfig` (whose seed is `Public`) rather than a session. The two are
-    // combined at the statement that writes the child's row — see
-    // [`parent_classification`], which is likewise ungated, so that the switch
-    // suspends enforcement without ever laundering a private parent's row to
-    // public. Both halves matter: re-enabling never revisits a row (AR-7).
-    let privacy_enforced = crate::privacy::privacy_tiers_enabled();
-
-    if let Some(settings) = &params.settings {
+/// Apply an explicit provider/model/temperature selection or fork an inherited
+/// composite into a fresh child-session binding.
+async fn apply_provider_override_and_composite_fork(
+    task_config: &mut TaskConfig,
+    settings: Option<&SubagentSettings>,
+) -> Result<()> {
+    let mut provider_rebuilt = false;
+    if let Some(settings) = settings {
         if settings.provider.is_some() || settings.model.is_some() || settings.temperature.is_some()
         {
             let provider_name = settings
                 .provider
                 .clone()
                 .unwrap_or_else(|| task_config.provider.get_name().to_string());
-
             let mut model_config = task_config.provider.get_model_config();
 
+            // Naming a provider or model selects one concrete route. A
+            // temperature-only change preserves the composite route and updates
+            // both possible active halves.
+            if settings.provider.is_some() || settings.model.is_some() {
+                model_config = crate::providers::lead_worker::model_config_without_restore_marker(
+                    model_config,
+                );
+            }
             if let Some(model) = &settings.model {
                 model_config.model_name = model.clone();
             }
-
             if let Some(temp) = settings.temperature {
-                model_config = model_config.with_temperature(Some(temp));
+                model_config =
+                    crate::providers::lead_worker::model_config_with_composite_temperature(
+                        model_config,
+                        temp,
+                    )?;
+            }
+
+            // Mint the child's generation before construction so a
+            // temperature-only composite is reconstructed exactly once.
+            let inherited_composite_fork =
+                if settings.provider.is_none() && settings.model.is_none() {
+                    crate::providers::lead_worker::model_config_for_session_fork(&model_config)?
+                } else {
+                    None
+                };
+            if let Some(forked) = inherited_composite_fork {
+                model_config = forked;
             }
 
             task_config.provider = providers::create(&provider_name, model_config)
                 .await
                 .map_err(|e| anyhow!("Failed to create provider '{}': {}", provider_name, e))?;
+            provider_rebuilt = true;
         }
     }
 
-    // The CHILD's capability, read off the CONSTRUCTED INSTANCE rather than off
-    // the name that was requested. `providers::create` can return something
-    // else entirely — the `BIOROUTER_LEAD_MODEL` intercept in `factory.rs` fires
-    // BEFORE the registry lookup — and when only `model` is given, the code
-    // above keeps the parent's provider name and swaps the model string. Both
-    // are harmless here precisely because the tier is a property of the
-    // instance and never of a model id.
-    let child_tier = task_config.provider.tier();
-
-    // DR-31: and the CHILD's affiliation, off that same constructed instance,
-    // for word-for-word the reason above. A provider NAME is not a tier and it
-    // is not an affiliation either — the `BIOROUTER_LEAD_MODEL` intercept can
-    // hand back a lead/worker pair under the name of a single provider, and a
-    // model-only or temperature-only override keeps the parent's name while
-    // rebuilding the instance.
-    let child_affiliation = task_config.provider.affiliation();
-
-    // R4, refused: a public-capability session may never gain private reach,
-    // not even through a child. Refusing (rather than silently downgrading the
-    // child) is the point — a subagent is an extension of the chat that started
-    // it, so "spawn a private child and hand the answer back" would make the
-    // boundary a formality.
-    if privacy_enforced && child_tier.is_private() && !parent_cap.is_private() {
-        return Err(crate::privacy::PrivacyRefusal::spawn_upgrade(child_tier).into());
+    // Ordinary providers retain their live instance. A composite reconstructs
+    // both halves from its current snapshot into an independent child binding.
+    if !provider_rebuilt {
+        let provider_name = task_config.provider.get_name().to_string();
+        if let Some(model_config) = crate::providers::lead_worker::model_config_for_session_fork(
+            &task_config.provider.get_model_config(),
+        )? {
+            task_config.provider = providers::create(&provider_name, model_config)
+                .await
+                .map_err(|e| anyhow!("Failed to fork provider '{}': {}", provider_name, e))?;
+        }
     }
-    // DR-19, refused. This branch used to raise a downgrade-confirmation flag
-    // on the child's config — a write nothing in the tree ever read, no surface
-    // rendering it and no handler branching on it. A flag nothing reads is
-    // worse than no control at all, because in review it reads like one. (The
-    // flag's name is deliberately not written anywhere in this crate any more;
-    // a Step 5 gate greps for it and expects silence.)
-    //
-    // A subagent spawn is a tool call and there is no surface on which a human
-    // spawns one and picks its provider, so this is the MODEL choosing to send
-    // private-origin prompt text to a public model it named. There is no
-    // request on this path to carry a proof of user, and an approval an agent
-    // can author the approver for — from config files it holds `text_editor`
-    // over — is not an approval. So: refuse, ABOVE all of that machinery, and
-    // say what the user can do instead.
-    //
-    // "Above" is load-bearing and is asserted two ways: this function names
-    // nothing permission-shaped (a Step 5 gate greps for exactly that, which is
-    // why the sentence above is careful not to name one either), and
-    // `the_spawn_refusal_cannot_be_unlocked_by_anything_the_agent_can_write`
-    // drives a real spawn under every such unlock at once.
-    //
-    // ⚠ This fires ONLY on a request that carried a `settings` override, and
-    // needs no extra term to say so. An inheriting child is handed the parent's
-    // SAME `Arc<dyn Provider>` (the fact R5 rides on), so
-    // `child_tier == parent_cap` identically and the comparison cannot be true.
-    //
-    // The two can differ whenever the rebuild branch above ran — which is on
-    // `provider`, on `model`, **and on `temperature`**. Temperature is not a
-    // harmless third term: the rebuild calls `providers::create` with
-    // `task_config.provider.get_name()`, and on a `LeadWorker` parent that name
-    // is the LEAD's alone (`lead_worker.rs`, `get_name`) while `parent_cap` is
-    // `least(lead, worker)` (`tier`). A temperature-only spawn under a
-    // private-lead / public-worker parent therefore reads `parent_cap = Public`
-    // and rebuilds a lead-only `child_tier = Private`, and R4 above refuses it —
-    // a genuine reach increase, correctly caught, for a request that named no
-    // model. The collapse is fail-closed in both directions, so it is left as
-    // is; what is NOT acceptable is a comment that says it cannot happen.
-    if privacy_enforced && !child_tier.is_private() && parent_cap.is_private() {
-        return Err(crate::privacy::PrivacyRefusal::spawn_downgrade(child_tier).into());
-    }
-    // DR-31, refused: the third axis, beside the two tier arms and off the same
-    // single `privacy_enforced` read, so a spawn cannot be refused on one rule
-    // while another silently keeps applying.
-    //
-    // ⚠ **EQUALITY, in both directions — deliberately not DR-26's subset rule.**
-    // The `settings` object lets the spawning model name any `provider`, and the
-    // gate above it only ever compared tiers, so a UCSF-affiliated chat could
-    // spawn a `Local`-affiliated child. That is not a lateral move: `Local` is
-    // the TOP of this lattice — a local model reaches every private extension,
-    // because no transfer occurs at all — so `Institution(x) → Local` is an
-    // ELEVATION of exactly the shape R4 already refuses, on an axis this path
-    // never learned to look at. And the mirror, `Local → Institution(x)`, is a
-    // DISCLOSURE: the parent's text was never leaving the machine. The subset
-    // rule DR-26 uses for model-versus-extension would permit that second one,
-    // which is why it is not used here; it answers a different question.
-    // `Institution(a) → Institution(b)` fails on both readings at once —
-    // compliance does not transfer between institutions.
-    //
-    // ⚠ **REFUSED, not escalated**, for the reason DR-19's arm above spells out
-    // at length: a spawn is a tool call, no shipped surface lets a human spawn
-    // one and pick its provider, and no request on this path can carry a proof
-    // of user. An approval an agent can author the approver for is not an
-    // approval. The refusal says what the user can do instead.
-    //
-    // ⚠ **What it costs, so the narrowing is stated rather than discovered.**
-    // `settings.provider` still moves a child between any two models with the
-    // SAME affiliation — a UCSF chat may swap `versa_azure` for `versa_bedrock`,
-    // both `ucsf` — but no longer to `llamacpp`, which is `Local`. The refusal
-    // text says so, because a user who meets this should learn why rather than
-    // conclude the override is broken.
-    //
-    // ⚠ An INHERITING spawn is free, and needs no extra term to say so: the
-    // child is handed the parent's SAME `Arc<dyn Provider>`, so the two
-    // affiliations are read off one instance and cannot differ. That is the
-    // same fact R5 and the tier arms ride on.
-    if privacy_enforced && child_affiliation != parent_affiliation {
-        return Err(crate::privacy::PrivacyRefusal::spawn_affiliation(
-            parent_affiliation,
-            child_affiliation,
-        )
-        .into());
-    }
-    // The ONE crossing this task adds: the child's CAPABILITY establishes the
-    // CLASSIFICATION its row is born with.
-    task_config.privacy_tier = crate::privacy::floor(child_tier);
+    Ok(())
+}
 
+fn narrow_child_extensions_by_name(task_config: &mut TaskConfig, params: &SubagentParams) {
     if let Some(extension_names) = &params.extensions {
         if extension_names.is_empty() {
             task_config.extensions = Vec::new();
@@ -1880,49 +1785,16 @@ pub async fn apply_settings_overrides(
                 .retain(|ext| extension_names.contains(&ext.name()));
         }
     }
+}
 
-    // The TIER filter the name-only narrowing above does not do. Without it a
-    // session holding `ucsfomopagent` could spawn a public-model child that
-    // inherited it verbatim, leaving Gate C as the only thing between a public
-    // model and the clinical warehouse.
-    //
-    // It runs AFTER the name narrowing so `dropped_private_extensions` names
-    // only what the child would otherwise actually have held: a caller that
-    // asked for `extensions: []` lost nothing to privacy and must not be told
-    // that it did.
-    //
-    // NOT `visible_to(child_tier, floor(<the extension's tier>))`: both sides of
-    // that comparison are `ProviderTier`s, so `floor` has no business in it, and
-    // writing it that way would add a SECOND crossing here. This is Gate C's own
-    // predicate, which is also what Gate E uses, so all three agree by
-    // construction rather than by three people reading the same paragraph.
-    //
-    // ⚠ Issue #56 Task 48 (DR-26): the AFFILIATION filter runs in the same
-    // pass, off the SAME resolution. `resolve_extension` is named exactly ONCE
-    // in this function, and a gate greps for that: do not repeat its name in
-    // prose here. Two lookups would let the tier and the affiliation disagree
-    // about one entry, which is the failure that resolver exists to remove —
-    // and a partition is where it would be least visible, because a
-    // disagreement drops the wrong half rather than erroring.
-    //
-    // **A spawn is the AGENT's enablement path for a whole new chat**, so it
-    // takes the agent's rule and not the bind's. `check_enable_allowed` refuses
-    // rather than warns because enabling a clinical connector is the call that
-    // SPAWNS the server, pulls its credentials out of the keychain and opens
-    // the institutional session — a disclosure no later refusal takes back.
-    // `subagent_handler` does precisely that for every extension in this list.
-    // Without this arm a chat on UCSF's Versa could spawn a child on another
-    // institution's model holding the UCSF clinical connector, with no user in
-    // the loop at any point; DR-26's asymmetry is that an agent never clears a
-    // cross-institutional warning automatically.
-    //
-    // It DROPS rather than refusing the spawn, matching the tier filter: a
-    // refusal would kill a legitimate delegation that merely inherited an
-    // extension it never meant to use, and DR-26 is emphatic that a mismatch
-    // must not become a blanket block.
-    //
-    // DR-15's master opt-out arrives as `gate_cross_affiliation`'s `enforced`
-    // argument — the same single read the tier arm uses, not a second one.
+/// Apply the tier and affiliation partitions to the already name-narrowed set.
+/// Both decisions consume the same resolved classification for each extension;
+/// resolving twice could partition one entry on inconsistent metadata.
+fn filter_child_extensions(
+    task_config: &mut TaskConfig,
+    child_tier: crate::privacy::ProviderTier,
+    privacy_enforced: bool,
+) {
     let mut kept = Vec::new();
     let mut dropped_private = Vec::new();
     let mut dropped_cross_affiliation = Vec::new();
@@ -1950,6 +1822,49 @@ pub async fn apply_settings_overrides(
     task_config.extensions = kept;
     task_config.dropped_private_extensions = dropped_private;
     task_config.dropped_cross_affiliation_extensions = dropped_cross_affiliation;
+}
+
+/// Resolve the child's provider, classification, and extensions before its row
+/// exists. Every privacy decision shares one master-toggle read. Explicit
+/// provider moves require the same affiliation; inheriting composite children
+/// retain the parent's folded capability while receiving independent state.
+pub async fn apply_settings_overrides(
+    mut task_config: TaskConfig,
+    params: &SubagentParams,
+) -> Result<TaskConfig> {
+    // Sample the parent before an override can replace its provider instance.
+    let parent_cap = task_config.provider.tier();
+    let parent_affiliation = task_config.provider.affiliation();
+    let privacy_enforced = crate::privacy::privacy_tiers_enabled();
+
+    apply_provider_override_and_composite_fork(&mut task_config, params.settings.as_ref()).await?;
+
+    // Judge the constructed instance: the factory can return a composite under
+    // the requested provider name.
+    let child_tier = task_config.provider.tier();
+    let child_affiliation = task_config.provider.affiliation();
+
+    // R4: a public-capability parent cannot gain private reach through a child.
+    if privacy_enforced && child_tier.is_private() && !parent_cap.is_private() {
+        return Err(crate::privacy::PrivacyRefusal::spawn_upgrade(child_tier).into());
+    }
+    // DR-19: the model cannot disclose a private prompt through a public child.
+    if privacy_enforced && !child_tier.is_private() && parent_cap.is_private() {
+        return Err(crate::privacy::PrivacyRefusal::spawn_downgrade(child_tier).into());
+    }
+    // DR-31 requires affiliation equality in both directions.
+    if privacy_enforced && child_affiliation != parent_affiliation {
+        return Err(crate::privacy::PrivacyRefusal::spawn_affiliation(
+            parent_affiliation,
+            child_affiliation,
+        )
+        .into());
+    }
+    // The ONE crossing this task adds: the child's CAPABILITY establishes the
+    // CLASSIFICATION its row is born with.
+    task_config.privacy_tier = crate::privacy::floor(child_tier);
+    narrow_child_extensions_by_name(&mut task_config, params);
+    filter_child_extensions(&mut task_config, child_tier, privacy_enforced);
 
     Ok(task_config)
 }
@@ -1981,6 +1896,65 @@ async fn hold_every_subagent_permit() -> Vec<tokio::sync::SemaphorePermit<'stati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct SuccessfulQueuedChildProvider;
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for SuccessfulQueuedChildProvider {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::new(
+                "successful-queued-child",
+                "Successful queued child",
+                "",
+                "queued-child-model",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "successful-queued-child"
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("queued-child-model")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            system: &str,
+            messages: &[crate::conversation::message::Message],
+            _tools: &[Tool],
+        ) -> std::result::Result<
+            (
+                crate::conversation::message::Message,
+                crate::providers::base::ProviderUsage,
+            ),
+            crate::providers::errors::ProviderError,
+        > {
+            let context = messages
+                .iter()
+                .map(crate::conversation::message::Message::as_concat_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let response = if system.contains("produce the delegated result")
+                && context.contains("include the user's changed emphasis")
+            {
+                "delegated result collected"
+            } else {
+                "queued steering was missing"
+            };
+            Ok((
+                crate::conversation::message::Message::assistant().with_text(response),
+                crate::providers::base::ProviderUsage::new(
+                    "queued-child-model".into(),
+                    crate::providers::base::Usage::default(),
+                ),
+            ))
+        }
+    }
 
     #[test]
     fn test_tool_name() {
@@ -2165,6 +2139,118 @@ mod tests {
         drop(held);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[serial_test::serial(workspace_services)]
+    async fn saturated_queue_preserves_user_steering_and_the_delegated_result() {
+        // This drives the real detached runner. Pin it headless under the
+        // process-global services lock so a leaked test override cannot change
+        // turn admission or prompt preparation while the child is queued.
+        struct ClearWorkspaceServices;
+        impl Drop for ClearWorkspaceServices {
+            fn drop(&mut self) {
+                crate::workspace_services::clear_test_override();
+            }
+        }
+
+        crate::workspace_services::set_for_tests(None);
+        let _workspace_services = ClearWorkspaceServices;
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let held = hold_every_subagent_permit().await;
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        let session_manager =
+            std::sync::Arc::new(crate::session::SessionManager::new(root.clone()));
+        let config = AgentConfig::new(
+            session_manager.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
+            std::sync::Arc::new(SuccessfulQueuedChildProvider);
+        let task_config = TaskConfig::new(provider, "queued-parent", &root, vec![]);
+
+        let started = handle_subagent_tool(
+            &config,
+            json!({
+                "instructions": "produce the delegated result",
+                "visible": false,
+            }),
+            task_config,
+            HashMap::new(),
+            root,
+            None,
+        )
+        .result
+        .await
+        .expect("the supervised background spawn returns its handle");
+        let child_session_id = started
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("child_session_id"))
+            .and_then(Value::as_str)
+            .expect("the handle snapshot names the child session")
+            .to_string();
+        wait_until(
+            || pending_subagent_count() == 1,
+            "the background child to wait behind the saturated semaphore",
+        )
+        .await;
+        let handle = crate::agents::subagent_handle::list_for_session("queued-parent")
+            .into_iter()
+            .find(|handle| handle.child_session_id == child_session_id)
+            .expect("the parent retains the original background handle");
+        let steer = crate::conversation::message::Message::user()
+            .with_text("include the user's changed emphasis")
+            .with_provenance(crate::conversation::message::MessageProvenance {
+                kind: crate::conversation::message::ProvenanceKind::UserDirect,
+                from_session_id: None,
+                from_session_name: None,
+            });
+        assert_eq!(
+            crate::agents::subagent_handle::queue_initializing_child_input(
+                &child_session_id,
+                Some("queued-user-turn".into()),
+                steer,
+            ),
+            crate::agents::subagent_handle::InitialInputDisposition::Queued
+        );
+        crate::agents::subagent_handle::begin_child_turn(&child_session_id);
+        assert_eq!(handle.child_turn_generation(), 0);
+        assert!(handle.result_is_current());
+
+        drop(held);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            handle.wait_until_complete(),
+        )
+        .await
+        .expect("the child starts when a permit is released");
+
+        assert_eq!(result.summary, "delegated result collected");
+        assert!(result.human_intervened);
+        assert!(handle.result_is_current());
+        assert_eq!(handle.child_turn_generation(), 1);
+        let stored = session_manager
+            .get_session(&child_session_id, true)
+            .await
+            .expect("the delegated child session remains readable");
+        let stored_text = stored
+            .conversation
+            .expect("the delegated turn persisted its conversation")
+            .messages()
+            .iter()
+            .map(crate::conversation::message::Message::as_concat_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(stored_text.contains("include the user's changed emphasis"));
+        wait_until(
+            || pending_subagent_count() == 0,
+            "the completed child to leave the pending queue",
+        )
+        .await;
+    }
+
     /// **Both** internal spawn doors, with every concurrency slot taken so the
     /// queue is the only thing left to hit. Public delegation always chooses
     /// the supervised background door.
@@ -2318,8 +2404,22 @@ mod tests {
             "the background door must report the same refusal on its handle, got: {handle_error}"
         );
 
-        parked.abort();
+        parked
+            .await
+            .expect("the parked spawn task must return its background handle")
+            .expect("the parked spawn returns a handle before waiting for a permit");
+        let parked_handle = crate::agents::subagent_handle::list_for_session("parent-parked")
+            .into_iter()
+            .find(|handle| handle.is_running())
+            .expect("the parked child remains addressable until teardown");
+        parked_handle.cancel();
         drop(held);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            parked_handle.wait_until_complete(),
+        )
+        .await
+        .expect("the parked child must settle after cancellation");
         // Release the serialising lock only once the queue is empty again: a
         // sibling test's spawn that parked while this test held every permit is
         // still counted until it gets one, and the next queue-depth test reads
@@ -3529,12 +3629,16 @@ mod tests {
             "instructions": "stamp the parent at birth"
         }))
         .unwrap();
+        let provider = TieredParent {
+            tier: ProviderTier::Public,
+        };
         let session = create_subagent_session(
             &config,
             temp.path().to_path_buf(),
             "parent-99",
             &params,
             crate::privacy::SessionClassification::Public,
+            &provider,
         )
         .await
         .expect("session creation succeeds");
@@ -3938,22 +4042,10 @@ mod tests {
         );
     }
 
-    /// The `settings.temperature` term of the rebuild branch, which review
-    /// found the R4/DR-19 comment claiming was inert.
-    ///
-    /// It is not inert on a **composite** parent. `apply_settings_overrides`
-    /// rebuilds on `provider || model || temperature`, and the rebuild passes
-    /// `task_config.provider.get_name()` — which `LeadWorkerProvider` answers
-    /// with the LEAD's name alone, while its `tier()` is `least(lead, worker)`.
-    /// So a spawn that named nothing but a temperature can hand the child MORE
-    /// reach than the parent had, and R4 refuses it.
-    ///
-    /// The parent here is a private-lead / public-worker pair, i.e. `parent_cap
-    /// = Public`: a loopback `ollama` lead (the one registry entry that
-    /// constructs with no credential and no network, and reads its tier off the
-    /// resolved base URL) over a Public mock worker. Pinned so the comment
-    /// cannot quietly become wrong again — deleting the `temperature` term makes
-    /// this test fail, which is how it was checked.
+    /// A temperature-only override changes both possible active halves without
+    /// turning a composite into its lead. The durable restore recipe makes that
+    /// distinction explicit: provider/model selections discard it, while this
+    /// provider-agnostic generation setting preserves it.
     #[tokio::test]
     async fn a_temperature_only_spawn_is_not_inert_on_a_composite_parent() {
         use crate::providers::lead_worker::LeadWorkerProvider;
@@ -3965,11 +4057,14 @@ mod tests {
         }))
         .unwrap();
 
-        let err = crate::config::with_config_overrides(
-            HashMap::from([(
-                "OLLAMA_HOST".to_string(),
-                "http://localhost:11434".to_string(),
-            )]),
+        let child = crate::config::with_config_overrides(
+            HashMap::from([
+                (
+                    "OLLAMA_HOST".to_string(),
+                    "http://localhost:11434".to_string(),
+                ),
+                ("OPENAI_API_KEY".to_string(), "not-a-real-key".to_string()),
+            ]),
             async move {
                 let lead = crate::providers::create(
                     "ollama",
@@ -3982,9 +4077,12 @@ mod tests {
                     "the lead must be Private for this test to be about anything"
                 );
 
-                let worker: Arc<dyn crate::providers::base::Provider> = Arc::new(TieredParent {
-                    tier: ProviderTier::Public,
-                });
+                let worker = crate::providers::create(
+                    "openai",
+                    crate::model::ModelConfig::new_or_fail("gpt-4o-mini"),
+                )
+                .await
+                .expect("openai constructs from a placeholder key without a network call");
                 let parent: Arc<dyn crate::providers::base::Provider> =
                     Arc::new(LeadWorkerProvider::new(lead, worker, None));
                 assert!(
@@ -4003,15 +4101,158 @@ mod tests {
             },
         )
         .await
-        .expect_err("a temperature-only spawn collapsed the pair to its private lead");
+        .expect("a temperature-only spawn preserves the parent's composite");
 
+        assert!(!child.provider.tier().is_private());
+        assert!(child.provider.as_lead_worker().is_some());
+        let persisted = crate::providers::lead_worker::PersistedProviderConfig::from_model_config(
+            &child.provider.get_model_config(),
+        )
+        .unwrap()
+        .unwrap();
+        let crate::providers::lead_worker::PersistedProviderConfig::LeadWorkerV2 {
+            lead_model,
+            worker_model,
+            ..
+        } = persisted;
         assert!(
-            matches!(
-                err.downcast_ref::<PrivacyRefusal>(),
-                Some(PrivacyRefusal::PrivateChildOfPublicParent { .. })
-            ),
-            "expected R4's typed refusal, got: {err}"
+            [lead_model.temperature, worker_model.temperature]
+                .into_iter()
+                .all(|temperature| temperature == Some(0.25)),
+            "the selected half can change between turns, so both must receive the override"
         );
+    }
+
+    /// Delegation copies the parent's current composite snapshot into a fresh
+    /// child binding. The factory regression advances and cold-restores the two
+    /// sessions without live provider calls; this spawn-path row proves that
+    /// delegation actually selects that fork rather than the parent's `Arc`.
+    #[tokio::test]
+    async fn an_inherited_composite_is_forked_for_the_child_session() {
+        use crate::providers::lead_worker::{
+            LeadWorkerProvider, LeadWorkerRoutingState, PersistedProviderConfig,
+        };
+        use std::sync::Arc;
+
+        let (parent, child) = crate::config::with_config_overrides(
+            HashMap::from([
+                (
+                    "OLLAMA_HOST".to_string(),
+                    "http://localhost:11434".to_string(),
+                ),
+                ("OPENAI_API_KEY".to_string(), "not-a-real-key".to_string()),
+            ]),
+            async move {
+                let lead = crate::providers::create(
+                    "ollama",
+                    crate::model::ModelConfig::new_or_fail("llama3"),
+                )
+                .await
+                .expect("ollama construction does not contact its endpoint");
+                let worker = crate::providers::create(
+                    "openai",
+                    crate::model::ModelConfig::new_or_fail("gpt-4o-mini"),
+                )
+                .await
+                .expect("openai construction does not contact its endpoint");
+                let parent: Arc<dyn crate::providers::base::Provider> =
+                    Arc::new(LeadWorkerProvider::new_with_settings_and_state(
+                        lead,
+                        worker,
+                        2,
+                        2,
+                        2,
+                        "parent-binding".into(),
+                        LeadWorkerRoutingState {
+                            turn_count: 4,
+                            failure_count: 1,
+                            in_fallback_mode: false,
+                            fallback_remaining: 0,
+                        },
+                    ));
+                let task_config = TaskConfig::new(
+                    Arc::clone(&parent),
+                    "parent-1",
+                    std::path::Path::new("."),
+                    vec![],
+                );
+                let child = apply_settings_overrides(task_config, &ask_params(Ask::Inherit))
+                    .await
+                    .expect("an inheriting composite reconstructs from its durable recipe");
+                (parent, child.provider)
+            },
+        )
+        .await;
+
+        assert!(!Arc::ptr_eq(&parent, &child));
+        let parent_config = PersistedProviderConfig::from_model_config(&parent.get_model_config())
+            .unwrap()
+            .unwrap();
+        let child_config = PersistedProviderConfig::from_model_config(&child.get_model_config())
+            .unwrap()
+            .unwrap();
+        let PersistedProviderConfig::LeadWorkerV2 {
+            config_generation: parent_generation,
+            routing_state: parent_state,
+            ..
+        } = parent_config;
+        let PersistedProviderConfig::LeadWorkerV2 {
+            config_generation: child_generation,
+            routing_state: child_state,
+            ..
+        } = child_config;
+        assert_ne!(parent_generation, child_generation);
+        assert_eq!(
+            parent_state, child_state,
+            "the child starts at the parent's live snapshot"
+        );
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let session_manager = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let config = AgentConfig::new(
+            session_manager.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let parent_session = session_manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "parent".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let child_session = create_subagent_session(
+            &config,
+            temp.path().to_path_buf(),
+            &parent_session.id,
+            &ask_params(Ask::Inherit),
+            SessionClassification::Public,
+            child.as_ref(),
+        )
+        .await
+        .unwrap();
+        let row = session_manager
+            .get_session(&child_session.id, false)
+            .await
+            .unwrap();
+        assert_eq!(row.provider_name.as_deref(), Some(child.get_name()));
+        let PersistedProviderConfig::LeadWorkerV2 {
+            config_generation: row_generation,
+            routing_state: row_state,
+            ..
+        } = PersistedProviderConfig::from_model_config(
+            row.model_config
+                .as_ref()
+                .expect("the initial composite snapshot is durable at birth"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(row_generation, child_generation);
+        assert_eq!(row_state, child_state);
     }
 
     /// Step 3(d): a child is born at the tier of the model it actually
@@ -4053,6 +4294,7 @@ mod tests {
                 "parent-1",
                 &params,
                 child_config.privacy_tier,
+                child_config.provider.as_ref(),
             )
             .await
             .unwrap();
@@ -4177,6 +4419,7 @@ mod tests {
                 &parent_id,
                 &params,
                 child_config.privacy_tier,
+                child_config.provider.as_ref(),
             )
             .await
             .unwrap();

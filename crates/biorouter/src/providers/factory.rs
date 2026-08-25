@@ -10,7 +10,7 @@ use super::{
     gcpvertexai::GcpVertexAIProvider,
     githubcopilot::GithubCopilotProvider,
     google::GoogleProvider,
-    lead_worker::LeadWorkerProvider,
+    lead_worker::{LeadWorkerProvider, LeadWorkerRoutingState, PersistedProviderConfig},
     litellm::LiteLLMProvider,
     llamacpp::LlamaCppProvider,
     ollama::OllamaProvider,
@@ -145,6 +145,10 @@ async fn get_from_registry(name: &str) -> Result<ProviderEntry> {
 }
 
 pub async fn create(name: &str, model: ModelConfig) -> Result<Arc<dyn Provider>> {
+    if let Some(persisted) = PersistedProviderConfig::from_model_config(&model)? {
+        return create_lead_worker_from_persisted(persisted, get_registry().await).await;
+    }
+
     let config = crate::config::Config::global();
 
     if let Ok(lead_model_name) = config.get_param::<String>("BIOROUTER_LEAD_MODEL") {
@@ -199,37 +203,81 @@ async fn create_lead_worker_from_env(
 
     let worker_model_config = create_worker_model_config(default_model)?;
 
-    let registry = get_registry().await;
+    create_lead_worker_from_persisted(
+        PersistedProviderConfig::LeadWorkerV2 {
+            lead_provider: lead_provider_name,
+            lead_model: lead_model_config,
+            worker_provider: default_provider_name.to_string(),
+            worker_model: worker_model_config,
+            lead_turns,
+            failure_threshold,
+            fallback_turns,
+            config_generation: uuid::Uuid::new_v4().to_string(),
+            routing_state: LeadWorkerRoutingState::default(),
+        },
+        get_registry().await,
+    )
+    .await
+}
 
-    let lead_constructor = {
+async fn create_lead_worker_from_persisted(
+    persisted: PersistedProviderConfig,
+    registry: &RwLock<ProviderRegistry>,
+) -> Result<Arc<dyn Provider>> {
+    let PersistedProviderConfig::LeadWorkerV2 {
+        lead_provider,
+        lead_model,
+        worker_provider,
+        worker_model,
+        lead_turns,
+        failure_threshold,
+        fallback_turns,
+        config_generation,
+        routing_state,
+    } = persisted;
+
+    anyhow::ensure!(
+        !config_generation.trim().is_empty(),
+        "persisted lead/worker configuration has no generation"
+    );
+
+    anyhow::ensure!(
+        routing_state.in_fallback_mode == (routing_state.fallback_remaining > 0),
+        "invalid persisted lead/worker fallback state"
+    );
+    anyhow::ensure!(
+        routing_state.fallback_remaining <= fallback_turns,
+        "persisted lead/worker fallback exceeds configured fallback turns"
+    );
+
+    let (lead_constructor, worker_constructor) = {
         let guard = registry.read().unwrap();
-        guard
+        let lead = guard
             .entries
-            .get(&lead_provider_name)
-            .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", lead_provider_name))?
+            .get(&lead_provider)
+            .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", lead_provider))?
             .constructor
-            .clone()
+            .clone();
+        let worker = guard
+            .entries
+            .get(&worker_provider)
+            .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", worker_provider))?
+            .constructor
+            .clone();
+        (lead, worker)
     };
 
-    let worker_constructor = {
-        let guard = registry.read().unwrap();
-        guard
-            .entries
-            .get(default_provider_name)
-            .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", default_provider_name))?
-            .constructor
-            .clone()
-    };
+    let lead_provider = lead_constructor(lead_model).await?;
+    let worker_provider = worker_constructor(worker_model).await?;
 
-    let lead_provider = lead_constructor(lead_model_config).await?;
-    let worker_provider = worker_constructor(worker_model_config).await?;
-
-    Ok(Arc::new(LeadWorkerProvider::new_with_settings(
+    Ok(Arc::new(LeadWorkerProvider::new_with_settings_and_state(
         lead_provider,
         worker_provider,
         lead_turns,
         failure_threshold,
         fallback_turns,
+        config_generation,
+        routing_state,
     )))
 }
 
@@ -255,6 +303,126 @@ fn create_worker_model_config(default_model: &ModelConfig) -> Result<ModelConfig
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::conversation::message::Message;
+    use crate::providers::base::{ProviderUsage, Usage};
+    use crate::providers::errors::ProviderError;
+    use rmcp::model::Tool;
+
+    macro_rules! fake_provider {
+        ($type_name:ident, $provider_name:literal) => {
+            struct $type_name {
+                model: ModelConfig,
+            }
+
+            #[async_trait::async_trait]
+            impl Provider for $type_name {
+                fn metadata() -> ProviderMetadata {
+                    ProviderMetadata::new(
+                        $provider_name,
+                        $provider_name,
+                        "test-only provider",
+                        "test-model",
+                        vec!["test-model"],
+                        "",
+                        vec![],
+                    )
+                }
+
+                fn get_name(&self) -> &str {
+                    $provider_name
+                }
+
+                async fn complete_with_model(
+                    &self,
+                    _model_config: &ModelConfig,
+                    _system: &str,
+                    _messages: &[Message],
+                    _tools: &[Tool],
+                ) -> Result<(Message, ProviderUsage), ProviderError> {
+                    Ok((
+                        Message::assistant().with_text(format!("served by {}", $provider_name)),
+                        ProviderUsage::new(self.model.model_name.clone(), Usage::default()),
+                    ))
+                }
+
+                fn get_model_config(&self) -> ModelConfig {
+                    self.model.clone()
+                }
+            }
+        };
+    }
+
+    fake_provider!(FakeVersaAzureProvider, "versa_azure");
+    fake_provider!(FakeVersaBedrockProvider, "versa_bedrock");
+    fake_provider!(FakeCodexProvider, "codex");
+    fake_provider!(FakeClaudeCodeProvider, "claude_code");
+
+    fn restore_test_model(model_name: &str) -> ModelConfig {
+        ModelConfig {
+            model_name: model_name.to_string(),
+            context_limit: Some(32_000),
+            temperature: None,
+            max_tokens: None,
+            toolshim: false,
+            toolshim_model: None,
+            fast_model: None,
+            request_params: None,
+            reasoning_effort: None,
+        }
+    }
+
+    fn restore_test_registry() -> RwLock<ProviderRegistry> {
+        RwLock::new(ProviderRegistry::new().with_providers(|registry| {
+            registry.register::<FakeVersaAzureProvider, _>(
+                |model| Box::pin(async move { Ok(FakeVersaAzureProvider { model }) }),
+                false,
+            );
+            registry.register::<FakeVersaBedrockProvider, _>(
+                |model| Box::pin(async move { Ok(FakeVersaBedrockProvider { model }) }),
+                false,
+            );
+            registry.register::<FakeCodexProvider, _>(
+                |model| Box::pin(async move { Ok(FakeCodexProvider { model }) }),
+                false,
+            );
+            registry.register::<FakeClaudeCodeProvider, _>(
+                |model| Box::pin(async move { Ok(FakeClaudeCodeProvider { model }) }),
+                false,
+            );
+        }))
+    }
+
+    async fn cold_restore(
+        provider: &Arc<dyn Provider>,
+        registry: &RwLock<ProviderRegistry>,
+    ) -> Arc<dyn Provider> {
+        let stored_json = serde_json::to_string(&provider.get_model_config()).unwrap();
+        let cold_model: ModelConfig = serde_json::from_str(&stored_json).unwrap();
+        let persisted = PersistedProviderConfig::from_model_config(&cold_model)
+            .unwrap()
+            .expect("composite marker must survive the session model-config round trip");
+        create_lead_worker_from_persisted(persisted, registry)
+            .await
+            .unwrap()
+    }
+
+    fn routing_state(provider: &Arc<dyn Provider>) -> LeadWorkerRoutingState {
+        let persisted = PersistedProviderConfig::from_model_config(&provider.get_model_config())
+            .unwrap()
+            .expect("composite provider must publish its routing snapshot");
+        let PersistedProviderConfig::LeadWorkerV2 { routing_state, .. } = persisted;
+        routing_state
+    }
+
+    fn config_generation(provider: &Arc<dyn Provider>) -> String {
+        let persisted = PersistedProviderConfig::from_model_config(&provider.get_model_config())
+            .unwrap()
+            .expect("composite provider must publish its binding generation");
+        let PersistedProviderConfig::LeadWorkerV2 {
+            config_generation, ..
+        } = persisted;
+        config_generation
+    }
 
     /// Every built-in provider whose **instances** can carry an affiliation
     /// (DR-26, Task 46), with the predicate that decides it. Nothing here is a
@@ -714,6 +882,269 @@ pub(crate) mod tests {
             lw.get_settings(),
             (expected_turns, expected_failure, expected_fallback)
         );
+    }
+
+    #[tokio::test]
+    async fn persisted_lead_worker_restores_codex_and_claude_workers_without_their_clis() {
+        let registry = restore_test_registry();
+
+        for (worker_provider, worker_model) in [
+            ("codex", "gpt-5.6-codex"),
+            ("claude_code", "claude-sonnet-4-6"),
+        ] {
+            let original = create_lead_worker_from_persisted(
+                PersistedProviderConfig::LeadWorkerV2 {
+                    lead_provider: "versa_azure".into(),
+                    lead_model: restore_test_model("gpt-5.2"),
+                    worker_provider: worker_provider.into(),
+                    worker_model: restore_test_model(worker_model),
+                    lead_turns: 4,
+                    failure_threshold: 3,
+                    fallback_turns: 2,
+                    config_generation: format!("static-{worker_provider}"),
+                    routing_state: LeadWorkerRoutingState::default(),
+                },
+                &registry,
+            )
+            .await
+            .unwrap();
+
+            let stored_json = serde_json::to_string(&original.get_model_config()).unwrap();
+            let stored_value: serde_json::Value = serde_json::from_str(&stored_json).unwrap();
+            assert_eq!(
+                stored_value["request_params"]["__biorouter_provider_restore"]["type"],
+                "lead_worker_v2"
+            );
+            let cold_model: ModelConfig = serde_json::from_str(&stored_json).unwrap();
+            let persisted = PersistedProviderConfig::from_model_config(&cold_model)
+                .unwrap()
+                .expect("composite marker must survive the session model-config round trip");
+            let restored = create_lead_worker_from_persisted(persisted, &registry)
+                .await
+                .unwrap();
+            let restored_config =
+                PersistedProviderConfig::from_model_config(&restored.get_model_config())
+                    .unwrap()
+                    .unwrap();
+            let PersistedProviderConfig::LeadWorkerV2 {
+                lead_provider,
+                worker_provider: restored_worker,
+                config_generation,
+                ..
+            } = restored_config;
+            assert_eq!(lead_provider, "versa_azure");
+            assert_eq!(restored_worker, worker_provider);
+            assert_eq!(config_generation, format!("static-{worker_provider}"));
+
+            let restored = restored.as_lead_worker().unwrap();
+            assert_eq!(
+                restored.get_model_info(),
+                ("gpt-5.2".into(), worker_model.into())
+            );
+            assert_eq!(restored.get_settings(), (4, 3, 2));
+        }
+    }
+
+    /// A delegated child starts from the parent's live routing snapshot but is
+    /// a distinct binding from then on. Each provider combination is built from
+    /// this test's local registry, so neither coding-agent CLI nor either Versa
+    /// endpoint is discovered or contacted.
+    #[tokio::test]
+    async fn delegated_versa_composites_advance_and_cold_restore_per_session() {
+        let registry = restore_test_registry();
+
+        for (lead_provider, lead_model) in [
+            ("versa_azure", "gpt-5.2"),
+            ("versa_bedrock", "anthropic.claude-sonnet-4-6"),
+        ] {
+            for (worker_provider, worker_model) in [
+                ("codex", "gpt-5.6-codex"),
+                ("claude_code", "claude-sonnet-4-6"),
+            ] {
+                let parent = create_lead_worker_from_persisted(
+                    PersistedProviderConfig::LeadWorkerV2 {
+                        lead_provider: lead_provider.into(),
+                        lead_model: restore_test_model(lead_model),
+                        worker_provider: worker_provider.into(),
+                        worker_model: restore_test_model(worker_model),
+                        lead_turns: 2,
+                        failure_threshold: 2,
+                        fallback_turns: 2,
+                        config_generation: format!("parent-{lead_provider}-{worker_provider}"),
+                        routing_state: LeadWorkerRoutingState {
+                            turn_count: 3,
+                            failure_count: 1,
+                            in_fallback_mode: false,
+                            fallback_remaining: 0,
+                        },
+                    },
+                    &registry,
+                )
+                .await
+                .unwrap();
+                assert_eq!(parent.get_name(), lead_provider);
+                let parent_generation = config_generation(&parent);
+                let child_model = crate::providers::lead_worker::model_config_for_session_fork(
+                    &parent.get_model_config(),
+                )
+                .unwrap()
+                .expect("a composite snapshot is forkable");
+                let child_persisted = PersistedProviderConfig::from_model_config(&child_model)
+                    .unwrap()
+                    .unwrap();
+                let child = create_lead_worker_from_persisted(child_persisted, &registry)
+                    .await
+                    .unwrap();
+                let child_generation = config_generation(&child);
+
+                assert!(!Arc::ptr_eq(&parent, &child));
+                assert_eq!(child.get_name(), lead_provider);
+                assert_ne!(parent_generation, child_generation);
+                assert_eq!(routing_state(&parent), routing_state(&child));
+
+                for expected_turn in [4, 5] {
+                    let (_, usage) = child.complete("system", &[], &[]).await.unwrap();
+                    assert_eq!(usage.provider.as_deref(), Some(worker_provider));
+                    assert_eq!(usage.model, worker_model);
+                    assert_eq!(routing_state(&child).turn_count, expected_turn);
+                    assert_eq!(routing_state(&parent).turn_count, 3);
+                }
+
+                parent.complete("system", &[], &[]).await.unwrap();
+                assert_eq!(routing_state(&parent).turn_count, 4);
+                assert_eq!(routing_state(&child).turn_count, 5);
+
+                let restored_parent = cold_restore(&parent, &registry).await;
+                let restored_child = cold_restore(&child, &registry).await;
+                assert_eq!(restored_parent.get_name(), lead_provider);
+                assert_eq!(restored_child.get_name(), lead_provider);
+                assert_eq!(config_generation(&restored_parent), parent_generation);
+                assert_eq!(config_generation(&restored_child), child_generation);
+                assert_eq!(routing_state(&restored_parent).turn_count, 4);
+                assert_eq!(routing_state(&restored_child).turn_count, 5);
+
+                restored_child.complete("system", &[], &[]).await.unwrap();
+                assert_eq!(routing_state(&restored_child).turn_count, 6);
+                assert_eq!(routing_state(&restored_parent).turn_count, 4);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_mid_worker_cold_restore_stays_on_codex_and_claude_workers_without_their_clis() {
+        let registry = restore_test_registry();
+
+        for (worker_provider, worker_model) in [
+            ("codex", "gpt-5.6-codex"),
+            ("claude_code", "claude-sonnet-4-6"),
+        ] {
+            let original = create_lead_worker_from_persisted(
+                PersistedProviderConfig::LeadWorkerV2 {
+                    lead_provider: "versa_azure".into(),
+                    lead_model: restore_test_model("gpt-5.2"),
+                    worker_provider: worker_provider.into(),
+                    worker_model: restore_test_model(worker_model),
+                    lead_turns: 2,
+                    failure_threshold: 2,
+                    fallback_turns: 2,
+                    config_generation: format!("worker-{worker_provider}"),
+                    routing_state: LeadWorkerRoutingState {
+                        turn_count: 5,
+                        failure_count: 1,
+                        in_fallback_mode: false,
+                        fallback_remaining: 0,
+                    },
+                },
+                &registry,
+            )
+            .await
+            .unwrap();
+
+            let restored = cold_restore(&original, &registry).await;
+            assert_eq!(
+                routing_state(&restored),
+                LeadWorkerRoutingState {
+                    turn_count: 5,
+                    failure_count: 1,
+                    in_fallback_mode: false,
+                    fallback_remaining: 0,
+                }
+            );
+            let (_, usage) = restored.complete("system", &[], &[]).await.unwrap();
+            assert_eq!(usage.model, worker_model);
+            assert_eq!(usage.provider.as_deref(), Some(worker_provider));
+            assert_eq!(routing_state(&restored).turn_count, 6);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_mid_fallback_cold_restore_finishes_lead_turns_then_returns_to_each_worker() {
+        let registry = restore_test_registry();
+
+        for (worker_provider, worker_model) in [
+            ("codex", "gpt-5.6-codex"),
+            ("claude_code", "claude-sonnet-4-6"),
+        ] {
+            let original = create_lead_worker_from_persisted(
+                PersistedProviderConfig::LeadWorkerV2 {
+                    lead_provider: "versa_azure".into(),
+                    lead_model: restore_test_model("gpt-5.2"),
+                    worker_provider: worker_provider.into(),
+                    worker_model: restore_test_model(worker_model),
+                    lead_turns: 2,
+                    failure_threshold: 2,
+                    fallback_turns: 3,
+                    config_generation: format!("fallback-{worker_provider}"),
+                    routing_state: LeadWorkerRoutingState {
+                        turn_count: 7,
+                        failure_count: 0,
+                        in_fallback_mode: true,
+                        fallback_remaining: 2,
+                    },
+                },
+                &registry,
+            )
+            .await
+            .unwrap();
+
+            let restored = cold_restore(&original, &registry).await;
+            let (_, first_usage) = restored.complete("system", &[], &[]).await.unwrap();
+            assert_eq!(first_usage.model, "gpt-5.2");
+            assert_eq!(first_usage.provider.as_deref(), Some("versa_azure"));
+            assert_eq!(
+                routing_state(&restored),
+                LeadWorkerRoutingState {
+                    turn_count: 8,
+                    failure_count: 0,
+                    in_fallback_mode: true,
+                    fallback_remaining: 1,
+                }
+            );
+
+            let restored = cold_restore(&restored, &registry).await;
+            let (_, second_usage) = restored.complete("system", &[], &[]).await.unwrap();
+            assert_eq!(second_usage.model, "gpt-5.2");
+            assert_eq!(second_usage.provider.as_deref(), Some("versa_azure"));
+            assert!(!routing_state(&restored).in_fallback_mode);
+
+            let (_, worker_usage) = restored.complete("system", &[], &[]).await.unwrap();
+            assert_eq!(worker_usage.model, worker_model);
+            assert_eq!(worker_usage.provider.as_deref(), Some(worker_provider));
+        }
+    }
+
+    #[test]
+    fn unknown_persisted_provider_version_is_not_silently_treated_as_the_lead() {
+        let mut model = restore_test_model("gpt-5.2");
+        model.request_params = Some(std::collections::HashMap::from([(
+            "__biorouter_provider_restore".to_string(),
+            serde_json::json!({ "type": "lead_worker_v3" }),
+        )]));
+
+        let error = PersistedProviderConfig::from_model_config(&model).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("invalid persisted provider configuration"));
     }
 
     #[tokio::test]

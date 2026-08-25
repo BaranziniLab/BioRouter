@@ -305,9 +305,9 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
     // SSE subscription reconnecting forever for a chat nobody can see.
     //
     // `peekController`, so teardown never CREATES a controller; and
-    // `stopObserving` is a no-op on a controller that is driving, so closing an
-    // ordinary chat tab still does not cancel its turn.
-    for (const id of closed) defaultChatStreamRegistry.peekController(id)?.stopObserving();
+    // `releaseOwnership` detaches observers and abandons an unconsumed
+    // Stop-and-Send lease, but does not cancel a daemon turn already running.
+    for (const id of closed) defaultChatStreamRegistry.peekController(id)?.releaseOwnership();
     setTabAnnotations((prev) => {
       // Same object back when there is nothing to drop, so this never costs a
       // render on the ordinary tab close.

@@ -498,6 +498,374 @@ fn retained_background_result_is_current(
     handle.result_is_current()
 }
 
+fn read_conversation_body(
+    caller_session_id: &str,
+    args: &WorkspaceReadParams,
+    view: &str,
+    session: &crate::session::session_manager::Session,
+    messages: &[crate::conversation::message::Message],
+) -> Result<String, String> {
+    // BR-45 range: slice from the named msg_uid (message ids ARE the durable
+    // uids — #41 add_message_adopting_uid), then apply `last` as a tail.
+    let from_start = match &args.from_msg_uid {
+        Some(uid) => messages
+            .iter()
+            .position(|m| m.id.as_deref() == Some(uid.as_str()))
+            .ok_or_else(|| format!("no message with msg_uid '{uid}' in this session"))?,
+        None => 0,
+    };
+    let ranged = &messages[from_start..];
+    let tail = match args.last {
+        Some(n) if n < ranged.len() => &ranged[ranged.len() - n..],
+        _ => ranged,
+    };
+
+    match view {
+        "tool_calls" => Ok(project_tool_calls(tail)),
+        "summary" => Ok(read_conversation_summary(
+            caller_session_id,
+            &args.session_id,
+            session,
+            messages,
+        )),
+        "spawn_context" => project_spawn_context(messages)
+            .ok_or_else(|| "this session has no recorded spawn context".to_string()),
+        _ => Ok(project_transcript(tail)),
+    }
+}
+
+fn read_conversation_summary(
+    caller_session_id: &str,
+    target_session_id: &str,
+    session: &crate::session::session_manager::Session,
+    messages: &[crate::conversation::message::Message],
+) -> String {
+    let mut summary = project_summary(session, messages);
+    let Some(handle) = background_subagent_for(caller_session_id, target_session_id) else {
+        return summary;
+    };
+    let newer_turn_is_active = workspace_services::get()
+        .as_ref()
+        .is_some_and(|services| services.is_turn_active(target_session_id));
+    if handle.is_running() {
+        summary.push_str(&format!(
+            "\n\nBackground subagent is still running ({}s elapsed).",
+            handle.elapsed().as_secs()
+        ));
+    } else if !newer_turn_is_active && retained_background_result_is_current(&handle) {
+        if let Some(result) = handle.result() {
+            summary.push_str("\n\n--- Background result ---\n");
+            summary.push_str(&result.to_agent_text());
+        }
+    }
+    summary
+}
+
+// This cap is model-facing pagination, not the production large-response
+// storage boundary. Above the aggregate token budget, BR-6 writes the full
+// payload under `<working_dir>/.biorouter/tool-output/` and returns a preview
+// naming it. Below that budget, BR-7 can externalize responses over 64 KB to
+// the session-blob table and hydrate them byte-for-byte. Thus clipping here
+// must announce how to narrow or raise the cap; it must never imply that the
+// retained full payload was silently truncated.
+fn clip_read_conversation_body(body: String, max_chars: usize) -> (String, bool) {
+    if body.chars().count() <= max_chars {
+        return (body, true);
+    }
+    let cut: String = body.chars().take(max_chars).collect();
+    (
+        format!(
+            "{cut}\n… [clipped at {max_chars} chars; narrow with `last` or \
+             `from_msg_uid`, or raise `max_chars` (up to 200000). A raised cap \
+             is not silently truncated: a result too large to return inline is \
+             kept in full and the reply says where to read it.]"
+        ),
+        false,
+    )
+}
+
+fn collect_full_read_result(
+    caller_session_id: &str,
+    args: &WorkspaceReadParams,
+    view: &str,
+    body_fully_returned: bool,
+) {
+    let result_bearing_view = view == "summary"
+        || (view == "transcript" && args.last.is_none() && args.from_msg_uid.is_none());
+    if !body_fully_returned || !result_bearing_view {
+        return;
+    }
+    let Some(handle) = background_subagent_for(caller_session_id, &args.session_id) else {
+        return;
+    };
+    let completed_generation = handle.child_turn_generation();
+    let services = workspace_services::get();
+    let newer_turn_is_active = services
+        .as_ref()
+        .is_some_and(|services| services.is_turn_active(&args.session_id));
+    let latest_generation_is_known_finished = retained_background_result_is_current(&handle)
+        || services.as_ref().is_some_and(|_| !newer_turn_is_active);
+    if !handle.is_running() && !handle.continuation_pending() && latest_generation_is_known_finished
+    {
+        handle.mark_collected_if_generation(completed_generation);
+    }
+}
+
+struct WatchedBackground {
+    handle: std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>,
+    child_generation_at_subscribe: u64,
+}
+
+struct WatchedCompletion {
+    id: String,
+    reason: String,
+    collection: Option<(
+        std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>,
+        u64,
+    )>,
+}
+
+struct ReplacementWatchState {
+    waiting_for_replacement: bool,
+    replacement_started: bool,
+    superseded_turn_id: Option<String>,
+    generation_resync_needed: bool,
+    unscoped_terminal: Option<String>,
+}
+
+impl ReplacementWatchState {
+    fn observe(&mut self, event: crate::session_events::SessionBusEvent) -> Option<String> {
+        use crate::session_events::SessionBusEvent;
+
+        match event {
+            SessionBusEvent::TurnStarted { turn_id } => {
+                self.replacement_started = !self.waiting_for_replacement
+                    || self
+                        .superseded_turn_id
+                        .as_ref()
+                        .is_none_or(|superseded| superseded != &turn_id);
+                self.unscoped_terminal = None;
+                None
+            }
+            SessionBusEvent::TurnFinished { reason, .. } => self.observe_terminal(reason),
+            SessionBusEvent::TurnError { message, .. } => {
+                self.observe_terminal(format!("error: {message}"))
+            }
+            SessionBusEvent::Agent(_) => None,
+        }
+    }
+
+    fn observe_terminal(&mut self, reason: String) -> Option<String> {
+        if !self.waiting_for_replacement || self.replacement_started {
+            return Some(reason);
+        }
+        if self.generation_resync_needed {
+            self.unscoped_terminal = Some(reason);
+        }
+        None
+    }
+
+    fn note_lag(&mut self) {
+        self.generation_resync_needed = true;
+    }
+
+    fn take_resynchronized_terminal(
+        &mut self,
+        handle: Option<&crate::agents::subagent_handle::BackgroundSubagent>,
+    ) -> Option<String> {
+        if !self.generation_resync_needed || self.replacement_started {
+            return None;
+        }
+        let handle = handle?;
+        let replacement_began = handle.child_turn_generation()
+            > handle.superseded_child_turn_generation()
+            && !handle.continuation_pending();
+        if replacement_began {
+            self.unscoped_terminal.take()
+        } else {
+            None
+        }
+    }
+}
+
+struct ReplacementEventWatch {
+    state: ReplacementWatchState,
+    background_handle: Option<std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>>,
+    replacement_generation: Option<u64>,
+}
+
+impl ReplacementEventWatch {
+    fn completion(&self, id: String, reason: String) -> WatchedCompletion {
+        let collection = self
+            .background_handle
+            .as_ref()
+            .zip(self.replacement_generation)
+            .map(|(handle, generation)| (std::sync::Arc::clone(handle), generation));
+        WatchedCompletion {
+            id,
+            reason,
+            collection,
+        }
+    }
+}
+
+enum BackgroundWatchPlan {
+    Completed {
+        reason: String,
+        handle: std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>,
+        generation: u64,
+    },
+    Events(ReplacementEventWatch),
+}
+
+async fn prepare_background_watch(
+    background: Option<WatchedBackground>,
+    stop: &CancellationToken,
+) -> Option<BackgroundWatchPlan> {
+    let Some(background) = background else {
+        return Some(BackgroundWatchPlan::Events(ReplacementEventWatch {
+            state: ReplacementWatchState {
+                waiting_for_replacement: false,
+                replacement_started: false,
+                superseded_turn_id: None,
+                generation_resync_needed: false,
+                unscoped_terminal: None,
+            },
+            background_handle: None,
+            replacement_generation: None,
+        }));
+    };
+
+    let handle = background.handle;
+    let result = tokio::select! {
+        biased;
+        () = stop.cancelled() => return None,
+        result = handle.wait_until_complete() => result,
+    };
+    let completed_generation = handle.child_turn_generation();
+    if retained_background_result_is_current(&handle) {
+        return Some(BackgroundWatchPlan::Completed {
+            reason: background_watch_reason(&result),
+            handle,
+            generation: completed_generation,
+        });
+    }
+
+    let superseded_turn_id = handle.superseded_turn_id();
+    let replacement_generation = handle.superseded_child_turn_generation().wrapping_add(1);
+    let replacement_started =
+        background.child_generation_at_subscribe > handle.superseded_child_turn_generation();
+    let waiting_for_replacement =
+        handle.continuation_pending() || !retained_background_result_is_current(&handle);
+    Some(BackgroundWatchPlan::Events(ReplacementEventWatch {
+        state: ReplacementWatchState {
+            waiting_for_replacement,
+            replacement_started,
+            superseded_turn_id,
+            generation_resync_needed: false,
+            unscoped_terminal: None,
+        },
+        background_handle: Some(handle),
+        replacement_generation: Some(replacement_generation),
+    }))
+}
+
+enum WatchDrain {
+    Pending,
+    Completed(String),
+    Closed,
+}
+
+fn drain_watched_events(
+    receiver: &mut crate::session_events::Subscription,
+    state: &mut ReplacementWatchState,
+) -> WatchDrain {
+    // Drain the retained ring before generation resync. If an original terminal
+    // survived a lag, its newer replacement TurnStarted survives too and clears
+    // the unscoped terminal candidate before Empty.
+    loop {
+        match receiver.try_recv() {
+            Ok(event) => {
+                if let Some(reason) = state.observe(event) {
+                    return WatchDrain::Completed(reason);
+                }
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => state.note_lag(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                return WatchDrain::Pending;
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                return WatchDrain::Closed;
+            }
+        }
+    }
+}
+
+async fn watch_one_completion(
+    id: String,
+    mut receiver: crate::session_events::Subscription,
+    background: Option<WatchedBackground>,
+    tx: tokio::sync::mpsc::Sender<WatchedCompletion>,
+    stop: CancellationToken,
+) {
+    let Some(plan) = prepare_background_watch(background, &stop).await else {
+        return;
+    };
+    let mut watch = match plan {
+        BackgroundWatchPlan::Completed {
+            reason,
+            handle,
+            generation,
+        } => {
+            let _ = tx
+                .send(WatchedCompletion {
+                    id,
+                    reason,
+                    collection: Some((handle, generation)),
+                })
+                .await;
+            return;
+        }
+        BackgroundWatchPlan::Events(watch) => watch,
+    };
+
+    loop {
+        match drain_watched_events(&mut receiver, &mut watch.state) {
+            WatchDrain::Completed(reason) => {
+                let _ = tx.send(watch.completion(id, reason)).await;
+                return;
+            }
+            WatchDrain::Closed => return,
+            WatchDrain::Pending => {}
+        }
+        if let Some(reason) = watch
+            .state
+            .take_resynchronized_terminal(watch.background_handle.as_deref())
+        {
+            let _ = tx.send(watch.completion(id, reason)).await;
+            return;
+        }
+
+        // `recv` is cancel-safe. The next loop drains all subsequently retained
+        // frames before attempting generation resynchronization.
+        let event = tokio::select! {
+            biased;
+            () = stop.cancelled() => return,
+            event = receiver.recv() => event,
+        };
+        match event {
+            Ok(event) => {
+                if let Some(reason) = watch.state.observe(event) {
+                    let _ = tx.send(watch.completion(id, reason)).await;
+                    return;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => watch.state.note_lag(),
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        }
+    }
+}
+
 /// Resolve liveness from the best source available.
 ///
 /// The handle registry is checked **FIRST and is a veto**, not a fallback the
@@ -533,7 +901,7 @@ fn session_liveness(
     session_id: &str,
 ) -> SessionLiveness {
     if let Some(handle) = background_subagent_for(caller_session_id, session_id) {
-        if handle.is_running() {
+        if handle.is_running() || handle.continuation_pending() {
             // VETO: registered and not yet complete. The daemon may not have
             // a lease for it yet (semaphore queue) — that is not idleness.
             return SessionLiveness::Running;
@@ -1175,100 +1543,12 @@ impl WorkspaceClient {
             .as_ref()
             .map(|c| c.messages().to_vec())
             .unwrap_or_default();
-        // BR-45 range: slice from the named msg_uid (message ids ARE the durable
-        // uids — #41 add_message_adopting_uid), then apply `last` as a tail.
-        let from_start = match &args.from_msg_uid {
-            Some(uid) => messages
-                .iter()
-                .position(|m| m.id.as_deref() == Some(uid.as_str()))
-                .ok_or_else(|| format!("no message with msg_uid '{uid}' in this session"))?,
-            None => 0,
-        };
-        let ranged = &messages[from_start..];
-        let tail = |n: Option<usize>| -> &[crate::conversation::message::Message] {
-            match n {
-                Some(n) if n < ranged.len() => &ranged[ranged.len() - n..],
-                _ => ranged,
-            }
-        };
-
-        let body = match view {
-            "tool_calls" => project_tool_calls(tail(args.last)),
-            "summary" => {
-                let mut summary = project_summary(&session, &messages);
-                if let Some(handle) = background_subagent_for(caller_session_id, &args.session_id) {
-                    let newer_turn_is_active = workspace_services::get()
-                        .as_ref()
-                        .is_some_and(|services| services.is_turn_active(&args.session_id));
-                    if handle.is_running() {
-                        summary.push_str(&format!(
-                            "\n\nBackground subagent is still running ({}s elapsed).",
-                            handle.elapsed().as_secs()
-                        ));
-                    } else if !newer_turn_is_active
-                        && retained_background_result_is_current(&handle)
-                    {
-                        if let Some(result) = handle.result() {
-                            summary.push_str("\n\n--- Background result ---\n");
-                            summary.push_str(&result.to_agent_text());
-                        }
-                    }
-                }
-                summary
-            }
-            "spawn_context" => project_spawn_context(&messages)
-                .ok_or("this session has no recorded spawn context")?,
-            _ => project_transcript(tail(args.last)),
-        };
-
-        // Oversized-result handling. The design of record says "oversized results
-        // go through the existing session-blob mechanism rather than truncating
-        // silently" (§4.1). The binding half of that is **never truncating
-        // silently**; the mechanism that actually carries a big result is NOT
-        // BR-7's session blob, and saying so here was wrong. The real production
-        // path, traced end to end:
-        //
-        //   1. This is an ordinary extension tool, so `dispatch_tool_call`
-        //      returns into `Agent::dispatch_tool_call`, which hands every result
-        //      to BR-6 `large_response_handler::process_tool_response`.
-        //   2. BR-6 measures the AGGREGATE token count and, above
-        //      `DEFAULT_LARGE_RESPONSE_TOKENS` (~25k tokens — reachable here,
-        //      since the 200k-char `max_chars` ceiling is roughly 50k tokens of
-        //      prose), writes the FULL body to a handle under
-        //      `<working_dir>/.biorouter/tool-output/` and replaces the result
-        //      with a head/tail preview naming that path. So above that budget
-        //      the payload never reaches persistence whole, and BR-7 never sees
-        //      it — the session-blob claim was false exactly where it mattered.
-        //   3. Below the BR-6 budget the result is persisted intact, and only
-        //      there does BR-7 apply: `message_blobs::externalize` moves a tool
-        //      response text item over `DEFAULT_BLOB_THRESHOLD_BYTES` (64 KB) to
-        //      the blob table, hydrated back byte-for-byte on read (or left as a
-        //      stub, readable with `platform__read_session_blob`, under
-        //      `BIOROUTER_SESSION_BLOB_LAZY_LOAD`). BR-7's own module doc states
-        //      this ordering: its threshold sits "comfortably above anything the
-        //      BR-6 handler lets through".
-        //
-        // Both bands retain the whole payload and both announce the indirection,
-        // so §4.1's requirement holds — via a filesystem handle above ~25k tokens
-        // and a session blob below it. `read_conversation_oversized_result_is_
-        // retained_in_full_on_the_production_path` pins band 2 against the real
-        // BR-6 entry point. The tool-level cap below is model-facing pagination
-        // layered on top; when it clips it names the narrowing controls rather
-        // than dropping data silently, and it must not promise a mechanism.
-        let clipped = if body.chars().count() > max_chars {
-            let cut: String = body.chars().take(max_chars).collect();
-            format!(
-                "{cut}\n… [clipped at {max_chars} chars; narrow with `last` or \
-                 `from_msg_uid`, or raise `max_chars` (up to 200000). A raised cap \
-                 is not silently truncated: a result too large to return inline is \
-                 kept in full and the reply says where to read it.]"
-            )
-        } else {
-            body
-        };
+        let body = read_conversation_body(caller_session_id, &args, view, &session, &messages)?;
+        let (body, body_fully_returned) = clip_read_conversation_body(body, max_chars);
+        collect_full_read_result(caller_session_id, &args, view, body_fully_returned);
         Ok(vec![Content::text(format!(
             "Session {} ({}, {:?})\n\n{}",
-            session.id, session.name, session.session_type, clipped
+            session.id, session.name, session.session_type, body
         ))])
     }
 
@@ -2743,6 +3023,7 @@ impl WorkspaceClient {
             // and report the answer.
             "tab" => Self::handle_close_tab(&args.session_id, services.as_ref()).await,
             "turn" => {
+                crate::agents::subagent_handle::abandon_continuation(&args.session_id);
                 if let Some(handle) = background.as_ref().filter(|handle| handle.is_running()) {
                     handle.cancel();
                     self.notify_target(
@@ -2775,6 +3056,7 @@ impl WorkspaceClient {
                 }
             }
             "agent" => {
+                crate::agents::subagent_handle::abandon_continuation(&args.session_id);
                 let cancelled_background = background
                     .as_ref()
                     .filter(|handle| handle.is_running())
@@ -2885,21 +3167,20 @@ impl WorkspaceClient {
         let mut receivers: Vec<(
             String,
             session_events::Subscription,
-            Option<std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>>,
+            Option<WatchedBackground>,
         )> = Vec::with_capacity(args.session_ids.len());
         for id in &args.session_ids {
-            let mut background = background_subagent_for(caller_session_id, id).filter(|handle| {
+            let background = background_subagent_for(caller_session_id, id).filter(|handle| {
                 handle.is_running()
-                    || !services
-                        .as_ref()
-                        .is_some_and(|services| services.is_turn_active(id))
+                    || handle.continuation_pending()
+                    || !handle.latest_generation_collected()
             });
-            if let Some(handle) = background.as_ref().filter(|handle| !handle.is_running()) {
-                if !retained_background_result_is_current(handle) {
-                    background = None;
-                }
-            }
-            receivers.push((id.clone(), session_events::subscribe(id), background));
+            let events = session_events::subscribe(id);
+            let background = background.map(|handle| WatchedBackground {
+                child_generation_at_subscribe: handle.child_turn_generation(),
+                handle,
+            });
+            receivers.push((id.clone(), events, background));
         }
 
         let mut completed: Vec<(String, String)> = Vec::new();
@@ -2908,9 +3189,20 @@ impl WorkspaceClient {
         let mut unknown_liveness = 0usize;
         if !assume_running {
             for (id, _, background) in &receivers {
-                if let Some(result) = background.as_ref().and_then(|handle| handle.result()) {
-                    completed.push((id.clone(), background_watch_reason(&result)));
-                    continue;
+                if let Some(background) = background.as_ref() {
+                    let completed_generation = background.handle.child_turn_generation();
+                    if let Some(result) = retained_background_result_is_current(&background.handle)
+                        .then(|| background.handle.result())
+                        .flatten()
+                    {
+                        if background
+                            .handle
+                            .mark_collected_if_generation(completed_generation)
+                        {
+                            completed.push((id.clone(), background_watch_reason(&result)));
+                            continue;
+                        }
+                    }
                 }
                 match session_liveness(services.as_ref(), caller_session_id, id) {
                     // Only a POSITIVE idle answer short-circuits. `Unknown`
@@ -2967,15 +3259,13 @@ impl WorkspaceClient {
         receivers: Vec<(
             String,
             crate::session_events::Subscription,
-            Option<std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>>,
+            Option<WatchedBackground>,
         )>,
         completed: &mut Vec<(String, String)>,
         want: usize,
         timeout: std::time::Duration,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> bool {
-        use crate::session_events::SessionBusEvent;
-
         let deadline = tokio::time::Instant::now() + timeout;
         // Cancelled when this function returns, **however** it returns — the
         // deadline, a cancel, or every watcher exiting.
@@ -2984,59 +3274,23 @@ impl WorkspaceClient {
         // reclaims its session's 1024-slot event ring when it drops. Without
         // this the tasks looped on `recv()` for the life of the process after a
         // watch timed out, pinning a ring slot per watched session per watch —
-        // a leak that got materially worse with #110, because a watch that used
-        // to be killed by the child's 60-second deadline can now legitimately
-        // park for ten minutes.
+        // a leak that got materially worse with #110, because an explicitly
+        // long watch can legitimately hold the subscription for many minutes.
         let stop = tokio_util::sync::CancellationToken::new();
         let _reap_watchers = stop.clone().drop_guard();
 
         // One task per watched session, all feeding one channel: simpler
         // and more obviously correct than a hand-rolled select over a Vec,
         // and 32 short-lived tasks is nothing.
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, String)>(WATCH_MAX_SESSIONS);
-        for (id, mut receiver, background) in receivers {
-            let tx = tx.clone();
-            let stop = stop.clone();
-            tokio::spawn(async move {
-                if let Some(handle) = background {
-                    let result = tokio::select! {
-                        biased;
-                        () = stop.cancelled() => return,
-                        result = handle.wait(std::time::Duration::from_secs(
-                            crate::agents::subagent_handle::MAX_WAIT_SECS,
-                        )) => result,
-                    };
-                    if let Some(result) = result {
-                        let reason = background_watch_reason(&result);
-                        let _ = tx.send((id, reason)).await;
-                    }
-                    return;
-                }
-                loop {
-                    // `recv` is cancel-safe, so losing this race never drops an
-                    // event that had already resolved.
-                    let event = tokio::select! {
-                        biased;
-                        () = stop.cancelled() => return,
-                        event = receiver.recv() => event,
-                    };
-                    match event {
-                        Ok(SessionBusEvent::TurnFinished { reason, .. }) => {
-                            let _ = tx.send((id, reason)).await;
-                            return;
-                        }
-                        Ok(SessionBusEvent::TurnError { message, .. }) => {
-                            let _ = tx.send((id, format!("error: {message}"))).await;
-                            return;
-                        }
-                        Ok(_) => {}
-                        // A lagged watcher has certainly not missed the
-                        // *last* event yet; keep listening.
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                    }
-                }
-            });
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<WatchedCompletion>(WATCH_MAX_SESSIONS);
+        for (id, receiver, background) in receivers {
+            tokio::spawn(watch_one_completion(
+                id,
+                receiver,
+                background,
+                tx.clone(),
+                stop.clone(),
+            ));
         }
         drop(tx); // so `rx.recv()` ends if every watcher exits
 
@@ -3044,9 +3298,9 @@ impl WorkspaceClient {
         // mechanism Biorouter has — Stop, `AppState::cancel_turn`, the websocket
         // `TurnGuard`, and a bridge lease dropping — reaches a running tool
         // through it, and a watch that ignored it kept a cancelled turn alive
-        // for the whole wait. That was survivable while the child's own deadline
-        // capped it at a minute; it is not now that a watch may legitimately
-        // park for ten.
+        // for the whole caller-requested lease. The handle wait has no private
+        // deadline; this token and the explicit workspace_watch lease are its
+        // boundaries.
         let mut cancelled = false;
         let _ = tokio::time::timeout_at(deadline, async {
             while completed.len() < want {
@@ -3057,7 +3311,12 @@ impl WorkspaceClient {
                         break;
                     }
                     entry = rx.recv() => match entry {
-                        Some(entry) => completed.push(entry),
+                        Some(entry) => {
+                            if let Some((handle, generation)) = entry.collection {
+                                handle.mark_collected_if_generation(generation);
+                            }
+                            completed.push((entry.id, entry.reason));
+                        }
                         None => break,
                     },
                 }
@@ -3568,7 +3827,7 @@ impl McpClientTrait for WorkspaceClient {
             }
             // #110: the only handler here that PARKS, so the only one the turn's
             // cancel token has anything to reach. Every other tool returns
-            // promptly; a watch may legitimately wait ten minutes.
+            // promptly; a watch may hold a caller-requested long lease.
             "workspace_watch" => {
                 self.handle_watch(
                     caller,
@@ -8694,6 +8953,457 @@ pub(crate) mod tests {
             text.contains("{\"human_intervened\":true}"),
             "the machine-readable flag must survive the background watch boundary: {text}"
         );
+        assert!(
+            handle.latest_generation_collected(),
+            "returning the completed background result must release parent supervision"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_result_after_watch_expiry_stays_uncollected_until_a_later_watch_receives_it() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        use crate::agents::subagent_result::SubagentResult;
+        use crate::session_events;
+
+        let child = unique_id("watch-expired-before-completion");
+        let handle = BackgroundSubagent::register(
+            "watch-expired-parent",
+            &child,
+            "late result",
+            CancellationToken::new(),
+        );
+        let first_events = session_events::subscribe(&child);
+        let mut first_completed = Vec::new();
+        let cancelled = WorkspaceClient::park_for_completions(
+            vec![(
+                child.clone(),
+                first_events,
+                Some(WatchedBackground {
+                    child_generation_at_subscribe: handle.child_turn_generation(),
+                    handle: handle.clone(),
+                }),
+            )],
+            &mut first_completed,
+            1,
+            std::time::Duration::ZERO,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(!cancelled);
+        assert!(first_completed.is_empty());
+
+        handle.complete(SubagentResult::from_error("completed after lease expiry"));
+        tokio::task::yield_now().await;
+        assert!(
+            !handle.latest_generation_collected(),
+            "an expired watch cannot collect a result that arrives later"
+        );
+
+        let second_events = session_events::subscribe(&child);
+        let mut second_completed = Vec::new();
+        let cancelled = WorkspaceClient::park_for_completions(
+            vec![(
+                child.clone(),
+                second_events,
+                Some(WatchedBackground {
+                    child_generation_at_subscribe: handle.child_turn_generation(),
+                    handle: handle.clone(),
+                }),
+            )],
+            &mut second_completed,
+            1,
+            std::time::Duration::from_secs(1),
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(!cancelled);
+        assert_eq!(second_completed.len(), 1);
+        assert_eq!(second_completed[0].0, child);
+        assert!(second_completed[0]
+            .1
+            .contains("completed after lease expiry"));
+        assert!(
+            handle.latest_generation_collected(),
+            "the later watch commits collection only after accepting the result"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_collects_only_when_the_completed_result_is_returned_in_full() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        use crate::agents::subagent_result::SubagentResult;
+
+        let c = client();
+        let child = seeded_target(&c, "read-collect-finished-child").await;
+        let handle = BackgroundSubagent::register(
+            "caller",
+            &child,
+            "read collection",
+            CancellationToken::new(),
+        );
+        handle.complete(SubagentResult::from_error(
+            "completed after the first watch lease expired",
+        ));
+
+        let clipped_args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_id": child.clone(),
+            "view": "summary",
+            "max_chars": 1
+        }))
+        .unwrap();
+        let clipped = c
+            .call_tool(
+                "workspace_read_conversation",
+                Some(clipped_args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(text_of(&clipped).contains("clipped at 1 chars"));
+        assert!(
+            !handle.latest_generation_collected(),
+            "a clipped preview cannot release collection supervision"
+        );
+
+        let full_args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_id": child,
+            "view": "summary"
+        }))
+        .unwrap();
+        let full = c
+            .call_tool(
+                "workspace_read_conversation",
+                Some(full_args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(text_of(&full).contains("completed after the first watch lease expired"));
+        assert!(
+            handle.latest_generation_collected(),
+            "returning the full completed result must release parent supervision"
+        );
+    }
+
+    #[tokio::test]
+    async fn watch_ignores_a_stale_background_result_until_the_replacement_turn_finishes() {
+        use crate::agents::subagent_handle::{self, BackgroundSubagent};
+        use crate::agents::subagent_result::SubagentResult;
+        use crate::session_events::{self, SessionBusEvent};
+
+        let child = unique_id("watch-generation");
+        let handle = BackgroundSubagent::register(
+            "watch-generation-parent",
+            &child,
+            "original delegated turn",
+            CancellationToken::new(),
+        );
+        // Subscribe before even the original child turn starts. Both of its
+        // lifecycle frames will therefore be queued when its handle resolves.
+        let events = session_events::subscribe(&child);
+
+        let replacement_child = child.clone();
+        let replacement_handle = handle.clone();
+        tokio::spawn(async move {
+            session_events::publish(
+                &replacement_child,
+                SessionBusEvent::TurnStarted {
+                    turn_id: "original-turn".into(),
+                },
+            );
+            subagent_handle::begin_child_turn(&replacement_child);
+            let mark = subagent_handle::mark_continuation_pending_for_turn(
+                &replacement_child,
+                Some("original-turn".to_string()),
+            );
+            assert!(!mark.is_empty());
+            mark.commit();
+            session_events::publish(
+                &replacement_child,
+                SessionBusEvent::TurnFinished {
+                    reason: "original turn finished".into(),
+                    token_state: None,
+                },
+            );
+            replacement_handle.complete(SubagentResult::from_error("obsolete result"));
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            session_events::publish(
+                &replacement_child,
+                SessionBusEvent::TurnStarted {
+                    turn_id: "replacement-turn".into(),
+                },
+            );
+            subagent_handle::begin_child_turn(&replacement_child);
+            tokio::task::yield_now().await;
+            session_events::publish(
+                &replacement_child,
+                SessionBusEvent::TurnFinished {
+                    reason: "replacement turn finished".into(),
+                    token_state: None,
+                },
+            );
+        });
+
+        let mut completed = Vec::new();
+        let cancelled = WorkspaceClient::park_for_completions(
+            vec![(
+                child.clone(),
+                events,
+                Some(WatchedBackground {
+                    child_generation_at_subscribe: 0,
+                    handle: handle.clone(),
+                }),
+            )],
+            &mut completed,
+            1,
+            std::time::Duration::from_secs(5),
+            &CancellationToken::new(),
+        )
+        .await;
+
+        assert!(!cancelled);
+        assert_eq!(
+            completed,
+            vec![(child, "replacement turn finished".to_string())]
+        );
+        assert!(
+            handle.latest_generation_collected(),
+            "watching the replacement terminal collects that exact generation"
+        );
+    }
+
+    #[tokio::test]
+    async fn watch_accepts_a_replacement_terminal_when_subscription_follows_its_start() {
+        use crate::agents::subagent_handle::{self, BackgroundSubagent};
+        use crate::agents::subagent_result::SubagentResult;
+        use crate::session_events::{self, SessionBusEvent};
+
+        let child = unique_id("watch-after-replacement-start");
+        let handle = BackgroundSubagent::register(
+            "watch-after-replacement-parent",
+            &child,
+            "original delegated turn",
+            CancellationToken::new(),
+        );
+        subagent_handle::begin_child_turn(&child);
+        let mark = subagent_handle::mark_continuation_pending_for_turn(
+            &child,
+            Some("original-turn".to_string()),
+        );
+        mark.commit();
+        handle.complete(SubagentResult::from_error("obsolete result"));
+
+        session_events::publish(
+            &child,
+            SessionBusEvent::TurnStarted {
+                turn_id: "replacement-turn".into(),
+            },
+        );
+        subagent_handle::begin_child_turn(&child);
+        let events = session_events::subscribe(&child);
+        let subscribed_generation = handle.child_turn_generation();
+        session_events::publish(
+            &child,
+            SessionBusEvent::TurnFinished {
+                reason: "replacement turn finished after subscribe".into(),
+                token_state: None,
+            },
+        );
+
+        let mut completed = Vec::new();
+        let cancelled = WorkspaceClient::park_for_completions(
+            vec![(
+                child.clone(),
+                events,
+                Some(WatchedBackground {
+                    child_generation_at_subscribe: subscribed_generation,
+                    handle,
+                }),
+            )],
+            &mut completed,
+            1,
+            std::time::Duration::from_secs(5),
+            &CancellationToken::new(),
+        )
+        .await;
+
+        assert!(!cancelled);
+        assert_eq!(
+            completed,
+            vec![(
+                child,
+                "replacement turn finished after subscribe".to_string()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn lag_resynchronizes_when_the_replacement_start_was_evicted() {
+        use crate::agents::subagent_handle::{self, BackgroundSubagent};
+        use crate::agents::subagent_result::SubagentResult;
+        use crate::session_events::{self, SessionBusEvent};
+
+        let child = unique_id("watch-lag-lost-replacement-start");
+        let handle = BackgroundSubagent::register(
+            "watch-lag-lost-replacement-parent",
+            &child,
+            "original delegated turn",
+            CancellationToken::new(),
+        );
+        let events = session_events::subscribe(&child);
+        session_events::publish(
+            &child,
+            SessionBusEvent::TurnStarted {
+                turn_id: "original-turn".into(),
+            },
+        );
+        subagent_handle::begin_child_turn(&child);
+        let mark = subagent_handle::mark_continuation_pending_for_turn(
+            &child,
+            Some("original-turn".to_string()),
+        );
+        mark.commit();
+        session_events::publish(
+            &child,
+            SessionBusEvent::TurnFinished {
+                reason: "stale original terminal".into(),
+                token_state: None,
+            },
+        );
+        handle.complete(SubagentResult::from_error("obsolete result"));
+        session_events::publish(
+            &child,
+            SessionBusEvent::TurnStarted {
+                turn_id: "replacement-turn".into(),
+            },
+        );
+        subagent_handle::begin_child_turn(&child);
+        for index in 0..1_200 {
+            session_events::publish(
+                &child,
+                SessionBusEvent::Agent(crate::agents::AgentEvent::ModelChange {
+                    model: format!("noise-{index}"),
+                    mode: "test".into(),
+                }),
+            );
+        }
+        session_events::publish(
+            &child,
+            SessionBusEvent::TurnFinished {
+                reason: "replacement terminal after lost start".into(),
+                token_state: None,
+            },
+        );
+
+        let mut completed = Vec::new();
+        let cancelled = WorkspaceClient::park_for_completions(
+            vec![(
+                child.clone(),
+                events,
+                Some(WatchedBackground {
+                    child_generation_at_subscribe: 0,
+                    handle,
+                }),
+            )],
+            &mut completed,
+            1,
+            std::time::Duration::from_secs(5),
+            &CancellationToken::new(),
+        )
+        .await;
+
+        assert!(!cancelled);
+        assert_eq!(
+            completed,
+            vec![(child, "replacement terminal after lost start".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn lag_never_resynchronizes_to_a_retained_original_terminal() {
+        use crate::agents::subagent_handle::{self, BackgroundSubagent};
+        use crate::agents::subagent_result::SubagentResult;
+        use crate::session_events::{self, SessionBusEvent};
+
+        let child = unique_id("watch-lag-retained-original");
+        let handle = BackgroundSubagent::register(
+            "watch-lag-retained-original-parent",
+            &child,
+            "original delegated turn",
+            CancellationToken::new(),
+        );
+        let events = session_events::subscribe(&child);
+        session_events::publish(
+            &child,
+            SessionBusEvent::TurnStarted {
+                turn_id: "original-turn".into(),
+            },
+        );
+        subagent_handle::begin_child_turn(&child);
+        let mark = subagent_handle::mark_continuation_pending_for_turn(
+            &child,
+            Some("original-turn".to_string()),
+        );
+        mark.commit();
+        for index in 0..1_200 {
+            session_events::publish(
+                &child,
+                SessionBusEvent::Agent(crate::agents::AgentEvent::ModelChange {
+                    model: format!("pre-terminal-noise-{index}"),
+                    mode: "test".into(),
+                }),
+            );
+        }
+        session_events::publish(
+            &child,
+            SessionBusEvent::TurnFinished {
+                reason: "retained stale original terminal".into(),
+                token_state: None,
+            },
+        );
+        handle.complete(SubagentResult::from_error("obsolete result"));
+        session_events::publish(
+            &child,
+            SessionBusEvent::TurnStarted {
+                turn_id: "replacement-turn".into(),
+            },
+        );
+        subagent_handle::begin_child_turn(&child);
+        session_events::publish(
+            &child,
+            SessionBusEvent::TurnFinished {
+                reason: "replacement terminal after retained original".into(),
+                token_state: None,
+            },
+        );
+
+        let mut completed = Vec::new();
+        let cancelled = WorkspaceClient::park_for_completions(
+            vec![(
+                child.clone(),
+                events,
+                Some(WatchedBackground {
+                    child_generation_at_subscribe: 0,
+                    handle,
+                }),
+            )],
+            &mut completed,
+            1,
+            std::time::Duration::from_secs(5),
+            &CancellationToken::new(),
+        )
+        .await;
+
+        assert!(!cancelled);
+        assert_eq!(
+            completed,
+            vec![(
+                child,
+                "replacement terminal after retained original".to_string()
+            )]
+        );
     }
 
     #[tokio::test]
@@ -8706,6 +9416,10 @@ pub(crate) mod tests {
         let child = seeded_target(&c, "queued-background-child").await;
         let handle =
             BackgroundSubagent::register("caller", &child, "queued", CancellationToken::new());
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        let continuation = crate::agents::subagent_handle::mark_continuation_pending(&child);
+        continuation.commit();
+        assert!(handle.continuation_pending());
 
         let result = close(
             &c,
@@ -8719,6 +9433,10 @@ pub(crate) mod tests {
         assert!(
             handle.is_cancelled(),
             "the queued child's token was not tripped"
+        );
+        assert!(
+            !handle.continuation_pending(),
+            "an explicit close must abandon the promised replacement"
         );
         assert!(
             text_of(&result).contains("Cancellation requested"),

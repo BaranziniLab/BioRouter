@@ -236,6 +236,35 @@ mod tests {
         assert_eq!(entry(&svc, "omop").reason, None);
     }
 
+    #[tokio::test]
+    async fn user_publicize_waits_for_private_curation_to_release_the_kb_lock() {
+        let (_d, svc) = svc_with_base("omop");
+        raise_tier(&svc, "omop", true);
+        let curation_guard = svc.lock_kb("omop").await.unwrap();
+        let publicize_svc = svc.clone();
+        let mut publicize = tokio::spawn(async move {
+            publicize_svc
+                .set_tier_by_user_async("omop", KbTier::Public, UserKbTierChange::for_test(), None)
+                .await
+        });
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), &mut publicize)
+                .await
+                .is_err(),
+            "the user tier change bypassed the active curation transaction"
+        );
+        assert_eq!(
+            tier_of(&svc, "omop"),
+            KbTier::Private,
+            "the base became public while private provider-derived writes were in flight"
+        );
+
+        drop(curation_guard);
+        publicize.await.unwrap().unwrap();
+        assert_eq!(tier_of(&svc, "omop"), KbTier::Public);
+    }
+
     #[test]
     fn a_user_change_survives_a_reader_that_cannot_parse_the_store() {
         // The one direction `load_for_write` must NOT be relaxed in: an

@@ -802,6 +802,12 @@ const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__workspace_watch",
 ];
 
+const CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS: &[&str] = &[
+    "workspace__workspace_watch",
+    "workspace__workspace_read_conversation",
+    "workspace__workspace_close",
+];
+
 const CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS: &[&str] = &[
     "knowledge__kb_list_bases",
     "knowledge__kb_list_pages",
@@ -824,6 +830,16 @@ fn coding_agent_bridge_allows_tool(
         || (trusted_knowledge && CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS.contains(&tool_name))
 }
 
+fn coding_agent_bridge_can_delegate(tools: &[Tool], trusted_workspace: bool) -> bool {
+    trusted_workspace
+        && tools
+            .iter()
+            .any(|tool| is_spawn_tool_call(tool.name.as_ref()))
+        && CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS
+            .iter()
+            .all(|required| tools.iter().any(|tool| tool.name.as_ref() == *required))
+}
+
 fn prepare_coding_agent_bridge_tool(tool: &Tool) -> Tool {
     let mut bridged = tool.clone();
     if is_spawn_tool_call(tool.name.as_ref()) {
@@ -843,21 +859,51 @@ fn prepare_coding_agent_bridge_tool(tool: &Tool) -> Tool {
 }
 
 fn delegated_work_supervision_prompt(parent_session_id: &str) -> Option<String> {
+    let services = crate::workspace_services::get();
     let running: Vec<_> = crate::agents::subagent_handle::list_for_session(parent_session_id)
         .into_iter()
-        .filter(|handle| handle.is_running())
+        .filter(|handle| {
+            handle.is_running()
+                || handle.continuation_pending()
+                || !handle.latest_generation_collected()
+                || services.as_ref().is_some_and(|services| {
+                    services.is_turn_active(handle.child_session_id.as_str())
+                })
+        })
         .map(|handle| handle.child_session_id.clone())
         .collect();
     if running.is_empty() {
         return None;
     }
     Some(format!(
-        "Your delegated subagent sessions are still running: {}. Continue supervising them now. \
+        "Your delegated subagent sessions still require supervision or result collection: {}. \
+         Continue supervising them now. \
          Call workspace_watch for these session ids, inspect progress with \
          workspace_read_conversation, and use workspace_close if a child must stop. Do not give \
          a final answer until every listed child has finished and you have collected its result.",
         running.join(", ")
     ))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum StructuredFinalOutputAction {
+    Emit(String),
+    ContinueSupervising(String),
+}
+
+async fn take_structured_final_output_action(
+    final_output_tool: &Mutex<Option<FinalOutputTool>>,
+    parent_session_id: &str,
+) -> Option<StructuredFinalOutputAction> {
+    let final_output = {
+        let mut tool = final_output_tool.lock().await;
+        tool.as_mut()?.final_output.take()?
+    };
+
+    Some(match delegated_work_supervision_prompt(parent_session_id) {
+        Some(prompt) => StructuredFinalOutputAction::ContinueSupervising(prompt),
+        None => StructuredFinalOutputAction::Emit(final_output),
+    })
 }
 
 struct ChatBridgeDispatch {
@@ -2282,6 +2328,11 @@ pub struct Agent {
 
     pub extension_manager: Arc<ExtensionManager>,
     pub(super) sub_workflows: Mutex<HashMap<String, SubWorkflow>>,
+    /// Session ids whose daemon-authored child runtime is already installed on
+    /// this live agent. Cold restoration consults this before touching prompt,
+    /// structured-output, subworkflow, or extension state, preserving provider-
+    /// local Codex/Claude sessions during ordinary steering.
+    pub(super) subagent_runtime_sessions: Mutex<HashSet<String>>,
     /// Whether the generic `subagent` tool is offered at all.
     ///
     /// Default `true` (every existing caller). An Agent-Drafter app that declares
@@ -2646,6 +2697,7 @@ pub(super) fn fire_compaction_hook_on(
 #[cfg(test)]
 pub(crate) mod seams {
     use crate::providers::base::Provider;
+    use crate::session::SessionManager;
     use tokio::sync::oneshot;
 
     /// One armed rendezvous: the caller session id and tool name it is waiting
@@ -2697,16 +2749,16 @@ pub(crate) mod seams {
         }
     }
 
-    // ─── Issue #56, Gate A: the two rendezvous on the provider-bind path ────
+    // ─── Provider-persistence rendezvous ────────────────────────────────────
     //
-    // `arm_*` returns a [`Rendezvous`] that fires when the bind path reaches
+    // `arm_*` returns a [`Rendezvous`] that fires when its persistence path reaches
     // it, carrying the sender that releases it — so a test can run a whole
     // ratchet *inside* the window instead of hoping a `tokio::spawn` lands
     // there. Two channels and not a `Barrier`: a 2-party `Barrier::wait`
     // releases both sides at the rendezvous, which is the one thing this must
     // not do.
     //
-    // ⚠ THE TWO SEAMS SIT IN DIFFERENT FUNCTIONS, ON PURPOSE.
+    // ⚠ THE SEAMS SIT IN DIFFERENT FUNCTIONS, ON PURPOSE.
     // `before_bind_write` is inside `SessionStorage::bind_provider_if_allowed`
     // (`session_manager.rs`), between any read that function performs and the
     // statement that writes — hence `pub(crate)`, and hence the name: it is
@@ -2745,11 +2797,12 @@ pub(crate) mod seams {
     // sender. An arm nobody consumes is inert — its token exists nowhere but
     // inside the one future it was minted for.
 
-    /// Which of the two bind rendezvous a token authorizes.
+    /// Which provider-persistence rendezvous a token authorizes.
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum Seam {
         BeforeBindWrite,
         AfterBindBeforeSwap,
+        BeforeCompositeStateWrite,
     }
 
     /// What one `arm_*` call hands out: permission for one future to be caught
@@ -2772,8 +2825,7 @@ pub(crate) mod seams {
         static ARMED_TASK: ArmToken;
     }
 
-    /// One armed rendezvous, handed back by `arm_before_bind_write` /
-    /// `arm_after_bind_before_swap`.
+    /// One armed provider-persistence rendezvous.
     pub(crate) struct Rendezvous {
         token: ArmToken,
         arrived: oneshot::Receiver<oneshot::Sender<()>>,
@@ -2815,8 +2867,8 @@ pub(crate) mod seams {
 
     /// Mark `fut` as the ONE call that may consume `token`'s arm.
     ///
-    /// Every other `update_provider` in the process walks through both seams
-    /// with one uncontended `try_with` and no await.
+    /// Every other provider-persistence call in the process walks through its
+    /// seam with one uncontended `try_with` and no await.
     pub(crate) fn armed<F: std::future::Future>(
         token: ArmToken,
         fut: F,
@@ -2871,6 +2923,10 @@ pub(crate) mod seams {
         arm(Seam::AfterBindBeforeSwap)
     }
 
+    pub(crate) fn arm_before_composite_state_write() -> Rendezvous {
+        arm(Seam::BeforeCompositeStateWrite)
+    }
+
     /// Called from `session_manager.rs`, hence `pub(crate)`.
     pub(crate) async fn before_bind_write() {
         park(Seam::BeforeBindWrite).await
@@ -2880,50 +2936,87 @@ pub(crate) mod seams {
         park(Seam::AfterBindBeforeSwap).await
     }
 
-    // ─── Issue #56, Gate B: the provider a repairing rebind constructs ───────
+    /// Called from `session_manager.rs`, immediately before the composite CAS.
+    pub(crate) async fn before_composite_state_write() {
+        park(Seam::BeforeCompositeStateWrite).await
+    }
+
+    // ─── Provider construction for row restore/rebind tests ───────────
     //
-    // Gate B's repair arm exists to build the provider the session ROW names,
-    // which in production means `providers::create` — a factory that reads the
-    // user's config file and their OS keyring, and whose products talk to real
-    // hosts. A unit test cannot go through it in either direction:
+    // Row restoration and Gate B repair both build the provider the session ROW
+    // names, which in production means `providers::create` — a factory that
+    // reads the user's config file and their OS keyring, and whose products talk
+    // to real hosts. A unit test cannot go through it in either direction:
     // `create("versa_azure", ..)` needs institutional credentials this machine
     // may not have (and asking for them can raise a Keychain prompt), while
     // `create("ollama", ..)` succeeds *offline* and then points the turn at
     // whatever happens to be listening on localhost:11434.
     //
     // So the construction step — and only that step — is overridable in test
-    // builds. Keyed by `(session id, provider name)`, not by name alone: these
-    // tests are `#[tokio::test]`s in one binary on parallel threads, and a
-    // name-only key would let one test's rebind answer another's.
-    type RebindOverride = (String, String, std::sync::Arc<dyn Provider>);
+    // builds. The storage identity is part of the key because isolated test
+    // databases each allocate the same first session id (`YYYYMMDD_1`). Keeping
+    // only `(session id, provider name)` lets an override from one database answer
+    // another's rebind, even when the tests run serially.
+    type RebindOverride = (
+        std::sync::Weak<crate::session::session_manager::SessionStorage>,
+        String,
+        String,
+        std::sync::Arc<dyn Provider>,
+    );
     static REBIND_OVERRIDES: std::sync::Mutex<Vec<RebindOverride>> =
         std::sync::Mutex::new(Vec::new());
 
-    /// Register the provider `Agent::rebind_from_row` must hand back when the
-    /// row for `session_id` names `provider_name`.
+    /// Register the provider row restoration/rebind must hand back when the row
+    /// for `session_id` names `provider_name`.
     pub(crate) fn override_rebind_provider(
+        session_manager: &SessionManager,
         session_id: &str,
         provider_name: &str,
         provider: std::sync::Arc<dyn Provider>,
     ) {
-        REBIND_OVERRIDES
+        let storage = std::sync::Arc::downgrade(session_manager.storage());
+        let mut overrides = REBIND_OVERRIDES
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((session_id.to_string(), provider_name.to_string(), provider));
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        overrides.retain(
+            |(registered_storage, registered_session, registered_provider, _)| {
+                registered_storage.strong_count() > 0
+                    && !(std::sync::Weak::ptr_eq(registered_storage, &storage)
+                        && registered_session == session_id
+                        && registered_provider == provider_name)
+            },
+        );
+        overrides.push((
+            storage,
+            session_id.to_string(),
+            provider_name.to_string(),
+            provider,
+        ));
     }
 
     /// The registered override, if any. Not consumed: a session's rebind can
     /// legitimately happen on more than one turn.
     pub(super) fn rebind_override(
+        session_manager: &SessionManager,
         session_id: &str,
         provider_name: &str,
     ) -> Option<std::sync::Arc<dyn Provider>> {
-        REBIND_OVERRIDES
+        let storage = std::sync::Arc::downgrade(session_manager.storage());
+        let mut overrides = REBIND_OVERRIDES
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        overrides.retain(|(registered_storage, _, _, _)| registered_storage.strong_count() > 0);
+        overrides
             .iter()
-            .find(|(s, p, _)| s == session_id && p == provider_name)
-            .map(|(_, _, provider)| std::sync::Arc::clone(provider))
+            .rev()
+            .find(
+                |(registered_storage, registered_session, registered_provider, _)| {
+                    std::sync::Weak::ptr_eq(registered_storage, &storage)
+                        && registered_session == session_id
+                        && registered_provider == provider_name
+                },
+            )
+            .map(|(_, _, _, provider)| std::sync::Arc::clone(provider))
     }
 }
 
@@ -2971,6 +3064,7 @@ impl Agent {
             config,
             extension_manager: Arc::new(ExtensionManager::new(provider.clone(), session_manager)),
             sub_workflows: Mutex::new(HashMap::new()),
+            subagent_runtime_sessions: Mutex::new(HashSet::new()),
             subagent_tool_enabled: AtomicBool::new(true),
             final_output_tool: Arc::new(Mutex::new(None)),
             frontend_tools: Mutex::new(HashMap::new()),
@@ -5019,7 +5113,11 @@ impl Agent {
         };
 
         #[cfg(test)]
-        let provider = match seams::rebind_override(&row.id, &provider_name) {
+        let provider = match seams::rebind_override(
+            self.config.session_manager.as_ref(),
+            &row.id,
+            &provider_name,
+        ) {
             Some(provider) => provider,
             None => crate::providers::create(&provider_name, model_config).await?,
         };
@@ -5092,6 +5190,34 @@ impl Agent {
                 Ok(None)
             }
         }
+    }
+
+    async fn persist_composite_provider_state(
+        &self,
+        session_id: &str,
+        provider: &Arc<dyn Provider>,
+        expected_generation: &str,
+    ) -> Result<bool> {
+        let Some(composite) = provider.as_lead_worker() else {
+            return Ok(true);
+        };
+        if composite.get_config_generation() != expected_generation {
+            return Ok(false);
+        }
+
+        let model_config_json = serde_json::to_string(&provider.get_model_config())
+            .context("Failed to serialize composite provider routing state")?;
+        self.config
+            .session_manager
+            .storage()
+            .update_composite_model_config_if_generation_matches(
+                session_id,
+                provider.get_name(),
+                expected_generation,
+                &model_config_json,
+            )
+            .await
+            .context("Failed to persist composite provider routing state")
     }
 
     /// Check if a tool is a frontend tool
@@ -5205,10 +5331,7 @@ impl Agent {
             false
         };
 
-        let delegation_available = trusted_workspace
-            && tools
-                .iter()
-                .any(|tool| is_spawn_tool_call(tool.name.as_ref()));
+        let delegation_available = coding_agent_bridge_can_delegate(tools, trusted_workspace);
         let subagent = if delegation_available {
             let provider = self.provider().await.ok()?;
             let mut extensions = self.get_extension_configs().await;
@@ -5361,7 +5484,9 @@ impl Agent {
                 .arguments
                 .map(Value::Object)
                 .unwrap_or(Value::Object(serde_json::Map::new()));
-            let result = self.handle_ingest_conversation(arguments, session).await;
+            let result = self
+                .handle_ingest_conversation(arguments, session, cancellation_token.clone())
+                .await;
             let wrapped_result = result.map(|content| CallToolResult {
                 content,
                 structured_content: None,
@@ -5380,7 +5505,9 @@ impl Agent {
                 .arguments
                 .map(Value::Object)
                 .unwrap_or(Value::Object(serde_json::Map::new()));
-            let result = self.handle_ingest_source(arguments, session).await;
+            let result = self
+                .handle_ingest_source(arguments, session, cancellation_token.clone())
+                .await;
             let wrapped_result = result.map(|content| CallToolResult {
                 content,
                 structured_content: None,
@@ -5738,6 +5865,16 @@ impl Agent {
     /// on the other — and tool calls overlap by construction, so the window was
     /// reachable rather than theoretical.
     async fn write_enabled_extensions(&self, session_id: &str) -> Result<()> {
+        let session = self
+            .config
+            .session_manager
+            .get_session(session_id, false)
+            .await?;
+        if session.session_type == SessionType::SubAgent {
+            return Err(anyhow!(
+                "subagent extension grants are immutable runtime-profile authority"
+            ));
+        }
         let extensions_state =
             EnabledExtensionsState::new(self.persistable_extension_configs().await);
         let value = extensions_state
@@ -7201,6 +7338,9 @@ impl Agent {
                 Some(provider) => Arc::clone(provider),
                 None => self.provider().await?,
             };
+            let mut composite_generation = reply_provider
+                .as_lead_worker()
+                .map(|provider| provider.get_config_generation().to_string());
             let mut signed_replay_context: Option<Conversation> = None;
 
             // #69: this run of the loop is now the turn that soft interrupts are
@@ -7225,13 +7365,34 @@ impl Agent {
                     break;
                 }
 
-                if let Some(final_output_tool) = self.final_output_tool.lock().await.as_ref() {
-                    if final_output_tool.final_output.is_some() {
-                        let final_event = AgentEvent::Message(
-                            assistant_text(final_output_tool.final_output.clone().unwrap())
-                        );
-                        yield final_event;
-                        break;
+                if let Some(action) = take_structured_final_output_action(
+                    &self.final_output_tool,
+                    &session_config.id,
+                )
+                .await
+                {
+                    match action {
+                        StructuredFinalOutputAction::Emit(final_output) => {
+                            yield AgentEvent::Message(assistant_text(final_output));
+                            break;
+                        }
+                        StructuredFinalOutputAction::ContinueSupervising(prompt) => {
+                            info!("parent remains active to supervise delegated work");
+                            let (supervision, published) = persist_steering_message(
+                                &session_manager,
+                                &session_config.id,
+                                prompt,
+                            )
+                            .await?;
+                            if let Some(published) = published {
+                                yield published;
+                            }
+                            if signed_replay_context.take().is_some() {
+                                conversation =
+                                    crate::conversation::without_bedrock_reasoning(&conversation);
+                            }
+                            conversation.push(supervision);
+                        }
                     }
                 }
 
@@ -8440,6 +8601,23 @@ impl Agent {
                     }
                 }
 
+                // A lead/worker provider advances its worker/fallback routing only
+                // after the provider stream settles. Persist that exact snapshot
+                // before any later yield can let the consumer drop this stream and
+                // the AgentManager evict the live provider instance.
+                if let Some(generation) = composite_generation.as_deref() {
+                    if !self
+                        .persist_composite_provider_state(
+                            &session_config.id,
+                            &reply_provider,
+                            generation,
+                        )
+                        .await?
+                    {
+                        composite_generation = None;
+                    }
+                }
+
                 // Record the turn exactly once, whether the stream finished, was
                 // cancelled, or errored out. The provider still processed (and
                 // billed) whatever it reported.
@@ -8531,8 +8709,8 @@ impl Agent {
                             .final_output_tool
                             .lock()
                             .await
-                            .as_ref()
-                            .map(|tool| tool.final_output.clone());
+                            .as_mut()
+                            .map(|tool| tool.final_output.take());
                         if let Some(final_output) = final_output_state {
                         match final_output {
                             None => {
@@ -8956,13 +9134,29 @@ impl Agent {
                 return;
             }
         };
+        let composite_generation = provider
+            .as_lead_worker()
+            .map(|provider| provider.get_config_generation().to_string());
         if let Err(e) = self
             .config
             .session_manager
-            .maybe_update_name(session_id, provider)
+            .maybe_update_name(session_id, Arc::clone(&provider))
             .await
         {
             warn!("Failed to generate session description: {}", e);
+        }
+        if let Some(generation) = composite_generation {
+            match self
+                .persist_composite_provider_state(session_id, &provider, &generation)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => debug!(
+                    session_id,
+                    "session provider changed while naming; retained the newer selection"
+                ),
+                Err(e) => warn!("Failed to persist provider state after session rename: {e}"),
+            }
         }
     }
 
@@ -9296,6 +9490,18 @@ impl Agent {
             }
         };
 
+        #[cfg(test)]
+        let provider = match seams::rebind_override(
+            self.config.session_manager.as_ref(),
+            &session.id,
+            &provider_name,
+        ) {
+            Some(provider) => provider,
+            None => crate::providers::create(&provider_name, model_config)
+                .await
+                .map_err(|e| anyhow!("Could not create provider: {}", e))?,
+        };
+        #[cfg(not(test))]
         let provider = crate::providers::create(&provider_name, model_config)
             .await
             .map_err(|e| anyhow!("Could not create provider: {}", e))?;
@@ -9331,6 +9537,26 @@ impl Agent {
         // to stop. The fix is the repair card reaching this site and not only
         // `reply`, which needs a UI surface that does not exist yet.
         self.update_provider(provider, &session.id).await
+    }
+
+    /// Restore the provider recorded by `session` only when this agent has no
+    /// live provider binding.
+    ///
+    /// Turn setup uses this after resolving an agent from the manager. A running
+    /// subagent is pinned there with its original provider instance, while an
+    /// idle subagent is reconstructed as a bare agent after the pin is released.
+    /// Rebinding the former would discard provider-local state (including live
+    /// Codex and Claude agent sessions); leaving the latter bare fails its next
+    /// direct turn with `Provider not set`.
+    ///
+    /// A session that has never recorded a provider is deliberately left alone.
+    /// The resume/start surfaces own global-default selection; a direct turn must
+    /// not silently turn an uninitialized row into today's global provider.
+    pub async fn restore_persisted_provider_if_missing(&self, session: &Session) -> Result<()> {
+        if self.bound_provider_unchecked().await.is_some() || session.provider_name.is_none() {
+            return Ok(());
+        }
+        self.restore_provider_from_session(session).await
     }
 
     /// Override the system prompt with a custom template
@@ -10861,6 +11087,69 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn coding_agent_bridge_withholds_spawn_when_any_collector_is_missing() {
+        coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        agent
+            .update_provider(
+                Arc::new(BridgedChildProvider { name: "codex" }),
+                &session_id,
+            )
+            .await
+            .expect("bind a coding-agent-shaped provider");
+        let full_surface = agent.list_tools(&session_id, None).await;
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, true)
+            .await
+            .expect("read the bridge parent");
+        let conversation = session
+            .conversation
+            .clone()
+            .unwrap_or_else(Conversation::empty);
+
+        for missing_collector in CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS {
+            assert!(
+                full_surface
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == *missing_collector),
+                "the full prepared surface must contain {missing_collector}"
+            );
+            let restricted_surface: Vec<_> = full_surface
+                .iter()
+                .filter(|tool| tool.name.as_ref() != *missing_collector)
+                .cloned()
+                .collect();
+            assert!(
+                restricted_surface
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == "workspace__subagent"),
+                "the ordinary prepared surface must still contain spawn when only {missing_collector} is restricted"
+            );
+
+            let lease = agent
+                .issue_tool_bridge(&session, &conversation, &restricted_surface, None)
+                .await
+                .expect("a coding-agent provider still needs a bridge");
+            let nonce = lease
+                .url()
+                .rsplit('/')
+                .next()
+                .expect("the bridge URL ends in its nonce");
+            let grant = coding_agent_bridge::lookup(nonce).expect("the bridge grant is live");
+            assert!(
+                !grant
+                    .tools()
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == "workspace__subagent"),
+                "the bridge advertised an uncollectable subagent without {missing_collector}"
+            );
+        }
+    }
+
     #[test]
     fn coding_agent_bridge_requires_active_parent_supervision() {
         let spawn = bridge_test_tool("workspace__subagent");
@@ -10871,7 +11160,252 @@ mod tests {
         assert!(description.contains("steer or stop it"));
     }
 
+    fn armed_structured_final_output(output: &str) -> Arc<Mutex<Option<FinalOutputTool>>> {
+        let mut tool = FinalOutputTool::new(Response {
+            json_schema: Some(serde_json::json!({ "type": "object" })),
+        });
+        tool.final_output = Some(output.to_string());
+        Arc::new(Mutex::new(Some(tool)))
+    }
+
+    struct ReplacementTurnServices {
+        child_session_id: String,
+        active: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::workspace_services::WorkspaceServices for ReplacementTurnServices {
+        fn gui_attached(&self) -> bool {
+            false
+        }
+
+        fn layout_snapshot(&self) -> Option<serde_json::Value> {
+            None
+        }
+
+        fn is_turn_active(&self, session_id: &str) -> bool {
+            session_id == self.child_session_id.as_str()
+                && self.active.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn cancel_turn(&self, _session_id: &str) -> Option<String> {
+            None
+        }
+
+        fn begin_turn(
+            &self,
+            _session_id: &str,
+            _cancel: CancellationToken,
+        ) -> std::result::Result<Box<dyn crate::workspace_services::WorkspaceTurnLease>, String>
+        {
+            Err("the test service starts no turns".into())
+        }
+
+        async fn stop_agent(&self, _session_id: &str) -> std::result::Result<(), String> {
+            Ok(())
+        }
+
+        async fn start_detached_turn(
+            &self,
+            _session_id: &str,
+            _message: Message,
+        ) -> std::result::Result<String, String> {
+            Err("the test service starts no turns".into())
+        }
+
+        async fn start_session(
+            &self,
+            _working_dir: std::path::PathBuf,
+            _extensions: Option<Vec<String>>,
+            _knowledge_bases: Vec<String>,
+            _primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> std::result::Result<String, String> {
+            Err("the test service starts no sessions".into())
+        }
+
+        fn set_knowledge_bases(
+            &self,
+            _session_id: &str,
+            _kbs: &[String],
+            _primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> std::result::Result<crate::workspace_services::KbSelectionView, String> {
+            Err("the test service sets no knowledge bases".into())
+        }
+
+        fn knowledge_selection(
+            &self,
+            _session_id: &str,
+        ) -> crate::workspace_services::KbSelectionView {
+            crate::workspace_services::KbSelectionView::default()
+        }
+
+        async fn gui_command(
+            &self,
+            _frame: serde_json::Value,
+            _wait_result: bool,
+        ) -> std::result::Result<serde_json::Value, String> {
+            Err("no GUI attached".into())
+        }
+    }
+
+    struct ClearWorkspaceServicesOverride;
+
+    impl Drop for ClearWorkspaceServicesOverride {
+        fn drop(&mut self) {
+            crate::workspace_services::clear_test_override();
+        }
+    }
+
     #[test]
+    #[serial_test::serial(workspace_services)]
+    fn a_replacement_turn_on_a_finished_child_still_blocks_parent_exit() {
+        let _clear_override = ClearWorkspaceServicesOverride;
+        let parent = format!("replacement-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("replacement-child-{}", uuid::Uuid::new_v4());
+        let handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "test child",
+            CancellationToken::new(),
+        );
+        handle.complete(crate::agents::subagent_result::SubagentResult::from_error(
+            "original turn complete",
+        ));
+        assert!(!handle.is_running(), "the original handle must be finished");
+        let mark = crate::agents::subagent_handle::mark_continuation_pending(&child);
+        assert!(!mark.is_empty());
+        let prompt = delegated_work_supervision_prompt(&parent)
+            .expect("the admitted continuation gap must keep the parent supervising");
+        assert!(prompt.contains(&child));
+
+        let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        crate::workspace_services::set_for_tests(Some(Arc::new(ReplacementTurnServices {
+            child_session_id: child.clone(),
+            active: Arc::clone(&active),
+        })));
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        assert!(!handle.continuation_pending());
+
+        let prompt = delegated_work_supervision_prompt(&parent)
+            .expect("the active replacement turn must keep the parent supervising");
+        assert!(prompt.contains(&child));
+
+        active.store(false, std::sync::atomic::Ordering::SeqCst);
+        let prompt = delegated_work_supervision_prompt(&parent)
+            .expect("an idle replacement result remains uncollected");
+        assert!(prompt.contains(&child));
+        assert!(handle.mark_collected_if_generation(handle.child_turn_generation()));
+        assert!(
+            delegated_work_supervision_prompt(&parent).is_none(),
+            "collecting the latest idle generation releases the parent"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn structured_final_output_cannot_bypass_pending_or_active_child_supervision() {
+        let _clear_override = ClearWorkspaceServicesOverride;
+        let parent = format!("structured-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("structured-child-{}", uuid::Uuid::new_v4());
+        let handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "test child",
+            CancellationToken::new(),
+        );
+        handle.complete(crate::agents::subagent_result::SubagentResult::from_error(
+            "original turn complete",
+        ));
+        let mark = crate::agents::subagent_handle::mark_continuation_pending(&child);
+        mark.commit();
+
+        let final_output = armed_structured_final_output(r#"{"result":"too early"}"#);
+        let action = take_structured_final_output_action(&final_output, &parent)
+            .await
+            .expect("structured output must be intercepted");
+        let StructuredFinalOutputAction::ContinueSupervising(prompt) = action else {
+            panic!("continuation-pending work must block structured final output");
+        };
+        assert!(prompt.contains(&child));
+        assert!(prompt.contains("workspace_watch"));
+        assert!(prompt.contains("workspace_read_conversation"));
+        assert!(prompt.contains("workspace_close"));
+        assert!(handle.continuation_pending());
+        assert!(
+            final_output
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|tool| tool.final_output.is_none()),
+            "the stale pre-supervision output must not be emitted later"
+        );
+
+        let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        crate::workspace_services::set_for_tests(Some(Arc::new(ReplacementTurnServices {
+            child_session_id: child.clone(),
+            active: Arc::clone(&active),
+        })));
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        assert!(!handle.continuation_pending());
+
+        final_output
+            .lock()
+            .await
+            .as_mut()
+            .expect("structured output tool remains installed")
+            .final_output = Some(r#"{"result":"still too early"}"#.to_string());
+        assert!(matches!(
+            take_structured_final_output_action(&final_output, &parent).await,
+            Some(StructuredFinalOutputAction::ContinueSupervising(_))
+        ));
+
+        active.store(false, std::sync::atomic::Ordering::SeqCst);
+        final_output
+            .lock()
+            .await
+            .as_mut()
+            .expect("structured output tool remains installed")
+            .final_output = Some(r#"{"result":"finished but unread"}"#.to_string());
+        assert!(matches!(
+            take_structured_final_output_action(&final_output, &parent).await,
+            Some(StructuredFinalOutputAction::ContinueSupervising(_))
+        ));
+
+        assert!(handle.mark_collected_if_generation(handle.child_turn_generation()));
+        final_output
+            .lock()
+            .await
+            .as_mut()
+            .expect("structured output tool remains installed")
+            .final_output = Some(r#"{"result":"collected"}"#.to_string());
+        assert_eq!(
+            take_structured_final_output_action(&final_output, &parent).await,
+            Some(StructuredFinalOutputAction::Emit(
+                r#"{"result":"collected"}"#.to_string()
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn structured_final_output_without_delegated_work_emits_once() {
+        let parent = format!("structured-idle-parent-{}", uuid::Uuid::new_v4());
+        let final_output = armed_structured_final_output(r#"{"result":"done"}"#);
+
+        assert_eq!(
+            take_structured_final_output_action(&final_output, &parent).await,
+            Some(StructuredFinalOutputAction::Emit(
+                r#"{"result":"done"}"#.to_string()
+            ))
+        );
+        assert_eq!(
+            take_structured_final_output_action(&final_output, &parent).await,
+            None,
+            "consuming the structured output prevents duplicate final emission"
+        );
+    }
+
+    #[test]
+    #[serial_test::parallel(workspace_services)]
     fn every_parent_exit_gate_tracks_running_background_children() {
         let parent = format!("supervision-parent-{}", uuid::Uuid::new_v4());
         let child = format!("supervision-child-{}", uuid::Uuid::new_v4());
@@ -10891,7 +11425,56 @@ mod tests {
         handle.complete(crate::agents::subagent_result::SubagentResult::from_error(
             "test complete",
         ));
+        let prompt = delegated_work_supervision_prompt(&parent)
+            .expect("a completed but uncollected child must still block the parent's exit");
+        assert!(prompt.contains(&child));
+        assert!(handle.mark_collected_if_generation(handle.child_turn_generation()));
         assert!(delegated_work_supervision_prompt(&parent).is_none());
+    }
+
+    #[tokio::test]
+    async fn expired_watch_lease_does_not_collect_a_late_result_or_release_structured_final() {
+        let parent = format!("expired-watch-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("expired-watch-child-{}", uuid::Uuid::new_v4());
+        let handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "late child",
+            CancellationToken::new(),
+        );
+
+        assert!(
+            handle.wait(std::time::Duration::ZERO).await.is_none(),
+            "the first watch lease expires before child completion"
+        );
+        handle.complete(crate::agents::subagent_result::SubagentResult::from_error(
+            "completed after the watch lease",
+        ));
+        assert!(!handle.latest_generation_collected());
+
+        let final_output = armed_structured_final_output(r#"{"result":"too early"}"#);
+        let action = take_structured_final_output_action(&final_output, &parent)
+            .await
+            .expect("structured output must be intercepted");
+        assert!(matches!(
+            action,
+            StructuredFinalOutputAction::ContinueSupervising(_)
+        ));
+
+        let completed_generation = handle.child_turn_generation();
+        assert!(handle.mark_collected_if_generation(completed_generation));
+        final_output
+            .lock()
+            .await
+            .as_mut()
+            .expect("structured output tool remains installed")
+            .final_output = Some(r#"{"result":"after collection"}"#.to_string());
+        assert_eq!(
+            take_structured_final_output_action(&final_output, &parent).await,
+            Some(StructuredFinalOutputAction::Emit(
+                r#"{"result":"after collection"}"#.to_string()
+            ))
+        );
     }
 
     #[tokio::test]
@@ -11030,6 +11613,11 @@ mod tests {
                 .await
                 .expect("the coding-agent bridge must monitor its child");
             assert_eq!(watched.is_error, Some(false));
+            let watched_text = watched
+                .content
+                .iter()
+                .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+                .collect::<String>();
             let handle = crate::agents::subagent_handle::list_for_session(&session_id)
                 .into_iter()
                 .find(|handle| handle.child_session_id == child_session_id)
@@ -11056,8 +11644,10 @@ mod tests {
                 .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
                 .collect::<String>();
             assert!(
-                collected_text.contains(&format!("{provider_name} bridged child completed")),
-                "the finished result must cross workspace_watch: {collected_text}"
+                watched_text.contains(&format!("{provider_name} bridged child completed"))
+                    || collected_text
+                        .contains(&format!("{provider_name} bridged child completed")),
+                "the finished result must cross workspace_watch: first={watched_text}; second={collected_text}"
             );
             let read = grant
                 .call(CallToolRequestParams {
@@ -12735,6 +13325,9 @@ mod gate_a_bind_tests {
     use crate::privacy::{bind_allowed, ProviderTier, SessionClassification};
     use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
     use crate::providers::errors::ProviderError;
+    use crate::providers::lead_worker::{
+        LeadWorkerProvider, LeadWorkerRoutingState, PersistedProviderConfig,
+    };
     use crate::session::session_manager::{Session, SessionType};
     use crate::session::SessionManager;
     use async_trait::async_trait;
@@ -12858,6 +13451,280 @@ mod gate_a_bind_tests {
             .expect("a bound session carries a model config")
             .model_name
             .clone()
+    }
+
+    #[tokio::test]
+    async fn rebind_overrides_are_isolated_between_stores_with_the_same_session_id() {
+        let first_dir = TempDir::new().unwrap();
+        let second_dir = TempDir::new().unwrap();
+        let first_manager = SessionManager::new(first_dir.path().to_path_buf());
+        let second_manager = SessionManager::new(second_dir.path().to_path_buf());
+        let first: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "versa_azure",
+            model: "first",
+            tier: ProviderTier::Public,
+        });
+        let second = private_provider();
+
+        seams::override_rebind_provider(
+            &first_manager,
+            "same-session",
+            "versa_azure",
+            Arc::clone(&first),
+        );
+        seams::override_rebind_provider(
+            &second_manager,
+            "same-session",
+            "versa_azure",
+            Arc::clone(&second),
+        );
+
+        let restored =
+            seams::rebind_override(&second_manager, "same-session", "versa_azure").unwrap();
+        assert!(Arc::ptr_eq(&restored, &second));
+    }
+
+    #[tokio::test]
+    async fn persisted_provider_restore_preserves_a_live_provider_instance() {
+        let live: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "br71-live-provider-not-in-the-factory",
+            model: "br71-live-model",
+            tier: ProviderTier::Public,
+        });
+        let expected = Arc::clone(&live);
+        let (_dir, agent, session) = agent_on(live).await;
+        let row = reread(&manager(&agent), &session.id).await;
+
+        agent
+            .restore_persisted_provider_if_missing(&row)
+            .await
+            .unwrap();
+
+        let actual = agent
+            .bound_provider_unchecked()
+            .await
+            .expect("the live binding remains present");
+        assert!(
+            Arc::ptr_eq(&expected, &actual),
+            "turn preparation must not replace a live Codex/Claude-style provider instance"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_settled_composite_snapshot_is_persisted_without_replacing_its_live_instance() {
+        let lead: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "versa_azure",
+            model: "gpt-5.2",
+            tier: ProviderTier::Private,
+        });
+        let worker: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "codex",
+            model: "gpt-5.6-codex",
+            tier: ProviderTier::Public,
+        });
+        let composite: Arc<dyn Provider> =
+            Arc::new(LeadWorkerProvider::new_with_settings(lead, worker, 1, 2, 2));
+        let expected = Arc::clone(&composite);
+        let (_dir, agent, session) = agent_on(Arc::clone(&composite)).await;
+
+        composite.complete("system", &[], &[]).await.unwrap();
+        let generation = composite
+            .as_lead_worker()
+            .unwrap()
+            .get_config_generation()
+            .to_string();
+        assert!(
+            agent
+                .persist_composite_provider_state(&session.id, &composite, &generation)
+                .await
+                .unwrap(),
+            "the unchanged provider generation accepts its routing snapshot"
+        );
+
+        let row = reread(&manager(&agent), &session.id).await;
+        let persisted = PersistedProviderConfig::from_model_config(
+            row.model_config
+                .as_ref()
+                .expect("the provider snapshot is durable on the session row"),
+        )
+        .unwrap()
+        .expect("the row retains the composite restore marker");
+        let PersistedProviderConfig::LeadWorkerV2 { routing_state, .. } = persisted;
+        assert_eq!(
+            routing_state,
+            LeadWorkerRoutingState {
+                turn_count: 1,
+                failure_count: 0,
+                in_fallback_mode: false,
+                fallback_remaining: 0,
+            }
+        );
+
+        let actual = agent
+            .bound_provider_unchecked()
+            .await
+            .expect("the live provider remains bound");
+        assert!(Arc::ptr_eq(&expected, &actual));
+    }
+
+    #[tokio::test]
+    async fn a_new_same_name_composite_bind_wins_while_the_old_snapshot_is_parked() {
+        let lead: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "versa_azure",
+            model: "gpt-5.2",
+            tier: ProviderTier::Private,
+        });
+        let worker: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "codex",
+            model: "gpt-5.6-codex",
+            tier: ProviderTier::Public,
+        });
+        let composite: Arc<dyn Provider> =
+            Arc::new(LeadWorkerProvider::new_with_settings(lead, worker, 1, 2, 2));
+        let generation = composite
+            .as_lead_worker()
+            .unwrap()
+            .get_config_generation()
+            .to_string();
+        let (dir, agent, session) = agent_on(Arc::clone(&composite)).await;
+        let session_manager = manager(&agent);
+        composite.complete("system", &[], &[]).await.unwrap();
+
+        let rendezvous = seams::arm_before_composite_state_write();
+        let token = rendezvous.token();
+        let stale_agent = Arc::clone(&agent);
+        let stale_composite = Arc::clone(&composite);
+        let stale_session_id = session.id.clone();
+        let stale_generation = generation.clone();
+        let stale_write = tokio::spawn(seams::armed(token, async move {
+            stale_agent
+                .persist_composite_provider_state(
+                    &stale_session_id,
+                    &stale_composite,
+                    &stale_generation,
+                )
+                .await
+        }));
+        let release_stale_write = rendezvous.arrived().await;
+
+        let replacement_lead: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "versa_azure",
+            model: "gpt-5.4",
+            tier: ProviderTier::Private,
+        });
+        let replacement_worker: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "claude_code",
+            model: "claude-sonnet-4-6",
+            tier: ProviderTier::Public,
+        });
+        let replacement: Arc<dyn Provider> = Arc::new(LeadWorkerProvider::new_with_settings(
+            replacement_lead,
+            replacement_worker,
+            2,
+            3,
+            1,
+        ));
+        let replacement_generation = replacement
+            .as_lead_worker()
+            .unwrap()
+            .get_config_generation()
+            .to_string();
+        assert_ne!(generation, replacement_generation);
+        let expected_live = Arc::clone(&replacement);
+        agent
+            .update_provider(replacement, &session.id)
+            .await
+            .unwrap();
+        release_stale_write.send(()).unwrap();
+        assert!(
+            !stale_write.await.unwrap().unwrap(),
+            "the stale composite generation must lose its conditional write"
+        );
+
+        let row = reread(&session_manager, &session.id).await;
+        assert_eq!(row.provider_name.as_deref(), Some("versa_azure"));
+        assert_eq!(model_name_of(&row), "gpt-5.4");
+        let persisted =
+            PersistedProviderConfig::from_model_config(row.model_config.as_ref().unwrap())
+                .unwrap()
+                .expect("the newer composite restore marker remains durable");
+        let PersistedProviderConfig::LeadWorkerV2 {
+            worker_provider,
+            config_generation,
+            ..
+        } = persisted;
+        assert_eq!(worker_provider, "claude_code");
+        assert_eq!(config_generation, replacement_generation);
+        assert!(Arc::ptr_eq(
+            &expected_live,
+            &agent.bound_provider_unchecked().await.unwrap()
+        ));
+
+        let cold_lead: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "versa_azure",
+            model: "gpt-5.4",
+            tier: ProviderTier::Private,
+        });
+        let cold_worker: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "claude_code",
+            model: "claude-sonnet-4-6",
+            tier: ProviderTier::Public,
+        });
+        let cold_provider: Arc<dyn Provider> =
+            Arc::new(LeadWorkerProvider::new_with_settings_and_state(
+                cold_lead,
+                cold_worker,
+                2,
+                3,
+                1,
+                replacement_generation.clone(),
+                LeadWorkerRoutingState::default(),
+            ));
+        let expected_cold = Arc::clone(&cold_provider);
+        seams::override_rebind_provider(
+            session_manager.as_ref(),
+            &session.id,
+            "versa_azure",
+            cold_provider,
+        );
+        let cold = Agent::with_config(AgentConfig::new(
+            Arc::clone(&session_manager),
+            Arc::new(PermissionManager::new(dir.path().to_path_buf())),
+            None,
+            BioRouterMode::Auto,
+        ));
+        cold.restore_persisted_provider_if_missing(&row)
+            .await
+            .unwrap();
+        let restored = cold.bound_provider_unchecked().await.unwrap();
+        assert!(Arc::ptr_eq(&expected_cold, &restored));
+        assert_eq!(
+            restored.as_lead_worker().unwrap().get_config_generation(),
+            replacement_generation
+        );
+    }
+
+    #[tokio::test]
+    async fn persisted_provider_restore_attempts_the_row_after_a_binding_is_lost() {
+        let missing_name = "br71-missing-provider-not-in-the-factory";
+        let live: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: missing_name,
+            model: "br71-missing-model",
+            tier: ProviderTier::Public,
+        });
+        let (_dir, agent, session) = agent_on(live).await;
+        let row = reread(&manager(&agent), &session.id).await;
+        *agent.provider.lock().await = None;
+
+        let err = agent
+            .restore_persisted_provider_if_missing(&row)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains(missing_name),
+            "the error must come from restoring the persisted provider, got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -13423,7 +14290,12 @@ mod gate_b_turn_tests {
         let row_provider = private_provider();
         point_row_at(&sm, &s.id, &row_provider).await;
         ratchet_to_private(&sm, &s.id).await;
-        seams::override_rebind_provider(&s.id, "versa_azure", Arc::clone(&row_provider));
+        seams::override_rebind_provider(
+            sm.as_ref(),
+            &s.id,
+            "versa_azure",
+            Arc::clone(&row_provider),
+        );
 
         let events = drain(
             agent
@@ -13451,7 +14323,7 @@ mod gate_b_turn_tests {
         let row_provider = public_provider();
         point_row_at(&sm, &s.id, &row_provider).await;
         ratchet_to_private(&sm, &s.id).await;
-        seams::override_rebind_provider(&s.id, "anthropic", Arc::clone(&row_provider));
+        seams::override_rebind_provider(sm.as_ref(), &s.id, "anthropic", Arc::clone(&row_provider));
 
         let events = drain(
             agent
@@ -13485,7 +14357,7 @@ mod gate_b_turn_tests {
         let row_provider = public_provider();
         point_row_at(&sm, &s.id, &row_provider).await;
         ratchet_to_private(&sm, &s.id).await;
-        seams::override_rebind_provider(&s.id, "anthropic", row_provider);
+        seams::override_rebind_provider(sm.as_ref(), &s.id, "anthropic", row_provider);
 
         let answer =
             Message::user().with_content(MessageContent::action_required_elicitation_response(

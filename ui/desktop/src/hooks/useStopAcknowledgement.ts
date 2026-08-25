@@ -14,8 +14,8 @@ export const STOP_ACK_MS = 450;
 export interface StopAcknowledgement {
   /** True while the confirmation is on screen. */
   acknowledged: boolean;
-  /** Call INSTEAD of onStop: acknowledges first, then stops. */
-  trigger: () => void;
+  /** Call INSTEAD of onStop: acknowledges first, then reports whether stopping settled. */
+  trigger: (continuationPending?: boolean) => Promise<boolean>;
 }
 
 /**
@@ -35,7 +35,9 @@ export interface StopAcknowledgement {
  * change rather than being suppressed entirely. The acknowledgement still
  * happens — it just does not animate.
  */
-export function useStopAcknowledgement(onStop?: () => void): StopAcknowledgement {
+export function useStopAcknowledgement(
+  onStop?: (continuationPending?: boolean) => boolean | void | Promise<boolean | void>
+): StopAcknowledgement {
   const [acknowledged, setAcknowledged] = useState(false);
   const timerRef = useRef<number | null>(null);
 
@@ -48,22 +50,28 @@ export function useStopAcknowledgement(onStop?: () => void): StopAcknowledgement
     []
   );
 
-  const trigger = useCallback(() => {
-    setAcknowledged(true);
-    // A second press restarts the window rather than inheriting the remainder
-    // of the first, so an impatient double-click still ends in a full-length
-    // confirmation instead of a flicker.
-    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(() => {
-      timerRef.current = null;
-      setAcknowledged(false);
-    }, STOP_ACK_MS);
+  const trigger = useCallback(
+    async (continuationPending = false) => {
+      setAcknowledged(true);
+      // A second press restarts the window rather than inheriting the remainder
+      // of the first, so an impatient double-click still ends in a full-length
+      // confirmation instead of a flicker.
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => {
+        timerRef.current = null;
+        setAcknowledged(false);
+      }, STOP_ACK_MS);
 
-    // Acknowledge BEFORE stopping. `onStop` synchronously flips chatState to
-    // Idle, which re-renders the composer back to its Send face; setting the
-    // flag first means the state is already committed in the same React batch.
-    onStop?.();
-  }, [onStop]);
+      // Acknowledge BEFORE stopping. The acknowledgement belongs to the press;
+      // completion belongs to the server barrier and may arrive later.
+      try {
+        return (await onStop?.(continuationPending)) !== false;
+      } catch {
+        return false;
+      }
+    },
+    [onStop]
+  );
 
   return { acknowledged, trigger };
 }

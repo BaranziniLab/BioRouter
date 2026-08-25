@@ -36,7 +36,10 @@ interface UseChatStreamReturn {
     userData: Record<string, unknown>
   ) => Promise<void>;
   setWorkflowUserParams: (values: Record<string, string>) => Promise<void>;
-  stopStreaming: () => void;
+  /** Resolves true once the server confirms the cancelled turn released its slot. */
+  stopStreaming: (continuationPending?: boolean) => Promise<boolean>;
+  /** Explicitly release a Stop-and-Send admission when its queued message is discarded. */
+  abandonContinuation: () => Promise<void>;
   /** BR-61: inject a message into the running turn without cancelling it. */
   steer: (text: string) => Promise<boolean>;
   sessionLoadError?: string;
@@ -111,6 +114,7 @@ export function useChatStream({
     submitSystemMessage: controller.submitSystemMessage,
     submitElicitationResponse: controller.submitElicitationResponse,
     stopStreaming: controller.stopStreaming,
+    abandonContinuation: controller.abandonContinuation,
     steer: controller.steer,
     setWorkflowUserParams: controller.setWorkflowUserParams,
     tokenState: snapshot.tokenState,

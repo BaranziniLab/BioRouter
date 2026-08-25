@@ -3,10 +3,13 @@ import { ChatState } from '../types/chatState';
 import { ChatStreamRegistry, NOTIFY_FALLBACK_MS, isRunningState } from './chatStreamStore';
 import type { Message, MessageEvent, Session, TokenState } from '../api';
 import { cancelTurn, editMessage, getSession, interrupt, reply, resumeAgent } from '../api';
+import { abandonContinuationLease } from '../utils/continuationLease';
 
 vi.mock('../api', async () => {
   return {
-    cancelTurn: vi.fn(async () => ({ data: { cancelled: true } })),
+    cancelTurn: vi.fn(async () => ({
+      data: { cancelled: true, settled: true, continuation_lease: 'lease-default' },
+    })),
     editMessage: vi.fn(),
     getSession: vi.fn(async () => ({ data: null })),
     interrupt: vi.fn(),
@@ -18,6 +21,9 @@ vi.mock('../api', async () => {
     updateSessionUserWorkflowValues: vi.fn(async () => ({ data: {} })),
   };
 });
+vi.mock('../utils/continuationLease', () => ({
+  abandonContinuationLease: vi.fn(async () => undefined),
+}));
 
 // Issue #56 Task 58 / #47. `POST /reply` and `GET /sessions/{id}` now resolve
 // the named chat's tier before they do anything, and refuse a private one
@@ -100,6 +106,16 @@ function createControlledStream() {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 async function flush() {
   await Promise.resolve();
   await Promise.resolve();
@@ -113,7 +129,11 @@ beforeEach(() => {
   vi.mocked(interrupt).mockReset();
   vi.mocked(cancelTurn).mockReset();
   vi.mocked(editMessage).mockReset();
-  vi.mocked(cancelTurn).mockResolvedValue({ data: { cancelled: true } } as never);
+  vi.mocked(abandonContinuationLease).mockReset();
+  vi.mocked(abandonContinuationLease).mockResolvedValue(undefined);
+  vi.mocked(cancelTurn).mockResolvedValue({
+    data: { cancelled: true, settled: true, continuation_lease: 'lease-default' },
+  } as never);
   vi.mocked(getSession).mockResolvedValue({ data: null } as never);
   Object.assign(window, {
     electron: {
@@ -500,7 +520,7 @@ describe('ChatStreamRegistry', () => {
     expect(snap.turnError).toBeUndefined();
   });
 
-  it('retryTurn re-runs the failed send exactly once without duplicating the user message (gate b)', async () => {
+  it('replays a retired ambiguous turn with its original idempotency key (gate b)', async () => {
     // Unique session id: the transcript cache is a module-level LRU keyed by id,
     // so reusing a shared id ('s1') would load another test's cached messages
     // and break the exact-length assertions below.
@@ -517,6 +537,7 @@ describe('ChatStreamRegistry', () => {
 
     const controller = registry.getController(sessionId);
     await controller.handleSubmit('hello world');
+    const originalTurnId = vi.mocked(reply).mock.calls[0][0].body.turn_id;
 
     // The failed send parked the user's message in the transcript (once) and
     // surfaced a retryable inline error — NOT the fatal card.
@@ -532,11 +553,96 @@ describe('ChatStreamRegistry', () => {
 
     // reply fired once for the original send and once for the retry — no more.
     expect(reply).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(reply).mock.calls[1][0].body).toMatchObject({
+      turn_id: originalTurnId,
+      from_seq: 0,
+    });
     // The user's message still appears exactly once (retry reused the trailing
     // turn rather than appending a duplicate).
     expect(controller.getSnapshot().messages.filter((m) => m.role === 'user')).toHaveLength(1);
     expect(controller.getSnapshot().turnError).toBeUndefined();
     expect(controller.getSnapshot().sessionLoadError).toBeUndefined();
+  });
+
+  it('keeps the original idempotency key when an accepted reply response is lost', async () => {
+    const sessionId = 'retry-lost-response';
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(sessionId) } } as never);
+    vi.mocked(reply)
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new TypeError('Still offline'));
+
+    const controller = registry.getController(sessionId);
+    await controller.handleSubmit('do this once');
+    const originalTurnId = vi.mocked(reply).mock.calls[0][0].body.turn_id;
+
+    await controller.retryTurn();
+
+    expect(reply).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(reply).mock.calls[1][0].body.turn_id).toBe(originalTurnId);
+    expect(controller.getSnapshot().turnError).toMatchObject({
+      code: 'submit_error',
+      scope: 'transport',
+      retryable: true,
+    });
+  });
+
+  it('attaches to a still-running ambiguous turn instead of starting another one', async () => {
+    const sessionId = 'retry-running-attach';
+    const registry = new ChatStreamRegistry();
+    const running = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(sessionId) } } as never);
+    vi.mocked(reply)
+      .mockRejectedValueOnce(new TypeError('Response lost after accept'))
+      .mockResolvedValueOnce({ stream: running.stream } as never);
+
+    const controller = registry.getController(sessionId);
+    await controller.handleSubmit('long running task');
+    const originalTurnId = vi.mocked(reply).mock.calls[0][0].body.turn_id;
+
+    const retry = controller.retryTurn();
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(2));
+
+    expect(vi.mocked(reply).mock.calls[1][0].body.turn_id).toBe(originalTurnId);
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+
+    running.push({ type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent);
+    running.close();
+    await retry;
+    expect(controller.getSnapshot().turnError).toBeUndefined();
+  });
+
+  it('mints a new turn only after a genuine terminal model failure', async () => {
+    const sessionId = 'retry-genuine-terminal';
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(sessionId) } } as never);
+    vi.mocked(reply)
+      .mockResolvedValueOnce({
+        stream: (async function* () {
+          yield {
+            type: 'Error',
+            error: 'The provider rejected the model request',
+            code: 'provider_failure',
+            scope: 'provider',
+            retryable: true,
+          } as MessageEvent;
+        })(),
+      } as never)
+      .mockResolvedValueOnce({
+        stream: (async function* () {
+          yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+        })(),
+      } as never);
+
+    const controller = registry.getController(sessionId);
+    await controller.handleSubmit('try the model');
+    const failedTurnId = vi.mocked(reply).mock.calls[0][0].body.turn_id;
+
+    await controller.retryTurn();
+
+    expect(reply).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(reply).mock.calls[1][0].body.turn_id).not.toBe(failedTurnId);
+    expect(vi.mocked(reply).mock.calls[1][0].body.from_seq).toBeUndefined();
   });
 
   it('retryTurn does not fire a second concurrent turn while one is live', async () => {
@@ -1259,13 +1365,23 @@ describe('ChatStreamRegistry', () => {
 
     const controller = registry.getController('s1');
     const submit = controller.handleSubmit('long task');
-    await flush();
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    const turnId = vi.mocked(reply).mock.calls[0][0].body.turn_id;
 
-    controller.stopStreaming();
-    await flush();
+    const stopped = controller.stopStreaming();
+
+    // Visual acknowledgement is separate; the store remains busy until the
+    // server-side cancellation barrier resolves.
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+    expect(await stopped).toBe(true);
 
     expect(cancelTurn).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(cancelTurn).mock.calls[0][0].body).toEqual({ session_id: 's1' });
+    expect(vi.mocked(cancelTurn).mock.calls[0][0].body).toEqual({
+      session_id: 's1',
+      expected_turn_id: turnId,
+      wait_for_idle: true,
+      continuation_pending: false,
+    });
     expect(vi.mocked(cancelTurn).mock.calls[0][0].headers).toEqual({
       'X-User-Action': 'test-key',
     });
@@ -1273,6 +1389,359 @@ describe('ChatStreamRegistry', () => {
 
     controlled.close();
     await submit;
+  });
+
+  it('fails closed without sending a session-only cancel before a turn is named', async () => {
+    const registry = new ChatStreamRegistry();
+    const controller = registry.getController('unnamed-stop');
+    const initialState = controller.getSnapshot().chatState;
+
+    await expect(controller.stopStreaming()).resolves.toBe(false);
+    expect(cancelTurn).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().chatState).toBe(initialState);
+
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: session('unnamed-stop') },
+    } as never);
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never);
+    await expect(controller.handleSubmit('after loading')).resolves.toBe(true);
+    expect(reply).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not admit a successor before the cancellation barrier settles', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    const cancellation = deferred<{
+      data: { cancelled: boolean; settled: boolean; continuation_lease: string };
+    }>();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: session('stop-barrier') },
+    } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+    vi.mocked(cancelTurn).mockReturnValue(cancellation.promise as never);
+
+    const controller = registry.getController('stop-barrier');
+    const firstSubmit = controller.handleSubmit('long task');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+
+    const stopped = controller.stopStreaming(true);
+    await flush();
+    expect(cancelTurn).toHaveBeenCalledTimes(1);
+
+    // Even if the client sees a terminal frame and its original submit latch
+    // unwinds first, the cancel response is the admission authority.
+    controlled.push({
+      type: 'Finish',
+      reason: 'cancelled',
+      token_state: tokenState,
+    } as MessageEvent);
+    controlled.close();
+    await firstSubmit;
+
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+    await expect(controller.handleSubmit('too early')).resolves.toBe(false);
+    expect(reply).toHaveBeenCalledTimes(1);
+
+    cancellation.resolve({
+      data: { cancelled: true, settled: true, continuation_lease: 'lease-barrier' },
+    });
+    await expect(stopped).resolves.toBe(true);
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never);
+    await expect(controller.handleSubmit('after the barrier')).resolves.toBe(true);
+    expect(reply).toHaveBeenCalledTimes(2);
+    expect(
+      (vi.mocked(reply).mock.calls[1][0].body as Record<string, unknown>).continuation_lease
+    ).toBe('lease-barrier');
+  });
+
+  it('abandons the lease when the replacement reply is authoritatively refused', async () => {
+    const registry = new ChatStreamRegistry();
+    const original = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: session('lease-refused') },
+    } as never);
+    vi.mocked(reply)
+      .mockResolvedValueOnce({ stream: original.stream } as never)
+      .mockRejectedValueOnce(new Error('HTTP 409: replacement refused'));
+
+    const controller = registry.getController('lease-refused');
+    const first = controller.handleSubmit('original');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    await expect(controller.stopStreaming(true)).resolves.toBe(true);
+    original.close();
+    await first;
+
+    await expect(controller.handleSubmit('replacement')).resolves.toBe(true);
+    expect(vi.mocked(reply).mock.calls[1][0].body).toMatchObject({
+      continuation_lease: 'lease-default',
+    });
+    expect(abandonContinuationLease).toHaveBeenCalledWith('lease-refused', 'lease-default');
+  });
+
+  it('preserves the lease through an ambiguous retry and abandons it when reattach fails', async () => {
+    const registry = new ChatStreamRegistry();
+    const original = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: session('lease-retry-abandoned') },
+    } as never);
+    vi.mocked(reply)
+      .mockResolvedValueOnce({ stream: original.stream } as never)
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new Error('HTTP 409: exact turn was never admitted'));
+
+    const controller = registry.getController('lease-retry-abandoned');
+    const first = controller.handleSubmit('original');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    await expect(controller.stopStreaming(true)).resolves.toBe(true);
+    original.close();
+    await first;
+
+    await controller.handleSubmit('replacement');
+    const replacementTurnId = vi.mocked(reply).mock.calls[1][0].body.turn_id;
+    await controller.retryTurn();
+
+    expect(vi.mocked(reply).mock.calls[1][0].body).toMatchObject({
+      continuation_lease: 'lease-default',
+    });
+    expect(vi.mocked(reply).mock.calls[2][0].body).toMatchObject({
+      turn_id: replacementTurnId,
+      continuation_lease: 'lease-default',
+    });
+    expect(abandonContinuationLease).toHaveBeenCalledWith('lease-retry-abandoned', 'lease-default');
+  });
+
+  it('abandons an admitted lease when renderer ownership closes before replacement submit', async () => {
+    const registry = new ChatStreamRegistry();
+    const original = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: session('lease-tab-close') },
+    } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: original.stream } as never);
+
+    const controller = registry.getController('lease-tab-close');
+    const first = controller.handleSubmit('original');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    await expect(controller.stopStreaming(true)).resolves.toBe(true);
+    controller.releaseOwnership();
+    await vi.waitFor(() =>
+      expect(abandonContinuationLease).toHaveBeenCalledWith('lease-tab-close', 'lease-default')
+    );
+    original.close();
+    await first;
+  });
+
+  it('retains an unacknowledged abandonment token and retries it idempotently', async () => {
+    const registry = new ChatStreamRegistry();
+    const original = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: session('lease-abandon-retry') },
+    } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: original.stream } as never);
+    vi.mocked(abandonContinuationLease)
+      .mockRejectedValueOnce(new TypeError('abandon response lost'))
+      .mockRejectedValueOnce(new TypeError('daemon still restarting'))
+      .mockResolvedValueOnce(undefined);
+
+    const controller = registry.getController('lease-abandon-retry');
+    const first = controller.handleSubmit('original');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    await expect(controller.stopStreaming(true)).resolves.toBe(true);
+
+    controller.releaseOwnership();
+    await vi.waitFor(() => expect(abandonContinuationLease).toHaveBeenCalledTimes(2));
+    await controller.abandonContinuation();
+    expect(abandonContinuationLease).toHaveBeenNthCalledWith(
+      3,
+      'lease-abandon-retry',
+      'lease-default'
+    );
+
+    original.close();
+    await first;
+  });
+
+  it('keeps a continuation lease until the lazy reply stream proves admission', async () => {
+    const registry = new ChatStreamRegistry();
+    const original = createControlledStream();
+    const admitted = deferred<void>();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: session('lease-lazy-admission') },
+    } as never);
+    vi.mocked(reply)
+      .mockResolvedValueOnce({ stream: original.stream } as never)
+      .mockResolvedValueOnce({
+        stream: (async function* () {
+          await admitted.promise;
+          yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+        })(),
+      } as never);
+
+    const controller = registry.getController('lease-lazy-admission');
+    const first = controller.handleSubmit('original');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    await expect(controller.stopStreaming(true)).resolves.toBe(true);
+    original.close();
+    await first;
+
+    const replacement = controller.handleSubmit('replacement');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(2));
+    await controller.abandonContinuation();
+    expect(abandonContinuationLease).toHaveBeenCalledWith('lease-lazy-admission', 'lease-default');
+
+    admitted.resolve();
+    await replacement;
+  });
+
+  it('upgrades an in-flight ordinary Stop before Stop-and-Send admits a successor', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    const ordinaryCancellation = deferred<{ data: { cancelled: boolean; settled: boolean } }>();
+    const continuationAdmission = deferred<{
+      data: { cancelled: boolean; settled: boolean; continuation_lease: string };
+    }>();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: session('stop-intent-upgrade') },
+    } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+    vi.mocked(cancelTurn)
+      .mockReturnValueOnce(ordinaryCancellation.promise as never)
+      .mockReturnValueOnce(continuationAdmission.promise as never);
+
+    const controller = registry.getController('stop-intent-upgrade');
+    const firstSubmit = controller.handleSubmit('original turn');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    const originalTurnId = vi.mocked(reply).mock.calls[0][0].body.turn_id;
+
+    const ordinaryStop = controller.stopStreaming(false);
+    await vi.waitFor(() => expect(cancelTurn).toHaveBeenCalledTimes(1));
+    expect(
+      (vi.mocked(cancelTurn).mock.calls[0][0].body as Record<string, unknown>).continuation_pending
+    ).toBe(false);
+
+    const stopAndSend = controller.stopStreaming(true);
+    expect(stopAndSend).not.toBe(ordinaryStop);
+    expect(cancelTurn).toHaveBeenCalledTimes(1);
+
+    controlled.push({
+      type: 'Finish',
+      reason: 'cancelled',
+      token_state: tokenState,
+    } as MessageEvent);
+    controlled.close();
+    await firstSubmit;
+    ordinaryCancellation.resolve({ data: { cancelled: true, settled: true } });
+    await expect(ordinaryStop).resolves.toBe(true);
+    await vi.waitFor(() => expect(cancelTurn).toHaveBeenCalledTimes(2));
+
+    expect(vi.mocked(cancelTurn).mock.calls[1][0].body).toEqual({
+      session_id: 'stop-intent-upgrade',
+      expected_turn_id: originalTurnId,
+      wait_for_idle: true,
+      continuation_pending: true,
+    });
+    await expect(controller.handleSubmit('must wait for the lease')).resolves.toBe(false);
+    expect(reply).toHaveBeenCalledTimes(1);
+
+    continuationAdmission.resolve({
+      data: { cancelled: false, settled: true, continuation_lease: 'lease-upgrade' },
+    });
+    await expect(stopAndSend).resolves.toBe(true);
+
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never);
+    await expect(controller.handleSubmit('after the lease')).resolves.toBe(true);
+    expect(reply).toHaveBeenCalledTimes(2);
+    expect(
+      (vi.mocked(reply).mock.calls[1][0].body as Record<string, unknown>).continuation_lease
+    ).toBe('lease-upgrade');
+  });
+
+  it('keeps the stopped turn generation gated after a stale cancel is refused', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    const firstCancellation = deferred<{ data: { cancelled: boolean; settled: boolean } }>();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: session('stale-stop') },
+    } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+    vi.mocked(cancelTurn).mockReturnValueOnce(firstCancellation.promise as never);
+
+    const controller = registry.getController('stale-stop');
+    const firstSubmit = controller.handleSubmit('original turn');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    const originalTurnId = vi.mocked(reply).mock.calls[0][0].body.turn_id;
+
+    const stopped = controller.stopStreaming(true);
+    firstCancellation.reject(new Error('409: a different turn is active'));
+    await expect(stopped).resolves.toBe(false);
+
+    // A later terminal frame still cannot override the failed server barrier.
+    controlled.push({
+      type: 'Finish',
+      reason: 'cancelled',
+      token_state: tokenState,
+    } as MessageEvent);
+    controlled.close();
+    await firstSubmit;
+
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+    await expect(controller.handleSubmit('must remain queued')).resolves.toBe(false);
+    expect(reply).toHaveBeenCalledTimes(1);
+
+    vi.mocked(cancelTurn).mockResolvedValueOnce({
+      data: { cancelled: false, settled: true, continuation_lease: 'lease-retry' },
+    } as never);
+    await expect(controller.stopStreaming()).resolves.toBe(true);
+    expect(vi.mocked(cancelTurn).mock.calls[1][0].body).toEqual({
+      session_id: 'stale-stop',
+      expected_turn_id: originalTurnId,
+      wait_for_idle: true,
+      continuation_pending: true,
+    });
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+  });
+
+  it('adopts the authoritative successor after a typed stale-Stop mismatch', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: session('stale-stop-successor') },
+    } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+    const controller = registry.getController('stale-stop-successor');
+    const first = controller.handleSubmit('original');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    const rendererTurnId = vi.mocked(reply).mock.calls[0][0].body.turn_id;
+    vi.mocked(cancelTurn).mockRejectedValueOnce({
+      mismatch: true,
+      expected_turn_id: rendererTurnId,
+      active_turn_id: 'successor-turn',
+    });
+    vi.mocked(cancelTurn).mockResolvedValueOnce({
+      data: { cancelled: true, settled: true },
+    } as never);
+
+    await expect(controller.stopStreaming()).resolves.toBe(false);
+    await expect(controller.stopStreaming()).resolves.toBe(true);
+    expect(vi.mocked(cancelTurn).mock.calls[1][0].body).toMatchObject({
+      expected_turn_id: 'successor-turn',
+    });
+
+    controlled.close();
+    await first;
   });
 });
 
@@ -1325,8 +1794,7 @@ describe('ChatStreamRegistry — progressive loading', () => {
     expect(controller.getSnapshot().agentReady).toBe(false);
 
     releaseAgent();
-    await flush();
-    expect(controller.getSnapshot().agentReady).toBe(true);
+    await vi.waitFor(() => expect(controller.getSnapshot().agentReady).toBe(true));
   });
 
   it('fetches the transcript alone first, then the agent — in that order', async () => {

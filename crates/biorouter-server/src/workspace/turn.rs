@@ -35,6 +35,7 @@ use std::sync::Arc;
 use biorouter::agents::{AgentEvent, SessionConfig};
 use biorouter::conversation::message::Message;
 use biorouter::conversation::Conversation;
+use biorouter::session::{EnabledExtensionsState, ExtensionState};
 use biorouter::session_events::{self, SessionBusEvent};
 use futures::{FutureExt, StreamExt};
 use tokio_util::sync::CancellationToken;
@@ -444,7 +445,7 @@ async fn prepare_turn(
     // buys is only that we do not start BEFORE the load settles. A second
     // caller blocks on the holder's mutex rather than skipping, so concurrent
     // waiters both wait.
-    state.take_extension_loading_task(session_id).await;
+    let eager_extension_results = state.take_extension_loading_task(session_id).await;
     state.remove_extension_loading_task(session_id).await;
 
     let agent = match state.get_agent(session_id.to_string()).await {
@@ -477,6 +478,57 @@ async fn prepare_turn(
             return None;
         }
     };
+
+    if let Err(e) = agent.restore_persisted_provider_if_missing(&session).await {
+        tracing::error!(
+            session_id,
+            "turn: failed to restore persisted provider: {e}"
+        );
+        publish_turn_error(
+            session_id,
+            format!("Failed to restore session provider: {e}"),
+            "provider_restore_failed",
+            TurnErrorScope::Provider,
+            false,
+            None,
+        );
+        return None;
+    }
+
+    // A current child carries a daemon-authored profile for its prompt,
+    // structured response, subworkflows, and exact grant set. A live agent
+    // recognizes the profile as already installed and is left untouched; a
+    // cold one reconstructs it without parsing the human-readable transcript.
+    let runtime_profile_restored = match agent.restore_subagent_runtime_profile(&session).await {
+        Ok(restored) => restored,
+        Err(e) => {
+            tracing::error!(
+                session_id,
+                "turn: failed to restore subagent runtime profile: {e}"
+            );
+            publish_turn_error(
+                session_id,
+                format!("Failed to restore subagent runtime profile: {e}"),
+                "subagent_runtime_restore_failed",
+                TurnErrorScope::Session,
+                false,
+                None,
+            );
+            return None;
+        }
+    };
+
+    // Legacy children have no runtime profile. Keep their former exact-
+    // extension fallback, but limit it to SubAgent rows: `None` above can also
+    // mean an ordinary session's eager task timed out and is still running
+    // detached, where a second load would duplicate its MCP subprocesses.
+    if !runtime_profile_restored
+        && session.session_type == biorouter::session::SessionType::SubAgent
+        && eager_extension_results.is_none()
+        && EnabledExtensionsState::from_extension_data(&session.extension_data).is_some()
+    {
+        agent.load_extensions_from_session(&session).await;
+    }
 
     // BR-71 §4.5: a human typing into a subagent's tab (its composer posts to
     // /reply like any other tab) is an intervention the parent must hear about.
@@ -978,6 +1030,127 @@ mod tests {
             .await
             .unwrap();
         (temp, s.id)
+    }
+
+    #[tokio::test]
+    async fn a_cold_subagent_turn_reports_a_typed_persisted_provider_restore_failure() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let workdir = tempfile::TempDir::new().unwrap();
+        let child = state
+            .session_manager()
+            .create_session(
+                workdir.path().to_path_buf(),
+                "br71 cold child provider restore".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let missing_provider = "br71-turn-provider-not-in-the-factory";
+        state
+            .session_manager()
+            .update(&child.id)
+            .provider_name(missing_provider)
+            .model_config(biorouter::model::ModelConfig::new("br71-turn-model").unwrap())
+            .apply()
+            .await
+            .unwrap();
+        let mut events = session_events::subscribe(&child.id);
+
+        let setup = prepare_turn(
+            &state,
+            &child.id,
+            Message::user().with_text("continue"),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(
+            setup.is_none(),
+            "a failed restore must stop before inference"
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await
+            .expect("restore failure must publish a terminal")
+            .unwrap();
+        let SessionBusEvent::TurnError {
+            message,
+            code,
+            scope,
+            retryable,
+            ..
+        } = event
+        else {
+            panic!("expected a typed restore error, got {event:?}");
+        };
+        assert_eq!(code, "provider_restore_failed");
+        assert_eq!(scope, TurnErrorScope::Provider.wire_value());
+        assert!(!retryable);
+        assert!(
+            message.contains(missing_provider),
+            "unexpected error: {message}"
+        );
+        assert!(!message.contains("Provider not set"));
+    }
+
+    #[tokio::test]
+    async fn a_cold_subagent_turn_hydrates_its_persisted_extension_grants() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let workdir = tempfile::TempDir::new().unwrap();
+        let mut child = state
+            .session_manager()
+            .create_session(
+                workdir.path().to_path_buf(),
+                "br71 cold child extensions".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        EnabledExtensionsState::new(vec![biorouter::agents::ExtensionConfig::Platform {
+            name: "todo".into(),
+            description: "Todo".into(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        }])
+        .to_extension_data(&mut child.extension_data)
+        .unwrap();
+        state
+            .session_manager()
+            .update(&child.id)
+            .provider_name("ollama")
+            .model_config(biorouter::model::ModelConfig::new("br71-local-model").unwrap())
+            .extension_data(child.extension_data)
+            .apply()
+            .await
+            .unwrap();
+
+        let setup = prepare_turn(
+            &state,
+            &child.id,
+            Message::user().with_text("continue"),
+            None,
+            None,
+        )
+        .await
+        .expect("the persisted local provider and extension should hydrate");
+        let tool_names: Vec<String> = setup
+            .agent
+            .list_tools(&child.id, None)
+            .await
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+
+        assert!(
+            tool_names.iter().any(|name| name == "todo__todo_write"),
+            "the child's persisted grant set was not restored: {tool_names:?}"
+        );
+        assert!(
+            tool_names
+                .iter()
+                .all(|name| !name.starts_with("workspace__")),
+            "cold hydration must not replace child grants with global defaults: {tool_names:?}"
+        );
     }
 
     #[tokio::test]

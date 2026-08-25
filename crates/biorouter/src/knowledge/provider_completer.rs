@@ -41,17 +41,9 @@ pub struct ProviderCompleter {
     /// to (#107 / #109).
     ///
     /// `None` means the run has no chat behind it — the Knowledge view's ingest
-    /// panel, a scheduled job — and the card is queued unscoped, deliverable by
-    /// any session's loop.
-    ///
-    /// ⚠ **Known gap, recorded rather than implied away.** A macro run from the
-    /// Knowledge view has no agent loop draining that queue at all, so an
-    /// approval raised there would go unanswered until its TTL. In practice a
-    /// macro's tool surface is the workflow's own — the KB tools — under
-    /// `BioRouterMode::Auto`, so the permission inspector allows and nothing is
-    /// raised; the security and sensitive-ops inspectors can still escalate, and
-    /// that is the case with nowhere to draw. Closing it means giving the ingest
-    /// SSE stream a card frame, which is a UI change and not this one.
+    /// panel, for example. Safe workflow calls can still run, but an inspector
+    /// that requires a person fails immediately with
+    /// `approval_unavailable_without_session`; no unroutable card is published.
     session_id: Option<String>,
     /// The run's cancellation, so a bridged tool call is reachable by whatever
     /// stops the run.
@@ -131,8 +123,15 @@ impl ProviderCompleter {
     /// one model's identity while running on another's. Minting them from one
     /// captured `Arc` in one expression is what makes that structural rather
     /// than conventional, exactly as [`Self::paired`] does for the single case.
+    /// `session_id` is likewise captured once and cloned into every completer:
+    /// a batch started from a chat must route an inspector escalation back to
+    /// that chat, while `None` keeps chatless Knowledge-view runs fail-closed.
+    /// The same owner token is cloned into every completer so cancelling a batch
+    /// reaches whichever source is currently driving a bridged provider.
     pub fn paired_factory(
         provider: Arc<dyn Provider>,
+        session_id: Option<String>,
+        cancel: Option<CancellationToken>,
     ) -> (
         CompleterFactory,
         crate::privacy::ProviderTier,
@@ -140,8 +139,19 @@ impl ProviderCompleter {
     ) {
         let tier = provider.tier();
         let affiliation = provider.affiliation();
-        let factory: CompleterFactory =
-            Box::new(move || Box::new(Self::new(Arc::clone(&provider))) as Box<dyn Completer>);
+        let session_id = session_id.filter(|id| !id.is_empty());
+        let factory: CompleterFactory = Box::new(move || {
+            let completer = Self::new(Arc::clone(&provider));
+            let completer = match &session_id {
+                Some(session_id) => completer.in_session(session_id.clone()),
+                None => completer,
+            };
+            let completer = match &cancel {
+                Some(cancel) => completer.cancelled_by(cancel.clone()),
+                None => completer,
+            };
+            Box::new(completer) as Box<dyn Completer>
+        });
         (factory, tier, affiliation)
     }
 }
@@ -215,10 +225,9 @@ impl Completer for ProviderCompleter {
             Arc::new(tokio::sync::Mutex::new(Some(Arc::clone(&self.provider))));
         let capability = crate::privacy::CallCapability::sample(&shared).await;
 
-        // An empty id when there is no chat behind the run. The bridge reads
-        // that as "unscoped" rather than as a session literally named "", which
-        // is the difference between a card any loop may surface and a queue every
-        // chat-less run in the process shares.
+        // An empty id means no chat owns the run. The bridge may still execute
+        // calls its inspectors allow, but refuses an escalation before publishing
+        // a card because no session can securely display and resolve it.
         let session = crate::session::session_manager::Session {
             id: self.session_id.clone().unwrap_or_default(),
             ..Default::default()
@@ -287,12 +296,11 @@ impl Completer for ProviderCompleter {
 /// the one place that already depends on both — the same reason
 /// [`ProviderCompleter`] itself is here.
 ///
-/// The session id, capability and cancellation are dropped rather than
-/// forwarded, and that is not a loss: a `ToolDispatch` is a closure over ONE
-/// run's state — the ingest macro's carries the git transaction every write in
-/// the run must land on — so there is no second session it could serve and no
-/// second capability it could be asked about. What decides whether the call may
-/// run at all has already happened above this point, in the grant.
+/// The session id and capability are dropped rather than forwarded: a
+/// `ToolDispatch` is a closure over one run's state, so there is no second
+/// session it could serve or capability it could be asked about. Cancellation
+/// is enforced while the dispatch future is awaited so a bridged call cannot
+/// outlive the request or turn that owns the macro.
 struct SubAgentDispatchBridge {
     dispatch: Arc<dyn ToolDispatch>,
 }
@@ -304,14 +312,19 @@ impl BridgeToolDispatch for SubAgentDispatchBridge {
         _session_id: &str,
         call: CallToolRequestParams,
         _capability: crate::privacy::CallCapability,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> std::result::Result<CallToolResult, String> {
         let name = call.name.to_string();
         let args = call
             .arguments
             .map(serde_json::Value::Object)
             .unwrap_or(serde_json::Value::Null);
-        match self.dispatch.call(&name, args).await {
+        let result = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err("tool call cancelled".to_string()),
+            result = self.dispatch.call(&name, args) => result,
+        };
+        match result {
             Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
             // A tool that refused is a RESULT the child's model reads and acts
             // on, not a transport error it may retry — the same distinction the

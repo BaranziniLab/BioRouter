@@ -33,7 +33,7 @@
 //!   it gates *only* that parameter: collecting a detached child is done with
 //!   the workspace tools, which are advertised on their own terms.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -43,6 +43,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agents::subagent_result::SubagentResult;
 use crate::config::Config;
+use crate::conversation::message::Message;
 
 /// Is the async-handle path available at all?
 ///
@@ -57,32 +58,52 @@ pub fn background_enabled() -> bool {
 }
 
 /// How many *finished* handles are retained **per parent session**. Running
-/// handles are never evicted. Beyond the cap the oldest finished handles of that
-/// session are dropped, so a long session that spawns hundreds of background
-/// children cannot grow the registry without bound — the results it never
-/// collected are the ones it stopped caring about.
+/// handles are never evicted. Beyond the cap the oldest finished, collected
+/// handles of that session are dropped. Uncollected results stay authoritative
+/// even when the watch lease that originally waited for them has expired.
 ///
 /// Per session, not per process, on purpose: a global cap would let a busy chat
 /// evict a quiet chat's uncollected result.
 const MAX_RETAINED_FINISHED: usize = 32;
 
-/// Belt-and-braces ceiling on the whole registry, so a daemon that has served
-/// thousands of sessions still cannot accumulate finished handles forever. Well
-/// above the per-session cap, so it only ever bites the pathological case.
+/// Belt-and-braces ceiling on collected finished handles across the registry.
+/// It is well above the per-session cap, so it only bites the pathological case
+/// without discarding a result the parent still has to collect.
 const MAX_RETAINED_FINISHED_TOTAL: usize = 512;
-
-/// Default and maximum block a caller of [`BackgroundSubagent::wait`] should
-/// clamp to. BR-71 decision 23 removed the tool that used to apply them; the
-/// caller-facing wait is `workspace_watch`, which carries its own clamp
-/// (`workspace_extension.rs`, default 120s, same 600s ceiling). Kept as the
-/// registry's own advertised bounds — unify the two literals here if a later
-/// task needs one source of truth.
-pub const DEFAULT_WAIT_SECS: u64 = 60;
-pub const MAX_WAIT_SECS: u64 = 600;
 
 static NEXT_HANDLE_ID: AtomicU64 = AtomicU64::new(1);
 static HANDLES: LazyLock<Mutex<Vec<Arc<BackgroundSubagent>>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
+
+#[derive(Debug, Default)]
+struct ContinuationPendingState {
+    generation: u64,
+    reservations: usize,
+    committed: bool,
+    result_was_current: bool,
+    superseded_generation: u64,
+    superseded_turn_id: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct InitialRunState {
+    runtime_ready: bool,
+    finished: bool,
+    pending_user_inputs: Vec<PendingInitialInput>,
+}
+
+#[derive(Debug)]
+struct PendingInitialInput {
+    turn_id: Option<String>,
+    message: Message,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitialInputDisposition {
+    NotInitializing,
+    Queued,
+    Duplicate,
+}
 
 /// A detached subagent run the parent can poll.
 pub struct BackgroundSubagent {
@@ -103,16 +124,58 @@ pub struct BackgroundSubagent {
     /// The first child turn belongs to this handle and must not invalidate it.
     /// Any subsequent turn does.
     initial_turn_started: std::sync::atomic::AtomicBool,
+    /// A background child is registered before it receives a concurrency
+    /// permit. Until its exact runtime profile is installed, an interactive
+    /// reply must be retained as steering for the delegated initial turn, not
+    /// allowed to claim that turn on a generic agent.
+    initial_run: Mutex<InitialRunState>,
+    /// Number of real provider turns that have begun in this child. Watchers
+    /// snapshot it when they subscribe so they can distinguish a successor
+    /// already in flight from lifecycle frames queued by the original turn.
+    child_turn_generation: AtomicU64,
+    /// The child-turn generation whose terminal result the parent actually
+    /// collected through workspace_watch or workspace_read_conversation.
+    /// Completion alone never advances this: a result that lands after a watch
+    /// lease expires must still block the parent's final answer.
+    collected_generation: Mutex<Option<u64>>,
+    /// Stop-and-Send has admitted an exact-generation cancellation, but the
+    /// replacement provider turn has not started yet. During this gap the
+    /// original result is historical and the parent must keep supervising.
+    continuation_pending: Mutex<ContinuationPendingState>,
 }
 
 impl BackgroundSubagent {
-    /// Register a new running handle and return it. The caller spawns the work
-    /// and must call [`BackgroundSubagent::complete`] exactly once when it ends.
+    /// Register a handle whose initial runtime already exists. This remains the
+    /// constructor for retained/running-handle bookkeeping; detached spawning
+    /// uses [`Self::register_initializing`] because it queues before runtime
+    /// installation.
     pub fn register(
         parent_session_id: impl Into<String>,
         child_session_id: impl Into<String>,
         title: impl Into<String>,
         cancel: CancellationToken,
+    ) -> Arc<Self> {
+        Self::register_with_runtime_state(parent_session_id, child_session_id, title, cancel, true)
+    }
+
+    /// Register a detached child before it receives a concurrency permit. The
+    /// caller must install the runtime profile and call
+    /// [`mark_initial_runtime_ready`] before its delegated provider turn.
+    pub fn register_initializing(
+        parent_session_id: impl Into<String>,
+        child_session_id: impl Into<String>,
+        title: impl Into<String>,
+        cancel: CancellationToken,
+    ) -> Arc<Self> {
+        Self::register_with_runtime_state(parent_session_id, child_session_id, title, cancel, false)
+    }
+
+    fn register_with_runtime_state(
+        parent_session_id: impl Into<String>,
+        child_session_id: impl Into<String>,
+        title: impl Into<String>,
+        cancel: CancellationToken,
+        runtime_ready: bool,
     ) -> Arc<Self> {
         let id = format!("sub_{}", NEXT_HANDLE_ID.fetch_add(1, Ordering::SeqCst));
         let (result, _) = watch::channel(None);
@@ -126,6 +189,13 @@ impl BackgroundSubagent {
             result,
             result_is_current: std::sync::atomic::AtomicBool::new(true),
             initial_turn_started: std::sync::atomic::AtomicBool::new(false),
+            initial_run: Mutex::new(InitialRunState {
+                runtime_ready,
+                ..InitialRunState::default()
+            }),
+            child_turn_generation: AtomicU64::new(0),
+            collected_generation: Mutex::new(None),
+            continuation_pending: Mutex::new(ContinuationPendingState::default()),
         });
 
         let mut handles = HANDLES.lock().expect("subagent handle registry poisoned");
@@ -141,11 +211,69 @@ impl BackgroundSubagent {
     /// `send` as a failure and **throws the value away**, which for a background
     /// subagent nobody happens to be waiting on would silently lose its result.
     pub fn complete(&self, result: SubagentResult) {
+        let mut state = self
+            .initial_run
+            .lock()
+            .expect("subagent initial-run state poisoned");
+        state.finished = true;
+        state.pending_user_inputs.clear();
+        drop(state);
         self.result.send_replace(Some(result));
     }
 
     pub fn result_is_current(&self) -> bool {
         self.result_is_current.load(Ordering::Acquire)
+    }
+
+    pub fn continuation_pending(&self) -> bool {
+        let state = self
+            .continuation_pending
+            .lock()
+            .expect("subagent continuation state poisoned");
+        state.committed || state.reservations > 0
+    }
+
+    pub fn child_turn_generation(&self) -> u64 {
+        self.child_turn_generation.load(Ordering::Acquire)
+    }
+
+    pub fn latest_generation_collected(&self) -> bool {
+        let collected = self
+            .collected_generation
+            .lock()
+            .expect("subagent collection state poisoned");
+        let generation = self.child_turn_generation();
+        (*collected).is_some_and(|collected| collected == generation)
+    }
+
+    /// Record collection only if the result still belongs to `generation`.
+    /// A successor beginning between a watch/read and this call makes the
+    /// collection stale rather than accidentally collecting the successor.
+    pub fn mark_collected_if_generation(&self, generation: u64) -> bool {
+        let mut collected = self
+            .collected_generation
+            .lock()
+            .expect("subagent collection state poisoned");
+        if self.child_turn_generation() != generation {
+            return false;
+        }
+        *collected = Some(generation);
+        true
+    }
+
+    pub fn superseded_turn_id(&self) -> Option<String> {
+        self.continuation_pending
+            .lock()
+            .expect("subagent continuation state poisoned")
+            .superseded_turn_id
+            .clone()
+    }
+
+    pub fn superseded_child_turn_generation(&self) -> u64 {
+        self.continuation_pending
+            .lock()
+            .expect("subagent continuation state poisoned")
+            .superseded_generation
     }
 
     pub fn is_running(&self) -> bool {
@@ -202,6 +330,28 @@ impl BackgroundSubagent {
         }
     }
 
+    /// Wait until this handle publishes its result, with no independent
+    /// deadline. Callers must supply their own cancellation boundary. This is
+    /// the supervision primitive used by `workspace_watch`: the watch tool has
+    /// an explicit caller-visible lease, while the handle must never disappear
+    /// at an unrelated hidden ten-minute deadline.
+    pub async fn wait_until_complete(&self) -> SubagentResult {
+        let mut rx = self.result.subscribe();
+        if let Some(result) = rx.borrow_and_update().clone() {
+            return result;
+        }
+        loop {
+            if rx.changed().await.is_err() {
+                return SubagentResult::from_error(
+                    "Background subagent task ended without producing a result",
+                );
+            }
+            if let Some(result) = rx.borrow_and_update().clone() {
+                return result;
+            }
+        }
+    }
+
     /// A serializable view for the tool's structured content.
     pub fn snapshot(&self) -> HandleSnapshot {
         let result = self.result();
@@ -221,24 +371,328 @@ impl BackgroundSubagent {
     }
 }
 
+/// Retain a proven user reply while a background child's delegated runtime is
+/// still being assembled. The route returns 202 without taking the session turn
+/// lock; the delegated runner drains this queue atomically when its runtime
+/// profile is ready.
+pub fn queue_initializing_child_input(
+    child_session_id: &str,
+    turn_id: Option<String>,
+    message: Message,
+) -> InitialInputDisposition {
+    let handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    let Some(handle) = handles
+        .iter()
+        .find(|handle| handle.child_session_id == child_session_id && handle.is_running())
+    else {
+        return InitialInputDisposition::NotInitializing;
+    };
+    let mut state = handle
+        .initial_run
+        .lock()
+        .expect("subagent initial-run state poisoned");
+    if state.runtime_ready || state.finished {
+        return InitialInputDisposition::NotInitializing;
+    }
+    if turn_id.is_some()
+        && state
+            .pending_user_inputs
+            .iter()
+            .any(|pending| pending.turn_id == turn_id)
+    {
+        return InitialInputDisposition::Duplicate;
+    }
+    state
+        .pending_user_inputs
+        .push(PendingInitialInput { turn_id, message });
+    InitialInputDisposition::Queued
+}
+
+/// Atomically make the child eligible to claim its delegated initial turn and
+/// return every user reply that arrived while it was waiting for a permit.
+pub fn mark_initial_runtime_ready(child_session_id: &str) -> Vec<Message> {
+    let handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    let Some(handle) = handles
+        .iter()
+        .find(|handle| handle.child_session_id == child_session_id && handle.is_running())
+    else {
+        return Vec::new();
+    };
+    let mut state = handle
+        .initial_run
+        .lock()
+        .expect("subagent initial-run state poisoned");
+    if state.finished {
+        return Vec::new();
+    }
+    state.runtime_ready = true;
+    std::mem::take(&mut state.pending_user_inputs)
+        .into_iter()
+        .map(|pending| pending.message)
+        .collect()
+}
+
+pub fn is_child_initializing(child_session_id: &str) -> bool {
+    let handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    handles.iter().any(|handle| {
+        if handle.child_session_id != child_session_id {
+            return false;
+        }
+        let state = handle
+            .initial_run
+            .lock()
+            .expect("subagent initial-run state poisoned");
+        !state.finished && !state.runtime_ready
+    })
+}
+
+/// Cancel a child that is still waiting for its delegated initial runtime. Once
+/// ready, the daemon's ordinary active-turn cancellation owns the lifecycle.
+pub fn cancel_initializing_child(child_session_id: &str) -> bool {
+    let handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    let Some(handle) = handles.iter().find(|handle| {
+        if handle.child_session_id != child_session_id {
+            return false;
+        }
+        let state = handle
+            .initial_run
+            .lock()
+            .expect("subagent initial-run state poisoned");
+        !state.finished && !state.runtime_ready
+    }) else {
+        return false;
+    };
+    handle.cancel();
+    true
+}
+
 /// Mark the start of a real provider turn in a child session.
 ///
-/// Registration happens immediately before the background task starts its
-/// first turn, so that first call claims the handle instead of invalidating it.
-/// A later call means the user has continued or redirected the child and any
-/// retained result from the original delegated run is now historical.
+/// A detached registration is ineligible until [`mark_initial_runtime_ready`]
+/// atomically installs its runtime boundary and drains pre-start steering. Its
+/// first eligible call claims the handle instead of invalidating it. A later
+/// call means the user has continued or redirected the child and any retained
+/// result from the original delegated run is now historical.
 pub fn begin_child_turn(child_session_id: &str) {
     let handles = HANDLES.lock().expect("subagent handle registry poisoned");
     for handle in handles
         .iter()
         .filter(|handle| handle.child_session_id == child_session_id)
     {
+        if !handle
+            .initial_run
+            .lock()
+            .expect("subagent initial-run state poisoned")
+            .runtime_ready
+        {
+            continue;
+        }
+        let next_generation = {
+            let _collection = handle
+                .collected_generation
+                .lock()
+                .expect("subagent collection state poisoned");
+            handle.child_turn_generation.fetch_add(1, Ordering::AcqRel) + 1
+        };
         let is_initial_running_turn =
             handle.is_running() && !handle.initial_turn_started.swap(true, Ordering::AcqRel);
-        if !is_initial_running_turn {
-            handle.result_is_current.store(false, Ordering::Release);
+        if is_initial_running_turn {
+            // A fast Stop-and-Send can reserve the continuation after the
+            // server publishes the initial TurnStarted but before the agent
+            // reaches this hook. That initial turn is still the superseded
+            // generation, not the promised replacement.
+            let mut state = handle
+                .continuation_pending
+                .lock()
+                .expect("subagent continuation state poisoned");
+            if state.committed || state.reservations > 0 {
+                state.superseded_generation = next_generation;
+            }
+            continue;
+        }
+        let was_pending = {
+            let mut state = handle
+                .continuation_pending
+                .lock()
+                .expect("subagent continuation state poisoned");
+            let pending = state.committed || state.reservations > 0;
+            if pending {
+                state.generation = state.generation.wrapping_add(1);
+                state.reservations = 0;
+                state.committed = false;
+            }
+            pending
+        };
+        if !was_pending {
+            let mut state = handle
+                .continuation_pending
+                .lock()
+                .expect("subagent continuation state poisoned");
+            state.generation = state.generation.wrapping_add(1);
+            state.superseded_generation = next_generation.saturating_sub(1);
+            state.superseded_turn_id = None;
+        }
+        handle.result_is_current.store(false, Ordering::Release);
+    }
+}
+
+/// A reversible Stop-and-Send admission mark.
+///
+/// The route keeps this ticket until cancellation settles. Rolling it back only
+/// restores state that this exact mark changed; if the replacement turn has
+/// already begun, [`begin_child_turn`] has cleared the bit and rollback is a
+/// no-op.
+#[derive(Clone)]
+pub struct ContinuationPendingMark {
+    handles: Vec<ContinuationReservation>,
+}
+
+#[derive(Clone)]
+struct ContinuationReservation {
+    handle: Arc<BackgroundSubagent>,
+    generation: u64,
+    resolution: Arc<AtomicU8>,
+}
+
+impl std::fmt::Debug for ContinuationPendingMark {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContinuationPendingMark")
+            .field("handles", &self.handles.len())
+            .finish()
+    }
+}
+
+impl ContinuationPendingMark {
+    pub fn commit(&self) {
+        for reservation in &self.handles {
+            reservation.resolve(true);
         }
     }
+
+    pub fn rollback(&self) {
+        for reservation in &self.handles {
+            reservation.resolve(false);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.handles.is_empty()
+    }
+}
+
+impl ContinuationReservation {
+    fn resolve(&self, commit: bool) {
+        let resolution = if commit { 1 } else { 2 };
+        if self
+            .resolution
+            .compare_exchange(0, resolution, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        let mut state = self
+            .handle
+            .continuation_pending
+            .lock()
+            .expect("subagent continuation state poisoned");
+        if state.generation != self.generation {
+            return;
+        }
+        state.reservations = state.reservations.saturating_sub(1);
+        if commit {
+            state.committed = true;
+        } else if state.reservations == 0 && !state.committed {
+            self.handle
+                .result_is_current
+                .store(state.result_was_current, Ordering::Release);
+            state.superseded_turn_id = None;
+        }
+    }
+}
+
+/// Mark every retained delegated-run handle for `child_session_id` as waiting
+/// for a replacement turn. The caller must have generation-matched the child's
+/// active or safely retained turn before calling this.
+pub fn mark_continuation_pending(child_session_id: &str) -> ContinuationPendingMark {
+    mark_continuation_pending_for_turn(child_session_id, None)
+}
+
+/// Reserve supervision across a Stop-and-Send gap and identify the exact
+/// canonical turn whose queued lifecycle frames must remain historical.
+pub fn mark_continuation_pending_for_turn(
+    child_session_id: &str,
+    superseded_turn_id: Option<String>,
+) -> ContinuationPendingMark {
+    let handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    let mut marked = Vec::new();
+    for handle in handles
+        .iter()
+        .filter(|handle| handle.child_session_id == child_session_id)
+    {
+        let mut state = handle
+            .continuation_pending
+            .lock()
+            .expect("subagent continuation state poisoned");
+        if state.reservations == 0 && !state.committed {
+            state.generation = state.generation.wrapping_add(1);
+            state.result_was_current = handle.result_is_current.swap(false, Ordering::AcqRel);
+            state.superseded_generation = handle.child_turn_generation();
+            state.superseded_turn_id.clone_from(&superseded_turn_id);
+        } else if superseded_turn_id.is_some() && state.superseded_turn_id != superseded_turn_id {
+            state.superseded_turn_id.clone_from(&superseded_turn_id);
+        }
+        state.reservations += 1;
+        marked.push(ContinuationReservation {
+            handle: Arc::clone(handle),
+            generation: state.generation,
+            resolution: Arc::new(AtomicU8::new(0)),
+        });
+    }
+    ContinuationPendingMark { handles: marked }
+}
+
+/// Explicitly abandon an admitted continuation, for example when
+/// `workspace_close` cancels or evicts the child instead of starting the
+/// promised replacement. There is deliberately no elapsed-time fallback:
+/// supervision changes only because a successor starts or an explicit close
+/// says it will not.
+pub fn abandon_continuation(child_session_id: &str) -> bool {
+    abandon_continuation_matching(child_session_id, None)
+}
+
+pub fn abandon_continuation_for_turn(child_session_id: &str, superseded_turn_id: &str) -> bool {
+    abandon_continuation_matching(child_session_id, Some(superseded_turn_id))
+}
+
+fn abandon_continuation_matching(child_session_id: &str, superseded_turn_id: Option<&str>) -> bool {
+    let handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    let mut abandoned = false;
+    for handle in handles
+        .iter()
+        .filter(|handle| handle.child_session_id == child_session_id)
+    {
+        let mut state = handle
+            .continuation_pending
+            .lock()
+            .expect("subagent continuation state poisoned");
+        if superseded_turn_id
+            .is_some_and(|expected| state.superseded_turn_id.as_deref() != Some(expected))
+        {
+            continue;
+        }
+        if state.committed || state.reservations > 0 {
+            state.generation = state.generation.wrapping_add(1);
+            state.reservations = 0;
+            state.committed = false;
+            state.superseded_turn_id = None;
+            handle
+                .result_is_current
+                .store(state.result_was_current, Ordering::Release);
+            abandoned = true;
+        }
+    }
+    abandoned
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -333,7 +787,9 @@ pub fn running_count() -> usize {
 
 /// Drop the oldest finished handles of `parent_session_id` once it holds more
 /// than [`MAX_RETAINED_FINISHED`], then enforce the process-wide ceiling.
-/// Running handles are never evicted — their results have nowhere else to land.
+/// Running and uncollected handles are never evicted — their results have
+/// nowhere else to land, and dropping an uncollected handle would bypass the
+/// parent's final-output supervision gate.
 fn prune_locked(handles: &mut Vec<Arc<BackgroundSubagent>>, parent_session_id: &str) {
     drop_oldest_finished(handles, MAX_RETAINED_FINISHED, |h| {
         h.parent_session_id == parent_session_id
@@ -348,14 +804,24 @@ fn drop_oldest_finished(
 ) {
     let finished = handles
         .iter()
-        .filter(|h| in_scope(h) && !h.is_running())
+        .filter(|h| {
+            in_scope(h)
+                && !h.is_running()
+                && !h.continuation_pending()
+                && h.latest_generation_collected()
+        })
         .count();
     if finished <= keep {
         return;
     }
     let mut to_drop = finished - keep;
     handles.retain(|h| {
-        if to_drop > 0 && in_scope(h) && !h.is_running() {
+        if to_drop > 0
+            && in_scope(h)
+            && !h.is_running()
+            && !h.continuation_pending()
+            && h.latest_generation_collected()
+        {
             to_drop -= 1;
             false
         } else {
@@ -379,10 +845,19 @@ mod tests {
         )
     }
 
+    fn new_initializing_handle(parent: &str) -> Arc<BackgroundSubagent> {
+        BackgroundSubagent::register_initializing(
+            parent,
+            format!("child-session-{parent}"),
+            "do the thing",
+            CancellationToken::new(),
+        )
+    }
+
     fn new_handle(parent: &str) -> Arc<BackgroundSubagent> {
         BackgroundSubagent::register(
             parent,
-            "child-session",
+            format!("child-session-{parent}"),
             "do the thing",
             CancellationToken::new(),
         )
@@ -432,6 +907,40 @@ mod tests {
         assert_eq!(handle.snapshot().state, HandleState::Finished);
     }
 
+    #[test]
+    fn queued_user_input_cannot_claim_the_delegated_initial_turn() {
+        let handle = new_initializing_handle("parent-initializing");
+        let child = handle.child_session_id.clone();
+        let steer = Message::user().with_text("change the requested output");
+
+        assert_eq!(
+            queue_initializing_child_input(&child, Some("client-turn-1".into()), steer.clone()),
+            InitialInputDisposition::Queued
+        );
+        assert_eq!(
+            queue_initializing_child_input(&child, Some("client-turn-1".into()), steer),
+            InitialInputDisposition::Duplicate
+        );
+        begin_child_turn(&child);
+        assert_eq!(handle.child_turn_generation(), 0);
+        assert!(handle.result_is_current());
+
+        let queued = mark_initial_runtime_ready(&child);
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].as_concat_text(), "change the requested output");
+        begin_child_turn(&child);
+        assert_eq!(handle.child_turn_generation(), 1);
+        assert!(handle.result_is_current());
+    }
+
+    #[test]
+    fn queued_child_remains_cancellable_before_it_has_a_daemon_turn() {
+        let handle = new_initializing_handle("parent-queued-cancel");
+        assert!(is_child_initializing(&handle.child_session_id));
+        assert!(cancel_initializing_child(&handle.child_session_id));
+        assert!(handle.is_cancelled());
+    }
+
     #[tokio::test]
     async fn wait_returns_none_while_running_and_the_result_once_done() {
         let handle = new_handle("parent-wait");
@@ -459,6 +968,22 @@ mod tests {
         assert_eq!(result.summary, "already done");
     }
 
+    #[tokio::test]
+    async fn unbounded_supervision_wait_has_only_the_callers_cancellation_boundary() {
+        let handle = new_handle("parent-unbounded-wait");
+        let waiter = handle.clone();
+        let task = tokio::spawn(async move { waiter.wait_until_complete().await });
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished());
+
+        handle.complete(done("finished without an internal deadline"));
+        let result = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("test safety deadline")
+            .unwrap();
+        assert_eq!(result.summary, "finished without an internal deadline");
+    }
+
     #[test]
     fn finished_handles_are_pruned_but_running_ones_are_kept() {
         let parent = "parent-prune";
@@ -467,6 +992,7 @@ mod tests {
         for i in 0..(MAX_RETAINED_FINISHED + 5) {
             let handle = new_handle(parent);
             handle.complete(done(&format!("run {i}")));
+            assert!(handle.mark_collected_if_generation(handle.child_turn_generation()));
             finished_ids.push(handle.id.clone());
         }
         // Registering one more triggers the prune of the excess finished ones.
@@ -494,6 +1020,7 @@ mod tests {
         for i in 0..(MAX_RETAINED_FINISHED + 10) {
             let handle = new_handle(busy);
             handle.complete(done(&format!("busy run {i}")));
+            assert!(handle.mark_collected_if_generation(handle.child_turn_generation()));
         }
 
         let kept = get_for_session(quiet, &precious.id).expect("quiet session's result survives");
@@ -504,6 +1031,23 @@ mod tests {
         // Pruning happens on registration, so the busy session settles at the cap
         // (plus at most the one handle that finished after the last register).
         assert!(list_for_session(busy).len() <= MAX_RETAINED_FINISHED + 1);
+    }
+
+    #[test]
+    fn starting_a_successor_invalidates_collection_of_the_previous_generation() {
+        let handle = new_handle("parent-collection-generation");
+        begin_child_turn(&handle.child_session_id);
+        handle.complete(done("initial result"));
+        let initial_generation = handle.child_turn_generation();
+        assert!(handle.mark_collected_if_generation(initial_generation));
+        assert!(handle.latest_generation_collected());
+
+        begin_child_turn(&handle.child_session_id);
+        assert!(!handle.latest_generation_collected());
+        assert!(
+            !handle.mark_collected_if_generation(initial_generation),
+            "a late collector for the initial turn cannot collect its successor"
+        );
     }
 
     #[test]
@@ -537,6 +1081,185 @@ mod tests {
         let handle = new_handle("parent-concurrent-generation");
         begin_child_turn(&handle.child_session_id);
         begin_child_turn(&handle.child_session_id);
+        assert!(!handle.result_is_current());
+    }
+
+    #[test]
+    fn continuation_mark_invalidates_the_original_until_the_replacement_begins() {
+        let handle = new_handle("parent-continuation");
+        begin_child_turn(&handle.child_session_id);
+        handle.complete(done("original run"));
+
+        let mark = mark_continuation_pending(&handle.child_session_id);
+        assert!(!mark.is_empty());
+        assert!(handle.continuation_pending());
+        assert!(!handle.result_is_current());
+
+        begin_child_turn(&handle.child_session_id);
+        assert!(!handle.continuation_pending());
+        assert!(!handle.result_is_current());
+    }
+
+    #[test]
+    fn initial_turn_start_after_admission_does_not_consume_the_replacement_lease() {
+        let handle = new_handle("parent-fast-continuation");
+        let mark = mark_continuation_pending_for_turn(
+            &handle.child_session_id,
+            Some("turn-original".to_string()),
+        );
+        mark.commit();
+
+        begin_child_turn(&handle.child_session_id);
+        assert!(handle.continuation_pending());
+
+        handle.complete(done("original run"));
+        begin_child_turn(&handle.child_session_id);
+        assert!(!handle.continuation_pending());
+        assert!(!handle.result_is_current());
+    }
+
+    #[test]
+    fn failed_continuation_admission_restores_the_original_result() {
+        let handle = new_handle("parent-continuation-rollback");
+        begin_child_turn(&handle.child_session_id);
+        handle.complete(done("original run"));
+
+        let mark = mark_continuation_pending(&handle.child_session_id);
+        mark.rollback();
+
+        assert!(!handle.continuation_pending());
+        assert!(handle.result_is_current());
+    }
+
+    #[test]
+    fn explicit_close_abandons_a_continuation_without_a_successor_turn() {
+        let handle = new_handle("parent-continuation-abandoned");
+        begin_child_turn(&handle.child_session_id);
+        handle.complete(done("original run"));
+
+        let mark = mark_continuation_pending(&handle.child_session_id);
+        assert!(!mark.is_empty());
+        mark.commit();
+        assert!(abandon_continuation(&handle.child_session_id));
+
+        assert!(!handle.continuation_pending());
+        assert!(handle.result_is_current());
+    }
+
+    #[test]
+    fn one_dropped_concurrent_admission_cannot_rollback_another_committed_lease() {
+        let handle = new_handle("parent-concurrent-continuations");
+        begin_child_turn(&handle.child_session_id);
+        handle.complete(done("original run"));
+
+        let child_for_dropped = handle.child_session_id.clone();
+        let child_for_success = handle.child_session_id.clone();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let dropped_barrier = barrier.clone();
+        let dropped = std::thread::spawn(move || {
+            dropped_barrier.wait();
+            mark_continuation_pending_for_turn(
+                &child_for_dropped,
+                Some("turn-original".to_string()),
+            )
+        });
+        let successful_barrier = barrier.clone();
+        let successful = std::thread::spawn(move || {
+            successful_barrier.wait();
+            mark_continuation_pending_for_turn(
+                &child_for_success,
+                Some("turn-original".to_string()),
+            )
+        });
+        barrier.wait();
+        let dropped = dropped.join().unwrap();
+        let successful = successful.join().unwrap();
+        successful.commit();
+        dropped.rollback();
+
+        assert!(handle.continuation_pending());
+        assert!(!handle.result_is_current());
+
+        begin_child_turn(&handle.child_session_id);
+        assert!(!handle.continuation_pending());
+        assert!(!handle.result_is_current());
+    }
+
+    #[test]
+    fn cloned_ticket_resolves_its_reservation_only_once() {
+        let handle = new_handle("parent-cloned-continuation-ticket");
+        begin_child_turn(&handle.child_session_id);
+        handle.complete(done("original run"));
+
+        let ticket = mark_continuation_pending(&handle.child_session_id);
+        let clone = ticket.clone();
+        ticket.rollback();
+        clone.commit();
+
+        assert!(!handle.continuation_pending());
+        assert!(handle.result_is_current());
+    }
+
+    #[test]
+    fn continuation_remembers_the_exact_superseded_turn_for_watchers() {
+        let handle = new_handle("parent-canonical-continuation");
+        begin_child_turn(&handle.child_session_id);
+        handle.complete(done("original run"));
+
+        let mark = mark_continuation_pending_for_turn(
+            &handle.child_session_id,
+            Some("turn-original".to_string()),
+        );
+        mark.commit();
+
+        assert_eq!(
+            handle.superseded_turn_id().as_deref(),
+            Some("turn-original")
+        );
+    }
+
+    #[test]
+    fn abandoning_an_older_generation_cannot_clear_a_newer_continuation() {
+        let handle = new_handle("parent-exact-continuation-abandonment");
+        begin_child_turn(&handle.child_session_id);
+        handle.complete(done("original run"));
+
+        let first = mark_continuation_pending_for_turn(
+            &handle.child_session_id,
+            Some("turn-original".to_string()),
+        );
+        first.commit();
+        let second = mark_continuation_pending_for_turn(
+            &handle.child_session_id,
+            Some("turn-successor".to_string()),
+        );
+        second.commit();
+
+        assert!(!abandon_continuation_for_turn(
+            &handle.child_session_id,
+            "turn-original"
+        ));
+        assert!(handle.continuation_pending());
+        assert!(abandon_continuation_for_turn(
+            &handle.child_session_id,
+            "turn-successor"
+        ));
+        assert!(!handle.continuation_pending());
+    }
+
+    #[test]
+    fn stale_rollback_cannot_clear_a_later_continuation_generation() {
+        let handle = new_handle("parent-continuation-generation");
+        begin_child_turn(&handle.child_session_id);
+        handle.complete(done("original run"));
+
+        let first = mark_continuation_pending(&handle.child_session_id);
+        begin_child_turn(&handle.child_session_id);
+        let second = mark_continuation_pending(&handle.child_session_id);
+        assert!(!second.is_empty());
+
+        first.rollback();
+        assert!(handle.continuation_pending());
         assert!(!handle.result_is_current());
     }
 }

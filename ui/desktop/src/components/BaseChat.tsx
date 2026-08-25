@@ -1180,6 +1180,7 @@ function BaseChatContent({
     submitSystemMessage,
     submitElicitationResponse,
     stopStreaming,
+    abandonContinuation,
     steer,
     sessionLoadError,
     turnError,
@@ -1856,6 +1857,7 @@ function BaseChatContent({
         chatState={chatState}
         setChatState={setChatState}
         onStop={stopStreaming}
+        onAbandonContinuation={abandonContinuation}
         onSteer={steer}
         commandHistory={commandHistory}
         initialValue={initialPrompt}

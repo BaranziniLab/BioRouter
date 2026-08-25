@@ -14,19 +14,13 @@ pub const BIOROUTER_SUBAGENT_MAX_TURNS_ENV_VAR: &str = "BIOROUTER_SUBAGENT_MAX_T
 
 /// Configuration for task execution with all necessary dependencies
 ///
-/// **R5 (issue #56) needs no mechanism here, and that is worth stating.** A
-/// child inherits "the same worker/leader mode the parent is operating under"
-/// literally rather than by copying settings: `provider` is the parent's *same*
-/// `Arc<dyn Provider>` (see `Agent::dispatch`'s `TaskConfig::new` call site), so
-/// a child of a lead/worker parent runs the identical composite with the
-/// identical split, and `tier()` on it is the same `least()` over the same
-/// components.
-///
-/// One consequence, written down so a future reader does not "fix" it: sharing
-/// the instance also shares its mutable `turn_count` / `failure_count` /
-/// `in_fallback_mode`, so a subagent's turns advance the parent's lead→worker
-/// transition. Pre-existing and orthogonal — cloning the wrapper to separate
-/// them would split the tier computation this task depends on.
+/// A regular provider is initially the parent's same `Arc<dyn Provider>`, which
+/// preserves live provider-local state. Before the child row is created,
+/// `subagent_tool::apply_settings_overrides` replaces a lead/worker composite
+/// with a reconstructed per-session instance. Its durable recipe copies the
+/// parent's current route and both component configurations, while a fresh
+/// binding generation and independent counters make each session row
+/// authoritative after that point.
 #[derive(Clone)]
 pub struct TaskConfig {
     pub provider: Arc<dyn Provider>,

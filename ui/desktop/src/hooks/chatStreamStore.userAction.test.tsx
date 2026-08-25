@@ -51,7 +51,7 @@ const mocks = vi.hoisted(() => ({
   interrupt: vi.fn(),
   listApps: vi.fn(async () => ({ data: { apps: [] } })),
   listSessions: vi.fn(async () => ({ data: { sessions: [] } })),
-  updateFromSession: vi.fn(async () => ({ data: {} })),
+  updateFromSession: vi.fn(async (_options?: unknown) => ({ data: {} })),
   updateSessionUserWorkflowValues: vi.fn(async () => ({ data: {} })),
 }));
 
@@ -110,6 +110,7 @@ beforeEach(() => {
   mocks.reply.mockReset();
   mocks.observeSessionEvents.mockReset();
   mocks.resumeAgent.mockReset();
+  mocks.updateFromSession.mockClear();
   Object.assign(window, {
     electron: {
       // What `utils/userAction.ts` reads. The real bridge is the Electron
@@ -123,6 +124,25 @@ beforeEach(() => {
 });
 
 describe('gated routes carry the user-action proof', () => {
+  it('on both resume phases and the session-to-agent update', async () => {
+    const sid = `ua-resume-${++sessionSeq}`;
+    mocks.resumeAgent.mockResolvedValue({ data: { session: session(sid) } });
+
+    const controller = new ChatStreamRegistry().getController(sid);
+    await controller.loadSession();
+    await vi.waitFor(() => expect(mocks.resumeAgent).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(mocks.updateFromSession).toHaveBeenCalledTimes(1));
+
+    expect(
+      mocks.resumeAgent.mock.calls.map(
+        (call) => (call[0] as { headers?: Record<string, string> }).headers
+      )
+    ).toEqual([{ 'X-User-Action': USER_ACTION_KEY }, { 'X-User-Action': USER_ACTION_KEY }]);
+    expect(
+      (mocks.updateFromSession.mock.calls[0][0] as { headers?: Record<string, string> }).headers
+    ).toEqual({ 'X-User-Action': USER_ACTION_KEY });
+  });
+
   it('on the attach that rejoins a live turn after a reload', async () => {
     const sid = `ua-attach-${++sessionSeq}`;
     mocks.resumeAgent.mockResolvedValue({ data: { session: session(sid) } });

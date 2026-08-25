@@ -711,6 +711,11 @@ pub trait LeadWorkerProviderTrait {
 
     /// Get (lead_turns, failure_threshold, fallback_turns)
     fn get_settings(&self) -> (usize, usize, usize);
+
+    /// Stable identity of this composite configuration. Routing snapshots keep
+    /// this value while a newly selected lead/worker configuration gets a new
+    /// one, allowing session persistence to reject stale turn completions.
+    fn get_config_generation(&self) -> &str;
 }
 
 /// Base trait for AI providers (OpenAI, Anthropic, etc)

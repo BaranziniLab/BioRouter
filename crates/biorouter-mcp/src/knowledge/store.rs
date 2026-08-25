@@ -1,8 +1,12 @@
-use crate::knowledge::{git::GitRepo, types::ChangeKind};
+use crate::knowledge::{
+    git::{GitRepo, KnowledgeWriteFailure},
+    types::ChangeKind,
+};
 use anyhow::{Context, Result};
 use bm25::{Language, SearchEngine, SearchEngineBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
@@ -106,22 +110,44 @@ pub fn write_page(
     txn_branch: Option<&str>,
 ) -> Result<Option<String>> {
     let abs = resolve_writable_path(kb_root, path)?;
+    let repo = GitRepo::open(kb_root)?;
+    if std::fs::read(&abs).is_ok_and(|existing| existing.as_slice() == content.as_bytes())
+        && repo.head_file_matches(Path::new(path), content.as_bytes())?
+    {
+        return Ok(None);
+    }
     if let Some(parent) = abs.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = abs.with_extension("md.tmp");
-    std::fs::write(&tmp, content)?;
-    std::fs::rename(tmp, &abs)?;
+    write_atomically(&abs, content.as_bytes())?;
 
-    let repo = GitRepo::open(kb_root)?;
-    if let Some(_branch) = txn_branch {
+    let committed = if let Some(_branch) = txn_branch {
         // Caller has already switched HEAD to the txn branch via begin_txn.
-        let sha = repo.commit_on_txn_in_progress(commit_message)?;
-        Ok(Some(sha))
+        repo.commit_on_txn_in_progress(commit_message)
     } else {
-        let sha = repo.commit_all(ChangeKind::Manual, commit_message, None)?;
-        Ok(Some(sha))
-    }
+        repo.commit_all(ChangeKind::Manual, commit_message, None)
+    };
+    committed.map(Some).map_err(|error| {
+        KnowledgeWriteFailure::outcome_uncertain(
+            format!("page write to {path}"),
+            error.context("committing the replaced page"),
+        )
+        .into()
+    })
+}
+
+/// Replace one file without exposing a partially-written target or sharing a
+/// predictable sibling name with another writer.
+pub(crate) fn write_atomically(path: &Path, content: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(content)?;
+    temporary
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| error.error.into())
 }
 
 /// Path is readable: `knowledge/`, `raw/`, or top-level `index.md` / `schema.md` / `log.md`.
@@ -524,6 +550,60 @@ mod tests {
         let p = read_page(&kb, "knowledge/entities/hrv.md").unwrap();
         assert_eq!(p.frontmatter["title"], serde_yaml::Value::from("HRV"));
         assert_eq!(p.content.trim(), "Body text.");
+    }
+
+    #[test]
+    fn a_predictable_legacy_tmp_collision_cannot_block_page_replacement() {
+        let (_dir, kb) = fresh();
+        let page = kb.join("knowledge/entities/hrv.md");
+        std::fs::create_dir_all(page.with_extension("md.tmp")).unwrap();
+
+        let body = "---\ntitle: HRV\nkind: entity\n---\n\nBody text.";
+        write_page(&kb, "knowledge/entities/hrv.md", body, "add HRV", None).unwrap();
+
+        assert_eq!(std::fs::read_to_string(page).unwrap(), body);
+    }
+
+    #[test]
+    fn retrying_identical_durable_page_content_does_not_commit_again() {
+        let (_dir, kb) = fresh();
+        let body = "---\ntitle: HRV\nkind: entity\n---\n\nBody text.";
+        assert!(
+            write_page(&kb, "knowledge/entities/hrv.md", body, "add HRV", None)
+                .unwrap()
+                .is_some()
+        );
+        let history_len = GitRepo::open(&kb).unwrap().log(10).unwrap().len();
+
+        assert!(
+            write_page(&kb, "knowledge/entities/hrv.md", body, "retry HRV", None)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            GitRepo::open(&kb).unwrap().log(10).unwrap().len(),
+            history_len
+        );
+    }
+
+    #[test]
+    fn identical_uncommitted_page_content_is_not_mistaken_for_a_completed_retry() {
+        let (_dir, kb) = fresh();
+        let body = "---\ntitle: HRV\nkind: entity\n---\n\nBody text.";
+        let path = kb.join("knowledge/entities/hrv.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, body).unwrap();
+
+        assert!(
+            write_page(&kb, "knowledge/entities/hrv.md", body, "finish HRV", None)
+                .unwrap()
+                .is_some(),
+            "matching working-tree bytes are not durable until HEAD contains them"
+        );
+        assert!(GitRepo::open(&kb)
+            .unwrap()
+            .head_file_matches(Path::new("knowledge/entities/hrv.md"), body.as_bytes())
+            .unwrap());
     }
 
     #[test]

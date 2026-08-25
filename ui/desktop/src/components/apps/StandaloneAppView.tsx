@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import McpAppRenderer from '../McpApps/McpAppRenderer';
 import { startAgent, resumeAgent, listApps, stopAgent } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 
 export default function StandaloneAppView() {
   const [searchParams] = useSearchParams();
@@ -69,6 +70,7 @@ export default function StandaloneAppView() {
             session_id: sid,
             load_model_and_extensions: true,
           },
+          headers: await userActionHeaders(),
           throwOnError: true,
         });
 

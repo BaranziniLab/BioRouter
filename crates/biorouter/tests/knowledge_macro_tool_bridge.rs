@@ -28,9 +28,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use rmcp::model::Tool;
 
-use biorouter::conversation::message::Message;
+use biorouter::action_required_manager::ActionRequiredManager;
+use biorouter::conversation::message::{ActionRequiredData, Message, MessageContent};
 use biorouter::knowledge::provider_completer::ProviderCompleter;
 use biorouter::model::ModelConfig;
+use biorouter::pending_user_action::{PendingUserActions, UserActionOutcome};
+use biorouter::permission::Permission;
 use biorouter::providers::base::{MessageStream, Provider, ProviderMetadata, ProviderUsage, Usage};
 use biorouter::providers::coding_agent::bridge;
 use biorouter::providers::coding_agent::mirror;
@@ -173,6 +176,172 @@ impl Provider for BridgedStub {
     }
 }
 
+/// A coding-agent-shaped provider whose one bridged call is deliberately
+/// inspector-gated, so the tests below exercise the approval route rather than
+/// merely observing a session id stored on a grant.
+struct ApprovalBridgedStub;
+
+#[async_trait]
+impl Provider for ApprovalBridgedStub {
+    fn metadata() -> ProviderMetadata
+    where
+        Self: Sized,
+    {
+        unimplemented!()
+    }
+
+    fn get_name(&self) -> &str {
+        "codex"
+    }
+
+    fn get_model_config(&self) -> ModelConfig {
+        ModelConfig::new_or_fail("gpt-5.4")
+    }
+
+    fn uses_tool_bridge(&self) -> bool {
+        true
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+
+    async fn complete_with_model(
+        &self,
+        _model_config: &ModelConfig,
+        _system: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        unreachable!("this stub streams")
+    }
+
+    async fn stream(
+        &self,
+        _system: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        let url = bridge::active_bridge_url()
+            .ok_or_else(|| ProviderError::ExecutionError("no bridge was offered".into()))?;
+        let nonce = url.rsplit('/').next().unwrap_or_default();
+        let grant = bridge::lookup(nonce)
+            .ok_or_else(|| ProviderError::ExecutionError("the grant was not live".into()))?;
+        grant
+            .call(rmcp::model::CallToolRequestParams {
+                name: "approval_probe__write".into(),
+                arguments: serde_json::json!({
+                    "path": "/etc/biorouter-knowledge-approval-probe",
+                    "content": "approval routing only",
+                })
+                .as_object()
+                .cloned(),
+                meta: None,
+                task: None,
+            })
+            .await
+            .map_err(ProviderError::ExecutionError)?;
+
+        let done = Message::assistant().with_text("Approved knowledge write completed.");
+        let usage = ProviderUsage::new("codex".into(), Usage::new(None, None, None));
+        Ok(Box::pin(futures::stream::iter(vec![Ok((
+            Some(done),
+            Some(usage),
+            None,
+        ))])))
+    }
+}
+
+struct SetOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for SetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+struct BlockingMutationDispatch {
+    started: Arc<tokio::sync::Notify>,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+    mutations: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl ToolDispatch for BlockingMutationDispatch {
+    async fn call(&self, _name: &str, _args: serde_json::Value) -> anyhow::Result<String> {
+        let _drop_probe = SetOnDrop(Arc::clone(&self.dropped));
+        self.started.notify_one();
+        std::future::pending::<()>().await;
+        self.mutations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok("mutated".into())
+    }
+}
+
+struct BlockingBridgedStub;
+
+#[async_trait]
+impl Provider for BlockingBridgedStub {
+    fn metadata() -> ProviderMetadata
+    where
+        Self: Sized,
+    {
+        unimplemented!()
+    }
+
+    fn get_name(&self) -> &str {
+        "claude_code"
+    }
+
+    fn get_model_config(&self) -> ModelConfig {
+        ModelConfig::new_or_fail("claude-3-5-sonnet-20241022")
+    }
+
+    fn uses_tool_bridge(&self) -> bool {
+        true
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+
+    async fn complete_with_model(
+        &self,
+        _model_config: &ModelConfig,
+        _system: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        unreachable!("this stub streams")
+    }
+
+    async fn stream(
+        &self,
+        _system: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        let url = bridge::active_bridge_url()
+            .ok_or_else(|| ProviderError::ExecutionError("no bridge was offered".into()))?;
+        let nonce = url.rsplit('/').next().unwrap_or_default();
+        let grant = bridge::lookup(nonce)
+            .ok_or_else(|| ProviderError::ExecutionError("the grant was not live".into()))?;
+        let call = rmcp::model::CallToolRequestParams {
+            name: "kb_write_page".into(),
+            arguments: serde_json::json!({ "path": "knowledge/source/blocked.md" })
+                .as_object()
+                .cloned(),
+            meta: None,
+            task: None,
+        };
+        grant
+            .call(call)
+            .await
+            .map_err(ProviderError::ExecutionError)?;
+        unreachable!("the blocking mutation must be cancelled")
+    }
+}
+
 fn kb_tools() -> Vec<Tool> {
     vec![Tool::new(
         "kb_write_page",
@@ -186,6 +355,67 @@ fn kb_tools() -> Vec<Tool> {
             .expect("a valid schema"),
         ),
     )]
+}
+
+fn approval_tools() -> Vec<Tool> {
+    vec![Tool::new(
+        "approval_probe__write",
+        "Test-only sensitive write.",
+        Arc::new(
+            serde_json::from_value(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "content": { "type": "string" }
+                },
+                "required": ["path", "content"]
+            }))
+            .expect("a valid schema"),
+        ),
+    )]
+}
+
+async fn routed_approval_id(session_id: &str, unrelated_session_id: &str) -> String {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let leaked = ActionRequiredManager::global().drain_requests(unrelated_session_id);
+            assert!(
+                !leaked.iter().any(is_approval_probe),
+                "a chat-scoped approval must not be deliverable to another session"
+            );
+
+            for message in ActionRequiredManager::global().drain_requests(session_id) {
+                for content in message.content {
+                    if let MessageContent::ActionRequired(action) = content {
+                        if let ActionRequiredData::ToolConfirmation { id, tool_name, .. } =
+                            action.data
+                        {
+                            if tool_name == "approval_probe__write" {
+                                return id;
+                            }
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the approval must be routed to the originating chat")
+}
+
+fn is_approval_probe(message: &Message) -> bool {
+    message.content.iter().any(|content| {
+        matches!(
+            content,
+            MessageContent::ActionRequired(action)
+                if matches!(
+                    &action.data,
+                    ActionRequiredData::ToolConfirmation { tool_name, .. }
+                        if tool_name == "approval_probe__write"
+                )
+        )
+    })
 }
 
 #[tokio::test]
@@ -256,4 +486,155 @@ async fn a_macro_run_under_a_coding_agent_executes_its_own_tools() {
         "the child's answer must survive: {:?}",
         result.final_text
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_factory_completer_routes_approval_to_the_originating_chat() {
+    bridge::publish_base_url("http://127.0.0.1:65535");
+
+    let session_id = format!("knowledge-chat-{}", uuid::Uuid::new_v4());
+    let unrelated_session_id = format!("unrelated-chat-{}", uuid::Uuid::new_v4());
+    let dispatch = Arc::new(RecordingKbDispatch::default());
+    let (factory, _tier, _affiliation) = ProviderCompleter::paired_factory(
+        Arc::new(ApprovalBridgedStub) as Arc<dyn Provider>,
+        Some(session_id.clone()),
+        None,
+    );
+    let completer = factory();
+    let tools = approval_tools();
+    let running = tokio::spawn({
+        let dispatch = Arc::clone(&dispatch);
+        async move {
+            completer
+                .complete_with_dispatch(
+                    "Approve sensitive knowledge operations.",
+                    &[],
+                    &tools,
+                    dispatch as Arc<dyn ToolDispatch>,
+                )
+                .await
+        }
+    });
+
+    let request_id = routed_approval_id(&session_id, &unrelated_session_id).await;
+    assert_eq!(
+        PendingUserActions::global().resolve(
+            &request_id,
+            UserActionOutcome::Approved {
+                permission: Permission::AllowOnce,
+            },
+        ),
+        biorouter::pending_user_action::ResolveOutcome::Delivered,
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), running)
+        .await
+        .expect("the approved factory completer must resume promptly")
+        .expect("the approval test task must not panic")
+        .expect("the approved factory completer must finish");
+    assert_eq!(
+        dispatch.calls.lock().unwrap().len(),
+        1,
+        "approval must dispatch the sensitive call exactly once"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_chatless_factory_completer_refuses_approval_without_waiting_or_dispatching() {
+    bridge::publish_base_url("http://127.0.0.1:65535");
+
+    let dispatch = Arc::new(RecordingKbDispatch::default());
+    let (factory, _tier, _affiliation) = ProviderCompleter::paired_factory(
+        Arc::new(ApprovalBridgedStub) as Arc<dyn Provider>,
+        None,
+        None,
+    );
+    let completer = factory();
+    let tools = approval_tools();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        completer.complete_with_dispatch(
+            "Approve sensitive knowledge operations.",
+            &[],
+            &tools,
+            Arc::clone(&dispatch) as Arc<dyn ToolDispatch>,
+        ),
+    )
+    .await
+    .expect("a chatless workflow must refuse immediately, not at the approval TTL");
+    let refusal = match result {
+        Ok(_) => panic!("a chatless workflow cannot securely collect approval"),
+        Err(error) => error.to_string(),
+    };
+
+    assert!(
+        refusal.contains("approval_unavailable_without_session"),
+        "the refusal must preserve the stable failure code: {refusal}"
+    );
+    assert!(
+        dispatch.calls.lock().unwrap().is_empty(),
+        "a chatless refusal must not dispatch the gated operation"
+    );
+    let probe_session = format!("chatless-probe-{}", uuid::Uuid::new_v4());
+    assert!(
+        !ActionRequiredManager::global()
+            .drain_requests(&probe_session)
+            .iter()
+            .any(is_approval_probe),
+        "a chatless refusal must not publish an unscoped approval capability"
+    );
+}
+
+#[tokio::test]
+async fn provider_completer_cancellation_reaches_a_blocked_bridged_tool() {
+    bridge::publish_base_url("http://127.0.0.1:65535");
+
+    let started = Arc::new(tokio::sync::Notify::new());
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mutations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let dispatch = Arc::new(BlockingMutationDispatch {
+        started: Arc::clone(&started),
+        dropped: Arc::clone(&dropped),
+        mutations: Arc::clone(&mutations),
+    });
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (completer, _tier, _affiliation) =
+        ProviderCompleter::paired(Arc::new(BlockingBridgedStub) as Arc<dyn Provider>);
+    let agent = SubAgent {
+        completer: Box::new(
+            completer
+                .in_session("kb-macro-cancel")
+                .cancelled_by(cancel.clone()),
+        ),
+        tools: kb_tools(),
+        system_prompt: "You are a knowledge curator.".to_string(),
+        bounds: SubAgentBounds::default(),
+    };
+    let task = tokio::spawn(async move {
+        agent
+            .run(
+                "Digest this source.",
+                dispatch as Arc<dyn ToolDispatch>,
+                None,
+                None,
+            )
+            .await
+    });
+
+    started.notified().await;
+    cancel.cancel();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+        .await
+        .expect("the provider completer did not propagate cancellation")
+        .unwrap();
+    let error = match outcome {
+        Ok(_) => panic!("the bridged provider call must not report completion"),
+        Err(error) => error.to_string(),
+    };
+
+    assert!(error.contains("cancel"), "unexpected error: {error}");
+    assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(mutations.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

@@ -98,12 +98,12 @@ pub async fn convert(input: &SourceInput) -> Result<Converted> {
         }),
         SourceInput::Url(url) => {
             let fetched = url_fetch::fetch_url(url).await?;
-            let file = SourceInput::File {
-                bytes: fetched.bytes,
-                filename: filename_from_url(&fetched.final_url),
-                mime: Some(fetched.mime),
-            };
-            Box::pin(convert(&file)).await
+            convert_file_async(
+                fetched.bytes,
+                filename_from_url(&fetched.final_url),
+                Some(fetched.mime),
+            )
+            .await
         }
         SourceInput::Path(path) => {
             let bytes = tokio::fs::read(path).await?;
@@ -112,19 +112,24 @@ pub async fn convert(input: &SourceInput) -> Result<Converted> {
                 .and_then(|value| value.to_str())
                 .unwrap_or("source")
                 .to_string();
-            let file = SourceInput::File {
-                bytes,
-                filename,
-                mime: None,
-            };
-            Box::pin(convert(&file)).await
+            convert_file_async(bytes, filename, None).await
         }
         SourceInput::File {
             bytes,
             filename,
             mime,
-        } => convert_file(bytes, filename, mime.as_deref()),
+        } => convert_file_async(bytes.clone(), filename.clone(), mime.clone()).await,
     }
+}
+
+async fn convert_file_async(
+    bytes: Vec<u8>,
+    filename: String,
+    mime: Option<String>,
+) -> Result<Converted> {
+    tokio::task::spawn_blocking(move || convert_file(&bytes, &filename, mime.as_deref()))
+        .await
+        .map_err(|error| anyhow::anyhow!("source conversion task failed: {error}"))?
 }
 
 fn convert_file(bytes: &[u8], filename: &str, mime: Option<&str>) -> Result<Converted> {

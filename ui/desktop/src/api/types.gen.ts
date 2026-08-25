@@ -4,6 +4,15 @@ export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
 };
 
+export type AbandonContinuationLeaseRequest = {
+    continuation_lease: string;
+    session_id: string;
+};
+
+export type AbandonContinuationLeaseResponse = {
+    resolution: string;
+};
+
 export type ActionRequired = {
     data: ActionRequiredData;
 };
@@ -269,10 +278,36 @@ export type CancelActiveWorkResponse = {
 };
 
 /**
+ * A generation-conditional cancel addressed a different active turn.
+ */
+export type CancelTurnConflictResponse = {
+    active_turn_id: string;
+    expected_turn_id: string;
+    mismatch: boolean;
+};
+
+/**
  * Request body for the addressable cancel route.
  */
 export type CancelTurnRequest = {
+    /**
+     * The caller will submit a replacement turn after cancellation settles.
+     * This is distinct from ordinary Stop because a delegated child's parent
+     * must keep supervising across the gap between the two turns.
+     */
+    continuation_pending?: boolean;
+    /**
+     * Cancel only this turn generation. A stale Stop request must never cancel
+     * a successor that started in the same session after the UI queued it.
+     */
+    expected_turn_id?: string | null;
     session_id: string;
+    /**
+     * Wait until the exact cancelled turn has released the session lock before
+     * acknowledging. Stop-and-Send callers use this as their submission
+     * barrier; ordinary Stop callers retain the immediate acknowledgement.
+     */
+    wait_for_idle?: boolean;
 };
 
 /**
@@ -284,6 +319,17 @@ export type CancelTurnResponse = {
      * False means there was nothing to cancel — which is a success, not an error.
      */
     cancelled: boolean;
+    /**
+     * Opaque exact-generation admission for the replacement `/reply`.
+     * Present only for a settled Stop-and-Send request.
+     */
+    continuation_lease?: string | null;
+    /**
+     * True only after the cancelled turn's guard has retired. An idle session
+     * is already settled. An immediate cancellation acknowledgement may be
+     * `false` while the agent loop is still unwinding.
+     */
+    settled: boolean;
     /**
      * The id of the turn that was cancelled, when there was one.
      */
@@ -440,6 +486,13 @@ export type ChangeKind = 'ingest' | 'link' | 'flag' | 'query' | 'lint' | 'restor
 
 export type ChatRequest = {
     /**
+     * Opaque admission minted by an exact-generation Stop-and-Send. A live
+     * lease is required while that superseded child generation remains under
+     * parent supervision, and is consumed atomically with this successor's
+     * turn lock.
+     */
+    continuation_lease?: string | null;
+    /**
      * The client's own copy of the session's history, which REPLACES what the
      * server has stored.
      *
@@ -561,6 +614,10 @@ export type ConfirmToolActionRequest = {
 };
 
 export type Content = RawTextContent | RawImageContent | RawEmbeddedResource | RawAudioContent | RawResource;
+
+export type ContinuationLeaseErrorResponse = {
+    error: string;
+};
 
 export type Conversation = Array<Message>;
 
@@ -2806,6 +2863,12 @@ export type ResumeAgentResponse = {
     active_turn?: ActiveTurnRef | null;
     extension_results?: Array<ExtensionLoadResult> | null;
     initialization_error?: AgentInitializationError | null;
+    /**
+     * True only while a delegated child is queued before its exact runtime
+     * profile has been installed. Clients must wait instead of fetching tools
+     * or submitting a turn through a generic placeholder agent.
+     */
+    initializing: boolean;
     session: Session;
 };
 
@@ -4068,7 +4131,7 @@ export type AgentAddExtensionErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user
+     * Refused by a privacy or subagent-control boundary: the named chat is private/absent, or is a subagent, and the request carried no proof it came from the user
      */
     403: unknown;
     /**
@@ -4146,10 +4209,20 @@ export type CancelTurnErrors = {
      */
     403: unknown;
     /**
+     * A different turn generation is now active; it was not cancelled
+     */
+    409: CancelTurnConflictResponse;
+    /**
      * Internal server error
      */
     500: unknown;
+    /**
+     * The cancelled turn did not release the session lock before the safety bound
+     */
+    504: unknown;
 };
+
+export type CancelTurnError = CancelTurnErrors[keyof CancelTurnErrors];
 
 export type CancelTurnResponses = {
     /**
@@ -4159,6 +4232,35 @@ export type CancelTurnResponses = {
 };
 
 export type CancelTurnResponse2 = CancelTurnResponses[keyof CancelTurnResponses];
+
+export type AbandonContinuationLeaseData = {
+    body: AbandonContinuationLeaseRequest;
+    path?: never;
+    query?: never;
+    url: '/agent/continuation/abandon';
+};
+
+export type AbandonContinuationLeaseErrors = {
+    /**
+     * The request was not proven to come from the user
+     */
+    403: unknown;
+    /**
+     * The lease is invalid or belongs to another session
+     */
+    409: ContinuationLeaseErrorResponse;
+};
+
+export type AbandonContinuationLeaseError = AbandonContinuationLeaseErrors[keyof AbandonContinuationLeaseErrors];
+
+export type AbandonContinuationLeaseResponses = {
+    /**
+     * The continuation lease is abandoned or was already resolved
+     */
+    200: AbandonContinuationLeaseResponse;
+};
+
+export type AbandonContinuationLeaseResponse2 = AbandonContinuationLeaseResponses[keyof AbandonContinuationLeaseResponses];
 
 export type AgentCrossAffiliationGrantData = {
     body: CrossAffiliationGrantRequest;
@@ -4278,6 +4380,14 @@ export type AgentRemoveExtensionErrors = {
      */
     401: unknown;
     /**
+     * The session is out of reach, or the target is a subagent and the request lacks user-action proof
+     */
+    403: unknown;
+    /**
+     * Subagent extension grants are immutable for the lifetime of the delegated child
+     */
+    409: unknown;
+    /**
      * Agent not initialized
      */
     424: unknown;
@@ -4308,6 +4418,10 @@ export type RestartAgentErrors = {
      * Unauthorized - invalid secret key
      */
     401: unknown;
+    /**
+     * The session is out of reach, or the target is a subagent and the request lacks user-action proof
+     */
+    403: unknown;
     /**
      * Session not found
      */
@@ -4403,6 +4517,10 @@ export type StopAgentErrors = {
      * Unauthorized - invalid secret key
      */
     401: unknown;
+    /**
+     * The session is out of reach, or the target is a subagent and the request lacks user-action proof
+     */
+    403: unknown;
     /**
      * Session not found
      */
@@ -4507,6 +4625,10 @@ export type UpdateAgentProviderErrors = {
      * Unauthorized - invalid secret key
      */
     401: unknown;
+    /**
+     * The session is out of reach, or the target is a subagent and the request lacks user-action proof
+     */
+    403: unknown;
     /**
      * Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user (body = plain text)
      */
@@ -5853,6 +5975,10 @@ export type WritePageErrors = {
      * Bad request
      */
     400: unknown;
+    /**
+     * Write outcome uncertain or post-commit cache refresh failed
+     */
+    500: unknown;
 };
 
 export type WritePageResponses = {
@@ -6421,6 +6547,10 @@ export type ReplyResponses = {
      * Streaming response initiated: either a NEW turn, or an attachment to the turn this `turn_id` already named, replayed from `from_seq` and then followed live
      */
     200: MessageEvent;
+    /**
+     * A proven user reply was retained as steering for a delegated child that is still initializing
+     */
+    202: unknown;
 };
 
 export type ReplyResponse = ReplyResponses[keyof ReplyResponses];

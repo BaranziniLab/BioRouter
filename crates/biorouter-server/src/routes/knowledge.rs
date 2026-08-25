@@ -29,6 +29,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 
 /// Build the knowledge router.  The router owns an `Arc<KnowledgeService>` directly so
@@ -171,6 +172,44 @@ async fn finish_macro_stream(
             let _ = sse_tx.send(sse_error_frame(&msg)).await;
         }
     }
+}
+
+async fn forward_macro_stream(
+    sse_tx: mpsc::Sender<String>,
+    mut event_rx: tokio::sync::mpsc::UnboundedReceiver<SubAgentEvent>,
+    result_rx: mpsc::Receiver<Result<serde_json::Value, String>>,
+    macro_handle: JoinHandle<()>,
+    cancel: CancellationToken,
+) {
+    let mut macro_handle = Some(macro_handle);
+    loop {
+        tokio::select! {
+            biased;
+            () = sse_tx.closed() => {
+                cancel.cancel();
+                let _ = macro_handle.take().expect("macro handle is present").await;
+                return;
+            }
+            event = event_rx.recv() => {
+                let Some(event) = event else {
+                    break;
+                };
+                if let Ok(json) = serde_json::to_string(&event) {
+                    if sse_tx.send(format!("data: {json}\n\n")).await.is_err() {
+                        cancel.cancel();
+                        let _ = macro_handle.take().expect("macro handle is present").await;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    finish_macro_stream(
+        sse_tx,
+        result_rx,
+        macro_handle.take().expect("macro handle is present"),
+    )
+    .await;
 }
 
 fn ingest_bounds() -> SubAgentBounds {
@@ -482,7 +521,8 @@ pub async fn update_base(
     Json(body): Json<UpdateBaseBody>,
 ) -> Result<Json<Manifest>, (StatusCode, String)> {
     let manifest = svc
-        .update_base(&id, body.name.as_deref(), body.color.as_deref())
+        .update_base_async(&id, body.name.as_deref(), body.color.as_deref(), None)
+        .await
         .map_err(|e| {
             let msg = e.to_string();
             if msg.contains("not found") {
@@ -509,14 +549,17 @@ pub async fn set_default_model(
     Path(id): Path<String>,
     Json(body): Json<SetDefaultModelBody>,
 ) -> Result<Json<Manifest>, (StatusCode, String)> {
-    let manifest = svc.set_default_model(&id, body.model).map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("not found") {
-            (StatusCode::NOT_FOUND, msg)
-        } else {
-            (StatusCode::BAD_REQUEST, msg)
-        }
-    })?;
+    let manifest = svc
+        .set_default_model_async(&id, body.model, None)
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("not found") {
+                (StatusCode::NOT_FOUND, msg)
+            } else {
+                (StatusCode::BAD_REQUEST, msg)
+            }
+        })?;
     Ok(Json(manifest))
 }
 
@@ -707,7 +750,8 @@ pub async fn set_kb_tier(
 
     // The single construction site of the proof-of-user, pinned by
     // `knowledge::tier_user::tests::the_proof_of_user_is_constructed_in_exactly_one_place`.
-    svc.set_tier_by_user(&id, body.tier, &UserKbTierChange::from_user_action())
+    svc.set_tier_by_user_async(&id, body.tier, UserKbTierChange::from_user_action(), None)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(tier_response(&svc, &id)))
@@ -725,7 +769,7 @@ pub async fn delete_base(
     State(svc): State<Arc<KnowledgeService>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    svc.delete_base(&id).map_err(|e| {
+    svc.delete_base_async(&id, None).await.map_err(|e| {
         let msg = e.to_string();
         if msg.contains("not found") {
             (StatusCode::NOT_FOUND, msg)
@@ -749,7 +793,8 @@ pub async fn get_graph(
     Path(id): Path<String>,
 ) -> Result<Json<Graph>, (StatusCode, String)> {
     let g = svc
-        .get_graph(&id)
+        .get_graph_async(&id)
+        .await
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
     Ok(Json(g))
 }
@@ -837,6 +882,7 @@ pub async fn read_page(
     responses(
         (status = 200, description = "Written", body = CommitResponse),
         (status = 400, description = "Bad request"),
+        (status = 500, description = "Write outcome uncertain or post-commit cache refresh failed"),
     )
 )]
 pub async fn write_page(
@@ -856,7 +902,17 @@ pub async fn write_page(
         &body.commit_message,
         None,
     )
-    .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    .map_err(|e| {
+        let status = if e
+            .downcast_ref::<biorouter_mcp::knowledge::git::KnowledgeWriteFailure>()
+            .is_some()
+        {
+            StatusCode::INTERNAL_SERVER_ERROR
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        (status, e.to_string())
+    })?;
     let commit_sha = sha_opt.unwrap_or_default();
     // Re-derive the graph cache, exactly as the MCP `kb_write_page` tool does.
     //
@@ -874,15 +930,20 @@ pub async fn write_page(
     // the cache is refreshed by the caller, not by `store::write_page`, because
     // a macro writes many pages under one lock and re-deriving per page would
     // do the whole derivation N times for one logical change.
-    if let Err(e) = svc.rebuild_graph_cache(&id) {
-        // The page IS written and committed at this point, so a cache that
-        // could not be rebuilt must not turn a successful write into a 500.
-        // The next reader re-derives: `get_graph` rewrites the cache whenever
-        // it cannot read a usable one, and a stale cache is recoverable while
-        // a lost commit is not.
-        tracing::warn!(
-            "knowledge: page written to '{id}' but the graph cache did not rebuild: {e:#}"
-        );
+    if let Err(error) = svc.rebuild_graph_cache(&id) {
+        let failure = if commit_sha.is_empty() {
+            anyhow::anyhow!(
+                "page {page_path} already matched durable content, but its graph cache could not be refreshed: {error:#}. The cache will be re-derived on its next read"
+            )
+        } else {
+            biorouter_mcp::knowledge::git::KnowledgeWriteFailure::committed(
+                format!("page write to {page_path}"),
+                commit_sha.clone(),
+                error,
+            )
+            .into()
+        };
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, failure.to_string()));
     }
     Ok(Json(CommitResponse { commit_sha }))
 }
@@ -1203,7 +1264,8 @@ pub async fn restore_state(
     Json(body): Json<RestoreBody>,
 ) -> Result<Json<RestoreResponse>, (StatusCode, String)> {
     let new_commit_sha = svc
-        .restore_state(&id, &body.commit_sha)
+        .restore_state_async(&id, &body.commit_sha, None)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(RestoreResponse { new_commit_sha }))
 }
@@ -1224,6 +1286,7 @@ pub async fn restore_state(
 /// `Arc` the completer wraps, so the two cannot come from different providers.
 async fn build_completer(
     model: &ModelRef,
+    cancel: Option<CancellationToken>,
 ) -> Result<
     (
         Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>,
@@ -1252,6 +1315,10 @@ async fn build_completer(
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let (completer, tier, affiliation) = ProviderCompleter::paired(provider);
+    let completer = match cancel {
+        Some(cancel) => completer.cancelled_by(cancel),
+        None => completer,
+    };
     Ok((Box::new(completer), tier, affiliation))
 }
 
@@ -1293,7 +1360,7 @@ async fn read_only_caller_identity(
     biorouter::privacy::ProviderTier,
     Option<biorouter::privacy::affiliation::ModelAffiliation>,
 ) {
-    match build_completer(model).await {
+    match build_completer(model, None).await {
         Ok((_completer, tier, affiliation)) => (tier, affiliation),
         Err(_) => (biorouter::privacy::ProviderTier::Public, None),
     }
@@ -1538,7 +1605,7 @@ pub async fn check_model(
     State(svc): State<Arc<KnowledgeService>>,
     Json(body): Json<CheckModelBody>,
 ) -> Result<Json<CheckModelResponse>, (StatusCode, Json<CheckModelResponse>)> {
-    let completer = match build_completer(&body.model).await {
+    let completer = match build_completer(&body.model, None).await {
         Ok((c, _tier, _affiliation)) => c,
         Err((_status, msg)) => {
             return Err((
@@ -1582,13 +1649,13 @@ pub async fn ingest(
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
     let (source, model, focus) = parse_ingest_request(&headers, req).await?;
 
-    let (completer, caller_capability, caller_affiliation) = build_completer(&model).await?;
+    let cancel = CancellationToken::new();
+    let (completer, caller_capability, caller_affiliation) =
+        build_completer(&model, Some(cancel.clone())).await?;
     assert_macro_target_reachable(&svc, &id, caller_capability, caller_affiliation)?;
 
-    let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
-
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
     let (result_tx, result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
 
     // Macro task: run ingest, then report result through a dedicated channel.
@@ -1618,22 +1685,13 @@ pub async fn ingest(
         let _ = result_tx.send(outcome).await;
     });
 
-    // Forwarder task: owns `sse_tx`. Drains all SubAgent events first (guaranteed
-    // ordering), then emits the terminal done/error frame from the macro result.
-    // This eliminates the race where `done` could arrive before the last data events.
-    // If the client disconnects (sse_tx.send returns Err), signal cancellation.
-    let cancel_for_forwarder = cancel.clone();
-    tokio::spawn(async move {
-        while let Some(ev) = event_rx.recv().await {
-            if let Ok(j) = serde_json::to_string(&ev) {
-                if sse_tx.send(format!("data: {j}\n\n")).await.is_err() {
-                    cancel_for_forwarder.notify_one();
-                    return;
-                }
-            }
-        }
-        finish_macro_stream(sse_tx, result_rx, macro_handle).await;
-    });
+    tokio::spawn(forward_macro_stream(
+        sse_tx,
+        event_rx,
+        result_rx,
+        macro_handle,
+        cancel,
+    ));
 
     Ok(crate::routes::reply::SseResponse::from_rx(sse_rx))
 }
@@ -1681,16 +1739,16 @@ pub async fn ingest_conversation(
         }
     }
 
-    let (completer, caller_capability, caller_affiliation) = build_completer(&body.model).await?;
+    let cancel = CancellationToken::new();
+    let (completer, caller_capability, caller_affiliation) =
+        build_completer(&body.model, Some(cancel.clone())).await?;
     // Issue #56, Gate G. Before the stream opens, and before a single transcript
     // is rendered: this route is the same private -> public laundering primitive
     // as the platform tool, reachable with nothing but the secret key.
     assert_conversations_readable(caller_capability, &sessions)?;
 
-    let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
-
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
     let (result_tx, result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
 
     let focus = body.focus.clone();
@@ -1725,18 +1783,13 @@ pub async fn ingest_conversation(
         let _ = result_tx.send(outcome).await;
     });
 
-    let cancel_for_forwarder = cancel.clone();
-    tokio::spawn(async move {
-        while let Some(ev) = event_rx.recv().await {
-            if let Ok(j) = serde_json::to_string(&ev) {
-                if sse_tx.send(format!("data: {j}\n\n")).await.is_err() {
-                    cancel_for_forwarder.notify_one();
-                    return;
-                }
-            }
-        }
-        finish_macro_stream(sse_tx, result_rx, macro_handle).await;
-    });
+    tokio::spawn(forward_macro_stream(
+        sse_tx,
+        event_rx,
+        result_rx,
+        macro_handle,
+        cancel,
+    ));
 
     Ok(crate::routes::reply::SseResponse::from_rx(sse_rx))
 }
@@ -1755,13 +1808,13 @@ pub async fn query_kb(
     Path(id): Path<String>,
     Json(body): Json<QueryBody>,
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
-    let (completer, caller_capability, caller_affiliation) = build_completer(&body.model).await?;
+    let cancel = CancellationToken::new();
+    let (completer, caller_capability, caller_affiliation) =
+        build_completer(&body.model, Some(cancel.clone())).await?;
     assert_macro_target_reachable(&svc, &id, caller_capability, caller_affiliation)?;
 
-    let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
-
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
     let (result_tx, result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
 
     let cancel_for_macro = cancel.clone();
@@ -1788,18 +1841,13 @@ pub async fn query_kb(
         let _ = result_tx.send(outcome).await;
     });
 
-    let cancel_for_forwarder = cancel.clone();
-    tokio::spawn(async move {
-        while let Some(ev) = event_rx.recv().await {
-            if let Ok(j) = serde_json::to_string(&ev) {
-                if sse_tx.send(format!("data: {j}\n\n")).await.is_err() {
-                    cancel_for_forwarder.notify_one();
-                    return;
-                }
-            }
-        }
-        finish_macro_stream(sse_tx, result_rx, macro_handle).await;
-    });
+    tokio::spawn(forward_macro_stream(
+        sse_tx,
+        event_rx,
+        result_rx,
+        macro_handle,
+        cancel,
+    ));
 
     Ok(crate::routes::reply::SseResponse::from_rx(sse_rx))
 }
@@ -1837,6 +1885,7 @@ pub async fn lint(
     Json(body): Json<LintBody>,
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
     let autofix = body.autofix.unwrap_or(false);
+    let cancel = CancellationToken::new();
     // Only build a *completer* when autofix is requested (it requires an LLM).
     // The caller's CAPABILITY is read on both paths, off the provider
     // `body.model` names — see `read_only_caller_identity` for why a scan asks
@@ -1846,7 +1895,7 @@ pub async fn lint(
         biorouter::privacy::ProviderTier,
         Option<biorouter::privacy::affiliation::ModelAffiliation>,
     ) = if autofix {
-        let (c, tier, affiliation) = build_completer(&body.model).await?;
+        let (c, tier, affiliation) = build_completer(&body.model, Some(cancel.clone())).await?;
         (Some(c), tier, affiliation)
     } else {
         let (tier, affiliation) = read_only_caller_identity(&body.model).await;
@@ -1854,10 +1903,8 @@ pub async fn lint(
     };
     assert_macro_target_reachable(&svc, &id, caller_capability, caller_affiliation)?;
 
-    let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
-
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
     let (result_tx, result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
 
     let cancel_for_macro = cancel.clone();
@@ -1882,18 +1929,13 @@ pub async fn lint(
         let _ = result_tx.send(outcome).await;
     });
 
-    let cancel_for_forwarder = cancel.clone();
-    tokio::spawn(async move {
-        while let Some(ev) = event_rx.recv().await {
-            if let Ok(j) = serde_json::to_string(&ev) {
-                if sse_tx.send(format!("data: {j}\n\n")).await.is_err() {
-                    cancel_for_forwarder.notify_one();
-                    return;
-                }
-            }
-        }
-        finish_macro_stream(sse_tx, result_rx, macro_handle).await;
-    });
+    tokio::spawn(forward_macro_stream(
+        sse_tx,
+        event_rx,
+        result_rx,
+        macro_handle,
+        cancel,
+    ));
 
     Ok(crate::routes::reply::SseResponse::from_rx(sse_rx))
 }
@@ -2275,17 +2317,65 @@ pub async fn override_credibility(
         ));
     }
     let credibility = svc
-        .override_credibility(&id, &sid, cred)
+        .override_credibility_async(&id, &sid, cred, None)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(CredibilityResponse { credibility }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::assert_conversations_readable;
+    use super::{assert_conversations_readable, forward_macro_stream};
     use axum::http::StatusCode;
     use biorouter::privacy::{ProviderTier, SessionClassification};
     use biorouter::session::session_manager::{Session, SessionType};
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn dropping_a_macro_stream_cancels_and_joins_the_macro() {
+        let (sse_tx, sse_rx) = mpsc::channel(1);
+        drop(sse_rx);
+        let (_event_tx, event_rx) = mpsc::unbounded_channel();
+        let (_result_tx, result_rx) = mpsc::channel(1);
+        let cancel = CancellationToken::new();
+        let macro_cancel = cancel.clone();
+        let cancellation_seen = std::sync::Arc::new(tokio::sync::Notify::new());
+        let macro_saw_cancellation = cancellation_seen.clone();
+        let allow_macro_exit = std::sync::Arc::new(tokio::sync::Notify::new());
+        let macro_exit = allow_macro_exit.clone();
+        let macro_handle = tokio::spawn(async move {
+            macro_cancel.cancelled().await;
+            macro_saw_cancellation.notify_one();
+            macro_exit.notified().await;
+        });
+
+        let forwarder = tokio::spawn(forward_macro_stream(
+            sse_tx,
+            event_rx,
+            result_rx,
+            macro_handle,
+            cancel.clone(),
+        ));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            cancellation_seen.notified(),
+        )
+        .await
+        .expect("a disconnected client did not cancel the macro");
+
+        assert!(cancel.is_cancelled());
+        assert!(
+            !forwarder.is_finished(),
+            "the stream supervisor detached the cancelled macro before it settled"
+        );
+
+        allow_macro_exit.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(1), forwarder)
+            .await
+            .expect("the stream supervisor did not finish after the macro settled")
+            .expect("the stream supervisor panicked");
+    }
 
     /// ⚠ DEVIATION, recorded rather than hidden. Task 11 writes this row as a
     /// `POST /bases/{id}/ingest-conversation` against the router in

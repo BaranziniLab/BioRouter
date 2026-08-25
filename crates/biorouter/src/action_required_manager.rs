@@ -199,6 +199,30 @@ impl ActionRequiredManager {
         messages
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_unscoped_tool_confirmation(&self, expected_tool_name: &str) -> bool {
+        self.unscoped
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|message| {
+                message.content.iter().any(|content| {
+                    matches!(
+                        content,
+                        MessageContent::ActionRequired(action)
+                            if matches!(
+                                &action.data,
+                                crate::conversation::message::ActionRequiredData::ToolConfirmation {
+                                    tool_name,
+                                    ..
+                                } if tool_name.as_str() == expected_tool_name
+                            )
+                    )
+                })
+            })
+    }
+
     pub async fn submit_response(&self, request_id: String, user_data: Value) -> Result<()> {
         self.deliver(request_id, Some(user_data)).await
     }

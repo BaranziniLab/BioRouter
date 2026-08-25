@@ -174,9 +174,7 @@ pub fn append(
     // tmp + rename, like every other durable write in this module: a torn
     // `log.md` is a torn *user* file, and the change log is the one file whose
     // job is to say what happened.
-    let tmp = log_path.with_extension("md.tmp");
-    std::fs::write(&tmp, updated)?;
-    std::fs::rename(tmp, &log_path)?;
+    crate::knowledge::store::write_atomically(&log_path, updated.as_bytes())?;
 
     let repo = GitRepo::open(kb_root)?;
     let kind_str = kind_slug(kind);

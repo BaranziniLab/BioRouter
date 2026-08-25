@@ -63,6 +63,17 @@ impl GitRepo {
         })
     }
 
+    pub fn head_file_matches(&self, path: &Path, content: &[u8]) -> Result<bool> {
+        let tree = self.inner.head()?.peel_to_commit()?.tree()?;
+        let Ok(entry) = tree.get_path(path) else {
+            return Ok(false);
+        };
+        let Ok(blob) = self.inner.find_blob(entry.id()) else {
+            return Ok(false);
+        };
+        Ok(blob.content() == content)
+    }
+
     pub fn commit_all(
         &self,
         kind: ChangeKind,
@@ -169,6 +180,82 @@ fn parse_header(header: &str) -> (ChangeKind, String) {
 pub struct Txn {
     pub branch: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KnowledgeWriteFailurePhase {
+    RolledBack,
+    OutcomeUncertain,
+    Committed,
+}
+
+/// A mutation failed after a transaction had started, with enough durable
+/// state for callers to decide whether retrying is safe.
+#[derive(Debug)]
+pub struct KnowledgeWriteFailure {
+    pub phase: KnowledgeWriteFailurePhase,
+    pub commit_sha: Option<String>,
+    operation: String,
+    cause: String,
+}
+
+impl KnowledgeWriteFailure {
+    pub fn rolled_back(operation: impl Into<String>, cause: anyhow::Error) -> Self {
+        Self {
+            phase: KnowledgeWriteFailurePhase::RolledBack,
+            commit_sha: None,
+            operation: operation.into(),
+            cause: format!("{cause:#}"),
+        }
+    }
+
+    pub fn outcome_uncertain(operation: impl Into<String>, cause: anyhow::Error) -> Self {
+        Self {
+            phase: KnowledgeWriteFailurePhase::OutcomeUncertain,
+            commit_sha: None,
+            operation: operation.into(),
+            cause: format!("{cause:#}"),
+        }
+    }
+
+    pub fn committed(
+        operation: impl Into<String>,
+        commit_sha: impl Into<String>,
+        cause: anyhow::Error,
+    ) -> Self {
+        Self {
+            phase: KnowledgeWriteFailurePhase::Committed,
+            commit_sha: Some(commit_sha.into()),
+            operation: operation.into(),
+            cause: format!("{cause:#}"),
+        }
+    }
+}
+
+impl std::fmt::Display for KnowledgeWriteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.phase {
+            KnowledgeWriteFailurePhase::RolledBack => write!(
+                f,
+                "{} failed and rolled back: {}. It is safe to retry",
+                self.operation, self.cause
+            ),
+            KnowledgeWriteFailurePhase::OutcomeUncertain => write!(
+                f,
+                "{} failed, and its commit or rollback could not be verified: {}. Inspect knowledge history before retrying",
+                self.operation, self.cause
+            ),
+            KnowledgeWriteFailurePhase::Committed => write!(
+                f,
+                "{} committed in commit {}, but post-commit graph refresh failed: {}. The cache will be re-derived on its next read; do not retry the durable write",
+                self.operation,
+                self.commit_sha.as_deref().unwrap_or("unknown"),
+                self.cause
+            ),
+        }
+    }
+}
+
+impl std::error::Error for KnowledgeWriteFailure {}
 
 impl GitRepo {
     pub fn begin_txn(&self, label: &str) -> Result<Txn> {
@@ -327,6 +414,22 @@ impl GitRepo {
         Ok(())
     }
 
+    pub fn abort_after_failure(
+        &self,
+        txn: &Txn,
+        operation: &str,
+        error: anyhow::Error,
+    ) -> anyhow::Error {
+        match self.abort_txn(txn) {
+            Ok(()) => KnowledgeWriteFailure::rolled_back(operation, error).into(),
+            Err(abort_error) => KnowledgeWriteFailure::outcome_uncertain(
+                operation,
+                anyhow::anyhow!("{error:#}; rollback also failed: {abort_error:#}"),
+            )
+            .into(),
+        }
+    }
+
     /// Re-derive `graph-cache.json` from whatever pages the checkout just left
     /// on disk.
     ///
@@ -401,26 +504,23 @@ impl GitRepo {
     /// happened and is durable — the rollback on one path, the squash-merge
     /// commit on the other — so failing the call now would report a *derived
     /// file* as a failed transaction and invite a retry of work that is already
-    /// done. But a failed rebuild must not leave the stale file in place, or the
-    /// silent-loss bug survives its own fix — so on any failure the file is
-    /// removed, which is the one state DR-13 guarantees `get_graph` repairs by
-    /// re-deriving.
+    /// done. But a failed rebuild must not leave the stale file usable, or the
+    /// silent-loss bug survives its own fix. The repair therefore removes it;
+    /// if even removal fails, that second failure is retained in the warning
+    /// and the revision-bound reader still rejects the old envelope.
     fn repair_graph_cache_after_checkout(&self) {
         let Some(kb_root) = self.inner.workdir().map(Path::to_path_buf) else {
             // A bare repo has no pages to derive from. Not reachable for a
             // knowledge base, and not worth an error if it ever is.
             return;
         };
-        let rebuilt = crate::knowledge::graph::derive(&kb_root)
-            .and_then(|graph| crate::knowledge::graph::write_cache(&kb_root, &graph));
-        if let Err(e) = rebuilt {
+        if let Err(e) = crate::knowledge::graph::rebuild_cache(&kb_root) {
             let stale = crate::knowledge::graph::cache_path(&kb_root);
             tracing::warn!(
                 "knowledge: could not rebuild the graph cache at {} after a transaction \
-                 checkout, removing it so the next read re-derives: {e:#}",
+                 checkout; the next read will re-derive it: {e:#}",
                 stale.display()
             );
-            let _ = std::fs::remove_file(&stale);
         }
     }
 }

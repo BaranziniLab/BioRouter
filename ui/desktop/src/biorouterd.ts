@@ -15,8 +15,9 @@ import { Client } from './api/client';
 import { ExternalBiorouterdConfig } from './utils/settings';
 
 export const findAvailablePort = (): Promise<number> => {
-  return new Promise((resolve, _reject) => {
+  return new Promise((resolve, reject) => {
     const server = createServer();
+    server.once('error', reject);
 
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address() as { port: number };

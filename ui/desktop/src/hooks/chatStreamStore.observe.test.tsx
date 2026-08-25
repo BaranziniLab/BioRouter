@@ -9,7 +9,9 @@ const mocks = vi.hoisted(() => ({
   // `fetch` or on how fast the machine is).
   reply: vi.fn(),
   resumeAgent: vi.fn(),
-  cancelTurn: vi.fn(async () => ({ data: { cancelled: true } })),
+  cancelTurn: vi.fn(async () => ({
+    data: { cancelled: true, settled: true, continuation_lease: 'observer-test-lease' },
+  })),
   getSession: vi.fn(async () => ({ data: null })),
   listApps: vi.fn(async () => ({ data: { apps: [] } })),
   listSessions: vi.fn(async () => ({ data: { sessions: [] } })),
@@ -77,6 +79,26 @@ function assistantMessage(id: string, text: string): Message {
   };
 }
 
+type ObserverWireFrame = MessageEvent & {
+  seq?: number;
+  turn_id?: string;
+  replay?: true;
+};
+
+function observerFrame(
+  event: MessageEvent,
+  turnId: string,
+  seq: number,
+  replay = false
+): MessageEvent {
+  return {
+    ...event,
+    seq,
+    turn_id: turnId,
+    ...(replay ? { replay: true as const } : {}),
+  } as ObserverWireFrame;
+}
+
 /** A stream whose frames and end are driven by the test — the same helper the
  * sibling store suite uses, so an observer connection can be held open, dropped
  * mid-turn, or closed cleanly on demand. */
@@ -114,6 +136,16 @@ function createControlledStream() {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 /** Puts a real user-driven `/reply` turn in flight on a fresh controller and
  * hands back the pieces the ownership tests assert on. */
 async function drivingController(sessionId: string) {
@@ -140,6 +172,10 @@ beforeEach(() => {
   mocks.observeSessionEvents.mockReset();
   mocks.reply.mockReset();
   mocks.resumeAgent.mockReset();
+  mocks.cancelTurn.mockReset();
+  mocks.cancelTurn.mockResolvedValue({
+    data: { cancelled: true, settled: true, continuation_lease: 'observer-test-lease' },
+  });
 });
 
 afterEach(() => {
@@ -184,6 +220,115 @@ describe('ChatStreamController.observeSession', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('keeps a clean 202 initializing-child reply on the delegated observer run', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = {
+        ...session('queued-child'),
+        session_type: 'sub_agent' as const,
+        parent_session_id: 'parent',
+      };
+      mocks.resumeAgent.mockImplementation(async (options: unknown) => {
+        const load = (options as { body: { load_model_and_extensions: boolean } }).body
+          .load_model_and_extensions;
+        return {
+          data: {
+            session: child,
+            initializing: true,
+            ...(load ? { extension_results: null } : {}),
+          },
+        };
+      });
+      mocks.reply.mockResolvedValue({
+        stream: (async function* () {})(),
+      });
+      const observed = createControlledStream();
+      mocks.observeSessionEvents.mockResolvedValue({ stream: observed.stream });
+
+      const registry = new ChatStreamRegistry();
+      const controller = registry.getController('queued-child');
+      const submitted = controller.handleSubmit('change the delegated plan');
+      await vi.advanceTimersByTimeAsync(0);
+      await submitted;
+
+      expect(mocks.reply).toHaveBeenCalledTimes(1);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(1);
+      expect(controller.getSnapshot().turnError).toBeUndefined();
+      expect(controller.getSnapshot().agentReady).toBe(false);
+
+      observed.push({
+        type: 'UpdateConversation',
+        conversation: [],
+        token_state: tokenState,
+      } as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(JSON.stringify(controller.getSnapshot().messages)).toContain(
+        'change the delegated plan'
+      );
+
+      mocks.resumeAgent.mockResolvedValue({
+        data: { session: child, initializing: false, active_turn: { turn_id: 'delegated-turn' } },
+      });
+      observed.push({
+        type: 'Message',
+        message: assistantMessage('ready-frame', 'delegated child started'),
+        token_state: tokenState,
+      } as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.getSnapshot().agentReady).toBe(true);
+
+      controller.stopObserving();
+      observed.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('awaits and retries an authoritative observer turn lookup before Stop', async () => {
+    const observed = createControlledStream();
+    mocks.observeSessionEvents.mockResolvedValue({ stream: observed.stream });
+    const firstLookup = deferred<never>();
+    const secondLookup = deferred<{
+      data: { session: Session; initializing: boolean; active_turn: { turn_id: string } };
+    }>();
+    mocks.resumeAgent
+      .mockReturnValueOnce(firstLookup.promise)
+      .mockReturnValueOnce(secondLookup.promise);
+
+    const registry = new ChatStreamRegistry();
+    const controller = registry.getController('observer-stop-lookup');
+    void controller.observeSession();
+    await Promise.resolve();
+    observed.push({
+      type: 'Message',
+      message: assistantMessage('lookup-frame', 'working without a turn envelope'),
+      token_state: tokenState,
+    } as MessageEvent);
+    await vi.waitFor(() => expect(mocks.resumeAgent).toHaveBeenCalledTimes(1));
+
+    const stopped = controller.stopStreaming();
+    expect(mocks.cancelTurn).not.toHaveBeenCalled();
+    firstLookup.reject(new TypeError('resume transport lost'));
+    await vi.waitFor(() => expect(mocks.resumeAgent).toHaveBeenCalledTimes(2));
+    secondLookup.resolve({
+      data: {
+        session: session('observer-stop-lookup'),
+        initializing: false,
+        active_turn: { turn_id: 'authoritative-turn' },
+      },
+    });
+
+    await expect(stopped).resolves.toBe(true);
+    expect(mocks.cancelTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({ expected_turn_id: 'authoritative-turn' }),
+      })
+    );
+    observed.close();
   });
 
   it('stops reconnecting once aborted', async () => {
@@ -262,7 +407,7 @@ describe('ChatStreamController.observeSession — who owns the socket', () => {
     open.close();
   });
 
-  it('can re-attach after Stop tore the observer loop down mid-stream', async () => {
+  it('keeps observer detachment separate from explicit Stop without an exact turn id', async () => {
     vi.useFakeTimers();
     try {
       const registry = new ChatStreamRegistry();
@@ -277,18 +422,16 @@ describe('ChatStreamController.observeSession — who owns the socket', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(1);
 
-      // Stop, pressed while the observed agent is mid-turn — which is exactly
-      // when a user presses it. It bumps `activeStreamId` and aborts, so the
-      // observer loop unwinds through its staleness check and is gone.
-      controller.stopStreaming();
+      await expect(controller.stopStreaming()).resolves.toBe(false);
+      expect(mocks.cancelTurn).not.toHaveBeenCalled();
+      expect((mocks.observeSessionEvents.mock.calls[0][0].signal as AbortSignal).aborted).toBe(
+        false
+      );
+
+      // Tab close is the separate observer-detach operation.
+      controller.stopObserving();
       first.close();
       await vi.advanceTimersByTimeAsync(0);
-
-      // The FLAG has to unwind with the loop. If `observing` outlives it, every
-      // later attach short-circuits on the idempotence guard and the tab is dead
-      // until the window reloads — `getController` retains this controller for
-      // the life of the renderer, and the daemon re-annotating the tab is the
-      // ordinary way an attach is retried.
       void controller.observeSession();
       await vi.advanceTimersByTimeAsync(0);
       expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(2);
@@ -301,7 +444,170 @@ describe('ChatStreamController.observeSession — who owns the socket', () => {
     }
   });
 
-  it('does not resurrect the observer stream when Stop lands during backoff', async () => {
+  it('exact-cancels the daemon turn when Stop is pressed in an observed child tab', async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new ChatStreamRegistry();
+      const observed = createControlledStream();
+      mocks.observeSessionEvents.mockResolvedValue({ stream: observed.stream });
+      mocks.resumeAgent.mockResolvedValue({
+        data: {
+          session: session('obs-exact-stop'),
+          active_turn: { turn_id: 'turn-observed-child' },
+        },
+      });
+      mocks.cancelTurn.mockResolvedValue({
+        data: { cancelled: true, settled: true, continuation_lease: 'observer-test-lease' },
+      });
+
+      const controller = registry.getController('obs-exact-stop');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      await controller.loadSession();
+
+      const observerSignal = mocks.observeSessionEvents.mock.calls[0][0].signal as AbortSignal;
+      await expect(controller.stopStreaming(true)).resolves.toBe(true);
+
+      expect(mocks.cancelTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: {
+            session_id: 'obs-exact-stop',
+            expected_turn_id: 'turn-observed-child',
+            wait_for_idle: true,
+            continuation_pending: true,
+          },
+        })
+      );
+      expect(observerSignal.aborted).toBe(true);
+      observed.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('adopts an observed successor id but never revives a retired id from replay', async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new ChatStreamRegistry();
+      const original = createControlledStream();
+      const successor = createControlledStream();
+      mocks.observeSessionEvents
+        .mockResolvedValueOnce({ stream: original.stream })
+        .mockResolvedValueOnce({ stream: successor.stream });
+      mocks.resumeAgent.mockResolvedValue({
+        data: {
+          session: session('obs-successor-id'),
+          active_turn: { turn_id: 'turn-original' },
+        },
+      });
+
+      const controller = registry.getController('obs-successor-id');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      await controller.loadSession();
+
+      original.push(
+        observerFrame(
+          { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent,
+          'turn-original',
+          0
+        )
+      );
+      original.close();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(2);
+
+      successor.push(
+        observerFrame(
+          {
+            type: 'Message',
+            message: assistantMessage('stale', 'stale replay'),
+            token_state: tokenState,
+          } as MessageEvent,
+          'turn-original',
+          0,
+          true
+        )
+      );
+      successor.push(
+        observerFrame(
+          {
+            type: 'Message',
+            message: assistantMessage('new', 'successor is running'),
+            token_state: tokenState,
+          } as MessageEvent,
+          'turn-successor',
+          0
+        )
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      await expect(controller.stopStreaming(true)).resolves.toBe(true);
+      expect(mocks.cancelTurn).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            expected_turn_id: 'turn-successor',
+            continuation_pending: true,
+          }),
+        })
+      );
+      successor.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refreshes the authoritative id for an unsequenced observer successor', async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new ChatStreamRegistry();
+      const original = createControlledStream();
+      const successor = createControlledStream();
+      let activeTurnId = 'turn-original-unsequenced';
+      mocks.observeSessionEvents
+        .mockResolvedValueOnce({ stream: original.stream })
+        .mockResolvedValueOnce({ stream: successor.stream });
+      mocks.resumeAgent.mockImplementation(async () => ({
+        data: {
+          session: session('obs-unsequenced-successor'),
+          active_turn: { turn_id: activeTurnId },
+        },
+      }));
+
+      const controller = registry.getController('obs-unsequenced-successor');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      await controller.loadSession();
+
+      original.push({ type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent);
+      original.close();
+      await vi.advanceTimersByTimeAsync(1000);
+      activeTurnId = 'turn-successor-unsequenced';
+      successor.push({
+        type: 'Message',
+        message: assistantMessage('next', 'the successor is live'),
+        token_state: tokenState,
+      } as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+
+      await expect(controller.stopStreaming(true)).resolves.toBe(true);
+      expect(mocks.cancelTurn).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            expected_turn_id: 'turn-successor-unsequenced',
+          }),
+        })
+      );
+      successor.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not detach an observer when explicit Stop has no exact id during backoff', async () => {
     vi.useFakeTimers();
     try {
       const registry = new ChatStreamRegistry();
@@ -312,13 +618,11 @@ describe('ChatStreamController.observeSession — who owns the socket', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(1);
 
-      // Parked in the 1 s backoff now — the mirror of the case above, and wrong
-      // in the opposite direction. Stop has to mean stop: it already fired
-      // `cancelTurn` at a session another agent drives, so a loop that wakes up
-      // and re-subscribes anyway leaves Stop doing nothing except harm.
-      controller.stopStreaming();
+      await expect(controller.stopStreaming()).resolves.toBe(false);
+      expect(mocks.cancelTurn).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(5000);
-      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(1);
+      expect(mocks.observeSessionEvents.mock.calls.length).toBeGreaterThan(1);
+      controller.stopObserving();
     } finally {
       vi.useRealTimers();
     }

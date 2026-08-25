@@ -1,5 +1,6 @@
-import { Session } from '../api';
+import type { ResumeAgentResponse, Session } from '../api';
 import { getApiUrl } from '../config';
+import { userActionHeaders } from './userAction';
 
 /**
  * In-memory cache for session data
@@ -35,15 +36,18 @@ export async function loadSession(sessionId: string, forceRefresh = false): Prom
     try {
       const url = getApiUrl('/agent/resume');
       const secretKey = await window.electron.getSecretKey();
+      const proofHeaders = await userActionHeaders();
 
       const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Secret-Key': secretKey,
+          ...proofHeaders,
         },
         body: JSON.stringify({
           session_id: sessionId,
+          load_model_and_extensions: true,
         }),
       });
 
@@ -52,7 +56,8 @@ export async function loadSession(sessionId: string, forceRefresh = false): Prom
         throw new Error(`Could not load this chat: HTTP ${response.status} - ${errorText}`);
       }
 
-      const session: Session = await response.json();
+      const resumed = (await response.json()) as ResumeAgentResponse;
+      const session = resumed.session;
       sessionCache.set(sessionId, session);
 
       return session;

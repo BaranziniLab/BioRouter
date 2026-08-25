@@ -5,7 +5,7 @@
 
 use crate::knowledge::{
     biookf,
-    git::{GitRepo, Txn},
+    git::{GitRepo, KnowledgeWriteFailure, Txn},
     graph, manifest, okf, paths, raw,
     service::KnowledgeService,
     source_anchor,
@@ -88,6 +88,14 @@ pub struct LintReport {
 // ---------------------------------------------------------------------------
 
 pub fn scan(kb_root: &Path) -> Result<LintReport> {
+    scan_with_cancellation(kb_root, None)
+}
+
+pub(crate) fn scan_with_cancellation(
+    kb_root: &Path,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<LintReport> {
+    super::ensure_not_cancelled(cancel, "the lint scan")?;
     if !kb_root.join("knowledge").exists() {
         return Ok(LintReport::default());
     }
@@ -96,6 +104,7 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
     // frontmatter and text. The *links* come from the deriver; see below.
     let mut pages: HashMap<String, String> = HashMap::new(); // logical_path -> body
     for page in crate::knowledge::store::list_pages(kb_root, None)? {
+        super::ensure_not_cancelled(cancel, "reading lint pages")?;
         let path = crate::knowledge::store::resolve_readable_path(kb_root, &page.path)?;
         pages.insert(page.path, std::fs::read_to_string(path)?);
     }
@@ -113,7 +122,9 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
     // fix every page of a base that was fine, and contradicting the graph drawn
     // next to it. Reading the deriver's answer rather than re-deriving one is
     // what makes a fifth grammar impossible to add to one and not the other.
+    super::ensure_not_cancelled(cancel, "deriving lint links")?;
     let links = graph::bundle_links(kb_root)?;
+    super::ensure_not_cancelled(cancel, "processing lint links")?;
     let inbound = &links.inbound;
 
     // ---- Orphans: pages with no inbound links, excluding hub pages ----
@@ -148,6 +159,7 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
     let mut stale_sources: Vec<String> = Vec::new();
     if let Ok(metas) = raw::list_sources(kb_root) {
         for meta in metas {
+            super::ensure_not_cancelled(cancel, "scanning lint sources")?;
             let age = now.signed_duration_since(meta.ingested_at);
             if age > ninety_days {
                 // Does anything link to the page (or pages) that stand for this
@@ -175,6 +187,7 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
     // is why a target the graph draws an edge to can no longer appear here.
     let mut missing_concept_pages: Vec<String> = Vec::new();
     for (src_path, target) in &links.unresolved {
+        super::ensure_not_cancelled(cancel, "scanning unresolved lint links")?;
         if sources.is_source_page(src_path) && !missing_concept_pages.contains(target) {
             missing_concept_pages.push(target.clone());
         }
@@ -198,11 +211,13 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
     report.contradictions.sort();
     report.stale_sources.sort();
     report.missing_concept_pages.sort();
+    super::ensure_not_cancelled(cancel, "lint format diagnostics")?;
     report.diagnostics = Diagnostics::new(
         scan_diagnostics(&report)
             .chain(format_diagnostics(kb_root, &pages))
             .collect(),
     );
+    super::ensure_not_cancelled(cancel, "finishing the lint scan")?;
     Ok(report)
 }
 
@@ -448,10 +463,9 @@ pub struct LintArgs {
     /// `SubAgentEvent` is sent here as soon as it is produced (not just at
     /// the end of the run). Set to `None` if streaming is not needed.
     pub event_sink: Option<tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
-    /// Optional cancellation signal. When `notify_one()` is called on the
-    /// shared `Notify`, the sub-agent loop returns `DoneReason::Cancelled`
-    /// at the start of its next iteration.
-    pub cancel: Option<std::sync::Arc<tokio::sync::Notify>>,
+    /// Optional level-triggered cancellation shared with the request or turn
+    /// that owns this macro run.
+    pub cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
 /// What the lint stream's terminal `event: done` frame actually carries.
@@ -472,7 +486,11 @@ pub struct LintResult {
 }
 
 pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> {
-    let _lock = svc.lock_kb(&args.kb_id).await?;
+    let cancel = args.cancel.clone();
+    let lock = svc
+        .lock_kb_cancellable(&args.kb_id, cancel.as_ref())
+        .await?;
+    super::ensure_not_cancelled(cancel.as_ref(), "lint preflight")?;
     // Issue #56. Before the sub-agent, not after: an autofix that fails halfway
     // has already written pages. Task 10C (CP2) puts the barrier on the line
     // above — a lint's `scan` reads every page, and an autofix rewrites them.
@@ -486,9 +504,19 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
 
     // Migrate a stale `schema.md` (the sub-agent's system prompt) and refresh a
     // stale graph cache, neither fatally. See `macros::refresh_base`.
-    super::refresh_base(svc, &args.kb_id);
+    super::ensure_not_cancelled(cancel.as_ref(), "the lint refresh")?;
+    super::refresh_base(svc, &args.kb_id).await?;
 
-    let report = scan(&kb_root)?;
+    super::ensure_not_cancelled(cancel.as_ref(), "the lint scan")?;
+    let scan_root = kb_root.clone();
+    let scan_cancel = cancel.clone();
+    let (_lock, report) = tokio::task::spawn_blocking(move || {
+        let report = scan_with_cancellation(&scan_root, scan_cancel.as_ref())?;
+        Ok::<_, anyhow::Error>((lock, report))
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("knowledge lint scan task failed: {error}"))??;
+    super::ensure_not_cancelled(cancel.as_ref(), "returning the lint report")?;
 
     if !args.autofix {
         // ⚠ RETURN BEFORE THE RATCHET, and that ordering is the whole point.
@@ -512,25 +540,77 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
         });
     }
 
+    run_autofix(svc, args, &kb_root, report, cancel.as_ref()).await
+}
+
+async fn run_autofix(
+    svc: &KnowledgeService,
+    args: LintArgs,
+    kb_root: &Path,
+    report: LintReport,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<LintResult> {
     // Issue #56, both axes in one call under one lock — see
     // `KnowledgeService::raise_tier_and_affiliation` for why they cannot be
     // two. It belongs HERE, on the writing half: `assert_reachable` above has
     // already decided whether this caller may READ the base, and only an
     // autofix changes it.
-    svc.raise_tier_and_affiliation(
+    super::ensure_not_cancelled(cancel, "the lint privacy ratchet")?;
+    svc.raise_tier_and_affiliation_cancelled_by(
         &args.kb_id,
         args.caller_is_private,
         &args.caller_affiliation,
-    )?;
+        cancel,
+    )
+    .await?;
 
     let completer = args
         .completer
         .ok_or_else(|| anyhow::anyhow!("completer required for autofix"))?;
 
-    let repo = GitRepo::open(&kb_root)?;
+    super::ensure_not_cancelled(cancel, "the lint transaction")?;
+    let repo = GitRepo::open(kb_root)?;
     let txn = repo.begin_txn("lint")?;
 
-    let schema_path = crate::knowledge::store::resolve_readable_path(&kb_root, "schema.md")?;
+    let prompt = match prepare_autofix_prompt(kb_root, &report) {
+        Ok(prompt) => prompt,
+        Err(error) => return Err(repo.abort_after_failure(&txn, "lint autofix", error)),
+    };
+
+    let dispatch = KbToolDispatch {
+        svc: svc.clone(),
+        kb_id: args.kb_id.clone(),
+        txn_branch: txn.branch.clone(),
+        access: KbToolAccess::ReadWrite,
+    };
+    let agent = SubAgent {
+        completer,
+        tools: tool_specs(prompt.format),
+        system_prompt: prompt.system,
+        bounds: args.bounds,
+    };
+
+    let agent_result = agent
+        .run(
+            &prompt.user,
+            std::sync::Arc::new(dispatch),
+            cancel,
+            args.event_sink.as_ref(),
+        )
+        .await;
+
+    settle_autofix(svc, &args.kb_id, &repo, &txn, report, agent_result, cancel)
+}
+
+struct AutofixPrompt {
+    format: Option<KbFormat>,
+    system: String,
+    user: String,
+}
+
+fn prepare_autofix_prompt(kb_root: &Path, report: &LintReport) -> Result<AutofixPrompt> {
+    let schema_path = crate::knowledge::store::resolve_readable_path(kb_root, "schema.md")
+        .context("resolving schema.md for lint")?;
     let schema = std::fs::read_to_string(schema_path).context("read schema.md")?;
     // The four lists are what `LINT_PROCEDURE` teaches, so they stay exactly as
     // they were. `diagnostics` is added beside them rather than instead of them,
@@ -545,36 +625,17 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
     }))?;
     // See `query`'s note on `profile()` vs `format`: an autofix run on a legacy
     // base must not be handed BioOKF's typed writer.
-    let format = manifest::load(&kb_root).ok().and_then(|m| m.profile());
+    let format = manifest::load(kb_root).ok().and_then(|m| m.profile());
     let system = system_prompt(&schema, lint_procedure(format));
     let user = format!(
         "autofix=true. Here is the current lint report:\n```json\n{report_json}\n```\nPlease fix the issues."
     );
 
-    let dispatch = KbToolDispatch {
-        svc: svc.clone(),
-        kb_id: args.kb_id.clone(),
-        txn_branch: txn.branch.clone(),
-        access: KbToolAccess::ReadWrite,
-    };
-    let agent = SubAgent {
-        completer,
-        tools: tool_specs(format),
-        system_prompt: system,
-        bounds: args.bounds,
-    };
-
-    let cancel_ref = args.cancel.as_deref();
-    let agent_result = agent
-        .run(
-            &user,
-            std::sync::Arc::new(dispatch),
-            cancel_ref,
-            args.event_sink.as_ref(),
-        )
-        .await;
-
-    settle_autofix(svc, &args.kb_id, &repo, &txn, report, agent_result)
+    Ok(AutofixPrompt {
+        format,
+        system,
+        user,
+    })
 }
 
 /// The autofix transaction's three endings — commit, abort-and-report,
@@ -587,6 +648,7 @@ fn settle_autofix(
     txn: &Txn,
     report: LintReport,
     agent_result: Result<SubAgentResult>,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<LintResult> {
     match agent_result {
         Ok(r)
@@ -595,6 +657,9 @@ fn settle_autofix(
                 DoneReason::CompleteSentinel | DoneReason::NoMoreToolCalls
             ) =>
         {
+            if let Err(error) = super::ensure_not_cancelled(cancel, "the lint commit") {
+                return Err(repo.abort_after_failure(txn, "lint autofix", error));
+            }
             let fixes_applied = r
                 .events
                 .iter()
@@ -613,38 +678,60 @@ fn settle_autofix(
             let fixed = match repo.txn_wrote_knowledge_pages(txn) {
                 Ok(fixed) => fixed,
                 Err(e) => {
-                    let _ = repo.abort_txn(txn);
-                    return Err(e.context("checking whether the lint fixed anything"));
+                    return Err(repo.abort_after_failure(
+                        txn,
+                        "lint autofix",
+                        e.context("checking whether the lint fixed anything"),
+                    ));
                 }
             };
             if !fixed {
-                let _ = repo.abort_txn(txn);
+                repo.abort_txn(txn).map_err(|abort_error| {
+                    KnowledgeWriteFailure::outcome_uncertain(
+                        "lint autofix",
+                        anyhow::anyhow!(
+                            "the lint changed no page, but discarding its transaction failed: {abort_error:#}"
+                        ),
+                    )
+                })?;
                 return Ok(LintResult {
                     report,
                     commit_sha: None,
                     fixes_applied,
                 });
             }
-            let sha = repo.commit_txn(txn, ChangeKind::Lint, "lint autofix", None)?;
-            svc.rebuild_graph_cache(kb_id)?;
+            let sha = repo
+                .commit_txn(txn, ChangeKind::Lint, "lint autofix", None)
+                .map_err(|error| {
+                    KnowledgeWriteFailure::outcome_uncertain(
+                        "lint autofix",
+                        error.context("committing lint fixes"),
+                    )
+                })?;
+            if let Err(error) = svc.rebuild_graph_cache(kb_id) {
+                return Err(KnowledgeWriteFailure::committed(
+                    "lint autofix",
+                    sha.clone(),
+                    error.context("rebuilding the graph cache after lint committed"),
+                )
+                .into());
+            }
             Ok(LintResult {
                 report,
                 commit_sha: Some(sha),
                 fixes_applied,
             })
         }
-        Ok(r) => {
-            let _ = repo.abort_txn(txn);
-            anyhow::bail!(
+        Ok(r) => Err(repo.abort_after_failure(
+            txn,
+            "lint autofix",
+            anyhow::anyhow!(
                 "lint sub-agent aborted: reason={:?}, final={}",
                 r.reason,
                 r.final_text
-            )
-        }
-        Err(e) => {
-            let _ = repo.abort_txn(txn);
-            Err(e)
-        }
+            ),
+        )),
+        Err(e) => Err(repo.abort_after_failure(txn, "lint autofix", e)),
     }
 }
 
@@ -656,7 +743,8 @@ fn settle_autofix(
 mod tests {
     use super::*;
     use crate::knowledge::{
-        affiliation::CallerAffiliation, service::KnowledgeService, store::write_page,
+        affiliation::CallerAffiliation, page_fixtures::valid_page, service::KnowledgeService,
+        store::write_page,
     };
 
     fn fresh_svc() -> (tempfile::TempDir, KnowledgeService) {
@@ -1367,6 +1455,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn deterministic_scan_observes_level_triggered_cancellation() {
+        let (_dir, svc) = fresh_svc();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+
+        let error = scan_with_cancellation(&svc.root().join("k"), Some(&cancel))
+            .expect_err("the deterministic read pass must observe cancellation itself");
+        assert!(error.to_string().contains("cancelled"), "{error:#}");
+    }
+
     // ---- Part B: async lint tests ------------------------------------------
 
     /// scan-only (autofix=false) should return the report with no commit.
@@ -1410,6 +1509,31 @@ mod tests {
             "scan-only must not produce a commit"
         );
         assert_eq!(result.fixes_applied, 0);
+    }
+
+    #[tokio::test]
+    async fn a_read_only_lint_honors_level_triggered_cancellation() {
+        let (_dir, svc) = fresh_svc();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+
+        let error = lint(
+            &svc,
+            LintArgs {
+                kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
+                completer: None,
+                autofix: false,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: Some(cancel),
+            },
+        )
+        .await
+        .expect_err("a read-only lint must honor a level-triggered cancellation");
+
+        assert!(error.to_string().contains("cancelled"), "{error:#}");
     }
 
     /// An autofix run that fixed nothing must not commit either.
@@ -1480,6 +1604,90 @@ mod tests {
         assert!(
             !log.iter().any(|e| e.kind == ChangeKind::Lint),
             "no lint commit may appear in the change log; log: {log:?}"
+        );
+    }
+
+    #[test]
+    fn lint_post_commit_refresh_failure_is_committed_and_retry_does_not_duplicate() {
+        let (_dir, svc) = fresh_svc();
+        let kb = svc.root().join("k");
+        write_page(
+            &kb,
+            "knowledge/concept/a.md",
+            &valid_page("concept", "a", "A"),
+            "add A",
+            None,
+        )
+        .unwrap();
+        svc.rebuild_graph_cache("k").unwrap();
+        let repo = GitRepo::open(&kb).unwrap();
+        let txn = repo.begin_txn("lint-refresh-failure").unwrap();
+        write_page(
+            &kb,
+            "knowledge/concept/b.md",
+            &valid_page("concept", "b", "B"),
+            "fix B",
+            Some(&txn.branch),
+        )
+        .unwrap();
+        crate::knowledge::graph::fail_cache_writes(&kb, 2);
+
+        let error = settle_autofix(
+            &svc,
+            "k",
+            &repo,
+            &txn,
+            scan(&kb).unwrap(),
+            Ok(SubAgentResult {
+                steps_used: 1,
+                reason: DoneReason::NoMoreToolCalls,
+                final_text: "fixed".into(),
+                events: vec![],
+            }),
+            None,
+        )
+        .expect_err("the injected post-commit refresh must be reported");
+        let failure = error
+            .downcast_ref::<KnowledgeWriteFailure>()
+            .expect("the durable phase remains machine-readable");
+        assert_eq!(
+            failure.phase,
+            crate::knowledge::git::KnowledgeWriteFailurePhase::Committed
+        );
+        assert!(failure.commit_sha.is_some());
+        assert!(!crate::knowledge::graph::cache_path(&kb).exists());
+        let history_len = GitRepo::open(&kb).unwrap().log(10).unwrap().len();
+
+        let retry = GitRepo::open(&kb).unwrap();
+        let retry_txn = retry.begin_txn("lint-retry").unwrap();
+        assert!(write_page(
+            &kb,
+            "knowledge/concept/b.md",
+            &valid_page("concept", "b", "B"),
+            "retry B",
+            Some(&retry_txn.branch),
+        )
+        .unwrap()
+        .is_none());
+        let result = settle_autofix(
+            &svc,
+            "k",
+            &retry,
+            &retry_txn,
+            scan(&kb).unwrap(),
+            Ok(SubAgentResult {
+                steps_used: 1,
+                reason: DoneReason::NoMoreToolCalls,
+                final_text: "already fixed".into(),
+                events: vec![],
+            }),
+            None,
+        )
+        .unwrap();
+        assert!(result.commit_sha.is_none());
+        assert_eq!(
+            GitRepo::open(&kb).unwrap().log(10).unwrap().len(),
+            history_len
         );
     }
 

@@ -35,6 +35,31 @@ impl ExtensionData {
         let key = format!("{}.{}", extension_name, version);
         self.extension_states.insert(key, state);
     }
+
+    /// Remove resolved connector credentials from the legacy extension snapshot
+    /// before a session leaves the database through export or diagnostics.
+    /// Malformed legacy state is dropped rather than copied verbatim.
+    pub fn redact_resolved_auth_material_for_export(&mut self) {
+        let key = format!(
+            "{}.{}",
+            EnabledExtensionsState::EXTENSION_NAME,
+            EnabledExtensionsState::VERSION
+        );
+        let Some(value) = self.extension_states.remove(&key) else {
+            return;
+        };
+        let Ok(mut state) = serde_json::from_value::<EnabledExtensionsState>(value) else {
+            return;
+        };
+        state.extensions = state
+            .extensions
+            .iter()
+            .map(ExtensionConfig::redacted_for_session_export)
+            .collect();
+        if let Ok(value) = serde_json::to_value(state) {
+            self.extension_states.insert(key, value);
+        }
+    }
 }
 
 /// Helper trait for extension-specific state management

@@ -3401,7 +3401,10 @@ async fn run_kb_read(
             Ok(json!({ "path": path, "body": body }))
         }
         "graph" => {
-            let g = svc.get_graph(kb_id).map_err(|e| e.to_string())?;
+            let g = svc
+                .get_graph_async(kb_id)
+                .await
+                .map_err(|e| e.to_string())?;
             serde_json::to_value(g).map_err(|e| e.to_string())
         }
         "history" => {
@@ -3599,11 +3602,10 @@ async fn handle_kb_frame(
             // FIRST and every other site raised the tier first, so a failure
             // between the two left a *public* base carrying an owner here and a
             // claimed base at public tier everywhere else.
-            if let Err(e) = knowledge.raise_tier_and_affiliation(
-                &kb_id,
-                caller.is_private(),
-                caller.affiliation(),
-            ) {
+            if let Err(e) = knowledge
+                .raise_tier_and_affiliation_async(&kb_id, caller.is_private(), caller.affiliation())
+                .await
+            {
                 emit_kb_error(ui_bridge, req_id, &e.to_string());
                 return;
             }

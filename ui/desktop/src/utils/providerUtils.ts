@@ -62,6 +62,7 @@ export const initializeSystem = async (
       body: {
         session_id: sessionId,
       },
+      headers: await userActionHeaders(),
       throwOnError: true,
     });
 

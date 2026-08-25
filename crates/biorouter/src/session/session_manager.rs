@@ -1,4 +1,5 @@
 use crate::config::paths::Paths;
+use crate::config::ExtensionConfig;
 use crate::conversation::message::{
     new_message_id, Message, MessageContent, MessageMetadata, TokenState,
 };
@@ -1489,6 +1490,26 @@ impl SessionManager {
             .await
     }
 
+    /// Atomically mutate the complete extension-data object for operations whose
+    /// security invariant spans more than one versioned key.
+    ///
+    /// Most callers should use [`Self::update_extension_state`]. This wider form
+    /// exists for migrations that must install a replacement record and remove
+    /// its legacy credential-bearing record in the same SQLite transaction. A
+    /// mutation error rolls the transaction back; `Ok(None)` means the session
+    /// did not exist.
+    pub async fn update_extension_data<F, R>(
+        &self,
+        session_id: &str,
+        mutate: F,
+    ) -> Result<Option<R>>
+    where
+        F: FnOnce(&mut ExtensionData) -> Result<R> + Send,
+        R: Send,
+    {
+        self.storage.update_extension_data(session_id, mutate).await
+    }
+
     /// Set the session's working directory **only if the chat is still empty**
     /// (#44), as one atomic conditional `UPDATE`: the emptiness check is the
     /// statement's own `WHERE NOT EXISTS (…messages…)` clause, so a first
@@ -2871,6 +2892,41 @@ impl SessionStorage {
         } else {
             BindOutcome::NoSuchSession
         })
+    }
+
+    /// Persist one lead/worker routing snapshot only while the session still
+    /// names the exact composite configuration that produced it.
+    ///
+    /// This is one conditional write rather than a read followed by an update:
+    /// a user can select another provider while the old turn is settling, and
+    /// that newer bind must win even when it uses the same provider name.
+    pub(crate) async fn update_composite_model_config_if_generation_matches(
+        &self,
+        session_id: &str,
+        expected_provider_name: &str,
+        expected_generation: &str,
+        model_config_json: &str,
+    ) -> Result<bool> {
+        let pool = self.pool().await?;
+        let write = sqlx::query(
+            r#"
+            UPDATE sessions
+               SET model_config_json = ?, updated_at = datetime('now')
+             WHERE id = ?
+               AND provider_name = ?
+               AND json_extract(
+                     model_config_json,
+                     '$.request_params.__biorouter_provider_restore.config_generation'
+                   ) = ?
+            "#,
+        )
+        .bind(model_config_json)
+        .bind(session_id)
+        .bind(expected_provider_name)
+        .bind(expected_generation);
+        #[cfg(test)]
+        crate::agents::agent::seams::before_composite_state_write().await;
+        Ok(write.execute(pool).await?.rows_affected() == 1)
     }
 
     fn create_pool(path: &Path) -> Pool<Sqlite> {
@@ -4755,6 +4811,23 @@ impl SessionStorage {
     where
         F: FnOnce(Option<&serde_json::Value>) -> Result<serde_json::Value> + Send,
     {
+        self.update_extension_data(session_id, move |data| {
+            let current = data
+                .get_extension_state(extension, version)
+                .filter(|v| !v.is_null())
+                .cloned();
+            let next = mutate(current.as_ref())?;
+            data.set_extension_state(extension, version, next.clone());
+            Ok(next)
+        })
+        .await
+    }
+
+    async fn update_extension_data<F, R>(&self, session_id: &str, mutate: F) -> Result<Option<R>>
+    where
+        F: FnOnce(&mut ExtensionData) -> Result<R> + Send,
+        R: Send,
+    {
         let pool = self.pool().await?;
         let mut tx = pool.begin().await?;
 
@@ -4791,18 +4864,13 @@ impl SessionStorage {
             }
         };
 
-        let current = data
-            .get_extension_state(extension, version)
-            .filter(|v| !v.is_null())
-            .cloned();
-        let next = match mutate(current.as_ref()) {
-            Ok(next) => next,
+        let result = match mutate(&mut data) {
+            Ok(result) => result,
             Err(e) => {
                 tx.rollback().await?;
                 return Err(e);
             }
         };
-        data.set_extension_state(extension, version, next.clone());
 
         sqlx::query("UPDATE sessions SET extension_data = ? WHERE id = ?")
             .bind(serde_json::to_string(&data)?)
@@ -4810,7 +4878,7 @@ impl SessionStorage {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        Ok(Some(next))
+        Ok(Some(result))
     }
 
     /// Strict, unlike the tolerant `unwrap_or_default()` in `Session::from_row`.
@@ -6566,7 +6634,20 @@ impl SessionStorage {
     }
 
     async fn export_session(&self, id: &str) -> Result<String> {
-        let session = self.get_session(id, true).await?;
+        let mut session = self.get_session(id, true).await?;
+        session
+            .extension_data
+            .redact_resolved_auth_material_for_export();
+        if let Some(extensions) = session
+            .workflow
+            .as_mut()
+            .and_then(|workflow| workflow.extensions.as_mut())
+        {
+            *extensions = extensions
+                .iter()
+                .map(ExtensionConfig::redacted_for_session_export)
+                .collect();
+        }
         serde_json::to_string_pretty(&session).map_err(Into::into)
     }
 

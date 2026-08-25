@@ -61,13 +61,32 @@ vi.mock('./MentionPopover', () => {
 // The real queue UI is a drag-and-drop list; what these tests need from it is
 // only WHICH messages are in the queue, so it stands in as a plain list.
 vi.mock('./MessageQueue', () => ({
-  default: ({ queuedMessages }: { queuedMessages: Array<{ id: string; content: string }> }) => (
+  default: ({
+    queuedMessages,
+    onStopAndSend,
+    onRemoveMessage,
+    onClearQueue,
+  }: {
+    queuedMessages: Array<{ id: string; content: string }>;
+    onStopAndSend?: (id: string) => void;
+    onRemoveMessage?: (id: string) => void;
+    onClearQueue?: () => void;
+  }) => (
     <ul data-testid="queue">
       {queuedMessages.map((msg) => (
         <li key={msg.id} data-testid="queued-item">
-          {msg.content}
+          <span data-testid="queued-content">{msg.content}</span>
+          <button type="button" onClick={() => onStopAndSend?.(msg.id)}>
+            Stop and send {msg.id}
+          </button>
+          <button type="button" onClick={() => onRemoveMessage?.(msg.id)}>
+            Remove {msg.id}
+          </button>
         </li>
       ))}
+      <button type="button" onClick={onClearQueue}>
+        Clear queue
+      </button>
     </ul>
   ),
 }));
@@ -94,6 +113,7 @@ const DIRECT_TEXT = 'plot the residuals';
 /** The composer's own prop signature, so a mock cannot drift from it. */
 type SubmitFn = (e: React.FormEvent) => void | Promise<boolean | void>;
 type SubmitMock = Mock<SubmitFn>;
+type StopFn = (continuationPending?: boolean) => boolean | void | Promise<boolean | void>;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -113,29 +133,31 @@ beforeEach(() => {
 });
 
 const composer = () => screen.getByTestId('chat-input') as HTMLTextAreaElement;
-const queued = () => screen.queryAllByTestId('queued-item').map((el) => el.textContent);
+const queued = () => screen.queryAllByTestId('queued-content').map((el) => el.textContent);
 const submittedTexts = (handleSubmit: SubmitMock) =>
-  handleSubmit.mock.calls.map(
-    (call) => (call[0] as unknown as CustomEvent).detail.value as string
-  );
+  handleSubmit.mock.calls.map((call) => (call[0] as unknown as CustomEvent).detail.value as string);
 
 /** How many offers actually landed a turn, as opposed to being refused. */
 async function acceptedCount(handleSubmit: SubmitMock): Promise<number> {
   const verdicts = await Promise.all(
-    handleSubmit.mock.results.map((result) =>
-      Promise.resolve(result.value as boolean | undefined)
-    )
+    handleSubmit.mock.results.map((result) => Promise.resolve(result.value as boolean | undefined))
   );
   return verdicts.filter((verdict) => verdict !== false).length;
 }
 
-function renderComposer(handleSubmit: SubmitMock, chatState: ChatState) {
+function renderComposer(
+  handleSubmit: SubmitMock,
+  chatState: ChatState,
+  onStop: StopFn = vi.fn(),
+  onAbandonContinuation: () => void | Promise<void> = vi.fn()
+) {
   const props = (state: ChatState) => (
     <ChatInput
       sessionId="session-under-test"
       handleSubmit={handleSubmit}
       chatState={state}
-      onStop={vi.fn()}
+      onStop={onStop}
+      onAbandonContinuation={onAbandonContinuation}
       initialValue=""
       setView={vi.fn()}
       totalTokens={0}
@@ -152,6 +174,7 @@ function renderComposer(handleSubmit: SubmitMock, chatState: ChatState) {
   const view = render(props(chatState));
   return {
     setChatState: (state: ChatState) => view.rerender(props(state)),
+    unmount: view.unmount,
   };
 }
 
@@ -242,6 +265,155 @@ describe('draining the message queue', () => {
 
     expect(queued()).toEqual([]);
     await act(async () => release(true));
+    expect(queued()).toEqual([]);
+  });
+
+  it('recovers an in-flight refused offer after the composer unmounts', async () => {
+    let resolveOffer: (accepted: boolean) => void = () => {};
+    const handleSubmit = vi.fn<SubmitFn>(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveOffer = resolve;
+        })
+    );
+    const first = renderComposer(handleSubmit, ChatState.Streaming);
+    await queueOneMessage();
+    act(() => first.setChatState(ChatState.Idle));
+    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
+
+    act(() => first.unmount());
+    await act(async () => resolveOffer(false));
+    await settle();
+    expect(handleSubmit).toHaveBeenCalledTimes(1);
+
+    renderComposer(
+      vi.fn<SubmitFn>(async () => true),
+      ChatState.Streaming
+    );
+    expect(queued()).toEqual([QUEUED_TEXT]);
+    fireEvent.click(screen.getByRole('button', { name: /^remove /i }));
+    expect(queued()).toEqual([]);
+  });
+});
+
+describe('stopping the current turn and sending a queued message', () => {
+  it('sends directly from an idle paused queue without issuing a generationless Stop', async () => {
+    let accepted = false;
+    const handleSubmit = vi.fn<SubmitFn>(async () => accepted);
+    const onStop = vi.fn<StopFn>();
+    const { setChatState } = renderComposer(handleSubmit, ChatState.Streaming, onStop);
+    await queueOneMessage();
+
+    // Exhaust the automatic drain so the row is visible while idle, matching a
+    // queue the user deliberately left paused after an interruption.
+    setChatState(ChatState.Idle);
+    await waitFor(() => expect(toastWarning).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queued()).toEqual([QUEUED_TEXT]));
+    handleSubmit.mockClear();
+    onStop.mockClear();
+    accepted = true;
+
+    fireEvent.click(screen.getByRole('button', { name: /stop and send/i }));
+
+    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
+    expect(onStop).not.toHaveBeenCalled();
+    expect(submittedTexts(handleSubmit)).toEqual([QUEUED_TEXT]);
+    expect(queued()).toEqual([]);
+  });
+
+  it('keeps the row and sends nothing until Stop reaches its completion barrier', async () => {
+    let finishStop: (value: boolean) => void = () => {};
+    const onStop = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishStop = resolve;
+        })
+    );
+    const handleSubmit = vi.fn<SubmitFn>(async () => true);
+    renderComposer(handleSubmit, ChatState.Streaming, onStop);
+    await queueOneMessage();
+
+    fireEvent.click(screen.getByRole('button', { name: /stop and send/i }));
+
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onStop).toHaveBeenCalledWith(true);
+    expect(handleSubmit).not.toHaveBeenCalled();
+    expect(queued()).toEqual([QUEUED_TEXT]);
+
+    await act(async () => finishStop(true));
+
+    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
+    expect(submittedTexts(handleSubmit)).toEqual([QUEUED_TEXT]);
+    expect(queued()).toEqual([]);
+    await settle();
+    expect(handleSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the row queued and warns when Stop reports failure', async () => {
+    const handleSubmit = vi.fn<SubmitFn>(async () => true);
+    renderComposer(handleSubmit, ChatState.Streaming, async () => false);
+    await queueOneMessage();
+
+    fireEvent.click(screen.getByRole('button', { name: /stop and send/i }));
+
+    await waitFor(() => expect(toastWarning).toHaveBeenCalledTimes(1));
+    expect(handleSubmit).not.toHaveBeenCalled();
+    expect(queued()).toEqual([QUEUED_TEXT]);
+    expect(toastWarning).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Message still queued' })
+    );
+  });
+
+  it('leaves the row queued and warns when Stop rejects', async () => {
+    const handleSubmit = vi.fn<SubmitFn>(async () => true);
+    renderComposer(handleSubmit, ChatState.Streaming, async () => {
+      throw new Error('cancel unavailable');
+    });
+    await queueOneMessage();
+
+    fireEvent.click(screen.getByRole('button', { name: /stop and send/i }));
+
+    await waitFor(() => expect(toastWarning).toHaveBeenCalledTimes(1));
+    expect(handleSubmit).not.toHaveBeenCalled();
+    expect(queued()).toEqual([QUEUED_TEXT]);
+  });
+
+  it('abandons a delayed continuation acknowledgement after its queued owner is removed', async () => {
+    let finishStop: (value: boolean) => void = () => {};
+    const onStop = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishStop = resolve;
+        })
+    );
+    const abandon = vi.fn(async () => undefined);
+    const handleSubmit = vi.fn<SubmitFn>(async () => true);
+    renderComposer(handleSubmit, ChatState.Streaming, onStop, abandon);
+    await queueOneMessage();
+
+    fireEvent.click(screen.getByRole('button', { name: /stop and send/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^remove /i }));
+    expect(abandon).toHaveBeenCalledTimes(1);
+
+    await act(async () => finishStop(true));
+    await waitFor(() => expect(abandon).toHaveBeenCalledTimes(2));
+    expect(handleSubmit).not.toHaveBeenCalled();
+    expect(queued()).toEqual([]);
+  });
+
+  it('abandons the admitted continuation when its refused queued replacement is removed', async () => {
+    const handleSubmit = vi.fn<SubmitFn>(async () => false);
+    const abandon = vi.fn(async () => undefined);
+    renderComposer(handleSubmit, ChatState.Streaming, async () => true, abandon);
+    await queueOneMessage();
+
+    fireEvent.click(screen.getByRole('button', { name: /stop and send/i }));
+    await settle();
+    await waitFor(() => expect(queued()).toEqual([QUEUED_TEXT]));
+    expect(abandon).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /^remove /i }));
+    expect(abandon).toHaveBeenCalledTimes(1);
     expect(queued()).toEqual([]);
   });
 });

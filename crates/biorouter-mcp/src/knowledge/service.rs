@@ -1,19 +1,21 @@
 use crate::knowledge::{
     biookf, convert, credibility,
-    git::GitRepo,
+    git::{GitRepo, KnowledgeWriteFailure},
     manifest, okf, paths, raw, registry,
-    types::{KbFormat, Manifest, ModelRef, RegistryEntry, SourceMeta},
+    types::{Credibility, KbFormat, Manifest, ModelRef, RegistryEntry, SourceMeta},
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
 use dashmap::DashMap;
 use fs2::FileExt as _;
+use std::future::Future;
 use std::sync::Arc;
 use std::{
     fs::{File, OpenOptions},
     path::{Path, PathBuf},
 };
 use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio_util::sync::CancellationToken;
 
 /// The `schema.md` a new base is scaffolded with, one per profile (DR-6).
 ///
@@ -60,6 +62,16 @@ pub struct RawSourceRefreshFailure {
     cause: String,
 }
 
+struct PreparedRawSource {
+    title: String,
+    url: Option<String>,
+    original_bytes: Option<Vec<u8>>,
+    original_filename: Option<String>,
+    sha256: String,
+    credibility: Credibility,
+    converted: convert::Converted,
+}
+
 impl std::fmt::Display for RawSourceRefreshFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let commit = self
@@ -69,7 +81,7 @@ impl std::fmt::Display for RawSourceRefreshFailure {
             .map_or_else(String::new, |sha| format!(" in commit {sha}"));
         write!(
             f,
-            "raw source {} was committed{commit}, but the graph cache could not be refreshed: {}",
+            "raw source {} was committed{commit}, but the graph cache could not be refreshed: {}. The cache will be re-derived on its next read; retry will reuse the committed source",
             self.written.source_id, self.cause
         )
     }
@@ -271,6 +283,14 @@ struct FileLockGuard {
     file: File,
 }
 
+struct CancelOnDrop(CancellationToken);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
 impl FileLockGuard {
     fn acquire(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -285,6 +305,56 @@ impl FileLockGuard {
             .open(path)?;
         file.lock_exclusive()?;
         Ok(Self { file })
+    }
+
+    fn acquire_existing(path: &Path) -> Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        file.lock_exclusive()?;
+        Ok(Self { file })
+    }
+
+    /// Interruptible `flock` acquisition for async callers. There is no
+    /// artificial deadline: a live operation waits as long as its owner does,
+    /// while cancellation bounds shutdown latency to one poll interval.
+    fn acquire_cancellable(
+        path: &Path,
+        create_parent: bool,
+        cancel: &CancellationToken,
+    ) -> Result<Self> {
+        if create_parent {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        loop {
+            if cancel.is_cancelled() {
+                anyhow::bail!("knowledge operation cancelled while waiting for a file lock");
+            }
+            match file.try_lock_exclusive() {
+                Ok(()) => {
+                    if cancel.is_cancelled() {
+                        let _ = file.unlock();
+                        anyhow::bail!("knowledge operation cancelled after acquiring a file lock");
+                    }
+                    return Ok(Self { file });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::park_timeout(std::time::Duration::from_millis(10));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 }
 
@@ -644,8 +714,36 @@ impl KnowledgeService {
         paths::kb_root(&self.root, kb_id).join(paths::KB_WRITE_LOCK_REL)
     }
 
+    /// Transaction lock for synchronous mutations of an existing base. Call
+    /// this before `lock_root`: macros already hold the KB lock when they take
+    /// the privacy/registry lock, so KB then root is the only deadlock-safe
+    /// order shared by both paths.
+    fn lock_existing_kb(&self, kb_id: &str) -> Result<FileLockGuard> {
+        paths::validate_kb_id(kb_id)?;
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        if !kb_root.exists() {
+            anyhow::bail!("kb '{kb_id}' not found");
+        }
+        FileLockGuard::acquire_existing(&self.kb_lock_path(kb_id)).map_err(|error| {
+            if !kb_root.exists() {
+                anyhow::anyhow!("kb '{kb_id}' not found")
+            } else {
+                error
+            }
+        })
+    }
+
     fn lock_root(&self) -> Result<FileLockGuard> {
         FileLockGuard::acquire(&self.root_lock_path())
+    }
+
+    fn lock_root_cancellable(&self, cancel: Option<&CancellationToken>) -> Result<FileLockGuard> {
+        match cancel {
+            Some(cancel) => {
+                FileLockGuard::acquire_cancellable(&self.root_lock_path(), true, cancel)
+            }
+            None => self.lock_root(),
+        }
     }
 
     /// Take the root lock and raise `kb_id` on **both** of issue #56's axes: to
@@ -674,9 +772,64 @@ impl KnowledgeService {
         caller_is_private: bool,
         caller: &crate::knowledge::affiliation::CallerAffiliation,
     ) -> Result<()> {
-        let _lock = self.lock_root()?;
+        self.raise_tier_and_affiliation_under_root_lock(kb_id, caller_is_private, caller, None)
+    }
+
+    fn raise_tier_and_affiliation_under_root_lock(
+        &self,
+        kb_id: &str,
+        caller_is_private: bool,
+        caller: &crate::knowledge::affiliation::CallerAffiliation,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<()> {
+        let _lock = self.lock_root_cancellable(cancel)?;
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            anyhow::bail!("knowledge privacy ratchet cancelled before mutation");
+        }
         crate::knowledge::tier::raise_unlocked(&self.root, kb_id, caller_is_private)?;
         crate::knowledge::tier::raise_affiliation_unlocked(&self.root, kb_id, caller)
+    }
+
+    /// Async entry point for the privacy ratchet. The root's process-wide file
+    /// lock may wait behind another process, so async callers must not acquire
+    /// it on a Tokio worker.
+    pub async fn raise_tier_and_affiliation_async(
+        &self,
+        kb_id: &str,
+        caller_is_private: bool,
+        caller: &crate::knowledge::affiliation::CallerAffiliation,
+    ) -> Result<()> {
+        self.raise_tier_and_affiliation_cancelled_by(kb_id, caller_is_private, caller, None)
+            .await
+    }
+
+    pub async fn raise_tier_and_affiliation_cancelled_by(
+        &self,
+        kb_id: &str,
+        caller_is_private: bool,
+        caller: &crate::knowledge::affiliation::CallerAffiliation,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<()> {
+        let operation_cancel = cancel
+            .map(CancellationToken::child_token)
+            .unwrap_or_default();
+        let cancel_operation_on_drop = CancelOnDrop(operation_cancel.clone());
+        let svc = self.clone();
+        let kb_id = kb_id.to_string();
+        let caller = caller.clone();
+        let operation_cancel_for_task = operation_cancel.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            svc.raise_tier_and_affiliation_under_root_lock(
+                &kb_id,
+                caller_is_private,
+                &caller,
+                Some(&operation_cancel_for_task),
+            )
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("knowledge privacy ratchet task failed: {error}"))?;
+        drop(cancel_operation_on_drop);
+        result
     }
 
     /// Stamp a base on **both** of issue #56's axes from an explicit owner set,
@@ -729,7 +882,36 @@ impl KnowledgeService {
         tier: crate::knowledge::types::KbTier,
         ok: &crate::knowledge::tier_user::UserKbTierChange,
     ) -> Result<()> {
-        let _lock = self.lock_root()?;
+        let _kb_lock = self.lock_existing_kb(kb_id)?;
+        self.set_tier_by_user_under_kb_lock(kb_id, tier, ok, None)
+    }
+
+    pub async fn set_tier_by_user_async(
+        &self,
+        kb_id: &str,
+        tier: crate::knowledge::types::KbTier,
+        ok: crate::knowledge::tier_user::UserKbTierChange,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<()> {
+        let lock_id = kb_id.to_string();
+        let kb_id = lock_id.clone();
+        self.run_existing_kb_mutation(&lock_id, cancel, move |svc, cancel| {
+            svc.set_tier_by_user_under_kb_lock(&kb_id, tier, &ok, Some(cancel))
+        })
+        .await
+    }
+
+    fn set_tier_by_user_under_kb_lock(
+        &self,
+        kb_id: &str,
+        tier: crate::knowledge::types::KbTier,
+        ok: &crate::knowledge::tier_user::UserKbTierChange,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<()> {
+        let _lock = self.lock_root_cancellable(cancel)?;
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            anyhow::bail!("knowledge tier change cancelled before writing its classification");
+        }
         crate::knowledge::tier_user::set_unlocked(&self.root, kb_id, tier, ok)
     }
 
@@ -755,18 +937,119 @@ impl KnowledgeService {
 
     /// Acquire an exclusive lock for `kb_id`. Held until the returned guard is dropped.
     /// Used by macros to serialize concurrent writers against the same KB.
+    ///
+    /// The in-process mutex is awaited first, so at most one blocking-pool task
+    /// per service and KB can wait in the cross-process `flock`. File acquisition
+    /// runs in `spawn_blocking`, so neither Tokio workers nor the rest of this
+    /// process's queue are held hostage by a process outside Biorouter.
     pub async fn lock_kb(&self, kb_id: &str) -> Result<KnowledgeWriteGuard> {
+        self.lock_kb_cancellable(kb_id, None).await
+    }
+
+    /// [`Self::lock_kb`] with level-triggered cancellation while queued on
+    /// either the in-process mutex or the cross-process file lock.
+    pub async fn lock_kb_cancellable(
+        &self,
+        kb_id: &str,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<KnowledgeWriteGuard> {
+        self.lock_kb_path_cancellable(kb_id, cancel, false).await
+    }
+
+    async fn lock_existing_kb_cancellable(
+        &self,
+        kb_id: &str,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<KnowledgeWriteGuard> {
+        paths::validate_kb_id(kb_id)?;
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        if !kb_root.exists() {
+            anyhow::bail!("kb '{kb_id}' not found");
+        }
+        self.lock_kb_path_cancellable(kb_id, cancel, true)
+            .await
+            .map_err(|error| {
+                if !kb_root.exists() {
+                    anyhow::anyhow!("kb '{kb_id}' not found")
+                } else {
+                    error
+                }
+            })
+    }
+
+    async fn lock_kb_path_cancellable(
+        &self,
+        kb_id: &str,
+        cancel: Option<&CancellationToken>,
+        existing: bool,
+    ) -> Result<KnowledgeWriteGuard> {
         let m = self
             .locks
             .entry(kb_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
-        let process_guard = m.lock_owned().await;
-        let file_guard = FileLockGuard::acquire(&self.kb_lock_path(kb_id))?;
+        let process_guard = match cancel {
+            Some(cancel) => {
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => anyhow::bail!("knowledge operation cancelled while waiting for the KB lock"),
+                    guard = m.lock_owned() => guard,
+                }
+            }
+            None => m.lock_owned().await,
+        };
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            anyhow::bail!("knowledge operation cancelled after acquiring the KB queue lock");
+        }
+
+        let lock_path = self.kb_lock_path(kb_id);
+        let waiter_cancel = cancel
+            .map(CancellationToken::child_token)
+            .unwrap_or_default();
+        let cancel_waiter_on_drop = CancelOnDrop(waiter_cancel.clone());
+        let acquire = tokio::task::spawn_blocking(move || {
+            FileLockGuard::acquire_cancellable(&lock_path, !existing, &waiter_cancel)
+        });
+        let file_guard = acquire
+            .await
+            .map_err(|error| anyhow::anyhow!("knowledge KB lock task failed: {error}"))??;
+        drop(cancel_waiter_on_drop);
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            anyhow::bail!("knowledge operation cancelled after acquiring the KB lock");
+        }
         Ok(KnowledgeWriteGuard {
             _process_guard: process_guard,
             _file_guard: file_guard,
         })
+    }
+
+    async fn run_existing_kb_mutation<T, F>(
+        &self,
+        kb_id: &str,
+        cancel: Option<&CancellationToken>,
+        operation: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&KnowledgeService, &CancellationToken) -> Result<T> + Send + 'static,
+    {
+        let operation_cancel = cancel
+            .map(CancellationToken::child_token)
+            .unwrap_or_default();
+        let cancel_operation_on_drop = CancelOnDrop(operation_cancel.clone());
+        let guard = self
+            .lock_existing_kb_cancellable(kb_id, Some(&operation_cancel))
+            .await?;
+        let svc = self.clone();
+        let operation_cancel_for_task = operation_cancel.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            operation(&svc, &operation_cancel_for_task)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("knowledge mutation task failed: {error}"))?;
+        drop(cancel_operation_on_drop);
+        result
     }
 
     /// Create a base on behalf of the user (no model involved), so it is born
@@ -1266,8 +1549,38 @@ impl KnowledgeService {
         name: Option<&str>,
         color: Option<&str>,
     ) -> Result<Manifest> {
-        let _lock = self.lock_root()?;
-        paths::validate_kb_id(id)?;
+        let _kb_lock = self.lock_existing_kb(id)?;
+        self.update_base_under_kb_lock(id, name, color, None)
+    }
+
+    pub async fn update_base_async(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        color: Option<&str>,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<Manifest> {
+        let lock_id = id.to_string();
+        let id = lock_id.clone();
+        let name = name.map(str::to_string);
+        let color = color.map(str::to_string);
+        self.run_existing_kb_mutation(&lock_id, cancel, move |svc, cancel| {
+            svc.update_base_under_kb_lock(&id, name.as_deref(), color.as_deref(), Some(cancel))
+        })
+        .await
+    }
+
+    fn update_base_under_kb_lock(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        color: Option<&str>,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<Manifest> {
+        let _lock = self.lock_root_cancellable(cancel)?;
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            anyhow::bail!("knowledge base update cancelled before mutation");
+        }
         let current_root = paths::kb_root(&self.root, id);
         if !current_root.exists() {
             anyhow::bail!("kb '{id}' not found");
@@ -1320,6 +1633,10 @@ impl KnowledgeService {
             };
 
             if target_id != id {
+                // The open lock file moves with its directory. Keep this guard
+                // through the registry/classification rewrite and commit so a
+                // caller using the new id opens the same locked inode rather
+                // than a second transaction domain.
                 std::fs::rename(&current_root, &target_root)?;
                 registry::replace(
                     &self.root,
@@ -1362,8 +1679,34 @@ impl KnowledgeService {
     }
 
     pub fn set_default_model(&self, id: &str, model: Option<ModelRef>) -> Result<Manifest> {
-        let _lock = self.lock_root()?;
-        paths::validate_kb_id(id)?;
+        let _kb_lock = self.lock_existing_kb(id)?;
+        self.set_default_model_under_kb_lock(id, model, None)
+    }
+
+    pub async fn set_default_model_async(
+        &self,
+        id: &str,
+        model: Option<ModelRef>,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<Manifest> {
+        let lock_id = id.to_string();
+        let id = lock_id.clone();
+        self.run_existing_kb_mutation(&lock_id, cancel, move |svc, cancel| {
+            svc.set_default_model_under_kb_lock(&id, model, Some(cancel))
+        })
+        .await
+    }
+
+    fn set_default_model_under_kb_lock(
+        &self,
+        id: &str,
+        model: Option<ModelRef>,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<Manifest> {
+        let _lock = self.lock_root_cancellable(cancel)?;
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            anyhow::bail!("default knowledge model update cancelled before mutation");
+        }
         let kb_root = paths::kb_root(&self.root, id);
         if !kb_root.exists() {
             anyhow::bail!("kb '{id}' not found");
@@ -1386,8 +1729,32 @@ impl KnowledgeService {
     }
 
     pub fn delete_base(&self, id: &str) -> Result<()> {
-        let _lock = self.lock_root()?;
-        paths::validate_kb_id(id)?;
+        let _kb_lock = self.lock_existing_kb(id)?;
+        self.delete_base_under_kb_lock(id, None)
+    }
+
+    pub async fn delete_base_async(
+        &self,
+        id: &str,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<()> {
+        let lock_id = id.to_string();
+        let id = lock_id.clone();
+        self.run_existing_kb_mutation(&lock_id, cancel, move |svc, cancel| {
+            svc.delete_base_under_kb_lock(&id, Some(cancel))
+        })
+        .await
+    }
+
+    fn delete_base_under_kb_lock(
+        &self,
+        id: &str,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<()> {
+        let _lock = self.lock_root_cancellable(cancel)?;
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            anyhow::bail!("knowledge base deletion cancelled before mutation");
+        }
         let kb_root = paths::kb_root(&self.root, id);
         if !kb_root.exists() {
             anyhow::bail!("kb '{id}' not found");
@@ -1449,103 +1816,105 @@ impl KnowledgeService {
         input: convert::SourceInput,
         txn_branch: Option<&str>,
     ) -> Result<raw::RawWrite> {
+        self.add_raw_source_cancelled_by(kb_id, input, txn_branch, None)
+            .await
+    }
+
+    pub(crate) async fn add_raw_source_cancelled_by(
+        &self,
+        kb_id: &str,
+        input: convert::SourceInput,
+        txn_branch: Option<&str>,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<raw::RawWrite> {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         if !kb_root.exists() {
             anyhow::bail!("kb '{kb_id}' does not exist");
         }
 
-        let converted = convert::convert(&input).await?;
-        // Classify against the *converted* text, not just the raw input bytes,
-        // so a paper's DOI / journal markers in the body are actually seen.
-        let credibility =
-            credibility::classify_with_text(&input, Some(&converted.markdown), None).await?;
-
-        let title = humanize_source_title(&input, &converted);
-
-        let (original_bytes, original_filename, url) = match &input {
-            convert::SourceInput::File {
-                bytes, filename, ..
-            } => (Some(bytes.clone()), Some(filename.clone()), None),
-            convert::SourceInput::Path(path) => (
-                Some(std::fs::read(path)?),
-                Some(
-                    path.file_name()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or("source")
-                        .to_string(),
-                ),
-                None,
-            ),
-            convert::SourceInput::Url(u) => (None, None, Some(u.clone())),
-            convert::SourceInput::Text { .. } => (None, None, None),
-        };
-
-        let hash = match &original_bytes {
-            Some(b) => raw::hash_bytes(b),
-            None => raw::hash_bytes(converted.markdown.as_bytes()),
-        };
-
+        let prepared = prepare_raw_source(&input, cancel).await?;
         let (existing_by_url, existing_by_hash) =
-            self.find_existing_source_match(&kb_root, url.as_deref(), &hash)?;
-
-        if let Some(existing) = existing_by_hash.as_ref() {
-            if existing_by_url
-                .as_ref()
-                .map(|meta| meta.id.as_str())
-                .unwrap_or(existing.id.as_str())
-                == existing.id
-            {
-                return Ok(raw::RawWrite {
-                    source_id: existing.id.clone(),
-                    source_md_path: format!("raw/{}/source.md", existing.id),
-                    meta_path: format!("raw/{}/meta.yaml", existing.id),
-                    commit_sha: None,
-                });
-            }
+            self.find_existing_source_match(&kb_root, prepared.url.as_deref(), &prepared.sha256)?;
+        if let Some(existing) = durable_duplicate_raw_source(
+            &kb_root,
+            existing_by_url.as_ref(),
+            existing_by_hash.as_ref(),
+            cancel,
+        )? {
+            return Ok(existing);
         }
 
         let source_id = existing_by_url
             .as_ref()
             .map(|meta| meta.id.clone())
-            .unwrap_or_else(|| raw::new_source_id(&title));
+            .unwrap_or_else(|| raw::new_source_id(&prepared.title));
+        self.commit_prepared_raw_source(
+            kb_id,
+            source_id,
+            prepared,
+            existing_by_url.is_some(),
+            txn_branch,
+            cancel,
+        )
+    }
 
+    fn commit_prepared_raw_source(
+        &self,
+        kb_id: &str,
+        source_id: String,
+        prepared: PreparedRawSource,
+        refreshing_existing: bool,
+        txn_branch: Option<&str>,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<raw::RawWrite> {
+        let kb_root = paths::kb_root(&self.root, kb_id);
         let meta = SourceMeta {
             id: source_id.clone(),
-            title,
-            url,
+            title: prepared.title,
+            url: prepared.url,
             ingested_at: Utc::now(),
-            sha256: hash,
-            mime: converted.mime.clone(),
-            original_filename,
-            credibility,
+            sha256: prepared.sha256,
+            mime: prepared.converted.mime.clone(),
+            original_filename: prepared.original_filename,
+            credibility: prepared.credibility,
         };
+        let source_markdown = source_markdown_with_quality_banner(&prepared.converted);
 
-        let source_markdown = source_markdown_with_quality_banner(&converted);
-
+        // This is the cancellation linearization point. Before it, this call
+        // has not modified raw source files. Once the synchronous write/commit
+        // section starts, its durable result is returned even if cancellation
+        // races it so the macro can report retained raw state accurately.
+        ensure_raw_source_not_cancelled(cancel, "raw source commit")?;
         let written = raw::write_raw(
             &kb_root,
-            original_bytes.as_deref(),
+            prepared.original_bytes.as_deref(),
             meta.original_filename.clone().as_deref(),
             &source_markdown,
             meta,
         )?;
 
         let repo = GitRepo::open(&kb_root)?;
-        let (summary, delta) = if existing_by_url.is_some() {
+        let (summary, delta) = if refreshing_existing {
             (format!("refresh source {source_id}"), "~1 source")
         } else {
             (format!("ingested {source_id}"), "+1 source")
         };
-        let commit_sha = if let Some(_branch) = txn_branch {
-            repo.commit_on_txn_in_progress(&summary)?
+        let committed = if let Some(_branch) = txn_branch {
+            repo.commit_on_txn_in_progress(&summary)
         } else {
             repo.commit_all(
                 crate::knowledge::types::ChangeKind::Ingest,
                 &summary,
                 Some(delta),
-            )?
+            )
         };
+        let commit_sha = committed.map_err(|error| {
+            KnowledgeWriteFailure::outcome_uncertain(
+                format!("raw source write for {source_id}"),
+                error.context("committing raw source files"),
+            )
+        })?;
         let written = raw::RawWrite {
             commit_sha: Some(commit_sha),
             ..written
@@ -1558,6 +1927,117 @@ impl KnowledgeService {
             .into());
         }
         Ok(written)
+    }
+}
+
+async fn prepare_raw_source(
+    input: &convert::SourceInput,
+    cancel: Option<&CancellationToken>,
+) -> Result<PreparedRawSource> {
+    ensure_raw_source_not_cancelled(cancel, "source conversion")?;
+    let converted =
+        await_raw_source_step(cancel, "source conversion", convert::convert(input)).await?;
+    // Classify against the converted text, not just the raw input bytes, so a
+    // paper's DOI / journal markers in the body are actually seen.
+    let credibility = await_raw_source_step(
+        cancel,
+        "source credibility classification",
+        credibility::classify_with_text(input, Some(&converted.markdown), None),
+    )
+    .await?;
+    let title = humanize_source_title(input, &converted);
+    let (original_bytes, original_filename, url) = stage_original_source(input, cancel).await?;
+    let sha256 = original_bytes.as_ref().map_or_else(
+        || raw::hash_bytes(converted.markdown.as_bytes()),
+        |bytes| raw::hash_bytes(bytes),
+    );
+    Ok(PreparedRawSource {
+        title,
+        url,
+        original_bytes,
+        original_filename,
+        sha256,
+        credibility,
+        converted,
+    })
+}
+
+async fn stage_original_source(
+    input: &convert::SourceInput,
+    cancel: Option<&CancellationToken>,
+) -> Result<(Option<Vec<u8>>, Option<String>, Option<String>)> {
+    match input {
+        convert::SourceInput::File {
+            bytes, filename, ..
+        } => Ok((Some(bytes.clone()), Some(filename.clone()), None)),
+        convert::SourceInput::Path(path) => {
+            let bytes = await_raw_source_step(cancel, "source staging", async {
+                Ok(tokio::fs::read(path).await?)
+            })
+            .await?;
+            let filename = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("source")
+                .to_string();
+            Ok((Some(bytes), Some(filename), None))
+        }
+        convert::SourceInput::Url(url) => Ok((None, None, Some(url.clone()))),
+        convert::SourceInput::Text { .. } => Ok((None, None, None)),
+    }
+}
+
+fn durable_duplicate_raw_source(
+    kb_root: &Path,
+    existing_by_url: Option<&SourceMeta>,
+    existing_by_hash: Option<&SourceMeta>,
+    cancel: Option<&CancellationToken>,
+) -> Result<Option<raw::RawWrite>> {
+    let Some(existing) = existing_by_hash else {
+        return Ok(None);
+    };
+    if existing_by_url
+        .map(|meta| meta.id.as_str())
+        .unwrap_or(existing.id.as_str())
+        != existing.id
+    {
+        return Ok(None);
+    }
+
+    let source_md_path = format!("raw/{}/source.md", existing.id);
+    let source_on_disk = std::fs::read(kb_root.join(&source_md_path))?;
+    let repo = GitRepo::open(kb_root)?;
+    if !repo.head_file_matches(Path::new(&source_md_path), &source_on_disk)? {
+        return Ok(None);
+    }
+    ensure_raw_source_not_cancelled(cancel, "raw source deduplication")?;
+    Ok(Some(raw::RawWrite {
+        source_id: existing.id.clone(),
+        source_md_path,
+        meta_path: format!("raw/{}/meta.yaml", existing.id),
+        commit_sha: None,
+    }))
+}
+
+fn ensure_raw_source_not_cancelled(cancel: Option<&CancellationToken>, phase: &str) -> Result<()> {
+    if cancel.is_some_and(CancellationToken::is_cancelled) {
+        anyhow::bail!("raw source ingest cancelled during {phase}");
+    }
+    Ok(())
+}
+
+async fn await_raw_source_step<T>(
+    cancel: Option<&CancellationToken>,
+    phase: &str,
+    step: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    let Some(cancel) = cancel else {
+        return step.await;
+    };
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => anyhow::bail!("raw source ingest cancelled during {phase}"),
+        result = step => result,
     }
 }
 
@@ -1780,9 +2260,7 @@ impl KnowledgeService {
     /// hand-crafting a commit.
     pub fn rebuild_graph_cache(&self, kb_id: &str) -> anyhow::Result<()> {
         let kb_root = paths::kb_root(&self.root, kb_id);
-        let g = crate::knowledge::graph::derive(&kb_root)?;
-        crate::knowledge::graph::write_cache(&kb_root, &g)?;
-        Ok(())
+        crate::knowledge::graph::rebuild_cache(&kb_root)
     }
 
     /// Bring a base's `schema.md` up to [`AUTOMATIC_SCHEMA_CEILING`], if it is
@@ -1872,6 +2350,34 @@ impl KnowledgeService {
     pub fn get_graph(&self, kb_id: &str) -> anyhow::Result<crate::knowledge::types::Graph> {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
+        anyhow::ensure!(kb_root.exists(), "kb '{kb_id}' does not exist");
+        let _file_guard = FileLockGuard::acquire(&self.kb_lock_path(kb_id))?;
+        self.get_graph_unlocked(kb_id)
+    }
+
+    /// Async graph read for HTTP/MCP handlers. Graph reads join the same
+    /// per-KB queue as macros, so a stream of readers cannot repeatedly beat a
+    /// macro to the file lock while that macro is waiting or using a provider.
+    pub async fn get_graph_async(
+        &self,
+        kb_id: &str,
+    ) -> anyhow::Result<crate::knowledge::types::Graph> {
+        paths::validate_kb_id(kb_id)?;
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        anyhow::ensure!(kb_root.exists(), "kb '{kb_id}' does not exist");
+        let guard = self.lock_kb(kb_id).await?;
+        let svc = self.clone();
+        let kb_id = kb_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            svc.get_graph_unlocked(&kb_id)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("knowledge graph read task failed: {error}"))?
+    }
+
+    fn get_graph_unlocked(&self, kb_id: &str) -> anyhow::Result<crate::knowledge::types::Graph> {
+        let kb_root = paths::kb_root(&self.root, kb_id);
         if let Some(g) = crate::knowledge::graph::read_cache(&kb_root)? {
             return Ok(g);
         }
@@ -1891,7 +2397,15 @@ impl KnowledgeService {
         // key at all.
         let fresh = crate::knowledge::graph::derive(&kb_root)?;
         if let Err(e) = crate::knowledge::graph::write_cache(&kb_root, &fresh) {
-            tracing::warn!("knowledge: could not rewrite the graph cache for '{kb_id}': {e:#}");
+            let invalidation = crate::knowledge::graph::invalidate_cache(&kb_root);
+            match invalidation {
+                Ok(()) => tracing::warn!(
+                    "knowledge: could not rewrite the graph cache for '{kb_id}', removed the old cache: {e:#}"
+                ),
+                Err(invalidate_error) => tracing::warn!(
+                    "knowledge: could not rewrite the graph cache for '{kb_id}': {e:#}; stale cache removal also failed: {invalidate_error:#}"
+                ),
+            }
         }
         Ok(fresh)
     }
@@ -2506,8 +3020,34 @@ impl KnowledgeService {
     }
 
     pub fn restore_state(&self, kb_id: &str, commit_sha: &str) -> anyhow::Result<String> {
-        let _lock = FileLockGuard::acquire(&self.kb_lock_path(kb_id))?;
-        paths::validate_kb_id(kb_id)?;
+        let _lock = self.lock_existing_kb(kb_id)?;
+        self.restore_state_under_kb_lock(kb_id, commit_sha, None)
+    }
+
+    pub async fn restore_state_async(
+        &self,
+        kb_id: &str,
+        commit_sha: &str,
+        cancel: Option<&CancellationToken>,
+    ) -> anyhow::Result<String> {
+        let lock_id = kb_id.to_string();
+        let kb_id = lock_id.clone();
+        let commit_sha = commit_sha.to_string();
+        self.run_existing_kb_mutation(&lock_id, cancel, move |svc, cancel| {
+            svc.restore_state_under_kb_lock(&kb_id, &commit_sha, Some(cancel))
+        })
+        .await
+    }
+
+    fn restore_state_under_kb_lock(
+        &self,
+        kb_id: &str,
+        commit_sha: &str,
+        cancel: Option<&CancellationToken>,
+    ) -> anyhow::Result<String> {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            anyhow::bail!("knowledge restore cancelled before mutation");
+        }
         let kb_root = paths::kb_root(&self.root, kb_id);
         let repo = GitRepo::open(&kb_root)?;
         let summary = format!("restore to {}", commit_sha.get(..7).unwrap_or(commit_sha));
@@ -2537,43 +3077,82 @@ impl KnowledgeService {
         kb_id: &str,
         source_id: &str,
     ) -> anyhow::Result<crate::knowledge::types::Credibility> {
-        let _lock = FileLockGuard::acquire(&self.kb_lock_path(kb_id))?;
-        paths::validate_kb_id(kb_id)?;
-        let kb_root = paths::kb_root(&self.root, kb_id);
-        let mut meta = raw::read_meta(&kb_root, source_id)?;
+        self.reclassify_source_cancelled_by(kb_id, source_id, None)
+            .await
+    }
 
-        // The stored, already-extracted text is our best probe for identifiers
-        // (DOI / journal markers) — read it once and feed it to the classifier
-        // regardless of source kind so re-running classification on an old,
-        // mislabelled source can now recover its true peer-reviewed tier.
-        let stored_body =
-            std::fs::read_to_string(kb_root.join("raw").join(source_id).join("source.md")).ok();
+    pub async fn reclassify_source_cancelled_by(
+        &self,
+        kb_id: &str,
+        source_id: &str,
+        cancel: Option<&CancellationToken>,
+    ) -> anyhow::Result<crate::knowledge::types::Credibility> {
+        let operation_cancel = cancel
+            .map(CancellationToken::child_token)
+            .unwrap_or_default();
+        let cancel_operation_on_drop = CancelOnDrop(operation_cancel.clone());
+        let guard = self
+            .lock_existing_kb_cancellable(kb_id, Some(&operation_cancel))
+            .await?;
+        let kb_id = kb_id.to_string();
+        let kb_root = paths::kb_root(&self.root, &kb_id);
+        let source_id = source_id.to_string();
+        let source_for_preflight = source_id.clone();
+        let preflight_cancel = operation_cancel.clone();
+        let (guard, mut meta, stored_body, input) = tokio::task::spawn_blocking(move || {
+            ensure_raw_source_not_cancelled(Some(&preflight_cancel), "source reclassification")?;
+            let meta = raw::read_meta(&kb_root, &source_for_preflight)?;
+            let stored_body = std::fs::read_to_string(
+                kb_root
+                    .join("raw")
+                    .join(&source_for_preflight)
+                    .join("source.md"),
+            )
+            .ok();
+            let input = if let Some(url) = meta.url.clone() {
+                convert::SourceInput::Url(url)
+            } else {
+                convert::SourceInput::Text {
+                    text: stored_body.clone().unwrap_or_default(),
+                    title: Some(meta.title.clone()),
+                }
+            };
+            Ok::<_, anyhow::Error>((guard, meta, stored_body, input))
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("source reclassification preflight failed: {error}"))??;
 
-        // Reconstruct a SourceInput from what was stored.  URL-based sources keep the url;
-        // everything else falls back to the derived markdown (source.md).
-        let input = if let Some(url) = meta.url.clone() {
-            convert::SourceInput::Url(url)
-        } else {
-            convert::SourceInput::Text {
-                text: stored_body.clone().unwrap_or_default(),
-                title: Some(meta.title.clone()),
-            }
-        };
+        let new_cred = await_raw_source_step(
+            Some(&operation_cancel),
+            "source reclassification",
+            credibility::classify_with_text(&input, stored_body.as_deref(), None),
+        )
+        .await?;
+        ensure_raw_source_not_cancelled(Some(&operation_cancel), "source reclassification")?;
 
-        let new_cred =
-            credibility::classify_with_text(&input, stored_body.as_deref(), None).await?;
-        meta.credibility = new_cred.clone();
-        let yaml = serde_yaml::to_string(&meta)?;
-        std::fs::write(kb_root.join("raw").join(source_id).join("meta.yaml"), yaml)?;
+        let svc = self.clone();
+        let commit_cancel = operation_cancel.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            ensure_raw_source_not_cancelled(Some(&commit_cancel), "source reclassification")?;
+            let kb_root = paths::kb_root(svc.root(), &kb_id);
+            meta.credibility = new_cred.clone();
+            let yaml = serde_yaml::to_string(&meta)?;
+            std::fs::write(kb_root.join("raw").join(&source_id).join("meta.yaml"), yaml)?;
 
-        let repo = GitRepo::open(&kb_root)?;
-        repo.commit_all(
-            crate::knowledge::types::ChangeKind::Manual,
-            &format!("reclassify {source_id}"),
-            None,
-        )?;
-        self.rebuild_graph_cache(kb_id)?;
-        Ok(new_cred)
+            let repo = GitRepo::open(&kb_root)?;
+            repo.commit_all(
+                crate::knowledge::types::ChangeKind::Manual,
+                &format!("reclassify {source_id}"),
+                None,
+            )?;
+            svc.rebuild_graph_cache(&kb_id)?;
+            Ok::<_, anyhow::Error>(new_cred)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("source reclassification commit failed: {error}"))?;
+        drop(cancel_operation_on_drop);
+        result
     }
 
     /// Write a manually-specified `Credibility` override to `meta.yaml` and commit.
@@ -2584,8 +3163,36 @@ impl KnowledgeService {
         source_id: &str,
         cred: crate::knowledge::types::Credibility,
     ) -> anyhow::Result<crate::knowledge::types::Credibility> {
-        let _lock = FileLockGuard::acquire(&self.kb_lock_path(kb_id))?;
-        paths::validate_kb_id(kb_id)?;
+        let _lock = self.lock_existing_kb(kb_id)?;
+        self.override_credibility_under_kb_lock(kb_id, source_id, cred, None)
+    }
+
+    pub async fn override_credibility_async(
+        &self,
+        kb_id: &str,
+        source_id: &str,
+        cred: crate::knowledge::types::Credibility,
+        cancel: Option<&CancellationToken>,
+    ) -> anyhow::Result<crate::knowledge::types::Credibility> {
+        let lock_id = kb_id.to_string();
+        let kb_id = lock_id.clone();
+        let source_id = source_id.to_string();
+        self.run_existing_kb_mutation(&lock_id, cancel, move |svc, cancel| {
+            svc.override_credibility_under_kb_lock(&kb_id, &source_id, cred, Some(cancel))
+        })
+        .await
+    }
+
+    fn override_credibility_under_kb_lock(
+        &self,
+        kb_id: &str,
+        source_id: &str,
+        cred: crate::knowledge::types::Credibility,
+        cancel: Option<&CancellationToken>,
+    ) -> anyhow::Result<crate::knowledge::types::Credibility> {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            anyhow::bail!("knowledge credibility override cancelled before mutation");
+        }
         let kb_root = paths::kb_root(&self.root, kb_id);
         let mut meta = raw::read_meta(&kb_root, source_id)?;
         meta.credibility = cred.clone();
@@ -2642,6 +3249,7 @@ mod tests {
     use super::*;
     use crate::knowledge::convert::SourceInput;
     use crate::knowledge::types::{ChangeKind, Credibility, CredibilityTier};
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
     fn svc() -> (tempfile::TempDir, KnowledgeService) {
         let dir = tempfile::tempdir().unwrap();
@@ -3015,6 +3623,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelling_source_conversion_does_not_stage_or_commit_raw_files() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(30))
+                    .set_body_string("conversion completed too late"),
+            )
+            .mount(&server)
+            .await;
+
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task_svc = svc.clone();
+        let url = server.uri();
+        let ingest = tokio::spawn(async move {
+            task_svc
+                .add_raw_source_cancelled_by("k", SourceInput::Url(url), None, Some(&task_cancel))
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if !server.received_requests().await.unwrap().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the source conversion never reached the blocking HTTP response");
+        cancel.cancel();
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), ingest)
+            .await
+            .expect("cancellation did not interrupt source conversion")
+            .expect("the source task panicked")
+            .expect_err("a cancelled conversion must not report success");
+        assert!(
+            error
+                .to_string()
+                .contains("cancelled during source conversion"),
+            "{error:#}"
+        );
+
+        let kb = svc.root().join("k");
+        assert!(raw::list_sources(&kb).unwrap().is_empty());
+        assert_eq!(
+            GitRepo::open(&kb).unwrap().log(10).unwrap().len(),
+            1,
+            "only the base-creation commit may remain"
+        );
+    }
+
+    #[tokio::test]
     async fn add_raw_source_from_html_file() {
         let (_dir, svc) = svc();
         svc.create_base("k", "K", None).unwrap();
@@ -3131,6 +3796,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_raw_post_commit_refresh_removes_old_cache_and_retry_is_idempotent() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let kb = svc.root().join("k");
+        assert!(crate::knowledge::graph::cache_path(&kb).exists());
+        crate::knowledge::graph::fail_cache_writes(&kb, 1);
+
+        let err = svc
+            .add_raw_source(
+                "k",
+                SourceInput::Text {
+                    text: "Same durable source".into(),
+                    title: Some("Durable note".into()),
+                },
+                None,
+            )
+            .await
+            .expect_err("the injected post-commit refresh must be reported");
+        let failure = err
+            .downcast_ref::<RawSourceRefreshFailure>()
+            .expect("durable raw state remains machine-readable");
+        assert!(failure.written.commit_sha.is_some());
+        let source_id = failure.written.source_id.clone();
+        assert!(
+            !crate::knowledge::graph::cache_path(&kb).exists(),
+            "an older graph cache survived a failed post-commit rebuild"
+        );
+        let history_len = GitRepo::open(&kb).unwrap().log(10).unwrap().len();
+
+        let retry = svc
+            .add_raw_source(
+                "k",
+                SourceInput::Text {
+                    text: "Same durable source".into(),
+                    title: Some("Durable note".into()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(retry.source_id, source_id);
+        assert!(retry.commit_sha.is_none());
+        assert_eq!(
+            GitRepo::open(&kb).unwrap().log(10).unwrap().len(),
+            history_len
+        );
+    }
+
+    #[tokio::test]
     async fn get_graph_returns_cached_after_create_and_add() {
         let (_dir, svc) = svc();
         svc.create_base("k", "K", None).unwrap();
@@ -3193,6 +3907,344 @@ mod tests {
             t2 >= t1,
             "h2 must observe lock acquisition after h1 released"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_queued_file_lock_never_blocks_the_tokio_worker() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let external = FileLockGuard::acquire(&svc.kb_lock_path("k")).unwrap();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(external);
+        });
+
+        let mut acquisition = Box::pin(svc.lock_kb("k"));
+        tokio::select! {
+            biased;
+            () = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
+            _ = &mut acquisition => panic!("file-lock acquisition ran on and blocked the Tokio worker"),
+        }
+
+        let _guard = acquisition.await.unwrap();
+        releaser.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_releases_a_waiter_queued_on_the_process_lock() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let first = svc.lock_kb("k").await.unwrap();
+        let cancel = CancellationToken::new();
+        let waiting_svc = svc.clone();
+        let waiting_cancel = cancel.clone();
+        let waiting = tokio::spawn(async move {
+            waiting_svc
+                .lock_kb_cancellable("k", Some(&waiting_cancel))
+                .await
+        });
+        tokio::task::yield_now().await;
+
+        cancel.cancel();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            .await
+            .expect("cancellation must not wait for the current lock holder")
+            .unwrap();
+        let error = match result {
+            Ok(_) => panic!("the queued acquisition was not cancelled"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("cancelled"), "{error:#}");
+
+        drop(first);
+        let _next = svc.lock_kb("k").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn repeated_cancellation_terminates_file_lock_waiters() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let external = FileLockGuard::acquire(&svc.kb_lock_path("k")).unwrap();
+        for _ in 0..16 {
+            let cancel = CancellationToken::new();
+            let waiting_svc = svc.clone();
+            let waiting_cancel = cancel.clone();
+            let waiting = tokio::spawn(async move {
+                waiting_svc
+                    .lock_kb_cancellable("k", Some(&waiting_cancel))
+                    .await
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+
+            cancel.cancel();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+                .await
+                .expect("cancellation must terminate the file-lock poller")
+                .unwrap();
+            assert!(
+                result.is_err(),
+                "the file-lock acquisition ignored cancellation"
+            );
+            let process_queue = Arc::clone(
+                svc.locks
+                    .get("k")
+                    .expect("the acquisition registered a process queue")
+                    .value(),
+            );
+            assert!(
+                process_queue.try_lock_owned().is_ok(),
+                "a cancelled waiter survived after its caller returned"
+            );
+        }
+
+        drop(external);
+        let _next = tokio::time::timeout(std::time::Duration::from_secs(1), svc.lock_kb("k"))
+            .await
+            .expect("cancelled file-lock pollers accumulated behind the released lock")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn repeated_cancellation_terminates_root_lock_waiters() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let external = FileLockGuard::acquire(&svc.root_lock_path()).unwrap();
+        for _ in 0..16 {
+            let cancel = CancellationToken::new();
+            let waiting_svc = svc.clone();
+            let waiting_cancel = cancel.clone();
+            let waiting = tokio::spawn(async move {
+                waiting_svc
+                    .raise_tier_and_affiliation_cancelled_by(
+                        "k",
+                        true,
+                        &Default::default(),
+                        Some(&waiting_cancel),
+                    )
+                    .await
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+
+            cancel.cancel();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+                .await
+                .expect("cancellation must terminate the root-lock poller")
+                .unwrap();
+            assert!(result.is_err(), "the root-lock waiter ignored cancellation");
+            assert!(!crate::knowledge::tier::is_private(svc.root(), "k"));
+        }
+
+        drop(external);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            svc.raise_tier_and_affiliation_async("k", true, &Default::default()),
+        )
+        .await
+        .expect("cancelled root-lock pollers accumulated behind the released lock")
+        .unwrap();
+        assert!(crate::knowledge::tier::is_private(svc.root(), "k"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_async_update_keeps_the_tokio_worker_responsive() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let external = FileLockGuard::acquire(&svc.kb_lock_path("k")).unwrap();
+        let cancel = CancellationToken::new();
+        let update_svc = svc.clone();
+        let update_cancel = cancel.clone();
+        let update = tokio::spawn(async move {
+            update_svc
+                .update_base_async("k", None, Some("#ffffff"), Some(&update_cancel))
+                .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        cancel.cancel();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), update)
+            .await
+            .expect("the Axum-style mutation blocked the current-thread runtime")
+            .unwrap()
+            .expect_err("the cancelled mutation unexpectedly updated the base");
+        assert!(error.to_string().contains("cancelled"), "{error:#}");
+        assert_ne!(svc.get_base("k").unwrap().color, "#ffffff");
+        drop(external);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queued_reclassification_never_blocks_the_tokio_worker() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let external = FileLockGuard::acquire(&svc.kb_lock_path("k")).unwrap();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(external);
+        });
+
+        let mut reclassify = Box::pin(svc.reclassify_source("k", "missing-source"));
+        tokio::select! {
+            biased;
+            () = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
+            _ = &mut reclassify => panic!("source reclassification blocked the Tokio worker while acquiring flock"),
+        }
+        drop(reclassify);
+        releaser.join().unwrap();
+        let _next = tokio::time::timeout(std::time::Duration::from_secs(1), svc.lock_kb("k"))
+            .await
+            .expect("the dropped reclassification left a detached file-lock waiter")
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queued_restore_never_blocks_the_tokio_worker() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let external = FileLockGuard::acquire(&svc.kb_lock_path("k")).unwrap();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(external);
+        });
+
+        let mut restore = Box::pin(svc.restore_state_async("k", "missing-commit", None));
+        tokio::select! {
+            biased;
+            () = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
+            _ = &mut restore => panic!("state restore blocked the Tokio worker while acquiring flock"),
+        }
+        drop(restore);
+        releaser.join().unwrap();
+        let _next = tokio::time::timeout(std::time::Duration::from_secs(1), svc.lock_kb("k"))
+            .await
+            .expect("the dropped restore left a detached file-lock waiter")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_waits_for_the_macro_lock_without_holding_the_root_lock() {
+        let (_dir, svc) = svc();
+        svc.create_base("kb-a", "KB A", None).unwrap();
+        let macro_guard = svc.lock_kb("kb-a").await.unwrap();
+
+        let (rename_tx, rename_rx) = std::sync::mpsc::channel();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let rename_svc = svc.clone();
+        let rename = std::thread::spawn(move || {
+            let _ = started_tx.send(());
+            let _ = rename_tx.send(rename_svc.update_base("kb-a", Some("Renamed KB"), None));
+        });
+        started_rx.recv().unwrap();
+        assert!(
+            rename_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "rename bypassed the macro transaction lock"
+        );
+
+        let (root_tx, root_rx) = std::sync::mpsc::channel();
+        let root_svc = svc.clone();
+        let root = std::thread::spawn(move || {
+            let _ = root_tx.send(root_svc.raise_tier_and_affiliation(
+                "kb-a",
+                false,
+                &Default::default(),
+            ));
+        });
+        let root_result = root_rx.recv_timeout(std::time::Duration::from_secs(1));
+        drop(macro_guard);
+        let renamed = rename_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("rename did not resume after the macro released its lock")
+            .unwrap();
+        rename.join().unwrap();
+        root.join().unwrap();
+
+        root_result
+            .expect("rename held the root lock while waiting for the KB lock")
+            .unwrap();
+        assert_eq!(renamed.id, "renamed-kb");
+        assert!(!svc.root().join("kb-a").exists());
+        assert!(svc.root().join("renamed-kb").exists());
+        let _renamed_guard = svc.lock_kb("renamed-kb").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_default_model_waits_for_the_macro_lock() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let macro_guard = svc.lock_kb("k").await.unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let update_svc = svc.clone();
+        let update = std::thread::spawn(move || {
+            let _ = started_tx.send(());
+            let _ = tx.send(update_svc.set_default_model(
+                "k",
+                Some(ModelRef {
+                    provider: "test".into(),
+                    model: "model".into(),
+                }),
+            ));
+        });
+        started_rx.recv().unwrap();
+
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "default-model update bypassed the macro transaction lock"
+        );
+        drop(macro_guard);
+        let updated = rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("default-model update did not resume")
+            .unwrap();
+        update.join().unwrap();
+        assert_eq!(updated.default_model.unwrap().provider, "test");
+    }
+
+    #[tokio::test]
+    async fn delete_waits_for_the_macro_lock() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let macro_guard = svc.lock_kb("k").await.unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let delete_svc = svc.clone();
+        let delete = std::thread::spawn(move || {
+            let _ = started_tx.send(());
+            let _ = tx.send(delete_svc.delete_base("k"));
+        });
+        started_rx.recv().unwrap();
+
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "delete bypassed the macro transaction lock"
+        );
+        drop(macro_guard);
+        rx.recv_timeout(std::time::Duration::from_secs(1))
+            .expect("delete did not resume")
+            .unwrap();
+        delete.join().unwrap();
+        assert!(!svc.root().join("k").exists());
+    }
+
+    #[tokio::test]
+    async fn graph_reads_wait_behind_the_macro_lock() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let macro_guard = svc.lock_kb("k").await.unwrap();
+        let read_svc = svc.clone();
+        let mut read = tokio::spawn(async move { read_svc.get_graph_async("k").await });
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), &mut read)
+                .await
+                .is_err(),
+            "a graph read bypassed the macro's per-KB queue"
+        );
+        drop(macro_guard);
+
+        read.await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -3367,7 +4419,7 @@ mod tests {
         let history_after_two = svc.list_history("k", 10).unwrap();
         assert_eq!(history_after_two.len(), 3);
 
-        svc.restore_state("k", &target).unwrap();
+        svc.restore_state_async("k", &target, None).await.unwrap();
         let history_after_restore = svc.list_history("k", 10).unwrap();
         assert_eq!(history_after_restore.len(), 4);
         assert_eq!(

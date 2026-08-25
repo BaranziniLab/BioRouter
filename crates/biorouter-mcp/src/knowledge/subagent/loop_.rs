@@ -14,6 +14,7 @@ use rmcp::model::Tool;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tokio::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
 // Message types used inside the loop (provider-agnostic)
@@ -315,7 +316,7 @@ impl SubAgent {
         &self,
         user_message: &str,
         dispatch: std::sync::Arc<dyn ToolDispatch>,
-        cancel: Option<&tokio::sync::Notify>,
+        cancel: Option<&CancellationToken>,
         event_sink: Option<&tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
     ) -> Result<SubAgentResult> {
         let mut events: Vec<SubAgentEvent> = Vec::new();
@@ -350,9 +351,18 @@ impl SubAgent {
                 &self.tools,
                 std::sync::Arc::clone(&dispatch),
             );
-            let turn = match tokio::time::timeout(remaining, call).await {
-                Ok(turn) => turn?,
-                Err(_elapsed) => {
+            let timed_call = tokio::time::timeout(remaining, call);
+            let turn = match await_or_cancel(timed_call, cancel).await {
+                AwaitOrCancel::Cancelled => {
+                    return Ok(make_result(
+                        events,
+                        DoneReason::Cancelled,
+                        stop_text(&DoneReason::Cancelled),
+                        steps,
+                    ));
+                }
+                AwaitOrCancel::Completed(Ok(turn)) => turn?,
+                AwaitOrCancel::Completed(Err(_elapsed)) => {
                     let reason = budget_reason(DoneReason::TimeBudgetReached, retrying_vocabulary);
                     let text = if reason == DoneReason::TimeBudgetReached {
                         "time budget reached while waiting for the model"
@@ -362,6 +372,14 @@ impl SubAgent {
                     return Ok(make_result(events, reason, text, steps));
                 }
             };
+            if cancel.is_some_and(CancellationToken::is_cancelled) {
+                return Ok(make_result(
+                    events,
+                    DoneReason::Cancelled,
+                    stop_text(&DoneReason::Cancelled),
+                    steps,
+                ));
+            }
 
             let CompleterTurn { reply, executed } = turn;
 
@@ -380,6 +398,14 @@ impl SubAgent {
             record_executed(&executed, &mut events, event_sink);
 
             if reply.tool_calls.is_empty() {
+                if cancel.is_some_and(CancellationToken::is_cancelled) {
+                    return Ok(make_result(
+                        events,
+                        DoneReason::Cancelled,
+                        stop_text(&DoneReason::Cancelled),
+                        steps,
+                    ));
+                }
                 return Ok(make_result(
                     events,
                     DoneReason::NoMoreToolCalls,
@@ -408,25 +434,42 @@ impl SubAgent {
             // Store the assistant turn in the conversation
             messages.push(LlmMessage::Assistant(reply.clone()));
 
-            let (result_parts, turn_rejected_vocabulary) = self
+            let dispatch_result = self
                 .dispatch_turn(
                     &reply.tool_calls,
                     dispatch.as_ref(),
                     &mut events,
+                    cancel,
                     event_sink,
                 )
                 .await;
+            if dispatch_result.cancelled {
+                return Ok(make_result(
+                    events,
+                    DoneReason::Cancelled,
+                    stop_text(&DoneReason::Cancelled),
+                    steps,
+                ));
+            }
+            if cancel.is_some_and(CancellationToken::is_cancelled) {
+                return Ok(make_result(
+                    events,
+                    DoneReason::Cancelled,
+                    stop_text(&DoneReason::Cancelled),
+                    steps,
+                ));
+            }
             // Only a turn that actually dispatched something updates the flag:
             // a turn of pure prose is not evidence that the model stopped
             // retrying, and clearing it there would hide the diagnosis behind
             // one apologetic message.
-            if !result_parts.is_empty() {
-                retrying_vocabulary = turn_rejected_vocabulary;
+            if !dispatch_result.result_parts.is_empty() {
+                retrying_vocabulary = dispatch_result.rejected_vocabulary;
             }
             // Bundle all results into one message so Bedrock sees a single user
             // turn paired against the assistant turn above.
-            if !result_parts.is_empty() {
-                messages.push(LlmMessage::ToolResults(result_parts));
+            if !dispatch_result.result_parts.is_empty() {
+                messages.push(LlmMessage::ToolResults(dispatch_result.result_parts));
             }
 
             if complete_requested {
@@ -453,7 +496,7 @@ impl SubAgent {
         steps: usize,
         started: Instant,
         messages: &[LlmMessage],
-        cancel: Option<&tokio::sync::Notify>,
+        cancel: Option<&CancellationToken>,
     ) -> Option<DoneReason> {
         if steps >= self.bounds.max_steps {
             return Some(DoneReason::StepBudgetReached);
@@ -464,8 +507,7 @@ impl SubAgent {
         if estimated_tokens(&self.system_prompt, messages) > self.bounds.max_tokens {
             return Some(DoneReason::TokenBudgetReached);
         }
-        // Non-blocking poll: fires if notify_one() was called.
-        if cancel.is_some_and(cancel_was_signalled) {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
             return Some(DoneReason::Cancelled);
         }
         None
@@ -496,8 +538,9 @@ impl SubAgent {
         calls: &[LlmToolCall],
         dispatch: &dyn ToolDispatch,
         events: &mut Vec<SubAgentEvent>,
+        cancel: Option<&CancellationToken>,
         event_sink: Option<&tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
-    ) -> (Vec<ToolResultPart>, bool) {
+    ) -> DispatchTurn {
         let mut result_parts: Vec<ToolResultPart> = Vec::new();
         let mut rejected_vocabulary = false;
         for call in calls.iter().filter(|c| c.name != "complete") {
@@ -510,7 +553,16 @@ impl SubAgent {
             }
             events.push(call_ev);
 
-            let (ok, summary, content) = match dispatch.call(&call.name, call.args.clone()).await {
+            let outcome =
+                await_or_cancel(dispatch.call(&call.name, call.args.clone()), cancel).await;
+            let AwaitOrCancel::Completed(outcome) = outcome else {
+                return DispatchTurn {
+                    result_parts,
+                    rejected_vocabulary,
+                    cancelled: true,
+                };
+            };
+            let (ok, summary, content) = match outcome {
                 Ok(s) => (true, s.chars().take(120).collect(), s),
                 Err(e) => {
                     rejected_vocabulary |= VocabularyRejection::is_one(&e);
@@ -534,8 +586,18 @@ impl SubAgent {
                 content,
             });
         }
-        (result_parts, rejected_vocabulary)
+        DispatchTurn {
+            result_parts,
+            rejected_vocabulary,
+            cancelled: false,
+        }
     }
+}
+
+struct DispatchTurn {
+    result_parts: Vec<ToolResultPart>,
+    rejected_vocabulary: bool,
+    cancelled: bool,
 }
 
 /// Write a completer-executed call into the run log, as the pair the loop's own
@@ -646,14 +708,26 @@ fn message_chars(message: &LlmMessage) -> usize {
     }
 }
 
-/// Non-blocking cancellation check.
-///
-/// We can't `.await` the `Notify::notified()` future without blocking; instead
-/// we poll it using `futures::poll!` which returns `Poll::Ready` iff the
-/// notify was already signalled.
-fn cancel_was_signalled(notify: &tokio::sync::Notify) -> bool {
-    use futures::FutureExt; // for `.now_or_never()`
-    notify.notified().now_or_never().is_some()
+enum AwaitOrCancel<T> {
+    Completed(T),
+    Cancelled,
+}
+
+async fn await_or_cancel<F>(
+    future: F,
+    cancel: Option<&CancellationToken>,
+) -> AwaitOrCancel<F::Output>
+where
+    F: std::future::Future,
+{
+    let Some(cancel) = cancel else {
+        return AwaitOrCancel::Completed(future.await);
+    };
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => AwaitOrCancel::Cancelled,
+        output = future => AwaitOrCancel::Completed(output),
+    }
 }
 
 fn make_result(
@@ -1021,12 +1095,12 @@ mod tests {
         );
     }
 
-    /// Test 3: cancellation via Notify before the loop starts → returns Cancelled.
+    /// A level-triggered token cannot lose a cancellation that arrives before
+    /// the loop starts.
     #[tokio::test]
-    async fn cancellation_via_notify() {
-        let notify = Arc::new(Notify::new());
-        // Signal before run() is called so the first iteration detects it.
-        notify.notify_one();
+    async fn cancellation_before_the_loop_starts_is_observed() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
 
         let completer = MockCompleter::new(vec![text_reply("never reached")]);
         let agent = make_agent(completer, 30);
@@ -1034,12 +1108,140 @@ mod tests {
             .run(
                 "hello",
                 std::sync::Arc::new(EchoDispatch),
-                Some(&notify),
+                Some(&cancel),
                 None,
             )
             .await
             .unwrap();
         assert_eq!(result.reason, DoneReason::Cancelled);
+    }
+
+    struct SetOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for SetOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    struct BlockingCompleter {
+        started: Arc<Notify>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Completer for BlockingCompleter {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[LlmMessage],
+            _tools: &[Tool],
+        ) -> Result<LlmReply> {
+            let _drop_probe = SetOnDrop(Arc::clone(&self.dropped));
+            self.started.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_blocked_provider_drops_its_future() {
+        let started = Arc::new(Notify::new());
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = CancellationToken::new();
+        let agent = SubAgent {
+            completer: Box::new(BlockingCompleter {
+                started: Arc::clone(&started),
+                dropped: Arc::clone(&dropped),
+            }),
+            tools: vec![],
+            system_prompt: "sys".into(),
+            bounds: SubAgentBounds::default(),
+        };
+        let run_cancel = cancel.clone();
+        let task = tokio::spawn(async move {
+            agent
+                .run(
+                    "hello",
+                    std::sync::Arc::new(EchoDispatch),
+                    Some(&run_cancel),
+                    None,
+                )
+                .await
+                .unwrap()
+        });
+
+        started.notified().await;
+        cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("cancellation must not wait for the provider wall-clock bound")
+            .unwrap();
+
+        assert_eq!(result.reason, DoneReason::Cancelled);
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "the blocked provider future remained alive after cancellation"
+        );
+    }
+
+    struct BlockingMutation {
+        started: Arc<Notify>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+        mutations: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ToolDispatch for BlockingMutation {
+        async fn call(&self, _name: &str, _args: serde_json::Value) -> Result<String> {
+            let _drop_probe = SetOnDrop(Arc::clone(&self.dropped));
+            self.started.notify_one();
+            std::future::pending::<()>().await;
+            self.mutations
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok("mutated".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_blocked_tool_prevents_the_mutation_from_continuing() {
+        let started = Arc::new(Notify::new());
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mutations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cancel = CancellationToken::new();
+        let agent = make_agent(
+            MockCompleter::new(vec![tool_call_reply("kb_write_page")]),
+            30,
+        );
+        let dispatch = Arc::new(BlockingMutation {
+            started: Arc::clone(&started),
+            dropped: Arc::clone(&dropped),
+            mutations: Arc::clone(&mutations),
+        });
+        let run_cancel = cancel.clone();
+        let task = tokio::spawn(async move {
+            agent
+                .run("hello", dispatch, Some(&run_cancel), None)
+                .await
+                .unwrap()
+        });
+
+        started.notified().await;
+        cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("cancellation must not wait for a blocked tool")
+            .unwrap();
+
+        assert_eq!(result.reason, DoneReason::Cancelled);
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "the blocked tool future remained alive after cancellation"
+        );
+        assert_eq!(
+            mutations.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a cancelled tool continued into its mutation"
+        );
     }
 
     /// Test: when the assistant returns 2 tool calls in one turn, the loop must

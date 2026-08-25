@@ -252,6 +252,28 @@ fn approval_ttl() -> Duration {
     child_tool_call_budget().saturating_sub(Duration::from_secs(30))
 }
 
+const APPROVAL_UNAVAILABLE_WITHOUT_SESSION_CODE: &str = "approval_unavailable_without_session";
+
+#[derive(Debug)]
+struct ApprovalUnavailableWithoutSession {
+    tool_name: String,
+}
+
+impl std::fmt::Display for ApprovalUnavailableWithoutSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{APPROVAL_UNAVAILABLE_WITHOUT_SESSION_CODE}: `{}` requires your approval, but this \
+             workflow has no chat session that can securely display and resolve an approval card. \
+             Start the operation from a Biorouter chat and approve it there. The tool was not \
+             run; do not retry it in this reply.",
+            self.tool_name
+        )
+    }
+}
+
+impl std::error::Error for ApprovalUnavailableWithoutSession {}
+
 tokio::task_local! {
     /// How long the bridged tool call running on this task may take (#110).
     ///
@@ -527,6 +549,22 @@ impl BridgeGrant {
         let Ok(call) = pending.tool_call.as_ref() else {
             return Err(format!("`{name}` needs approval but is not a usable call."));
         };
+
+        // An approval is an authorization capability, so it must have an exact
+        // session to display it and accept the answer. Unscoped publication is
+        // safe for generic elicitations whose origin genuinely cannot be known,
+        // but not for a tool approval: a Knowledge-view workflow has no agent
+        // loop to surface the card, and allowing any unrelated session to claim
+        // it would cross the permission boundary. Refuse before minting an id or
+        // publishing anything, rather than parking until the approval TTL.
+        let Some(session_scope) = (!self.session.id.is_empty()).then_some(self.session.id.as_str())
+        else {
+            return Err(ApprovalUnavailableWithoutSession {
+                tool_name: name.to_string(),
+            }
+            .to_string());
+        };
+
         let arguments = call.arguments.clone().unwrap_or_default();
         let request = UserActionRequest::ToolApproval(ToolApprovalRequest {
             tool_name: call.name.to_string(),
@@ -543,16 +581,8 @@ impl BridgeGrant {
 
         // Owned by the grant's nonce so the lease can release it, scoped to the
         // session so only that session's loop may surface it (#40).
-        //
-        // ⚠ An EMPTY session id is `None`, not `Some("")`. A workflow with no
-        // chat behind it — a scheduled knowledge macro, a `Session::default()` —
-        // carries one, and `Some("")` would key a queue on the empty string that
-        // every such run in the process would share, which is #40's
-        // cross-session leak with a different key. `None` is the unscoped
-        // fallback the manager already has for exactly this case.
-        let session_scope = (!self.session.id.is_empty()).then_some(self.session.id.as_str());
         let parked = PendingUserActions::global().park(
-            session_scope,
+            Some(session_scope),
             (!self.nonce.is_empty()).then_some(self.nonce.as_str()),
             request,
         );
@@ -2019,6 +2049,80 @@ mod tests {
         })
         .await
         .expect("an approval card must be published for the session")
+    }
+
+    /// A Knowledge-view workflow has no agent loop to render an approval card.
+    /// It must fail at the approval boundary rather than publishing an unscoped
+    /// capability that another session could claim or waiting out the TTL.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unscoped_approval_fails_closed_without_publishing_or_running() {
+        const PROBE_TOOL: &str = "approval_probe__write";
+
+        let dispatcher = Arc::new(RecordingBridgeDispatch::default());
+        let hooks = no_hooks();
+        let mut inspections = inspections_with(&hooks, false);
+        inspections.add_inspector(Box::new(
+            crate::security::sensitive_ops::SensitiveOpsInspector,
+        ));
+        let grant = BridgeGrant::new(
+            Session::default(),
+            BioRouterMode::Auto,
+            Arc::clone(&dispatcher) as Arc<dyn BridgeToolDispatch>,
+            Arc::new(inspections),
+            test_capability(),
+            vec![Tool::new(
+                PROBE_TOOL,
+                "test approval probe",
+                serde_json::Map::new(),
+            )],
+            Conversation::new_unvalidated(vec![]),
+            None,
+            hooks,
+            None,
+            Arc::new(ToolRiskRegistry::new()),
+        );
+
+        let refusal = tokio::time::timeout(
+            Duration::from_secs(1),
+            grant.call(CallToolRequestParams {
+                name: PROBE_TOOL.to_string().into(),
+                arguments: Some(
+                    serde_json::json!({
+                        "path": "/etc/biorouter-approval-probe",
+                        "content": "must never be written",
+                    })
+                    .as_object()
+                    .expect("an object")
+                    .clone(),
+                ),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await
+        .expect("an unroutable approval must fail immediately, not at its TTL")
+        .expect_err("an unscoped workflow must not run an approval-gated call");
+
+        assert!(
+            refusal.starts_with(APPROVAL_UNAVAILABLE_WITHOUT_SESSION_CODE),
+            "the refusal must carry a stable typed code: {refusal}"
+        );
+        assert!(
+            refusal.contains("Start the operation from a Biorouter chat")
+                && refusal.contains("The tool was not run"),
+            "the refusal must tell the user how to obtain approval safely: {refusal}"
+        );
+        assert!(
+            dispatcher.calls.lock().expect("the calls lock").is_empty(),
+            "an unroutable approval must never reach the dispatcher"
+        );
+
+        assert!(
+            !crate::action_required_manager::ActionRequiredManager::global()
+                .has_unscoped_tool_confirmation(PROBE_TOOL),
+            "an unscoped workflow must not publish a tool-confirmation card"
+        );
     }
 
     /// The whole of #107: a bridged call that needs approval raises a real card,

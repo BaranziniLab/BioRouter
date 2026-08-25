@@ -46,7 +46,7 @@ use crate::knowledge::{
     store::{self, PageRef},
     types::{Graph, GraphEdge, GraphNode, PageKind, QuantitativeValue},
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -885,12 +885,13 @@ fn non_empty(s: &str) -> Option<String> {
 /// cache carries the six old keys under names nothing reads any more *and* no
 /// degree at all, so a renderer sizing hubs by `degree` would draw every node in
 /// every pre-existing base at the same size and look like a layout bug.
-// 4: `page_kind_of` learned OKF's and BioOKF's typed vocabularies and their
-// singular directories. Every cached graph derived before that carries `Hub` for
-// every node on a modern base, and a cache is only re-derived when this number
-// moves — so without the bump a user whose base is unchanged keeps the wrong
-// kinds indefinitely, and a `.brkb` exported at 3 imports them into a 3 reader.
-const CACHE_VERSION: u32 = 4;
+/// **Version 4** taught `page_kind_of` OKF's and BioOKF's typed vocabularies
+/// and singular directories.
+///
+/// **Version 5** binds the derived payload to the Git revision it describes.
+/// A same-format cache can still be stale after a page/raw commit whose graph
+/// refresh failed; format generation alone cannot detect that state.
+const CACHE_VERSION: u32 = 5;
 
 /// The on-disk envelope, so `graph-cache.json` says what it is.
 ///
@@ -911,6 +912,7 @@ const CACHE_VERSION: u32 = 4;
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CacheEnvelope<G> {
     version: u32,
+    revision: String,
     graph: G,
 }
 
@@ -928,17 +930,74 @@ pub(crate) fn cache_path(kb_root: &Path) -> std::path::PathBuf {
         .join("graph-cache.json")
 }
 
+fn current_revision(kb_root: &Path) -> Result<String> {
+    let repo = git2::Repository::open(kb_root)?;
+    let revision = repo.head()?.peel_to_commit()?.id().to_string();
+    Ok(revision)
+}
+
 pub fn write_cache(kb_root: &Path, graph: &Graph) -> Result<()> {
+    write_cache_at_revision(kb_root, graph, current_revision(kb_root)?)
+}
+
+fn write_cache_at_revision(kb_root: &Path, graph: &Graph, revision: String) -> Result<()> {
+    #[cfg(test)]
+    if cache_write_failure_injected(kb_root) {
+        anyhow::bail!("injected graph-cache write failure");
+    }
+
     let path = cache_path(kb_root);
     std::fs::create_dir_all(path.parent().unwrap())?;
     let envelope = CacheEnvelope {
         version: CACHE_VERSION,
+        revision,
         graph,
     };
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&envelope)?)?;
-    std::fs::rename(tmp, path)?;
+    crate::knowledge::store::write_atomically(
+        &path,
+        serde_json::to_string_pretty(&envelope)?.as_bytes(),
+    )?;
     Ok(())
+}
+
+pub(crate) fn invalidate_cache(kb_root: &Path) -> Result<()> {
+    let path = cache_path(kb_root);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            Err(error).with_context(|| format!("removing stale cache {}", path.display()))
+        }
+    }
+}
+
+/// Rebuild against one stable durable revision. A failed rebuild never leaves
+/// an older cache available to readers.
+pub(crate) fn rebuild_cache(kb_root: &Path) -> Result<()> {
+    let rebuilt = (|| {
+        let revision = current_revision(kb_root)?;
+        let graph = derive(kb_root)?;
+        anyhow::ensure!(
+            current_revision(kb_root)? == revision,
+            "knowledge content changed while deriving the graph cache"
+        );
+        write_cache_at_revision(kb_root, &graph, revision.clone())?;
+        anyhow::ensure!(
+            current_revision(kb_root)? == revision,
+            "knowledge content changed while publishing the graph cache"
+        );
+        Ok(())
+    })();
+
+    match rebuilt {
+        Ok(()) => Ok(()),
+        Err(rebuild_error) => match invalidate_cache(kb_root) {
+            Ok(()) => Err(rebuild_error),
+            Err(invalidate_error) => Err(anyhow::anyhow!(
+                "{rebuild_error:#}; stale graph-cache removal also failed: {invalidate_error:#}"
+            )),
+        },
+    }
 }
 
 /// The cached graph, or `None` meaning "no usable cache — re-derive".
@@ -968,8 +1027,33 @@ pub fn read_cache(kb_root: &Path) -> Result<Option<Graph>> {
             return Ok(None);
         }
     };
+    let revision_before = match current_revision(kb_root) {
+        Ok(revision) => revision,
+        Err(error) => {
+            tracing::warn!(
+                "knowledge: cannot establish the durable revision for cache {}: {error:#}",
+                path.display()
+            );
+            return Ok(None);
+        }
+    };
     match serde_json::from_str::<CacheEnvelope<Graph>>(&s) {
-        Ok(envelope) if envelope.version == CACHE_VERSION => Ok(Some(envelope.graph)),
+        Ok(envelope)
+            if envelope.version == CACHE_VERSION
+                && envelope.revision == revision_before
+                && current_revision(kb_root).is_ok_and(|revision| revision == revision_before) =>
+        {
+            Ok(Some(envelope.graph))
+        }
+        Ok(envelope) if envelope.version == CACHE_VERSION => {
+            tracing::info!(
+                "knowledge: graph cache at {} describes revision {}, current revision is {}; re-deriving",
+                path.display(),
+                envelope.revision,
+                revision_before
+            );
+            Ok(None)
+        }
         Ok(envelope) => {
             tracing::info!(
                 "knowledge: graph cache at {} is version {}, this build writes {CACHE_VERSION}; re-deriving",
@@ -988,6 +1072,32 @@ pub fn read_cache(kb_root: &Path) -> Result<Option<Graph>> {
             Ok(None)
         }
     }
+}
+
+#[cfg(test)]
+static CACHE_WRITE_FAILURES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(test)]
+pub(crate) fn fail_cache_writes(kb_root: &Path, count: usize) {
+    CACHE_WRITE_FAILURES
+        .lock()
+        .unwrap()
+        .insert(kb_root.to_path_buf(), count);
+}
+
+#[cfg(test)]
+fn cache_write_failure_injected(kb_root: &Path) -> bool {
+    let mut failures = CACHE_WRITE_FAILURES.lock().unwrap();
+    let Some(remaining) = failures.get_mut(kb_root) else {
+        return false;
+    };
+    *remaining = remaining.saturating_sub(1);
+    if *remaining == 0 {
+        failures.remove(kb_root);
+    }
+    true
 }
 
 /// Scaffold pages that exist in every KB and should never appear as graph
@@ -1569,6 +1679,7 @@ mod tests {
             &kb,
             &serde_json::to_string(&serde_json::json!({
                 "version": CACHE_VERSION + 1,
+                "revision": current_revision(&kb).unwrap(),
                 "graph": g,
             }))
             .unwrap(),
@@ -1601,6 +1712,60 @@ mod tests {
     }
 
     #[test]
+    fn a_same_version_cache_for_an_older_commit_is_never_served() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base("k", "K", None).unwrap();
+        let kb = dir.path().join("k");
+        write_page(
+            &kb,
+            "knowledge/concept/a.md",
+            "---\ntype: Concept\nidentifier: A\n---\n\nA",
+            "add A",
+            None,
+        )
+        .unwrap();
+        svc.rebuild_graph_cache("k").unwrap();
+        assert!(read_cache(&kb).unwrap().is_some());
+
+        write_page(
+            &kb,
+            "knowledge/concept/b.md",
+            "---\ntype: Concept\nidentifier: B\n---\n\nB",
+            "add B",
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            read_cache(&kb).unwrap().is_none(),
+            "a valid current-format cache for the previous commit must be rejected"
+        );
+        let healed = svc.get_graph("k").unwrap();
+        assert!(healed
+            .nodes
+            .iter()
+            .any(|node| node.path == "knowledge/concept/b.md"));
+        assert_eq!(read_cache(&kb).unwrap().as_ref(), Some(&healed));
+    }
+
+    #[test]
+    fn a_predictable_legacy_tmp_collision_cannot_block_cache_replacement() {
+        let (_d, kb) = build_sample();
+        let legacy_tmp = cache_path(&kb).with_extension("json.tmp");
+        std::fs::create_dir_all(&legacy_tmp).unwrap();
+
+        let graph = derive(&kb).unwrap();
+        write_cache(&kb, &graph).unwrap();
+
+        assert_eq!(read_cache(&kb).unwrap().as_ref(), Some(&graph));
+        assert!(
+            legacy_tmp.is_dir(),
+            "the collision fixture was not consumed"
+        );
+    }
+
+    #[test]
     fn the_cache_file_states_its_own_version() {
         // Self-describing on disk, not merely in the type: a reader holding the
         // file and not this source has to be able to tell what it is.
@@ -1608,7 +1773,9 @@ mod tests {
         write_cache(&kb, &derive(&kb).unwrap()).unwrap();
         let raw = std::fs::read_to_string(cache_path(&kb)).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let revision = current_revision(&kb).unwrap();
         assert_eq!(v["version"], serde_json::json!(CACHE_VERSION));
+        assert_eq!(v["revision"].as_str(), Some(revision.as_str()));
         assert!(v["graph"]["nodes"].is_array(), "got: {raw}");
     }
 

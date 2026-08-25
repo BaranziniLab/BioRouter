@@ -29,11 +29,11 @@ pub fn write_raw(
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("bin");
-        std::fs::write(raw_dir.join(format!("original.{ext}")), bytes)?;
+        crate::knowledge::store::write_atomically(&raw_dir.join(format!("original.{ext}")), bytes)?;
     }
-    std::fs::write(raw_dir.join("source.md"), derived_md)?;
+    crate::knowledge::store::write_atomically(&raw_dir.join("source.md"), derived_md.as_bytes())?;
     let yaml = serde_yaml::to_string(&meta)?;
-    std::fs::write(raw_dir.join("meta.yaml"), yaml)?;
+    crate::knowledge::store::write_atomically(&raw_dir.join("meta.yaml"), yaml.as_bytes())?;
     Ok(RawWrite {
         source_id: meta.id.clone(),
         source_md_path: format!("raw/{}/source.md", meta.id),

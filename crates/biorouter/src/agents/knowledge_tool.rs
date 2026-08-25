@@ -9,6 +9,7 @@
 
 use rmcp::model::{Content, ErrorCode, ErrorData};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use super::Agent;
 use crate::knowledge::conversation_ingest::{ingest_conversation, ConversationIngestArgs};
@@ -27,6 +28,7 @@ impl Agent {
         &self,
         arguments: Value,
         session: &Session,
+        cancel: Option<CancellationToken>,
     ) -> ToolResult<Vec<Content>> {
         let svc = KnowledgeService::new_default().map_err(internal)?;
 
@@ -71,7 +73,7 @@ impl Agent {
         }
 
         let (completer, caller_capability, caller_affiliation) = self
-            .conversation_ingest_completer(&svc, &kb_id, session)
+            .conversation_ingest_completer(&svc, &kb_id, session, cancel.clone())
             .await?;
 
         let result = ingest_conversation(
@@ -98,7 +100,7 @@ impl Agent {
                     .map(str::to_string),
                 bounds: SubAgentBounds::default(),
                 event_sink: None,
-                cancel: None,
+                cancel,
             },
         )
         .await
@@ -122,6 +124,7 @@ impl Agent {
         svc: &KnowledgeService,
         kb_id: &str,
         session: &Session,
+        cancel: Option<CancellationToken>,
     ) -> Result<
         (
             Box<dyn Completer>,
@@ -133,7 +136,7 @@ impl Agent {
         if should_use_knowledge_default_model(session) {
             let manifest = svc.get_base(kb_id).map_err(internal)?;
             if let Some(model) = manifest.default_model {
-                return build_model_ref_completer(&model, session.privacy_tier)
+                return build_model_ref_completer(&model, session.privacy_tier, cancel)
                     .await
                     .map_err(|e| {
                         internal(format!(
@@ -149,6 +152,10 @@ impl Agent {
             ))
         })?;
         let (completer, tier, affiliation) = ProviderCompleter::paired(provider);
+        let completer = match cancel {
+            Some(cancel) => completer.cancelled_by(cancel),
+            None => completer,
+        };
         // #107 / #109: this macro runs from inside a chat, so this session's own
         // agent loop is the surface that can draw a human-decision card and the
         // one that will drain it. Scoping the card here is what makes an
@@ -319,6 +326,7 @@ fn should_use_knowledge_default_model(session: &Session) -> bool {
 async fn build_model_ref_completer(
     model: &ModelRef,
     session: crate::privacy::SessionClassification,
+    cancel: Option<CancellationToken>,
 ) -> anyhow::Result<(
     Box<dyn Completer>,
     ProviderTier,
@@ -346,6 +354,10 @@ async fn build_model_ref_completer(
     )
     .await?;
     let (completer, tier, affiliation) = ProviderCompleter::paired(provider);
+    let completer = match cancel {
+        Some(cancel) => completer.cancelled_by(cancel),
+        None => completer,
+    };
     Ok((Box::new(completer), tier, affiliation))
 }
 
@@ -796,7 +808,7 @@ mod tests {
         let err = crate::config::with_config_overrides(
             // Not this machine ⇒ `tier()` says Public, from a real provider.
             ollama_at("https://api.example-saas.invalid"),
-            build_model_ref_completer(&model, SessionClassification::Private),
+            build_model_ref_completer(&model, SessionClassification::Private, None),
         )
         .await
         // `Completer` is not `Debug`, so the Ok side cannot be unwrapped for a
@@ -812,13 +824,13 @@ mod tests {
         // Both directions, or the gate is just "refuse everyone".
         assert!(crate::config::with_config_overrides(
             ollama_at("http://localhost:11434"),
-            build_model_ref_completer(&model, SessionClassification::Private),
+            build_model_ref_completer(&model, SessionClassification::Private, None),
         )
         .await
         .is_ok());
         assert!(crate::config::with_config_overrides(
             ollama_at("https://api.example-saas.invalid"),
-            build_model_ref_completer(&model, SessionClassification::Public),
+            build_model_ref_completer(&model, SessionClassification::Public, None),
         )
         .await
         .is_ok());
@@ -863,7 +875,7 @@ mod tests {
 
         let err = crate::config::with_config_overrides(
             ollama_at(OFF_MACHINE),
-            agent.conversation_ingest_completer(&svc, "kb", &session),
+            agent.conversation_ingest_completer(&svc, "kb", &session, None),
         )
         .await
         .err()
@@ -879,7 +891,7 @@ mod tests {
         // everyone — which is not "the session's classification" either.
         assert!(crate::config::with_config_overrides(
             ollama_at(THIS_MACHINE),
-            agent.conversation_ingest_completer(&svc, "kb", &session),
+            agent.conversation_ingest_completer(&svc, "kb", &session, None),
         )
         .await
         .is_ok());
@@ -888,7 +900,7 @@ mod tests {
         assert!(
             crate::config::with_config_overrides(
                 ollama_at(OFF_MACHINE),
-                agent.conversation_ingest_completer(&svc, "kb", &session),
+                agent.conversation_ingest_completer(&svc, "kb", &session, None),
             )
             .await
             .is_ok(),
