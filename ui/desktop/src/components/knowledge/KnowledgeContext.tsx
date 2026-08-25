@@ -403,10 +403,10 @@ export function KnowledgeProvider({
     // A primary that names a base which no longer exists is cleared, not
     // promoted — deleting a base is destructive, so re-pointing the write
     // target at an unrelated one is the wrong default (D2).
-    if (primaryKbId && bases.length > 0 && !bases.some((b) => b.id === primaryKbId)) {
+    if (basesLoaded && primaryKbId && !bases.some((b) => b.id === primaryKbId)) {
       setPrimaryKbId(null);
     }
-  }, [primaryKbId, bases, setPrimaryKbId]);
+  }, [basesLoaded, primaryKbId, bases, setPrimaryKbId]);
 
   useEffect(() => {
     // Drop ids naming bases that no longer exist — but only once a list has

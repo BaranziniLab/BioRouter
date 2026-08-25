@@ -22,12 +22,14 @@
 //! an HTTP client crate, matching `commands/apps.rs`'s `daemon_ok` — the CLI
 //! deliberately carries no HTTP dependency.
 
+use std::io::IsTerminal;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::SessionManager;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use zeroize::Zeroizing;
 
 use super::apps::{configured_port, daemon_ok, DAEMON_HOST};
 use super::session_grouping::{listed_session_types, SessionRow};
@@ -42,6 +44,7 @@ use super::session_grouping::{listed_session_types, SessionRow};
 /// no HTTP client either — so the agreement is held by a test rather than by the
 /// type system, and the test reads the source rather than grepping for a name.
 pub(crate) const CALLER_PROVIDER_HEADER: &str = "X-Caller-Provider";
+pub(crate) const USER_ACTION_HEADER: &str = "X-User-Action";
 
 /// Everything a daemon request must carry: the shared secret, and **the
 /// capability this terminal is running under**.
@@ -61,6 +64,11 @@ pub(crate) struct DaemonAuth {
     /// the public tier — the same answer, stated by saying nothing rather than
     /// by saying something meaningless.
     caller_provider: String,
+    /// Present only for attach/cancel routes that require proof of a live
+    /// operator: the attached event stream, interrupt, cancel, and a
+    /// provenance-less reply to a subagent.
+    /// It is never sourced from argv, environment, config, or desktop settings.
+    user_action: Option<Arc<Zeroizing<String>>>,
 }
 
 /// The daemon's secret plus this process's capability, or an actionable error.
@@ -82,7 +90,49 @@ pub(crate) async fn daemon_auth() -> Result<DaemonAuth> {
     Ok(DaemonAuth {
         secret,
         caller_provider,
+        user_action: None,
     })
+}
+
+async fn daemon_auth_with_user_action(from_stdin: bool) -> Result<DaemonAuth> {
+    let auth = daemon_auth().await?;
+    auth_with_user_action(auth, from_stdin).await
+}
+
+async fn auth_with_user_action(mut auth: DaemonAuth, from_stdin: bool) -> Result<DaemonAuth> {
+    let key = tokio::task::spawn_blocking(move || read_user_action_key(from_stdin))
+        .await
+        .map_err(|join| anyhow!("could not read the user-action key: {join}"))??;
+    auth.user_action = Some(Arc::new(key));
+    Ok(auth)
+}
+
+fn read_user_action_key(from_stdin: bool) -> Result<Zeroizing<String>> {
+    let key = if from_stdin {
+        let mut key = String::new();
+        std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut key)?;
+        while key.ends_with('\n') || key.ends_with('\r') {
+            key.pop();
+        }
+        Zeroizing::new(key)
+    } else {
+        if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+            return Err(anyhow!(
+                "steering and cancellation require the user-action key that was hashed into \
+                 biorouterd at startup. Run this from a controlling terminal, or pass \
+                 --user-action-key-stdin and pipe the raw key as the first line"
+            ));
+        }
+        eprintln!(
+            "Enter the user-action key supplied when this daemon was launched \
+             (input is hidden):"
+        );
+        Zeroizing::new(console::Term::stderr().read_secure_line()?)
+    };
+    if key.is_empty() {
+        return Err(anyhow!("the user-action key cannot be empty"));
+    }
+    Ok(key)
 }
 
 impl DaemonAuth {
@@ -109,6 +159,16 @@ impl DaemonAuth {
         Self {
             secret: secret.to_string(),
             caller_provider: caller_provider.to_string(),
+            user_action: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test_with_user_action(secret: &str, caller_provider: &str, key: &str) -> Self {
+        Self {
+            secret: secret.to_string(),
+            caller_provider: caller_provider.to_string(),
+            user_action: Some(Arc::new(Zeroizing::new(key.to_string()))),
         }
     }
 }
@@ -131,7 +191,9 @@ pub(crate) const NO_SECRET_KEY_HELP: &str =
      unreachable from a terminal: it binds a random port and mints a new secret every launch, \
      and neither is published. Point the app at a daemon you control instead:\n  \
      1. Start one yourself, with a port and a secret you choose:\n       \
-     BIOROUTER_PORT=3000 BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent\n  \
+     read -r -s action_key; printf '\n'; printf '%s' \"$action_key\" | shasum -a 256 | \
+     cut -d ' ' -f 1 | BIOROUTER_PORT=3000 BIOROUTER_SERVER__SECRET_KEY=<key> \
+     biorouterd agent\n  \
      2. In the app: Settings > Advanced > External Backend, enable it and set the URL to \
      http://127.0.0.1:3000\n  3. Re-run this command in a shell that exports the same two \
      values:\n       BIOROUTER_PORT=3000 BIOROUTER_SERVER__SECRET_KEY=<key> biorouter session \
@@ -150,7 +212,9 @@ pub(crate) fn no_daemon_at(port: u16) -> String {
          daemon does not count: it binds a port the operating system chooses at launch, so it \
          is never on {port} except by coincidence. Start one you control, and point the app at \
          it with Settings > Advanced > External Backend:\n  \
-         BIOROUTER_PORT={port} BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent"
+         read -r -s action_key; printf '\n'; printf '%s' \"$action_key\" | shasum -a 256 | \
+         cut -d ' ' -f 1 | BIOROUTER_PORT={port} BIOROUTER_SERVER__SECRET_KEY=<key> \
+         biorouterd agent"
     )
 }
 
@@ -162,6 +226,26 @@ pub(crate) fn build_get_request(path: &str, host: &str, auth: &DaemonAuth) -> St
     )
 }
 
+fn build_user_action_get_request(
+    path: &str,
+    host: &str,
+    auth: &DaemonAuth,
+) -> Result<Zeroizing<String>> {
+    let proof = auth.user_action.as_ref().ok_or_else(|| {
+        anyhow!("this action requires a user-action key from the controlling terminal")
+    })?;
+    let mut request = Zeroizing::new(format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\n{}",
+        auth.headers()
+    ));
+    request.push_str(USER_ACTION_HEADER);
+    request.push_str(": ");
+    request.push_str(proof);
+    request.push_str("\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n");
+    Ok(request)
+}
+
+#[cfg(test)]
 pub(crate) fn build_post_request(path: &str, host: &str, auth: &DaemonAuth, body: &str) -> String {
     format!(
         "POST {path} HTTP/1.1\r\nHost: {host}\r\n{}\
@@ -170,6 +254,29 @@ pub(crate) fn build_post_request(path: &str, host: &str, auth: &DaemonAuth, body
         auth.headers(),
         body.len()
     )
+}
+
+fn build_user_action_post_request(
+    path: &str,
+    host: &str,
+    auth: &DaemonAuth,
+    body: &str,
+) -> Result<Zeroizing<String>> {
+    let proof = auth.user_action.as_ref().ok_or_else(|| {
+        anyhow!("this action requires a user-action key from the controlling terminal")
+    })?;
+    let mut request = Zeroizing::new(format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\n{}",
+        auth.headers()
+    ));
+    request.push_str(USER_ACTION_HEADER);
+    request.push_str(": ");
+    request.push_str(proof);
+    request.push_str("\r\nContent-Type: application/json\r\nContent-Length: ");
+    request.push_str(&body.len().to_string());
+    request.push_str("\r\nAccept: application/json\r\nConnection: close\r\n\r\n");
+    request.push_str(body);
+    Ok(request)
 }
 
 /// Append `chunk` to `buffer` and drain every COMPLETE SSE frame into `out`.
@@ -433,15 +540,21 @@ async fn stream_request(
     render: Render,
     status: Option<tokio::sync::oneshot::Sender<u16>>,
 ) -> Result<u16> {
+    stream_request_bytes(request.as_bytes(), stop_on_terminal, render, status).await
+}
+
+async fn stream_request_bytes(
+    request: &[u8],
+    stop_on_terminal: bool,
+    render: Render,
+    status: Option<tokio::sync::oneshot::Sender<u16>>,
+) -> Result<u16> {
     let port = configured_port();
     if !daemon_ok(DAEMON_HOST, port).await {
-        return Err(anyhow!(
-            "no Biorouter daemon is listening on {DAEMON_HOST}:{port}. \
-             Start one: BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent"
-        ));
+        return Err(anyhow!("{}", no_daemon_at(port)));
     }
     let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
-    stream.write_all(request.as_bytes()).await?;
+    stream.write_all(request).await?;
     read_response(&mut stream, stop_on_terminal, render, status).await
 }
 
@@ -691,7 +804,7 @@ async fn post_json(path: &str, body: &str, auth: &DaemonAuth) -> Result<(u16, St
     if !daemon_ok(DAEMON_HOST, port).await {
         return Err(anyhow!("{}", no_daemon_at(port)));
     }
-    let request = build_post_request(path, DAEMON_HOST, auth, body);
+    let request = build_user_action_post_request(path, DAEMON_HOST, auth, body)?;
     let raw = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
         stream.write_all(request.as_bytes()).await?;
@@ -756,15 +869,28 @@ fn reply_body(session_id: &str, text: &str) -> String {
 
 /// `biorouter sessions send <id> <text>` — inject a turn and, unless
 /// `--no-wait`, watch it to completion.
-pub async fn handle_session_send(session_id: &str, text: &str, wait: bool) -> Result<()> {
-    let auth = daemon_auth().await?;
+pub async fn handle_session_send(
+    session_id: &str,
+    text: &str,
+    wait: bool,
+    user_action_key_stdin: bool,
+) -> Result<()> {
+    let auth = daemon_auth_with_user_action(user_action_key_stdin).await?;
+    let request = build_user_action_post_request(
+        "/reply",
+        DAEMON_HOST,
+        &auth,
+        &reply_body(session_id, text),
+    )?;
     // `/reply` streams the turn back, so a send that waits is one request.
-    stream_frames(
-        build_post_request("/reply", DAEMON_HOST, &auth, &reply_body(session_id, text)),
-        wait,
-        Render::Lines,
-    )
-    .await
+    match stream_request_bytes(request.as_bytes(), wait, Render::Lines, None).await? {
+        200 => Ok(()),
+        code => Err(anyhow!(
+            "daemon refused the request: HTTP {code}\n\
+             (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's; \
+              403 means the user-action key does not match the daemon's configured digest)"
+        )),
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -976,7 +1102,8 @@ async fn post_interrupt(session_id: &str, text: &str, auth: &DaemonAuth) -> Resu
         (code, _) => Err(anyhow!(
             "the daemon refused the steer: HTTP {code}\n\
              (400 means the message was empty; 401 means BIOROUTER_SERVER__SECRET_KEY \
-              does not match the daemon's)"
+              does not match the daemon's; 403 means the user-action key does not \
+              match the daemon's configured digest)"
         )),
     }
 }
@@ -1006,14 +1133,16 @@ async fn post_reply_quiet(
     auth: &DaemonAuth,
     window: Arc<ReplyWindow>,
 ) -> Result<TurnOutcome> {
-    let request = build_post_request("/reply", DAEMON_HOST, auth, &reply_body(session_id, text));
+    let request =
+        build_user_action_post_request("/reply", DAEMON_HOST, auth, &reply_body(session_id, text))?;
     let (status_tx, status_rx) = tokio::sync::oneshot::channel();
     // Opened from before the request rather than from the 200: erring towards
     // warning about a turn that does not exist is harmless, erring the other way
     // silently kills one.
     window.open();
     let holder = tokio::spawn(async move {
-        let outcome = stream_request(request, true, Render::Silent, Some(status_tx)).await;
+        let outcome =
+            stream_request_bytes(request.as_bytes(), true, Render::Silent, Some(status_tx)).await;
         window.close();
         outcome
     });
@@ -1040,7 +1169,8 @@ async fn post_reply_quiet(
         Ok(409) => Ok(TurnOutcome::Refused),
         Ok(code) => Err(anyhow!(
             "the daemon refused to start a turn: HTTP {code}\n\
-             (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's)"
+             (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's; \
+              403 means the user-action key does not match the daemon's configured digest)"
         )),
         // The sender was dropped without a status: no status line was ever
         // read, so the request failed outright. The holder carries the reason.
@@ -1310,12 +1440,18 @@ pub async fn handle_session_attach(
     name: Option<String>,
     of: Option<String>,
     read_only: bool,
+    user_action_key_stdin: bool,
 ) -> Result<()> {
     // The daemon credentials first: `--of` needs the daemon to answer, and
     // failing on a missing key with the actionable message beats failing on a
     // lookup.
     let auth = daemon_auth().await?;
     let session_id = resolve_attach_target(session_id, name, of).await?;
+    let auth = if read_only {
+        auth
+    } else {
+        auth_with_user_action(auth, user_action_key_stdin).await?
+    };
 
     if read_only {
         eprintln!("attached to session {session_id}, observing only (ctrl-c to detach)");
@@ -1343,12 +1479,21 @@ pub async fn handle_session_attach(
     // frame is rendered as a transcript. It is READ-ONLY: its task in the daemon
     // merely returns when the channel closes and cancels nothing, so detaching
     // can never stop the session.
-    let observer = stream_request(
-        build_get_request(
+    let observer_request = if read_only {
+        Zeroizing::new(build_get_request(
             &format!("/sessions/{session_id}/events"),
             DAEMON_HOST,
             &auth,
-        ),
+        ))
+    } else {
+        build_user_action_get_request(
+            &format!("/sessions/{session_id}/events"),
+            DAEMON_HOST,
+            &auth,
+        )?
+    };
+    let observer = stream_request_bytes(
+        observer_request.as_bytes(),
         false,
         Render::JoinThenLines,
         None,
@@ -1453,14 +1598,15 @@ pub(crate) fn render_cancel(response: &serde_json::Value) -> Result<String> {
 /// unable to stop it from the terminal is the gap this closes.
 /// `workspace_close scope:"turn"` is the agent's version of the same act, and
 /// `POST /agent/cancel` is the route the GUI's Stop button already uses.
-pub async fn handle_session_cancel(session_id: &str) -> Result<()> {
-    let auth = daemon_auth().await?;
+pub async fn handle_session_cancel(session_id: &str, user_action_key_stdin: bool) -> Result<()> {
+    let auth = daemon_auth_with_user_action(user_action_key_stdin).await?;
     let body = serde_json::json!({ "session_id": session_id }).to_string();
     let (code, body) = post_json("/agent/cancel", &body, &auth).await?;
     if code != 200 {
         return Err(anyhow!(
             "the daemon refused the cancel: HTTP {code}\n\
-             (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's)"
+             (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's; \
+              403 means the user-action key does not match the daemon's configured digest)"
         ));
     }
     let response = json_object(&body).ok_or_else(|| {
@@ -1798,6 +1944,40 @@ mod tests {
         assert!(post.ends_with("\r\n\r\n{\"a\":1}"));
     }
 
+    #[test]
+    fn user_action_proof_is_explicit_and_scoped_to_attach_control_requests() {
+        let auth = DaemonAuth::for_test_with_user_action(
+            "s3cret",
+            "versa_azure",
+            "proof-known-only-to-the-operator",
+        );
+        let ordinary = build_post_request("/reply", "127.0.0.1", &auth, "{}");
+        assert!(!ordinary.contains(USER_ACTION_HEADER));
+        assert!(!ordinary.contains("proof-known-only-to-the-operator"));
+
+        for path in ["/interrupt", "/agent/cancel", "/reply"] {
+            let protected = build_user_action_post_request(path, "127.0.0.1", &auth, "{}").unwrap();
+            assert!(protected.contains("X-User-Action: proof-known-only-to-the-operator\r\n"));
+            assert!(protected.contains("X-Secret-Key: s3cret\r\n"));
+            assert!(protected.contains("X-Caller-Provider: versa_azure\r\n"));
+        }
+
+        let protected_get =
+            build_user_action_get_request("/sessions/child/events", "127.0.0.1", &auth).unwrap();
+        assert!(protected_get.contains("X-User-Action: proof-known-only-to-the-operator\r\n"));
+        let ordinary_get = build_get_request("/sessions/child/events", "127.0.0.1", &auth);
+        assert!(!ordinary_get.contains(USER_ACTION_HEADER));
+        assert!(!ordinary_get.contains("proof-known-only-to-the-operator"));
+    }
+
+    #[test]
+    fn a_protected_post_without_live_operator_proof_fails_closed() {
+        let auth = DaemonAuth::for_test("s3cret", "versa_azure");
+        let error =
+            build_user_action_post_request("/agent/cancel", "127.0.0.1", &auth, "{}").unwrap_err();
+        assert!(error.to_string().contains("user-action key"));
+    }
+
     /// Issue #56 — **every** daemon request states the capability this terminal
     /// is running under, on both verbs.
     ///
@@ -1858,6 +2038,7 @@ mod tests {
             // the supported path, by the name it has in Settings
             "External Backend",
             // and the two commands that make it work, in full
+            "shasum -a 256",
             "BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent",
             "http://127.0.0.1:3000",
         ] {
@@ -1883,6 +2064,7 @@ mod tests {
         assert!(text.contains("127.0.0.1:3456"), "{text}");
         assert!(text.contains("desktop app"), "{text}");
         assert!(text.contains("External Backend"), "{text}");
+        assert!(text.contains("shasum -a 256"), "{text}");
         // The command it prints uses the port it just reported, not a literal.
         assert!(text.contains("BIOROUTER_PORT=3456 "), "{text}");
     }

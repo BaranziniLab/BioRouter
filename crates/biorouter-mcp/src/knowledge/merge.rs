@@ -338,7 +338,7 @@ pub fn snapshot(kb_root: &Path) -> Result<Snapshot> {
                 .or_insert((id, page.path.clone()));
         }
     }
-    snap.raw_ids = raw_ids(kb_root);
+    snap.raw_ids = raw_ids(kb_root)?;
     Ok(snap)
 }
 
@@ -391,17 +391,27 @@ fn page_identifier(text: &str) -> Option<String> {
     page.doc.primary_key().map(ToOwned::to_owned)
 }
 
-fn raw_ids(kb_root: &Path) -> BTreeSet<String> {
+fn raw_ids(kb_root: &Path) -> Result<BTreeSet<String>> {
     let mut ids = BTreeSet::new();
-    let Ok(entries) = std::fs::read_dir(kb_root.join("raw")) else {
-        return ids;
+    let entries = match std::fs::read_dir(kb_root.join("raw")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(ids),
+        Err(error) => return Err(error.into()),
     };
-    for entry in entries.flatten() {
-        if entry.path().is_dir() {
+    for entry in entries {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            anyhow::bail!(
+                "knowledge merge refuses symbolic link raw/{}",
+                entry.file_name().to_string_lossy()
+            );
+        }
+        if file_type.is_dir() {
             ids.insert(entry.file_name().to_string_lossy().to_string());
         }
     }
-    ids
+    Ok(ids)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -721,10 +731,10 @@ fn plan_raw(dst_root: &Path, src_root: &Path, src_kb_id: &str) -> Result<RawPlan
         copies: Vec::new(),
         deduped: Vec::new(),
     };
-    let by_sha = raw_sha_index(dst_root);
-    let mut taken = raw_ids(dst_root);
+    let by_sha = raw_sha_index(dst_root)?;
+    let mut taken = raw_ids(dst_root)?;
 
-    for id in raw_ids(src_root) {
+    for id in raw_ids(src_root)? {
         if let Some(meta) = raw_store::read_meta(src_root, &id).ok().filter(|m| {
             // A blank hash is not a hash. Two sources that both failed to record
             // one are not the same source, and collapsing them would be the one
@@ -754,16 +764,16 @@ fn plan_raw(dst_root: &Path, src_root: &Path, src_kb_id: &str) -> Result<RawPlan
 
 /// `sha256` → raw id, for the destination. Directories whose `meta.yaml` cannot
 /// be read simply do not participate in dedup.
-fn raw_sha_index(kb_root: &Path) -> BTreeMap<String, String> {
+fn raw_sha_index(kb_root: &Path) -> Result<BTreeMap<String, String>> {
     let mut by_sha = BTreeMap::new();
-    for id in raw_ids(kb_root) {
+    for id in raw_ids(kb_root)? {
         if let Ok(meta) = raw_store::read_meta(kb_root, &id) {
             if !meta.sha256.trim().is_empty() {
                 by_sha.entry(meta.sha256).or_insert(id);
             }
         }
     }
-    by_sha
+    Ok(by_sha)
 }
 
 // ── knowledge/ ──────────────────────────────────────────────────────────────
@@ -1360,8 +1370,16 @@ fn write_everything(
     txn: &Txn,
     created: &mut Created,
 ) -> Result<String> {
+    let root_metadata = std::fs::symlink_metadata(dst_root)
+        .with_context(|| format!("inspect merge destination {}", dst_root.display()))?;
+    anyhow::ensure!(
+        !root_metadata.file_type().is_symlink(),
+        "knowledge merge refuses a symbolic-link destination root"
+    );
     for copy in &plan.raw_copies {
+        crate::knowledge::raw::validate_source_id(&copy.to)?;
         let to = dst_root.join("raw").join(&copy.to);
+        store::ensure_writable_path_confined(dst_root, &to)?;
         // The last line of defence for "the destination is canonical", and it
         // guards a case the planner cannot see: `raw_ids` counts DIRECTORIES, so
         // a stray *file* at `raw/<id>` is not in the taken set and the copy would
@@ -1389,6 +1407,7 @@ fn write_everything(
             page.destination_path
         );
         let abs = dst_root.join(&page.destination_path);
+        store::ensure_writable_path_confined(dst_root, &abs)?;
         // The same last line of defence, for pages. `snapshot.paths` holds what
         // `store::list_pages` found, so anything at that path the *walker* skips
         // — a directory whose name ends in `.md`, a symlink — is invisible to the
@@ -1407,6 +1426,7 @@ fn write_everything(
         // destination's tree, and `store::list_pages` would not show it while
         // the next `.brkb` export would carry it.
         let tmp = abs.with_extension("md.tmp");
+        store::ensure_writable_path_confined(dst_root, &tmp)?;
         created.push(tmp.clone());
         created.push(abs.clone());
         std::fs::write(&tmp, &page.content)?;
@@ -1484,7 +1504,8 @@ fn append_index(dst_root: &Path, plan: &MergePlan, created: &mut Created) -> Res
         return Ok(());
     }
     let path = dst_root.join("index.md");
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let readable = store::resolve_readable_path(dst_root, "index.md")?;
+    let text = std::fs::read_to_string(readable)?;
     let heading = format!("# Merged from {}", plan.source_kb_id);
     let bullets: Vec<String> = plan
         .pages
@@ -1500,6 +1521,7 @@ fn append_index(dst_root: &Path, plan: &MergePlan, created: &mut Created) -> Res
         .collect();
 
     let tmp = path.with_extension("md.tmp");
+    store::ensure_writable_path_confined(dst_root, &tmp)?;
     created.push(tmp.clone());
     std::fs::write(&tmp, insert_into_section(&text, &heading, &bullets))?;
     std::fs::rename(&tmp, &path)?;
@@ -1566,14 +1588,42 @@ fn join_lines(lines: &[String]) -> String {
 }
 
 fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(from)
+        .with_context(|| format!("inspect raw source {}", from.display()))?;
+    anyhow::ensure!(
+        !metadata.file_type().is_symlink(),
+        "knowledge merge refuses a symbolic-link raw source"
+    );
+    let canonical_from = std::fs::canonicalize(from)
+        .with_context(|| format!("canonicalize raw source {}", from.display()))?;
+    copy_dir_confined(from, to, &canonical_from)
+}
+
+fn copy_dir_confined(from: &Path, to: &Path, canonical_from: &Path) -> Result<()> {
     std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)?.flatten() {
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
         let path = entry.path();
         let dest = to.join(entry.file_name());
-        if path.is_dir() {
-            copy_dir(&path, &dest)?;
-        } else {
+        if file_type.is_symlink() {
+            anyhow::bail!(
+                "knowledge merge refuses symbolic link {}",
+                path.strip_prefix(from).unwrap_or(&path).display()
+            );
+        }
+        let canonical_path = std::fs::canonicalize(&path)
+            .with_context(|| format!("canonicalize raw source entry {}", path.display()))?;
+        anyhow::ensure!(
+            canonical_path.starts_with(canonical_from),
+            "knowledge merge source entry resolves outside its raw source"
+        );
+        if file_type.is_dir() {
+            copy_dir_confined(&path, &dest, canonical_from)?;
+        } else if file_type.is_file() {
             std::fs::copy(&path, &dest)?;
+        } else {
+            anyhow::bail!("knowledge merge refuses a non-file raw source entry");
         }
     }
     Ok(())

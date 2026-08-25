@@ -130,7 +130,10 @@ export function useSubagentSession(sessionId: string): SubagentSessionInfo {
   }, [sessionId]);
 
   const stop = useCallback(async () => {
-    await cancelTurn({ body: { session_id: sessionId } });
+    await cancelTurn({
+      body: { session_id: sessionId },
+      headers: await userActionHeaders(),
+    });
   }, [sessionId]);
 
   return { ...info, stop };

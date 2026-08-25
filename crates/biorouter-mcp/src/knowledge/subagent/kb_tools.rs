@@ -63,11 +63,35 @@ pub struct KbToolDispatch {
     /// The currently active transaction branch name, or an empty string when
     /// not inside a transaction (writes then commit directly to main).
     pub txn_branch: String,
+    /// Whether this macro invocation may mutate the bound knowledge base.
+    pub access: KbToolAccess,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KbToolAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
+fn is_read_only_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "kb_list_pages"
+            | "kb_read_page"
+            | "kb_search"
+            | "kb_classify_source"
+            | VALIDATE_PAGE
+            | "complete"
+    )
 }
 
 #[async_trait]
 impl ToolDispatch for KbToolDispatch {
     async fn call(&self, name: &str, args: Value) -> Result<String> {
+        if self.access == KbToolAccess::ReadOnly && !is_read_only_tool(name) {
+            anyhow::bail!("knowledge tool '{name}' is unavailable in read-only mode");
+        }
+
         let kb_root = paths::kb_root(self.svc.root(), &self.kb_id);
         let txn_opt: Option<&str> = if self.txn_branch.is_empty() {
             None
@@ -326,8 +350,9 @@ impl KbToolDispatch {
 /// adds one edge to a page and omits `body` is not asking for the page's prose
 /// to be replaced by its own title.
 fn existing(kb_root: &std::path::Path, path: &str) -> okf::Split {
-    std::fs::read_to_string(kb_root.join(path))
+    crate::knowledge::store::resolve_readable_path(kb_root, path)
         .ok()
+        .and_then(|resolved| std::fs::read_to_string(resolved).ok())
         .and_then(|text| okf::frontmatter::split(&text).ok())
         .unwrap_or(okf::Split {
             frontmatter: serde_yaml::Mapping::new(),
@@ -969,6 +994,18 @@ pub fn tool_specs(format: Option<KbFormat>) -> Vec<Tool> {
     tools
 }
 
+/// The query surface when `file_as_page` is false.
+///
+/// This is intentionally an allowlist of readers rather than a blocklist of
+/// today's writers. A future tool is unavailable to a read-only query until it
+/// is deliberately classified here and at the dispatch boundary above.
+pub fn read_only_tool_specs(format: Option<KbFormat>) -> Vec<Tool> {
+    tool_specs(format)
+        .into_iter()
+        .filter(|tool| is_read_only_tool(tool.name.as_ref()))
+        .collect()
+}
+
 /// The legal values as `&[&str]`, borrowed from the vocabulary's own tables so
 /// the schema can never list a 29th type or miss a new one.
 fn node_type_values() -> Vec<&'static str> {
@@ -1529,6 +1566,7 @@ mod tests {
             svc: svc.clone(),
             kb_id: "bound".to_string(),
             txn_branch: String::new(),
+            access: KbToolAccess::ReadWrite,
         };
 
         // A read aimed at the other base does not reach it.
@@ -1589,6 +1627,7 @@ mod tests {
             svc: svc.clone(),
             kb_id: "bio".to_string(),
             txn_branch: String::new(),
+            access: KbToolAccess::ReadWrite,
         }
     }
 
@@ -1937,6 +1976,7 @@ mod tests {
             svc: svc.clone(),
             kb_id: "okf".to_string(),
             txn_branch: String::new(),
+            access: KbToolAccess::ReadWrite,
         };
         let err = dispatch
             .call(
@@ -1991,6 +2031,7 @@ mod tests {
             svc,
             kb_id: "k".to_string(),
             txn_branch: String::new(), // no txn — commit directly
+            access: KbToolAccess::ReadWrite,
         };
 
         // Write a page

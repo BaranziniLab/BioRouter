@@ -9,10 +9,10 @@ use crate::knowledge::{
     graph, manifest, okf, paths, raw,
     service::KnowledgeService,
     source_anchor,
-    store::{logical_path, split_frontmatter},
+    store::split_frontmatter,
     subagent::{
         events::{DoneReason, SubAgentEvent},
-        kb_tools::{tool_specs, KbToolDispatch},
+        kb_tools::{tool_specs, KbToolAccess, KbToolDispatch},
         loop_::{Completer, SubAgent, SubAgentBounds, SubAgentResult},
         procedures::{lint_procedure, system_prompt},
     },
@@ -88,15 +88,17 @@ pub struct LintReport {
 // ---------------------------------------------------------------------------
 
 pub fn scan(kb_root: &Path) -> Result<LintReport> {
-    let knowledge_dir = kb_root.join("knowledge");
-    if !knowledge_dir.exists() {
+    if !kb_root.join("knowledge").exists() {
         return Ok(LintReport::default());
     }
 
     // Collect all pages and their bodies — for the checks that read a page's own
     // frontmatter and text. The *links* come from the deriver; see below.
     let mut pages: HashMap<String, String> = HashMap::new(); // logical_path -> body
-    collect_pages(&knowledge_dir, &knowledge_dir, &mut pages)?;
+    for page in crate::knowledge::store::list_pages(kb_root, None)? {
+        let path = crate::knowledge::store::resolve_readable_path(kb_root, &page.path)?;
+        pages.insert(page.path, std::fs::read_to_string(path)?);
+    }
 
     // Both link-shaped rules — "does anything link to this page?" and "does this
     // target name a page?" — are answered off the graph deriver's own edge set
@@ -320,21 +322,6 @@ fn format_diagnostics(kb_root: &Path, pages: &HashMap<String, String>) -> Vec<Di
 
 // ---- helpers ----------------------------------------------------------------
 
-fn collect_pages(base: &Path, dir: &Path, out: &mut HashMap<String, String>) -> Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let p = entry.path();
-        if p.is_dir() {
-            collect_pages(base, &p, out)?;
-        } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
-            let logical = logical_path("knowledge", p.strip_prefix(base).unwrap());
-            let body = std::fs::read_to_string(&p)?;
-            out.insert(logical, body);
-        }
-    }
-    Ok(())
-}
-
 /// Which pages in a bundle are **source pages**, and which raw source each one
 /// stands for — one index, built once per scan, over
 /// [`source_anchor`](crate::knowledge::source_anchor).
@@ -543,7 +530,8 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
     let repo = GitRepo::open(&kb_root)?;
     let txn = repo.begin_txn("lint")?;
 
-    let schema = std::fs::read_to_string(kb_root.join("schema.md")).context("read schema.md")?;
+    let schema_path = crate::knowledge::store::resolve_readable_path(&kb_root, "schema.md")?;
+    let schema = std::fs::read_to_string(schema_path).context("read schema.md")?;
     // The four lists are what `LINT_PROCEDURE` teaches, so they stay exactly as
     // they were. `diagnostics` is added beside them rather than instead of them,
     // and is already capped at `MAX_DIAGNOSTICS` — an uncapped list over a large
@@ -567,6 +555,7 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
         svc: svc.clone(),
         kb_id: args.kb_id.clone(),
         txn_branch: txn.branch.clone(),
+        access: KbToolAccess::ReadWrite,
     };
     let agent = SubAgent {
         completer,

@@ -493,7 +493,7 @@ The one spawn tool, advertised by this extension under its pre-existing bare nam
 
 > **Advertised here, dispatched elsewhere.** The agent loop intercepts the call before it reaches the extension (`is_spawn_tool_call` in `agent.rs`), because dispatch needs the parent's `TaskConfig` — provider, extensions, working dir — which only `Agent::dispatch_tool_call` holds. The extension's own `call_tool` arm exists but returns `` `subagent` is dispatched by the agent loop, not by this extension ``, and is reachable only if that interception is ever removed. If you see that string in a transcript, the interception is broken.
 
-This is also why `subagent` works in a terminal `biorouter session` with no `workspace` extension enabled: `Agent::reply` → `prepare_tools_and_prompt` → `list_tools` → `ensure_spawn_extension` loads the extension with `available_tools: ["subagent"]` for any session where delegation is permitted.
+This is also why `subagent` works in a terminal `biorouter session` with no `workspace` extension enabled: `Agent::reply` → `prepare_tools_and_prompt` → `list_tools` → `ensure_spawn_extension` loads a restricted delegation surface for any session where delegation is permitted. That surface includes `subagent` plus `workspace_watch`, `workspace_read_conversation`, and `workspace_close`, so the parent can monitor, collect, and stop its own child. It does not include broad listing, steering, tool mutation, or session creation.
 
 ### Arguments
 

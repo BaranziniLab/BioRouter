@@ -215,10 +215,10 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(session_events::routes(state.clone()))
         .nest(
             "/knowledge",
-            // Issue #56 Task 58 / #47. `POST /knowledge/active` repoints a named
-            // chat's knowledge bases and its KB-less write target, so it is a
-            // session-addressing route and takes the same gate as the other
-            // four. It is layered rather than called from the handler because
+            // Issue #56 Task 58 / #47. Both methods on `/knowledge/active`
+            // address a named chat's knowledge-base selection, so reads and
+            // writes take the same session-reach gate. It is layered rather
+            // than called from the handlers because
             // this router is state-typed on `Arc<KnowledgeService>` so that it
             // can be tested without an `AppState` — see
             // `session_reach::gate_knowledge_active`, which explains the choice

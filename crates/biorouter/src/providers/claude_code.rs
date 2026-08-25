@@ -76,7 +76,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::base::{
     ConfigKey, MessageStream, ModelInfo, PendingToolCall, Provider, ProviderMetadata,
-    ProviderStreamItem, ProviderUsage, Usage,
+    ProviderSteerReceiver, ProviderSteerRequest, ProviderStreamItem, ProviderUsage, Usage,
 };
 use super::coding_agent::{
     self, bridge, claude_stream, discovery, effort, env as agent_env, mirror, transcript,
@@ -719,10 +719,240 @@ fn emit_tool_event(
 struct PumpInputs {
     child: tokio::process::Child,
     bridge_config: Option<tempfile::NamedTempFile>,
+    stdin: tokio::process::ChildStdin,
     stdout: tokio::process::ChildStdout,
     stderr_task: tokio::task::JoinHandle<String>,
+    initial_prompt: String,
+    steering: Option<ProviderSteerReceiver>,
     model_name: String,
     out_tx: tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+}
+
+enum ClaudePumpInput {
+    Output(std::io::Result<Option<String>>),
+    Steer(Option<ProviderSteerRequest>),
+    Timeout,
+}
+
+async fn next_claude_pump_input(
+    lines: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    steering: &mut Option<ProviderSteerReceiver>,
+    deadline: tokio::time::Instant,
+) -> ClaudePumpInput {
+    tokio::select! {
+        line = lines.next_line() => ClaudePumpInput::Output(line),
+        request = async {
+            match steering.as_mut() {
+                Some(steering) => steering.recv().await,
+                None => std::future::pending().await,
+            }
+        } => ClaudePumpInput::Steer(request),
+        _ = tokio::time::sleep_until(deadline) => ClaudePumpInput::Timeout,
+    }
+}
+
+async fn write_claude_user_message(
+    stdin: &mut tokio::process::ChildStdin,
+    text: &str,
+) -> Result<(), ProviderError> {
+    let message = serde_json::json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": text,
+        },
+        "parent_tool_use_id": null,
+    });
+    let mut line = serde_json::to_vec(&message)
+        .map_err(|e| ProviderError::ExecutionError(format!("encoding Claude input failed: {e}")))?;
+    line.push(b'\n');
+    stdin.write_all(&line).await.map_err(|e| {
+        ProviderError::ExecutionError(format!("writing to the running `claude` turn failed: {e}"))
+    })?;
+    stdin.flush().await.map_err(|e| {
+        ProviderError::ExecutionError(format!("flushing the running `claude` turn failed: {e}"))
+    })
+}
+
+enum ClaudeLineOutcome {
+    Line(String),
+    Continue,
+    Stop,
+    SteerWritten(ProviderSteerRequest),
+    Failure {
+        error: ProviderError,
+        kill_child: bool,
+    },
+}
+
+async fn next_claude_line(
+    lines: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    steering: &mut Option<ProviderSteerReceiver>,
+    stdin: &mut tokio::process::ChildStdin,
+    deadline: tokio::time::Instant,
+) -> ClaudeLineOutcome {
+    match next_claude_pump_input(lines, steering, deadline).await {
+        ClaudePumpInput::Timeout => ClaudeLineOutcome::Failure {
+            error: ProviderError::ExecutionError(format!(
+                "`claude` did not finish within {}s and was stopped",
+                TURN_TIMEOUT.as_secs()
+            )),
+            kill_child: true,
+        },
+        ClaudePumpInput::Output(Ok(Some(line))) => ClaudeLineOutcome::Line(line),
+        ClaudePumpInput::Output(Ok(None)) => ClaudeLineOutcome::Stop,
+        ClaudePumpInput::Output(Err(error)) => ClaudeLineOutcome::Failure {
+            error: ProviderError::ExecutionError(format!(
+                "reading `claude` output failed: {error}"
+            )),
+            kill_child: false,
+        },
+        ClaudePumpInput::Steer(None) => {
+            *steering = None;
+            ClaudeLineOutcome::Continue
+        }
+        ClaudePumpInput::Steer(Some(request)) => {
+            match write_claude_user_message(stdin, request.text()).await {
+                Ok(()) => ClaudeLineOutcome::SteerWritten(request),
+                Err(error) => {
+                    let detail = error.to_string();
+                    request.reject(error);
+                    ClaudeLineOutcome::Failure {
+                        error: ProviderError::ExecutionError(detail),
+                        kill_child: true,
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum ClaudeFrameOutcome {
+    Continue,
+    ConsumerClosed,
+    Terminal(Result<ProviderUsage, ProviderError>),
+    RejectAuthentication(ProviderError),
+}
+
+fn route_claude_frame<S>(
+    frame: claude_stream::RoutedFrame,
+    line_tx: &tokio::sync::mpsc::UnboundedSender<anyhow::Result<String>>,
+    decoded: &mut std::pin::Pin<Box<S>>,
+    partial_args: &mut std::collections::HashMap<String, PendingArgs>,
+    model_name: &str,
+    out_tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+) -> ClaudeFrameOutcome
+where
+    S: futures::Stream<Item = anyhow::Result<ProviderStreamItem>>,
+{
+    match frame {
+        claude_stream::RoutedFrame::AnthropicEvent(data) => {
+            if line_tx.send(Ok(data)).is_err() || !drain_ready(decoded, out_tx) {
+                ClaudeFrameOutcome::ConsumerClosed
+            } else {
+                ClaudeFrameOutcome::Continue
+            }
+        }
+        claude_stream::RoutedFrame::Tool(event) => {
+            // Everything the decoder already produced belongs before this card.
+            if !drain_ready(decoded, out_tx) || !emit_tool_event(event, partial_args, out_tx) {
+                ClaudeFrameOutcome::ConsumerClosed
+            } else {
+                ClaudeFrameOutcome::Continue
+            }
+        }
+        claude_stream::RoutedFrame::Init { api_key_source } => {
+            match ClaudeCodeProvider::assert_subscription_auth(api_key_source.as_deref()) {
+                Ok(()) => ClaudeFrameOutcome::Continue,
+                Err(error) => ClaudeFrameOutcome::RejectAuthentication(error),
+            }
+        }
+        claude_stream::RoutedFrame::UserReplay(_) => ClaudeFrameOutcome::Continue,
+        claude_stream::RoutedFrame::Terminal(frame) => {
+            let terminal = match frame.error {
+                Some(err) => Err(ClaudeCodeProvider::classify(
+                    err.category.as_deref(),
+                    err.detail,
+                )),
+                None => {
+                    let mut usage = ProviderUsage::new(model_name.to_string(), frame.usage);
+                    usage.provider = Some(KIND.provider_id().to_string());
+                    // The terminal frame owns the finish reason. Inner requests
+                    // may report `max_tokens`, but the child already handled
+                    // their continuation; propagating one would make Biorouter
+                    // launch another whole child turn after this one completed.
+                    usage.finish_reason = Some("stop".to_string());
+                    Ok(usage)
+                }
+            };
+            ClaudeFrameOutcome::Terminal(terminal)
+        }
+        claude_stream::RoutedFrame::Ignored => ClaudeFrameOutcome::Continue,
+    }
+}
+
+enum ClaudeLoopOutcome {
+    Continue,
+    Stop(Option<Result<ProviderUsage, ProviderError>>),
+    Kill(ProviderError),
+}
+
+struct ClaudeFrameContext<'a, S> {
+    pending_steers: &'a mut std::collections::VecDeque<ProviderSteerRequest>,
+    line_tx: &'a tokio::sync::mpsc::UnboundedSender<anyhow::Result<String>>,
+    decoded: &'a mut std::pin::Pin<Box<S>>,
+    partial_args: &'a mut std::collections::HashMap<String, PendingArgs>,
+    model_name: &'a str,
+    out_tx: &'a tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+    completed_usage: &'a mut Option<ProviderUsage>,
+    outstanding_turns: &'a mut usize,
+}
+
+fn apply_claude_frame<S>(
+    frame: claude_stream::RoutedFrame,
+    context: &mut ClaudeFrameContext<'_, S>,
+) -> ClaudeLoopOutcome
+where
+    S: futures::Stream<Item = anyhow::Result<ProviderStreamItem>>,
+{
+    if let claude_stream::RoutedFrame::UserReplay(text) = &frame {
+        if context
+            .pending_steers
+            .front()
+            .is_some_and(|request| request.text() == text)
+        {
+            if let Some(request) = context.pending_steers.pop_front() {
+                request.acknowledge();
+            }
+        }
+        return ClaudeLoopOutcome::Continue;
+    }
+
+    match route_claude_frame(
+        frame,
+        context.line_tx,
+        context.decoded,
+        context.partial_args,
+        context.model_name,
+        context.out_tx,
+    ) {
+        ClaudeFrameOutcome::Continue => ClaudeLoopOutcome::Continue,
+        ClaudeFrameOutcome::ConsumerClosed => ClaudeLoopOutcome::Stop(None),
+        ClaudeFrameOutcome::Terminal(Ok(usage)) => {
+            *context.completed_usage = Some(match context.completed_usage.take() {
+                Some(previous) => previous.combine_with(&usage),
+                None => usage,
+            });
+            *context.outstanding_turns = context.outstanding_turns.saturating_sub(1);
+            if *context.outstanding_turns == 0 {
+                ClaudeLoopOutcome::Stop(context.completed_usage.take().map(Ok))
+            } else {
+                ClaudeLoopOutcome::Continue
+            }
+        }
+        ClaudeFrameOutcome::Terminal(Err(error)) => ClaudeLoopOutcome::Stop(Some(Err(error))),
+        ClaudeFrameOutcome::RejectAuthentication(error) => ClaudeLoopOutcome::Kill(error),
+    }
 }
 
 /// Read the child's stdout to the end of the turn, emitting stream items.
@@ -734,8 +964,11 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
     let PumpInputs {
         child,
         bridge_config,
+        mut stdin,
         stdout,
         stderr_task,
+        initial_prompt,
+        mut steering,
         model_name,
         out_tx,
     } = inputs;
@@ -761,25 +994,31 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
 
     let deadline = tokio::time::Instant::now() + TURN_TIMEOUT;
     let mut terminal: Option<Result<ProviderUsage, ProviderError>> = None;
+    let mut completed_usage: Option<ProviderUsage> = None;
+    let mut outstanding_turns = 1usize;
+    let mut pending_steers = std::collections::VecDeque::new();
+
+    if let Err(error) = write_claude_user_message(&mut stdin, &initial_prompt).await {
+        let _ = child.start_kill();
+        let _ = out_tx.send(Err(error));
+        return;
+    }
 
     loop {
-        let next = tokio::time::timeout_at(deadline, lines.next_line()).await;
-        let line = match next {
-            // Rule 3: the ceiling, inside the stream.
-            Err(_) => {
-                let _ = child.start_kill();
-                terminal = Some(Err(ProviderError::ExecutionError(format!(
-                    "`claude` did not finish within {}s and was stopped",
-                    TURN_TIMEOUT.as_secs()
-                ))));
-                break;
+        let line = match next_claude_line(&mut lines, &mut steering, &mut stdin, deadline).await {
+            ClaudeLineOutcome::Line(line) => line,
+            ClaudeLineOutcome::Continue => continue,
+            ClaudeLineOutcome::Stop => break,
+            ClaudeLineOutcome::SteerWritten(request) => {
+                outstanding_turns = outstanding_turns.saturating_add(1);
+                pending_steers.push_back(request);
+                continue;
             }
-            Ok(Ok(Some(line))) => line,
-            Ok(Ok(None)) => break,
-            Ok(Err(e)) => {
-                terminal = Some(Err(ProviderError::ExecutionError(format!(
-                    "reading `claude` output failed: {e}"
-                ))));
+            ClaudeLineOutcome::Failure { error, kill_child } => {
+                if kill_child {
+                    let _ = child.start_kill();
+                }
+                terminal = Some(Err(error));
                 break;
             }
         };
@@ -787,68 +1026,31 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
             continue;
         }
 
-        match router.push_line(&line) {
-            claude_stream::RoutedFrame::AnthropicEvent(data) => {
-                if line_tx.send(Ok(data)).is_err() {
-                    break;
-                }
-                if !drain_ready(&mut decoded, &out_tx) {
-                    break;
-                }
-            }
-            claude_stream::RoutedFrame::Tool(event) => {
-                // Order first: everything the decoder already produced
-                // belongs before this card.
-                if !drain_ready(&mut decoded, &out_tx) {
-                    break;
-                }
-                if !emit_tool_event(event, &mut partial_args, &out_tx) {
-                    break;
-                }
-            }
-            claude_stream::RoutedFrame::Init { api_key_source } => {
-                // The subscription refusal, run at the same point the
-                // blocking path runs it: before any answer is shown.
-                if let Err(e) =
-                    ClaudeCodeProvider::assert_subscription_auth(api_key_source.as_deref())
-                {
-                    let _ = child.start_kill();
-                    terminal = Some(Err(e));
-                    break;
-                }
-            }
-            claude_stream::RoutedFrame::Terminal(frame) => {
-                terminal = Some(match frame.error {
-                    Some(err) => Err(ClaudeCodeProvider::classify(
-                        err.category.as_deref(),
-                        err.detail,
-                    )),
-                    None => {
-                        let mut usage = ProviderUsage::new(model_name.clone(), frame.usage);
-                        usage.provider = Some(KIND.provider_id().to_string());
-                        // ⚠ The terminal frame OWNS the finish reason, and says
-                        // so explicitly rather than leaving it `None`.
-                        //
-                        // The child's turn is many API requests, and each one's
-                        // `message_delta` carries its own `stop_reason` which the
-                        // reused Anthropic decoder maps and reports. A `max_tokens`
-                        // on any INNER request would map to `"length"`, and because
-                        // the agent only overwrites `last_finish_reason` when the
-                        // new one is `Some`, a `None` here would let that inner
-                        // value survive to the end of the turn — where the loop
-                        // treats `"length"` as a truncated answer and runs ANOTHER
-                        // whole child turn to continue it, on the user's own
-                        // subscription quota. The child already handled its own
-                        // continuation; the turn ended when this frame arrived.
-                        usage.finish_reason = Some("stop".to_string());
-                        Ok(usage)
-                    }
-                });
+        let mut context = ClaudeFrameContext {
+            pending_steers: &mut pending_steers,
+            line_tx: &line_tx,
+            decoded: &mut decoded,
+            partial_args: &mut partial_args,
+            model_name: &model_name,
+            out_tx: &out_tx,
+            completed_usage: &mut completed_usage,
+            outstanding_turns: &mut outstanding_turns,
+        };
+        match apply_claude_frame(router.push_line(&line), &mut context) {
+            ClaudeLoopOutcome::Continue => {}
+            ClaudeLoopOutcome::Stop(result) => {
+                terminal = result;
                 break;
             }
-            claude_stream::RoutedFrame::Ignored => {}
+            ClaudeLoopOutcome::Kill(error) => {
+                let _ = child.start_kill();
+                terminal = Some(Err(error));
+                break;
+            }
         }
     }
+
+    drop(stdin);
 
     // Closing the line channel ends the decoder stream; draining it to
     // completion is what flushes any text still buffered inside it.
@@ -968,6 +1170,92 @@ fn parse_usage(usage: Option<&Value>) -> Usage {
     }
 }
 
+impl ClaudeCodeProvider {
+    async fn stream_inner(
+        &self,
+        system: &str,
+        messages: &[Message],
+        steering: Option<ProviderSteerReceiver>,
+    ) -> Result<MessageStream, ProviderError> {
+        let prompt = transcript::flatten(messages).ok_or_else(|| {
+            ProviderError::RequestFailed(
+                "there is no user message for `claude` to answer".to_string(),
+            )
+        })?;
+
+        let bridge_config = bridge_mcp_config()?;
+        let model_config = self.model.clone();
+        let model_name = model_config.model_name.clone();
+
+        let mut cmd = self.command_for(
+            &model_config,
+            system,
+            "stream-json",
+            bridge_config.as_ref().map(|f| f.path()),
+        );
+        cmd.arg("--input-format");
+        cmd.arg("stream-json");
+        cmd.arg("--include-partial-messages");
+        cmd.arg("--verbose");
+        if steering.is_some() {
+            cmd.arg("--replay-user-messages");
+        }
+        cmd.kill_on_drop(true);
+
+        let mut child = cmd.spawn().map_err(|e| {
+            ProviderError::ExecutionError(format!(
+                "could not start `{}`: {e}",
+                self.command.display()
+            ))
+        })?;
+
+        let stdin = child.stdin.take().ok_or_else(|| {
+            ProviderError::ExecutionError("could not capture claude stdin".into())
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            ProviderError::ExecutionError("could not capture claude stdout".into())
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            ProviderError::ExecutionError("could not capture claude stderr".into())
+        })?;
+
+        let stderr_task = tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            let mut out = String::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                out.push_str(&line);
+                out.push('\n');
+            }
+            out
+        });
+
+        let (out_tx, out_rx) =
+            tokio::sync::mpsc::unbounded_channel::<Result<ProviderStreamItem, ProviderError>>();
+        let reader = tokio::spawn(pump_claude_stdout(PumpInputs {
+            child,
+            bridge_config,
+            stdin,
+            stdout,
+            stderr_task,
+            initial_prompt: prompt,
+            steering,
+            model_name,
+            out_tx,
+        }));
+
+        let guard = coding_agent::AbortOnDrop(reader.abort_handle());
+        let stream = async_stream::try_stream! {
+            let _guard = guard;
+            let mut out_rx = out_rx;
+            while let Some(item) = out_rx.recv().await {
+                yield item?;
+            }
+        };
+
+        Ok(Box::pin(stream))
+    }
+}
+
 #[async_trait]
 impl Provider for ClaudeCodeProvider {
     fn metadata() -> ProviderMetadata {
@@ -1037,6 +1325,10 @@ impl Provider for ClaudeCodeProvider {
         true
     }
 
+    fn supports_live_steering(&self) -> bool {
+        true
+    }
+
     /// The child agent's tools come from the MCP bridge the *agent turn loop*
     /// installs, so a loop Biorouter runs outside that turn (the knowledge
     /// macros' sub-agent) gets a child with no tools at all. Saying so lets a
@@ -1080,102 +1372,17 @@ impl Provider for ClaudeCodeProvider {
         messages: &[Message],
         _tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
-        let prompt = transcript::flatten(messages).ok_or_else(|| {
-            ProviderError::RequestFailed(
-                "there is no user message for `claude` to answer".to_string(),
-            )
-        })?;
+        self.stream_inner(system, messages, None).await
+    }
 
-        // Rule 1. Both of these read state that only exists inside the scope this
-        // call is running in.
-        let bridge_config = bridge_mcp_config()?;
-        let model_config = self.model.clone();
-        let model_name = model_config.model_name.clone();
-
-        let mut cmd = self.command_for(
-            &model_config,
-            system,
-            "stream-json",
-            bridge_config.as_ref().map(|f| f.path()),
-        );
-        // `--include-partial-messages` is what turns the `stream_event` frames on
-        // at all; without it `stream-json` still emits only whole messages and
-        // this path would be no more live than the blocking one. `--verbose` is
-        // required by the CLI alongside `stream-json` under `--print`.
-        cmd.arg("--include-partial-messages");
-        cmd.arg("--verbose");
-        cmd.kill_on_drop(true);
-
-        let mut child = cmd.spawn().map_err(|e| {
-            ProviderError::ExecutionError(format!(
-                "could not start `{}`: {e}",
-                self.command.display()
-            ))
-        })?;
-
-        // The prompt goes on stdin, never in argv: a flattened conversation can
-        // exceed the platform's argv limit.
-        if let Some(mut stdin) = child.stdin.take() {
-            let bytes = prompt.into_bytes();
-            tokio::spawn(async move {
-                let _ = stdin.write_all(&bytes).await;
-                let _ = stdin.shutdown().await;
-            });
-        }
-
-        let stdout = child.stdout.take().ok_or_else(|| {
-            ProviderError::ExecutionError("could not capture claude stdout".into())
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            ProviderError::ExecutionError("could not capture claude stderr".into())
-        })?;
-
-        // Drained concurrently, exactly as the blocking path does: a child that
-        // writes more than the pipe buffer to stderr and is never read deadlocks.
-        let stderr_task = tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            let mut out = String::new();
-            while let Ok(Some(line)) = lines.next_line().await {
-                out.push_str(&line);
-                out.push('\n');
-            }
-            out
-        });
-
-        // ONE ordered output channel. The Anthropic decoder lives inside the
-        // reader rather than wrapping it, because tool cards and prose have to
-        // interleave in wire order: a card that jumped ahead of the sentence
-        // introducing it would read as a different turn. The reader flushes
-        // whatever the decoder has ready immediately before emitting a tool
-        // item, which is what keeps the two in step.
-        let (out_tx, out_rx) =
-            tokio::sync::mpsc::unbounded_channel::<Result<ProviderStreamItem, ProviderError>>();
-
-        // The reader is a free function rather than an inline closure: this
-        // generator is on `Agent::reply`'s poll path, where frame size is a
-        // real constraint (issue #87), and a 120-line closure body would sit
-        // in it.
-        let reader = tokio::spawn(pump_claude_stdout(PumpInputs {
-            child,
-            bridge_config,
-            stdout,
-            stderr_task,
-            model_name,
-            out_tx,
-        }));
-
-        let guard = coding_agent::AbortOnDrop(reader.abort_handle());
-        let stream = async_stream::try_stream! {
-            // Held for the stream's whole life: dropping the stream aborts the
-            // reader, which drops the child, which `kill_on_drop` reaps.
-            let _guard = guard;
-            let mut out_rx = out_rx;
-            while let Some(item) = out_rx.recv().await {
-                yield item?;
-            }
-        };
-
-        Ok(Box::pin(stream))
+    async fn stream_with_steering(
+        &self,
+        system: &str,
+        messages: &[Message],
+        _tools: &[Tool],
+        steering: ProviderSteerReceiver,
+    ) -> Result<MessageStream, ProviderError> {
+        self.stream_inner(system, messages, Some(steering)).await
     }
 
     /// Ask the CLI's credential store whether this provider can run at all.
@@ -1854,6 +2061,61 @@ mod streaming_tests {
         ))
     }
 
+    fn steerable_claude() -> FakeCli {
+        FakeCli::new(
+            r#"#!/usr/bin/env python3
+import sys, json
+
+def send(obj):
+    print(json.dumps(obj), flush=True)
+
+args = sys.argv[1:]
+if "--input-format" not in args or args[args.index("--input-format") + 1] != "stream-json":
+    sys.exit("stream-json input was not enabled")
+
+initial = json.loads(sys.stdin.readline())
+if initial.get("type") != "user" or initial.get("message", {}).get("role") != "user":
+    sys.exit("initial input was not a user message")
+
+send({"type":"system","subtype":"init","apiKeySource":"none","session_id":"s"})
+send(initial)
+send({"type":"stream_event","event":{"type":"message_start",
+      "message":{"id":"msg_1","role":"assistant","content":[],
+                 "usage":{"input_tokens":1,"output_tokens":1}}}})
+send({"type":"stream_event","event":{"type":"content_block_start","index":0,
+      "content_block":{"type":"text","text":""}}})
+send({"type":"stream_event","event":{"type":"content_block_delta","index":0,
+      "delta":{"type":"text_delta","text":"before steering"}}})
+send({"type":"stream_event","event":{"type":"content_block_stop","index":0}})
+send({"type":"stream_event","event":{"type":"message_delta",
+      "delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}})
+send({"type":"stream_event","event":{"type":"message_stop"}})
+
+steer = json.loads(sys.stdin.readline())
+if steer.get("message", {}).get("content") != "change course":
+    sys.exit("steering input was not delivered")
+
+send({"type":"result","subtype":"success","is_error":False,
+      "result":"before steering","usage":{"input_tokens":1,"output_tokens":2}})
+send({"type":"system","subtype":"init","apiKeySource":"none","session_id":"s"})
+send(steer)
+send({"type":"stream_event","event":{"type":"message_start",
+      "message":{"id":"msg_2","role":"assistant","content":[],
+                 "usage":{"input_tokens":3,"output_tokens":1}}}})
+send({"type":"stream_event","event":{"type":"content_block_start","index":0,
+      "content_block":{"type":"text","text":""}}})
+send({"type":"stream_event","event":{"type":"content_block_delta","index":0,
+      "delta":{"type":"text_delta","text":"changed course"}}})
+send({"type":"stream_event","event":{"type":"content_block_stop","index":0}})
+send({"type":"stream_event","event":{"type":"message_delta",
+      "delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}})
+send({"type":"stream_event","event":{"type":"message_stop"}})
+send({"type":"result","subtype":"success","is_error":False,
+      "result":"changed course","usage":{"input_tokens":3,"output_tokens":2}})
+"#,
+        )
+    }
+
     fn provider_running(script: &FakeCli) -> ClaudeCodeProvider {
         ClaudeCodeProvider {
             command: script.path().to_path_buf(),
@@ -2069,6 +2331,46 @@ mod streaming_tests {
             !rendered.is_empty(),
             "the failure must carry a message the user can act on"
         );
+    }
+
+    #[tokio::test]
+    async fn a_user_instruction_steers_the_running_claude_turn() {
+        let script = steerable_claude();
+        let provider = provider_running(&script);
+        let messages = vec![Message::user().with_text("hello")];
+        let (steering_tx, steering_rx) = crate::providers::base::provider_steer_channel();
+        let stream = provider
+            .stream_with_steering("SYS", &messages, &[], steering_rx)
+            .await
+            .expect("the stream should open");
+
+        let (request, acknowledged) = ProviderSteerRequest::new("change course");
+        assert!(steering_tx.send(request).is_ok(), "the turn is running");
+        acknowledged
+            .await
+            .expect("the provider kept the acknowledgement")
+            .expect("the stream-json pipe accepted the instruction");
+
+        futures::pin_mut!(stream);
+        let mut text = String::new();
+        let mut usage = None;
+        while let Some(item) = stream.next().await {
+            let (message, update, _) = item.expect("the steered turn should finish");
+            if let Some(message) = message {
+                for content in message.content {
+                    if let MessageContent::Text(content) = content {
+                        text.push_str(&content.text);
+                    }
+                }
+            }
+            if update.is_some() {
+                usage = update;
+            }
+        }
+        assert_eq!(text, "before steeringchanged course");
+        let usage = usage.expect("the steered run should report combined usage");
+        assert_eq!(usage.usage.input_tokens, Some(4));
+        assert_eq!(usage.usage.output_tokens, Some(4));
     }
 }
 

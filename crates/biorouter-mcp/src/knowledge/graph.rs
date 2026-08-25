@@ -213,7 +213,8 @@ struct LoadedPage {
 fn load_pages(kb_root: &Path) -> Result<Vec<LoadedPage>> {
     let mut out = Vec::new();
     for page in store::list_pages(kb_root, None)? {
-        let text = std::fs::read_to_string(kb_root.join(&page.path))?;
+        let path = store::resolve_readable_path(kb_root, &page.path)?;
+        let text = std::fs::read_to_string(path)?;
         // DR-7: nothing rejects a page on read. `Page::parse` fails on exactly
         // one input — an unterminated `---` block — and the answer there is a
         // page with no typed view, not a base that refuses to derive.

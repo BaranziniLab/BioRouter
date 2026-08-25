@@ -1068,7 +1068,10 @@ fn selection_response(
     params(
         ("session_id" = Option<String>, Query, description = "Optional chat session id for the session-scoped selection"),
     ),
-    responses((status = 200, description = "The session's knowledge bases and its primary", body = ActiveKbResponse))
+    responses(
+        (status = 200, description = "The session's knowledge bases and its primary", body = ActiveKbResponse),
+        (status = 403, description = "The named session is outside the caller's privacy reach")
+    )
 )]
 pub async fn get_active(
     State(svc): State<Arc<KnowledgeService>>,
@@ -1765,8 +1768,8 @@ pub async fn query_kb(
     let macro_handle = tokio::spawn(async move {
         let args = query_macro::QueryArgs {
             kb_id: id,
-            // Issue #56. `query` writes — its sub-agent holds kb_write_page,
-            // kb_append_log and kb_add_raw_source unconditionally.
+            // Issue #56. A saved query writes model output into the base; an
+            // ordinary query is read-only and must not reclassify it.
             caller_is_private: caller_capability.is_private(),
             caller_affiliation: biorouter::privacy::affiliation::caller_affiliation(
                 caller_affiliation,

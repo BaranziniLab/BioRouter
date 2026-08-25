@@ -77,10 +77,10 @@ pub static EXTENSION_TITLE: &str = "Workspace Control";
 ///
 /// **This whole block ships even when only `subagent` is callable.** The common
 /// injection mode is `Agent::ensure_spawn_extension`, which loads this extension
-/// with `available_tools: ["subagent"]` for any session that merely has
+/// with delegation plus child read/watch/close for any session that merely has
 /// delegation enabled. `available_tools` filters the *tool list*; instructions
 /// are a single server string that `ExtensionManager::get_extensions_info`
-/// copies verbatim, so a spawn-only session still reads all eight bullets.
+/// copies verbatim, so a restricted session still reads all eight bullets.
 ///
 /// That is fine for a bullet describing a tool the model simply does not have —
 /// it cannot act on it either way. It is NOT fine for a negative imperative
@@ -447,6 +447,27 @@ struct NewSession {
 /// Max sessions one watch call may subscribe to. Each id costs one broadcast
 /// receiver for the duration of the park.
 const WATCH_MAX_SESSIONS: usize = 32;
+const WATCH_RESULT_MAX_CHARS: usize = 12_000;
+const WATCH_RESULTS_TOTAL_MAX_CHARS: usize = 48_000;
+
+fn bounded_watch_reason(reason: String) -> String {
+    if reason.chars().count() <= WATCH_RESULT_MAX_CHARS {
+        return reason;
+    }
+    let mut bounded: String = reason.chars().take(WATCH_RESULT_MAX_CHARS).collect();
+    bounded.push_str(
+        "\n… result shortened in this watch; use workspace_read_conversation for the full text",
+    );
+    bounded
+}
+
+fn background_watch_reason(result: &crate::agents::subagent_result::SubagentResult) -> String {
+    bounded_watch_reason(format!(
+        "background subagent {}:\n{}",
+        result.status.as_str(),
+        result.to_agent_text()
+    ))
+}
 
 /// Whether a session is running, idle, or not knowable from here.
 ///
@@ -460,6 +481,21 @@ enum SessionLiveness {
     Running,
     Idle,
     Unknown,
+}
+
+fn background_subagent_for(
+    caller_session_id: &str,
+    child_session_id: &str,
+) -> Option<std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>> {
+    crate::agents::subagent_handle::list_for_session(caller_session_id)
+        .into_iter()
+        .find(|handle| handle.child_session_id == child_session_id)
+}
+
+fn retained_background_result_is_current(
+    handle: &crate::agents::subagent_handle::BackgroundSubagent,
+) -> bool {
+    handle.result_is_current()
 }
 
 /// Resolve liveness from the best source available.
@@ -496,15 +532,16 @@ fn session_liveness(
     caller_session_id: &str,
     session_id: &str,
 ) -> SessionLiveness {
-    for handle in crate::agents::subagent_handle::list_for_session(caller_session_id) {
-        if handle.child_session_id == session_id {
-            if handle.is_running() {
-                // VETO: registered and not yet complete. The daemon may not have
-                // a lease for it yet (semaphore queue) — that is not idleness.
-                return SessionLiveness::Running;
-            }
-            return SessionLiveness::Idle;
+    if let Some(handle) = background_subagent_for(caller_session_id, session_id) {
+        if handle.is_running() {
+            // VETO: registered and not yet complete. The daemon may not have
+            // a lease for it yet (semaphore queue) — that is not idleness.
+            return SessionLiveness::Running;
         }
+        if services.is_some_and(|services| services.is_turn_active(session_id)) {
+            return SessionLiveness::Running;
+        }
+        return SessionLiveness::Idle;
     }
     if let Some(services) = services {
         return if services.is_turn_active(session_id) {
@@ -786,6 +823,58 @@ impl WorkspaceClient {
         .await
     }
 
+    async fn refuse_unless_writable(
+        &self,
+        cap: crate::privacy::CallCapability,
+        caller_session_id: &str,
+        target_session_id: &str,
+    ) -> Result<(), String> {
+        self.refuse_unless_visible(cap, target_session_id).await?;
+        if !cap.enforced() {
+            return Ok(());
+        }
+
+        let target = self
+            .context
+            .session_manager
+            .get_session(target_session_id, false)
+            .await
+            .map_err(|_| crate::privacy::refusal::workspace_out_of_reach())?;
+        let lineage = if target.id == caller_session_id {
+            crate::privacy::visibility::Lineage::Zelf
+        } else {
+            crate::privacy::visibility::lineage_of(
+                target.parent_session_id.as_deref(),
+                caller_session_id,
+            )
+        };
+        if crate::privacy::visibility::may_write(cap.tier(), target.privacy_tier, lineage) {
+            Ok(())
+        } else {
+            Err(crate::privacy::refusal::workspace_out_of_reach())
+        }
+    }
+
+    async fn refuse_unless_direct_subagent_child(
+        &self,
+        caller_session_id: &str,
+        target_session_id: &str,
+    ) -> Result<(), String> {
+        let target = self
+            .context
+            .session_manager
+            .get_session(target_session_id, false)
+            .await
+            .map_err(|_| crate::privacy::refusal::workspace_out_of_reach())?;
+        if target.session_type == crate::session::SessionType::SubAgent
+            && target.parent_session_id.as_deref() == Some(caller_session_id)
+        {
+            Ok(())
+        } else {
+            Err(crate::privacy::refusal::workspace_out_of_reach())
+        }
+    }
+
     async fn handle_list(
         &self,
         _caller_session_id: &str,
@@ -1030,6 +1119,7 @@ impl WorkspaceClient {
         &self,
         caller_session_id: &str,
         cap: crate::privacy::CallCapability,
+        child_scope_only: bool,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let args: WorkspaceReadParams = parse_args(arguments)?;
@@ -1047,6 +1137,10 @@ impl WorkspaceClient {
         // the tier is not itself the way to load the transcript being refused —
         // the ordering rule `routes::session_reach` states for the five gated
         // HTTP routes, with a tool call as its subject.
+        if child_scope_only {
+            self.refuse_unless_direct_subagent_child(caller_session_id, &args.session_id)
+                .await?;
+        }
         self.refuse_unless_visible(cap, &args.session_id).await?;
 
         let session = self
@@ -1100,7 +1194,28 @@ impl WorkspaceClient {
 
         let body = match view {
             "tool_calls" => project_tool_calls(tail(args.last)),
-            "summary" => project_summary(&session, &messages),
+            "summary" => {
+                let mut summary = project_summary(&session, &messages);
+                if let Some(handle) = background_subagent_for(caller_session_id, &args.session_id) {
+                    let newer_turn_is_active = workspace_services::get()
+                        .as_ref()
+                        .is_some_and(|services| services.is_turn_active(&args.session_id));
+                    if handle.is_running() {
+                        summary.push_str(&format!(
+                            "\n\nBackground subagent is still running ({}s elapsed).",
+                            handle.elapsed().as_secs()
+                        ));
+                    } else if !newer_turn_is_active
+                        && retained_background_result_is_current(&handle)
+                    {
+                        if let Some(result) = handle.result() {
+                            summary.push_str("\n\n--- Background result ---\n");
+                            summary.push_str(&result.to_agent_text());
+                        }
+                    }
+                }
+                summary
+            }
             "spawn_context" => project_spawn_context(&messages)
                 .ok_or("this session has no recorded spawn context")?,
             _ => project_transcript(tail(args.last)),
@@ -1728,11 +1843,8 @@ impl WorkspaceClient {
         // store, and neither can say anything about the target) and before
         // `caller_provenance`, which is this handler's first store read.
         //
-        // ⚠ This enforces VIS only. §7's write row is `may_write` — VIS **and**
-        // lineage ∈ {self, child} — and the lineage half is not implemented
-        // anywhere in this change, so a public caller may still steer a public
-        // sibling it did not spawn (column B, `✗ R6`).
-        self.refuse_unless_visible(cap, &args.session_id).await?;
+        self.refuse_unless_writable(cap, caller_session_id, &args.session_id)
+            .await?;
         let provenance = self.caller_provenance(caller_session_id).await;
         let services = workspace_services::get();
 
@@ -1923,7 +2035,9 @@ impl WorkspaceClient {
             ));
         }
 
-        let rx = session_events::subscribe(&args.session_id);
+        let wait_for_final = args.wait.as_deref() == Some("final_message");
+        let slot_rx = session_events::subscribe(&args.session_id);
+        let final_rx = wait_for_final.then(|| session_events::subscribe(&args.session_id));
         let body = crate::conversation::message::frame_workspace_injection(
             provenance.from_session_name.as_deref(),
             &args.text,
@@ -1935,6 +2049,12 @@ impl WorkspaceClient {
             .start_detached_turn(&args.session_id, message)
             .await
             .map_err(|e| format!("could not start turn: {e}"))?;
+        Self::hold_slot_until_turn_ends(
+            cap_guard,
+            TurnFollower::new(slot_rx, turn_id.clone()),
+            args.session_id.clone(),
+            std::sync::Arc::clone(&services),
+        );
         // §5 / decision 2: GUI-visible, always.
         self.notify_target(
             &args.session_id,
@@ -1958,17 +2078,7 @@ impl WorkspaceClient {
         // `TurnFinished` onto the very stream we are about to read. A
         // loop that accepts the first terminal it sees therefore reports
         // the PREVIOUS turn's answer as this one's.
-        let mut follower = TurnFollower::new(rx, turn_id.clone());
-
-        if args.wait.as_deref() != Some("final_message") {
-            // Fire-and-forget, but not accounting-free: the reservation
-            // outlives this call (see `InjectedTurnGuard::enter` above).
-            Self::hold_slot_until_turn_ends(
-                cap_guard,
-                follower,
-                args.session_id.clone(),
-                std::sync::Arc::clone(&services),
-            );
+        if !wait_for_final {
             return Ok(vec![Content::text(format!(
                 "Detached turn {turn_id} started on session {}.",
                 args.session_id
@@ -1977,7 +2087,11 @@ impl WorkspaceClient {
 
         // ui_ask-style bounded park (§4.1): watch the bus for the final
         // assistant message, bounded by timeout_s.
-        let timeout = std::time::Duration::from_secs(args.timeout_s.unwrap_or(120).min(600));
+        let timeout = std::time::Duration::from_secs(args.timeout_s.unwrap_or(120).clamp(1, 600));
+        let mut follower = TurnFollower::new(
+            final_rx.expect("the final-message wait subscribed before the turn started"),
+            turn_id.clone(),
+        );
         let waited = tokio::time::timeout(timeout, follower.run()).await;
 
         match waited {
@@ -1991,18 +2105,9 @@ impl WorkspaceClient {
             Ok(Ok(TurnOutcome::Failed(e))) => Err(format!("turn {turn_id} ended in error: {e}")),
             Ok(Err(e)) => Err(format!("event stream error while waiting: {e}")),
             Err(_) => {
-                // The park gave up; the TURN did not. It is still in
-                // flight and still counts against the cap, so the
-                // reservation is handed to the same background follower
-                // the no-wait path uses — with its `started` state
-                // intact, so it is still watching for THIS turn's
-                // terminal and not the next one's.
-                Self::hold_slot_until_turn_ends(
-                    cap_guard,
-                    follower,
-                    args.session_id.clone(),
-                    std::sync::Arc::clone(&services),
-                );
+                // The park gave up; the TURN did not. The independent slot
+                // follower above still owns the caller's reservation until the
+                // target emits this turn's terminal event.
                 Ok(vec![Content::text(format!(
                     "Turn {turn_id} is still running after {}s; it continues in the background. \
                      Read it later with workspace_read_conversation.",
@@ -2059,10 +2164,8 @@ impl WorkspaceClient {
         // conversation must certainly not re-tool one. FIRST, before any store
         // read that could answer a question about the target.
         //
-        // ⚠ VIS only, exactly as `handle_send_prompt` documents: §7's write row
-        // is `may_write` — VIS **and** lineage ∈ {self, child} — and the lineage
-        // half is not implemented anywhere in this file.
-        self.refuse_unless_visible(cap, &args.session_id).await?;
+        self.refuse_unless_writable(cap, caller_session_id, &args.session_id)
+            .await?;
 
         // ---- Resolve EVERYTHING before mutating anything, so a bad name is a
         // clean no-op rather than a half-applied change. ------------------
@@ -2561,6 +2664,37 @@ impl WorkspaceClient {
         })
     }
 
+    async fn handle_close_tab(
+        session_id: &str,
+        services: Option<&std::sync::Arc<dyn workspace_services::WorkspaceServices>>,
+    ) -> Result<Vec<Content>, String> {
+        match services {
+            Some(s) if s.gui_attached() => {
+                let result = s
+                    .gui_command(
+                        json!({ "type": "workspace", "cmd": "close_tab", "session_id": session_id }),
+                        true,
+                    )
+                    .await?;
+                if !announcement_delivered(&result) {
+                    return Ok(vec![Content::text(format!(
+                        "The GUI did NOT close the tab for session {} ({}). The session \
+                         is untouched; do not tell the user the tab is gone.",
+                        session_id,
+                        gui_detail(&result).unwrap_or("no reason given")
+                    ))]);
+                }
+                Ok(vec![Content::text(format!(
+                    "Tab for session {session_id} closed (session survives)."
+                ))])
+            }
+            _ => Ok(vec![Content::text(
+                "No GUI attached, so nothing to close at tab scope (gui_attached: false)."
+                    .to_string(),
+            )]),
+        }
+    }
+
     /// `workspace_close` — the three scopes of "stop", smallest blast radius
     /// first (§4.1).
     ///
@@ -2571,6 +2705,7 @@ impl WorkspaceClient {
         &self,
         caller_session_id: &str,
         cap: crate::privacy::CallCapability,
+        child_scope_only: bool,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let args: WorkspaceCloseParams = parse_args(arguments)?;
@@ -2586,8 +2721,14 @@ impl WorkspaceClient {
         // FIRST, before the scope match: an out-of-reach target must produce the
         // one ambiguous sentence whatever scope was named, including an invalid
         // one, or the scope argument becomes the probe.
-        self.refuse_unless_visible(cap, &args.session_id).await?;
+        if child_scope_only {
+            self.refuse_unless_direct_subagent_child(caller_session_id, &args.session_id)
+                .await?;
+        }
+        self.refuse_unless_writable(cap, caller_session_id, &args.session_id)
+            .await?;
         let services = workspace_services::get();
+        let background = background_subagent_for(caller_session_id, &args.session_id);
 
         match args.scope.as_str() {
             // ⚠ **The round trip is not optional here.** This used to emit with
@@ -2600,33 +2741,20 @@ impl WorkspaceClient {
             // sentence below, so the model told the user a tab was gone while it
             // was still on screen. Same shape as `place_in_gui`'s: ask, wait,
             // and report the answer.
-            "tab" => match services {
-                Some(s) if s.gui_attached() => {
-                    let result = s
-                        .gui_command(
-                            json!({ "type": "workspace", "cmd": "close_tab", "session_id": args.session_id }),
-                            true,
-                        )
-                        .await?;
-                    if !announcement_delivered(&result) {
-                        return Ok(vec![Content::text(format!(
-                            "The GUI did NOT close the tab for session {} ({}). The session \
-                             is untouched; do not tell the user the tab is gone.",
-                            args.session_id,
-                            gui_detail(&result).unwrap_or("no reason given")
-                        ))]);
-                    }
-                    Ok(vec![Content::text(format!(
-                        "Tab for session {} closed (session survives).",
-                        args.session_id
-                    ))])
-                }
-                _ => Ok(vec![Content::text(
-                    "No GUI attached, so nothing to close at tab scope (gui_attached: false)."
-                        .to_string(),
-                )]),
-            },
+            "tab" => Self::handle_close_tab(&args.session_id, services.as_ref()).await,
             "turn" => {
+                if let Some(handle) = background.as_ref().filter(|handle| handle.is_running()) {
+                    handle.cancel();
+                    self.notify_target(
+                        &args.session_id,
+                        format!("Turn cancelled by another agent ({caller_session_id})."),
+                    )
+                    .await;
+                    return Ok(vec![Content::text(format!(
+                        "Cancellation requested for background subagent session {}.",
+                        args.session_id
+                    ))]);
+                }
                 let services = services.ok_or("scope:\"turn\" requires the BioRouter daemon")?;
                 match services.cancel_turn(&args.session_id) {
                     Some(turn_id) => {
@@ -2647,7 +2775,23 @@ impl WorkspaceClient {
                 }
             }
             "agent" => {
-                let services = services.ok_or("scope:\"agent\" requires the BioRouter daemon")?;
+                let cancelled_background = background
+                    .as_ref()
+                    .filter(|handle| handle.is_running())
+                    .is_some_and(|handle| {
+                        handle.cancel();
+                        true
+                    });
+                let Some(services) = services else {
+                    if cancelled_background {
+                        return Ok(vec![Content::text(format!(
+                            "Cancellation requested for background subagent session {}; no live \
+                             daemon agent needed eviction.",
+                            args.session_id
+                        ))]);
+                    }
+                    return Err("scope:\"agent\" requires the BioRouter daemon".into());
+                };
                 services.stop_agent(&args.session_id).await?;
                 self.notify_target(
                     &args.session_id,
@@ -2663,16 +2807,7 @@ impl WorkspaceClient {
         }
     }
 
-    async fn handle_watch(
-        &self,
-        caller_session_id: &str,
-        cap: crate::privacy::CallCapability,
-        arguments: Option<JsonObject>,
-        cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<Vec<Content>, String> {
-        use crate::session_events;
-
-        let args: WorkspaceWatchParams = parse_args(arguments)?;
+    fn validate_watch_request(args: &WorkspaceWatchParams) -> Result<(), String> {
         if args.session_ids.is_empty() {
             return Err("session_ids must name at least one conversation".into());
         }
@@ -2682,6 +2817,21 @@ impl WorkspaceClient {
                 args.session_ids.len()
             ));
         }
+        Ok(())
+    }
+
+    async fn handle_watch(
+        &self,
+        caller_session_id: &str,
+        cap: crate::privacy::CallCapability,
+        child_scope_only: bool,
+        arguments: Option<JsonObject>,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Vec<Content>, String> {
+        use crate::session_events;
+
+        let args: WorkspaceWatchParams = parse_args(arguments)?;
+        Self::validate_watch_request(&args)?;
         // Issue #56, finding 15: an ACTIVITY ORACLE over conversations §7 will
         // not let this caller read. "still running" / "already idle" /
         // "completed (stop)" is a live readout of whether a private
@@ -2701,6 +2851,10 @@ impl WorkspaceClient {
         // Before `subscribe`, so a refused watch never claims a slot in another
         // conversation's event ring either.
         for id in &args.session_ids {
+            if child_scope_only {
+                self.refuse_unless_direct_subagent_child(caller_session_id, id)
+                    .await?;
+            }
             self.refuse_unless_visible(cap, id).await?;
         }
         let wait_all = match args.mode.as_deref() {
@@ -2727,19 +2881,37 @@ impl WorkspaceClient {
         // because only the wrapper's `Drop` reclaims the session's 1024-slot
         // ring. Holding `Subscription` here is what keeps a watch on an idle or
         // made-up id from pinning that ring for the life of the process.
-        let mut receivers: Vec<(String, session_events::Subscription)> = args
-            .session_ids
-            .iter()
-            .map(|id| (id.clone(), session_events::subscribe(id)))
-            .collect();
-
         let services = workspace_services::get();
+        let mut receivers: Vec<(
+            String,
+            session_events::Subscription,
+            Option<std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>>,
+        )> = Vec::with_capacity(args.session_ids.len());
+        for id in &args.session_ids {
+            let mut background = background_subagent_for(caller_session_id, id).filter(|handle| {
+                handle.is_running()
+                    || !services
+                        .as_ref()
+                        .is_some_and(|services| services.is_turn_active(id))
+            });
+            if let Some(handle) = background.as_ref().filter(|handle| !handle.is_running()) {
+                if !retained_background_result_is_current(handle) {
+                    background = None;
+                }
+            }
+            receivers.push((id.clone(), session_events::subscribe(id), background));
+        }
+
         let mut completed: Vec<(String, String)> = Vec::new();
         // How many watched ids we could not resolve at all — reported at the end
         // so a headless timeout does not read as "they are all still working".
         let mut unknown_liveness = 0usize;
         if !assume_running {
-            for (id, _) in &receivers {
+            for (id, _, background) in &receivers {
+                if let Some(result) = background.as_ref().and_then(|handle| handle.result()) {
+                    completed.push((id.clone(), background_watch_reason(&result)));
+                    continue;
+                }
                 match session_liveness(services.as_ref(), caller_session_id, id) {
                     // Only a POSITIVE idle answer short-circuits. `Unknown`
                     // parks — see `SessionLiveness`.
@@ -2750,7 +2922,7 @@ impl WorkspaceClient {
                     SessionLiveness::Unknown => unknown_liveness += 1,
                 }
             }
-            receivers.retain(|(id, _)| !completed.iter().any(|(done, _)| done == id));
+            receivers.retain(|(id, _, _)| !completed.iter().any(|(done, _)| done == id));
         }
 
         let mut cancelled = false;
@@ -2792,7 +2964,11 @@ impl WorkspaceClient {
     /// deadline passes — whichever comes first. A timeout is not an error; the
     /// caller reports whatever arrived.
     async fn park_for_completions(
-        receivers: Vec<(String, crate::session_events::Subscription)>,
+        receivers: Vec<(
+            String,
+            crate::session_events::Subscription,
+            Option<std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>>,
+        )>,
         completed: &mut Vec<(String, String)>,
         want: usize,
         timeout: std::time::Duration,
@@ -2818,10 +2994,24 @@ impl WorkspaceClient {
         // and more obviously correct than a hand-rolled select over a Vec,
         // and 32 short-lived tasks is nothing.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, String)>(WATCH_MAX_SESSIONS);
-        for (id, mut receiver) in receivers {
+        for (id, mut receiver, background) in receivers {
             let tx = tx.clone();
             let stop = stop.clone();
             tokio::spawn(async move {
+                if let Some(handle) = background {
+                    let result = tokio::select! {
+                        biased;
+                        () = stop.cancelled() => return,
+                        result = handle.wait(std::time::Duration::from_secs(
+                            crate::agents::subagent_handle::MAX_WAIT_SECS,
+                        )) => result,
+                    };
+                    if let Some(result) = result {
+                        let reason = background_watch_reason(&result);
+                        let _ = tx.send((id, reason)).await;
+                    }
+                    return;
+                }
                 loop {
                     // `recv` is cancel-safe, so losing this race never drops an
                     // event that had already resolved.
@@ -2910,8 +3100,21 @@ impl WorkspaceClient {
             }
         } else {
             report.push_str("Completed:\n");
-            for (id, reason) in completed {
+            let mut result_chars = 0usize;
+            let mut omitted = 0usize;
+            for (index, (id, reason)) in completed.iter().enumerate() {
+                let entry_chars = id.chars().count() + reason.chars().count();
+                if result_chars + entry_chars > WATCH_RESULTS_TOTAL_MAX_CHARS {
+                    omitted = completed.len() - index;
+                    break;
+                }
                 report.push_str(&format!("- {id} ({reason})\n"));
+                result_chars += entry_chars;
+            }
+            if omitted > 0 {
+                report.push_str(&format!(
+                    "- … {omitted} more completed result(s) omitted from this watch; read them with workspace_read_conversation\n"
+                ));
             }
             if !still_running.is_empty() {
                 report.push_str(&format!(
@@ -3344,6 +3547,7 @@ impl McpClientTrait for WorkspaceClient {
         cancellation_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
         let caller = &meta.session_id;
+        let child_scope_only = meta.workspace_child_scope_only;
         // Issue #56 §7. The capability this call was ADMITTED on, carried from
         // `Agent::dispatch_tool_call` — never re-derived here. `Copy`, so it
         // threads into each handler without a clone; see `CallCapability`'s own
@@ -3353,17 +3557,27 @@ impl McpClientTrait for WorkspaceClient {
         let content = match name {
             "workspace_list" => self.handle_list(caller, cap, arguments).await,
             "workspace_read_conversation" => {
-                self.handle_read_conversation(caller, cap, arguments).await
+                self.handle_read_conversation(caller, cap, child_scope_only, arguments)
+                    .await
             }
             "workspace_send_prompt" => self.handle_send_prompt(caller, cap, arguments).await,
             "workspace_set_tools" => self.handle_set_tools(caller, cap, arguments).await,
-            "workspace_close" => self.handle_close(caller, cap, arguments).await,
+            "workspace_close" => {
+                self.handle_close(caller, cap, child_scope_only, arguments)
+                    .await
+            }
             // #110: the only handler here that PARKS, so the only one the turn's
             // cancel token has anything to reach. Every other tool returns
             // promptly; a watch may legitimately wait ten minutes.
             "workspace_watch" => {
-                self.handle_watch(caller, cap, arguments, &cancellation_token)
-                    .await
+                self.handle_watch(
+                    caller,
+                    cap,
+                    child_scope_only,
+                    arguments,
+                    &cancellation_token,
+                )
+                .await
             }
             "workspace_open" => self.handle_open(caller, cap, arguments).await,
             "workspace_read_panel" | "workspace_capture_panel" => {
@@ -3696,7 +3910,7 @@ pub(crate) mod tests {
     async fn cancelling_the_turn_ends_a_parked_watch_at_once() {
         let cancel = tokio_util::sync::CancellationToken::new();
         let id = format!("watch-cancel-{:016x}", rand::random::<u64>());
-        let receivers = vec![(id.clone(), crate::session_events::subscribe(&id))];
+        let receivers = vec![(id.clone(), crate::session_events::subscribe(&id), None)];
         let mut completed: Vec<(String, String)> = Vec::new();
 
         {
@@ -3751,7 +3965,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_finished_park_reaps_its_watcher_tasks() {
         let id = format!("watch-reap-{:016x}", rand::random::<u64>());
-        let receivers = vec![(id.clone(), crate::session_events::subscribe(&id))];
+        let receivers = vec![(id.clone(), crate::session_events::subscribe(&id), None)];
         let mut completed: Vec<(String, String)> = Vec::new();
         let cancel = tokio_util::sync::CancellationToken::new();
 
@@ -4767,10 +4981,236 @@ pub(crate) mod tests {
         args: serde_json::Value,
         meta: crate::agents::mcp_client::McpMeta,
     ) -> CallToolResult {
+        if matches!(
+            tool,
+            "workspace_send_prompt" | "workspace_set_tools" | "workspace_close"
+        ) {
+            if let Some(target) = args.get("session_id").and_then(serde_json::Value::as_str) {
+                if target != meta.session_id
+                    && c.context
+                        .session_manager
+                        .get_session(target, false)
+                        .await
+                        .is_ok()
+                {
+                    c.context
+                        .session_manager
+                        .update(target)
+                        .parent_session_id(Some(meta.session_id.clone()))
+                        .apply()
+                        .await
+                        .expect("test target can be linked to its caller");
+                }
+            }
+        }
         let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
         c.call_tool(tool, Some(args), meta, CancellationToken::new())
             .await
             .unwrap()
+    }
+
+    async fn call_as_without_test_lineage(
+        c: &WorkspaceClient,
+        tool: &str,
+        args: serde_json::Value,
+        meta: crate::agents::mcp_client::McpMeta,
+    ) -> CallToolResult {
+        let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
+        c.call_tool(tool, Some(args), meta, CancellationToken::new())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn workspace_writes_are_limited_to_direct_children() {
+        use crate::session::session_manager::SessionType;
+
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let caller = sm
+            .create_session(std::env::temp_dir(), "parent".into(), SessionType::User)
+            .await
+            .unwrap();
+        let child = sm
+            .create_session(std::env::temp_dir(), "child".into(), SessionType::SubAgent)
+            .await
+            .unwrap();
+        sm.update(&child.id)
+            .parent_session_id(Some(caller.id.clone()))
+            .apply()
+            .await
+            .unwrap();
+        let grandchild = sm
+            .create_session(
+                std::env::temp_dir(),
+                "grandchild".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        sm.update(&grandchild.id)
+            .parent_session_id(Some(child.id.clone()))
+            .apply()
+            .await
+            .unwrap();
+        let unrelated = sm
+            .create_session(std::env::temp_dir(), "unrelated".into(), SessionType::User)
+            .await
+            .unwrap();
+
+        let meta = || {
+            crate::agents::mcp_client::McpMeta::new(
+                caller.id.clone(),
+                crate::privacy::CallCapability::for_test_restricted(),
+            )
+        };
+        let child_result = call_as_without_test_lineage(
+            &c,
+            "workspace_send_prompt",
+            serde_json::json!({
+                "session_id": child.id, "text": "direct-child-marker", "mode": "note"
+            }),
+            meta(),
+        )
+        .await;
+        assert_ne!(
+            child_result.is_error,
+            Some(true),
+            "{}",
+            text_of(&child_result)
+        );
+
+        for target in [&unrelated.id, &grandchild.id] {
+            let refused = call_as_without_test_lineage(
+                &c,
+                "workspace_send_prompt",
+                serde_json::json!({
+                    "session_id": target, "text": "must-not-land", "mode": "note"
+                }),
+                meta(),
+            )
+            .await;
+            assert_eq!(refused.is_error, Some(true), "{}", text_of(&refused));
+            assert!(
+                text_of(&refused).contains(&crate::privacy::refusal::workspace_out_of_reach()),
+                "{}",
+                text_of(&refused)
+            );
+        }
+
+        for (tool, args) in [
+            (
+                "workspace_set_tools",
+                serde_json::json!({
+                    "session_id": unrelated.id, "add_extensions": ["unknown-extension"]
+                }),
+            ),
+            (
+                "workspace_close",
+                serde_json::json!({ "session_id": unrelated.id, "scope": "everything" }),
+            ),
+        ] {
+            let refused = call_as_without_test_lineage(&c, tool, args, meta()).await;
+            assert_eq!(refused.is_error, Some(true), "{}", text_of(&refused));
+            assert!(
+                text_of(&refused).contains(&crate::privacy::refusal::workspace_out_of_reach()),
+                "{tool}: {}",
+                text_of(&refused)
+            );
+        }
+
+        let opted_out = call_as_without_test_lineage(
+            &c,
+            "workspace_send_prompt",
+            serde_json::json!({
+                "session_id": unrelated.id, "text": "opt-out-marker", "mode": "note"
+            }),
+            crate::agents::mcp_client::McpMeta::new(
+                caller.id,
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Public,
+                    false,
+                ),
+            ),
+        )
+        .await;
+        assert_ne!(opted_out.is_error, Some(true), "{}", text_of(&opted_out));
+    }
+
+    #[tokio::test]
+    async fn derived_supervision_surface_reads_watches_and_closes_only_direct_children() {
+        use crate::session::SessionType;
+
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let parent = sm
+            .create_session(std::env::temp_dir(), "parent".into(), SessionType::User)
+            .await
+            .unwrap();
+        let child = sm
+            .create_session(std::env::temp_dir(), "child".into(), SessionType::SubAgent)
+            .await
+            .unwrap();
+        sm.update(&child.id)
+            .parent_session_id(Some(parent.id.clone()))
+            .apply()
+            .await
+            .unwrap();
+        let unrelated = sm
+            .create_session(
+                std::env::temp_dir(),
+                "unrelated".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+
+        let meta = || {
+            crate::agents::mcp_client::McpMeta::new(
+                parent.id.clone(),
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Public,
+                    false,
+                ),
+            )
+            .with_workspace_child_scope_only(true)
+        };
+        let readable = call_as_without_test_lineage(
+            &c,
+            "workspace_read_conversation",
+            serde_json::json!({ "session_id": child.id, "view": "summary" }),
+            meta(),
+        )
+        .await;
+        assert_ne!(readable.is_error, Some(true), "{}", text_of(&readable));
+
+        for (tool, args) in [
+            (
+                "workspace_read_conversation",
+                serde_json::json!({ "session_id": unrelated.id, "view": "summary" }),
+            ),
+            (
+                "workspace_watch",
+                serde_json::json!({ "session_ids": [unrelated.id], "timeout_s": 1 }),
+            ),
+            (
+                "workspace_close",
+                serde_json::json!({ "session_id": unrelated.id, "scope": "turn" }),
+            ),
+        ] {
+            let refused = call_as_without_test_lineage(&c, tool, args, meta()).await;
+            assert_eq!(
+                refused.is_error,
+                Some(true),
+                "{tool}: {}",
+                text_of(&refused)
+            );
+            assert!(
+                text_of(&refused).contains(&crate::privacy::refusal::workspace_out_of_reach()),
+                "{tool}: {}",
+                text_of(&refused)
+            );
+        }
     }
 
     /// **The blocker itself, as a named regression test.** A chat on a public
@@ -6017,20 +6457,27 @@ pub(crate) mod tests {
             "the cut removed more than the test module"
         );
 
-        // §7 column C, at every handler that names another conversation:
-        // read_conversation, open (existing), send_prompt, set_tools, close,
-        // watch, and the panel pair (which share one handler, hence one call
-        // site for two tools). An exact count, so a further tool that names a
-        // conversation cannot be added without either wiring the gate or
-        // editing this number — which is the moment to think about it.
+        // §7 column C, at every handler that names another conversation.
+        // Four read-only handler sites call the read gate directly; its helper
+        // contains the fifth occurrence. Three mutating handlers call the
+        // write gate, which composes the same read gate before its lineage
+        // check. Together those are read_conversation, open (existing),
+        // send_prompt, set_tools, close, watch, and the panel pair (which share
+        // one handler). Exact counts make a new door fail this audit until its
+        // gate is chosen deliberately.
         assert_eq!(
             production
                 .matches("self.refuse_unless_visible(cap,")
                 .count(),
-            7,
-            "the number of §7-gated call sites changed. Seven handlers name \
-             another conversation; if an eighth arrived it needs the gate, and if \
-             one was removed this count needs to shrink deliberately."
+            5,
+            "the number of direct §7 read-gate sites changed"
+        );
+        assert_eq!(
+            production
+                .matches("self.refuse_unless_writable(cap,")
+                .count(),
+            3,
+            "the number of §7 write-gate sites changed"
         );
 
         // Gate F1, at the two doors that ENABLE an extension.
@@ -6094,13 +6541,14 @@ pub(crate) mod tests {
         // caller — is what survives a growing signature while still failing the
         // thing it exists to catch: a handler that stops being given `cap` at
         // all, or that is given one it re-derived for itself.
+        let compact = production.split_whitespace().collect::<Vec<_>>().join(" ");
         for arm in [
             "\"workspace_set_tools\" => self.handle_set_tools(caller, cap,",
-            "\"workspace_close\" => self.handle_close(caller, cap,",
-            "self.handle_watch(caller, cap,",
+            "\"workspace_close\" => { self.handle_close(caller, cap,",
+            "\"workspace_watch\" => { self.handle_watch( caller, cap,",
         ] {
             assert!(
-                production.contains(arm),
+                compact.contains(arm),
                 "dispatch no longer threads the capability: {arm}"
             );
         }
@@ -6504,23 +6952,19 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
-            "session_id": target.id, "text": "context for later", "mode": "note"
-        }))
-        .unwrap();
         let meta = crate::agents::mcp_client::McpMeta::new(
             caller.id.clone(),
             crate::privacy::CallCapability::for_test_restricted(),
         );
-        let result = c
-            .call_tool(
-                "workspace_send_prompt",
-                Some(args),
-                meta,
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
+        let result = call_as(
+            &c,
+            "workspace_send_prompt",
+            serde_json::json!({
+                "session_id": target.id, "text": "context for later", "mode": "note"
+            }),
+            meta,
+        )
+        .await;
         assert_ne!(result.is_error, Some(true));
 
         let reread = sm.get_session(&target.id, true).await.unwrap();
@@ -6626,19 +7070,13 @@ pub(crate) mod tests {
             )
             .await
             .unwrap();
-        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
-            "session_id": target.id, "text": "go", "mode": "steer"
-        }))
-        .unwrap();
-        let result = c
-            .call_tool(
-                "workspace_send_prompt",
-                Some(args),
-                test_meta(),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
+        let result = call_as(
+            &c,
+            "workspace_send_prompt",
+            serde_json::json!({ "session_id": target.id, "text": "go", "mode": "steer" }),
+            test_meta(),
+        )
+        .await;
         crate::workspace_services::clear_test_override();
         // steer with no running turn is always an error (mirrors /interrupt 409).
         assert_eq!(result.is_error, Some(true));
@@ -7038,18 +7476,16 @@ pub(crate) mod tests {
         caller: &str,
         args: serde_json::Value,
     ) -> CallToolResult {
-        let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
-        c.call_tool(
+        call_as(
+            c,
             "workspace_send_prompt",
-            Some(args),
+            args,
             crate::agents::mcp_client::McpMeta::new(
                 caller.to_string(),
                 crate::privacy::CallCapability::for_test_restricted(),
             ),
-            CancellationToken::new(),
         )
         .await
-        .unwrap()
     }
 
     fn text_of(result: &CallToolResult) -> String {
@@ -7484,15 +7920,7 @@ pub(crate) mod tests {
     // not theorized: it is what the first green run of this task did.
 
     async fn set_tools(c: &WorkspaceClient, args: serde_json::Value) -> CallToolResult {
-        let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
-        c.call_tool(
-            "workspace_set_tools",
-            Some(args),
-            test_meta(),
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap()
+        call_as(c, "workspace_set_tools", args, test_meta()).await
     }
 
     #[tokio::test]
@@ -7734,19 +8162,13 @@ pub(crate) mod tests {
         // scope:"turn" with nothing running: success with cancelled=false
         // semantics (never an error — mirrors POST /agent/cancel).
         // `NullServices::cancel_turn` returns None, which is that path.
-        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
-            "session_id": target.id, "scope": "turn"
-        }))
-        .unwrap();
-        let result = c
-            .call_tool(
-                "workspace_close",
-                Some(args),
-                test_meta(),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
+        let result = call_as(
+            &c,
+            "workspace_close",
+            serde_json::json!({ "session_id": target.id, "scope": "turn" }),
+            test_meta(),
+        )
+        .await;
         assert_ne!(result.is_error, Some(true));
         assert!(result.content[0]
             .as_text()
@@ -7756,19 +8178,13 @@ pub(crate) mod tests {
 
         // scope:"tab" with no GUI attached (`NullServices::gui_attached()` is
         // false): not an error — session-level no-op, says so.
-        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
-            "session_id": target.id, "scope": "tab"
-        }))
-        .unwrap();
-        let result = c
-            .call_tool(
-                "workspace_close",
-                Some(args),
-                test_meta(),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
+        let result = call_as(
+            &c,
+            "workspace_close",
+            serde_json::json!({ "session_id": target.id, "scope": "tab" }),
+            test_meta(),
+        )
+        .await;
         assert_ne!(result.is_error, Some(true));
         assert!(result.content[0]
             .as_text()
@@ -7797,19 +8213,13 @@ pub(crate) mod tests {
             )
             .await
             .unwrap();
-        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
-            "session_id": target.id, "scope": "turn"
-        }))
-        .unwrap();
-        let result = c
-            .call_tool(
-                "workspace_close",
-                Some(args),
-                test_meta(),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
+        let result = call_as(
+            &c,
+            "workspace_close",
+            serde_json::json!({ "session_id": target.id, "scope": "turn" }),
+            test_meta(),
+        )
+        .await;
         assert_eq!(result.is_error, Some(true));
         assert!(result.content[0].as_text().unwrap().text.contains("daemon"));
 
@@ -7827,18 +8237,16 @@ pub(crate) mod tests {
 
     /// Call `workspace_close` as `caller`.
     async fn close(c: &WorkspaceClient, caller: &str, args: serde_json::Value) -> CallToolResult {
-        let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
-        c.call_tool(
+        call_as(
+            c,
             "workspace_close",
-            Some(args),
+            args,
             crate::agents::mcp_client::McpMeta::new(
                 caller.to_string(),
                 crate::privacy::CallCapability::for_test_restricted(),
             ),
-            CancellationToken::new(),
         )
         .await
-        .unwrap()
     }
 
     /// `scope:"tab"` WITH a GUI: the tab close must actually reach the renderer,
@@ -8251,7 +8659,9 @@ pub(crate) mod tests {
         let child = seeded_target(&c, "child-done").await;
         let handle =
             BackgroundSubagent::register("caller", &child, "short job", CancellationToken::new());
-        handle.complete(SubagentResult::from_error("finished"));
+        let mut completion = SubagentResult::from_error("finished");
+        completion.human_intervened = true;
+        handle.complete(completion);
 
         let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
             "session_ids": [child], "timeout_s": 30
@@ -8274,7 +8684,47 @@ pub(crate) mod tests {
         assert_ne!(result.is_error, Some(true));
         let text = result.content[0].as_text().unwrap().text.clone();
         assert!(text.contains(&child));
-        assert!(text.contains("already idle"));
+        assert!(text.contains("background subagent error"), "got: {text}");
+        assert!(text.contains("Subagent failed: finished"), "got: {text}");
+        assert!(
+            text.contains("user intervened directly"),
+            "the parent must learn that the human changed the child's course: {text}"
+        );
+        assert!(
+            text.contains("{\"human_intervened\":true}"),
+            "the machine-readable flag must survive the background watch boundary: {text}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn close_cancels_a_background_child_before_it_has_a_daemon_turn() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let child = seeded_target(&c, "queued-background-child").await;
+        let handle =
+            BackgroundSubagent::register("caller", &child, "queued", CancellationToken::new());
+
+        let result = close(
+            &c,
+            "caller",
+            serde_json::json!({ "session_id": child, "scope": "turn" }),
+        )
+        .await;
+        crate::workspace_services::clear_test_override();
+
+        assert_ne!(result.is_error, Some(true), "{}", text_of(&result));
+        assert!(
+            handle.is_cancelled(),
+            "the queued child's token was not tripped"
+        );
+        assert!(
+            text_of(&result).contains("Cancellation requested"),
+            "{}",
+            text_of(&result)
+        );
     }
 
     /// `Unknown` must PARK, and say it could not check.

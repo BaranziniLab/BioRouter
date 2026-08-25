@@ -309,7 +309,14 @@ pub async fn run_complete_subagent_task(
     .await
     {
         Ok(v) => v,
-        Err(e) => return SubagentResult::from_error(format!("Failed to execute task: {e}")),
+        Err(e) => {
+            let mut result = SubagentResult::from_error(format!("Failed to execute task: {e}"));
+            if run_token.is_cancelled() {
+                result.mark_cancelled();
+            }
+            result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
+            return result;
+        }
     };
 
     // An aborted turn is a failure even though the loop left a perfectly
@@ -320,6 +327,9 @@ pub async fn run_complete_subagent_task(
         Some((code, message)) => SubagentResult::from_aborted_turn(&messages, &code, message),
         None => SubagentResult::from_conversation(&messages, final_output, return_last_only),
     };
+    if run_token.is_cancelled() {
+        result.mark_cancelled();
+    }
     result.human_intervened = super::subagent_result::conversation_has_user_direct(&messages);
     result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
     result

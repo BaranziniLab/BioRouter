@@ -93,6 +93,7 @@ beforeEach(() => {
 
 describe('LintDrawer', () => {
   it('runs the check on open, against the base and the resolved model', () => {
+    mocks.knowledge.primaryKbId = 'stale-pointer';
     render(<LintDrawer open onOpenChange={() => undefined} />);
 
     expect(mocks.start).toHaveBeenCalledTimes(1);
@@ -189,6 +190,29 @@ describe('LintDrawer', () => {
     expect(run).toBeDisabled();
     await userEvent.click(run);
     expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  it('treats a primary id without a resolved manifest as unavailable', async () => {
+    mocks.stream = { events: [], status: 'idle', finalResult: null, error: undefined };
+    mocks.knowledge = { primaryKbId: 'kb-stale', primaryKb: null };
+    const { rerender } = render(<LintDrawer open onOpenChange={() => undefined} />);
+
+    expect(screen.getByRole('heading', { name: 'Knowledge base unavailable' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'No model is configured' })).toBeNull();
+    expect(mocks.start).not.toHaveBeenCalled();
+
+    const run = screen.getByTestId('knowledge-lint-run');
+    expect(run).toBeDisabled();
+    await userEvent.click(run);
+    expect(mocks.start).not.toHaveBeenCalled();
+
+    mocks.knowledge.primaryKb = { id: 'kb-stale', name: 'Notes', default_model: null };
+    rerender(<LintDrawer open onOpenChange={() => undefined} />);
+
+    expect(screen.queryByRole('heading', { name: 'Knowledge base unavailable' })).toBeNull();
+    expect(mocks.start).toHaveBeenCalledWith('/knowledge/bases/kb-stale/lint', {
+      model: { provider: 'anthropic', model: 'claude' },
+    });
   });
 });
 

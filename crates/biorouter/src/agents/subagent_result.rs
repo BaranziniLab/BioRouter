@@ -179,6 +179,23 @@ impl SubagentResult {
         }
     }
 
+    /// Reclassify a partially produced result when the run's cancellation token
+    /// won. Preserve any useful work and artifacts, but never report a stopped
+    /// child as completed or as a provider failure.
+    pub(crate) fn mark_cancelled(&mut self) {
+        self.status = SubagentStatus::Incomplete;
+        self.error = None;
+        self.question = None;
+        let recap = self.summary.trim();
+        self.summary = if recap.is_empty() {
+            "Subagent was cancelled before completion and produced no summary.".to_string()
+        } else {
+            format!(
+                "Subagent was cancelled before completion. Best-effort recap from its work:\n\n{recap}"
+            )
+        };
+    }
+
     /// The child's turn was **aborted** — a provider failure, a tool loop, a
     /// worker timeout. The run did not finish, so the envelope says `error` no
     /// matter how much prose the child left behind.
@@ -328,6 +345,7 @@ impl SubagentResult {
             if !out.is_empty() {
                 out.push_str("\n\n");
             }
+            out.push_str("{\"human_intervened\":true}\n");
             out.push_str(
                 "Note: the user intervened directly in this subagent's tab during the run.",
             );
@@ -896,6 +914,24 @@ mod tests {
         assert_eq!(r.question, None);
     }
 
+    #[test]
+    fn cancellation_preserves_work_but_never_reports_completed_or_error() {
+        let mut result = SubagentResult::from_conversation(
+            &conv(vec![Message::assistant().with_text("partial work")]),
+            None,
+            true,
+        );
+        result.artifacts.push("partial.txt".into());
+        result.mark_cancelled();
+
+        assert_eq!(result.status, SubagentStatus::Incomplete);
+        assert!(result.error.is_none());
+        assert!(result.question.is_none());
+        assert!(result.summary.contains("cancelled before completion"));
+        assert!(result.summary.contains("partial work"));
+        assert_eq!(result.artifacts, vec!["partial.txt"]);
+    }
+
     /// `as_str` is the name the parent reads in a handle listing; the serde
     /// rename is the name a programmatic consumer reads. A variant whose two
     /// names disagree is a variant one of the two audiences cannot match on.
@@ -1009,8 +1045,8 @@ mod tests {
             .filter_map(|c| c.as_text().map(|t| t.text.clone()))
             .collect();
         assert!(
-            text.to_lowercase().contains("intervened"),
-            "the model reads TEXT, not structured_content, so the note must be there: {text}"
+            text.contains("{\"human_intervened\":true}"),
+            "the model reads TEXT, not structured_content, so the machine marker must be there: {text}"
         );
 
         // …and a clean run says nothing, rather than "human_intervened: false",

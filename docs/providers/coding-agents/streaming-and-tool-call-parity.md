@@ -7,9 +7,9 @@
 > provider is selected. Grounded in a read of this tree, of get-bb/bb (commit `3f86b7c`,
 > 2026-08-21, which already streams both vendors on subscriptions), and of the vendors' own
 > wire protocols (Claude Code 2.1.235/2.1.238, Codex CLI 0.147.0/0.149.0).
-> **Status:** Partly implemented. Phases 0–4 have shipped — both providers stream, and the
-> child's tool calls are mirrored into the transcript as marked message pairs; phases 5–7
-> are in progress. See [what shipped](#what-shipped) immediately below. This page is kept as
+> **Status:** Implemented for live streaming, mirrored tool calls, human approval, cancellation,
+> and live steering. The original phase ledger remains below as historical design material. See
+> [what shipped](#what-shipped) immediately below. This page is kept as
 > the **design record**: every "today" claim in the analysis sections describes the tree
 > *before* this work, and is retained for the reasoning rather than as a description of the
 > running system. For the running system read
@@ -25,8 +25,9 @@ store, or the GUI ever sees.
 
 ## What shipped
 
-Option A — the mirror — was built. Phases 0–4 are on the branch; everything below this
-section is the analysis and the plan as written before that work, preserved unchanged.
+Option A — the mirror — was built, followed by interactive approval and live steering. Everything
+below this section is the analysis and the plan as written before that work, preserved as a design
+record rather than a description of the current runtime.
 
 **Done:**
 
@@ -48,9 +49,9 @@ section is the analysis and the plan as written before that work, preserved unch
   pair builders, and the fail-safe "any mirrored content suppresses dispatch" predicate.
 - **The agent loop's one new branch** (`agent.rs:7182-7202`): a message carrying mirrored
   content is persisted and yielded, never dispatched.
-- **Codex child-executed built-ins** are mirrored too, marked `child`
-  (`codex.rs:789-826`) — `exec`, `apply_patch`, and any MCP server from the user's own
-  `~/.codex/config.toml`.
+- **Unexpected Codex child-local events** are mirrored too, marked `child`
+  (`codex.rs`) so an upstream isolation regression remains visible. Current children start
+  with local model tools disabled and an isolated config home.
 - **In-stream turn ceilings** in both providers (`claude_code.rs:891-902`,
   `codex.rs:649-659`), because the blocking path's timeouts wrap awaits the streaming path
   never reaches.
@@ -60,17 +61,18 @@ section is the analysis and the plan as written before that work, preserved unch
   `ToolRequest` and `ToolResponse` in the generated OpenAPI schema, so the marker rides the
   existing serialized shape and no client regeneration was required.
 
-**Not done, and deliberately so:**
+**Current notes:**
 
-- **Interactive approval of a bridged call.** `needs_approval` is still refused rather than
-  parked (`bridge.rs:336`); the refusal is now a visible red card instead of silence. Option
-  B remains the design if this is ever wanted.
+- **Interactive approval of a bridged call is implemented.** The call parks on the same
+  session-scoped approval queue as an ordinary tool and is bounded below the child transport
+  timeout.
 - **A GUI label separating `bridged` from `child` cards.** The marker is persisted, but no
   component reads it yet, so a Codex `exec` card looks like any other card. This is phase 4's
   one visual change and it has not landed.
-- **Cooperative interrupt.** Cancellation is still the hard backstop — dropping the stream
-  aborts the reader, which drops the child, which `kill_on_drop(true)` reaps. Codex's
-  `turn/interrupt` is not wired (phase 5).
+- **Live steering is implemented.** Claude accepts another stream-json user turn. Codex uses
+  `turn/interrupt` followed by `turn/start` on the same thread because Codex 0.147 acknowledged
+  native `turn/steer` without applying it to later model decisions. Dropping the stream remains the
+  hard-stop backstop and reaps the child through `kill_on_drop(true)`.
 - **The parity gate in CI** and the browser sweep (phases 6 and 7's remaining items).
 
 ## Summary
@@ -698,7 +700,8 @@ riskiest phase is **phase 3** (the loop-adjacent marker skip and the pair contra
   `fix_tool_calling`, (c) `transcript::flatten` renders the pair for the next turn;
   fixture-driven decoder tests asserting pending → request → response id equality; an
   extension of `tests/streaming_pending_tool_calls.rs` for the marked path.
-- **Acceptance:** in the GUI, a bridged `developer__shell` call shows a skeleton within a
+- **Historical acceptance (superseded by the subscription credential-isolation allowlist):** in
+  the GUI, a bridged `developer__shell` call shows a skeleton within a
   token of the child starting the block, becomes a `loading` card, resolves with the green
   or red indicator, and expands to the exact arguments and output; reloading the session
   shows the same cards; the next turn's child prompt contains the flattened pair; the

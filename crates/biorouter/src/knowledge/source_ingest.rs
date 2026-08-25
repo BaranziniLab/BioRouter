@@ -38,7 +38,7 @@ use std::path::PathBuf;
 
 use biorouter_mcp::knowledge::{
     convert::SourceInput,
-    macros::ingest::{ingest, IngestArgs},
+    macros::ingest::{ingest, IngestArgs, IngestCurationFailure, IngestFailurePhase},
     service::KnowledgeService,
     source_paths::{self, WarningLevel},
     subagent::{events::SubAgentEvent, loop_::SubAgentBounds},
@@ -114,16 +114,25 @@ pub struct VerificationSummary {
     pub scan_error: Option<String>,
 }
 
-/// One source's ending. There are exactly two, and `ok` distinguishes them:
-/// committed with curated pages, or aborted with nothing added.
+/// One source's ending. `ok` says whether the complete ingest pipeline finished.
+/// A failed outcome keeps enough phase and commit provenance in its fields and
+/// error to distinguish rolled-back curation from a post-commit refresh failure.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SourceOutcome {
     pub label: String,
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
+    /// The commit that retained the raw source. This can be present even when
+    /// `ok` is false and there is no curation commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_commit_sha: Option<String>,
+    /// The commit containing curated pages. It can also be present on a failed
+    /// outcome when curation committed but a post-commit refresh failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_phase: Option<IngestFailurePhase>,
     #[serde(default)]
     pub steps: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -168,23 +177,53 @@ impl SourceIngestReport {
     ///
     /// ⚠ **It never claims completion when only raw sources exist.** A source
     /// whose sub-agent wrote no pages comes back as an `Err` from the macro,
-    /// which has already aborted the transaction — so it is counted a failure
-    /// here, its own line says so, and a run where nothing succeeded says that
-    /// in its first sentence. Reporting "ingested 3 sources" for three staged
-    /// PDFs and zero curated pages is exactly the outcome issue #108 is about.
+    /// which has already aborted the curation transaction while retaining the
+    /// raw source — so it is counted a failure and both outcomes are stated.
+    /// Reporting "ingested 3 sources" for three staged PDFs and zero curated
+    /// pages is exactly the outcome issue #108 is about.
     pub fn summary(&self) -> String {
-        let ok = self.succeeded();
+        let curated = self
+            .outcomes
+            .iter()
+            .filter(|outcome| outcome.commit_sha.is_some())
+            .count();
         let total = self.outcomes.len();
-        let mut out = if ok == 0 {
+        let outcome_uncertain = self
+            .outcomes
+            .iter()
+            .any(|outcome| outcome.failure_phase == Some(IngestFailurePhase::OutcomeUncertain));
+        let all_failures_rolled_back = self
+            .outcomes
+            .iter()
+            .filter(|outcome| !outcome.ok)
+            .all(|outcome| outcome.failure_phase == Some(IngestFailurePhase::RolledBack));
+        let mut out = if total == 0 {
             format!(
-                "Ingested nothing into knowledge base '{}'. {total} source(s) were attempted on \
-                 {} and none produced curated pages; each transaction was aborted, so the base is \
-                 unchanged by the failures and re-running is safe.",
+                "No sources were available to curate into knowledge base '{}' on {}.",
+                self.kb_id, self.model
+            )
+        } else if outcome_uncertain {
+            format!(
+                "Confirmed curation commits for {curated} of {total} source(s) in knowledge base \
+                 '{}' on {}; at least one outcome is uncertain. Refresh the knowledge base and \
+                 history before retrying.",
+                self.kb_id, self.model
+            )
+        } else if curated == 0 && all_failures_rolled_back {
+            format!(
+                "Curated 0 of {total} source(s) into knowledge base '{}' on {}. Curation rolled \
+                 back for each failure; raw sources were retained in the base and its history.",
+                self.kb_id, self.model
+            )
+        } else if curated == 0 {
+            format!(
+                "Curated 0 of {total} source(s) into knowledge base '{}' on {}. See each source's \
+                 status for whether curation started and which raw source was retained.",
                 self.kb_id, self.model
             )
         } else {
             format!(
-                "Ingested {ok} of {total} source(s) into knowledge base '{}' on {}.",
+                "Curated {curated} of {total} source(s) into knowledge base '{}' on {}.",
                 self.kb_id, self.model
             )
         };
@@ -198,8 +237,12 @@ impl SourceIngestReport {
                     .chars()
                     .take(8)
                     .collect();
+                let raw = outcome.raw_commit_sha.as_deref().map_or_else(
+                    || "raw source already retained".to_string(),
+                    |raw_sha| format!("raw commit {}", raw_sha.chars().take(8).collect::<String>()),
+                );
                 out.push_str(&format!(
-                    "✓ {} — source {}, commit {sha}, {} sub-agent step(s)",
+                    "✓ {} — source {}, {raw}, curation commit {sha}, {} sub-agent step(s)",
                     outcome.label,
                     outcome.source_id.as_deref().unwrap_or("?"),
                     outcome.steps
@@ -421,7 +464,9 @@ pub async fn ingest_sources(
                 label,
                 ok: true,
                 source_id: Some(r.source_id),
+                raw_commit_sha: r.raw_commit_sha,
                 commit_sha: Some(r.commit_sha),
+                failure_phase: None,
                 steps: r.steps,
                 verification: Some(VerificationSummary {
                     ok: r.verification.ok,
@@ -431,18 +476,23 @@ pub async fn ingest_sources(
                 }),
                 error: None,
             }),
-            Err(e) => report.outcomes.push(SourceOutcome {
-                label,
-                ok: false,
-                source_id: None,
-                commit_sha: None,
-                steps: 0,
-                verification: None,
-                // The macro's own words. It already says whether the run wrote
-                // nothing, how many steps it took and which tool calls failed;
-                // a second wording here would be a second answer to drift from.
-                error: Some(format!("{e:#}")),
-            }),
+            Err(e) => {
+                let retained = e.downcast_ref::<IngestCurationFailure>();
+                report.outcomes.push(SourceOutcome {
+                    label,
+                    ok: false,
+                    source_id: retained.map(|failure| failure.source_id.clone()),
+                    raw_commit_sha: retained.and_then(|failure| failure.raw_commit_sha.clone()),
+                    commit_sha: retained.and_then(|failure| failure.curation_commit_sha.clone()),
+                    failure_phase: retained.map(|failure| failure.phase),
+                    steps: 0,
+                    verification: None,
+                    // The macro's own words. It already says whether the run wrote
+                    // nothing, how many steps it took and which tool calls failed;
+                    // a second wording here would be a second answer to drift from.
+                    error: Some(format!("{e:#}")),
+                });
+            }
         }
     }
 
@@ -459,12 +509,19 @@ mod tests {
             label: label.into(),
             ok,
             source_id: ok.then(|| "src-1".to_string()),
+            raw_commit_sha: Some(if ok {
+                "rawabc1234567890".to_string()
+            } else {
+                "rawdef1234567890".to_string()
+            }),
             commit_sha: ok.then(|| "abcdef1234567890".to_string()),
+            failure_phase: (!ok).then_some(IngestFailurePhase::RolledBack),
             steps: if ok { 7 } else { 0 },
             verification: ok.then(VerificationSummary::default),
             error: (!ok).then(|| {
                 "ingest wrote no knowledge pages for source src-2 (3 step(s), ended: \
-                 NoMoreToolCalls). Nothing was added to the knowledge base"
+                 NoMoreToolCalls). Curation rolled back; raw source src-2 was retained in commit \
+                 rawdef1234567890."
                     .to_string()
             }),
         }
@@ -480,17 +537,21 @@ mod tests {
     }
 
     /// The headline defect of issue #108: three PDFs staged, no curated pages,
-    /// and a run that reported success. A report where nothing succeeded must
-    /// say so in its first sentence.
+    /// and a run that reported success. A report where nothing curated must say
+    /// both that curation rolled back and that the raw inputs remain.
     #[test]
     fn a_run_that_curated_nothing_never_reads_as_ingested() {
         let text = report(vec![outcome("a.pdf", false), outcome("b.pdf", false)]).summary();
         assert!(
-            text.starts_with("Ingested nothing into knowledge base 'ms-papers'."),
+            text.starts_with(
+                "Curated 0 of 2 source(s) into knowledge base 'ms-papers' on \
+                 anthropic/claude-opus-5."
+            ),
             "got: {text}"
         );
-        assert!(text.contains("none produced curated pages"), "got: {text}");
-        assert!(text.contains("re-running is safe"), "got: {text}");
+        assert!(text.contains("Curation rolled back"), "got: {text}");
+        assert!(text.contains("raw sources were retained"), "got: {text}");
+        assert!(!text.contains("base is unchanged"), "got: {text}");
     }
 
     /// Per-source status, and a partial batch that is honest about both halves.
@@ -501,8 +562,10 @@ mod tests {
             outcome("papers/b.pdf", false),
         ])
         .summary();
-        assert!(text.starts_with("Ingested 1 of 2 source(s)"), "got: {text}");
-        assert!(text.contains("✓ papers/a.pdf — source src-1, commit abcdef12"));
+        assert!(text.starts_with("Curated 1 of 2 source(s)"), "got: {text}");
+        assert!(text.contains(
+            "✓ papers/a.pdf — source src-1, raw commit rawabc12, curation commit abcdef12"
+        ));
         assert!(text.contains("✗ papers/b.pdf — ingest wrote no knowledge pages"));
     }
 
@@ -814,6 +877,13 @@ mod tests {
         assert_eq!(report.succeeded(), 2, "{}", report.summary());
         assert_eq!(report.failed(), 0, "{}", report.summary());
         for outcome in &report.outcomes {
+            assert!(
+                outcome
+                    .raw_commit_sha
+                    .as_deref()
+                    .is_some_and(|s| !s.is_empty()),
+                "every new raw source reports its durable commit"
+            );
             assert!(outcome.commit_sha.as_deref().is_some_and(|s| !s.is_empty()));
             assert!(
                 outcome.verification.is_some(),
@@ -855,8 +925,9 @@ mod tests {
     }
 
     /// The failure half. A run that curates nothing must abort its transaction,
-    /// leave no page behind, and be reported as a failure — never as an ingest
-    /// that happened to be quiet.
+    /// leave no curated page behind, retain its raw source and raw-source commit,
+    /// and be reported as a failure — never as an ingest that happened to be
+    /// quiet or as a base that did not change.
     #[tokio::test]
     async fn a_source_that_curates_nothing_aborts_and_is_reported_as_a_failure() {
         let (dir, svc) = fresh_svc();
@@ -872,9 +943,37 @@ mod tests {
             curated_pages(&svc).is_empty(),
             "the transaction was aborted"
         );
+        let outcome = &report.outcomes[0];
+        let source_id = outcome
+            .source_id
+            .as_deref()
+            .expect("the failed outcome reports its retained raw source");
+        let raw_commit = outcome
+            .raw_commit_sha
+            .as_deref()
+            .expect("the failed outcome reports its raw-source commit");
+        assert_eq!(raw_sources(&svc), vec![source_id]);
+        let history = svc.list_history("k", 10).unwrap();
+        assert!(
+            history.iter().any(|entry| entry.commit_sha == raw_commit),
+            "the reported raw commit remains in history: {history:?}"
+        );
+        assert!(
+            !history.iter().any(|entry| entry
+                .delta
+                .as_deref()
+                .is_some_and(|delta| delta.contains("steps"))),
+            "the rolled-back curation must not leave a curation commit: {history:?}"
+        );
         let text = report.summary();
-        assert!(text.starts_with("Ingested nothing"), "got: {text}");
-        assert!(text.contains("re-running is safe"), "got: {text}");
+        assert!(text.starts_with("Curated 0 of 1 source(s)"), "got: {text}");
+        assert!(text.contains("Curation rolled back"), "got: {text}");
+        assert!(
+            text.contains("raw source") && text.contains(source_id),
+            "got: {text}"
+        );
+        assert!(text.contains(raw_commit), "got: {text}");
+        assert!(!text.contains("base is unchanged"), "got: {text}");
     }
 
     /// A partial batch: one good document beside one that curates nothing. Each
@@ -913,7 +1012,7 @@ mod tests {
         assert_eq!(report.failed(), 1, "{}", report.summary());
         assert_eq!(curated_pages(&svc), vec!["doc-0.md"]);
         let text = report.summary();
-        assert!(text.starts_with("Ingested 1 of 2 source(s)"), "got: {text}");
+        assert!(text.starts_with("Curated 1 of 2 source(s)"), "got: {text}");
     }
 
     /// A path that does not exist yields no sources and a note that names it,

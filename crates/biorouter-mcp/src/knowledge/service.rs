@@ -48,6 +48,35 @@ const GITIGNORE: &str =
 /// can be kept in step.
 pub use crate::knowledge::types::{AUTOMATIC_SCHEMA_CEILING, CURRENT_SCHEMA_VERSION};
 
+/// A raw source commit succeeded, but the derived graph cache could not be
+/// refreshed afterwards.
+///
+/// The committed [`raw::RawWrite`] is retained so callers can report durable
+/// state instead of collapsing this into an ordinary pre-write error. The graph
+/// cache is derived and repairable; the commit is the source of truth.
+#[derive(Debug)]
+pub struct RawSourceRefreshFailure {
+    pub written: raw::RawWrite,
+    cause: String,
+}
+
+impl std::fmt::Display for RawSourceRefreshFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let commit = self
+            .written
+            .commit_sha
+            .as_deref()
+            .map_or_else(String::new, |sha| format!(" in commit {sha}"));
+        write!(
+            f,
+            "raw source {} was committed{commit}, but the graph cache could not be refreshed: {}",
+            self.written.source_id, self.cause
+        )
+    }
+}
+
+impl std::error::Error for RawSourceRefreshFailure {}
+
 /// Cross-reference rules block appended to `schema.md` files still at
 /// generation 1. Kept in sync with the equivalent block in `schema_default.md`.
 const SCHEMA_CROSSREF_RULES: &str = r#"
@@ -1471,6 +1500,7 @@ impl KnowledgeService {
                     source_id: existing.id.clone(),
                     source_md_path: format!("raw/{}/source.md", existing.id),
                     meta_path: format!("raw/{}/meta.yaml", existing.id),
+                    commit_sha: None,
                 });
             }
         }
@@ -1507,16 +1537,26 @@ impl KnowledgeService {
         } else {
             (format!("ingested {source_id}"), "+1 source")
         };
-        if let Some(_branch) = txn_branch {
-            repo.commit_on_txn_in_progress(&summary)?;
+        let commit_sha = if let Some(_branch) = txn_branch {
+            repo.commit_on_txn_in_progress(&summary)?
         } else {
             repo.commit_all(
                 crate::knowledge::types::ChangeKind::Ingest,
                 &summary,
                 Some(delta),
-            )?;
+            )?
+        };
+        let written = raw::RawWrite {
+            commit_sha: Some(commit_sha),
+            ..written
+        };
+        if let Err(error) = self.rebuild_graph_cache(kb_id) {
+            return Err(RawSourceRefreshFailure {
+                written,
+                cause: format!("{error:#}"),
+            }
+            .into());
         }
-        self.rebuild_graph_cache(kb_id)?;
         Ok(written)
     }
 }

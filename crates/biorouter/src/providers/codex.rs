@@ -26,14 +26,13 @@
 //!
 //! # What the child may do
 //!
-//! `sandbox: "read-only"` and no MCP servers, so the child has no way to change
-//! anything. Biorouter's own tools reach it over MCP once the bridge lands, and
-//! those execute in Biorouter's dispatcher where every existing gate still fires.
-//! Until then, an approval request for a command or a file change means the child
-//! is trying to do something it was not given, and is refused rather than
-//! rubber-stamped.
+//! `sandbox: "read-only"` and process-level feature disables remove the child's
+//! local model-controlled tools. Biorouter's own
+//! tools reach it over the one MCP bridge, and execute in Biorouter's dispatcher
+//! where every existing gate still fires. An unexpected approval request for a
+//! command or file change is refused rather than rubber-stamped.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -43,7 +42,7 @@ use serde_json::{json, Value};
 
 use super::base::{
     ConfigKey, MessageStream, ModelInfo, PendingToolCall, Provider, ProviderMetadata,
-    ProviderStreamItem, ProviderUsage, Usage,
+    ProviderSteerReceiver, ProviderSteerRequest, ProviderStreamItem, ProviderUsage, Usage,
 };
 use super::coding_agent::appserver::{AppServer, Inbound};
 use super::coding_agent::{
@@ -80,6 +79,84 @@ const TURN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// state and replies. Anything approaching this is already a broken install, and
 /// exceeding it lands in the same fail-open branch a rejected method does.
 const ACCOUNT_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+enum StreamPumpEvent {
+    Continue,
+    ConsumerClosed,
+    Terminal,
+}
+
+/// Codex capabilities that must not exist inside a Biorouter-managed child.
+///
+/// In particular, `read-only` constrains writes but deliberately permits reads
+/// anywhere on the host. Leaving either shell implementation enabled lets a
+/// prompt-injected child read `$CODEX_HOME/auth.json` (or the original file it
+/// links to) and place subscription credentials in model-visible tool output.
+/// Biorouter supplies the audited workspace/knowledge surface through its MCP
+/// bridge instead.
+const DISABLED_CHILD_FEATURES: &[&str] = &[
+    "apps",
+    "auth_elicitation",
+    "browser_use",
+    "computer_use",
+    "image_generation",
+    "in_app_browser",
+    "multi_agent",
+    "plugin_sharing",
+    "plugins",
+    "shell_tool",
+    "skill_mcp_dependency_install",
+    "skill_search",
+    "unified_exec",
+    "view_image",
+    "workspace_dependencies",
+];
+
+/// Give a Codex child its subscription credential without its personal config.
+///
+/// Codex merges `thread/start.config` into `$CODEX_HOME/config.toml`; it does
+/// not replace the user's configured MCP servers. Pointing the child at this
+/// empty home is therefore the enforcement boundary. The auth file is linked,
+/// not read or copied, so its contents never pass through Biorouter memory.
+fn isolated_codex_home(source_home: &Path) -> Result<tempfile::TempDir, ProviderError> {
+    let isolated = tempfile::Builder::new()
+        .prefix("biorouter-codex-home-")
+        .tempdir()
+        .map_err(|error| {
+            ProviderError::ExecutionError(format!(
+                "could not create an isolated Codex config home: {error}"
+            ))
+        })?;
+    let source_auth = source_home.join("auth.json");
+    if source_auth.try_exists().map_err(|error| {
+        ProviderError::ExecutionError(format!(
+            "could not inspect the Codex subscription credential: {error}"
+        ))
+    })? {
+        let source_auth = std::fs::canonicalize(&source_auth).map_err(|error| {
+            ProviderError::ExecutionError(format!(
+                "could not resolve the Codex subscription credential: {error}"
+            ))
+        })?;
+        let isolated_auth = isolated.path().join("auth.json");
+        link_codex_auth(&source_auth, &isolated_auth).map_err(|error| {
+            ProviderError::ExecutionError(format!(
+                "could not link the Codex subscription credential into its isolated config home: {error}"
+            ))
+        })?;
+    }
+    Ok(isolated)
+}
+
+#[cfg(unix)]
+fn link_codex_auth(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, target)
+}
+
+#[cfg(windows)]
+fn link_codex_auth(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::fs::hard_link(source, target)
+}
 
 /// Each window must match what `MODEL_CONTEXT_WINDOWS` declares, because
 /// `tests/context_windows.rs` compares the two.
@@ -158,9 +235,19 @@ impl CodexProvider {
         })
     }
 
-    fn app_server_command(&self) -> tokio::process::Command {
+    fn app_server_command(
+        &self,
+        isolated_home: Option<&std::path::Path>,
+    ) -> tokio::process::Command {
         let mut cmd = tokio::process::Command::new(&self.command);
         cmd.arg("app-server");
+        // Reject an older or changed CLI instead of silently ignoring one of
+        // the isolation settings below and exposing a host-reading built-in.
+        cmd.arg("--strict-config");
+
+        for feature in DISABLED_CHILD_FEATURES {
+            cmd.arg("--disable").arg(feature);
+        }
 
         // `codex` is an npm shim that execs a sibling native binary and shells out
         // to git and ripgrep on its own account, so the resolved absolute path is
@@ -168,9 +255,18 @@ impl CodexProvider {
         if let Ok(path) = SearchPaths::builder().with_npm().path() {
             cmd.env("PATH", path);
         }
+        if let Some(home) = isolated_home {
+            cmd.env("CODEX_HOME", home);
+        }
         // LAST, after every arg and env — see the ordering note on the function.
         agent_env::configure_subscription_child(&mut cmd);
         cmd
+    }
+
+    async fn spawn_app_server(&self) -> Result<AppServer, ProviderError> {
+        let home = isolated_codex_home(&discovery::codex_home())?;
+        let command = self.app_server_command(Some(home.path()));
+        AppServer::spawn_with_home(command, Some(home)).await
     }
 
     /// `thread/start` parameters.
@@ -199,32 +295,19 @@ impl CodexProvider {
         // is the eventual replacement — but the installed Codex declares the
         // DynamicToolSpec types without any request that accepts them, so it is not
         // reachable yet.
-        // Codex's own built-in tools cannot be switched off the way Claude Code's
-        // can (`tools.exec=false` was tried and does not remove `exec`; only the
-        // sandbox constrains it). Its web tool CAN be removed, and is: a child
-        // reaching the network on its own account is egress Biorouter never saw,
-        // and Biorouter has its own web tools behind its own gates.
-        let mut config = json!({ "tools": { "web_search": false } });
+        // Web search is also disabled in config for versions that register it
+        // independently of the process feature set. A child reaching the
+        // network on its own account is egress Biorouter never saw, and
+        // Biorouter has its own web tools behind its own gates.
+        let mut config = json!({
+            "web_search": "disabled",
+        });
         if let Some(url) = bridge_url {
-            // ⚠ KNOWN GAP, and it is not symmetric with Claude Code.
-            //
-            // This ADDS `biorouter` to the child's MCP servers; it does not
-            // replace the set. Codex has no `--strict-mcp-config` equivalent, and
-            // this `config` object is merged with the user's own
-            // `~/.codex/config.toml` rather than overriding it — so any MCP server
-            // declared there is also loaded into the child, and its tools execute
-            // outside Biorouter's inspectors, permission mode, `.biorouterignore`
-            // and vault. Measured against codex 0.147.0 with a canary server in a
-            // scratch `CODEX_HOME`.
-            //
-            // Claude Code closes exactly this with `--strict-mcp-config`, so do
-            // NOT read the two providers as equivalently isolated. The intended
-            // fix is to point the child at a scratch `CODEX_HOME` carrying only
-            // the auth file, which needs a live signed-in Codex to validate
-            // (a scratch home that loses the credential breaks the provider
-            // outright). Until then this is disclosed in
-            // `docs/providers/coding-agents/child-agent-isolation.md` rather than
-            // papered over.
+            // Codex has no `--strict-mcp-config` equivalent. The process is
+            // therefore spawned under an ephemeral `CODEX_HOME` containing only
+            // a link to `auth.json`; there is no user `config.toml` to merge here.
+            // This override is consequently the whole MCP server set, just as
+            // Claude's `--strict-mcp-config` makes its bridge config the whole set.
             // #110: `tool_timeout_sec` is the per-server **second** wall clock
             // Codex applies to one `tools/call`, and `startup_timeout_sec` the
             // one it applies to the initial connect. Their defaults are far
@@ -239,30 +322,14 @@ impl CodexProvider {
                     "startup_timeout_sec": 30,
                 }
             });
-            // ⚠ Tell the model which set of tools actually works, because the two
-            // it can see are not equally usable and the broken pair looks more
-            // familiar.
-            //
-            // Codex's own `exec` and `apply_patch` cannot be removed (only the
-            // sandbox constrains them), so a Codex child sees its built-ins AND
-            // Biorouter's bridged tools. Observed in the running app: asked to fix
-            // a file, it reached for `apply_patch`, hit the read-only sandbox, and
-            // reported "this session's filesystem is read-only" — never trying
-            // `developer__text_editor`, which would have worked, because the bridge
-            // executes in Biorouter's process rather than inside Codex's sandbox.
-            // It had diagnosed the bug correctly and still could not apply it.
-            //
-            // `developerInstructions` rather than appending to `baseInstructions`:
-            // the base prompt is Biorouter's and is shared with every other
-            // provider, while this is operational guidance about one child's tool
-            // surface. Claude Code needs no equivalent because `--tools ""` removes
-            // its built-ins outright, leaving nothing to choose wrongly between.
+            // Tell the model that the bridge is the complete usable tool surface.
+            // Agent::issue_tool_bridge withholds generic host-reading tools so
+            // this surface cannot be used to read the subscription link below.
+            // Process-level feature disables remove Codex's local shell and other
+            // host-reading built-ins before the credential is made available.
             params["developerInstructions"] = json!(
-                "Your own built-in file and shell tools run in a read-only sandbox and cannot \
-                 change anything on disk. Do not use them to read or edit files, and do not \
-                 report the filesystem as read-only. Use the `biorouter` MCP tools instead — \
-                 they run outside that sandbox, and they are how you read files, edit files and \
-                 run commands here."
+                "Use the `biorouter` MCP tools for all tool work. Local shell, file, browser, \
+                 plugin, and nested-agent capabilities are disabled for this child."
             );
         }
         params["config"] = config;
@@ -410,11 +477,10 @@ impl CodexProvider {
 
     /// Answer a server-originated request.
     ///
-    /// Anything that would let the child act on the machine is refused. The child
-    /// is configured with a read-only sandbox; its own `exec` and `apply_patch`
-    /// remain (they cannot be switched off — see `thread_params`), but the sandbox
-    /// is what keeps them from writing. So an approval request here means it is
-    /// reaching for authority it was not given, and the honest answer is no.
+    /// Anything that would let the child act on the machine is refused. Local
+    /// model-controlled tools are disabled when the app server starts, so an
+    /// approval request here means the CLI has exposed an unexpected capability
+    /// or is reaching for authority it was not given. The honest answer is no.
     /// Elicitation is accepted because that is how an MCP tool call Biorouter
     /// itself is serving gets its go-ahead — and those run
     /// in Biorouter's dispatcher, behind Biorouter's gates.
@@ -516,7 +582,7 @@ impl CodexProvider {
         system: &str,
         prompt: &str,
     ) -> Result<TurnOutcome, ProviderError> {
-        let server = AppServer::spawn(self.app_server_command()).await?;
+        let server = self.spawn_app_server().await?;
         let result = self.turn_on(&server, model, system, prompt).await;
         // Always reap. A leaked `codex app-server` is a live process holding the
         // user's credential.
@@ -616,6 +682,7 @@ impl CodexProvider {
         prompt: &str,
         bridge_url: Option<&str>,
         tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+        steering: Option<ProviderSteerReceiver>,
     ) -> Result<(), ProviderError> {
         server
             .request(
@@ -652,19 +719,34 @@ impl CodexProvider {
             })?
             .to_string();
 
-        let start = server.request(
-            "turn/start",
-            Self::turn_params(
-                &thread_id,
-                prompt,
-                model.reasoning_effort,
-                &model.model_name,
-            ),
-        );
-        let pump = Self::stream_pump(server, &model.model_name, tx);
+        let (turn_id_tx, turn_id_rx) = tokio::sync::watch::channel(None::<String>);
+        let start = async {
+            let started = server
+                .request(
+                    "turn/start",
+                    Self::turn_params(
+                        &thread_id,
+                        prompt,
+                        model.reasoning_effort,
+                        &model.model_name,
+                    ),
+                )
+                .await?;
+            let turn_id = started
+                .get("turn")
+                .and_then(|turn| turn.get("id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    ProviderError::RequestFailed(
+                        "codex app-server did not return a turn id".to_string(),
+                    )
+                })?
+                .to_string();
+            turn_id_tx.send_replace(Some(turn_id));
+            Ok::<(), ProviderError>(())
+        };
+        let pump = Self::stream_pump(server, model, &thread_id, turn_id_rx, tx, steering);
 
-        // The ceiling, inside the stream: the blocking path wraps this same join
-        // but that path is not reached here.
         let (started, pumped) =
             tokio::time::timeout(TURN_TIMEOUT, async { tokio::join!(start, pump) })
                 .await
@@ -681,81 +763,169 @@ impl CodexProvider {
     /// Read notifications, decode them, and forward each decoded event.
     async fn stream_pump(
         server: &AppServer,
-        model_name: &str,
+        model: &ModelConfig,
+        thread_id: &str,
+        mut turn_id_rx: tokio::sync::watch::Receiver<Option<String>>,
         tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+        mut steering: Option<ProviderSteerReceiver>,
     ) -> Result<(), ProviderError> {
         let mut decoder = codex_stream::CodexDecoder::new();
         let mut streamed_anything = false;
+        let mut turn_id = turn_id_rx.borrow().clone();
+        let mut pending_steering: std::collections::VecDeque<ProviderSteerRequest> =
+            std::collections::VecDeque::new();
+        let mut restart_after_terminal: Option<ProviderSteerRequest> = None;
 
-        while let Some(message) = server.next_inbound().await {
+        loop {
+            if restart_after_terminal.is_none() {
+                if let Some(active_turn_id) = turn_id.as_deref() {
+                    if let Some(request) = pending_steering.pop_front() {
+                        if let Err(error) =
+                            Self::interrupt_turn(server, thread_id, active_turn_id).await
+                        {
+                            request.reject(error);
+                            continue;
+                        }
+                        restart_after_terminal = Some(request);
+                        continue;
+                    }
+                }
+            }
+
+            let Some(message) = Self::next_stream_message(
+                server,
+                &mut steering,
+                &mut turn_id_rx,
+                &mut turn_id,
+                &mut pending_steering,
+            )
+            .await?
+            else {
+                continue;
+            };
+            let Some(message) = message else {
+                break;
+            };
             match message {
                 Inbound::Request { id, method, .. } => {
                     server.respond(&id, Self::decide(&method)).await?;
                 }
                 Inbound::Notification { method, params } => {
-                    for event in decoder.push(&method, &params) {
-                        match event {
-                            codex_stream::CodexEvent::TextDelta { item_id, text }
-                            | codex_stream::CodexEvent::TextComplete { item_id, text } => {
-                                streamed_anything = true;
-                                // The item id becomes the message id so every
-                                // chunk of one answer merges into a single row
-                                // instead of one row per token.
-                                let mut message = Message::new(
-                                    Role::Assistant,
-                                    chrono::Utc::now().timestamp(),
-                                    vec![MessageContent::text(text)],
-                                );
-                                message.id = Some(item_id);
-                                if tx.send(Ok((Some(message), None, None))).is_err() {
-                                    return Ok(());
-                                }
+                    match Self::emit_stream_notification(
+                        &mut decoder,
+                        &model.model_name,
+                        &method,
+                        &params,
+                        tx,
+                        &mut streamed_anything,
+                    )? {
+                        StreamPumpEvent::Continue => {}
+                        StreamPumpEvent::ConsumerClosed => return Ok(()),
+                        StreamPumpEvent::Terminal => {
+                            if Self::handle_stream_terminal(
+                                server,
+                                model,
+                                thread_id,
+                                &mut decoder,
+                                tx,
+                                &mut restart_after_terminal,
+                                &mut turn_id,
+                            )
+                            .await?
+                            {
+                                continue;
                             }
-                            codex_stream::CodexEvent::ReasoningDelta { item_id, text } => {
-                                let mut message = Message::new(
-                                    Role::Assistant,
-                                    chrono::Utc::now().timestamp(),
-                                    // No signature: Codex does not sign its
-                                    // reasoning, and a blank one keeps this off
-                                    // the signed-turn persistence path.
-                                    vec![MessageContent::thinking(text, "")],
-                                );
-                                message.id = Some(item_id);
-                                if tx.send(Ok((Some(message), None, None))).is_err() {
-                                    return Ok(());
-                                }
-                            }
-                            codex_stream::CodexEvent::Terminal(terminal) => {
-                                if let Some(error) = terminal.error {
-                                    return Err(ProviderError::RequestFailed(format!(
-                                        "{error}{}",
-                                        unknown_model_hint(model_name)
-                                    )));
-                                }
-                                // The authoritative usage goes last, so it is the
-                                // snapshot the agent keeps.
-                                let usage = decoder.usage().map(|u| u.usage).unwrap_or_default();
-                                let mut usage = ProviderUsage::new(model_name.to_string(), usage);
-                                usage.provider = Some(KIND.provider_id().to_string());
-                                let _ = tx.send(Ok((None, Some(usage), None)));
-                                return Ok(());
-                            }
-                            codex_stream::CodexEvent::Tool(event) => {
-                                if !emit_codex_tool_event(*event, tx) {
-                                    return Ok(());
-                                }
-                            }
-                            // Usage is read from the decoder at the terminal
-                            // frame; notices are advisory and never end a turn.
-                            codex_stream::CodexEvent::Usage(_)
-                            | codex_stream::CodexEvent::Notice { .. }
-                            | codex_stream::CodexEvent::Ignored => {}
+                            return Ok(());
                         }
                     }
                 }
             }
         }
 
+        Err(Self::interrupted_stream_error(server, &decoder, streamed_anything).await)
+    }
+
+    async fn next_stream_message(
+        server: &AppServer,
+        steering: &mut Option<ProviderSteerReceiver>,
+        turn_id_rx: &mut tokio::sync::watch::Receiver<Option<String>>,
+        turn_id: &mut Option<String>,
+        pending_steering: &mut std::collections::VecDeque<ProviderSteerRequest>,
+    ) -> Result<Option<Option<Inbound>>, ProviderError> {
+        enum PumpInput {
+            Inbound(Option<Inbound>),
+            Steer(Option<ProviderSteerRequest>),
+            TurnId(Result<(), tokio::sync::watch::error::RecvError>),
+        }
+        let input = tokio::select! {
+            message = server.next_inbound() => PumpInput::Inbound(message),
+            request = async {
+                match steering.as_mut() {
+                    Some(steering) => steering.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => PumpInput::Steer(request),
+            changed = turn_id_rx.changed(), if turn_id.is_none() => PumpInput::TurnId(changed),
+        };
+        match input {
+            PumpInput::Inbound(message) => Ok(Some(message)),
+            PumpInput::Steer(Some(request)) => {
+                pending_steering.push_back(request);
+                Ok(None)
+            }
+            PumpInput::Steer(None) => {
+                *steering = None;
+                Ok(None)
+            }
+            PumpInput::TurnId(Ok(())) => {
+                *turn_id = turn_id_rx.borrow().clone();
+                Ok(None)
+            }
+            PumpInput::TurnId(Err(_)) => Err(ProviderError::RequestFailed(
+                "codex app-server closed before returning a turn id".to_string(),
+            )),
+        }
+    }
+
+    async fn handle_stream_terminal(
+        server: &AppServer,
+        model: &ModelConfig,
+        thread_id: &str,
+        decoder: &mut codex_stream::CodexDecoder,
+        tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+        restart_after_terminal: &mut Option<ProviderSteerRequest>,
+        turn_id: &mut Option<String>,
+    ) -> Result<bool, ProviderError> {
+        if let Some(request) = restart_after_terminal.take() {
+            match Self::start_followup_turn(server, thread_id, model, request.text()).await {
+                Ok(next_turn_id) => {
+                    *turn_id = Some(next_turn_id);
+                    *decoder = codex_stream::CodexDecoder::new();
+                    request.acknowledge();
+                    return Ok(true);
+                }
+                Err(error) => {
+                    request.reject(error);
+                    return Err(ProviderError::RequestFailed(
+                        "Codex stopped the original turn but could not start the steered follow-up"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+
+        let usage = decoder.usage().map(|u| u.usage).unwrap_or_default();
+        let mut usage = ProviderUsage::new(model.model_name.clone(), usage);
+        usage.provider = Some(KIND.provider_id().to_string());
+        let _ = tx.send(Ok((None, Some(usage), None)));
+        Ok(false)
+    }
+
+    async fn interrupted_stream_error(
+        server: &AppServer,
+        decoder: &codex_stream::CodexDecoder,
+        streamed_anything: bool,
+    ) -> ProviderError {
         // stdout closed without a terminal frame. This is a failure whether or
         // not text arrived: a turn that streamed half an answer and then lost
         // its app server has NOT completed, and returning `Ok` here would show
@@ -770,10 +940,122 @@ impl CodexProvider {
         } else {
             ""
         };
-        Err(ProviderError::RequestFailed(format!(
+        ProviderError::RequestFailed(format!(
             "the Codex app server exited before finishing the turn{partial}: {detail}{}",
             server.stderr_suffix().await
-        )))
+        ))
+    }
+
+    fn emit_stream_notification(
+        decoder: &mut codex_stream::CodexDecoder,
+        model_name: &str,
+        method: &str,
+        params: &Value,
+        tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+        streamed_anything: &mut bool,
+    ) -> Result<StreamPumpEvent, ProviderError> {
+        for event in decoder.push(method, params) {
+            match event {
+                codex_stream::CodexEvent::TextDelta { item_id, text }
+                | codex_stream::CodexEvent::TextComplete { item_id, text } => {
+                    *streamed_anything = true;
+                    // The item id becomes the message id so every chunk of one
+                    // answer merges into a single row instead of one row per token.
+                    let mut message = Message::new(
+                        Role::Assistant,
+                        chrono::Utc::now().timestamp(),
+                        vec![MessageContent::text(text)],
+                    );
+                    message.id = Some(item_id);
+                    if tx.send(Ok((Some(message), None, None))).is_err() {
+                        return Ok(StreamPumpEvent::ConsumerClosed);
+                    }
+                }
+                codex_stream::CodexEvent::ReasoningDelta { item_id, text } => {
+                    let mut message = Message::new(
+                        Role::Assistant,
+                        chrono::Utc::now().timestamp(),
+                        // No signature: Codex does not sign its reasoning, and a blank
+                        // one keeps this off the signed-turn persistence path.
+                        vec![MessageContent::thinking(text, "")],
+                    );
+                    message.id = Some(item_id);
+                    if tx.send(Ok((Some(message), None, None))).is_err() {
+                        return Ok(StreamPumpEvent::ConsumerClosed);
+                    }
+                }
+                codex_stream::CodexEvent::Terminal(terminal) => {
+                    if let Some(error) = terminal.error {
+                        return Err(ProviderError::RequestFailed(format!(
+                            "{error}{}",
+                            unknown_model_hint(model_name)
+                        )));
+                    }
+                    return Ok(StreamPumpEvent::Terminal);
+                }
+                codex_stream::CodexEvent::Tool(event) => {
+                    if !emit_codex_tool_event(*event, tx) {
+                        return Ok(StreamPumpEvent::ConsumerClosed);
+                    }
+                }
+                // Usage is read from the decoder at the terminal frame; notices
+                // are advisory and never end a turn.
+                codex_stream::CodexEvent::Usage(_)
+                | codex_stream::CodexEvent::Notice { .. }
+                | codex_stream::CodexEvent::Ignored => {}
+            }
+        }
+        Ok(StreamPumpEvent::Continue)
+    }
+
+    async fn interrupt_turn(
+        server: &AppServer,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> Result<(), ProviderError> {
+        // Codex 0.147 acknowledged `turn/steer` while silently omitting the
+        // input from later model decisions, including across MCP calls. An
+        // interrupt followed by `turn/start` on the same thread preserves the
+        // partial work and makes accepting a steer mean the model will see it.
+        server
+            .request(
+                "turn/interrupt",
+                json!({
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn start_followup_turn(
+        server: &AppServer,
+        thread_id: &str,
+        model: &ModelConfig,
+        instruction: &str,
+    ) -> Result<String, ProviderError> {
+        let started = server
+            .request(
+                "turn/start",
+                Self::turn_params(
+                    thread_id,
+                    instruction,
+                    model.reasoning_effort,
+                    &model.model_name,
+                ),
+            )
+            .await?;
+        started
+            .get("turn")
+            .and_then(|turn| turn.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                ProviderError::RequestFailed(
+                    "codex app-server did not return a follow-up turn id".to_string(),
+                )
+            })
     }
 
     /// Read notifications until the turn ends, answering server requests as they
@@ -805,10 +1087,9 @@ impl CodexProvider {
 
 /// The MCP server name Biorouter serves over the tool bridge.
 ///
-/// A call from any *other* server is one the user configured in their own
-/// `~/.codex/config.toml`, which `thread_params` merges in rather than replacing.
-/// Those run inside the child and never reach Biorouter's gates, so they are
-/// attributed to the child, not to the bridge.
+/// Any call from another server is unexpected because Codex runs under an
+/// isolated config home. It is still attributed to the child rather than to the
+/// bridge so an upstream isolation regression remains visible in the transcript.
 const BRIDGE_SERVER: &str = "biorouter";
 
 /// How a Codex tool item is presented: the name on the card, the arguments to
@@ -832,10 +1113,10 @@ fn codex_tool_identity(kind: &codex_stream::CodexToolKind) -> (String, Value, mi
                 )
             }
         }
-        // Codex's built-ins cannot be switched off — only the read-only sandbox
-        // constrains them (see `thread_params`). They are shown because hiding
-        // what the child did would be worse, and marked `Child` because
-        // Biorouter neither approved nor executed them.
+        // These items should be unreachable with the process feature gates and
+        // read-only sandbox. Keep decoding them as defense in depth: an
+        // upstream isolation regression must be visible and marked `Child`,
+        // because Biorouter neither approved nor executed it.
         codex_stream::CodexToolKind::CommandExecution { command, cwd } => (
             // `exec_command`, not `exec`: the GUI's row summariser recognises
             // `shell` / `exec_command` / anything containing `command` and shows
@@ -901,8 +1182,8 @@ fn emit_codex_tool_event(
                 vec![rmcp::model::Content::text(output.clone())]
             } else if declined {
                 vec![rmcp::model::Content::text(
-                    "Biorouter declined this request: the child runs read-only, \
-                     and tools run on Biorouter's side of the bridge instead."
+                    "Biorouter declined this unexpected local-tool request; use a \
+                     Biorouter MCP tool instead."
                         .to_string(),
                 )]
             } else if let Some(result) = &event.result {
@@ -950,6 +1231,66 @@ fn parse_usage(usage: Option<&Value>) -> Usage {
         },
         cache_read_input_tokens: cached,
         cache_creation_input_tokens: cache_write,
+    }
+}
+
+impl CodexProvider {
+    async fn stream_inner(
+        &self,
+        system: &str,
+        messages: &[Message],
+        steering: Option<ProviderSteerReceiver>,
+    ) -> Result<MessageStream, ProviderError> {
+        let prompt = transcript::flatten(messages).ok_or_else(|| {
+            ProviderError::RequestFailed("there is no user message for Codex to answer".to_string())
+        })?;
+
+        let bridge_url = bridge::active_bridge_url();
+        let model_config = self.model.clone();
+        let home = isolated_codex_home(&discovery::codex_home())?;
+        let command = self.app_server_command(Some(home.path()));
+        let system = system.to_string();
+
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<Result<ProviderStreamItem, ProviderError>>();
+
+        let pump = tokio::spawn(async move {
+            let server = match AppServer::spawn_with_home(command, Some(home)).await {
+                Ok(server) => server,
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
+            };
+
+            let outcome = Self::stream_turn(
+                &server,
+                &model_config,
+                &system,
+                &prompt,
+                bridge_url.as_deref(),
+                &tx,
+                steering,
+            )
+            .await;
+
+            if let Err(e) = outcome {
+                let _ = tx.send(Err(e));
+            }
+
+            server.shutdown().await;
+        });
+
+        let guard = coding_agent::AbortOnDrop(pump.abort_handle());
+        let stream = async_stream::try_stream! {
+            let _guard = guard;
+            let mut rx = rx;
+            while let Some(item) = rx.recv().await {
+                yield item?;
+            }
+        };
+
+        Ok(Box::pin(stream))
     }
 }
 
@@ -1029,6 +1370,10 @@ impl Provider for CodexProvider {
         true
     }
 
+    fn supports_live_steering(&self) -> bool {
+        true
+    }
+
     /// The child agent's tools come from the MCP bridge the *agent turn loop*
     /// installs, so a loop Biorouter runs outside that turn (the knowledge
     /// macros' sub-agent) gets a child with no tools at all. Saying so lets a
@@ -1060,59 +1405,17 @@ impl Provider for CodexProvider {
         messages: &[Message],
         _tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
-        let prompt = transcript::flatten(messages).ok_or_else(|| {
-            ProviderError::RequestFailed("there is no user message for Codex to answer".to_string())
-        })?;
+        self.stream_inner(system, messages, None).await
+    }
 
-        // Read INSIDE the scope, before the stream exists. `thread_params` needs
-        // it, and by the time the stream is polled `active_bridge_url()` is None.
-        let bridge_url = bridge::active_bridge_url();
-        let model_config = self.model.clone();
-        let command = self.app_server_command();
-        // Owned copies: the pump outlives this call's borrows.
-        let system = system.to_string();
-
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<Result<ProviderStreamItem, ProviderError>>();
-
-        let pump = tokio::spawn(async move {
-            let server = match AppServer::spawn(command).await {
-                Ok(server) => server,
-                Err(e) => {
-                    let _ = tx.send(Err(e));
-                    return;
-                }
-            };
-
-            let outcome = Self::stream_turn(
-                &server,
-                &model_config,
-                &system,
-                &prompt,
-                bridge_url.as_deref(),
-                &tx,
-            )
-            .await;
-
-            if let Err(e) = outcome {
-                let _ = tx.send(Err(e));
-            }
-
-            // Always reap: a leaked `codex app-server` is a live process holding
-            // the user's credential.
-            server.shutdown().await;
-        });
-
-        let guard = coding_agent::AbortOnDrop(pump.abort_handle());
-        let stream = async_stream::try_stream! {
-            let _guard = guard;
-            let mut rx = rx;
-            while let Some(item) = rx.recv().await {
-                yield item?;
-            }
-        };
-
-        Ok(Box::pin(stream))
+    async fn stream_with_steering(
+        &self,
+        system: &str,
+        messages: &[Message],
+        _tools: &[Tool],
+        steering: ProviderSteerReceiver,
+    ) -> Result<MessageStream, ProviderError> {
+        self.stream_inner(system, messages, Some(steering)).await
     }
 
     /// Ask the CLI whether this provider can run at all. Spawns, so never call it
@@ -1437,6 +1740,72 @@ for line in sys.stdin:
         assert!(p.get("model").is_none());
     }
 
+    #[test]
+    fn an_isolated_codex_home_carries_auth_but_never_user_mcp_config() {
+        let source = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            source.path().join("auth.json"),
+            r#"{"auth_mode":"chatgpt"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.path().join("config.toml"),
+            "[mcp_servers.personal]\nurl = 'http://127.0.0.1:9'\n",
+        )
+        .unwrap();
+
+        let isolated = isolated_codex_home(source.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(isolated.path().join("auth.json")).unwrap(),
+            r#"{"auth_mode":"chatgpt"}"#
+        );
+        assert!(
+            !isolated.path().join("config.toml").exists(),
+            "the child's config home must not inherit personal MCP servers"
+        );
+
+        let command = test_provider().app_server_command(Some(isolated.path()));
+        let args: Vec<_> = command.as_std().get_args().collect();
+        assert!(args.iter().any(|arg| *arg == "--strict-config"));
+        for feature in DISABLED_CHILD_FEATURES {
+            assert!(
+                args.windows(2).any(|pair| {
+                    pair[0] == std::ffi::OsStr::new("--disable")
+                        && pair[1] == std::ffi::OsStr::new(feature)
+                }),
+                "the child command did not disable {feature}: {args:?}"
+            );
+        }
+        let configured_home = command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new("CODEX_HOME"))
+            .and_then(|(_, value)| value)
+            .expect("the isolated home is applied to the child");
+        assert_eq!(Path::new(configured_home), isolated.path());
+    }
+
+    #[test]
+    fn a_relative_codex_home_links_an_absolute_working_credential() {
+        let cwd = std::env::current_dir().unwrap();
+        let source = tempfile::Builder::new()
+            .prefix("relative-codex-home-")
+            .tempdir_in(&cwd)
+            .unwrap();
+        std::fs::write(
+            source.path().join("auth.json"),
+            r#"{"auth_mode":"chatgpt"}"#,
+        )
+        .unwrap();
+        let relative = source.path().strip_prefix(&cwd).unwrap();
+
+        let isolated = isolated_codex_home(relative).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(isolated.path().join("auth.json")).unwrap(),
+            r#"{"auth_mode":"chatgpt"}"#
+        );
+    }
+
     /// A bridge URL becomes an `mcp_servers` config override, which is how
     /// Biorouter's own tools reach the child. Without a bridge no `config` key is
     /// sent at all, so the child gets no tools rather than an empty server map.
@@ -1468,8 +1837,15 @@ for line in sys.stdin:
         );
         // …but the web tool is disabled either way: that is not part of the
         // bridge, it is a standing restriction on the child.
-        assert_eq!(without["config"]["tools"]["web_search"], false);
-        assert_eq!(with["config"]["tools"]["web_search"], false);
+        assert_eq!(without["config"]["web_search"], "disabled");
+        assert_eq!(with["config"]["web_search"], "disabled");
+        assert!(without["config"].get("tools").is_none());
+        assert!(with["config"].get("tools").is_none());
+        // Codex 0.147's generated ThreadStartParams has no `environments`
+        // field. Sending the experimental source-tree field here is silently
+        // ignored and must not be mistaken for an isolation control.
+        assert!(without.get("environments").is_none());
+        assert!(with.get("environments").is_none());
     }
 
     /// The turn's prompt and thread id are always sent — the effort rides
@@ -1531,15 +1907,9 @@ for line in sys.stdin:
         assert_eq!(tall["effort"], "max");
     }
 
-    /// The child is told which of its two tool surfaces actually works.
-    ///
-    /// Without this it reaches for its own `apply_patch`, hits the read-only
-    /// sandbox and reports the filesystem as read-only — observed in the running
-    /// app on a task it had already diagnosed correctly. Only sent when there is a
-    /// bridge, because without one the advice would point at tools that are not
-    /// there.
+    /// A bridged child is told that Biorouter is its complete tool surface.
     #[test]
-    fn a_bridged_child_is_steered_away_from_its_crippled_built_ins() {
+    fn a_bridged_child_is_steered_to_the_isolated_tool_surface() {
         let with =
             CodexProvider::thread_params("S", "/tmp", "gpt-5.5", Some("http://x/tool_bridge/n"));
         let advice = with["developerInstructions"].as_str().unwrap_or_default();
@@ -1547,10 +1917,7 @@ for line in sys.stdin:
             advice.contains("biorouter"),
             "it must name the tools that work: {advice}"
         );
-        assert!(
-            advice.contains("read-only"),
-            "and explain why its own are not usable: {advice}"
-        );
+        assert!(advice.contains("disabled"), "got: {advice}");
 
         let without = CodexProvider::thread_params("S", "/tmp", "gpt-5.5", None);
         assert!(
@@ -1862,6 +2229,8 @@ for line in sys.stdin:
     elif method == "thread/start":
         send({"jsonrpc":"2.0","id":m["id"],"result":{"thread":{"id":"t-1"}}})
     elif method == "turn/start":
+        send({"jsonrpc":"2.0","id":m["id"],
+              "result":{"turn":{"id":"turn-1"}}})
         send({"jsonrpc":"2.0","method":"item/started",
               "params":{"threadId":"t-1","turnId":"turn-1",
                         "item":{"id":"msg_1","type":"agentMessage","text":""}}})
@@ -1888,7 +2257,7 @@ for line in sys.stdin:
                                 "status":"completed",
                                 "arguments":{"command":"ls"},
                                 "result":"a.txt"}}})
-        # A built-in the child ran itself, inside its sandbox, and that failed.
+        # An unexpected built-in event, as from an upstream isolation regression.
         send({"jsonrpc":"2.0","method":"item/completed",
               "params":{"threadId":"t-1","turnId":"turn-1",
                         "item":{"id":"exec_1","type":"commandExecution",
@@ -1914,9 +2283,61 @@ for line in sys.stdin:
                            "outputTokens":30,"totalTokens":330}}}})
         send({"jsonrpc":"2.0","method":"turn/completed",
               "params":{"threadId":"t-1","turn":{"id":"turn-1","status":"completed"}}})
-        send({"jsonrpc":"2.0","id":m["id"],"result":{}})
 "#;
         FakeCli::new(script)
+    }
+
+    fn steerable_codex() -> FakeCli {
+        FakeCli::new(
+            r#"#!/usr/bin/env python3
+import sys, json
+
+def send(obj):
+    print(json.dumps(obj), flush=True)
+
+turn_count = 0
+for line in sys.stdin:
+    m = json.loads(line)
+    method = m.get("method")
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":m["id"],"result":{"codexHome":"/tmp"}})
+    elif method == "account/read":
+        send({"jsonrpc":"2.0","id":m["id"],
+              "result":{"account":{"type":"chatgpt","planType":"pro"},
+                        "requiresOpenaiAuth":True}})
+    elif method == "thread/start":
+        send({"jsonrpc":"2.0","id":m["id"],"result":{"thread":{"id":"t-1"}}})
+    elif method == "turn/start":
+        turn_count += 1
+        turn_id = f"turn-{turn_count}"
+        if turn_count == 2:
+            expected = [{"type":"text","text":"change course"}]
+            if m.get("params", {}).get("input") != expected:
+                send({"jsonrpc":"2.0","id":m["id"],
+                      "error":{"code":-32602,"message":"invalid follow-up input"}})
+                continue
+        send({"jsonrpc":"2.0","id":m["id"],"result":{"turn":{"id":turn_id}}})
+        if turn_count == 2:
+            send({"jsonrpc":"2.0","method":"item/agentMessage/delta",
+                  "params":{"threadId":"t-1","turnId":"turn-2",
+                            "itemId":"msg_1","delta":"changed course"}})
+            send({"jsonrpc":"2.0","method":"turn/completed",
+                  "params":{"threadId":"t-1",
+                            "turn":{"id":"turn-2","status":"completed"}}})
+    elif method == "turn/interrupt":
+        params = m["params"]
+        valid = (params.get("threadId") == "t-1" and
+                 params.get("turnId") == "turn-1")
+        if not valid:
+            send({"jsonrpc":"2.0","id":m["id"],
+                  "error":{"code":-32602,"message":"invalid interrupt params"}})
+            continue
+        send({"jsonrpc":"2.0","id":m["id"],"result":{}})
+        send({"jsonrpc":"2.0","method":"turn/completed",
+              "params":{"threadId":"t-1",
+                        "turn":{"id":"turn-1","status":"interrupted"}}})
+"#,
+        )
     }
 
     fn provider_running(script: &FakeCli) -> CodexProvider {
@@ -2022,6 +2443,46 @@ for line in sys.stdin:
              priced as an API call"
         );
     }
+
+    #[tokio::test]
+    async fn a_user_instruction_steers_the_running_codex_turn() {
+        let script = steerable_codex();
+        let provider = provider_running(&script);
+        let messages = vec![Message::user().with_text("hello")];
+        let (steering_tx, steering_rx) = crate::providers::base::provider_steer_channel();
+        let stream = provider
+            .stream_with_steering("SYS", &messages, &[], steering_rx)
+            .await
+            .expect("the stream should open");
+
+        let collector = tokio::spawn(async move {
+            futures::pin_mut!(stream);
+            let mut text = String::new();
+            while let Some(item) = stream.next().await {
+                let (message, _, _) = item.map_err(|error| error.to_string())?;
+                if let Some(message) = message {
+                    for content in message.content {
+                        if let MessageContent::Text(content) = content {
+                            text.push_str(&content.text);
+                        }
+                    }
+                }
+            }
+            Ok::<_, String>(text)
+        });
+
+        let (request, acknowledged) = ProviderSteerRequest::new("change course");
+        assert!(steering_tx.send(request).is_ok(), "the turn is running");
+        acknowledged
+            .await
+            .expect("the provider kept the acknowledgement")
+            .expect("the interrupted thread started the steered follow-up");
+        let text = collector
+            .await
+            .expect("the stream collector should finish")
+            .expect("the steered turn should finish");
+        assert_eq!(text, "changed course");
+    }
     /// One tool card as the assertions care about it.
     struct Card {
         id: String,
@@ -2100,9 +2561,9 @@ for line in sys.stdin:
         );
     }
 
-    /// A built-in the child ran itself is shown too — and marked `Child`, because
-    /// Biorouter neither approved nor executed it. Hiding it would be worse than
-    /// showing it; claiming Biorouter vetted it would be false.
+    /// An unexpected built-in event is shown and marked `Child`. This should be
+    /// unreachable with the feature gates, but hiding an upstream regression or
+    /// claiming Biorouter vetted it would both be false.
     #[tokio::test]
     async fn a_child_executed_builtin_is_mirrored_and_attributed_to_the_child() {
         let (messages, _) = drive().await;
@@ -2116,8 +2577,8 @@ for line in sys.stdin:
         assert_eq!(
             exec.execution,
             Some(mirror::Execution::Child),
-            "a sandboxed built-in never passed Biorouter's gates and must not be \
-             presented as though it had"
+            "an unexpected child-local event never passed Biorouter's gates and \
+             must not be presented as though it had"
         );
         assert!(
             responses.iter().any(|r| r.id == "exec_1" && r.failed),
@@ -2215,6 +2676,8 @@ for line in sys.stdin:
     elif method == "thread/start":
         send({{"jsonrpc":"2.0","id":m["id"],"result":{{"thread":{{"id":"t-1"}}}}}})
     elif method == "turn/start":
+        send({{"jsonrpc":"2.0","id":m["id"],
+              "result":{{"turn":{{"id":"turn-1"}}}}}})
         send({{"jsonrpc":"2.0","method":"item/agentMessage/delta",
               "params":{{"threadId":"t-1","turnId":"turn-1",
                         "itemId":"msg_1","delta":"working"}}}})

@@ -1278,11 +1278,14 @@ mod tests {
     #[serial]
     fn a_string_key_that_looks_numeric_is_not_coerced() -> Result<(), ConfigError> {
         let config = new_test_config();
-        config.set_param("AWS_PROFILE", "12345")?;
-        config.set_param("SOME_VERSION", "2024")?;
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let profile_key = format!("BIOROUTER_TEST_NUMERIC_PROFILE_{suffix}");
+        let version_key = format!("BIOROUTER_TEST_NUMERIC_VERSION_{suffix}");
+        config.set_param(&profile_key, "12345")?;
+        config.set_param(&version_key, "2024")?;
 
-        assert_eq!(config.get_param::<String>("AWS_PROFILE")?, "12345");
-        assert_eq!(config.get_param::<String>("SOME_VERSION")?, "2024");
+        assert_eq!(config.get_param::<String>(&profile_key)?, "12345");
+        assert_eq!(config.get_param::<String>(&version_key)?, "2024");
         Ok(())
     }
 

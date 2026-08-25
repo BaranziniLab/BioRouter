@@ -31,7 +31,9 @@ use crate::agents::resource_refs::{extract_resource_refs, ResourceRefs};
 use crate::agents::retry::{RetryManager, RetryResult};
 use crate::agents::stall::{StallAction, StallCheckConfig, StallWatch};
 use crate::agents::subagent_task_config::TaskConfig;
-use crate::agents::subagent_tool::{handle_subagent_tool, SUBAGENT_TOOL_NAME};
+use crate::agents::subagent_tool::{
+    handle_bridged_subagent_tool, handle_subagent_tool, SUBAGENT_TOOL_NAME,
+};
 use crate::agents::types::SessionConfig;
 use crate::agents::types::{FrontendTool, SharedProvider, ToolResultReceiver};
 use crate::checkpoint::{CheckpointConfig, CheckpointKind, CheckpointManager};
@@ -59,7 +61,9 @@ use crate::permission::tool_risk::ToolRiskRegistry;
 use crate::permission::PermissionConfirmation;
 use crate::privacy::refusal::PrivacyRefusal;
 use crate::privacy::{ProviderTier, SessionClassification};
-use crate::providers::base::Provider;
+use crate::providers::base::{
+    provider_steer_channel, Provider, ProviderSteerRequest, ProviderSteerSender,
+};
 use crate::providers::coding_agent::bridge as coding_agent_bridge;
 use crate::providers::coding_agent::mirror;
 use crate::providers::errors::ProviderError;
@@ -80,7 +84,7 @@ use rmcp::model::{
 };
 use rmcp::object;
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -777,6 +781,220 @@ fn normalize_each_turn() -> bool {
 pub(crate) fn is_spawn_tool_call(tool_name: &str) -> bool {
     tool_name == crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED
         || tool_name == crate::agents::subagent_tool::SUBAGENT_TOOL_NAME
+}
+
+#[derive(Clone)]
+struct BridgedSubagentContext {
+    agent_config: AgentConfig,
+    task_config: TaskConfig,
+    sub_workflows: HashMap<String, SubWorkflow>,
+    working_dir: std::path::PathBuf,
+}
+
+// Subscription-backed CLIs need a host-readable credential file. A generic or
+// custom extension can read that file on the daemon's behalf, bypassing the
+// child's native-tool isolation. Only these audited, path-bounded surfaces may
+// cross the chat bridge; expanding either list requires an isolation review.
+const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
+    "workspace__subagent",
+    "workspace__workspace_read_conversation",
+    "workspace__workspace_close",
+    "workspace__workspace_watch",
+];
+
+const CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS: &[&str] = &[
+    "knowledge__kb_list_bases",
+    "knowledge__kb_list_pages",
+    "knowledge__kb_read_page",
+    "knowledge__kb_validate_page",
+    "knowledge__kb_lint",
+    "knowledge__kb_get_graph",
+    "knowledge__kb_list_history",
+    "knowledge__kb_search",
+    "knowledge__kb_search_raw_sources",
+    "knowledge__kb_get_active",
+];
+
+fn coding_agent_bridge_allows_tool(
+    tool_name: &str,
+    trusted_workspace: bool,
+    trusted_knowledge: bool,
+) -> bool {
+    (trusted_workspace && CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&tool_name))
+        || (trusted_knowledge && CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS.contains(&tool_name))
+}
+
+fn prepare_coding_agent_bridge_tool(tool: &Tool) -> Tool {
+    let mut bridged = tool.clone();
+    if is_spawn_tool_call(tool.name.as_ref()) {
+        let description = bridged.description.as_deref().unwrap_or_default();
+        bridged.description = Some(
+            format!(
+                "{description}\n\nCoding-agent bridge behavior: this starts a visible child and \
+                 returns its session id. You MUST supervise it with workspace_watch and \
+                 workspace_read_conversation until it finishes; the parent turn is not allowed \
+                 to finish while the child runs. The user can open the child tab and steer or \
+                 stop it at any time."
+            )
+            .into(),
+        );
+    }
+    bridged
+}
+
+fn delegated_work_supervision_prompt(parent_session_id: &str) -> Option<String> {
+    let running: Vec<_> = crate::agents::subagent_handle::list_for_session(parent_session_id)
+        .into_iter()
+        .filter(|handle| handle.is_running())
+        .map(|handle| handle.child_session_id.clone())
+        .collect();
+    if running.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Your delegated subagent sessions are still running: {}. Continue supervising them now. \
+         Call workspace_watch for these session ids, inspect progress with \
+         workspace_read_conversation, and use workspace_close if a child must stop. Do not give \
+         a final answer until every listed child has finished and you have collected its result.",
+        running.join(", ")
+    ))
+}
+
+struct ChatBridgeDispatch {
+    extensions: Arc<ExtensionManager>,
+    session_manager: Arc<SessionManager>,
+    subagent: Option<BridgedSubagentContext>,
+    workspace_target: Option<crate::agents::extension_manager::BundledExtensionTarget>,
+    knowledge_target: Option<crate::agents::extension_manager::BundledExtensionTarget>,
+}
+
+impl ChatBridgeDispatch {
+    async fn refuse_unless_direct_subagent_child(
+        &self,
+        parent_session_id: &str,
+        child_session_id: &str,
+    ) -> std::result::Result<(), String> {
+        let child = self
+            .session_manager
+            .get_session(child_session_id, false)
+            .await
+            .map_err(|_| crate::privacy::refusal::workspace_out_of_reach())?;
+        if child.session_type == SessionType::SubAgent
+            && child.parent_session_id.as_deref() == Some(parent_session_id)
+        {
+            Ok(())
+        } else {
+            Err(crate::privacy::refusal::workspace_out_of_reach())
+        }
+    }
+
+    async fn enforce_child_collector_scope(
+        &self,
+        parent_session_id: &str,
+        call: &CallToolRequestParams,
+    ) -> std::result::Result<(), String> {
+        let arguments = call
+            .arguments
+            .as_ref()
+            .ok_or_else(|| "Child supervision requires a direct subagent session id".to_string())?;
+        match call.name.as_ref() {
+            "workspace__workspace_read_conversation" | "workspace__workspace_close" => {
+                let child = arguments
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "Child supervision requires session_id".to_string())?;
+                self.refuse_unless_direct_subagent_child(parent_session_id, child)
+                    .await
+            }
+            "workspace__workspace_watch" => {
+                let children = arguments
+                    .get("session_ids")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| "Child supervision requires session_ids".to_string())?;
+                for child in children {
+                    let child = child.as_str().ok_or_else(|| {
+                        "Child supervision session_ids must be strings".to_string()
+                    })?;
+                    self.refuse_unless_direct_subagent_child(parent_session_id, child)
+                        .await?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
+    async fn dispatch(
+        &self,
+        session_id: &str,
+        call: CallToolRequestParams,
+        capability: crate::privacy::CallCapability,
+        cancel: CancellationToken,
+    ) -> std::result::Result<CallToolResult, String> {
+        let name = call.name.to_string();
+        if CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&name.as_str()) {
+            let target = self.workspace_target.as_ref().ok_or_else(|| {
+                "The bundled Workspace Control extension is not available".to_string()
+            })?;
+            if !self.extensions.is_bundled_target_enabled(target).await {
+                return Err("The bundled Workspace Control extension is no longer enabled".into());
+            }
+            self.enforce_child_collector_scope(session_id, &call)
+                .await?;
+        } else if CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS.contains(&name.as_str()) {
+            let target = self
+                .knowledge_target
+                .as_ref()
+                .ok_or_else(|| "The bundled Knowledge extension is not available".to_string())?;
+            if !self.extensions.is_bundled_target_enabled(target).await {
+                return Err("The bundled Knowledge extension is no longer enabled".into());
+            }
+        }
+        if is_spawn_tool_call(&name) {
+            let context = self.subagent.as_ref().ok_or_else(|| {
+                "Subagent delegation is not available in this session".to_string()
+            })?;
+            if !self
+                .extensions
+                .is_extension_enabled(Agent::SPAWN_EXTENSION)
+                .await
+                || !self
+                    .extensions
+                    .is_extension_tool_available(Agent::SPAWN_EXTENSION, SUBAGENT_TOOL_NAME)
+                    .await
+            {
+                return Err("Tool 'subagent' is not available for extension 'workspace'".into());
+            }
+            let params = call
+                .arguments
+                .map(Value::Object)
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+            let result = handle_bridged_subagent_tool(
+                &context.agent_config,
+                params,
+                context.task_config.clone(),
+                context.sub_workflows.clone(),
+                context.working_dir.clone(),
+                Some(cancel),
+            );
+            return result
+                .result
+                .await
+                .map_err(|error| format!("`{name}` failed: {error}"));
+        }
+
+        coding_agent_bridge::BridgeToolDispatch::dispatch(
+            self.extensions.as_ref(),
+            session_id,
+            call,
+            capability,
+            cancel,
+        )
+        .await
+    }
 }
 
 /// BR-71 §5 + decision 25: subagents never get workspace control — no
@@ -1893,6 +2111,12 @@ pub enum InterruptRefused {
     TurnEnded,
 }
 
+enum LiveSteerOutcome {
+    Delivered(Vec<Message>),
+    Disabled,
+    Cancelled,
+}
+
 impl std::fmt::Display for InterruptRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -2112,6 +2336,10 @@ pub struct Agent {
     /// it still is, so a steer's acceptance and its enqueue are one critical
     /// section rather than a check the loop can invalidate in between.
     pub(super) soft_interrupts: Arc<std::sync::Mutex<SoftInterrupts>>,
+    /// Wakes a provider-stream wait when a newly accepted interrupt may be
+    /// deliverable into the provider's current turn. `Notify` retains one
+    /// permit, so a steer landing just before the wait is armed is not lost.
+    pub(super) soft_interrupt_notify: Arc<Notify>,
     /// BR-43 shadow-git checkpoints: captures the work-tree at turn boundaries so
     /// `/rewind` can restore files/conversation. `None` when disabled (the
     /// default) or on the subagent/test paths. Gated by `BIOROUTER_CHECKPOINTS`.
@@ -2281,6 +2509,45 @@ pub(crate) enum BatchWake<T> {
     ElicitationReady,
     /// The next tool-stream item (or `None`: the batch is drained).
     Item(Option<T>),
+}
+
+enum ProviderWake<T> {
+    Cancelled,
+    ElicitationReady,
+    Item(Option<T>),
+    SteerReady,
+}
+
+async fn next_provider_wake<T, S>(
+    cancel_token: &Option<CancellationToken>,
+    stream: &mut S,
+    session_id: &str,
+    interrupt_notify: &Notify,
+    live_steering: bool,
+) -> ProviderWake<T>
+where
+    S: Stream<Item = T> + Unpin,
+{
+    tokio::select! {
+        biased;
+        _ = async {
+            match cancel_token.as_ref() {
+                Some(token) => token.cancelled().await,
+                None => std::future::pending::<()>().await,
+            }
+        } => ProviderWake::Cancelled,
+        _ = ActionRequiredManager::global().request_arrived(session_id) => {
+            ProviderWake::ElicitationReady
+        }
+        _ = async {
+            if live_steering {
+                interrupt_notify.notified().await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        } => ProviderWake::SteerReady,
+        item = stream.next() => ProviderWake::Item(item),
+    }
 }
 
 /// Race the batch's next tool item against the turn's cancel token and the
@@ -2725,6 +2992,7 @@ impl Agent {
             fallback_scheduler: tokio::sync::OnceCell::new(),
             vault: Mutex::new(None),
             soft_interrupts: Arc::new(std::sync::Mutex::new(SoftInterrupts::new())),
+            soft_interrupt_notify: Arc::new(Notify::new()),
             checkpoints,
             eager_compactions: Arc::new(std::sync::Mutex::new(HashSet::new())),
             injected_skills: Mutex::new(HashMap::new()),
@@ -2815,6 +3083,8 @@ impl Agent {
         }
         let turn = q.turn.clone().ok_or(InterruptRefused::TurnEnded)?;
         q.queued.push(QueuedInterrupt { text, provenance });
+        drop(q);
+        self.soft_interrupt_notify.notify_one();
         Ok(turn)
     }
 
@@ -2846,6 +3116,8 @@ impl Agent {
     ) {
         let mut q = self.lock_interrupts();
         q.queued.push(QueuedInterrupt { text, provenance });
+        drop(q);
+        self.soft_interrupt_notify.notify_one();
     }
 
     /// Drain queued soft-interrupt messages (FIFO). Returns empty when none.
@@ -2854,6 +3126,69 @@ impl Agent {
     pub(super) fn drain_soft_interrupts(&self) -> Vec<QueuedInterrupt> {
         let mut q = self.lock_interrupts();
         std::mem::take(&mut q.queued)
+    }
+
+    async fn deliver_live_interrupts(
+        &self,
+        sender: &ProviderSteerSender,
+        session_manager: &SessionManager,
+        session_id: &str,
+        cancel_token: &Option<CancellationToken>,
+    ) -> Result<LiveSteerOutcome> {
+        let pending = self.drain_soft_interrupts();
+        let mut delivered = Vec::with_capacity(pending.len());
+        for (index, queued) in pending.iter().cloned().enumerate() {
+            let mut message = soft_interrupt_message(queued.clone());
+            let (request, acknowledged) = ProviderSteerRequest::new(message.as_concat_text());
+            if sender.send(request).is_err() {
+                self.requeue_for_this_turn(pending[index..].to_vec());
+                return Ok(LiveSteerOutcome::Disabled);
+            }
+
+            let acknowledgement = tokio::select! {
+                biased;
+                _ = async {
+                    match cancel_token.as_ref() {
+                        Some(token) => token.cancelled().await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    // The route already returned 202, so cancellation cannot
+                    // turn this accepted user input into nothing. Persist the
+                    // in-flight item and unsent tail exactly once. The provider
+                    // may have observed the first item before cancellation, but
+                    // storing the user's message is correct in either case and
+                    // avoids an unsafe blind retry after an unknown ack state.
+                    for queued in pending[index..].iter().cloned() {
+                        let mut message = soft_interrupt_message(queued);
+                        session_manager
+                            .add_message_adopting_uid(session_id, &mut message)
+                            .await?;
+                    }
+                    return Ok(LiveSteerOutcome::Cancelled);
+                },
+                acknowledgement = acknowledged => acknowledgement,
+            };
+            match acknowledgement {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    warn!("provider rejected live steering; deferring to the next loop boundary: {error}");
+                    self.requeue_for_this_turn(pending[index..].to_vec());
+                    return Ok(LiveSteerOutcome::Disabled);
+                }
+                Err(_) => {
+                    warn!("provider live-steering channel closed; deferring to the next loop boundary");
+                    self.requeue_for_this_turn(pending[index..].to_vec());
+                    return Ok(LiveSteerOutcome::Disabled);
+                }
+            }
+
+            session_manager
+                .add_message_adopting_uid(session_id, &mut message)
+                .await?;
+            delivered.push(message);
+        }
+        Ok(LiveSteerOutcome::Delivered(delivered))
     }
 
     /// Take everything and, only if there was nothing, close in the same critical
@@ -3728,15 +4063,6 @@ impl Agent {
         Vec<String>,
         Vec<(String, ToolStream)>,
     )> {
-        // Sync the developer server's `text_editor` path jail to the live mode
-        // before anything is dispatched. In Auto ("Fully Automatic") mode the
-        // jail is relaxed so legitimate writes outside the session working dir
-        // (e.g. `/tmp`) are not rejected — sensitive-path writes stay gated by
-        // the `SensitiveOpsInspector` above. Every other mode keeps the jail.
-        // The policy (Auto ⇒ relaxed) lives here; the developer server only
-        // reads the flag. See `biorouter_mcp::set_path_jail_relaxed`.
-        biorouter_mcp::set_path_jail_relaxed(biorouter_mode == BioRouterMode::Auto);
-
         // Run all tool inspectors
         let mut inspection_results = self
             .tool_inspection_manager
@@ -4862,10 +5188,55 @@ impl Agent {
         // before it runs rather than re-read while it runs.
         let capability = crate::privacy::CallCapability::sample(&self.provider).await;
 
+        let workspace_target = resolve_bundled_extension(Self::SPAWN_EXTENSION);
+        let trusted_workspace = if let Some(target) = workspace_target.as_ref() {
+            self.extension_manager
+                .is_bundled_target_enabled(target)
+                .await
+        } else {
+            false
+        };
+        let knowledge_target = resolve_bundled_extension("knowledge");
+        let trusted_knowledge = if let Some(target) = knowledge_target.as_ref() {
+            self.extension_manager
+                .is_bundled_target_enabled(target)
+                .await
+        } else {
+            false
+        };
+
+        let delegation_available = trusted_workspace
+            && tools
+                .iter()
+                .any(|tool| is_spawn_tool_call(tool.name.as_ref()));
+        let subagent = if delegation_available {
+            let provider = self.provider().await.ok()?;
+            let mut extensions = self.get_extension_configs().await;
+            extensions.retain(|extension| {
+                trusted_knowledge
+                    && knowledge_target
+                        .as_ref()
+                        .is_some_and(|target| target.matches_config(extension))
+            });
+            Some(BridgedSubagentContext {
+                agent_config: self.config.clone(),
+                task_config: TaskConfig::new(
+                    provider,
+                    &session.id,
+                    &session.working_dir,
+                    extensions,
+                ),
+                sub_workflows: self.sub_workflows.lock().await.clone(),
+                working_dir: session.working_dir.clone(),
+            })
+        } else {
+            None
+        };
+
         // Advertise only what the bridge can actually execute.
         //
         // `tools` is not just the extension surface — `prepare_tools` deliberately
-        // includes the platform, frontend, subagent and final-output tools so the
+        // includes the platform, frontend and final-output tools so the
         // risk registry grades them. Those are dispatched by the branches at the
         // top of `dispatch_tool_call`, NOT by the `ExtensionManager` the grant
         // holds, so offering them over the bridge would advertise tools that then
@@ -4878,15 +5249,17 @@ impl Agent {
         let mut bridged = Vec::with_capacity(tools.len());
         for tool in tools {
             let name = tool.name.as_ref();
-            let dispatched_elsewhere = is_spawn_tool_call(name)
-                || name == crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME
+            let dispatched_elsewhere = name
+                == crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME
                 || name == crate::agents::platform_tools::PLATFORM_INGEST_CONVERSATION_TOOL_NAME
                 || name == crate::agents::platform_tools::PLATFORM_INGEST_SOURCE_TOOL_NAME
                 || name == crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME
                 || name == crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
                 || self.is_frontend_tool(name).await;
-            if !dispatched_elsewhere {
-                bridged.push(tool.clone());
+            if !dispatched_elsewhere
+                && coding_agent_bridge_allows_tool(name, delegation_available, trusted_knowledge)
+            {
+                bridged.push(prepare_coding_agent_bridge_tool(tool));
             }
         }
 
@@ -4897,7 +5270,13 @@ impl Agent {
             // macro or a scheduled workflow can bridge its OWN small tool
             // surface. A chat turn's surface is the session's extensions, which
             // is what this named coercion says.
-            crate::providers::tool_turn::session_tools(Arc::clone(&self.extension_manager)),
+            Arc::new(ChatBridgeDispatch {
+                extensions: Arc::clone(&self.extension_manager),
+                session_manager: Arc::clone(&self.config.session_manager),
+                subagent,
+                workspace_target: trusted_workspace.then_some(workspace_target).flatten(),
+                knowledge_target: trusted_knowledge.then_some(knowledge_target).flatten(),
+            }),
             Arc::clone(&self.tool_inspection_manager),
             capability,
             bridged,
@@ -5426,11 +5805,11 @@ impl Agent {
 
                     // BR-71 decision 21: "already loaded" must not include a
                     // copy THIS AGENT auto-injected. `ensure_spawn_extension`
-                    // loads `workspace` with `available_tools: ["subagent"]`,
+                    // loads `workspace` with delegation and child-supervision tools,
                     // and a turn can run before (or concurrently with) this
                     // load — at which point skipping would leave the session's
                     // own, explicitly configured full-surface entry
-                    // permanently shadowed by the spawn-only one. Falling
+                    // permanently shadowed by the derived one. Falling
                     // through instead is safe: an explicit config replaces an
                     // auto-injected entry of the same key.
                     //
@@ -5606,10 +5985,17 @@ impl Agent {
             name: Self::SPAWN_EXTENSION.to_string(),
             description: "Delegate work to subagents".to_string(),
             bundled: Some(true),
-            // The spawn-only surface. Enforced on BOTH the advertisement path
-            // (`filter`/`is_tool_available` in `fetch_all_tools`) and the
-            // dispatch path (the same predicate in `dispatch_tool_call`).
-            available_tools: vec![SUBAGENT_TOOL_NAME.to_string()],
+            // Delegation plus its child-scoped supervision surface. The bridge
+            // does not expose workspace_send_prompt, and WorkspaceClient still
+            // enforces lineage on every read/close/watch call. Enforced on BOTH
+            // the advertisement path (`filter`/`is_tool_available` in
+            // `fetch_all_tools`) and dispatch.
+            available_tools: vec![
+                SUBAGENT_TOOL_NAME.to_string(),
+                "workspace_read_conversation".to_string(),
+                "workspace_close".to_string(),
+                "workspace_watch".to_string(),
+            ],
         };
         // Never fatal: a session that cannot load the extension simply has no
         // spawn tool this turn, which is a strictly smaller failure than
@@ -5661,9 +6047,9 @@ impl Agent {
         // implementation, so a session that may delegate must have it LOADED
         // before the tool list is read. When the user enabled `workspace`
         // explicitly it is already present with the full surface and this is a
-        // no-op; otherwise it is injected with `available_tools: ["subagent"]`,
-        // so delegation rides along WITHOUT the cross-session control surface
-        // (§5 blast radius unchanged).
+        // no-op; otherwise it is injected with delegation plus read/watch/close,
+        // so the parent can supervise its own child without broad workspace
+        // steering or reconfiguration powers.
         //
         // This MUST run before `get_prefixed_tools`: that call is the only read
         // of the extension manager in this function, and `ensure_spawn_extension`
@@ -6316,6 +6702,9 @@ impl Agent {
         // [`RewriteBasis`]).
         let (session, mut rewrite_basis) =
             RewriteBasis::read_with_session(&session_manager, &session_config.id).await?;
+        if session.session_type == SessionType::SubAgent {
+            crate::agents::subagent_handle::begin_child_turn(&session_config.id);
+        }
         let stored_conversation = rewrite_basis.known().clone();
         let conversation = crate::conversation::without_bedrock_reasoning(rewrite_basis.known());
 
@@ -7153,6 +7542,15 @@ impl Agent {
                     )
                     .await;
                 let bridge_url = bridge_lease.as_ref().map(|l| l.url().to_string());
+                let (mut live_steer_sender, live_steer_receiver) =
+                    if iteration_provider.supports_streaming()
+                        && iteration_provider.supports_live_steering()
+                    {
+                        let (sender, receiver) = provider_steer_channel();
+                        (Some(sender), Some(receiver))
+                    } else {
+                        (None, None)
+                    };
                 let mut stream = coding_agent_bridge::ACTIVE_BRIDGE_URL
                     .scope(
                         bridge_url,
@@ -7162,6 +7560,7 @@ impl Agent {
                             conversation_with_moim.messages(),
                             &tools,
                             &toolshim_tools,
+                            live_steer_receiver,
                         ),
                     )
                     .await?;
@@ -7221,21 +7620,54 @@ impl Agent {
                 // unlabeled `continue` in a `while` condition; every `break` and
                 // `continue` in the body below still means what it did.
                 loop {
-                    let next = match next_batch_wake(
+                    let next = match next_provider_wake(
                         &cancel_token,
                         &mut stream,
                         &session_config.id,
+                        &self.soft_interrupt_notify,
+                        live_steer_sender.is_some(),
                     )
                     .await
                     {
-                        BatchWake::Cancelled | BatchWake::Item(None) => break,
-                        BatchWake::ElicitationReady => {
+                        ProviderWake::Cancelled | ProviderWake::Item(None) => break,
+                        ProviderWake::ElicitationReady => {
                             for msg in self.drain_elicitation_messages(&session_config.id).await {
                                 yield AgentEvent::Message(msg);
                             }
                             continue;
                         }
-                        BatchWake::Item(Some(next)) => next,
+                        ProviderWake::SteerReady => {
+                            let Some(sender) = live_steer_sender.as_ref() else {
+                                continue;
+                            };
+                            match self
+                                .deliver_live_interrupts(
+                                    sender,
+                                    &session_manager,
+                                    &session_config.id,
+                                    &cancel_token,
+                                )
+                                .await?
+                            {
+                                LiveSteerOutcome::Delivered(messages) => {
+                                    if !messages.is_empty()
+                                        && signed_replay_context.take().is_some()
+                                    {
+                                        conversation = crate::conversation::without_bedrock_reasoning(
+                                            &conversation,
+                                        );
+                                    }
+                                    for message in messages {
+                                        conversation.push(message.clone());
+                                        yield AgentEvent::Message(message);
+                                    }
+                                }
+                                LiveSteerOutcome::Disabled => live_steer_sender = None,
+                                LiveSteerOutcome::Cancelled => break,
+                            }
+                            continue;
+                        }
+                        ProviderWake::Item(Some(next)) => next,
                     };
                     if is_token_cancelled(&cancel_token) {
                         break;
@@ -8089,13 +8521,19 @@ impl Agent {
                         "turn ended with no tool call; finish_reason={:?}",
                         last_finish_reason
                     );
-                    let final_output_state = self
-                        .final_output_tool
-                        .lock()
-                        .await
-                        .as_ref()
-                        .map(|tool| tool.final_output.clone());
-                    if let Some(final_output) = final_output_state {
+                    let supervision_prompt =
+                        delegated_work_supervision_prompt(&session_config.id);
+                    if let Some(prompt) = supervision_prompt {
+                        info!("parent remains active to supervise delegated work");
+                        messages_to_add.push(named(model_only_user_text(prompt)));
+                    } else {
+                        let final_output_state = self
+                            .final_output_tool
+                            .lock()
+                            .await
+                            .as_ref()
+                            .map(|tool| tool.final_output.clone());
+                        if let Some(final_output) = final_output_state {
                         match final_output {
                             None => {
                                 warn!("Final output tool has not been called yet. Continuing agent loop.");
@@ -8110,9 +8548,9 @@ impl Agent {
                                 exit_chat = true;
                             }
                         }
-                    } else if did_recovery_compact_this_iteration {
+                        } else if did_recovery_compact_this_iteration {
                         // Avoid setting exit_chat; continue from last user message in the conversation
-                    } else if did_recover_provider_error_this_iteration {
+                        } else if did_recover_provider_error_this_iteration {
                         // BR-66: the provider call failed recoverably and the hint is
                         // already in `messages_to_add`. No tool ran and the model said
                         // nothing, so this is not a finished turn — take the retry
@@ -8120,7 +8558,7 @@ impl Agent {
                         // manager, whose job is a *completed* response that failed
                         // validation). Bounded by `provider_error_retries`, and by
                         // `max_turns` like every other iteration.
-                    } else {
+                        } else {
                         match self.handle_retry_logic(&mut conversation, &session_config, initial_messages.messages()).await {
                             Ok(should_retry) => {
                                 if should_retry {
@@ -8137,6 +8575,7 @@ impl Agent {
                                 );
                                 exit_chat = true;
                             }
+                        }
                         }
                     }
                 }
@@ -10005,6 +10444,162 @@ mod tests {
         assert!(!agent.has_soft_interrupts(), "drain empties the queue");
     }
 
+    #[tokio::test]
+    async fn live_interrupt_is_persisted_only_after_provider_acknowledges_it() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "live-steer".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        agent.open_for_turn(TurnId::new("turn-live-steer"));
+        agent
+            .try_queue_soft_interrupt("change course now".into(), None)
+            .unwrap();
+        let (sender, mut receiver) = provider_steer_channel();
+        let provider = tokio::spawn(async move {
+            let request = receiver.recv().await.expect("steer reaches provider");
+            assert_eq!(request.text(), "change course now");
+            request.acknowledge();
+        });
+
+        let outcome = agent
+            .deliver_live_interrupts(&sender, &sm, &session.id, &None)
+            .await
+            .unwrap();
+        provider.await.unwrap();
+
+        let LiveSteerOutcome::Delivered(messages) = outcome else {
+            panic!("acknowledged steering must be delivered")
+        };
+        assert_eq!(messages.len(), 1);
+        assert!(!agent.has_soft_interrupts());
+        let stored = sm.get_session(&session.id, true).await.unwrap();
+        assert!(stored
+            .conversation
+            .unwrap()
+            .messages()
+            .iter()
+            .any(|message| message.as_concat_text() == "change course now"));
+    }
+
+    #[tokio::test]
+    async fn live_steering_cannot_be_starved_by_ready_provider_output() {
+        let notify = Notify::new();
+        notify.notify_one();
+        let mut output = futures::stream::iter(["already buffered"]);
+
+        let wake =
+            next_provider_wake(&None, &mut output, "steer-priority-session", &notify, true).await;
+
+        assert!(matches!(wake, ProviderWake::SteerReady));
+    }
+
+    #[tokio::test]
+    async fn rejected_live_interrupt_is_requeued_exactly_once() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "requeue-steer".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        agent.open_for_turn(TurnId::new("turn-requeue-steer"));
+        agent
+            .try_queue_soft_interrupt("do not lose me".into(), None)
+            .unwrap();
+        let (sender, mut receiver) = provider_steer_channel();
+        let provider = tokio::spawn(async move {
+            let request = receiver.recv().await.unwrap();
+            request.reject(ProviderError::RequestFailed("turn ended".into()));
+        });
+
+        let outcome = agent
+            .deliver_live_interrupts(&sender, &sm, &session.id, &None)
+            .await
+            .unwrap();
+        provider.await.unwrap();
+
+        assert!(matches!(outcome, LiveSteerOutcome::Disabled));
+        let queued = agent.drain_soft_interrupts();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].text, "do not lose me");
+        assert!(sm
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .is_none_or(|conversation| conversation.messages().is_empty()));
+    }
+
+    #[tokio::test]
+    async fn cancellation_persists_the_inflight_interrupt_and_unsent_tail() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "cancelled-steer".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        agent.open_for_turn(TurnId::new("turn-cancelled-steer"));
+        for text in ["first accepted steer", "second accepted steer"] {
+            agent.try_queue_soft_interrupt(text.into(), None).unwrap();
+        }
+        let (sender, _receiver) = provider_steer_channel();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let outcome = agent
+            .deliver_live_interrupts(&sender, &sm, &session.id, &Some(cancel))
+            .await
+            .unwrap();
+        assert!(matches!(outcome, LiveSteerOutcome::Cancelled));
+        assert!(!agent.has_soft_interrupts());
+        let stored = sm.get_session(&session.id, true).await.unwrap();
+        let texts: Vec<_> = stored
+            .conversation
+            .unwrap()
+            .messages()
+            .iter()
+            .map(Message::as_concat_text)
+            .collect();
+        assert_eq!(texts, ["first accepted steer", "second accepted steer"]);
+    }
+
     /// BR-71: a poisoned soft-interrupt mutex must not silently swallow an
     /// injection.
     ///
@@ -10172,11 +10767,375 @@ mod tests {
         agent_for_tests(crate::config::BioRouterMode::Chat).await
     }
 
+    struct BridgedChildProvider {
+        name: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for BridgedChildProvider {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::new(
+                "bridge-child-test",
+                "Bridge child test",
+                "",
+                "bridge-child-model",
+                vec!["bridge-child-model"],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            self.name
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("bridge-child-model")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<
+            (Message, crate::providers::base::ProviderUsage),
+            crate::providers::errors::ProviderError,
+        > {
+            Ok((
+                Message::assistant().with_text(format!("{} bridged child completed", self.name)),
+                crate::providers::base::ProviderUsage::new(
+                    "bridge-child-model".into(),
+                    crate::providers::base::Usage::default(),
+                ),
+            ))
+        }
+    }
+
+    fn bridge_test_tool(name: &str) -> Tool {
+        Tool::new(name.to_string(), "test tool", serde_json::Map::new())
+    }
+
+    #[test]
+    fn subscription_coding_agent_bridge_withholds_arbitrary_host_read_tools() {
+        for blocked in [
+            "developer__shell",
+            "developer__text_editor",
+            "developer__image_processor",
+            "code_execution__execute_code",
+            "code_execution__read_module",
+            "custom_local_mcp__read_any_path",
+            "workspace__workspace_send_prompt",
+            "workspace__workspace_set_tools",
+            "workspace__workspace_open",
+            "workspace__workspace_read_panel",
+            "knowledge__kb_export",
+            "knowledge__kb_import",
+            "knowledge__kb_write_page",
+        ] {
+            assert!(
+                !coding_agent_bridge_allows_tool(blocked, true, true),
+                "{blocked}"
+            );
+        }
+        for allowed in [
+            "workspace__subagent",
+            "workspace__workspace_watch",
+            "knowledge__kb_search",
+        ] {
+            assert!(
+                coding_agent_bridge_allows_tool(allowed, true, true),
+                "{allowed}"
+            );
+        }
+        assert!(!coding_agent_bridge_allows_tool(
+            "workspace__subagent",
+            false,
+            true
+        ));
+        assert!(!coding_agent_bridge_allows_tool(
+            "knowledge__kb_search",
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn coding_agent_bridge_requires_active_parent_supervision() {
+        let spawn = bridge_test_tool("workspace__subagent");
+        let attached = prepare_coding_agent_bridge_tool(&spawn);
+        let description = attached.description.as_deref().unwrap_or_default();
+        assert!(description.contains("MUST supervise it"));
+        assert!(description.contains("parent turn is not allowed to finish"));
+        assert!(description.contains("steer or stop it"));
+    }
+
+    #[test]
+    fn every_parent_exit_gate_tracks_running_background_children() {
+        let parent = format!("supervision-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("supervision-child-{}", uuid::Uuid::new_v4());
+        let handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "test child",
+            CancellationToken::new(),
+        );
+
+        let prompt = delegated_work_supervision_prompt(&parent)
+            .expect("a running child must block the parent's exit");
+        assert!(prompt.contains(&child));
+        assert!(prompt.contains("workspace_watch"));
+        assert!(prompt.contains("workspace_read_conversation"));
+
+        handle.complete(crate::agents::subagent_result::SubagentResult::from_error(
+            "test complete",
+        ));
+        assert!(delegated_work_supervision_prompt(&parent).is_none());
+    }
+
+    #[tokio::test]
+    async fn coding_agent_bridges_delegate_to_real_children_for_claude_and_codex() {
+        coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
+
+        let (agent, first_session_id) = agent_with_one_extension_for_tests().await;
+        let working_dir = agent
+            .config
+            .session_manager
+            .get_session(&first_session_id, false)
+            .await
+            .expect("read the first bridge parent")
+            .working_dir;
+        let second_session_id = agent
+            .config
+            .session_manager
+            .create_session(
+                working_dir,
+                "second bridge parent".into(),
+                SessionType::User,
+            )
+            .await
+            .expect("create a distinct second bridge parent")
+            .id;
+
+        for (provider_name, session_id) in ["claude_code", "codex"]
+            .into_iter()
+            .zip([first_session_id, second_session_id])
+        {
+            agent
+                .update_provider(
+                    Arc::new(BridgedChildProvider {
+                        name: provider_name,
+                    }),
+                    &session_id,
+                )
+                .await
+                .expect("bind the coding-agent-shaped provider");
+
+            let tools = agent.list_tools(&session_id, None).await;
+            assert!(
+                tools
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == "workspace__subagent"),
+                "precondition: {provider_name} must be offered delegation"
+            );
+            let session = agent
+                .config
+                .session_manager
+                .get_session(&session_id, true)
+                .await
+                .expect("read the parent session");
+            let conversation = session
+                .conversation
+                .clone()
+                .unwrap_or_else(Conversation::empty);
+            let lease = agent
+                .issue_tool_bridge(&session, &conversation, &tools, None)
+                .await
+                .expect("coding-agent providers need a live grant");
+            let nonce = lease
+                .url()
+                .rsplit('/')
+                .next()
+                .expect("the bridge URL ends in its nonce");
+            let grant = coding_agent_bridge::lookup(nonce).expect("the grant is live");
+            assert!(
+                grant
+                    .tools()
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == "workspace__subagent"),
+                "the direct bridge, not execute_code, must advertise delegation for {provider_name}"
+            );
+            for collector in [
+                "workspace__workspace_watch",
+                "workspace__workspace_read_conversation",
+                "workspace__workspace_close",
+            ] {
+                assert!(
+                    grant
+                        .tools()
+                        .iter()
+                        .any(|tool| tool.name.as_ref() == collector),
+                    "the automatic grant must let {provider_name} supervise its child with {collector}"
+                );
+            }
+
+            let result = grant
+                .call(CallToolRequestParams {
+                    name: "workspace__subagent".into(),
+                    arguments: Some(object!({
+                        "instructions": format!("Verify delegation through {provider_name}")
+                    })),
+                    meta: None,
+                    task: None,
+                })
+                .await
+                .expect("the bridge must reach the agent-owned spawn handler");
+            assert_eq!(result.is_error, Some(false));
+            let text = result
+                .content
+                .iter()
+                .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+                .collect::<String>();
+            assert!(
+                text.contains("Subagent started in the background"),
+                "{text}"
+            );
+
+            let children: Vec<_> = agent
+                .config
+                .session_manager
+                .list_sessions_by_types_including_empty(&[SessionType::SubAgent])
+                .await
+                .expect("list child sessions")
+                .into_iter()
+                .filter(|child| child.parent_session_id.as_deref() == Some(session_id.as_str()))
+                .collect();
+            assert_eq!(
+                children.len(),
+                1,
+                "the bridge must create exactly one child linked to its parent"
+            );
+            let child_session_id = children[0].id.clone();
+            let watched = grant
+                .call(CallToolRequestParams {
+                    name: "workspace__workspace_watch".into(),
+                    arguments: Some(object!({
+                        "session_ids": [child_session_id.clone()],
+                        "timeout_s": 10
+                    })),
+                    meta: None,
+                    task: None,
+                })
+                .await
+                .expect("the coding-agent bridge must monitor its child");
+            assert_eq!(watched.is_error, Some(false));
+            let handle = crate::agents::subagent_handle::list_for_session(&session_id)
+                .into_iter()
+                .find(|handle| handle.child_session_id == child_session_id)
+                .expect("the background child has a supervision handle");
+            handle
+                .wait(std::time::Duration::from_secs(10))
+                .await
+                .expect("the bridged child must finish within the test budget");
+            let collected = grant
+                .call(CallToolRequestParams {
+                    name: "workspace__workspace_watch".into(),
+                    arguments: Some(object!({
+                        "session_ids": [child_session_id.clone()],
+                        "timeout_s": 1
+                    })),
+                    meta: None,
+                    task: None,
+                })
+                .await
+                .expect("the coding-agent bridge must collect the finished child");
+            let collected_text = collected
+                .content
+                .iter()
+                .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+                .collect::<String>();
+            assert!(
+                collected_text.contains(&format!("{provider_name} bridged child completed")),
+                "the finished result must cross workspace_watch: {collected_text}"
+            );
+            let read = grant
+                .call(CallToolRequestParams {
+                    name: "workspace__workspace_read_conversation".into(),
+                    arguments: Some(object!({
+                        "session_id": child_session_id,
+                        "view": "summary"
+                    })),
+                    meta: None,
+                    task: None,
+                })
+                .await
+                .expect("the coding-agent bridge must collect its child");
+            let read_text = read
+                .content
+                .iter()
+                .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+                .collect::<String>();
+            assert!(read_text.contains("Session "), "{read_text}");
+            let refused_parent_read = grant
+                .call(CallToolRequestParams {
+                    name: "workspace__workspace_read_conversation".into(),
+                    arguments: Some(object!({
+                        "session_id": session_id.clone(),
+                        "view": "summary"
+                    })),
+                    meta: None,
+                    task: None,
+                })
+                .await
+                .expect_err("a bridge collector must be scoped to direct subagent children");
+            assert!(
+                refused_parent_read.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+                "got: {refused_parent_read}"
+            );
+
+            agent
+                .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                    name: "workspace".into(),
+                    description: "Workspace Control".into(),
+                    bundled: Some(true),
+                    available_tools: vec!["workspace_list".into()],
+                })
+                .await
+                .expect("replace the injected grant with a restricted one");
+            let refused = grant
+                .call(CallToolRequestParams {
+                    name: "workspace__subagent".into(),
+                    arguments: Some(object!({ "instructions": "must not run" })),
+                    meta: None,
+                    task: None,
+                })
+                .await
+                .expect_err("dispatch must re-check a grant revoked during the turn");
+            assert!(refused.contains("not available"), "got: {refused}");
+
+            agent
+                .remove_extension("workspace")
+                .await
+                .expect("remove the workspace extension entirely");
+            let absent = grant
+                .call(CallToolRequestParams {
+                    name: "workspace__subagent".into(),
+                    arguments: Some(object!({ "instructions": "must still not run" })),
+                    meta: None,
+                    task: None,
+                })
+                .await
+                .expect_err("an absent extension must not retain its snapshotted spawn grant");
+            assert!(absent.contains("no longer enabled"), "got: {absent}");
+        }
+    }
+
     /// Decision 21: a session with subagents enabled and NO explicit workspace
     /// entry still gets a spawn tool. This is the regression that would
     /// otherwise break every existing config when Task 19 lands.
     #[tokio::test]
-    async fn subagents_enabled_injects_the_workspace_extension_with_the_spawn_tool_only() {
+    async fn subagents_enabled_injects_delegation_and_child_supervision_tools() {
         let (agent, session_id) = agent_with_one_extension_for_tests().await;
         assert!(agent.subagents_enabled(&session_id).await, "precondition");
 
@@ -10190,11 +11149,27 @@ mod tests {
             names.iter().any(|n| n == "workspace__subagent"),
             "spawn tool must be advertised under the workspace prefix: {names:?}"
         );
-        // …and none of the cross-session surface came with it.
-        assert!(
-            !names.iter().any(|n| n.starts_with("workspace__workspace_")),
-            "auto-injection must not grant cross-session control: {names:?}"
-        );
+        for tool in [
+            "workspace__workspace_read_conversation",
+            "workspace__workspace_close",
+            "workspace__workspace_watch",
+        ] {
+            assert!(
+                names.iter().any(|name| name == tool),
+                "auto-injection must grant child supervision with {tool}: {names:?}"
+            );
+        }
+        for tool in [
+            "workspace__workspace_list",
+            "workspace__workspace_send_prompt",
+            "workspace__workspace_set_tools",
+            "workspace__workspace_open",
+        ] {
+            assert!(
+                !names.iter().any(|name| name == tool),
+                "auto-injection must not grant broad workspace control with {tool}: {names:?}"
+            );
+        }
 
         // THE 18 → 19 BOUNDARY, now crossed. Task 18 deliberately advertised
         // BOTH the bare `subagent` (the standalone push, the only *callable*

@@ -2424,7 +2424,7 @@ mod privacy_ratchet {
     // against any future `#[serial]` test that touches the environment without
     // taking the workspace lock.
     #[serial_test::serial]
-    async fn each_macro_route_ratchets_from_the_provider_it_constructed_both_ways() {
+    async fn mutating_macro_routes_ratchet_and_read_only_queries_do_not() {
         // The gate a `grep -c caller_is_private` cannot be: every route reports
         // NON-ZERO whether it passes the right value, a hardcoded `true`, or a
         // hardcoded `false`. Both rows, per route — the PUBLIC row is the one
@@ -2436,18 +2436,21 @@ mod privacy_ratchet {
         // process-global `SessionManager`, i.e. the developer's real session
         // database. Its capability is the same `build_completer` value the three
         // routes below pin, and it is covered structurally.
-        let routes: Vec<(&str, BodyFor)> = vec![
+        let routes: Vec<(&str, BodyFor, bool)> = vec![
             (
                 "ingest",
                 |m| serde_json::json!({ "source": {"text": "n=412", "title": "t"}, "model": m }),
+                true,
             ),
             (
                 "query",
                 |m| serde_json::json!({ "question": "what is n?", "model": m }),
+                false,
             ),
             (
                 "lint",
                 |m| serde_json::json!({ "autofix": true, "model": m }),
+                true,
             ),
         ];
 
@@ -2457,7 +2460,7 @@ mod privacy_ratchet {
         // live local model — several real sub-agent turns — on any developer
         // machine that happens to be running one, which is how an earlier
         // variant of this matrix came to sit for thirteen minutes.
-        for (route, body) in routes {
+        for (route, body, writes_base) in routes {
             for (host, caller_is_private) in [
                 ("http://127.0.0.1:1", true),
                 ("http://ollama.invalid:11434", false),
@@ -2474,7 +2477,7 @@ mod privacy_ratchet {
                 )
                 .await;
 
-                if caller_is_private {
+                if caller_is_private && writes_base {
                     assert!(
                         await_private(&root, "kb").await,
                         "{route} with a private model did not ratchet the base"
@@ -2482,7 +2485,7 @@ mod privacy_ratchet {
                 } else {
                     assert!(
                         !biorouter_mcp::knowledge::tier::is_private(&root, "kb"),
-                        "{route} with a public model privatised the base"
+                        "{route} unexpectedly privatised the base"
                     );
                 }
             }

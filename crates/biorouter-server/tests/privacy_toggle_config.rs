@@ -33,9 +33,9 @@ use biorouter_server::routes::config_management::{
 use http::{HeaderMap, StatusCode};
 use serde_json::Value;
 
-/// Points `Config::global()` at a throwaway directory, and restores the
-/// process-global toggle on drop — including on the unwind path a failing
-/// assertion takes.
+/// Points `Config::global()` at a throwaway directory, and restores the path
+/// override and process-global toggle on drop — including on the unwind path a
+/// failing assertion takes.
 ///
 /// ⚠ **These tests must never write the developer's real `config.yaml`, and an
 /// earlier version of them did.** `upsert_config` persists, so the accepting arm
@@ -62,10 +62,12 @@ static CONFIG_ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock
 
 struct PrivacyToggleFixture {
     prev_enabled: bool,
+    prev_path_root: Option<std::ffi::OsString>,
 }
 
 impl PrivacyToggleFixture {
     fn capture() -> Self {
+        let prev_path_root = std::env::var_os("BIOROUTER_PATH_ROOT");
         let root = CONFIG_ROOT.get_or_init(|| {
             let dir = tempfile::tempdir().expect("temp config root");
             std::fs::create_dir_all(dir.path().join("config")).expect("config dir");
@@ -86,6 +88,7 @@ impl PrivacyToggleFixture {
         );
         Self {
             prev_enabled: biorouter::privacy::privacy_tiers_enabled(),
+            prev_path_root,
         }
     }
 }
@@ -93,6 +96,10 @@ impl PrivacyToggleFixture {
 impl Drop for PrivacyToggleFixture {
     fn drop(&mut self) {
         biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(self.prev_enabled);
+        match self.prev_path_root.take() {
+            Some(root) => std::env::set_var("BIOROUTER_PATH_ROOT", root),
+            None => std::env::remove_var("BIOROUTER_PATH_ROOT"),
+        }
     }
 }
 

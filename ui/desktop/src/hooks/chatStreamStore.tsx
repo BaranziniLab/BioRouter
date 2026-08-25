@@ -2310,6 +2310,7 @@ class ChatStreamController {
     try {
       await interrupt({
         body: { session_id: this.sessionId, text: trimmed },
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
       this.lastInteractionTime = Date.now();
@@ -2355,12 +2356,17 @@ class ChatStreamController {
     // `/agent/cancel` is deliberately idempotent: a cancel with no turn in
     // flight is a 200 `cancelled:false`, not an error, so this is safe to fire
     // even when the turn already finished between the click and the POST.
-    cancelTurn({
-      body: { session_id: this.sessionId },
-      throwOnError: true,
-    }).catch((error) => {
-      console.warn('Failed to cancel running turn on stop:', error);
-    });
+    userActionHeaders()
+      .then((headers) =>
+        cancelTurn({
+          body: { session_id: this.sessionId },
+          headers,
+          throwOnError: true,
+        })
+      )
+      .catch((error) => {
+        console.warn('Failed to cancel running turn on stop:', error);
+      });
   };
 
   onMessageUpdate = async (

@@ -16,6 +16,9 @@ vi.mock('../../api', async (importOriginal) => {
     cancelTurn: mocks.cancelTurn,
   };
 });
+vi.mock('../../utils/userAction', () => ({
+  userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }),
+}));
 
 import { extractKnowledgeBases, useSubagentSession } from './useSubagentSession';
 
@@ -135,7 +138,10 @@ describe('useSubagentSession', () => {
     // Stop posts the addressable cancel — the chain Task 33 made real.
     await result.current.stop();
     expect(mocks.cancelTurn).toHaveBeenCalledWith(
-      expect.objectContaining({ body: { session_id: 'child-1' } })
+      expect.objectContaining({
+        body: { session_id: 'child-1' },
+        headers: { 'X-User-Action': 'test-key' },
+      })
     );
   });
 

@@ -127,20 +127,21 @@ What streaming does **not** change:
   (`crates/biorouter/src/providers/lead_worker.rs:410-412`), so pairing a coding agent with a
   non-streaming provider gives a blocking turn.
 
-Two limits remain, and both are honest gaps rather than oversights:
+Two limits remain, and both are explicit rather than accidental:
 
-- **A bridged call needing human approval is still refused, not parked**
-  (`crates/biorouter/src/providers/coding_agent/bridge.rs:336`). The refusal is now visible as a
-  red card naming the tool instead of vanishing, which is an improvement in reporting and not in
-  capability.
-- **Codex's own sandboxed built-ins are shown, and they passed none of BioRouter's gates.** They
-  carry a `child` execution marker in the mirrored pair's metadata, but the GUI does not yet draw a
-  label distinguishing them from a bridged call — a card reading `exec` is a command Codex ran
-  inside its read-only sandbox.
+- **A bridged call needing human approval parks for the real user decision.** The bridge keeps the
+  request leased while the desktop prompt is active, then returns the accepted result or an
+  explicit refusal/expiry. The wait is bounded below the per-call transport deadline so an expired
+  prompt becomes a result the child can act on, not a generic MCP timeout.
+- **Unexpected Codex-local tool events remain visible.** Process feature gates and the read-only
+  sandbox make these unreachable in normal operation. The decoder still mirrors one
+  with a `child` marker so an upstream isolation regression cannot be mistaken for a bridged,
+  policy-checked call.
 
-Cancellation is still the hard backstop rather than a cooperative one: dropping the provider stream
-aborts the reader task, which drops the child, which `kill_on_drop(true)` reaps. Codex's
-`turn/interrupt` is not wired.
+Cancellation retains a hard backstop: dropping the provider stream aborts the reader task, which
+drops the child, which `kill_on_drop(true)` reaps. Live Codex steering first sends
+`turn/interrupt`, then starts the user's replacement instruction on the same thread; this is
+separate from the hard-stop path and preserves the partial conversation.
 
 ## Failure modes worth recognising
 

@@ -178,8 +178,9 @@ fn pending_refusal(depth: usize, max_pending: usize) -> Option<String> {
 /// value read in the requesting task (see [`max_pending_subagents`]).
 async fn acquire_subagent_permit(
     max_pending: usize,
+    cancellation_token: Option<&CancellationToken>,
 ) -> Result<tokio::sync::SemaphorePermit<'static>, ErrorData> {
-    acquire_permit_bounded(&SUBAGENT_SEMAPHORE, max_pending).await
+    acquire_permit_bounded(&SUBAGENT_SEMAPHORE, max_pending, cancellation_token).await
 }
 
 /// The gate's body, over an explicit semaphore so a test can drive it with a
@@ -187,7 +188,16 @@ async fn acquire_subagent_permit(
 async fn acquire_permit_bounded(
     semaphore: &'static Semaphore,
     max_pending: usize,
+    cancellation_token: Option<&CancellationToken>,
 ) -> Result<tokio::sync::SemaphorePermit<'static>, ErrorData> {
+    let cancelled = || ErrorData {
+        code: ErrorCode::INVALID_REQUEST,
+        message: Cow::from("Subagent was cancelled before it could start."),
+        data: None,
+    };
+    if cancellation_token.is_some_and(CancellationToken::is_cancelled) {
+        return Err(cancelled());
+    }
     // Fast path: a free permit means this spawn never joins the queue, so it is
     // never counted against the queue bound and can never be refused by it.
     if let Ok(permit) = semaphore.try_acquire() {
@@ -205,7 +215,17 @@ async fn acquire_permit_bounded(
             data: None,
         });
     }
-    semaphore.acquire().await.map_err(|e| ErrorData {
+    let acquire = semaphore.acquire();
+    tokio::pin!(acquire);
+    let permit = match cancellation_token {
+        Some(token) => tokio::select! {
+            biased;
+            _ = token.cancelled() => return Err(cancelled()),
+            permit = &mut acquire => permit,
+        },
+        None => acquire.await,
+    };
+    permit.map_err(|e| ErrorData {
         code: ErrorCode::INTERNAL_ERROR,
         message: Cow::from(format!("Subagent semaphore closed: {e}")),
         data: None,
@@ -686,10 +706,8 @@ pub struct SubagentParams {
     pub settings: Option<SubagentSettings>,
     #[serde(default = "default_summary")]
     pub summary: bool,
-    /// BR-40: run detached and return a handle immediately instead of blocking
-    /// the parent's turn for the child's whole run. Ignored (and not advertised)
-    /// unless `BIOROUTER_SUBAGENT_BACKGROUND` is on, so the default is the
-    /// historical blocking call.
+    /// Backward-compatible input retained for persisted workflows. Parent-facing
+    /// delegation now forces this on so every provider can supervise the child.
     #[serde(default)]
     pub background: bool,
     /// BR-71 §4.5: open the child as a visible tab. Defaults to true when a GUI
@@ -706,6 +724,14 @@ fn default_summary() -> bool {
     true
 }
 
+fn should_run_in_background(params: &SubagentParams, force_background: bool) -> bool {
+    params.background && (force_background || subagent_handle::background_enabled())
+}
+
+fn apply_supervised_background_default(params: &mut SubagentParams, background: bool) {
+    params.background = background;
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SubagentSettings {
     pub provider: Option<String>,
@@ -716,7 +742,7 @@ pub struct SubagentSettings {
 pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
     let description = build_tool_description(sub_workflows);
 
-    let mut schema = json!({
+    let schema = json!({
         "type": "object",
         "properties": {
             "instructions": {
@@ -763,21 +789,6 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
         }
     });
 
-    // BR-40: the background parameter only exists when the async-handle path is
-    // enabled — an advertised parameter the tool would then ignore is worse than
-    // no parameter at all.
-    if subagent_handle::background_enabled() {
-        schema["properties"]["background"] = json!({
-            "type": "boolean",
-            "default": false,
-            "description": "If true, start the subagent and return its session id immediately \
-                            instead of waiting for it. Wait for it later with `workspace_watch`, \
-                            read it with `workspace_read_conversation`, stop it with \
-                            `workspace_close`. Use for long tasks you want to run while you \
-                            keep working."
-        });
-    }
-
     Tool::new(
         SUBAGENT_TOOL_NAME,
         description,
@@ -816,14 +827,12 @@ pub(crate) fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
          For parallel execution, make multiple `subagent` tool calls in the same message.",
     );
 
-    if subagent_handle::background_enabled() {
-        desc.push_str(
-            "\n\nBy default the call blocks until the subagent finishes. For a long task, \
-             pass `background: true` to get the child's session id back immediately and \
-             keep working; wait for it later with `workspace_watch`, read it with \
-             `workspace_read_conversation`, stop it with `workspace_close`.",
-        );
-    }
+    desc.push_str(
+        "\n\nThe child starts in the background and this call returns its session id \
+         immediately. You MUST supervise it with `workspace_watch` and \
+         `workspace_read_conversation` until it finishes; use `workspace_close` to stop it. \
+         Do not give a final answer while a delegated child is still running.",
+    );
 
     if !sub_workflows.is_empty() {
         desc.push_str("\n\nAvailable subworkflows:");
@@ -897,7 +906,49 @@ pub fn handle_subagent_tool(
     working_dir: PathBuf,
     cancellation_token: Option<CancellationToken>,
 ) -> ToolCallResult {
-    let parsed_params: SubagentParams = match serde_json::from_value(params) {
+    handle_subagent_tool_inner(
+        config,
+        params,
+        task_config,
+        sub_workflows,
+        working_dir,
+        cancellation_token,
+        Some(true),
+    )
+}
+
+/// Coding-agent providers use the same supervised background path as ordinary
+/// providers. The separate entry point keeps bridge dispatch explicit.
+pub(crate) fn handle_bridged_subagent_tool(
+    config: &AgentConfig,
+    params: Value,
+    task_config: TaskConfig,
+    sub_workflows: HashMap<String, SubWorkflow>,
+    working_dir: PathBuf,
+    cancellation_token: Option<CancellationToken>,
+) -> ToolCallResult {
+    handle_subagent_tool_inner(
+        config,
+        params,
+        task_config,
+        sub_workflows,
+        working_dir,
+        cancellation_token,
+        Some(true),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_subagent_tool_inner(
+    config: &AgentConfig,
+    params: Value,
+    task_config: TaskConfig,
+    sub_workflows: HashMap<String, SubWorkflow>,
+    working_dir: PathBuf,
+    cancellation_token: Option<CancellationToken>,
+    supervised_background: Option<bool>,
+) -> ToolCallResult {
+    let mut parsed_params: SubagentParams = match serde_json::from_value(params) {
         Ok(p) => p,
         Err(e) => {
             return ToolCallResult::from(Err(ErrorData {
@@ -922,6 +973,10 @@ pub fn handle_subagent_tool(
             message: Cow::from("'parameters' can only be used with 'subworkflow'"),
             data: None,
         }));
+    }
+
+    if let Some(background) = supervised_background {
+        apply_supervised_background_default(&mut parsed_params, background);
     }
 
     // BR-71 decision 24: checked HERE, before a session, an inflight slot or a
@@ -958,6 +1013,7 @@ pub fn handle_subagent_tool(
                 parsed_params,
                 working_dir,
                 cancellation_token,
+                supervised_background.unwrap_or(false),
             )
             .boxed(),
         ),
@@ -971,6 +1027,7 @@ async fn execute_subagent(
     params: SubagentParams,
     working_dir: PathBuf,
     cancellation_token: Option<CancellationToken>,
+    force_background: bool,
 ) -> Result<rmcp::model::CallToolResult, ErrorData> {
     // Fork-bomb guard: count this spawn, refuse if too many are already in
     // flight, then throttle concurrency — and, if every concurrency slot is
@@ -999,7 +1056,7 @@ async fn execute_subagent(
 
     // BR-40: detached run — create the child session (so the handle can name it),
     // register the handle, and hand it straight back to the parent.
-    if params.background && subagent_handle::background_enabled() {
+    if should_run_in_background(&params, force_background) {
         // Issue #56: resolve the child's provider and tier BEFORE creating its
         // row. A refusal must not leave a durable `SubAgent` session behind, and
         // this path runs the whole stretch in a detached `tokio::spawn`.
@@ -1026,7 +1083,7 @@ async fn execute_subagent(
 
     // Door 1 of 2 onto the concurrency semaphore (door 2 is inside
     // `spawn_background_subagent`'s detached task). Both call the same gate.
-    let _permit = acquire_subagent_permit(max_pending).await?;
+    let _permit = acquire_subagent_permit(max_pending, cancellation_token.as_ref()).await?;
     let _inflight = inflight;
 
     // Issue #56: resolve the child's provider and tier BEFORE creating its row,
@@ -1397,34 +1454,43 @@ async fn spawn_background_subagent(
 
     let task_handle = handle.clone();
     tokio::spawn(async move {
-        // Held for the child's whole life, exactly as on the blocking path.
-        let _inflight = inflight;
-        let _visible = visible_guard;
-        // Door 2 of 2 onto the concurrency semaphore. A queue-full refusal here
-        // cannot be returned to the parent — this function already returned the
-        // handle — so it completes the handle with the refusal instead, which is
-        // what `workspace_watch` / `workspace_read_conversation` will report. The
-        // child session row already exists (it is created before the spawn so the
-        // handle can name it) and is left as a zero-turn session, exactly as it
-        // would be for any other run that never started.
-        let _permit = match acquire_subagent_permit(max_pending).await {
-            Ok(permit) => permit,
-            Err(e) => {
-                task_handle.complete(SubagentResult::from_error(e.message.to_string()));
-                return;
-            }
-        };
+        let completion_handle = task_handle.clone();
+        let outcome = std::panic::AssertUnwindSafe(async move {
+            // Held for the child's whole life, exactly as on the blocking path.
+            let _inflight = inflight;
+            let _visible = visible_guard;
+            // Door 2 of 2 onto the concurrency semaphore. A queue-full or
+            // pre-start cancellation cannot be returned to the parent because
+            // this function already returned the handle, so it becomes the
+            // handle's terminal result for watch/read callers.
+            let _permit = match acquire_subagent_permit(max_pending, Some(&cancel)).await {
+                Ok(permit) => permit,
+                Err(e) => {
+                    let mut result = SubagentResult::from_error(e.message.to_string());
+                    if cancel.is_cancelled() {
+                        result.mark_cancelled();
+                    }
+                    return result;
+                }
+            };
 
-        let result = run_complete_subagent_task(
-            config,
-            workflow,
-            task_config,
-            summary,
-            child_session_id,
-            Some(cancel),
-        )
+            run_complete_subagent_task(
+                config,
+                workflow,
+                task_config,
+                summary,
+                child_session_id,
+                Some(cancel),
+            )
+            .await
+        })
+        .catch_unwind()
         .await;
-        task_handle.complete(result);
+        let result = match outcome {
+            Ok(result) => result,
+            Err(_) => SubagentResult::from_error("the background subagent task panicked"),
+        };
+        completion_handle.complete(result);
     });
 
     let mut text = background_started_message(
@@ -2009,7 +2075,7 @@ mod tests {
         const MAX_PENDING: usize = 2;
 
         // A free permit: taken immediately, never queued, never counted.
-        let held = acquire_permit_bounded(semaphore, MAX_PENDING)
+        let held = acquire_permit_bounded(semaphore, MAX_PENDING, None)
             .await
             .expect("the first spawn finds a free slot");
         assert_eq!(
@@ -2019,9 +2085,9 @@ mod tests {
         );
 
         // Two more fill the queue to its bound and park.
-        let first = tokio::spawn(acquire_permit_bounded(semaphore, MAX_PENDING));
+        let first = tokio::spawn(acquire_permit_bounded(semaphore, MAX_PENDING, None));
         wait_until(|| pending_subagent_count() == 1, "the first spawn to queue").await;
-        let second = tokio::spawn(acquire_permit_bounded(semaphore, MAX_PENDING));
+        let second = tokio::spawn(acquire_permit_bounded(semaphore, MAX_PENDING, None));
         wait_until(
             || pending_subagent_count() == 2,
             "the queue to reach its bound",
@@ -2029,7 +2095,7 @@ mod tests {
         .await;
 
         // The third is refused rather than queued.
-        let refused = acquire_permit_bounded(semaphore, MAX_PENDING)
+        let refused = acquire_permit_bounded(semaphore, MAX_PENDING, None)
             .await
             .expect_err("a full queue refuses instead of growing");
         assert_eq!(
@@ -2068,8 +2134,40 @@ mod tests {
         wait_until(|| pending_subagent_count() == 0, "the queue to empty").await;
     }
 
-    /// **Both** spawn doors, through the real tool entry point, with every
-    /// concurrency slot taken so the queue is the only thing left to hit.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_a_queued_spawn_releases_its_pending_slot() {
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let semaphore: &'static Semaphore = Box::leak(Box::new(Semaphore::new(1)));
+        let held = semaphore.acquire().await.unwrap();
+        let cancel = CancellationToken::new();
+        let wait_cancel = cancel.clone();
+        let waiter =
+            tokio::spawn(
+                async move { acquire_permit_bounded(semaphore, 1, Some(&wait_cancel)).await },
+            );
+        wait_until(
+            || pending_subagent_count() == 1,
+            "the cancellable spawn to queue",
+        )
+        .await;
+
+        cancel.cancel();
+        let refused = waiter
+            .await
+            .unwrap()
+            .expect_err("a cancelled queued spawn must not wait for a permit");
+        assert!(refused.message.contains("cancelled before it could start"));
+        wait_until(
+            || pending_subagent_count() == 0,
+            "the cancelled spawn to release its queue slot",
+        )
+        .await;
+        drop(held);
+    }
+
+    /// **Both** internal spawn doors, with every concurrency slot taken so the
+    /// queue is the only thing left to hit. Public delegation always chooses
+    /// the supervised background door.
     ///
     /// One test rather than two because it holds every permit in the
     /// process-global semaphore, and two tests doing that would starve each
@@ -2141,12 +2239,13 @@ mod tests {
         };
 
         // --- Door 1: the blocking path in `execute_subagent`. ---
-        let blocking = handle_subagent_tool(
+        let blocking = handle_subagent_tool_inner(
             &config,
             json!({ "instructions": "refused at the blocking door", "visible": false }),
             TaskConfig::new(public_parent(), "parent-blocking", &root, vec![]),
             HashMap::new(),
             root.clone(),
+            None,
             None,
         );
         let err = crate::config::with_config_overrides(
@@ -2261,12 +2360,12 @@ mod tests {
             uses,
             vec![
                 "static SUBAGENT_SEMAPHORE: LazyLock<Semaphore> =",
-                "acquire_permit_bounded(&SUBAGENT_SEMAPHORE, max_pending).await",
+                "acquire_permit_bounded(&SUBAGENT_SEMAPHORE, max_pending, cancellation_token).await",
                 "match SUBAGENT_SEMAPHORE.try_acquire() {",
                 "assert_eq!(SUBAGENT_SEMAPHORE.available_permits(), 0);",
             ],
             "someone added a use of the concurrency semaphore outside the bounded \
-             gate. Call `acquire_subagent_permit(max_pending)` instead; a direct \
+             gate. Call `acquire_subagent_permit(max_pending, cancellation_token)` instead; a direct \
              `acquire()` queues without bound."
         );
     }
@@ -3326,7 +3425,7 @@ mod tests {
     // --- BR-40: async handle -------------------------------------------------
 
     #[test]
-    fn background_defaults_off_so_an_ordinary_call_still_blocks() {
+    fn legacy_background_input_still_defaults_off_before_supervision_is_applied() {
         let params: SubagentParams = serde_json::from_value(json!({
             "instructions": "do the thing"
         }))
@@ -3342,6 +3441,27 @@ mod tests {
         }))
         .unwrap();
         assert!(params.background);
+    }
+
+    #[test]
+    fn an_ordinary_background_request_is_not_overwritten_by_bridge_defaults() {
+        let params: SubagentParams = serde_json::from_value(json!({
+            "instructions": "long crawl",
+            "background": true
+        }))
+        .unwrap();
+        assert!(should_run_in_background(&params, true));
+    }
+
+    #[test]
+    fn every_parent_provider_forces_background_for_active_supervision() {
+        let mut params: SubagentParams = serde_json::from_value(json!({
+            "instructions": "return a summary"
+        }))
+        .unwrap();
+        apply_supervised_background_default(&mut params, true);
+        assert!(params.background);
+        assert!(should_run_in_background(&params, true));
     }
 
     #[test]

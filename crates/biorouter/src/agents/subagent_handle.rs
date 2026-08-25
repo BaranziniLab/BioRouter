@@ -95,6 +95,14 @@ pub struct BackgroundSubagent {
     /// `None` until the run finishes; then the full result envelope. Using a
     /// watch channel means `wait` is a real await, not a poll loop.
     result: watch::Sender<Option<SubagentResult>>,
+    /// Whether this handle still represents the child's latest turn. A later
+    /// turn invalidates the retained result explicitly; persisted message
+    /// counts cannot safely identify generations because the spawn-context row
+    /// can race with a very fast child completion.
+    result_is_current: std::sync::atomic::AtomicBool,
+    /// The first child turn belongs to this handle and must not invalidate it.
+    /// Any subsequent turn does.
+    initial_turn_started: std::sync::atomic::AtomicBool,
 }
 
 impl BackgroundSubagent {
@@ -116,6 +124,8 @@ impl BackgroundSubagent {
             started: Instant::now(),
             cancel,
             result,
+            result_is_current: std::sync::atomic::AtomicBool::new(true),
+            initial_turn_started: std::sync::atomic::AtomicBool::new(false),
         });
 
         let mut handles = HANDLES.lock().expect("subagent handle registry poisoned");
@@ -132,6 +142,10 @@ impl BackgroundSubagent {
     /// subagent nobody happens to be waiting on would silently lose its result.
     pub fn complete(&self, result: SubagentResult) {
         self.result.send_replace(Some(result));
+    }
+
+    pub fn result_is_current(&self) -> bool {
+        self.result_is_current.load(Ordering::Acquire)
     }
 
     pub fn is_running(&self) -> bool {
@@ -203,6 +217,26 @@ impl BackgroundSubagent {
             state,
             elapsed_seconds: self.elapsed().as_secs(),
             result,
+        }
+    }
+}
+
+/// Mark the start of a real provider turn in a child session.
+///
+/// Registration happens immediately before the background task starts its
+/// first turn, so that first call claims the handle instead of invalidating it.
+/// A later call means the user has continued or redirected the child and any
+/// retained result from the original delegated run is now historical.
+pub fn begin_child_turn(child_session_id: &str) {
+    let handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    for handle in handles
+        .iter()
+        .filter(|handle| handle.child_session_id == child_session_id)
+    {
+        let is_initial_running_turn =
+            handle.is_running() && !handle.initial_turn_started.swap(true, Ordering::AcqRel);
+        if !is_initial_running_turn {
+            handle.result_is_current.store(false, Ordering::Release);
         }
     }
 }
@@ -485,5 +519,24 @@ mod tests {
         assert!(finished.contains("wrote the report"));
         // Only the first line of the summary makes the list view.
         assert!(!finished.contains("and more detail"));
+    }
+
+    #[test]
+    fn retained_result_is_invalidated_when_a_later_child_turn_begins() {
+        let handle = new_handle("parent-generation");
+        begin_child_turn(&handle.child_session_id);
+        handle.complete(done("original run"));
+        assert!(handle.result_is_current());
+
+        begin_child_turn(&handle.child_session_id);
+        assert!(!handle.result_is_current());
+    }
+
+    #[test]
+    fn concurrent_second_child_turn_invalidates_the_running_handle() {
+        let handle = new_handle("parent-concurrent-generation");
+        begin_child_turn(&handle.child_session_id);
+        begin_child_turn(&handle.child_session_id);
+        assert!(!handle.result_is_current());
     }
 }

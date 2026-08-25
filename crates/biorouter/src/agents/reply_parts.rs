@@ -9,7 +9,9 @@ use tracing::debug;
 use super::super::agents::Agent;
 use crate::conversation::message::{Message, MessageContent, ToolRequest};
 use crate::conversation::Conversation;
-use crate::providers::base::{stream_from_single_message, MessageStream, Provider, ProviderUsage};
+use crate::providers::base::{
+    stream_from_single_message, MessageStream, Provider, ProviderSteerReceiver, ProviderUsage,
+};
 use crate::providers::errors::ProviderError;
 use crate::providers::toolshim::{
     augment_message_with_tool_calls, convert_tool_messages_to_text,
@@ -18,9 +20,10 @@ use crate::providers::toolshim::{
 
 use crate::agents::code_execution_extension::EXTENSION_NAME as CODE_EXECUTION_EXTENSION;
 use crate::agents::subagent_tool::{SUBAGENT_TOOL_NAME, SUBAGENT_TOOL_PREFIXED};
-use crate::session::session_manager::UsageLedgerEntry;
-#[cfg(test)]
 use crate::session::SessionType;
+
+const SUBAGENT_STEERING_INSTRUCTIONS: &str = "A human can send a new user message directly into this subagent while it is running. At the next safe boundary, the newest direct user message supersedes any conflicting earlier task instruction. Act on it immediately before continuing prior work; do not merely record it or finish the old task first.";
+use crate::session::session_manager::UsageLedgerEntry;
 use rmcp::model::Tool;
 
 fn coerce_value(s: &str, schema: &Value) -> Value {
@@ -190,6 +193,20 @@ impl Agent {
             .with_prompt_variant(prompt_variant)
             .build();
 
+        let is_subagent = matches!(
+            self.config
+                .session_manager
+                .get_session(session_id, false)
+                .await
+                .ok()
+                .map(|session| session.session_type),
+            Some(SessionType::SubAgent)
+        );
+        if is_subagent {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(SUBAGENT_STEERING_INSTRUCTIONS);
+        }
+
         // Handle toolshim if enabled
         let mut toolshim_tools = vec![];
         if model_config.toolshim {
@@ -212,6 +229,7 @@ impl Agent {
         messages: &[Message],
         tools: &[Tool],
         toolshim_tools: &[Tool],
+        steering: Option<ProviderSteerReceiver>,
     ) -> Result<MessageStream, ProviderError> {
         let config = provider.get_model_config();
 
@@ -257,13 +275,27 @@ impl Agent {
         let stream_open_start = std::time::Instant::now();
         let stream_result = if streaming {
             debug!(streaming, "WAITING_LLM_STREAM_OPEN");
-            let result = provider
-                .stream(
-                    system_prompt.as_str(),
-                    messages_for_provider.messages(),
-                    &tools,
-                )
-                .await;
+            let result = match steering {
+                Some(steering) => {
+                    provider
+                        .stream_with_steering(
+                            system_prompt.as_str(),
+                            messages_for_provider.messages(),
+                            &tools,
+                            steering,
+                        )
+                        .await
+                }
+                None => {
+                    provider
+                        .stream(
+                            system_prompt.as_str(),
+                            messages_for_provider.messages(),
+                            &tools,
+                        )
+                        .await
+                }
+            };
             debug!(
                 streaming,
                 open_ms = stream_open_start.elapsed().as_millis() as u64,
@@ -614,6 +646,37 @@ mod tests {
         sorted.sort();
         assert_eq!(names, sorted);
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn subagent_prompt_makes_the_latest_direct_human_message_authoritative(
+    ) -> anyhow::Result<()> {
+        let agent = crate::agents::Agent::new();
+        let session = agent
+            .config
+            .session_manager
+            .create_session(
+                std::path::PathBuf::default(),
+                format!("steerable-subagent-{}", uuid::Uuid::new_v4()),
+                SessionType::SubAgent,
+            )
+            .await?;
+        agent
+            .update_provider(
+                Arc::new(MockProvider {
+                    model_config: ModelConfig::new("test-model").unwrap(),
+                }),
+                &session.id,
+            )
+            .await?;
+
+        let (_, _, system_prompt) = agent
+            .prepare_tools_and_prompt(&session.id, std::path::Path::new("."))
+            .await?;
+
+        assert!(system_prompt.contains(SUBAGENT_STEERING_INSTRUCTIONS));
+        assert!(system_prompt.contains("supersedes any conflicting earlier task instruction"));
         Ok(())
     }
 

@@ -67,9 +67,10 @@ BioRouter reads neither. It asks each CLI what state the CLI believes it is in.
 The macOS detail matters when debugging: on a Mac there is no `~/.claude/.credentials.json` to
 inspect, so its absence says nothing about whether the user is signed in. Codex's `auth.json` is
 read for one field and no others — not touching the tokens is what makes "credentials never pass
-through BioRouter" a property of the code rather than an intention. `CODEX_HOME` is honoured for
-auth even when `--ignore-user-config` suppresses `config.toml`, so a test or a sandboxed install
-can point both at a scratch directory.
+through BioRouter" a property of the code rather than an intention. For a turn, BioRouter points
+`CODEX_HOME` at an ephemeral directory containing only a filesystem link to that `auth.json`.
+Codex therefore retains subscription authentication without loading the user's `config.toml` or
+its personal MCP servers.
 
 ## Finding the CLI without spawning anything
 

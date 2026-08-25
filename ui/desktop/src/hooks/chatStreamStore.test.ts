@@ -710,6 +710,9 @@ describe('ChatStreamRegistry', () => {
       session_id: 's1',
       text: 'actually, use R',
     });
+    expect(vi.mocked(interrupt).mock.calls[0][0].headers).toEqual({
+      'X-User-Action': 'test-key',
+    });
     // The steer is not appended locally — the agent streams it back once consumed.
     const steerAppended = controller
       .getSnapshot()
@@ -1259,9 +1262,13 @@ describe('ChatStreamRegistry', () => {
     await flush();
 
     controller.stopStreaming();
+    await flush();
 
     expect(cancelTurn).toHaveBeenCalledTimes(1);
     expect(vi.mocked(cancelTurn).mock.calls[0][0].body).toEqual({ session_id: 's1' });
+    expect(vi.mocked(cancelTurn).mock.calls[0][0].headers).toEqual({
+      'X-User-Action': 'test-key',
+    });
     expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
 
     controlled.close();

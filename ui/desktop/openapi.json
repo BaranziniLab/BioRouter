@@ -261,6 +261,9 @@
           "401": {
             "description": "Unauthorized - invalid secret key"
           },
+          "403": {
+            "description": "The request was not proven to come from the user"
+          },
           "500": {
             "description": "Internal server error"
           }
@@ -1722,6 +1725,9 @@
           "400": {
             "description": "Empty message text"
           },
+          "403": {
+            "description": "The request was not proven to come from the user"
+          },
           "409": {
             "description": "No turn is accepting interrupts for this session"
           },
@@ -1759,6 +1765,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "The named session is outside the caller's privacy reach"
           }
         }
       },

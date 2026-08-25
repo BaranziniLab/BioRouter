@@ -176,6 +176,10 @@ pub struct McpMeta {
     /// [`CallerAffiliation::Unstated`](biorouter_mcp::knowledge::affiliation::CallerAffiliation::Unstated),
     /// which is the restrictive answer for every gate that consumes it.
     pub capability_affiliation: Option<String>,
+    /// The caller received Workspace Control only as the derived delegation
+    /// surface. Read/watch/close must then stay within its direct subagent
+    /// children even when privacy tiers are disabled.
+    pub workspace_child_scope_only: bool,
 }
 
 impl McpMeta {
@@ -186,6 +190,7 @@ impl McpMeta {
             capability,
             capability_private: None,
             capability_affiliation: None,
+            workspace_child_scope_only: false,
         }
     }
 
@@ -200,6 +205,11 @@ impl McpMeta {
     /// Built-ins only — see [`McpMeta::capability_private`].
     pub fn with_capability_private(mut self, private: bool) -> Self {
         self.capability_private = Some(private);
+        self
+    }
+
+    pub fn with_workspace_child_scope_only(mut self, restricted: bool) -> Self {
+        self.workspace_child_scope_only = restricted;
         self
     }
 

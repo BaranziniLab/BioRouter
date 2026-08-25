@@ -5,7 +5,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use super::base::{
-    LeadWorkerProviderTrait, MessageStream, Provider, ProviderMetadata, ProviderUsage,
+    LeadWorkerProviderTrait, MessageStream, Provider, ProviderMetadata, ProviderSteerReceiver,
+    ProviderUsage,
 };
 use super::errors::ProviderError;
 use crate::conversation::message::{Message, MessageContent};
@@ -294,6 +295,68 @@ impl LeadWorkerProvider {
             || text_lower.starts_with("wrong")
             || text_lower.starts_with("incorrect")
     }
+
+    async fn stream_from_active(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+        steering: Option<ProviderSteerReceiver>,
+    ) -> Result<MessageStream, ProviderError> {
+        let provider = self.get_active_provider().await;
+        super::base::set_current_model(&provider.get_model_config().model_name);
+
+        let inner = match steering {
+            Some(steering) if provider.supports_live_steering() => {
+                provider
+                    .stream_with_steering(system, messages, tools, steering)
+                    .await?
+            }
+            Some(_) | None => provider.stream(system, messages, tools).await?,
+        };
+        let accounting = self.clone();
+
+        let stream = async_stream::try_stream! {
+            let mut content: Vec<MessageContent> = Vec::new();
+            let mut usage: Option<ProviderUsage> = None;
+            futures::pin_mut!(inner);
+
+            while let Some(item) = futures::StreamExt::next(&mut inner).await {
+                match item {
+                    Ok((message, item_usage, pending)) => {
+                        if let Some(message) = &message {
+                            content.extend(message.content.iter().cloned());
+                        }
+                        if let Some(item_usage) = &item_usage {
+                            usage = Some(item_usage.clone());
+                        }
+                        yield (message, item_usage, pending);
+                    }
+                    Err(e) => {
+                        accounting
+                            .handle_completion_result(&Err(ProviderError::RequestFailed(
+                                e.to_string(),
+                            )))
+                            .await;
+                        Err(e)?;
+                        return;
+                    }
+                }
+            }
+
+            let message = Message::new(
+                rmcp::model::Role::Assistant,
+                chrono::Utc::now().timestamp(),
+                content,
+            );
+            let usage = usage.unwrap_or_else(|| {
+                ProviderUsage::new(provider.get_model_config().model_name, Default::default())
+            });
+            accounting.handle_completion_result(&Ok((message, usage))).await;
+        };
+
+        Ok(Box::pin(stream))
+    }
 }
 
 impl LeadWorkerProviderTrait for LeadWorkerProvider {
@@ -428,6 +491,15 @@ impl Provider for LeadWorkerProvider {
         self.lead_provider.supports_streaming() && self.worker_provider.supports_streaming()
     }
 
+    /// Live steering is selected per turn inside [`Self::stream_from_active`].
+    /// Advertising the union lets a capable active half receive the channel;
+    /// when the selected half is not capable, its receiver is dropped and the
+    /// agent's existing acknowledgement fallback defers the steer to the next
+    /// loop boundary.
+    fn supports_live_steering(&self) -> bool {
+        self.lead_provider.supports_live_steering() || self.worker_provider.supports_live_steering()
+    }
+
     /// Stream from the active provider **and keep the rotation accounting**.
     ///
     /// ⚠ The accounting is the whole difficulty here, and omitting it silently
@@ -449,61 +521,18 @@ impl Provider for LeadWorkerProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
-        // The same provider this turn's `complete_with_model` would have used,
-        // chosen by the same rule, so the two paths cannot diverge.
-        let provider = self.get_active_provider().await;
-        super::base::set_current_model(&provider.get_model_config().model_name);
+        self.stream_from_active(system, messages, tools, None).await
+    }
 
-        let inner = provider.stream(system, messages, tools).await?;
-        let accounting = self.clone();
-
-        let stream = async_stream::try_stream! {
-            let mut content: Vec<MessageContent> = Vec::new();
-            let mut usage: Option<ProviderUsage> = None;
-            futures::pin_mut!(inner);
-
-            while let Some(item) = futures::StreamExt::next(&mut inner).await {
-                match item {
-                    Ok((message, item_usage, pending)) => {
-                        if let Some(message) = &message {
-                            content.extend(message.content.iter().cloned());
-                        }
-                        if let Some(item_usage) = &item_usage {
-                            usage = Some(item_usage.clone());
-                        }
-                        yield (message, item_usage, pending);
-                    }
-                    Err(e) => {
-                        // A technical failure. The blocking path deliberately
-                        // does not count these — they are infrastructure
-                        // problems, not evidence about the model's ability — so
-                        // neither does this one.
-                        accounting
-                            .handle_completion_result(&Err(ProviderError::RequestFailed(
-                                e.to_string(),
-                            )))
-                            .await;
-                        Err(e)?;
-                        return;
-                    }
-                }
-            }
-
-            // The turn completed. Settle it with what was actually produced, so
-            // task-failure detection sees the same evidence it would have seen
-            // on the blocking path.
-            let message = Message::new(
-                rmcp::model::Role::Assistant,
-                chrono::Utc::now().timestamp(),
-                content,
-            );
-            let usage = usage.unwrap_or_else(|| {
-                ProviderUsage::new(provider.get_model_config().model_name, Default::default())
-            });
-            accounting.handle_completion_result(&Ok((message, usage))).await;
-        };
-
-        Ok(Box::pin(stream))
+    async fn stream_with_steering(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+        steering: ProviderSteerReceiver,
+    ) -> Result<MessageStream, ProviderError> {
+        self.stream_from_active(system, messages, tools, Some(steering))
+            .await
     }
 
     fn get_model_config(&self) -> ModelConfig {
@@ -993,6 +1022,7 @@ mod tests {
     /// A provider whose streaming support is whatever the test says it is.
     struct StreamingCapability {
         streams: bool,
+        steers: bool,
         model: ModelConfig,
     }
 
@@ -1022,6 +1052,9 @@ mod tests {
         fn supports_streaming(&self) -> bool {
             self.streams
         }
+        fn supports_live_steering(&self) -> bool {
+            self.steers
+        }
         async fn stream(
             &self,
             _system: &str,
@@ -1033,11 +1066,39 @@ mod tests {
                 ProviderUsage::new("m".to_string(), Usage::default()),
             ))
         }
+        async fn stream_with_steering(
+            &self,
+            system: &str,
+            messages: &[Message],
+            tools: &[Tool],
+            mut steering: ProviderSteerReceiver,
+        ) -> Result<MessageStream, ProviderError> {
+            if !self.steers {
+                return Err(ProviderError::NotImplemented(
+                    "test provider does not support live steering".to_string(),
+                ));
+            }
+            tokio::spawn(async move {
+                if let Some(request) = steering.recv().await {
+                    request.acknowledge();
+                }
+            });
+            self.stream(system, messages, tools).await
+        }
     }
 
     fn capability(streams: bool) -> Arc<dyn Provider> {
         Arc::new(StreamingCapability {
             streams,
+            steers: streams,
+            model: ModelConfig::new("m").unwrap(),
+        })
+    }
+
+    fn streaming_capability(steers: bool) -> Arc<dyn Provider> {
+        Arc::new(StreamingCapability {
+            streams: true,
+            steers,
             model: ModelConfig::new("m").unwrap(),
         })
     }
@@ -1060,6 +1121,93 @@ mod tests {
             stream.is_ok(),
             "and stream() must reach the active provider"
         );
+    }
+
+    #[tokio::test]
+    async fn a_pair_forwards_steering_to_the_active_provider() {
+        let pair = LeadWorkerProvider::new(capability(true), capability(true), Some(1));
+        assert!(pair.supports_live_steering());
+
+        let (sender, receiver) = crate::providers::base::provider_steer_channel();
+        let stream = pair
+            .stream_with_steering("SYS", &[], &[], receiver)
+            .await
+            .expect("stream");
+        let (request, acknowledged) =
+            crate::providers::base::ProviderSteerRequest::new("change course");
+        assert!(sender.send(request).is_ok(), "active provider is listening");
+        acknowledged
+            .await
+            .expect("active provider retained the acknowledgement")
+            .expect("active provider accepted the steer");
+
+        futures::pin_mut!(stream);
+        while futures::StreamExt::next(&mut stream).await.is_some() {}
+        assert_eq!(pair.get_turn_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_mixed_pair_steers_whichever_capable_half_is_active() {
+        async fn assert_acknowledged(pair: &LeadWorkerProvider) {
+            let (sender, receiver) = crate::providers::base::provider_steer_channel();
+            let stream = pair
+                .stream_with_steering("SYS", &[], &[], receiver)
+                .await
+                .expect("stream");
+            let (request, acknowledged) =
+                crate::providers::base::ProviderSteerRequest::new("change course");
+            sender.send(request).expect("active provider is listening");
+            acknowledged
+                .await
+                .expect("active provider retained the acknowledgement")
+                .expect("active provider accepted the steer");
+            futures::pin_mut!(stream);
+            while futures::StreamExt::next(&mut stream).await.is_some() {}
+        }
+
+        let capable_lead = LeadWorkerProvider::new(
+            streaming_capability(true),
+            streaming_capability(false),
+            Some(1),
+        );
+        assert!(capable_lead.supports_live_steering());
+        assert_acknowledged(&capable_lead).await;
+
+        let capable_worker = LeadWorkerProvider::new(
+            streaming_capability(false),
+            streaming_capability(true),
+            Some(1),
+        );
+        let first = capable_worker
+            .stream("SYS", &[], &[])
+            .await
+            .expect("lead stream");
+        futures::pin_mut!(first);
+        while futures::StreamExt::next(&mut first).await.is_some() {}
+        assert_acknowledged(&capable_worker).await;
+    }
+
+    #[tokio::test]
+    async fn a_mixed_pair_drops_the_live_channel_when_the_active_half_cannot_steer() {
+        let pair = LeadWorkerProvider::new(
+            streaming_capability(false),
+            streaming_capability(true),
+            Some(1),
+        );
+        assert!(pair.supports_live_steering());
+        let (sender, receiver) = crate::providers::base::provider_steer_channel();
+        let stream = pair
+            .stream_with_steering("SYS", &[], &[], receiver)
+            .await
+            .expect("the non-steering half still streams normally");
+        let (request, _acknowledged) =
+            crate::providers::base::ProviderSteerRequest::new("defer me");
+        assert!(
+            sender.send(request).is_err(),
+            "a non-steering active half must close the channel so the agent falls back"
+        );
+        futures::pin_mut!(stream);
+        while futures::StreamExt::next(&mut stream).await.is_some() {}
     }
 
     /// **The turn must still rotate on the streaming path.**
@@ -1122,11 +1270,13 @@ mod tests {
             !lead_only.supports_streaming(),
             "a worker that cannot stream would hit NotImplemented on its turn"
         );
+        assert!(lead_only.supports_live_steering());
 
         let worker_only = LeadWorkerProvider::new(capability(false), capability(true), Some(1));
         assert!(
             !worker_only.supports_streaming(),
             "and symmetrically for a non-streaming lead"
         );
+        assert!(worker_only.supports_live_steering());
     }
 }

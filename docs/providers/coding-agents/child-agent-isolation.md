@@ -142,12 +142,15 @@ defaults, and each is pinned by a test.
 | `ephemeral` | `true` | No Codex session files. BioRouter owns the transcript, for the same reason as `--no-session-persistence` above. |
 | `baseInstructions` | BioRouter's system prompt | Replaces Codex's own preamble, which measured ~15k input tokens on a trivial prompt. |
 | `config.mcp_servers.biorouter.url` | The bridge URL, when the turn has one | The streamable-HTTP MCP form, which needs no second process. |
+| `CODEX_HOME` | Ephemeral directory containing only a link to the existing `auth.json` | Prevents the child's config merge from loading personal MCP servers without reading or copying the subscription credential. |
+| app-server flags | `--strict-config` plus explicit feature disables | Fails closed on an unsupported isolation setting and removes shell, browser, plugin, image, nested-agent, and other local model-controlled capabilities. |
 | `cwd` | The process working directory | BioRouter's own, not the session's. The `Provider` trait has no session in scope (`providers/base.rs`, `complete_with_model` takes a system prompt, messages and tools), which is the same reason the bridge URL has to travel as a task-local. |
 
-### Every approval request is refused
+### Every child-local approval request is refused
 
-`codex app-server` routes approvals back to the host as server-originated requests that block the
-turn. BioRouter answers them from a single small decision function:
+`codex app-server` routes requests back to the host as server-originated messages that block the
+turn. BioRouter accepts only the MCP elicitation used by its own gated bridge and refuses every
+child-local command, file, patch, or permission escalation in one small decision function:
 
 | Server request | Answer |
 | --- | --- |
@@ -166,27 +169,25 @@ is no.
 
 Isolation is not a sandbox, and this section is the honest statement of the boundary.
 
-- **The child runs as the user**, in BioRouter's own process working directory — **not** the
-  session's; see the `cwd` row above and the note under `--setting-sources ""` — with the user's
-  `PATH` (augmented) and `HOME`. Read-only for Codex by configuration; for Claude Code the built-ins are
-  off rather than the process being confined.
-- **⚠ On Codex, it also loads the user's own MCP servers.** This is a real gap and it is not
-  symmetric between the two providers. Claude Code is launched with `--strict-mcp-config`, which
-  makes BioRouter's bridge the *only* MCP server the child sees. Codex has no equivalent, and the
-  `config` object BioRouter sends on `thread/start` is **merged** with `~/.codex/config.toml`
-  rather than replacing it — so every MCP server the user has declared there is loaded into the
-  child as well, and its tools run outside BioRouter's inspectors, permission mode,
-  `.biorouterignore` and vault. Measured against codex 0.147.0 with a canary server in a scratch
-  `CODEX_HOME`. Since the mirror landed the gap is at least *visible*: such a call now appears in
-  the transcript as a tool card marked `child`, meaning it passed none of BioRouter's gates
-  (`crates/biorouter/src/providers/codex.rs:793-826`). Visibility is not enforcement — the call has
-  already happened by the time the card is drawn. The intended fix is to give the child a scratch `CODEX_HOME` holding only its auth
-  file; that needs a live signed-in Codex to validate, because a scratch home that loses the
-  credential breaks the provider outright. Until it lands, **treat a Codex child as having whatever
-  reach the user's own MCP configuration grants it**, and prefer Claude Code where that matters.
+- **The child process runs as the user**, in BioRouter's own process working directory — **not**
+  the session's; see the `cwd` row above and the note under `--setting-sources ""` — with an
+  augmented `PATH` and the user's `HOME`. Claude's built-ins are off. Codex combines a read-only
+  sandbox with process feature disables; read-only alone is not a
+  confidentiality boundary because it permits host reads.
+- **It does not load the user's own MCP servers.** Claude Code enforces that with
+  `--strict-mcp-config`. Codex has no equivalent flag and merges thread overrides with its config,
+  so BioRouter starts it under an ephemeral `CODEX_HOME` with no `config.toml`; the only retained
+  file is a filesystem link to the existing `auth.json`. The bridge declared on `thread/start` is
+  therefore the child's complete MCP server set. An event from any other MCP server is still shown
+  as a `child` tool card so an upstream isolation regression is visible rather than misattributed.
 - **It has network access**, because it must reach its vendor to do inference at all.
-- **It has whatever BioRouter's tools can do**, which is the intended surface, gated as described in
-  [the tool bridge](tool-bridge.md#what-still-fires-on-a-bridged-call).
+- **It has only an audited workspace-control subset and knowledge tools in the turn's bridge grant**, gated as
+  described in [the tool bridge](tool-bridge.md#what-still-fires-on-a-bridged-call). Generic and
+  custom extensions are withheld because they may read arbitrary host files, including the
+  subscription credential the child process itself needs. A delegated child's inherited extension
+  set is narrowed to the same two surfaces even if it overrides its provider. `tools/call` also
+  checks exact membership in the grant, so calling an unadvertised bare or prefixed name cannot
+  bypass the filter.
 - **It does not have BioRouter's own credentials.** `BIOROUTER_SERVER__SECRET_KEY` and the rest of
   the daemon's secrets are stripped from the child's environment, so it cannot act as the daemon
   against its REST API. The inference-diverting credentials are stripped too — see

@@ -130,6 +130,8 @@ const MUTATING_NAME_HINTS: &[&str] = &[
     "overwrite",
     "patch",
     "copy",
+    "export",
+    "import",
 ];
 
 /// Tool-name substrings that mark a tool as read-only, vetoing a mutating-hint
@@ -850,6 +852,14 @@ mod tests {
         assert!(operation_is_mutating(
             "files__delete_file",
             &args(json!({"path": "x"}))
+        ));
+        assert!(operation_is_mutating(
+            "knowledge__kb_export",
+            &args(json!({"dest_path": "x"}))
+        ));
+        assert!(operation_is_mutating(
+            "knowledge__kb_import",
+            &args(json!({"src_path": "x"}))
         ));
         assert!(!operation_is_mutating(
             "files__read_file",

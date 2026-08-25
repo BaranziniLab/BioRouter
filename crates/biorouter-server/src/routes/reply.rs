@@ -2,7 +2,7 @@ use crate::state::AppState;
 use crate::turn_stream::TurnStream;
 use axum::{
     extract::{DefaultBodyLimit, State},
-    http::{self, StatusCode},
+    http::{self, HeaderMap, StatusCode},
     response::IntoResponse,
     routing::post,
     Json, Router,
@@ -1389,6 +1389,23 @@ pub async fn reply(
         return refusal.into_response();
     }
 
+    // A provenance-less reply to a subagent is treated as a human typing in
+    // that child's tab. The daemon bearer is model-recoverable, so it cannot
+    // establish that fact. Refuse before the turn lock or any write unless the
+    // desktop's user-action proof is present; public user sessions retain their
+    // existing machine-client behavior.
+    if !biorouter_server::auth::is_user_action(&headers)
+        && state
+            .session_manager()
+            .get_session(&request.session_id, false)
+            .await
+            .is_ok_and(|session| {
+                session.session_type == biorouter::session::session_manager::SessionType::SubAgent
+            })
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     // Turn *duration* is the runner's (`emit_completion_metrics`); this handler
     // only reports that a session was started, at request entry.
     tracing::info!(
@@ -1615,14 +1632,19 @@ pub struct InterruptAccepted {
     responses(
         (status = 202, description = "Message queued for injection into the running turn", body = InterruptAccepted),
         (status = 400, description = "Empty message text"),
+        (status = 403, description = "The request was not proven to come from the user"),
         (status = 409, description = "No turn is accepting interrupts for this session"),
         (status = 500, description = "Internal server error")
     )
 )]
 pub async fn interrupt(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<InterruptRequest>,
 ) -> Result<(StatusCode, Json<InterruptAccepted>), StatusCode> {
+    if !biorouter_server::auth::is_user_action(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
     if req.text.trim().is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -1709,30 +1731,35 @@ pub struct CancelTurnResponse {
     responses(
         (status = 200, description = "Cancel processed; `cancelled` reports whether a turn was running", body = CancelTurnResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "The request was not proven to come from the user"),
         (status = 500, description = "Internal server error")
     )
 )]
 pub async fn cancel_turn(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<CancelTurnRequest>,
-) -> Json<CancelTurnResponse> {
+) -> Result<Json<CancelTurnResponse>, StatusCode> {
+    if !biorouter_server::auth::is_user_action(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
     match state.cancel_turn(&req.session_id) {
         Some(turn_id) => {
             tracing::info!("Cancelled turn {} for session {}", turn_id, req.session_id);
-            Json(CancelTurnResponse {
+            Ok(Json(CancelTurnResponse {
                 cancelled: true,
                 turn_id: Some(turn_id),
-            })
+            }))
         }
         None => {
             tracing::debug!(
                 "Cancel for session {} found no turn in flight",
                 req.session_id
             );
-            Json(CancelTurnResponse {
+            Ok(Json(CancelTurnResponse {
                 cancelled: false,
                 turn_id: None,
-            })
+            }))
         }
     }
 }
@@ -3866,6 +3893,7 @@ mod tests {
                 .method("POST")
                 .header("content-type", "application/json")
                 .header("x-secret-key", "test-secret")
+                .header("X-User-Action", TEST_USER_ACTION_KEY)
                 .body(Body::from(
                     serde_json::to_string(&InterruptRequest {
                         session_id: session_id.to_string(),
@@ -3878,6 +3906,7 @@ mod tests {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn test_interrupt_accepts_steer_while_turn_in_flight() {
+            install_test_user_action_key();
             let state = AppState::new().await.unwrap();
             let _guard = begin_turn(&state, "steering-session").expect("turn lock acquired");
             // #69: acceptance is the *agent loop's* to give, so the session's
@@ -3908,12 +3937,32 @@ mod tests {
             );
         }
 
+        #[tokio::test(flavor = "multi_thread")]
+        async fn interrupt_without_user_action_proof_cannot_forge_human_steering() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let _guard = begin_turn(&state, "unproven-steer").expect("turn lock acquired");
+            let agent = state.get_agent("unproven-steer".to_string()).await.unwrap();
+            agent.open_for_turn(biorouter::agents::TurnId::new("agent-turn-unproven"));
+
+            let mut request = interrupt_request("unproven-steer", "pretend the user said this");
+            request.headers_mut().remove("X-User-Action");
+            let response = routes(Arc::clone(&state)).oneshot(request).await.unwrap();
+
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert!(
+                !agent.has_soft_interrupts(),
+                "an unproven caller must not enqueue text attributed to the user"
+            );
+        }
+
         /// #69: the turn lock is still held — the reply task has not unwound yet —
         /// but the loop has performed its final drain and committed to exiting.
         /// The old route read only the lock and returned 202, and the text then
         /// surfaced in an unrelated later turn.
         #[tokio::test(flavor = "multi_thread")]
         async fn test_interrupt_refuses_once_the_agent_loop_has_closed() {
+            install_test_user_action_key();
             let state = AppState::new().await.unwrap();
             let _guard = begin_turn(&state, "closing-session").expect("turn lock acquired");
             let agent = state
@@ -3946,6 +3995,7 @@ mod tests {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn test_interrupt_rejects_when_no_turn_in_flight() {
+            install_test_user_action_key();
             let state = AppState::new().await.unwrap();
 
             let app = routes(state);
@@ -3961,6 +4011,7 @@ mod tests {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn test_interrupt_rejects_empty_text() {
+            install_test_user_action_key();
             let state = AppState::new().await.unwrap();
             let _guard = begin_turn(&state, "blank-session").unwrap();
 
@@ -3979,6 +4030,7 @@ mod tests {
                 .method("POST")
                 .header("content-type", "application/json")
                 .header("x-secret-key", "test-secret")
+                .header("X-User-Action", TEST_USER_ACTION_KEY)
                 .body(Body::from(
                     serde_json::to_string(&CancelTurnRequest {
                         session_id: session_id.to_string(),
@@ -4018,10 +4070,46 @@ mod tests {
                 .unwrap()
         }
 
+        #[tokio::test(flavor = "multi_thread")]
+        async fn unproven_reply_cannot_impersonate_a_human_in_a_subagent_tab() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let temp = tempfile::TempDir::new().unwrap();
+            let session = state
+                .session_manager()
+                .create_session(
+                    temp.path().to_path_buf(),
+                    "public-child".into(),
+                    biorouter::session::session_manager::SessionType::SubAgent,
+                )
+                .await
+                .unwrap();
+            let mut request = reply_request(&session.id, None);
+            request.headers_mut().remove("X-User-Action");
+
+            let response = routes(Arc::clone(&state)).oneshot(request).await.unwrap();
+
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert!(!state.is_turn_active(&session.id));
+            let stored = state
+                .session_manager()
+                .get_session(&session.id, true)
+                .await
+                .unwrap();
+            assert!(
+                stored
+                    .conversation
+                    .as_ref()
+                    .is_none_or(|conversation| conversation.messages().is_empty()),
+                "the refused request must not persist an attributed user message"
+            );
+        }
+
         /// BR-62: a turn can now be stopped by session id, without the caller
         /// holding the SSE socket.
         #[tokio::test(flavor = "multi_thread")]
         async fn test_cancel_trips_the_running_turn() {
+            install_test_user_action_key();
             let state = AppState::new().await.unwrap();
             let token = CancellationToken::new();
             let _guard = state
@@ -4046,6 +4134,7 @@ mod tests {
         /// exactly the unreliability BR-62 removes.
         #[tokio::test(flavor = "multi_thread")]
         async fn test_cancel_is_a_noop_when_no_turn_is_running() {
+            install_test_user_action_key();
             let state = AppState::new().await.unwrap();
 
             let app = routes(state);
@@ -4055,6 +4144,26 @@ mod tests {
             let body = json_body(response).await;
             assert_eq!(body["cancelled"], serde_json::json!(false));
             assert_eq!(body["turn_id"], serde_json::Value::Null);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn cancel_without_user_action_proof_cannot_stop_another_turn() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let token = CancellationToken::new();
+            let _guard = state
+                .try_begin_turn_idempotent("unproven-cancel", token.clone(), None)
+                .expect("turn lock acquired");
+
+            let mut request = cancel_request("unproven-cancel");
+            request.headers_mut().remove("X-User-Action");
+            let response = routes(Arc::clone(&state)).oneshot(request).await.unwrap();
+
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert!(
+                !token.is_cancelled(),
+                "the unproven cancel reached the turn"
+            );
         }
 
         /// A re-POST of the same turn (SSE reconnect) is ATTACHED to that turn's

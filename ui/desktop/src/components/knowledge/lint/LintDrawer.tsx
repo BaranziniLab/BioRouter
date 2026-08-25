@@ -109,15 +109,21 @@ export function LintDrawer({ open, onOpenChange }: Props) {
   const stream = useIngestStream();
   const { start, reset } = stream;
 
+  const dispatchKbId = primaryKb?.id ?? null;
+  const primaryKbUnavailable = Boolean(primaryKbId) && !dispatchKbId;
+
   const model = useMemo(
-    () => resolveIngestModel(primaryKb?.default_model, currentProvider, currentModel),
-    [primaryKb?.default_model, currentProvider, currentModel]
+    () =>
+      dispatchKbId
+        ? resolveIngestModel(primaryKb?.default_model, currentProvider, currentModel)
+        : null,
+    [dispatchKbId, primaryKb?.default_model, currentProvider, currentModel]
   );
 
   const run = useCallback(() => {
-    if (!primaryKbId || !model) return;
-    void start(`/knowledge/bases/${primaryKbId}/lint`, { model });
-  }, [primaryKbId, model, start]);
+    if (!dispatchKbId || !model) return;
+    void start(`/knowledge/bases/${dispatchKbId}/lint`, { model });
+  }, [dispatchKbId, model, start]);
 
   /**
    * Opening the drawer IS the request — the user picked "Check for problems",
@@ -132,22 +138,22 @@ export function LintDrawer({ open, onOpenChange }: Props) {
   const startedFor = useRef<string | null>(null);
   useEffect(() => {
     if (!open) return;
-    if (!primaryKbId || !model) return;
-    if (startedFor.current === primaryKbId) return;
-    startedFor.current = primaryKbId;
+    if (!dispatchKbId || !model) return;
+    if (startedFor.current === dispatchKbId) return;
+    startedFor.current = dispatchKbId;
     reset();
     run();
-  }, [open, primaryKbId, model, run, reset]);
+  }, [open, dispatchKbId, model, run, reset]);
 
   useEffect(() => {
-    if (startedFor.current && startedFor.current !== primaryKbId) {
+    if (startedFor.current && startedFor.current !== dispatchKbId) {
       startedFor.current = null;
       reset();
     }
-  }, [primaryKbId, reset]);
+  }, [dispatchKbId, reset]);
 
   const result = stream.finalResult as LintResult | null;
-  const report = stream.status === 'done' ? (result?.report ?? null) : null;
+  const report = dispatchKbId && stream.status === 'done' ? (result?.report ?? null) : null;
   // Memoised, not `?? []` inline: a fresh literal every render would make the
   // grouping below re-run on every commit — and `report` is already a stable
   // reference for as long as the stream's terminal frame is.
@@ -179,7 +185,9 @@ export function LintDrawer({ open, onOpenChange }: Props) {
     [report]
   );
 
-  const running = stream.status === 'starting' || stream.status === 'streaming';
+  const running =
+    Boolean(dispatchKbId && model) &&
+    (stream.status === 'starting' || stream.status === 'streaming');
   const clean = report != null && total === 0 && lists.length === 0;
 
   return (
@@ -207,7 +215,7 @@ export function LintDrawer({ open, onOpenChange }: Props) {
             size="sm"
             className="mr-6 flex-none"
             data-testid="knowledge-lint-run"
-            disabled={running || !primaryKbId || !model}
+            disabled={running || !dispatchKbId || !model}
             onClick={run}
           >
             {running ? 'Checking…' : report ? 'Check again' : 'Check'}
@@ -260,14 +268,21 @@ export function LintDrawer({ open, onOpenChange }: Props) {
               are gone: the resolver no longer refuses by name, and a macro turn
               carries its tools over the MCP bridge. `null` here means what it
               says again. */}
-          {!model && (
+          {primaryKbUnavailable ? (
+            <EmptyState
+              compact
+              icon={AlertCircle}
+              title="Knowledge base unavailable"
+              description="Wait for this knowledge base to finish loading, or refresh your knowledge bases and try again."
+            />
+          ) : !model ? (
             <EmptyState
               compact
               icon={AlertCircle}
               title="No model is configured"
               description="A check reads the base with a model. Choose one in the Sources rail and try again."
             />
-          )}
+          ) : null}
 
           {model && running && (
             <div

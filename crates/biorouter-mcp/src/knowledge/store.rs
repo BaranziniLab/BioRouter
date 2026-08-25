@@ -38,6 +38,7 @@ pub fn list_pages(kb_root: &Path, prefix: Option<&str>) -> Result<Vec<PageRef>> 
     if !knowledge_dir.exists() {
         return Ok(Vec::new());
     }
+    let knowledge_dir = ensure_existing_path_confined(kb_root, &knowledge_dir)?;
     let mut out = Vec::new();
     walk_md(&knowledge_dir, &knowledge_dir, prefix, &mut out)?;
     out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -47,17 +48,23 @@ pub fn list_pages(kb_root: &Path, prefix: Option<&str>) -> Result<Vec<PageRef>> 
 fn walk_md(base: &Path, dir: &Path, prefix: Option<&str>, out: &mut Vec<PageRef>) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
         let p = entry.path();
-        if p.is_dir() {
-            walk_md(base, &p, prefix, out)?;
-        } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
+        if file_type.is_dir() {
+            let directory = ensure_existing_path_confined(base, &p)?;
+            walk_md(base, &directory, prefix, out)?;
+        } else if file_type.is_file() && p.extension().and_then(|e| e.to_str()) == Some("md") {
             let logical = logical_path("knowledge", p.strip_prefix(base).unwrap());
             if let Some(pre) = prefix {
                 if !logical.starts_with(pre) {
                     continue;
                 }
             }
-            let body = std::fs::read_to_string(&p)?;
+            let readable = ensure_existing_path_confined(base, &p)?;
+            let body = std::fs::read_to_string(readable)?;
             let (fm, _) = split_frontmatter(&body);
             let title = fm
                 .get("title")
@@ -130,7 +137,17 @@ pub(crate) fn resolve_readable_path(kb_root: &Path, logical: &str) -> Result<std
     if logical.contains("..") {
         anyhow::bail!("path traversal not allowed");
     }
-    Ok(kb_root.join(logical))
+    let path = kb_root.join(logical);
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => ensure_existing_path_confined(kb_root, &path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ensure_writable_path_confined(kb_root, &path)?;
+            Ok(path)
+        }
+        Err(error) => {
+            Err(error).with_context(|| format!("reading metadata for {}", path.display()))
+        }
+    }
 }
 
 /// The write-path contract: `knowledge/` pages plus the top-level `index.md`,
@@ -160,7 +177,53 @@ fn resolve_writable_path(kb_root: &Path, logical: &str) -> Result<std::path::Pat
     if logical.contains("..") {
         anyhow::bail!("path traversal not allowed");
     }
-    Ok(kb_root.join(logical))
+    let path = kb_root.join(logical);
+    ensure_writable_path_confined(kb_root, &path)?;
+    Ok(path)
+}
+
+fn ensure_existing_path_confined(kb_root: &Path, path: &Path) -> Result<PathBuf> {
+    let root = std::fs::canonicalize(kb_root)
+        .with_context(|| format!("canonicalizing knowledge base {}", kb_root.display()))?;
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("reading metadata for {}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!("knowledge paths may not be symbolic links");
+    }
+    let resolved = std::fs::canonicalize(path)
+        .with_context(|| format!("canonicalizing knowledge path {}", path.display()))?;
+    if !resolved.starts_with(&root) {
+        anyhow::bail!("knowledge path resolves outside its knowledge base");
+    }
+    Ok(resolved)
+}
+
+pub(crate) fn ensure_writable_path_confined(kb_root: &Path, path: &Path) -> Result<()> {
+    let root = std::fs::canonicalize(kb_root)
+        .with_context(|| format!("canonicalizing knowledge base {}", kb_root.display()))?;
+    let relative = path
+        .strip_prefix(kb_root)
+        .map_err(|_| anyhow::anyhow!("knowledge path is outside its knowledge base"))?;
+    let mut current = kb_root.to_path_buf();
+    for component in relative.components() {
+        current.push(component);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    anyhow::bail!("knowledge paths may not contain symbolic links");
+                }
+                let resolved = std::fs::canonicalize(&current).with_context(|| {
+                    format!("canonicalizing knowledge path {}", current.display())
+                })?;
+                if !resolved.starts_with(&root) {
+                    anyhow::bail!("knowledge path resolves outside its knowledge base");
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 pub fn split_frontmatter(s: &str) -> (serde_yaml::Value, String) {
@@ -327,20 +390,27 @@ fn list_doc_files(kb_root: &Path, scope: SearchScope) -> Result<Vec<(String, Pat
     if matches!(scope, SearchScope::Knowledge | SearchScope::All) {
         let knowledge_dir = kb_root.join("knowledge");
         if knowledge_dir.exists() {
+            let knowledge_dir = ensure_existing_path_confined(kb_root, &knowledge_dir)?;
             list_md_files_under(&knowledge_dir, &knowledge_dir, "knowledge", &mut out)?;
         }
     }
     if matches!(scope, SearchScope::RawSources | SearchScope::All) {
         let raw_dir = kb_root.join("raw");
         if raw_dir.exists() {
+            let raw_dir = ensure_existing_path_confined(kb_root, &raw_dir)?;
             for entry in std::fs::read_dir(&raw_dir)? {
                 let entry = entry?;
-                if !entry.path().is_dir() {
+                let file_type = entry.file_type()?;
+                if file_type.is_symlink() || !file_type.is_dir() {
                     continue;
                 }
                 let id = entry.file_name().to_string_lossy().to_string();
                 let source_md = entry.path().join("source.md");
-                if source_md.exists() {
+                if source_md
+                    .symlink_metadata()
+                    .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+                {
+                    let source_md = ensure_existing_path_confined(&raw_dir, &source_md)?;
                     out.push((format!("raw/{id}/source.md"), source_md));
                 }
             }
@@ -358,12 +428,18 @@ fn list_md_files_under(
 ) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
         let p = entry.path();
-        if p.is_dir() {
-            list_md_files_under(base, &p, prefix, out)?;
-        } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
+        if file_type.is_dir() {
+            let directory = ensure_existing_path_confined(base, &p)?;
+            list_md_files_under(base, &directory, prefix, out)?;
+        } else if file_type.is_file() && p.extension().and_then(|e| e.to_str()) == Some("md") {
             let logical = logical_path(prefix, p.strip_prefix(base).unwrap());
-            out.push((logical, p));
+            let readable = ensure_existing_path_confined(base, &p)?;
+            out.push((logical, readable));
         }
     }
     Ok(())
@@ -554,6 +630,60 @@ mod tests {
         assert!(!is_writable_page_path("raw/x/source.md"));
         assert!(!is_writable_page_path("notes.md"));
         assert!(!is_writable_page_path(""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn page_reads_indexes_and_writes_cannot_escape_through_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let (_dir, kb) = fresh();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("auth.json");
+        std::fs::write(&secret, "subscription-secret-marker").unwrap();
+        symlink(&secret, kb.join("knowledge/leak.md")).unwrap();
+
+        let read = read_page(&kb, "knowledge/leak.md").unwrap_err();
+        assert!(
+            read.to_string().contains("symbolic link")
+                || read.to_string().contains("outside its knowledge base"),
+            "unexpected refusal: {read:#}"
+        );
+        assert!(
+            list_pages(&kb, None)
+                .unwrap()
+                .iter()
+                .all(|page| page.path != "knowledge/leak.md"),
+            "symlinked pages must not enter the catalog"
+        );
+        assert!(
+            search(&kb, "subscription-secret-marker", 5)
+                .unwrap()
+                .is_empty(),
+            "symlinked content must not enter the search index"
+        );
+
+        let outside_dir = outside.path().join("redirected");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        symlink(&outside_dir, kb.join("knowledge/redirected")).unwrap();
+        let write = write_page(
+            &kb,
+            "knowledge/redirected/new.md",
+            "must stay inside",
+            "symlink escape",
+            None,
+        )
+        .unwrap_err();
+        assert!(write.to_string().contains("symbolic link"), "{write:#}");
+        assert!(!outside_dir.join("new.md").exists());
+    }
+
+    #[test]
+    fn a_missing_read_path_is_confined_and_left_for_the_caller_to_classify() {
+        let (_dir, kb) = fresh();
+        let path = resolve_readable_path(&kb, "knowledge/notes/missing.md").unwrap();
+        assert_eq!(path, kb.join("knowledge/notes/missing.md"));
+        assert!(!path.exists());
     }
 
     #[test]

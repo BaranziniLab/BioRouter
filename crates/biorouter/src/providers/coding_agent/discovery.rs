@@ -410,9 +410,9 @@ async fn probe_codex_auth(exe: &Path) -> AuthState {
     }
 }
 
-/// `$CODEX_HOME`, else `~/.codex`. Codex honours the override for auth even when
-/// `--ignore-user-config` suppresses `config.toml`, so a test or a sandboxed
-/// install can point both at a scratch directory.
+/// `$CODEX_HOME`, else `~/.codex`. Turn execution links this home's `auth.json`
+/// into an ephemeral config home so Codex keeps subscription authentication
+/// without loading the user's `config.toml`.
 pub fn codex_home() -> PathBuf {
     std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)

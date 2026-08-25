@@ -6,10 +6,10 @@ use crate::knowledge::{
     convert::SourceInput,
     git::{GitRepo, Txn},
     manifest, paths,
-    service::KnowledgeService,
+    service::{KnowledgeService, RawSourceRefreshFailure},
     subagent::{
         events::{DoneReason, SubAgentEvent},
-        kb_tools::{tool_specs, KbToolDispatch},
+        kb_tools::{tool_specs, KbToolAccess, KbToolDispatch},
         loop_::{Completer, SubAgent, SubAgentBounds, SubAgentResult},
         procedures::{ingest_procedure, system_prompt},
     },
@@ -51,6 +51,11 @@ pub struct IngestArgs {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IngestResult {
     pub source_id: String,
+    /// The commit that retained the raw source before curation began. `None`
+    /// means the source was already present and deduplication made no commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_commit_sha: Option<String>,
+    /// The transaction commit containing the curated knowledge pages.
     pub commit_sha: String,
     pub steps: usize,
     pub events: Vec<SubAgentEvent>,
@@ -60,6 +65,105 @@ pub struct IngestResult {
     /// still deserializes; its default is "the check did not run", not "clean".
     #[serde(default)]
     pub verification: Verification,
+}
+
+/// A curation failure that happened after the raw source became durable.
+///
+/// Keeping this typed lets callers report the retained source and its commit
+/// instead of turning a failed curation into the false claim that the base did
+/// not change.
+#[derive(Debug)]
+pub struct IngestCurationFailure {
+    pub source_id: String,
+    pub raw_commit_sha: Option<String>,
+    pub curation_commit_sha: Option<String>,
+    pub phase: IngestFailurePhase,
+    cause: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IngestFailurePhase {
+    NotStarted,
+    RolledBack,
+    OutcomeUncertain,
+    Committed,
+}
+
+impl std::fmt::Display for IngestCurationFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let cause = self.cause.trim_end_matches('.');
+        write!(f, "{cause}. ")?;
+        match self.phase {
+            IngestFailurePhase::NotStarted => f.write_str("Curation did not start")?,
+            IngestFailurePhase::RolledBack => f.write_str("Curation rolled back")?,
+            IngestFailurePhase::OutcomeUncertain => f.write_str(
+                "Curation did not complete and its commit or rollback could not be verified",
+            )?,
+            IngestFailurePhase::Committed => {
+                f.write_str("Curation committed")?;
+                if let Some(sha) = &self.curation_commit_sha {
+                    write!(f, " in commit {sha}")?;
+                }
+                f.write_str(", but post-commit refresh failed")?;
+            }
+        }
+        write!(f, "; raw source {} was retained", self.source_id)?;
+        if let Some(sha) = &self.raw_commit_sha {
+            write!(f, " in commit {sha}")?;
+        }
+        if matches!(
+            self.phase,
+            IngestFailurePhase::OutcomeUncertain | IngestFailurePhase::Committed
+        ) {
+            f.write_str(". Refresh the knowledge base and history before retrying")?;
+        }
+        f.write_str(".")
+    }
+}
+
+impl std::error::Error for IngestCurationFailure {}
+
+fn retained_raw_failure(
+    source_id: &str,
+    raw_commit_sha: Option<&str>,
+    phase: IngestFailurePhase,
+    curation_commit_sha: Option<&str>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    IngestCurationFailure {
+        source_id: source_id.to_string(),
+        raw_commit_sha: raw_commit_sha.map(str::to_string),
+        curation_commit_sha: curation_commit_sha.map(str::to_string),
+        phase,
+        cause: format!("{error:#}"),
+    }
+    .into()
+}
+
+fn aborted_curation_failure(
+    repo: &GitRepo,
+    txn: &Txn,
+    source_id: &str,
+    raw_commit_sha: Option<&str>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    match repo.abort_txn(txn) {
+        Ok(()) => retained_raw_failure(
+            source_id,
+            raw_commit_sha,
+            IngestFailurePhase::RolledBack,
+            None,
+            error,
+        ),
+        Err(abort_error) => retained_raw_failure(
+            source_id,
+            raw_commit_sha,
+            IngestFailurePhase::OutcomeUncertain,
+            None,
+            anyhow::anyhow!("{error:#}; rollback also failed: {abort_error:#}"),
+        ),
+    }
 }
 
 /// The tail check: what the run left behind, measured after it committed.
@@ -169,14 +273,46 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
 
     // Materialize the raw source outside the sub-agent txn so it is durable
     // even if the sub-agent fails.
-    let raw = svc
-        .add_raw_source(&args.kb_id, args.source, None)
-        .await
-        .context("add_raw_source")?;
+    let raw = match svc.add_raw_source(&args.kb_id, args.source, None).await {
+        Ok(raw) => raw,
+        Err(error) => {
+            let retained = error
+                .downcast_ref::<RawSourceRefreshFailure>()
+                .map(|failure| failure.written.clone());
+            if let Some(written) = retained {
+                return Err(retained_raw_failure(
+                    &written.source_id,
+                    written.commit_sha.as_deref(),
+                    IngestFailurePhase::NotStarted,
+                    None,
+                    error.context("add_raw_source"),
+                ));
+            }
+            return Err(error.context("add_raw_source"));
+        }
+    };
 
     // Open a transaction branch for the wiki-integration work.
-    let repo = GitRepo::open(&kb_root)?;
-    let txn = repo.begin_txn(&format!("ingest-{}", raw.source_id))?;
+    let repo = GitRepo::open(&kb_root).map_err(|e| {
+        retained_raw_failure(
+            &raw.source_id,
+            raw.commit_sha.as_deref(),
+            IngestFailurePhase::NotStarted,
+            None,
+            e,
+        )
+    })?;
+    let txn = repo
+        .begin_txn(&format!("ingest-{}", raw.source_id))
+        .map_err(|e| {
+            retained_raw_failure(
+                &raw.source_id,
+                raw.commit_sha.as_deref(),
+                IngestFailurePhase::NotStarted,
+                None,
+                e,
+            )
+        })?;
 
     // `Manifest::profile`, never `Manifest::format` — the field reads `Okf` on
     // every base written before Stage 3, so a legacy base would be taught OKF's
@@ -195,8 +331,13 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
     let (source_node, baseline_knowledge, schema) = match setup {
         Ok(setup) => setup,
         Err(e) => {
-            let _ = repo.abort_txn(&txn);
-            return Err(e);
+            return Err(aborted_curation_failure(
+                &repo,
+                &txn,
+                &raw.source_id,
+                raw.commit_sha.as_deref(),
+                e,
+            ));
         }
     };
     let system = system_prompt(&schema, ingest_procedure(format));
@@ -205,6 +346,7 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
         svc: svc.clone(),
         kb_id: args.kb_id.clone(),
         txn_branch: txn.branch.clone(),
+        access: KbToolAccess::ReadWrite,
     };
     let agent = SubAgent {
         completer: args.completer,
@@ -228,6 +370,7 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
         kb_id: &args.kb_id,
         kb_root: &kb_root,
         source_id: &raw.source_id,
+        raw_commit_sha: raw.commit_sha.as_deref(),
         baseline_knowledge,
     };
     settle_ingest(svc, &repo, &txn, run, agent_result)
@@ -239,6 +382,7 @@ struct IngestRun<'a> {
     kb_id: &'a str,
     kb_root: &'a std::path::Path,
     source_id: &'a str,
+    raw_commit_sha: Option<&'a str>,
     /// The `knowledge/` tree as the sub-agent FOUND it — see [`ingest_setup`].
     baseline_knowledge: Option<String>,
 }
@@ -281,23 +425,53 @@ fn settle_ingest(
             let wrote_knowledge = match repo.txn_knowledge_tree_id(txn) {
                 Ok(after) => after != run.baseline_knowledge,
                 Err(e) => {
-                    let _ = repo.abort_txn(txn);
-                    return Err(e.context("checking whether the ingest wrote anything"));
+                    return Err(aborted_curation_failure(
+                        repo,
+                        txn,
+                        run.source_id,
+                        run.raw_commit_sha,
+                        e.context("checking whether the ingest wrote anything"),
+                    ));
                 }
             };
             if !wrote_knowledge {
-                let _ = repo.abort_txn(txn);
-                anyhow::bail!(no_pages_written_error(run.source_id, &r));
+                return Err(aborted_curation_failure(
+                    repo,
+                    txn,
+                    run.source_id,
+                    run.raw_commit_sha,
+                    anyhow::anyhow!(no_pages_written_error(run.source_id, &r)),
+                ));
             }
-            let sha = repo.commit_txn(
+            let sha = match repo.commit_txn(
                 txn,
                 ChangeKind::Ingest,
                 &format!("ingest {}", run.source_id),
                 Some(&format!("+1 source · {} steps", r.steps_used)),
-            )?;
-            svc.rebuild_graph_cache(run.kb_id)?;
+            ) {
+                Ok(sha) => sha,
+                Err(e) => {
+                    return Err(retained_raw_failure(
+                        run.source_id,
+                        run.raw_commit_sha,
+                        IngestFailurePhase::OutcomeUncertain,
+                        None,
+                        e.context("committing curated knowledge pages"),
+                    ));
+                }
+            };
+            if let Err(e) = svc.rebuild_graph_cache(run.kb_id) {
+                return Err(retained_raw_failure(
+                    run.source_id,
+                    run.raw_commit_sha,
+                    IngestFailurePhase::Committed,
+                    Some(&sha),
+                    e.context("rebuilding the graph cache after curation committed"),
+                ));
+            }
             Ok(IngestResult {
                 source_id: run.source_id.to_string(),
+                raw_commit_sha: run.raw_commit_sha.map(str::to_string),
                 commit_sha: sha,
                 steps: r.steps_used,
                 events: r.events,
@@ -309,18 +483,24 @@ fn settle_ingest(
                 verification: verify(run.kb_root),
             })
         }
-        Ok(r) => {
-            let _ = repo.abort_txn(txn);
-            anyhow::bail!(
+        Ok(r) => Err(aborted_curation_failure(
+            repo,
+            txn,
+            run.source_id,
+            run.raw_commit_sha,
+            anyhow::anyhow!(
                 "ingest sub-agent aborted: reason={:?}, final={}",
                 r.reason,
                 r.final_text
-            )
-        }
-        Err(e) => {
-            let _ = repo.abort_txn(txn);
-            Err(e)
-        }
+            ),
+        )),
+        Err(e) => Err(aborted_curation_failure(
+            repo,
+            txn,
+            run.source_id,
+            run.raw_commit_sha,
+            e,
+        )),
     }
 }
 
@@ -352,7 +532,8 @@ fn ingest_setup(
     // check against main would answer yes for a run that did nothing (issue
     // #71). The baseline is the tree as the sub-agent finds it.
     let baseline_knowledge = repo.txn_knowledge_tree_id(txn)?;
-    let schema = std::fs::read_to_string(kb_root.join("schema.md")).context("read schema.md")?;
+    let schema_path = crate::knowledge::store::resolve_readable_path(kb_root, "schema.md")?;
+    let schema = std::fs::read_to_string(schema_path).context("read schema.md")?;
     Ok((source_node, baseline_knowledge, schema))
 }
 
@@ -623,7 +804,7 @@ fn narrated_its_tool_calls(final_text: &str) -> bool {
 fn no_pages_written_error(source_id: &str, result: &SubAgentResult) -> String {
     let mut msg = format!(
         "ingest wrote no knowledge pages for source {source_id} \
-         ({} step(s), ended: {:?}). Nothing was added to the knowledge base",
+         ({} step(s), ended: {:?})",
         result.steps_used, result.reason
     );
 
@@ -801,7 +982,18 @@ mod tests {
 
         // 1 iteration of tool-call + 1 step with text reply = steps_used 1
         assert_eq!(result.steps, 1);
+        assert!(
+            result
+                .raw_commit_sha
+                .as_deref()
+                .is_some_and(|sha| !sha.is_empty()),
+            "a new raw source reports the commit that retained it"
+        );
         assert!(!result.commit_sha.is_empty());
+        assert_ne!(
+            result.raw_commit_sha.as_deref(),
+            Some(result.commit_sha.as_str())
+        );
 
         // The ingest commit must appear as the latest history entry.
         let log = svc.list_history("k", 10).unwrap();
@@ -815,6 +1007,205 @@ mod tests {
             kb.join("knowledge/sources/stub.md").exists(),
             "source page must exist after commit"
         );
+    }
+
+    /// A graph-cache write happens after the curation commit. If that derived
+    /// refresh fails, retrying the digest would duplicate work that is already
+    /// durable, so the failure must carry the curation commit and must never
+    /// claim rollback.
+    #[tokio::test]
+    async fn a_post_commit_refresh_failure_reports_the_curation_commit() {
+        let (_dir, svc) = fresh_svc();
+        let raw = svc
+            .add_raw_source(
+                "k",
+                SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let kb = paths::kb_root(svc.root(), "k");
+        let repo = GitRepo::open(&kb).unwrap();
+        let txn = repo.begin_txn("post-commit-refresh").unwrap();
+        let baseline_knowledge = repo.txn_knowledge_tree_id(&txn).unwrap();
+        let page = kb.join("knowledge/sources/stub.md");
+        std::fs::create_dir_all(page.parent().unwrap()).unwrap();
+        std::fs::write(&page, valid_page("source", "stub", "Stub.")).unwrap();
+        repo.commit_on_txn(&txn, "write curated page").unwrap();
+
+        // `write_cache` writes this temporary path first. A directory at that
+        // exact path makes the post-commit refresh fail without preventing the
+        // curation commit itself.
+        std::fs::create_dir(kb.join(".biorouter-knowledge/graph-cache.json.tmp")).unwrap();
+
+        let err = settle_ingest(
+            &svc,
+            &repo,
+            &txn,
+            IngestRun {
+                kb_id: "k",
+                kb_root: &kb,
+                source_id: &raw.source_id,
+                raw_commit_sha: raw.commit_sha.as_deref(),
+                baseline_knowledge,
+            },
+            Ok(SubAgentResult {
+                steps_used: 1,
+                reason: DoneReason::NoMoreToolCalls,
+                final_text: "done".into(),
+                events: vec![],
+            }),
+        )
+        .expect_err("the failed post-commit refresh must be reported");
+
+        let failure = err
+            .downcast_ref::<IngestCurationFailure>()
+            .expect("the phase and durable commits remain machine-readable");
+        assert_eq!(failure.phase, IngestFailurePhase::Committed);
+        let curation_commit = failure
+            .curation_commit_sha
+            .as_deref()
+            .expect("a post-commit failure reports the curation commit");
+        assert!(
+            svc.list_history("k", 10)
+                .unwrap()
+                .iter()
+                .any(|entry| entry.commit_sha == curation_commit),
+            "the reported curation commit must be reachable from history"
+        );
+        let message = err.to_string();
+        assert!(message.contains("Curation committed"), "{message}");
+        assert!(
+            message.contains("Refresh the knowledge base and history"),
+            "{message}"
+        );
+        assert!(!message.contains("Curation rolled back"), "{message}");
+    }
+
+    /// Rollback is a fallible operation. If it cannot be verified, the error
+    /// must preserve that uncertainty instead of promising a rollback that may
+    /// not have happened.
+    #[tokio::test]
+    async fn an_abort_failure_does_not_claim_curation_rolled_back() {
+        let (_dir, svc) = fresh_svc();
+        let raw = svc
+            .add_raw_source(
+                "k",
+                SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let repo = GitRepo::open(&paths::kb_root(svc.root(), "k")).unwrap();
+        let txn = repo.begin_txn("abort-failure").unwrap();
+        repo.abort_txn(&txn).unwrap();
+
+        let err = aborted_curation_failure(
+            &repo,
+            &txn,
+            &raw.source_id,
+            raw.commit_sha.as_deref(),
+            anyhow::anyhow!("curation failed"),
+        );
+        let failure = err.downcast_ref::<IngestCurationFailure>().unwrap();
+        assert_eq!(failure.phase, IngestFailurePhase::OutcomeUncertain);
+        let message = err.to_string();
+        assert!(
+            message.contains("rollback could not be verified"),
+            "{message}"
+        );
+        assert!(!message.contains("Curation rolled back"), "{message}");
+    }
+
+    /// An error before raw staging completes has no retained-source provenance
+    /// and must not be wrapped as though raw bytes were durable.
+    #[tokio::test]
+    async fn a_raw_source_failure_is_not_reported_as_retained() {
+        let (_dir, svc) = fresh_svc();
+        let err = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
+                source: SourceInput::Path(std::path::PathBuf::from(
+                    "/nonexistent/biorouter-ingest-source.md",
+                )),
+                completer: Box::new(MockCompleter::new(vec![])),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("a missing input cannot be staged");
+
+        assert!(err.downcast_ref::<IngestCurationFailure>().is_none());
+        assert!(!err.to_string().contains("raw source"));
+    }
+
+    /// The raw commit happens before its derived-cache refresh. A refresh error
+    /// must therefore carry the retained source and commit as a typed
+    /// not-started curation outcome, not masquerade as a pre-write failure.
+    #[tokio::test]
+    async fn a_raw_post_commit_cache_failure_reports_the_durable_source() {
+        let (_dir, svc) = fresh_svc();
+        let kb = paths::kb_root(svc.root(), "k");
+        std::fs::create_dir(kb.join(".biorouter-knowledge/graph-cache.json.tmp")).unwrap();
+
+        let err = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
+                source: SourceInput::Text {
+                    text: "A raw source whose cache refresh will fail.".into(),
+                    title: Some("Retained raw fixture".into()),
+                },
+                completer: Box::new(MockCompleter::new(vec![])),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("the blocked graph-cache refresh must be reported");
+
+        let failure = err
+            .downcast_ref::<IngestCurationFailure>()
+            .expect("a durable raw commit keeps typed provenance");
+        assert_eq!(failure.phase, IngestFailurePhase::NotStarted);
+        let raw_commit = failure
+            .raw_commit_sha
+            .as_deref()
+            .expect("the durable raw commit is reported");
+        assert!(
+            kb.join("raw")
+                .join(&failure.source_id)
+                .join("source.md")
+                .is_file(),
+            "the reported raw source must exist"
+        );
+        assert!(
+            svc.list_history("k", 10)
+                .unwrap()
+                .iter()
+                .any(|entry| entry.commit_sha == raw_commit),
+            "the reported raw commit must remain reachable"
+        );
+        let message = err.to_string();
+        assert!(message.contains(&failure.source_id), "{message}");
+        assert!(message.contains(raw_commit), "{message}");
+        assert!(message.contains("Curation did not start"), "{message}");
     }
 
     // -------------------------------------------------------------------------
@@ -970,6 +1361,7 @@ mod tests {
             "source_id": "s", "commit_sha": "abc", "steps": 1, "events": []
         }))
         .expect("a result written before the field existed still loads");
+        assert_eq!(stored.raw_commit_sha, None);
         assert!(!stored.verification.ok);
     }
 
@@ -1441,9 +1833,29 @@ mod tests {
         )
         .await;
 
-        let err = result
-            .expect_err("a digest that wrote no knowledge page must not report success")
-            .to_string();
+        let err =
+            result.expect_err("a digest that wrote no knowledge page must not report success");
+        let retained = err
+            .downcast_ref::<IngestCurationFailure>()
+            .expect("failures after staging retain typed raw-source provenance");
+        assert_eq!(retained.phase, IngestFailurePhase::RolledBack);
+        assert_eq!(retained.curation_commit_sha, None);
+        let raw_commit = retained
+            .raw_commit_sha
+            .as_deref()
+            .expect("the newly retained raw source has a commit");
+        assert!(!retained.source_id.is_empty());
+
+        let kb = paths::kb_root(svc.root(), "k");
+        assert!(
+            kb.join("raw")
+                .join(&retained.source_id)
+                .join("source.md")
+                .is_file(),
+            "curation rollback must preserve the durable raw source"
+        );
+
+        let err = err.to_string();
         assert!(
             err.contains("no knowledge"),
             "the error must say the digest wrote nothing, got: {err}"
@@ -1453,9 +1865,22 @@ mod tests {
             "the error must carry the model's own last words so the user learns \
              what failed, got: {err}"
         );
+        assert!(
+            err.contains("Curation rolled back; raw source") && err.contains(raw_commit),
+            "the error must distinguish rolled-back curation from retained raw data: {err}"
+        );
+        assert!(
+            !err.contains("Nothing was added") && !err.contains("base is unchanged"),
+            "the error must not deny the durable raw-source write: {err}"
+        );
 
-        // Nothing may be committed on top of the raw source.
+        // The raw-source commit remains in history; no curation commit may be
+        // added on top of it.
         let log = svc.list_history("k", 10).unwrap();
+        assert!(
+            log.iter().any(|entry| entry.commit_sha == raw_commit),
+            "the reported raw commit must remain reachable in history: {log:?}"
+        );
         assert!(
             !log.iter().any(|e| e
                 .delta

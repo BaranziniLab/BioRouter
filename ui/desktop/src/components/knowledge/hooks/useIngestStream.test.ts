@@ -97,7 +97,9 @@ describe('useIngestStream terminal frames', () => {
 
     expect(run.status).toBe('error');
     expect(result.current.status).toBe('error');
-    expect(result.current.error ?? '').not.toBe('');
+    expect(run.error).toContain('outcome is uncertain');
+    expect(result.current.error).toContain('Refresh the knowledge base and history');
+    expect(result.current.error).not.toContain('Nothing was added');
   });
 
   it('treats an entirely empty stream as a failure too', async () => {
@@ -112,6 +114,8 @@ describe('useIngestStream terminal frames', () => {
 
     expect(run.status).toBe('error');
     expect(result.current.status).toBe('error');
+    expect(result.current.error).toContain('outcome is uncertain');
+    expect(result.current.error).toContain('Refresh');
   });
 
   // The other side of the same change. A stream with no terminal frame is now a

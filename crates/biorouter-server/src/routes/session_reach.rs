@@ -23,10 +23,10 @@
 //!   it can name — that is not a privacy boundary and this gate is deliberately
 //!   inert there;
 //! * it still reaches every session-addressing route NOT on
-//!   [the gated list](self#the-gated-list). `POST /interrupt` (inject text into
-//!   the turn running in a named chat), `POST /agent/cancel`, `POST
-//!   /agent/resume`, `GET /sessions/{id}/extensions`, `PUT /sessions/{id}/name`
-//!   and `DELETE /sessions/{id}` are all still open. The list began as the five
+//!   [the gated list](self#the-gated-list). `POST /interrupt` and `POST
+//!   /agent/cancel` now require user-action proof; `POST /agent/resume`,
+//!   `GET /sessions/{id}/extensions`, `PUT /sessions/{id}/name` and
+//!   `DELETE /sessions/{id}` remain open. The list began as the five
 //!   the ruling named, and `/reply` dominates them, but "dominates" is an
 //!   argument about capability rather than a proof about every route — which is
 //!   how `/export` and `/events` sat outside it while returning the same bytes
@@ -38,10 +38,9 @@
 //!   mechanical part of this is the wiring census
 //!   (`crates/biorouter/tests/privacy_guard_wiring.rs`), and even that pins the
 //!   guards, not the routes;
-//! * **`GET /knowledge/active?session_id=…` is still open**, because
-//!   [`gate_knowledge_active`] matches on `POST`. The read half of the very route
-//!   on the list still reports a private chat's knowledge-base set and its
-//!   primary to an unproven caller;
+//! * both read and write halves of `/knowledge/active` are gated when they name
+//!   a session. Machine-wide selection requests name no chat and remain outside
+//!   the session boundary;
 //! * **`GET /sessions` and `GET /sessions/sidebar` are still open, and they
 //!   enumerate wholesale.** `SessionSummary` carries `id`, `name`, `working_dir`
 //!   and `privacy_tier`, so one unproven request returns every private chat on
@@ -66,10 +65,11 @@
 //!   and `workspace_open` now call — comparing the CALLER'S CAPABILITY with the
 //!   target's classification instead of asking for a human. Its refusal answers
 //!   "private" and "no such conversation" in one sentence, for the same reason
-//!   [`SESSION_OUT_OF_REACH`] does. ⚠ Three workspace tools §7 also rules ✗ in
-//!   that column are still ungated — `workspace_watch` (its ids need not be
-//!   session rows), `workspace_close` and `workspace_set_tools` (writes, which
-//!   need `may_write`'s lineage half as well);
+//!   [`SESSION_OUT_OF_REACH`] does. `workspace_close` and `workspace_set_tools`
+//!   now enforce the same one-hop `may_write` lineage as
+//!   `workspace_send_prompt`; `workspace_watch` is parent-scoped through the
+//!   caller's registered background handles rather than an arbitrary session
+//!   write;
 //! * and the daemon still has no principal, which is the actual subject of #47.
 //!
 //! # The blast radius is wider than "private chats"
@@ -129,7 +129,7 @@
 //! | `GET /diagnostics/{session_id}` | The same transcript **in a zip**: `generate_diagnostics` writes `session.json` straight from `SessionManager::export_session`, and ships this session's log files — which carry its prompts — beside it. Added by the second wiring sweep; it is the third route on this list whose entire payload is `get_session(id, true)` under a different name. |
 //! | `POST /agent/update_working_dir` | Repoints the session at a directory of the caller's choosing and restarts its agent. |
 //! | `POST /agent/add_extension` | Attaches tools to the session. |
-//! | `POST /knowledge/active` | Repoints the session's knowledge bases and its write target. |
+//! | `GET|POST /knowledge/active` | Reads or repoints the session's knowledge bases and write target. |
 //!
 //! # Why `X-User-Action` and not a new mechanism, for the proof half
 //!
@@ -410,7 +410,7 @@ pub async fn session_reach(
     )
 }
 
-/// `POST /knowledge/active` — the one gated route whose router does not have an
+/// `GET|POST /knowledge/active` — the gated route whose router does not have an
 /// [`AppState`](crate::state::AppState) to resolve a tier with.
 ///
 /// ⚠ **A middleware rather than a line in the handler, and that is a plumbing
@@ -437,9 +437,27 @@ pub async fn gate_knowledge_active(
     // cannot silently turn a security gate into a no-op. Which spelling arrives
     // is pinned by `the_knowledge_active_gate_is_actually_wired`.
     let path = request.uri().path();
-    let gated = request.method() == axum::http::Method::POST
-        && (path == "/active" || path == "/knowledge/active");
-    if !gated {
+    let active_path = path == "/active" || path == "/knowledge/active";
+    if !active_path {
+        return next.run(request).await;
+    }
+
+    if request.method() == axum::http::Method::GET {
+        let session_id = request.uri().query().and_then(|query| {
+            url::form_urlencoded::parse(query.as_bytes())
+                .find(|(key, _)| key == "session_id")
+                .map(|(_, value)| value.into_owned())
+        });
+        if let Some(session_id) = session_id {
+            if let Err(refusal) =
+                session_reach(state.session_manager(), &session_id, request.headers()).await
+            {
+                return refusal.into_response();
+            }
+        }
+        return next.run(request).await;
+    }
+    if request.method() != axum::http::Method::POST {
         return next.run(request).await;
     }
 
@@ -763,7 +781,7 @@ mod tests {
     /// unit test — `AppState::new()` opens the developer's REAL session
     /// database. Every route on the list is also driven over HTTP by
     /// [`super::bypass_tests`] except `POST /agent/add_extension` (whose admitted
-    /// arm mints a real agent) and `POST /knowledge/active` (a middleware, which
+    /// arm mints a real agent) and `GET|POST /knowledge/active` (a middleware, which
     /// a body scan cannot see and
     /// [`super::bypass_tests::the_knowledge_active_gate_is_actually_wired`]
     /// drives instead); this is what holds the ORDERING, which no status code
@@ -1184,6 +1202,28 @@ mod bypass_tests {
                     .body(Body::from(serde_json::to_vec(&body).unwrap()))
                     .unwrap(),
             )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    async fn get_knowledge_active(
+        state: Arc<AppState>,
+        session_id: &str,
+        user_action: Option<&str>,
+    ) -> (StatusCode, String) {
+        let app = crate::routes::configure(state, "task-58-secret".to_string());
+        let encoded: String = url::form_urlencoded::byte_serialize(session_id.as_bytes()).collect();
+        let mut builder = Request::builder()
+            .method("GET")
+            .uri(format!("/knowledge/active?session_id={encoded}"));
+        if let Some(key) = user_action {
+            builder = builder.header("X-User-Action", key);
+        }
+        let res = app
+            .oneshot(builder.body(Body::empty()).unwrap())
             .await
             .unwrap();
         let status = res.status();
@@ -1747,6 +1787,20 @@ mod bypass_tests {
             StatusCode::FORBIDDEN,
             "a caller holding only the daemon secret repointed a private chat's knowledge \
              bases: {body}"
+        );
+
+        let (status, body) = get_knowledge_active(state.clone(), private.id(), None).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "an unproven caller read a private chat's knowledge selection: {body}"
+        );
+        let (status, body) =
+            get_knowledge_active(state.clone(), private.id(), Some(TEST_USER_ACTION_KEY)).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the user-action proof should reach the private selection: {body}"
         );
 
         // Step 4.1's other half, for this route: a PUBLIC chat is untouched by

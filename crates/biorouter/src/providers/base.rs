@@ -1,6 +1,7 @@
 use anyhow::Result;
 use futures::Stream;
 use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, oneshot};
 
 use super::canonical::{map_to_canonical_model, CanonicalModelRegistry};
 use super::errors::ProviderError;
@@ -940,7 +941,31 @@ pub trait Provider: Send + Sync {
         ))
     }
 
+    /// Stream a turn while accepting user instructions that must reach the
+    /// provider's already-running turn.
+    ///
+    /// The default deliberately closes the steering receiver and falls back to
+    /// ordinary streaming. Callers must check [`Self::supports_live_steering`]
+    /// before exposing the sender: accepting a request into a local queue is not
+    /// the same as delivering it to a provider.
+    async fn stream_with_steering(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+        steering: ProviderSteerReceiver,
+    ) -> Result<MessageStream, ProviderError> {
+        drop(steering);
+        self.stream(system, messages, tools).await
+    }
+
     fn supports_streaming(&self) -> bool {
+        false
+    }
+
+    /// Whether [`Self::stream_with_steering`] delivers instructions into the
+    /// provider's current turn and acknowledges the provider transport.
+    fn supports_live_steering(&self) -> bool {
         false
     }
 
@@ -1122,6 +1147,74 @@ pub fn tool_call_batching_enabled() -> bool {
 /// messages will only be yielded once concatenated.
 pub type MessageStream =
     Pin<Box<dyn Stream<Item = Result<ProviderStreamItem, ProviderError>> + Send>>;
+
+/// A user instruction destined for a provider turn that is already running.
+///
+/// The acknowledgement is intentionally owned by the request. It resolves only
+/// after the provider-specific transport accepts the instruction, so callers
+/// can distinguish a real mid-turn steer from text that was merely queued in
+/// Biorouter.
+pub struct ProviderSteerRequest {
+    text: String,
+    acknowledgement: oneshot::Sender<Result<(), ProviderError>>,
+}
+
+impl ProviderSteerRequest {
+    pub fn new(text: impl Into<String>) -> (Self, oneshot::Receiver<Result<(), ProviderError>>) {
+        let (acknowledgement, acknowledged) = oneshot::channel();
+        (
+            Self {
+                text: text.into(),
+                acknowledgement,
+            },
+            acknowledged,
+        )
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn acknowledge(self) {
+        let _ = self.acknowledgement.send(Ok(()));
+    }
+
+    pub fn reject(self, error: ProviderError) {
+        let _ = self.acknowledgement.send(Err(error));
+    }
+}
+
+pub type ProviderSteerSender = mpsc::UnboundedSender<ProviderSteerRequest>;
+pub type ProviderSteerReceiver = mpsc::UnboundedReceiver<ProviderSteerRequest>;
+
+pub fn provider_steer_channel() -> (ProviderSteerSender, ProviderSteerReceiver) {
+    mpsc::unbounded_channel()
+}
+
+#[cfg(test)]
+mod provider_steering_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn acknowledgement_resolves_only_when_the_provider_accepts_the_request() {
+        let (sender, mut receiver) = provider_steer_channel();
+        let (request, mut acknowledged) = ProviderSteerRequest::new("change course");
+        assert!(sender.send(request).is_ok(), "receiver is live");
+
+        let delivered = receiver.recv().await.expect("request was queued");
+        assert_eq!(delivered.text(), "change course");
+        assert!(
+            acknowledged.try_recv().is_err(),
+            "queueing alone must not claim provider acceptance"
+        );
+
+        delivered.acknowledge();
+        acknowledged
+            .await
+            .expect("ack sender remained live")
+            .expect("provider accepted the steer");
+    }
+}
 
 pub fn stream_from_single_message(message: Message, usage: ProviderUsage) -> MessageStream {
     let stream = futures::stream::once(async move { Ok((Some(message), Some(usage), None)) });

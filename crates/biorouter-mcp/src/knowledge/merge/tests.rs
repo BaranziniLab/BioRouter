@@ -211,6 +211,130 @@ fn dangling(kb: &Path) -> Vec<String> {
 
 // ── (a) raw dedup on the sha256 already in meta.yaml ────────────────────────
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlinked_raw_directory_is_refused_before_merge_planning() {
+    use std::os::unix::fs::symlink;
+
+    let (_dir, svc) = service();
+    let dst = base(&svc, "dst");
+    let src = base(&svc, "src");
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(
+        outside.path().join("secret.txt"),
+        b"OUTSIDE-RAW-DIR-SENTINEL",
+    )
+    .unwrap();
+    symlink(outside.path(), src.join("raw/escaped")).unwrap();
+
+    let error = svc
+        .merge_bases("dst", "src", &MergeAuthority::User(&user()), true)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("symbolic link"), "{error}");
+    assert!(!error.contains("OUTSIDE-RAW-DIR-SENTINEL"), "{error}");
+    assert!(!dst.join("raw/escaped").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlink_inside_a_raw_source_is_refused_and_rolled_back() {
+    use std::os::unix::fs::symlink;
+
+    let (_dir, svc) = service();
+    let dst = base(&svc, "dst");
+    let src = base(&svc, "src");
+    put_raw(&src, "incoming", "sha-src", "ordinary source");
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(outside.path(), b"OUTSIDE-RAW-FILE-SENTINEL").unwrap();
+    symlink(outside.path(), src.join("raw/incoming/escaped.txt")).unwrap();
+
+    let error = svc
+        .merge_bases("dst", "src", &MergeAuthority::User(&user()), false)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("symbolic link"), "{error}");
+    assert!(!error.contains("OUTSIDE-RAW-FILE-SENTINEL"), "{error}");
+    assert!(
+        !dst.join("raw/incoming").exists(),
+        "a rejected copy survived the merge rollback"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlinked_destination_raw_directory_cannot_redirect_a_merge() {
+    use std::os::unix::fs::symlink;
+
+    let (_dir, svc) = service();
+    let dst = base(&svc, "dst");
+    let src = base(&svc, "src");
+    put_raw(&src, "incoming", "sha-src", "ordinary source");
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::remove_dir(dst.join("raw")).unwrap();
+    symlink(outside.path(), dst.join("raw")).unwrap();
+
+    let error = svc
+        .merge_bases("dst", "src", &MergeAuthority::User(&user()), false)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("symbolic links"), "{error}");
+    assert!(!outside.path().join("incoming/source.md").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlinked_destination_page_parent_cannot_redirect_a_merge() {
+    use std::os::unix::fs::symlink;
+
+    let (_dir, svc) = service();
+    let dst = base(&svc, "dst");
+    let src = base(&svc, "src");
+    put_page(
+        &src,
+        "knowledge/redirected/new.md",
+        &page("Concept", "New", "body"),
+    );
+    let outside = tempfile::tempdir().unwrap();
+    symlink(outside.path(), dst.join("knowledge/redirected")).unwrap();
+
+    let error = svc
+        .merge_bases("dst", "src", &MergeAuthority::User(&user()), false)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("symbolic links"), "{error}");
+    assert!(!outside.path().join("new.md").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_destination_index_is_never_read_during_merge() {
+    use std::os::unix::fs::symlink;
+
+    let (_dir, svc) = service();
+    let dst = base(&svc, "dst");
+    let src = base(&svc, "src");
+    put_page(&src, "knowledge/new.md", &page("Concept", "New", "body"));
+    let plan = super::plan(&dst, &src, "src").unwrap();
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(outside.path(), "OUTSIDE-INDEX-SENTINEL\n").unwrap();
+    std::fs::remove_file(dst.join("index.md")).unwrap();
+    symlink(outside.path(), dst.join("index.md")).unwrap();
+
+    let error = super::append_index(&dst, &plan, &mut super::Created::default())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("symbolic links"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(outside.path()).unwrap(),
+        "OUTSIDE-INDEX-SENTINEL\n"
+    );
+}
+
 /// The same source in both bases is **one** source afterwards, and every
 /// reference to the incoming copy is repointed at the destination's.
 ///

@@ -564,6 +564,11 @@ enum SessionCommand {
             help = "Return as soon as the turn starts instead of streaming it"
         )]
         no_wait: bool,
+        #[arg(
+            long,
+            help = "Read the daemon's raw user-action key from the first line of stdin instead of prompting on the controlling terminal"
+        )]
+        user_action_key_stdin: bool,
     },
     #[command(
         about = "Attach to a running session: render where it is, follow it live, and steer it",
@@ -590,11 +595,21 @@ enum SessionCommand {
         of: Option<String>,
         #[arg(long, help = "Observe only; do not read stdin or send anything")]
         read_only: bool,
+        #[arg(
+            long,
+            help = "Read the daemon's raw user-action key from the first line of stdin instead of prompting on the controlling terminal"
+        )]
+        user_action_key_stdin: bool,
     },
     #[command(about = "Stop the turn a session is running (idempotent)")]
     Cancel {
         /// Session id whose running turn should be stopped.
         session_id: String,
+        #[arg(
+            long,
+            help = "Read the daemon's raw user-action key from the first line of stdin instead of prompting on the controlling terminal"
+        )]
+        user_action_key_stdin: bool,
     },
     #[command(name = "diagnostics")]
     Diagnostics {
@@ -1760,21 +1775,41 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             session_id,
             text,
             no_wait,
+            user_action_key_stdin,
         } => {
-            crate::commands::session_watch::handle_session_send(&session_id, &text, !no_wait)
-                .await?;
+            crate::commands::session_watch::handle_session_send(
+                &session_id,
+                &text,
+                !no_wait,
+                user_action_key_stdin,
+            )
+            .await?;
         }
         SessionCommand::Attach {
             session_id,
             name,
             of,
             read_only,
+            user_action_key_stdin,
         } => {
-            crate::commands::session_watch::handle_session_attach(session_id, name, of, read_only)
-                .await?;
+            crate::commands::session_watch::handle_session_attach(
+                session_id,
+                name,
+                of,
+                read_only,
+                user_action_key_stdin,
+            )
+            .await?;
         }
-        SessionCommand::Cancel { session_id } => {
-            crate::commands::session_watch::handle_session_cancel(&session_id).await?;
+        SessionCommand::Cancel {
+            session_id,
+            user_action_key_stdin,
+        } => {
+            crate::commands::session_watch::handle_session_cancel(
+                &session_id,
+                user_action_key_stdin,
+            )
+            .await?;
         }
         SessionCommand::Diagnostics { identifier, output } => {
             let session_manager = SessionManager::instance();

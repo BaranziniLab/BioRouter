@@ -7,7 +7,7 @@ use crate::knowledge::{
     service::KnowledgeService,
     subagent::{
         events::{DoneReason, SubAgentEvent},
-        kb_tools::{tool_specs, KbToolDispatch},
+        kb_tools::{read_only_tool_specs, tool_specs, KbToolAccess, KbToolDispatch},
         loop_::{Completer, SubAgent, SubAgentBounds},
         procedures::{query_procedure, system_prompt},
     },
@@ -24,12 +24,10 @@ pub struct QueryArgs {
     /// The capability of the model this macro will run (issue #56). Required,
     /// so every production caller is a compile error rather than an omission.
     ///
-    /// ⚠ `query` **writes**. `file_as_page` commits a page when set, but the
-    /// deciding fact is harsher: `tool_specs()` hands the sub-agent
-    /// `kb_write_page`, `kb_append_log` **and** `kb_add_raw_source`
-    /// unconditionally, and the only thing between a `file_as_page: false`
-    /// query and a write is a sentence in the system prompt. A prompt is not a
-    /// control, so `query` raises like the other two macros.
+    /// A query discloses the base to its model even when `file_as_page` is false,
+    /// so the reachability barrier always applies. Only `file_as_page=true`
+    /// writes model output back into the base and therefore raises its tier and
+    /// affiliation.
     pub caller_is_private: bool,
     /// Whose agreements cover that model — DR-26's third axis (issue #56, Task
     /// 50). Required for the same reason `caller_is_private` is: an omission
@@ -101,27 +99,42 @@ fn commit_txn_if_a_page_was_filed(
     Ok(Some(sha))
 }
 
+fn abort_query_txn_if_open(kb_root: &std::path::Path, txn_branch: Option<&str>) -> Result<()> {
+    let Some(branch) = txn_branch else {
+        return Ok(());
+    };
+    let repo = GitRepo::open(kb_root)?;
+    let txn = Txn {
+        branch: branch.to_string(),
+    };
+    let _ = repo.abort_txn(&txn);
+    Ok(())
+}
+
 pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResult> {
     let _lock = svc.lock_kb(&args.kb_id).await?;
-    // Issue #56. See `QueryArgs::caller_is_private`: this macro's sub-agent
-    // holds the same three write tools the ingest one does. Before the
-    // sub-agent, not after. Task 10C (CP2) puts the barrier on the line above:
-    // a `query` reads the whole base into a model's context, which is the
-    // disclosure this issue is about even when `file_as_page` is false.
+    // Issue #56. Before the sub-agent, not after. Task 10C (CP2) puts the
+    // barrier on the line above: a `query` reads the whole base into a model's
+    // context, which is the disclosure this issue is about even when
+    // `file_as_page` is false.
     crate::knowledge::tier::assert_reachable(
         svc.root(),
         &args.kb_id,
         args.caller_is_private,
         &args.caller_affiliation,
     )?;
-    // Issue #56, both axes in one call under one lock — see
-    // `KnowledgeService::raise_tier_and_affiliation` for why they cannot be
-    // two.
-    svc.raise_tier_and_affiliation(
-        &args.kb_id,
-        args.caller_is_private,
-        &args.caller_affiliation,
-    )?;
+    if args.file_as_page {
+        // Issue #56, both axes in one call under one lock — see
+        // `KnowledgeService::raise_tier_and_affiliation` for why they cannot be
+        // two. A read-only query sends base content to the model but writes none
+        // of that model's output back, so it must not permanently reclassify the
+        // base merely because the model looked at it.
+        svc.raise_tier_and_affiliation(
+            &args.kb_id,
+            args.caller_is_private,
+            &args.caller_affiliation,
+        )?;
+    }
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
     // Migrate a stale `schema.md` (the sub-agent's system prompt) and refresh a
@@ -144,7 +157,8 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
     let format = crate::knowledge::manifest::load(&kb_root)
         .ok()
         .and_then(|m| m.profile());
-    let schema = std::fs::read_to_string(kb_root.join("schema.md")).context("read schema.md")?;
+    let schema_path = crate::knowledge::store::resolve_readable_path(&kb_root, "schema.md")?;
+    let schema = std::fs::read_to_string(schema_path).context("read schema.md")?;
     let mut system = system_prompt(&schema, query_procedure(format));
     if !args.file_as_page {
         system.push_str(
@@ -157,10 +171,19 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
         svc: svc.clone(),
         kb_id: args.kb_id.clone(),
         txn_branch: txn_branch.clone().unwrap_or_default(),
+        access: if args.file_as_page {
+            KbToolAccess::ReadWrite
+        } else {
+            KbToolAccess::ReadOnly
+        },
     };
     let agent = SubAgent {
         completer: args.completer,
-        tools: tool_specs(format),
+        tools: if args.file_as_page {
+            tool_specs(format)
+        } else {
+            read_only_tool_specs(format)
+        },
         system_prompt: system,
         bounds: args.bounds,
     };
@@ -201,13 +224,7 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
         }
         Ok(r) => {
             // Bad DoneReason: abort the txn branch if one was opened.
-            if let Some(branch) = &txn_branch {
-                let repo = GitRepo::open(&kb_root)?;
-                let txn = Txn {
-                    branch: branch.clone(),
-                };
-                let _ = repo.abort_txn(&txn);
-            }
+            abort_query_txn_if_open(&kb_root, txn_branch.as_deref())?;
             anyhow::bail!(
                 "query sub-agent aborted: reason={:?}, final={}",
                 r.reason,
@@ -215,13 +232,7 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
             )
         }
         Err(e) => {
-            if let Some(branch) = &txn_branch {
-                let repo = GitRepo::open(&kb_root)?;
-                let txn = Txn {
-                    branch: branch.clone(),
-                };
-                let _ = repo.abort_txn(&txn);
-            }
+            abort_query_txn_if_open(&kb_root, txn_branch.as_deref())?;
             Err(e)
         }
     }
@@ -286,6 +297,10 @@ mod tests {
         replies: Mutex<Vec<LlmReply>>,
     }
 
+    struct MutationProbeCompleter {
+        step: Mutex<usize>,
+    }
+
     impl MockCompleter {
         fn new(replies: Vec<LlmReply>) -> Self {
             Self {
@@ -307,6 +322,70 @@ mod tests {
                 panic!("MockCompleter ran out of canned replies");
             }
             Ok(q.remove(0))
+        }
+    }
+
+    #[async_trait]
+    impl Completer for MutationProbeCompleter {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[LlmMessage],
+            tools: &[Tool],
+        ) -> anyhow::Result<LlmReply> {
+            let advertised: Vec<String> = tools.iter().map(|tool| tool.name.to_string()).collect();
+            for mutation in [
+                "kb_write_page",
+                "kb_append_log",
+                "kb_add_raw_source",
+                "kb_write_concept",
+            ] {
+                assert!(
+                    !advertised.iter().any(|name| name == mutation),
+                    "read-only query advertised mutation {mutation}: {advertised:?}"
+                );
+            }
+
+            let mut step = self.step.lock().await;
+            let reply = match *step {
+                0 => tool_call_reply(
+                    "kb_write_page",
+                    serde_json::json!({
+                        "path": "knowledge/notes/forbidden.md",
+                        "content": valid_page("note", "forbidden", "must not be written"),
+                        "commit_message": "forbidden page"
+                    }),
+                ),
+                1 => tool_call_reply(
+                    "kb_append_log",
+                    serde_json::json!({
+                        "summary": "forbidden log entry",
+                        "kind": "query"
+                    }),
+                ),
+                2 => tool_call_reply(
+                    "kb_add_raw_source",
+                    serde_json::json!({
+                        "type": "text",
+                        "text": "forbidden raw source",
+                        "title": "Forbidden"
+                    }),
+                ),
+                3 => tool_call_reply(
+                    "kb_write_concept",
+                    serde_json::json!({
+                        "type": "Gene",
+                        "identifier": "FORBIDDEN"
+                    }),
+                ),
+                4 => tool_call_reply(
+                    "kb_delete_page",
+                    serde_json::json!({ "path": "knowledge/entities/hrv.md" }),
+                ),
+                _ => text_reply_with_citation("The attempted mutations were refused [[HRV]]."),
+            };
+            *step += 1;
+            Ok(reply)
         }
     }
 
@@ -333,6 +412,44 @@ mod tests {
         let svc = KnowledgeService::new(dir.path().to_path_buf());
         svc.create_base("k", "K", None).unwrap();
         (dir, svc)
+    }
+
+    fn git_state(kb_root: &std::path::Path) -> (String, String, Vec<String>) {
+        let repo = git2::Repository::open(kb_root).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let head_id = head.id().to_string();
+        let tree_id = head.tree_id().to_string();
+        let mut walk = repo.revwalk().unwrap();
+        walk.push_head().unwrap();
+        let history = walk.map(|oid| oid.unwrap().to_string()).collect::<Vec<_>>();
+        (head_id, tree_id, history)
+    }
+
+    fn directory_state(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+        fn visit(base: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, Vec<u8>)>) {
+            if !dir.exists() {
+                return;
+            }
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(base, &path, out);
+                } else {
+                    out.push((
+                        path.strip_prefix(base)
+                            .unwrap()
+                            .to_string_lossy()
+                            .into_owned(),
+                        std::fs::read(path).unwrap(),
+                    ));
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        visit(root, root, &mut out);
+        out.sort_by(|left, right| left.0.cmp(&right.0));
+        out
     }
 
     // -------------------------------------------------------------------------
@@ -386,6 +503,87 @@ mod tests {
         assert!(
             result.commit_sha.is_none(),
             "read-only query must not commit"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_only_query_refuses_advertised_and_hallucinated_mutations_without_side_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base_in("k", "K", None, crate::knowledge::types::KbFormat::Biookf)
+            .unwrap();
+        let kb = svc.root().join("k");
+        crate::knowledge::store::write_page(
+            &kb,
+            "knowledge/entities/hrv.md",
+            "---\ntype: Gene\nidentifier: HRV\n---\n\nseed page",
+            "seed",
+            None,
+        )
+        .unwrap();
+
+        let repo_before = git_state(&kb);
+        let pages_before = directory_state(&kb.join("knowledge"));
+        let raw_before = directory_state(&kb.join("raw"));
+        let log_before = std::fs::read(kb.join("log.md")).unwrap();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let result = query(
+            &svc,
+            QueryArgs {
+                kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
+                question: "Try to mutate this base.".into(),
+                completer: Box::new(MutationProbeCompleter {
+                    step: Mutex::new(0),
+                }),
+                file_as_page: false,
+                bounds: SubAgentBounds::default(),
+                event_sink: Some(event_tx),
+                cancel: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(result.commit_sha.is_none());
+        let mut rejected = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            if let SubAgentEvent::ToolResult {
+                name, ok: false, ..
+            } = event
+            {
+                rejected.push(name);
+            }
+        }
+        assert_eq!(
+            rejected,
+            vec![
+                "kb_write_page".to_string(),
+                "kb_append_log".to_string(),
+                "kb_add_raw_source".to_string(),
+                "kb_write_concept".to_string(),
+                "kb_delete_page".to_string(),
+            ]
+        );
+        assert_eq!(git_state(&kb).0, repo_before.0, "HEAD changed");
+        assert_eq!(git_state(&kb).1, repo_before.1, "HEAD tree changed");
+        assert_eq!(git_state(&kb).2, repo_before.2, "history changed");
+        assert_eq!(
+            directory_state(&kb.join("knowledge")),
+            pages_before,
+            "knowledge pages changed"
+        );
+        assert_eq!(
+            directory_state(&kb.join("raw")),
+            raw_before,
+            "raw sources changed"
+        );
+        assert_eq!(
+            std::fs::read(kb.join("log.md")).unwrap(),
+            log_before,
+            "knowledge log changed"
         );
     }
 
@@ -579,13 +777,26 @@ mod tests {
         }
     }
 
-    /// Ratcheted even though it is called "query": `tool_specs()` hands the
-    /// sub-agent `kb_write_page`, `kb_append_log` **and** `kb_add_raw_source`
-    /// unconditionally, and the only thing between a `file_as_page: false`
-    /// query and a write is a sentence in the system prompt. A prompt is not a
-    /// control.
+    struct PanicsIfCalled;
+
+    #[async_trait]
+    impl Completer for PanicsIfCalled {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[LlmMessage],
+            _tools: &[Tool],
+        ) -> anyhow::Result<LlmReply> {
+            panic!("an unreachable base must be rejected before invoking the model")
+        }
+    }
+
+    /// The read-only boundary is not only a tool filter: merely running the
+    /// query through a private institutional model must not stamp a public base
+    /// private or claim it for that institution. The reachability check still
+    /// runs before the model is called.
     #[tokio::test]
-    async fn the_query_macro_ratchets_even_when_it_is_not_filing_a_page() {
+    async fn a_read_only_query_does_not_ratchet_tier_or_affiliation() {
         let (dir, svc) = fresh_svc();
         let root = dir.path().to_path_buf();
         assert!(!crate::knowledge::tier::is_private(&root, "k"));
@@ -595,7 +806,9 @@ mod tests {
             QueryArgs {
                 kb_id: "k".into(),
                 caller_is_private: true,
-                caller_affiliation: Default::default(),
+                caller_affiliation: crate::knowledge::affiliation::CallerAffiliation::Institution(
+                    "fixture-institution".to_string(),
+                ),
                 question: "what is n?".into(),
                 completer: Box::new(RefusesImmediately),
                 file_as_page: false,
@@ -607,8 +820,38 @@ mod tests {
         .await;
 
         assert!(
-            crate::knowledge::tier::is_private(&root, "k"),
-            "the raise ran after the sub-agent, or not at all"
+            !crate::knowledge::tier::is_private(&root, "k"),
+            "a read-only query permanently privatised a public base"
         );
+        assert_eq!(
+            crate::knowledge::tier::affiliation(&root, "k"),
+            crate::knowledge::affiliation::KbAffiliation::Owners(Default::default()),
+            "a read-only query permanently claimed a public base for its model's institution"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_only_query_still_enforces_reachability_before_the_model() {
+        let (dir, svc) = fresh_svc();
+        crate::knowledge::tier::raise_unlocked(dir.path(), "k", true).unwrap();
+
+        let error = query(
+            &svc,
+            QueryArgs {
+                kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
+                question: "what is n?".into(),
+                completer: Box::new(PanicsIfCalled),
+                file_as_page: false,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("a public model must not read a private base");
+
+        assert!(error.to_string().contains("private"), "{error:#}");
     }
 }

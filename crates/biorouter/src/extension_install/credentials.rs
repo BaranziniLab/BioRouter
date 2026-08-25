@@ -408,26 +408,26 @@ mod tests {
     /// start over from.
     #[tokio::test]
     async fn a_missing_required_value_leaves_the_install_parked() {
+        let key = format!("MISSING_TOKEN_{}", uuid::Uuid::new_v4().simple()).to_uppercase();
         let registry = PendingUserActions::global();
         let parked = registry.park(
             Some("s-incomplete"),
             None,
             UserActionRequest::Secrets(SecretsRequest {
                 prompt: "Configure".to_string(),
-                keys: vec![var("TOKEN", true, true).as_key_request()],
+                keys: vec![var(&key, true, true).as_key_request()],
                 destination: SecretDestination::Keyring,
             }),
         );
         let id = parked.id().to_string();
-        CredentialRequests::global().register(&id, spec(vec![var("TOKEN", true, true)]));
+        CredentialRequests::global().register(&id, spec(vec![var(&key, true, true)]));
 
-        let outcome = submit_credentials(&id, HashMap::from([("TOKEN".to_string(), "  ".into())]));
-        assert_eq!(
-            outcome,
-            SubmitOutcome::Incomplete {
-                missing: vec!["TOKEN".to_string()]
-            }
-        );
+        let outcome = crate::config::with_config_overrides(
+            HashMap::from([(key.clone(), "  ".to_string())]),
+            async { submit_credentials(&id, HashMap::from([(key.clone(), "  ".into())])) },
+        )
+        .await;
+        assert_eq!(outcome, SubmitOutcome::Incomplete { missing: vec![key] });
         assert!(registry.is_pending(&id), "the install must still be parked");
 
         CredentialRequests::global().forget(&id);

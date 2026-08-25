@@ -7,10 +7,12 @@ knowledge folders + git history. Use these primitive tools to read and write the
 
 To add a **document** to a knowledge base — a PDF, paper, note, spreadsheet, web page,
 folder of files, or pasted text — call `platform__ingest_source`. It takes one source or
-a batch and runs Biorouter's real ingestion pipeline: it stages the raw source, opens a
-git transaction, runs a bounded sub-agent to write curated knowledge pages, validates
-them, commits (or aborts and leaves the base untouched), rebuilds the graph, and
-verifies what it committed. It reports, per source, whether curated pages actually exist.
+a batch and runs Biorouter's real ingestion pipeline: it first commits the raw source so
+that input remains durable, then opens a git transaction for curation, runs a bounded
+sub-agent to write curated knowledge pages, validates them, commits or rolls back the
+curation, rebuilds the graph, and verifies what it committed. A curation failure can
+therefore leave the raw source and its commit in the base. The report distinguishes those
+two outcomes per source and includes the retained source id and commit when available.
 
 **Do not hand-roll ingestion out of the primitives below.** Extracting text yourself,
 calling `kb_add_raw_source`, and then writing pages with `kb_write_page` in a script has
@@ -25,9 +27,9 @@ Common operations:
 - `kb_add_raw_source` — file a URL or pasted text under `raw/<source-id>/` with
   `source.md` and `meta.yaml`; credibility is auto-classified. **This does NOT create
   knowledge pages, and it is not how you ingest a document** — use
-  `platform__ingest_source` for that, which does this step and then the curation,
-  transactionally. Reach for this tool alone only when the user wants the raw material
-  filed *without* being digested.
+  `platform__ingest_source` for that, which commits this raw step first and then curates in
+  a separate transaction. Reach for this tool alone only when the user wants the raw
+  material filed *without* being digested.
 - `kb_list_pages` / `kb_read_page` / `kb_write_page` — knowledge CRUD.
 - `kb_validate_page` — check a page against its base's format **before** writing it.
   Writes nothing; returns diagnostics, each with a stable rule id, a severity, the page

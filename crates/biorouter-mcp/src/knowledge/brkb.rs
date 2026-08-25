@@ -65,6 +65,13 @@ pub fn export<W: Write + Seek>(
     is_private: bool,
     owners: &std::collections::BTreeSet<String>,
 ) -> Result<()> {
+    let root_metadata =
+        std::fs::symlink_metadata(kb_root).context("inspect knowledge base root")?;
+    if root_metadata.file_type().is_symlink() {
+        anyhow::bail!("knowledge base export refuses a symbolic-link root");
+    }
+    let canonical_root =
+        std::fs::canonicalize(kb_root).context("canonicalize knowledge base root")?;
     let mut zip = ZipWriter::new(out);
     let opts = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     let kb_id = kb_root
@@ -72,7 +79,7 @@ pub fn export<W: Write + Seek>(
         .ok_or_else(|| anyhow::anyhow!("kb root has no basename"))?
         .to_string_lossy()
         .to_string();
-    walk(kb_root, kb_root, &kb_id, &mut zip, opts)?;
+    walk(kb_root, kb_root, &canonical_root, &kb_id, &mut zip, opts)?;
     let provenance = serde_json::to_vec(&Provenance {
         // 1 -> 2 with `owners`, and a label rather than a gate for the reason
         // `tier::SCHEMA` is one: an older binary parses `tier` exactly as before
@@ -154,12 +161,14 @@ fn archive_name(prefix: &str, rel: &Path) -> String {
 fn walk<W: Write + Seek>(
     base: &Path,
     dir: &Path,
+    canonical_base: &Path,
     prefix: &str,
     zip: &mut ZipWriter<W>,
     opts: FileOptions,
 ) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        let file_type = entry.file_type()?;
         let path = entry.path();
         let rel = path.strip_prefix(base)?;
         // ⚠ The exporter is holding this file's lock **right now**, so reading
@@ -181,14 +190,33 @@ fn walk<W: Write + Seek>(
         if crate::knowledge::paths::is_kb_write_lock(rel) {
             continue;
         }
+        if file_type.is_symlink() {
+            anyhow::bail!(
+                "knowledge base export refuses symbolic link {}",
+                rel.display()
+            );
+        }
+        let canonical_path = std::fs::canonicalize(&path)
+            .with_context(|| format!("canonicalize knowledge entry {}", rel.display()))?;
+        if !canonical_path.starts_with(canonical_base) {
+            anyhow::bail!(
+                "knowledge base export entry resolves outside its base: {}",
+                rel.display()
+            );
+        }
         let archive_path = archive_name(prefix, rel);
-        if path.is_dir() {
+        if file_type.is_dir() {
             zip.add_directory(&archive_path, opts)?;
-            walk(base, &path, prefix, zip, opts)?;
-        } else {
+            walk(base, &path, canonical_base, prefix, zip, opts)?;
+        } else if file_type.is_file() {
             zip.start_file(&archive_path, opts)?;
             let mut f = std::fs::File::open(&path)?;
             std::io::copy(&mut f, zip)?;
+        } else {
+            anyhow::bail!(
+                "knowledge base export refuses non-file entry {}",
+                rel.display()
+            );
         }
     }
     Ok(())
@@ -497,6 +525,40 @@ mod tests {
 
         assert!(bytes.len() > 100, "the archive has content");
         let _ = fs2::FileExt::unlock(&held);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_refuses_file_symlinks_instead_of_archiving_their_targets() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(outside.path(), b"EXTERNAL-FILE-SENTINEL").unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base("orig", "Orig", None).unwrap();
+        symlink(outside.path(), dir.path().join("orig/knowledge/escaped.md")).unwrap();
+
+        let error = svc.export_brkb("orig").unwrap_err().to_string();
+        assert!(error.contains("symbolic link"), "{error}");
+        assert!(!error.contains("EXTERNAL-FILE-SENTINEL"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_refuses_directory_symlinks_instead_of_walking_their_targets() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("escaped.md"), b"EXTERNAL-DIR-SENTINEL").unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base("orig", "Orig", None).unwrap();
+        symlink(outside.path(), dir.path().join("orig/raw/escaped-dir")).unwrap();
+
+        let error = svc.export_brkb("orig").unwrap_err().to_string();
+        assert!(error.contains("symbolic link"), "{error}");
+        assert!(!error.contains("EXTERNAL-DIR-SENTINEL"), "{error}");
     }
 
     #[test]

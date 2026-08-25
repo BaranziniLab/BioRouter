@@ -51,15 +51,18 @@ undo:
   runs. `source_ingest` calls that macro and writes nothing itself, so the four documented
   choke points remain four. A path that wrote pages beside the macro would be a fifth, and
   the lint-ratchet regression is what that mistake looks like in practice.
-- **One transaction per source, and that is the unit of atomicity.** A batch is N macro
-  calls. A source that fails aborts its own transaction and leaves the others alone —
-  which is what makes per-source status meaningful and a retry safe. One transaction over
-  the whole batch would let one bad PDF discard four good digests.
-- **The report cannot read as success when only raw sources exist.** The macro raises an
-  error when the `knowledge/` tree did not change, so such a source is counted a failure,
-  its own line says so, and a run where nothing succeeded says *"Ingested nothing"* in its
-  first sentence. This is the single behaviour the issue is about, and
-  `a_run_that_curated_nothing_never_reads_as_ingested` pins it.
+- **One curation transaction per source, and that is the unit of atomicity.** A batch is N
+  macro calls. The raw source is committed first so it remains available for inspection or
+  retry. A source that fails then aborts its own curation transaction and leaves the other
+  sources alone. One curation transaction over the whole batch would let one bad PDF
+  discard four good digests.
+- **The report cannot read as success when only raw sources exist, or deny that they
+  exist.** The macro raises an error when the `knowledge/` tree did not change, so such a
+  source is counted as a curation failure. The report says *"Curation rolled back; raw
+  source retained"* and includes the raw source id and commit when available. It never
+  claims that nothing was added or that the base is unchanged. This is the single
+  behaviour the issue is about, and `a_run_that_curated_nothing_never_reads_as_ingested`
+  pins it.
 
 ## Provider selection: reported, never substituted
 
@@ -133,9 +136,10 @@ cargo test -p biorouter --lib security::sensitive_ops
 ```
 
 Three of the `source_ingest` tests drive the **real macro** against a temporary knowledge
-base and assert on files on disk: a batch of local documents produces curated pages and
-commits; a source that curates nothing aborts and is reported as a failure with no page
-left behind; and one failing source does not discard the others.
+base and assert on files and history: a batch of local documents produces curated pages
+and separate raw/curation commits; a source that curates nothing retains its raw source and
+raw commit while leaving no curated page or curation commit behind; and one failing source
+does not discard the others.
 
 ## Still open
 

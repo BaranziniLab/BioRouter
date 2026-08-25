@@ -1,11 +1,9 @@
 # The tool bridge
 
-> **What this is.** How BioRouter's own extensions — SPOKE, UCSF OMOP, knowledge, Auto Visualiser,
-> any marketplace plugin — reach a child coding agent while BioRouter still executes them behind
-> its inspectors, permission mode, `.biorouterignore`, vault and privacy gates. Why MCP is the only
-> channel that can do this, why the capability travels in the URL rather than a header, how a
-> bridged call becomes a visible tool card without being executed twice, and how a call needing
-> human approval is put to a person and resumed.
+> **What this is.** How BioRouter gives subscription-authenticated coding agents an audited
+> Workspace/Knowledge subset and bounded workflow tools while withholding arbitrary host-reading
+> extensions. It also explains the gate stack, capability URL, mirrored tool cards and approval
+> flow.
 > **Status:** Current.
 > **Audience:** developers working on the coding-agent providers, the extension layer, or the
 > daemon's routes.
@@ -13,9 +11,10 @@
 `claude` and `codex` are complete agents: they run their own loop and execute their own file and
 shell tools. BioRouter switches those off, because a tool the child runs itself is invisible to
 BioRouter's inspectors, permission modes, `.biorouterignore` and vault — see
-[what the child agent may not do](child-agent-isolation.md). But a child with no tools can do
-nothing, which is most of the point of using BioRouter at all. The bridge is how the tools come
-back, with every gate intact.
+[what the child agent may not do](child-agent-isolation.md). The bridge restores only the reviewed
+surface with every gate intact. It is not generic extension parity: developer, code-execution,
+custom, marketplace, SPOKE, OMOP and Auto Visualiser tools are not advertised to
+subscription-provider chat turns.
 
 ## MCP is the mechanism, not one option among several
 
@@ -85,8 +84,12 @@ become available to a child. That falls out of both sides already speaking MCP: 
 *are* `rmcp::model::Tool`, and `ExtensionManager::dispatch_tool_call` already takes MCP's own
 `CallToolRequestParams`. The bridge is a relay between two things that already fit.
 
-The consequence worth stating plainly: **a new extension, a BAAM marketplace plugin or a future
-built-in tool works the moment it loads.** One bridge, zero per-tool work.
+The consequence worth stating plainly: the relay is generic, but the subscription boundary is an
+allowlist. Chat children receive an audited `workspace` subset and the `knowledge` surface; generic
+and custom extensions are withheld because they may read arbitrary host files, including the credential
+file the vendor CLI must retain. Adding another surface requires an isolation review, not merely
+loading a plugin. The bridge enforces its advertised list again at `tools/call`, so an unadvertised
+name cannot be invoked directly to bypass this boundary.
 
 Verified against a 60-tool surface — both CLIs accepted a 73-character prefixed tool name, a schema
 using `$defs`/`$ref`/`oneOf`, an image result, and a `ui://` embedded resource, all passed through
@@ -111,9 +114,9 @@ Stop, without the hooks manager a `PreToolUse` rewrite cannot be collected, and 
 | Permission mode | The inspectors' permission decision is honoured: denied is refused, "no decision was reached" is refused too (an absent decision must never read as approval), and `needs_approval` is [put to a person](#a-call-needing-approval-is-put-to-a-person-and-the-call-waits-107) rather than refused. |
 | Privacy Gate C | `dispatch_tool_call` is the one choke point every tool call passes through, and a bridged call goes through it with the turn's `CallCapability`. |
 | `PreToolUse` hook rewrites | Applied and then **re-judged**. The hooks have already run inside the inspector pass, so their `updatedInput` is collected and applied, and every inspector except the hook one re-runs on the rewritten arguments — otherwise a hook would be a hole straight through the security and permission gates, which only ever saw what the child's model asked for. The rewrite is taken scoped to this call's own request id, because the staging buffer is per session and bridged calls run concurrently. |
-| `text_editor` path jail | Pointed at **this** grant's mode before anything is dispatched. The jail is a process-global atomic whose only other setter is the agent's own inspection batch, which a coding-agent turn never reaches — so without this a bridged call ran under whatever the last session in the process left behind. It is correct at the instant it is written rather than for the duration of the call; see the residual noted below. |
+| Host file containment | Developer, code-execution and custom tools are absent from subscription grants. Separately, the ordinary Developer text editor always enforces its bound working-directory jail; there is no process-global Auto-mode relaxation for another route or session to inherit. |
 | `.biorouterignore`, vault, session working directory | Whatever BioRouter's dispatcher and inspectors already enforce, because BioRouter is the process executing the tool. A `{{vault:NAME}}` in the arguments is resolved on the leaf dispatch path, after the call has been judged and immediately before it runs — the same position the agent's own path uses, so the inspectors and the user's hooks never see the decrypted secret. |
-| Cancellation | The grant carries the turn's own token and hands it to `dispatch_tool_call`. Issue #72's process-tree kill, `AppState::cancel_turn` and the websocket `TurnGuard` all reach a running tool through that one token, so a token minted at the dispatch site would leave all three pulling on nothing — the user presses Stop, the child dies, and the `developer__shell` it launched keeps running detached. |
+| Cancellation | The grant carries the turn's own token and hands it to `dispatch_tool_call`. Stop therefore reaches parking Workspace/Knowledge calls; delegated background children have their own visible session and cancellation route so they can survive one provider invocation while the parent continues supervising them. |
 
 ⚠ **The inspector pass is why this is not a thin proxy onto `ExtensionManager`.**
 `POST /agent/call_tool` *is* that thin proxy, and its own comment records the cost: it bypasses the
@@ -124,14 +127,8 @@ The privacy capability is **sampled once**, when the grant is issued, and thread
 gate on this path asks the sampled capability rather than re-reading the master switch — a second
 read is precisely the race `CallCapability` exists to close.
 
-⚠ **Two residuals, recorded rather than implied away.** The path jail is one process-global atomic
-shared by every session, and between the write and the dispatch the call awaits through the
-inspector pass — which executes the user's `PreToolUse` hooks as real shell commands. A concurrent
-writer in that window (another bridged call in another session, or an ordinary agent turn) can flip
-it, so an Approve-mode session's write can still land with the jail down. The agent's own path has
-the identical window; what the bridge changes is the frequency, from once per batch of the model's
-tool calls to once per bridged tool call. Closing it means making the jail per-call state instead of
-a process global. Separately, a hook's `additionalContext` and `systemMessage` have **nowhere to go**
+⚠ **One residual, recorded rather than implied away.** A hook's `additionalContext` and
+`systemMessage` have **nowhere to go**
 on this path — the model that made the call lives in another process, and the tool result is data
 rather than a channel for out-of-band prose — so the bridge drops its own staged entries
 deliberately, rather than leaving them for the session's next ordinary turn to inject into an
@@ -299,7 +296,7 @@ Two design choices are worth knowing before touching this:
 | Marker | What ran, and under what | Where it comes from |
 | --- | --- | --- |
 | `bridged` | A BioRouter tool, executed by BioRouter's dispatcher behind every gate in the table above. | Claude Code's `tool_use`/`tool_result` frames; Codex `mcpToolCall` items whose server is `biorouter`. |
-| `child` | Something the child ran itself, under **none** of BioRouter's gates: Codex's `exec`/`apply_patch` inside its read-only sandbox, and any MCP server the user configured in their own `~/.codex/config.toml`. | Codex `commandExecution` / `fileChange` items, and `mcpToolCall` items from any other server (`crates/biorouter/src/providers/codex.rs:789-826`). |
+| `child` | An unexpected child-local execution that passed **none** of BioRouter's gates. Codex's local model tools are disabled; retaining this marker makes an upstream isolation regression or an unexpected MCP server visible instead of misattributing it to the bridge. | Codex `commandExecution` / `fileChange` items, and unexpected `mcpToolCall` items from any other server (`crates/biorouter/src/providers/codex.rs`). |
 
 Showing a `child` call is a deliberate honesty choice: it happened whether or not BioRouter drew it,
 and hiding it would be worse. It is not an endorsement, and the distinction is real rather than
@@ -331,11 +328,12 @@ So the deadline is set explicitly, per server, on both sides:
 | Claude Code | `timeout` | milliseconds | the `--mcp-config` server entry. Its own help calls it a "hard wall-clock limit per call; **progress notifications do not extend it**". |
 | Codex | `tool_timeout_sec` | seconds | the `thread/start` config override, beside the URL. `startup_timeout_sec` covers the initial connect. |
 
-`bridge::CHILD_TOOL_CALL_TIMEOUT` is what both are given, and
-`bridge::child_tool_call_budget()` is what a call may actually spend — the
-difference is the room the answer itself needs on the wire.
+`bridge::CHILD_TOOL_CALL_TIMEOUT` is what both are given: 31 minutes, just above
+the providers' own 30-minute turn ceiling so the enclosing turn always ends
+first. `bridge::child_tool_call_budget()` is the shorter ten-minute budget for
+parking tools that can return a partial result, such as approval and watch.
 
-**A tool that waits must clamp to the budget.** `BridgeGrant::call` publishes it
+**A parking tool that waits must clamp to the budget.** `BridgeGrant::call` publishes it
 in a task-local for the duration of the call, readable as
 `bridge::bridged_call_budget()`; absent means this is not a bridged call and
 nothing is holding a socket open. `workspace_watch` reads it, shortens its wait,
@@ -343,7 +341,13 @@ and **says both numbers** — the effective wait and the one that was asked for 
 because a caller told only "still running" after 50 s will read that as the answer
 to its 600-second question, and either abandon a subagent that is working fine or
 fall back to polling transcripts, which is the behaviour the tool exists to
-replace.
+replace. Coding-agent subagent delegation returns a visible background child
+session immediately. The outer BioRouter agent has an exit gate: while any such
+child is running it injects a supervision continuation instead of accepting a
+final answer. Claude Code or Codex must call `workspace_watch` and
+`workspace_read_conversation` until the child finishes. This crosses provider
+invocation timeouts without detaching the work from the parent lifecycle, and a
+user can steer or stop the child from its tab or the CLI throughout.
 
 **And a parked tool must be cancellable.** With the deadline raised, a
 `workspace_watch` can legitimately hold the child's request for ten minutes — so

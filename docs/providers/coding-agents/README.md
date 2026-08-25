@@ -16,13 +16,12 @@ no Business Associate Agreement and no zero-data-retention agreement, so protect
 information must never reach these providers, and the page explains both the rule and the
 gate that enforces it.
 
-**They are not chat-only any more.** Until issue #109, only the main chat loop
-knew how to give these two providers tools, so a knowledge ingest / query / lint
-macro, a scheduled workflow or any other bounded sub-agent run against one
-narrated its tool calls as prose and wrote nothing — and the Knowledge view
-carried a provider denylist to keep users away from it. Every one of those paths
-now goes through the same bridge, so a subscription-billed model is a first-class
-choice for tool-heavy work rather than a downgrade. See
+**They have an intentionally narrow tool surface.** Knowledge ingest, query and
+lint workflows can use their bounded workflow tools, and chat can delegate and
+supervise direct subagents plus read/query Knowledge. Developer, code-execution,
+custom, marketplace and other arbitrary host-reading extensions are withheld:
+the vendor CLI must retain its subscription credential on the host, so exposing
+those tools would let model-authored input read it. See
 [the tool bridge](tool-bridge.md#the-tools-do-not-have-to-be-an-extensions-109).
 
 ## Documents
@@ -31,11 +30,11 @@ choice for tool-heavy work rather than a downgrade. See
 | --- | --- |
 | [How the coding-agent providers work](how-it-works.md) | The mechanism: what each provider spawns, where each vendor's credential lives, how the binary is found without spawning anything, how the conversation becomes one prompt, and how usage is accounted for a run that billed no tokens. |
 | [Installing and signing in](installing-and-signing-in.md) | The user-facing setup: install each CLI, sign in by running the vendor's own command yourself, the four states the settings card can show, and the `CLAUDE_CODE_COMMAND` / `CODEX_COMMAND` escape hatch when the binary lives somewhere BioRouter does not search. |
-| [The tool bridge](tool-bridge.md) | How BioRouter's extensions — SPOKE, UCSF OMOP, knowledge, Auto Visualiser, any marketplace plugin — reach the child over MCP while BioRouter still executes them behind its inspectors, permission mode, `.biorouterignore`, vault and privacy gates. Why MCP is the only channel that can do this, why the capability travels in the URL, and how a bridged call becomes a visible tool card without being executed a second time. |
+| [The tool bridge](tool-bridge.md) | How the audited Workspace and Knowledge subsets, plus bounded workflow-owned tools, reach the child over MCP while BioRouter still executes them behind its gates; and why arbitrary host-reading extensions are deliberately excluded. |
 | [What the child agent may not do](child-agent-isolation.md) | The isolation flags, each of which is security-relevant rather than hygiene: the hostile-fixture result behind `--setting-sources ""`, the measured MCP leak behind `--strict-mcp-config`, why `--tools ""` is not a substitute for either, and why `--bare` must never be passed. |
 | [Compliance: vendor terms, BAA and PHI](compliance.md) | The most important page. What Anthropic's terms permit and forbid, the current state of subscription usage limits for `claude -p`, the unresolved OpenAI position, and why both providers are `ProviderTier::Public` so the privacy bind gate keeps them away from clinical sessions. |
 | [Performance, limits and known gaps](performance-and-limits.md) | Measured latency and prompt overhead, the cost of a large tool surface, why conversation history is flattened rather than replayed, what the streaming path does and does not change, and the failure modes worth recognising. |
-| [Streaming and tool-call parity](streaming-and-tool-call-parity.md) | **Status: Partly implemented.** The design record for the streaming path and the mirror: why both providers used to be blocking, the three designs considered and why the mirror won, and the phased plan — phases 0–4 shipped, 5–7 in progress. Its "what shipped" section is the current inventory of what is done and what was deliberately deferred. |
+| [Streaming and tool-call parity](streaming-and-tool-call-parity.md) | **Status: Implemented.** The design record for streaming, mirrored tool calls, interactive approval, cancellation, and live steering. Its older phased analysis is retained as history; the "what shipped" section is the current inventory. |
 
 Read [how it works](how-it-works.md) first if you are changing code, and
 [installing and signing in](installing-and-signing-in.md) first if you are trying to get a

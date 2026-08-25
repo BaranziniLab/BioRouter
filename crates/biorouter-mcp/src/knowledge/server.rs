@@ -494,6 +494,8 @@ impl KnowledgeServer {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
+            crate::knowledge::paths::validate_kb_id(id)
+                .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
             return Ok(Some(id.to_string()));
         }
         if !KB_PRIMARY_RESOLVING_TOOLS.contains(&tool) {
@@ -508,7 +510,12 @@ impl KnowledgeServer {
         // kb_id is not the bypass. Its error case — no id and no primary — is
         // the tool's own message and must NOT become a privacy refusal, so
         // `None` falls through and the tool answers.
-        self.primary_kb_for_context(context)
+        let primary = self.primary_kb_for_context(context)?;
+        if let Some(id) = primary.as_deref() {
+            crate::knowledge::paths::validate_kb_id(id)
+                .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+        }
+        Ok(primary)
     }
 
     /// The KB twin of `ExtensionManager::assert_extension_reachable` (issue
@@ -3565,6 +3572,49 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n"),
             Err(e) => e.message.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn kb_id_gate_rejects_paths_before_any_store_operation() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&[]);
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outside.path().join("knowledge")).unwrap();
+        std::fs::write(
+            outside.path().join("knowledge/escaped.md"),
+            "OUTSIDE-KNOWLEDGE-SENTINEL",
+        )
+        .unwrap();
+        let outside_id = outside.path().to_string_lossy().to_string();
+
+        let explicit = call_tool_as(
+            &srv,
+            "kb_list_pages",
+            serde_json::json!({ "kb_id": outside_id }),
+            Private,
+        )
+        .await;
+        assert!(explicit.is_err(), "absolute kb_id was accepted");
+        assert!(!rendered(&explicit).contains("OUTSIDE-KNOWLEDGE-SENTINEL"));
+
+        std::fs::write(
+            crate::knowledge::paths::primary_kb_path(&root),
+            outside.path().to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        let persisted = call_tool_as(&srv, "kb_list_pages", serde_json::json!({}), Private).await;
+        assert!(persisted.is_err(), "invalid persisted primary was accepted");
+        assert!(!rendered(&persisted).contains("OUTSIDE-KNOWLEDGE-SENTINEL"));
+
+        for invalid in ["../escape", "nested/base", "UPPER"] {
+            let result = call_tool_as(
+                &srv,
+                "kb_search",
+                serde_json::json!({ "kb_id": invalid, "query": "sentinel" }),
+                Private,
+            )
+            .await;
+            assert!(result.is_err(), "invalid kb_id {invalid:?} was accepted");
         }
     }
 

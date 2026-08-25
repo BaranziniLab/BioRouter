@@ -225,8 +225,8 @@ const REGISTRY: &[Guard] = &[
                 file: "crates/biorouter/src/agents/workspace_extension.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`WorkspaceClient::refuse_unless_visible`, which four workspace tools \
-                       call: read_conversation, list, send_prompt, open",
+                what: "`WorkspaceClient::refuse_unless_visible`, shared by the read handlers \
+                       and the writable-lineage adapter",
             },
         ],
     },
@@ -235,30 +235,26 @@ const REGISTRY: &[Guard] = &[
         defined_in: VISIBILITY,
         decides: "WRITE ⇔ VIS ∧ lineage ∈ {self, child}: whether a caller may steer a session, \
                   not merely see it",
-        status: Status::Unwired(
-            "OPERATOR DECISION OUTSTANDING. §7's write row needs the lineage half, and no \
-             production code resolves a target's `parent_session_id` into a `Lineage`; see \
-             `lineage_of` below, which is unwired for the same reason. Until it exists, \
-             `workspace_close` and `workspace_set_tools` take no capability at all: a public \
-             caller can cancel a private chat's turn, evict its agent, add extensions to it \
-             and switch its provider. Wiring VIS alone here would make the other half look \
-             done, which is the choice the module doc records. What is NOT open: the provider \
-             switch cannot be used to read the target, because `Agent::update_provider` asks \
-             `bind_allowed`.",
-        ),
-        sites: &[],
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter/src/agents/workspace_extension.rs",
+            counts: c(1, 0, 0),
+            kind: SiteKind::Guard,
+            what: "the shared writable adapter used by send_prompt, set_tools and close",
+        }],
     },
     Guard {
         ident: "lineage_of",
         defined_in: VISIBILITY,
         decides: "classifies a target as self / child / other from its stored \
                   `parent_session_id`, one hop and never transitive",
-        status: Status::Unwired(
-            "Nothing in the tree resolves a `parent_session_id` into a `Lineage`, so \
-             `may_write` cannot be called correctly even by a caller that wanted to. These two \
-             rows stand or fall together.",
-        ),
-        sites: &[],
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter/src/agents/workspace_extension.rs",
+            counts: c(1, 0, 0),
+            kind: SiteKind::Guard,
+            what: "the shared writable adapter classifies the named target before `may_write`",
+        }],
     },
     Guard {
         ident: "requires_first_crossing_approval",
@@ -360,7 +356,7 @@ const REGISTRY: &[Guard] = &[
     Guard {
         ident: "gate_knowledge_active",
         defined_in: SESSION_REACH,
-        decides: "the same reach gate for `POST /knowledge/active`, as a layer rather than a \
+        decides: "the same reach gate for `GET|POST /knowledge/active`, as a layer rather than a \
                   line in the handler",
         status: Status::Wired,
         sites: &[Site {

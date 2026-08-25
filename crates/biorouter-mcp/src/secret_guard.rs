@@ -42,6 +42,8 @@ pub const DEFAULT_SECRET_PATTERNS: &[&str] = &[
     "**/*.p12",
     "**/*.pfx",
     "**/.aws/credentials",
+    "**/.codex/auth.json",
+    "**/.claude/.credentials.json",
 ];
 
 /// Object keys whose string values are treated as file paths and scanned in
@@ -441,6 +443,8 @@ mod tests {
             assert!(g.is_denied(Path::new(name)), "expected {name} to be denied");
         }
         assert!(g.is_denied(Path::new(".aws/credentials")));
+        assert!(g.is_denied(Path::new(".codex/auth.json")));
+        assert!(g.is_denied(Path::new(".claude/.credentials.json")));
         assert!(!g.is_denied(Path::new("normal.txt")));
         assert!(!g.is_denied(Path::new("data.csv")));
     }

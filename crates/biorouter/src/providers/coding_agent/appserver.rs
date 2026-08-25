@@ -65,6 +65,9 @@ pub enum Inbound {
 /// A live JSON-RPC connection to a child process.
 pub struct AppServer {
     child: tokio::process::Child,
+    /// Process-scoped files that must outlive the child. Codex uses this to
+    /// retain its isolated config home until the app server has stopped.
+    _home_guard: Option<tempfile::TempDir>,
     stdin: Arc<Mutex<ChildStdin>>,
     next_id: AtomicI64,
     pending: Pending,
@@ -86,7 +89,16 @@ impl AppServer {
     ///
     /// `cmd` must already have had its environment configured — including the
     /// subscription scrub — because this only sets the three stdio pipes.
-    pub async fn spawn(mut cmd: Command) -> Result<Self, ProviderError> {
+    pub async fn spawn(cmd: Command) -> Result<Self, ProviderError> {
+        Self::spawn_with_home(cmd, None).await
+    }
+
+    /// Spawn while retaining an isolated process home for the connection's
+    /// entire lifetime.
+    pub async fn spawn_with_home(
+        mut cmd: Command,
+        home_guard: Option<tempfile::TempDir>,
+    ) -> Result<Self, ProviderError> {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -126,6 +138,7 @@ impl AppServer {
 
         Ok(Self {
             child,
+            _home_guard: home_guard,
             stdin: Arc::new(Mutex::new(stdin)),
             next_id: AtomicI64::new(1),
             pending,

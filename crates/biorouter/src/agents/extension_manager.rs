@@ -56,8 +56,8 @@ pub const MOIM_CLOSE_TAG: &str = "</info-msg>";
 /// How an extension entry came to be loaded.
 ///
 /// BR-71 decision 21: the agent loads `workspace` for ITSELF whenever a session
-/// may delegate, with a spawn-only `available_tools`. That grant is a derived
-/// per-turn consequence of `subagents_enabled`, not a user decision, and four
+/// may delegate, with a child-supervision-only `available_tools`. That grant is
+/// a derived per-turn consequence of `subagents_enabled`, not a user decision, and four
 /// separate consumers have to tell the two apart — session persistence, the
 /// `TaskConfig` handed to a child agent, a generated workflow's extension list,
 /// and an explicit enable that arrives later and must replace it.
@@ -266,8 +266,10 @@ fn dispatch_meta(
     cap: crate::privacy::CallCapability,
     client_name: &str,
     progress_token: Option<String>,
+    workspace_child_scope_only: bool,
 ) -> McpMeta {
-    let mut meta = McpMeta::new(session_id, cap);
+    let mut meta =
+        McpMeta::new(session_id, cap).with_workspace_child_scope_only(workspace_child_scope_only);
     if let Some(token) = progress_token {
         meta = meta.with_progress_token(token);
     }
@@ -351,7 +353,7 @@ impl BundledExtensionTarget {
         }
     }
 
-    fn matches_config(&self, config: &ExtensionConfig) -> bool {
+    pub(crate) fn matches_config(&self, config: &ExtensionConfig) -> bool {
         let name = match (self.kind, config) {
             (BundledExtensionKind::Builtin, ExtensionConfig::Builtin { name, .. })
             | (BundledExtensionKind::Platform, ExtensionConfig::Platform { name, .. }) => name,
@@ -1360,8 +1362,8 @@ impl ExtensionManager {
     /// * per-app in-process servers (`inprocess`): their config is a name-only
     ///   marker that no registry can re-spawn, so replaying it would simply
     ///   fail to load. They are re-injected per connect by `configure_agent`.
-    /// * auto-injections (BR-71 decision 21): a spawn-only `workspace` grant
-    ///   derived from `subagents_enabled`, re-derived every turn. Written down
+    /// * auto-injections (BR-71 decision 21): a delegation-and-supervision
+    ///   `workspace` grant derived from `subagents_enabled`, re-derived every turn. Written down
     ///   it becomes a *dead* grant that outlives its cause — it reloads into a
     ///   session whose mode no longer enables delegation (where the dispatch
     ///   gate keys on `session_type`, not on `subagents_enabled`, so it is
@@ -1881,6 +1883,7 @@ impl ExtensionManager {
         McpClientBox,
         ExtensionConfig,
         crate::privacy::ExtensionClassification,
+        ExtensionOrigin,
     )> {
         // Issue #56 Task 16: the SAME resolver Gate E filters with. A `find` over
         // a `HashMap` returned whichever of two overlapping keys the
@@ -1895,6 +1898,7 @@ impl ExtensionManager {
             extension.get_client(),
             extension.config.clone(),
             crate::privacy::resolve_extension(name, Some(&extension.config)),
+            extension.origin,
         ))
     }
 
@@ -2491,6 +2495,17 @@ impl ExtensionManager {
         }
     }
 
+    async fn prefixed_tool_name(&self, tool_name: &str) -> String {
+        if !tool_name.contains("__")
+            && ["execute_code", "read_module", "search_modules"].contains(&tool_name)
+            && self.extensions.lock().await.contains_key("code_execution")
+        {
+            format!("code_execution__{tool_name}")
+        } else {
+            tool_name.to_string()
+        }
+    }
+
     /// Dispatch one tool call to the extension that owns it.
     ///
     /// Issue #56: `cap` is the capability this call was ADMITTED on, sampled
@@ -2507,25 +2522,13 @@ impl ExtensionManager {
         cap: crate::privacy::CallCapability,
         cancellation_token: CancellationToken,
     ) -> Result<ToolCallResult> {
-        // Some models strip the tool prefix, so auto-add it for known code_execution tools
-        let tool_name_str = tool_call.name.to_string();
-        let prefixed_name = if !tool_name_str.contains("__") {
-            let code_exec_tools = ["execute_code", "read_module", "search_modules"];
-            if code_exec_tools.contains(&tool_name_str.as_str())
-                && self.extensions.lock().await.contains_key("code_execution")
-            {
-                format!("code_execution__{}", tool_name_str)
-            } else {
-                tool_name_str
-            }
-        } else {
-            tool_name_str
-        };
+        // Some models strip the tool prefix, so auto-add it for known code_execution tools.
+        let prefixed_name = self.prefixed_tool_name(tool_call.name.as_ref()).await;
 
         // Dispatch tool call based on the prefix naming convention. The client
         // and the config that authorizes it come out of ONE snapshot — see
         // `get_client_for_tool`.
-        let (client_name, client, client_config, ext_class) = self
+        let (client_name, client, client_config, ext_class, extension_origin) = self
             .get_client_for_tool(&prefixed_name)
             .await
             .ok_or_else(|| {
@@ -2652,7 +2655,15 @@ impl ExtensionManager {
         // is what keeps the capability a value that was decided at admission
         // rather than something re-derived on the far side of the dispatch
         // semaphore, minutes later, against whatever provider is bound by then.
-        let meta = dispatch_meta(&session_id, cap, &client_name, progress_token);
+        let workspace_child_scope_only =
+            client_name == "workspace" && extension_origin == ExtensionOrigin::AutoInjected;
+        let meta = dispatch_meta(
+            &session_id,
+            cap,
+            &client_name,
+            progress_token,
+            workspace_child_scope_only,
+        );
 
         let fut = async move {
             tracing::debug!(
@@ -3943,7 +3954,7 @@ mod tests {
             )
             .await;
 
-        let (name, _client, config, class) = extension_manager
+        let (name, _client, config, class, _origin) = extension_manager
             .get_client_for_tool("guarded__forbidden")
             .await
             .expect("the extension resolves");

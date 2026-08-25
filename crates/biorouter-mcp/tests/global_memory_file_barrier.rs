@@ -24,29 +24,10 @@
 
 use biorouter_mcp::computercontroller::{CacheCommand, CacheParams};
 use biorouter_mcp::developer::rmcp_developer::TextEditorParams;
-use biorouter_mcp::{
-    global_memory_dir, set_path_jail_relaxed, ComputerControllerServer, DeveloperServer,
-};
+use biorouter_mcp::{global_memory_dir, ComputerControllerServer, DeveloperServer};
 use rmcp::handler::server::wrapper::Parameters;
 
 const SECRET: &str = "PATIENT-SECRET-8811";
-
-/// Re-engages the jail on drop, so a panicking assertion cannot leave the
-/// process-wide Auto-mode flag set for whatever runs next.
-struct RelaxedJail;
-
-impl RelaxedJail {
-    fn enter() -> Self {
-        set_path_jail_relaxed(true);
-        RelaxedJail
-    }
-}
-
-impl Drop for RelaxedJail {
-    fn drop(&mut self) {
-        set_path_jail_relaxed(false);
-    }
-}
 
 /// Point the whole process's memory store at a temp root and plant one global
 /// memory in it. Returns the guard, the store dir and the planted file.
@@ -89,9 +70,7 @@ fn text_editor(command: &str, path: &str) -> Parameters<TextEditorParams> {
 async fn text_editor_cannot_read_the_global_memory_store() {
     let root = tempfile::tempdir().unwrap();
     let (_env, _store, file) = planted_store(root.path());
-    let _jail = RelaxedJail::enter();
-
-    let server = DeveloperServer::new();
+    let server = DeveloperServer::new().with_working_dir(root.path().to_path_buf());
     let result = server
         .text_editor(text_editor("view", &file.to_string_lossy()))
         .await;
@@ -115,9 +94,7 @@ async fn text_editor_cannot_read_the_global_memory_store() {
 async fn text_editor_cannot_write_or_edit_the_global_memory_store() {
     let root = tempfile::tempdir().unwrap();
     let (_env, store, file) = planted_store(root.path());
-    let _jail = RelaxedJail::enter();
-
-    let server = DeveloperServer::new();
+    let server = DeveloperServer::new().with_working_dir(root.path().to_path_buf());
     for command in ["write", "str_replace", "insert", "undo_edit"] {
         let result = server
             .text_editor(text_editor(command, &file.to_string_lossy()))
@@ -153,9 +130,7 @@ async fn text_editor_cannot_write_or_edit_the_global_memory_store() {
 async fn the_whole_store_directory_is_refused_not_just_its_files() {
     let root = tempfile::tempdir().unwrap();
     let (_env, store, _file) = planted_store(root.path());
-    let _jail = RelaxedJail::enter();
-
-    let server = DeveloperServer::new();
+    let server = DeveloperServer::new().with_working_dir(root.path().to_path_buf());
     for path in [
         store.clone(),
         store.join("nested").join("deep.txt"),
@@ -180,7 +155,6 @@ async fn the_whole_store_directory_is_refused_not_just_its_files() {
 async fn ordinary_files_are_untouched_by_the_barrier() {
     let root = tempfile::tempdir().unwrap();
     let (_env, store, _file) = planted_store(root.path());
-    let _jail = RelaxedJail::enter();
 
     // A sibling of the store, and a file whose name merely mentions memory.
     let sibling = store.parent().unwrap().join("memories-notes.txt");
@@ -189,7 +163,7 @@ async fn ordinary_files_are_untouched_by_the_barrier() {
     std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
     std::fs::write(&elsewhere, "ORDINARY\n").unwrap();
 
-    let server = DeveloperServer::new();
+    let server = DeveloperServer::new().with_working_dir(root.path().to_path_buf());
     for path in [sibling, elsewhere] {
         let result = server
             .text_editor(text_editor("view", &path.to_string_lossy()))
@@ -211,6 +185,7 @@ async fn ordinary_files_are_untouched_by_the_barrier() {
     let local_file = local.join("development.txt");
     std::fs::write(&local_file, "ORDINARY\n").unwrap();
     let result = DeveloperServer::new()
+        .with_working_dir(root.path().to_path_buf())
         .text_editor(text_editor("view", &local_file.to_string_lossy()))
         .await;
     assert!(

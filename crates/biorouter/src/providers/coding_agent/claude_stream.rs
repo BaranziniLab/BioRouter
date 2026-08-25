@@ -177,6 +177,11 @@ pub(crate) enum RoutedFrame {
         /// does not, so that it stays free of provider errors and stays pure.
         api_key_source: Option<String>,
     },
+    /// A user message echoed because the child was started with
+    /// `--replay-user-messages`. The provider uses this as the vendor-side
+    /// acknowledgement that a live steer left stdin and entered Claude's turn
+    /// queue.
+    UserReplay(String),
     /// The terminal `result` frame.
     Terminal(TerminalFrame),
     /// Nothing for the caller to do: a known-but-inert frame, a duplicate
@@ -353,8 +358,9 @@ pub(crate) struct ClaudeStreamRouter {
 }
 
 impl ClaudeStreamRouter {
-    /// A router for one turn. Not reusable across turns: the terminal frame and
-    /// the counters describe a single child run.
+    /// A router for one child process. Stream-json steering can put several
+    /// vendor turns in that process; per-message state resets on each
+    /// `message_start`, while the counters intentionally describe the whole run.
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -538,6 +544,13 @@ impl ClaudeStreamRouter {
     fn route_user(&mut self, frame: &Value) -> RoutedFrame {
         if is_subagent(frame) {
             return RoutedFrame::Ignored;
+        }
+        if let Some(text) = frame
+            .get("message")
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_str)
+        {
+            return RoutedFrame::UserReplay(text.to_string());
         }
         let Some(blocks) = content_blocks(frame) else {
             return RoutedFrame::Ignored;

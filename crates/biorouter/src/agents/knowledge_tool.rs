@@ -182,8 +182,8 @@ pub(crate) fn kb_caller(cap: crate::privacy::CallCapability) -> KbCaller {
     )
 }
 
-/// Resolve which KB a conversation ingest targets: `new_kb_name` creates one,
-/// else an explicit `kb_id`, else **this session's primary**.
+/// Resolve which KB an ingest targets: an explicit `kb_id`, else
+/// `new_kb_name` creates one, else **this session's primary**.
 ///
 /// It must be the session's primary, not the machine-wide pointer: every other
 /// surface writes session-scoped state, so reading the machine default here
@@ -211,35 +211,44 @@ pub(crate) fn kb_caller(cap: crate::privacy::CallCapability) -> KbCaller {
 /// It now asks [`KbCaller::can_reach`] — `tier::assert_reachable` negated,
 /// exactly what `KnowledgeServer::kb_is_out_of_reach` asks. There is no
 /// independent predicate left to keep in sync.
+///
+/// Explicit ids are checked here rather than left for the ingest pipeline. An
+/// inaccessible id gets the same answer as an absent one; otherwise the later
+/// barrier's privacy refusal confirms that the guessed base exists.
+/// `new_kb_name` always creates a fresh opaque id, so asking for a display name
+/// cannot probe whether a visible or invisible base already uses that name.
 pub(crate) fn resolve_target_kb(
     svc: &KnowledgeService,
     arguments: &Value,
     session_id: &str,
     caller: &KbCaller,
 ) -> anyhow::Result<String> {
+    if let Some(id) = arguments.get("kb_id").and_then(|v| v.as_str()) {
+        let id = id.trim();
+        let exists = svc.list_bases()?.iter().any(|base| base.id == id);
+        if !exists || !caller.can_reach(svc.root(), id) {
+            anyhow::bail!("knowledge base '{id}' does not exist");
+        }
+        return Ok(id.to_string());
+    }
     if let Some(name) = arguments.get("new_kb_name").and_then(|v| v.as_str()) {
         let name = name.trim();
         if name.is_empty() {
             anyhow::bail!("new_kb_name cannot be empty");
         }
-        let id = slugify_kb_name(name);
-        if id.is_empty() {
-            anyhow::bail!("new_kb_name must contain letters or numbers");
-        }
-        if !svc.list_bases()?.iter().any(|b| b.id == id) {
+        loop {
+            let id = format!("kb-{}", uuid::Uuid::new_v4().simple());
+            if svc.list_bases()?.iter().any(|base| base.id == id) {
+                continue;
+            }
             svc.create_base(&id, name, None)?;
+            return Ok(id);
         }
-        return Ok(id);
-    }
-    if let Some(id) = arguments.get("kb_id").and_then(|v| v.as_str()) {
-        let id = id.trim();
-        if !svc.list_bases()?.iter().any(|b| b.id == id) {
-            anyhow::bail!("knowledge base '{id}' does not exist");
-        }
-        return Ok(id.to_string());
     }
     if let Some(primary) = svc.primary_for_session(Some(session_id))? {
-        return Ok(primary);
+        if caller.can_reach(svc.root(), &primary) {
+            return Ok(primary);
+        }
     }
     let ids: Vec<String> = svc
         .session_kb_ids(Some(session_id))?
@@ -495,6 +504,117 @@ mod tests {
         assert_eq!(slugify_kb_name("  Soul  "), "soul");
         assert_eq!(slugify_kb_name("a / b -- c"), "a-b-c");
         assert!(slugify_kb_name("***").is_empty());
+    }
+
+    #[test]
+    fn an_inaccessible_explicit_id_is_indistinguishable_from_an_absent_one() -> anyhow::Result<()> {
+        let present_tmp = tempfile::TempDir::new()?;
+        let present = KnowledgeService::new(present_tmp.path().to_path_buf());
+        present.create_base("restricted-fixture", "Restricted Fixture", None)?;
+        crate::knowledge::tier::raise_unlocked(present_tmp.path(), "restricted-fixture", true)?;
+
+        let absent_tmp = tempfile::TempDir::new()?;
+        let absent = KnowledgeService::new(absent_tmp.path().to_path_buf());
+        let args = serde_json::json!({ "kb_id": "restricted-fixture" });
+        let present_error = resolve_target_kb(&present, &args, "chat-9", &public_caller())
+            .unwrap_err()
+            .to_string();
+        let absent_error = resolve_target_kb(&absent, &args, "chat-9", &public_caller())
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(present_error, absent_error);
+        assert_eq!(
+            present_error,
+            "knowledge base 'restricted-fixture' does not exist"
+        );
+        assert_eq!(
+            resolve_target_kb(&present, &args, "chat-9", &private_local())?,
+            "restricted-fixture",
+            "an authorized caller must retain explicit-id access"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_new_name_has_the_same_success_shape_when_hidden_or_absent() -> anyhow::Result<()> {
+        let private_tmp = tempfile::TempDir::new()?;
+        let private = KnowledgeService::new(private_tmp.path().to_path_buf());
+        private.create_base("restricted-cohort", "Restricted Cohort", None)?;
+        crate::knowledge::tier::raise_unlocked(private_tmp.path(), "restricted-cohort", true)?;
+        crate::knowledge::tier::raise_affiliation_unlocked(
+            private_tmp.path(),
+            "restricted-cohort",
+            &CallerAffiliation::Institution("fixture-institution".to_string()),
+        )?;
+
+        let args = serde_json::json!({ "new_kb_name": "Restricted Cohort" });
+        let alongside_hidden = resolve_target_kb(&private, &args, "chat-9", &public_caller())?;
+
+        let absent_tmp = tempfile::TempDir::new()?;
+        let absent = KnowledgeService::new(absent_tmp.path().to_path_buf());
+        let alongside_absent = resolve_target_kb(&absent, &args, "chat-9", &public_caller())?;
+
+        let public_tmp = tempfile::TempDir::new()?;
+        let public = KnowledgeService::new(public_tmp.path().to_path_buf());
+        public.create_base("restricted-cohort", "Restricted Cohort", None)?;
+        let alongside_visible = resolve_target_kb(&public, &args, "chat-9", &public_caller())?;
+
+        for created in [&alongside_hidden, &alongside_absent, &alongside_visible] {
+            assert!(created.starts_with("kb-"), "non-opaque id: {created}");
+            assert_eq!(created.len(), 35, "unexpected opaque-id shape: {created}");
+            assert_ne!(created, "restricted-cohort");
+        }
+        assert_ne!(alongside_hidden, alongside_absent);
+        assert_ne!(alongside_hidden, alongside_visible);
+        assert_ne!(alongside_absent, alongside_visible);
+        assert!(private
+            .list_bases()?
+            .iter()
+            .any(|base| base.id == alongside_hidden && base.name == "Restricted Cohort"));
+        assert!(absent
+            .list_bases()?
+            .iter()
+            .any(|base| base.id == alongside_absent && base.name == "Restricted Cohort"));
+        assert!(public
+            .list_bases()?
+            .iter()
+            .any(|base| base.id == alongside_visible && base.name == "Restricted Cohort"));
+
+        let selected = serde_json::json!({
+            "kb_id": "restricted-cohort",
+            "new_kb_name": "Restricted Cohort"
+        });
+        assert_eq!(
+            resolve_target_kb(&public, &selected, "chat-9", &public_caller())?,
+            "restricted-cohort",
+            "an accessible base explicitly selected by id must not take the name-collision path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_inaccessible_primary_falls_through_to_the_filtered_candidates() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("default", "Default", None)?;
+        svc.create_base("restricted-primary", "Restricted Primary", None)?;
+        crate::knowledge::tier::raise_unlocked(tmp.path(), "restricted-primary", true)?;
+        svc.set_primary_for_session("chat-9", Some("restricted-primary"))?;
+
+        let public = resolve_target_kb(&svc, &serde_json::json!({}), "chat-9", &public_caller())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            public.contains("default"),
+            "the reachable candidate vanished: {public}"
+        );
+        assert!(!public.contains("restricted-primary"), "{public}");
+        assert_eq!(
+            resolve_target_kb(&svc, &serde_json::json!({}), "chat-9", &private_local())?,
+            "restricted-primary"
+        );
+        Ok(())
     }
 
     /// Issue #56. `resolve_target_kb` is `kb_id_or_primary`'s twin one crate

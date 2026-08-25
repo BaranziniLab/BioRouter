@@ -49,23 +49,6 @@ use super::text_editor::{
 use super::undo_history::{self, FileHistory};
 use std::time::Duration;
 
-/// Process-global switch for the `text_editor` working-directory containment
-/// jail (see [`DeveloperServer::resolve_path`]).
-///
-/// The `biorouter` agent sets this from the **live** `BioRouterMode` before it
-/// dispatches each tool batch: `true` in `Auto` ("Fully Automatic") mode,
-/// `false` in every other mode. In Auto mode the agent's `SensitiveOpsInspector`
-/// already routes writes to sensitive system paths through the approval flow, so
-/// the additional path jail would only reject *legitimate* writes outside the
-/// session working directory (e.g. to `/tmp`) — the exact false-rejection the
-/// 2026-07-19 tool-errors audit found. The **policy** (which mode relaxes the
-/// jail) lives in `biorouter`; this crate merely reads the flag it toggles, so
-/// the mode read is never duplicated here. A process global (not a per-instance
-/// field) is correct because `BioRouterMode` is itself global config, and the
-/// developer server is a long-lived pooled MCP server the agent cannot re-plumb
-/// per turn.
-static PATH_JAIL_RELAXED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 fn redirect_target_within_base(base: &Path, target: &str) -> Option<PathBuf> {
     // Path::join preserves relative targets and replaces the base for absolute
     // ones on every supported platform. Always check the resulting path: a
@@ -73,30 +56,6 @@ fn redirect_target_within_base(base: &Path, target: &str) -> Option<PathBuf> {
     // which let an out-of-tree target bypass this snapshot-only containment.
     let resolved = base.join(target);
     resolved.starts_with(base).then_some(resolved)
-}
-
-/// Relax (or re-engage) the `text_editor` working-directory jail process-wide.
-/// Called by the `biorouter` agent with `biorouter_mode == BioRouterMode::Auto`.
-pub fn set_path_jail_relaxed(relaxed: bool) {
-    PATH_JAIL_RELAXED.store(relaxed, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Read the jail's current state.
-///
-/// `pub` only so a caller can assert that it *set* the flag. The flag is
-/// process-global with no per-session copy, which makes "who wrote it last" the
-/// only thing that decides whether a write outside the working directory is
-/// rejected — and a caller that forgets to write it fails silently, in whichever
-/// direction the previous session happened to leave it. A caller that owns a
-/// dispatch path therefore needs to be able to prove it wrote the flag, and the
-/// only alternative proof is driving a real `text_editor` write in a temp
-/// directory and reading the rejection, which measures the jail rather than the
-/// wiring under test.
-///
-/// Not a policy question: nothing should *branch* on this outside the jail check
-/// below. The policy (which mode relaxes the jail) lives in `biorouter`.
-pub fn path_jail_relaxed() -> bool {
-    PATH_JAIL_RELAXED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Build a git context + version-control policy block for the extension
@@ -2347,29 +2306,17 @@ impl DeveloperServer {
     }
 
     fn resolve_path(&self, path_str: &str) -> Result<PathBuf, ErrorData> {
-        self.resolve_path_jailed(path_str, path_jail_relaxed())
+        self.resolve_path_jailed(path_str)
     }
 
-    /// Resolve `path_str` against the effective working directory, applying the
-    /// containment jail unless `jail_relaxed` is set.
-    ///
-    /// `jail_relaxed` mirrors [`BioRouterMode::Auto`] (via [`path_jail_relaxed`]):
-    /// in Auto mode the agent's `SensitiveOpsInspector` gates sensitive-path
-    /// writes through approval, so this convenience jail is skipped and any
-    /// non-sensitive target (e.g. `/tmp/out.md`) resolves instead of being
-    /// rejected as "outside the working directory". In every other mode the jail
-    /// is enforced exactly as before.
-    fn resolve_path_jailed(
-        &self,
-        path_str: &str,
-        jail_relaxed: bool,
-    ) -> Result<PathBuf, ErrorData> {
+    /// Resolve `path_str` against the effective working directory and enforce
+    /// the session's containment jail.
+    fn resolve_path_jailed(&self, path_str: &str) -> Result<PathBuf, ErrorData> {
         let expanded = expand_path(path_str);
         let path = Path::new(&expanded);
 
-        // Ask for the base only where it is actually used: an absolute path
-        // needs none, so Auto mode keeps resolving one even when the working
-        // directory is gone. A relative path is meaningless without a base.
+        // Ask for the base only where it is actually used. A relative path is
+        // meaningless without a base.
         let resolved = if is_absolute_path(&expanded) {
             path.to_path_buf()
         } else {
@@ -2381,21 +2328,13 @@ impl DeveloperServer {
         // could read, rewrite or delete a global memory — the exact disclosure
         // the #63 consent gate exists to put to the user, taken with a tool that
         // gate does not recognise. It is refused as a *place*, before the jail
-        // and regardless of it: in Auto mode the jail is relaxed, which is
-        // precisely when an absolute path into the store resolves.
+        // and independently of the containment check below.
         if crate::memory::is_in_global_memory_store(&resolved) {
             return Err(ErrorData::new(
                 ErrorCode::INVALID_PARAMS,
                 crate::memory::global_memory_store_refusal(&resolved),
                 None,
             ));
-        }
-
-        // Auto mode: the containment jail is relaxed (sensitive writes are still
-        // gated upstream by the agent's SensitiveOpsInspector), so skip the
-        // outside-working-directory check entirely.
-        if jail_relaxed {
-            return Ok(resolved);
         }
 
         // Enforcing the jail always needs the base.
@@ -2959,31 +2898,18 @@ mod tests {
         assert!(server.resolve_path("/etc/hosts").is_err());
     }
 
-    /// GATE (2026-07-19 tool-errors audit, ITER-1): in Auto mode the containment
-    /// jail is relaxed, so a write target outside the session working directory
-    /// resolves instead of being rejected as "outside the working directory".
-    /// Every other mode keeps the jail. Exercises the pure `jail_relaxed`
-    /// parameter directly (no global mutation) so it is race-free under the test
-    /// harness; the live global is driven by `biorouter`'s agent from the mode.
     #[test]
-    fn auto_mode_relaxes_path_jail_outside_working_dir() {
+    fn path_jail_cannot_be_relaxed_outside_the_working_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let server = DeveloperServer::new().with_working_dir(tmp.path().to_path_buf());
-        // A target outside the session working dir (a sibling temp dir).
         let outside = tempfile::tempdir().unwrap();
         let target = outside.path().join("br-jail-relax-probe.md");
         let target_str = target.to_str().unwrap();
 
-        // Jail enforced (non-Auto modes): rejected.
         assert!(
-            server.resolve_path_jailed(target_str, false).is_err(),
-            "with the jail enforced, an outside-working-dir path must be rejected"
+            server.resolve_path_jailed(target_str).is_err(),
+            "an outside-working-dir path must always be rejected"
         );
-        // Jail relaxed (Auto mode): the path resolves.
-        let resolved = server
-            .resolve_path_jailed(target_str, true)
-            .expect("Auto mode must relax the jail and resolve an outside path");
-        assert_eq!(resolved, target);
     }
 
     /// #2 regression, narrowed by #64: if the session dir is deleted, the editor
@@ -3009,7 +2935,7 @@ mod tests {
         let dir = tmp.path().to_path_buf();
         drop(tmp);
         let server = DeveloperServer::new().with_working_dir(dir.clone());
-        let err = server.resolve_path_jailed("scratch.txt", false).expect_err(
+        let err = server.resolve_path_jailed("scratch.txt").expect_err(
             "a relative path has no base to resolve against once the session dir is gone",
         );
 
@@ -3056,14 +2982,14 @@ mod tests {
         let probe_str = probe.to_str().unwrap().to_string();
         // Sanity: while the session dir exists the jail refuses it.
         assert!(
-            server.resolve_path_jailed(&probe_str, false).is_err(),
+            server.resolve_path_jailed(&probe_str).is_err(),
             "sanity: a path outside the session dir must be refused"
         );
 
         // The session directory disappears mid-session.
         drop(session);
 
-        let outcome = server.resolve_path_jailed(&probe_str, false);
+        let outcome = server.resolve_path_jailed(&probe_str);
 
         // The cwd is `CwdGuard`'s job now; only the env var is restored by hand.
         if let Some(v) = saved_env {
@@ -3143,10 +3069,10 @@ mod tests {
         let server = DeveloperServer::new().with_working_dir(link.clone());
         let inside = link.join("notes.txt");
         server
-            .resolve_path_jailed(inside.to_str().unwrap(), false)
+            .resolve_path_jailed(inside.to_str().unwrap())
             .expect("a stable symlinked base must keep resolving its own files");
         server
-            .resolve_path_jailed("notes.txt", false)
+            .resolve_path_jailed("notes.txt")
             .expect("and relative paths against it");
     }
 
@@ -3179,7 +3105,7 @@ mod tests {
         std::fs::write(&probe, "not for the tools").unwrap();
         let probe_str = probe.to_str().unwrap().to_string();
         assert!(
-            server.resolve_path_jailed(&probe_str, false).is_err(),
+            server.resolve_path_jailed(&probe_str).is_err(),
             "sanity: a sibling of the session dir must be refused while it exists"
         );
 
@@ -3187,7 +3113,7 @@ mod tests {
         std::fs::remove_dir_all(&session_path).unwrap();
         assert!(env_path.is_dir(), "the env base must still exist");
 
-        let outcome = server.resolve_path_jailed(&probe_str, false);
+        let outcome = server.resolve_path_jailed(&probe_str);
 
         // This test never moves the process cwd, so only the env var needs
         // restoring before the assertions can unwind.
@@ -3255,7 +3181,7 @@ mod tests {
         drop(tmp);
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            server.resolve_path_jailed("scratch.txt", false)
+            server.resolve_path_jailed("scratch.txt")
         }));
 
         if let Some(v) = saved_env {

@@ -1,23 +1,8 @@
-//! #68 regression, end-to-end: in Auto mode a file *outside* the project must
-//! not be refused because its name happens to match one of the project's own
-//! `.biorouterignore` patterns.
-//!
-//! Re-rooting the `SecretGuard` onto the session working directory (the fix for
-//! the guard half of #68) is right, but the guard's matcher was then applied to
-//! every candidate path regardless of where it sits. A bare gitignore pattern
-//! matches a basename at any depth, so `notes.txt` in the project's ignore file
-//! started denying `/somewhere/else/notes.txt` too — a path Auto mode
-//! deliberately lets past the containment jail, because sensitive writes there
-//! are gated upstream by the agent's `SensitiveOpsInspector` instead.
-//!
-//! Driven through the public `text_editor` tool, in Auto mode, with the process
-//! cwd left alone: the only thing that can deny this read is the guard.
-//!
-//! `set_path_jail_relaxed` is process-wide, so this is a single test in its own
-//! integration binary.
+//! End-to-end confinement: a pooled developer server never inherits another
+//! session's permission mode, so `text_editor` remains inside its bound project.
 
 use biorouter_mcp::developer::rmcp_developer::TextEditorParams;
-use biorouter_mcp::{set_path_jail_relaxed, DeveloperServer};
+use biorouter_mcp::DeveloperServer;
 use rmcp::handler::server::wrapper::Parameters;
 
 fn view_params(path: &str) -> Parameters<TextEditorParams> {
@@ -33,25 +18,8 @@ fn view_params(path: &str) -> Parameters<TextEditorParams> {
     })
 }
 
-/// Re-engages the jail on drop, so a panicking assertion cannot leave the
-/// process-wide Auto-mode flag set for anything that runs after it.
-struct RelaxedJail;
-
-impl RelaxedJail {
-    fn enter() -> Self {
-        set_path_jail_relaxed(true);
-        RelaxedJail
-    }
-}
-
-impl Drop for RelaxedJail {
-    fn drop(&mut self) {
-        set_path_jail_relaxed(false);
-    }
-}
-
 #[tokio::test(flavor = "current_thread")]
-async fn auto_mode_read_outside_the_project_survives_a_project_ignore_pattern() {
+async fn text_editor_refuses_reads_outside_the_bound_project() {
     let project = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
 
@@ -65,7 +33,6 @@ async fn auto_mode_read_outside_the_project_survives_a_project_ignore_pattern() 
     std::fs::write(&stranger, "READ ALLOWED").unwrap();
 
     let server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
-    let _relaxed = RelaxedJail::enter();
 
     // Sanity: the project's own rule is still enforced, so this test cannot pass
     // by the guard simply doing nothing.
@@ -79,27 +46,13 @@ async fn auto_mode_read_outside_the_project_survives_a_project_ignore_pattern() 
         refused.message
     );
 
-    // THE POINT: an ordinary file outside the project is not the project's to
-    // deny. Auto mode already let it past the containment jail.
-    let result = server
+    let refused = server
         .text_editor(view_params(stranger.to_str().unwrap()))
-        .await;
-    let out = result.unwrap_or_else(|e| {
-        panic!(
-            "a project .biorouterignore pattern denied an unrelated file outside \
-             the project: {}",
-            e.message
-        )
-    });
-    let text = out
-        .content
-        .iter()
-        .find_map(|c| c.as_text())
-        .expect("view returns text")
-        .text
-        .clone();
+        .await
+        .expect_err("an outside file must remain outside the text-editor jail");
     assert!(
-        text.contains("READ ALLOWED"),
-        "the outside file should have been read, got: {text}"
+        refused.message.contains("outside the working directory"),
+        "the refusal must name the containment boundary: {}",
+        refused.message
     );
 }

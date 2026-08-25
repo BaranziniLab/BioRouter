@@ -72,6 +72,20 @@ async fn manager_with_computercontroller() -> Arc<ExtensionManager> {
     manager
 }
 
+async fn manager_with_workspace() -> Arc<ExtensionManager> {
+    let manager = manager().await;
+    manager
+        .add_extension(ExtensionConfig::Platform {
+            name: "workspace".to_string(),
+            description: "Workspace Control".to_string(),
+            bundled: Some(true),
+            available_tools: vec![],
+        })
+        .await
+        .expect("add workspace");
+    manager
+}
+
 /// Run `execute_code` with the given JS source and return the textual result
 /// (the `Result: ...` string the agent would see). Panics on dispatch errors.
 async fn exec(manager: &Arc<ExtensionManager>, code: &str) -> String {
@@ -540,6 +554,64 @@ async fn case19_search_modules_finds_shell() {
     assert!(out.contains("import * as module_developer"), "got: {out}");
     assert!(out.contains("command: string"), "got: {out}");
     assert!(!out.contains("Use the read_module"), "got: {out}");
+}
+
+#[tokio::test]
+async fn agent_loop_subagent_is_not_importable_through_code_execution() {
+    let manager = manager_with_workspace().await;
+    let direct_tools = manager
+        .get_prefixed_tools(Some("workspace".to_string()))
+        .await
+        .expect("list workspace tools");
+    assert!(
+        direct_tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == "workspace__subagent"),
+        "positive control: delegation must remain available as a direct agent-loop tool"
+    );
+
+    let module = call_tool(
+        &manager,
+        "read_module",
+        json!({ "module_path": "workspace" }),
+    )
+    .await;
+    assert!(
+        module.contains("workspace_list"),
+        "positive control: the workspace module must remain discoverable: {module}"
+    );
+    assert!(
+        !module.contains("[\"subagent\"]"),
+        "an agent-loop-only tool must not be advertised as a callable module function: {module}"
+    );
+
+    let search = call_tool(
+        &manager,
+        "search_modules",
+        json!({ "terms": ["subagent", "delegate"] }),
+    )
+    .await;
+    assert!(
+        !search.contains("workspace/subagent"),
+        "search_modules must not direct execute_code to the non-callable extension path: {search}"
+    );
+
+    let (is_error, output) = exec_raw(
+        &manager,
+        r#"
+        import * as workspace from "workspace";
+        record_result(workspace["subagent"]({instructions: "check delegation"}));
+        "#,
+    )
+    .await;
+    assert!(
+        is_error,
+        "the agent-loop-only tool must not be callable from code"
+    );
+    assert!(
+        !output.contains("dispatched by the agent loop"),
+        "the code bridge must reject the call before it reaches the extension stub: {output}"
+    );
 }
 
 /// Issue #26: a search that matches nothing is an EMPTY RESULT, not a broken

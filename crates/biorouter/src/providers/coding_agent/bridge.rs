@@ -28,10 +28,12 @@
 //! MCP tools/call   ->  the inspector stack, then ExtensionManager::dispatch_tool_call
 //! ```
 //!
-//! — and a new extension, a marketplace plugin or a future tool works the moment
-//! it loads. Verified against a 60-tool surface: both CLIs accepted a 73-character
-//! prefixed name, a schema using `$defs`/`$ref`/`oneOf`, an image result, and a
-//! `ui://` embedded resource, all passed through unchanged.
+//! Chat bridges deliberately expose only an audited workspace-control subset
+//! plus knowledge queries. Generic and custom extensions could read the subscription
+//! credential the child process needs on the host, so they fail closed. The
+//! relay itself was verified against a 60-tool surface: both CLIs accepted a
+//! 73-character prefixed name, a schema using `$defs`/`$ref`/`oneOf`, an image
+//! result, and a `ui://` embedded resource, all passed through unchanged.
 //!
 //! # Transport: HTTP, and why the URL is the credential
 //!
@@ -222,17 +224,17 @@ pub struct BridgeGrant {
 /// | Claude Code | `timeout` (**milliseconds**) in the `--mcp-config` server entry. Its own help calls it a "hard wall-clock limit per call; progress notifications do not extend it". |
 /// | Codex | `mcp_servers.<name>.tool_timeout_sec` (**seconds**) in the `thread/start` config override. |
 ///
-/// Deliberately **above** [`child_tool_call_budget`] rather than equal to it:
-/// the budget is what a call may spend, and the difference is the room the
-/// answer itself needs on the wire.
-pub const CHILD_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(660);
+/// Deliberately above the providers' 30-minute turn ceiling, so the bridge is
+/// never the first layer to abandon a valid tool call. Parking tools return
+/// inside [`child_tool_call_budget`], and delegation returns a background handle
+/// immediately for the parent to supervise through the workspace collectors.
+pub const CHILD_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(31 * 60);
 
-/// How long a bridged `tools/call` may actually spend before it must answer.
+/// How long a bridged parking call may spend before it must answer.
 ///
-/// Anything on this path that waits must fit *inside* this and answer with a
-/// real result, rather than letting the deadline pass and hoping. A tool that
-/// runs past it does not get more time — it gets an abandoned request, and the
-/// model reads that as a broken server.
+/// Approval and workspace-watch calls fit inside this and answer with a real
+/// result rather than relying on the transport deadline. Delegation itself does
+/// not park: it returns a child-session handle immediately.
 pub fn child_tool_call_budget() -> Duration {
     Duration::from_secs(600)
 }
@@ -351,66 +353,6 @@ impl BridgeGrant {
         self.cancel.clone().unwrap_or_default()
     }
 
-    /// Point the developer server's `text_editor` path jail at **this grant's**
-    /// mode, before anything is dispatched.
-    ///
-    /// `biorouter_mcp::set_path_jail_relaxed` is a process-global atomic with a
-    /// single production setter: the top of `Agent::inspect_and_gate_tool_requests`,
-    /// which the agent runs before every batch of *its own* model's tool calls.
-    /// A coding-agent turn produces no such batch — the child runs its own loop
-    /// and its tool calls arrive here over MCP instead — so that line never runs
-    /// for a bridged turn, and until now nothing on this path ran in its place.
-    ///
-    /// What that left behind is a jail set by whatever ran **last** anywhere in
-    /// the process. Both directions are wrong and neither is visible from the
-    /// tool's error: an Auto-mode Codex turn following an Approve-mode chat has
-    /// its writes to `/tmp` rejected as being outside the working directory (the
-    /// exact false rejection the 2026-07-19 tool-errors audit found and the Auto
-    /// relaxation exists to prevent), while an Approve-mode bridged turn
-    /// following an Auto-mode chat writes wherever it likes with the jail down.
-    /// In a fresh daemon that has only ever served a bridged provider the flag is
-    /// still at its `false` initial value, so the first symptom users meet is the
-    /// first of those two.
-    ///
-    /// The policy itself is not restated here — `Auto ⇒ relaxed` is read off the
-    /// grant's own `mode`, the same field the inspectors below are handed, so the
-    /// value written is this call's own mode and not a second opinion about it.
-    /// Sensitive-path writes stay gated by the `SensitiveOpsInspector` in that
-    /// inspection pass either way.
-    ///
-    /// It runs before the inspectors rather than immediately before dispatch, for
-    /// the same reason the agent's does: a refused call has still touched a global
-    /// that the *next* call reads, and leaving that write until after a refusal
-    /// would make the flag's value depend on whether the previous call was allowed.
-    ///
-    /// # What this does NOT establish
-    ///
-    /// ⚠ **Correct at the instant it is written, not for the duration of the
-    /// call.** An earlier version of this note claimed the jail and the
-    /// inspection "can never disagree about which mode this call is running
-    /// under", and that is false: the flag is one process-global atomic shared by
-    /// every session, and between this write and the dispatch below the call
-    /// awaits through `inspect_tools` — which executes the user's PreToolUse
-    /// hooks as real `sh -c` commands — and through `collect_hook_rewrites`. Any
-    /// concurrent writer inside that window (another bridged call in another
-    /// session, or `Agent::inspect_and_gate_tool_requests` on an ordinary turn)
-    /// flips it, and an Approve-mode session's `text_editor` write can still run
-    /// with the jail down.
-    ///
-    /// The agent's own path has exactly the same window, so this is a residual of
-    /// the flag's design rather than something the bridge introduced — but the
-    /// bridge does make it *bigger*, and honesty about that is the point of this
-    /// paragraph: the agent writes once per batch of the model's tool calls,
-    /// while this writes once per bridged tool call, which for co-resident
-    /// sessions is a materially higher collision rate. Closing it properly means
-    /// making the jail per-call state rather than a process global — the
-    /// `CallCapability` treatment, applied to a second global — and that is a
-    /// change to `biorouter_mcp`'s developer server, not to this file. Not doing
-    /// it here is deliberate; not writing it down was the defect.
-    fn sync_path_jail(&self) {
-        biorouter_mcp::set_path_jail_relaxed(self.mode == BioRouterMode::Auto);
-    }
-
     /// Run one bridged tool call through the full gate stack.
     ///
     /// The inspector pass is the reason this is not a thin proxy onto
@@ -461,9 +403,17 @@ impl BridgeGrant {
         request_id: String,
         call: CallToolRequestParams,
     ) -> Result<CallToolResult, String> {
-        self.sync_path_jail();
-
         let name = call.name.to_string();
+        if !self
+            .tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == name.as_str())
+        {
+            return Err(format!(
+                "`{name}` is not granted to this coding-agent turn. Only tools returned by \
+                 this bridge's tools/list response may be called."
+            ));
+        }
         let mut requests = vec![ToolRequest {
             id: request_id,
             tool_call: Ok(call),
@@ -519,7 +469,9 @@ impl BridgeGrant {
         let mut call = approved
             .tool_call
             .map_err(|e| format!("`{name}` was approved but is not a usable call: {e}"))?;
-        self.apply_vault(&mut call);
+        if !crate::agents::agent::is_spawn_tool_call(call.name.as_ref()) {
+            self.apply_vault(&mut call);
+        }
 
         self.dispatcher
             .dispatch(
@@ -1031,9 +983,8 @@ mod tests {
     /// other test in this file would still pass.
     #[tokio::test]
     async fn a_grant_with_no_permission_inspector_refuses_rather_than_allows() {
-        // `call()` writes the process-global path jail on its way in, so this
-        // shares the lock with the test that asserts on that flag even though it
-        // asserts nothing about it itself.
+        // Keep stateful bridge tests from sharing their process-global action and
+        // hook registries concurrently.
         let _guard = path_jail_lock().await;
         let grant = dummy_grant();
         let call = CallToolRequestParams {
@@ -1051,6 +1002,21 @@ mod tests {
             refusal.contains("no permission decision"),
             "the refusal should name the missing decision, got: {refusal}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_child_cannot_call_a_tool_omitted_from_its_grant() {
+        let grant = dummy_grant();
+        let refusal = grant
+            .call(CallToolRequestParams {
+                name: "code_execution__execute_code".into(),
+                arguments: Some(serde_json::Map::new()),
+                meta: None,
+                task: None,
+            })
+            .await
+            .expect_err("tools/call must be a subset of this grant's tools/list");
+        assert!(refusal.contains("not granted"), "got: {refusal}");
     }
 
     /// Cancelling the turn must cancel a tool the bridged child started.
@@ -1177,7 +1143,7 @@ mod tests {
             extensions,
             Arc::new(inspections_with(&hooks, false)),
             test_capability(),
-            vec![],
+            granted_developer_tools(),
             Conversation::new_unvalidated(vec![]),
             Some(turn.clone()),
             hooks,
@@ -1234,72 +1200,6 @@ mod tests {
             ended.is_ok(),
             "the cancelled bridged call never returned to the child"
         );
-    }
-
-    /// A bridged call jails `text_editor` by ITS OWN session's mode.
-    ///
-    /// The flag is a process-global atomic whose one production setter sits at the
-    /// top of the agent's own inspection batch, and a coding-agent turn never
-    /// reaches that line — the child runs its own loop. So before this, a bridged
-    /// call ran under whatever the previous session in the process had left, in
-    /// either direction: an Auto-mode Codex turn rejecting a legitimate `/tmp`
-    /// write, or an Approve-mode one writing anywhere with the jail down.
-    ///
-    /// Driven through `call()` rather than through `sync_path_jail()` directly,
-    /// because the defect was never in the policy — it was that nothing on this
-    /// path ran it. A test that called the helper would have passed against the
-    /// broken code the moment the helper existed.
-    ///
-    /// Every starting value here is *hostile* — the flag is left holding the
-    /// opposite of the answer before each call — so the test cannot pass by the
-    /// flag already happening to hold it.
-    ///
-    /// All four `BioRouterMode` variants, not the three that are interesting.
-    /// `SmartApprove` was missing and its absence was invisible: the policy is
-    /// `Auto ⇒ relaxed`, so a mode nobody enumerates is a mode nobody notices
-    /// moving to the other side of it, and a `matches!` widened to include it
-    /// would take the jail down for a mode whose whole purpose is to ask.
-    #[tokio::test]
-    async fn a_bridged_call_sets_the_path_jail_from_its_own_mode() {
-        // `PATH_JAIL_RELAXED` is process-global, so the grants below have to take
-        // turns; a `tokio::test` gives each its own runtime but not its own
-        // process.
-        let _guard = path_jail_lock().await;
-
-        for (mode, expected) in [
-            (BioRouterMode::Auto, true),
-            (BioRouterMode::Approve, false),
-            (BioRouterMode::SmartApprove, false),
-            (BioRouterMode::Chat, false),
-        ] {
-            // Leave the flag holding the opposite of the answer, the way a
-            // previous session of the other mode would have.
-            biorouter_mcp::set_path_jail_relaxed(!expected);
-
-            let grant = grant_in_mode(mode);
-            // The call itself is refused (no permission inspector is configured),
-            // which is deliberate: the jail must be pointed at this session before
-            // any decision is taken, so that a refusal cannot leave the next call
-            // reading a mode that is not its own.
-            let _ = grant
-                .call(CallToolRequestParams {
-                    name: "developer__text_editor".to_string().into(),
-                    arguments: None,
-                    meta: None,
-                    task: None,
-                })
-                .await;
-
-            assert_eq!(
-                biorouter_mcp::path_jail_relaxed(),
-                expected,
-                "a bridged call in {mode:?} must set the jail itself; leaving it \
-                 unset means the last session in the process decides whether this \
-                 one may write outside its working directory"
-            );
-        }
-
-        biorouter_mcp::set_path_jail_relaxed(false);
     }
 
     /// BR-19 end-to-end: a PreToolUse rewrite decides what a bridged call runs.
@@ -1609,8 +1509,113 @@ mod tests {
         assert!(
             text.contains("TP53"),
             "`{{{{vault:CHROM}}}}` must have become `17` before the query ran; an \
-             unresolved placeholder matches nothing and fails silently. got: {text}"
+            unresolved placeholder matches nothing and fails silently. got: {text}"
         );
+    }
+
+    /// Delegation arguments become another model's prompt, so resolving a vault
+    /// placeholder there would disclose the secret rather than use it in a leaf
+    /// tool. Ordinary bridged tools must keep their existing just-in-time
+    /// resolution behavior.
+    #[tokio::test]
+    async fn subagent_arguments_keep_vault_references_opaque_while_ordinary_tools_resolve_them() {
+        let _guard = path_jail_lock().await;
+
+        let hooks = no_hooks();
+        let vault = Arc::new(crate::agents::vault_refs::VaultRefs::new(HashMap::from([
+            (
+                "API_TOKEN".to_string(),
+                "synthetic-secret-value".to_string(),
+            ),
+        ])));
+        let dispatcher = Arc::new(RecordingBridgeDispatch::default());
+        let grant = BridgeGrant::new(
+            Session::default(),
+            BioRouterMode::Auto,
+            Arc::clone(&dispatcher) as Arc<dyn BridgeToolDispatch>,
+            Arc::new(inspections_with(&hooks, false)),
+            test_capability(),
+            ["workspace__subagent", "developer__shell"]
+                .into_iter()
+                .map(|name| Tool::new(name, "test tool", serde_json::Map::new()))
+                .collect(),
+            Conversation::new_unvalidated(vec![]),
+            None,
+            hooks,
+            Some(vault),
+            Arc::new(ToolRiskRegistry::new()),
+        );
+
+        grant
+            .call(CallToolRequestParams {
+                name: "workspace__subagent".to_string().into(),
+                arguments: Some(
+                    serde_json::json!({ "instructions": "{{vault:API_TOKEN}}" })
+                        .as_object()
+                        .expect("an object")
+                        .clone(),
+                ),
+                meta: None,
+                task: None,
+            })
+            .await
+            .expect("the subagent call is dispatched");
+        grant
+            .call(CallToolRequestParams {
+                name: "developer__shell".to_string().into(),
+                arguments: Some(
+                    serde_json::json!({ "command": "{{vault:API_TOKEN}}" })
+                        .as_object()
+                        .expect("an object")
+                        .clone(),
+                ),
+                meta: None,
+                task: None,
+            })
+            .await
+            .expect("the ordinary tool call is dispatched");
+
+        let calls = dispatcher.calls.lock().expect("the calls lock");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name.as_ref(), "workspace__subagent");
+        assert_eq!(
+            calls[0]
+                .arguments
+                .as_ref()
+                .and_then(|args| args.get("instructions"))
+                .and_then(serde_json::Value::as_str),
+            Some("{{vault:API_TOKEN}}"),
+            "a subagent must receive only the opaque vault reference"
+        );
+        assert_eq!(calls[1].name.as_ref(), "developer__shell");
+        assert_eq!(
+            calls[1]
+                .arguments
+                .as_ref()
+                .and_then(|args| args.get("command"))
+                .and_then(serde_json::Value::as_str),
+            Some("synthetic-secret-value"),
+            "ordinary leaf tools must still receive resolved vault values"
+        );
+    }
+
+    #[derive(Default)]
+    struct RecordingBridgeDispatch {
+        calls: std::sync::Mutex<Vec<CallToolRequestParams>>,
+    }
+
+    #[async_trait::async_trait]
+    impl BridgeToolDispatch for RecordingBridgeDispatch {
+        async fn dispatch(
+            &self,
+            _session_id: &str,
+            call: CallToolRequestParams,
+            _capability: CallCapability,
+            _cancel: CancellationToken,
+        ) -> Result<CallToolResult, String> {
+            self.calls.lock().expect("the calls lock").push(call);
+            Ok(CallToolResult::success(vec![]))
+        }
     }
 
     /// The same call with no vault installed leaves the placeholder alone.
@@ -1721,7 +1726,7 @@ mod tests {
                 Arc::clone(&self.extensions) as Arc<dyn BridgeToolDispatch>,
                 Arc::new(inspections),
                 test_capability(),
-                vec![],
+                granted_fixture_tools(),
                 Conversation::new_unvalidated(vec![]),
                 None,
                 hooks,
@@ -1880,8 +1885,7 @@ mod tests {
         ))
     }
 
-    /// Serializes every test in this module that touches the process-global path
-    /// jail.
+    /// Serializes the stateful bridge tests that share process-global registries.
     ///
     /// `tokio::sync::Mutex` rather than `std::sync::Mutex`, and not as a style
     /// preference: every holder of this guard awaits while holding it (that is
@@ -1924,23 +1928,18 @@ mod tests {
         grant_cancelled_by(None)
     }
 
-    fn grant_in_mode(mode: BioRouterMode) -> BridgeGrant {
-        BridgeGrant::new(
-            Session::default(),
-            mode,
-            Arc::new(ExtensionManager::new(
-                Arc::new(tokio::sync::Mutex::new(None)),
-                Arc::new(crate::session::SessionManager::instance()),
-            )),
-            Arc::new(ToolInspectionManager::new()),
-            test_capability(),
-            vec![],
-            Conversation::new_unvalidated(vec![]),
-            None,
-            no_hooks(),
-            None,
-            Arc::new(ToolRiskRegistry::new()),
-        )
+    fn granted_developer_tools() -> Vec<Tool> {
+        ["developer__shell", "developer__text_editor"]
+            .into_iter()
+            .map(|name| Tool::new(name, "test tool", serde_json::Map::new()))
+            .collect()
+    }
+
+    fn granted_fixture_tools() -> Vec<Tool> {
+        ["datasql__data_query", "developer__shell"]
+            .into_iter()
+            .map(|name| Tool::new(name, "test tool", serde_json::Map::new()))
+            .collect()
     }
 
     /// A manager with no hooks configured, for the tests that are not about
@@ -1981,7 +1980,7 @@ mod tests {
             Arc::clone(&db.extensions) as Arc<dyn BridgeToolDispatch>,
             Arc::new(inspections_with(&hooks, false)),
             test_capability(),
-            vec![],
+            granted_fixture_tools(),
             Conversation::new_unvalidated(vec![]),
             None,
             hooks,
@@ -2172,7 +2171,7 @@ mod tests {
             Arc::clone(&db.extensions) as Arc<dyn BridgeToolDispatch>,
             Arc::new(inspections_with(&hooks, false)),
             test_capability(),
-            vec![],
+            granted_fixture_tools(),
             Conversation::new_unvalidated(vec![]),
             Some(token.clone()),
             hooks,
@@ -2217,7 +2216,7 @@ mod tests {
             Arc::clone(&db.extensions) as Arc<dyn BridgeToolDispatch>,
             Arc::new(inspections_with(&hooks, false)),
             test_capability(),
-            vec![],
+            granted_fixture_tools(),
             Conversation::new_unvalidated(vec![]),
             None,
             hooks,
@@ -2276,7 +2275,7 @@ mod tests {
             )),
             Arc::new(ToolInspectionManager::new()),
             test_capability(),
-            vec![],
+            granted_developer_tools(),
             Conversation::new_unvalidated(vec![]),
             cancel,
             no_hooks(),

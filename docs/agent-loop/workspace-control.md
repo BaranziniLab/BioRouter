@@ -205,13 +205,27 @@ Give `session export` an identifier. With neither `--session-id` nor `--name` it
 
 `session list --subagents` reads the store for the rows but has to ask the daemon who is still live, so it marks each run `● live`, `○ done`, or — when it could not ask — `· state unknown`. It deliberately does *not* blame a missing daemon for that third state: a stripped `BIOROUTER_SERVER__SECRET_KEY` (which is what an agent-spawned shell gets) produces it with a daemon running perfectly well. The actual reason is printed once on stderr, so `--format json` on stdout stays clean.
 
-The four daemon-bound commands need one running:
+The four daemon-bound commands need one running. Steering and cancellation also
+require a user-action key whose SHA-256 digest is handed to the daemon on stdin:
 
 ```bash
-BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent
+read -r -s action_key
+printf '\n'
+printf '%s' "$action_key" | shasum -a 256 | cut -d ' ' -f 1 | \
+  BIOROUTER_SERVER__SECRET_KEY=<daemon-key> biorouterd agent
 ```
 
-It listens on `127.0.0.1:3000` unless `BIOROUTER_PORT` says otherwise, and `send`, `watch`, `attach` and `cancel` authenticate with the same `BIOROUTER_SERVER__SECRET_KEY`. `biorouterd` invents a random key when that variable is unset, in which case no client can authenticate — so set it on both sides. A mismatch shows up as HTTP 401.
+It listens on `127.0.0.1:3000` unless `BIOROUTER_PORT` says otherwise, and `send`, `watch`,
+`attach` and `cancel` authenticate with the same `BIOROUTER_SERVER__SECRET_KEY`. `biorouterd`
+invents a random key when that variable is unset, in which case no client can authenticate — so
+set it on both sides. A mismatch shows up as HTTP 401.
+
+`session attach` prompts for the raw user-action key, without echo, before it permits steering;
+`session cancel` does the same. `attach --read-only`, `watch`, and `send` do not need that proof.
+Trusted automation can pipe the key as the first line with `--user-action-key-stdin`; never put it
+in argv, an environment variable, config, or logs. The raw key is held in a zeroizing CLI buffer
+and sent only on the attached event stream, `/interrupt`, `/agent/cancel`, or the attached
+subagent's `/reply`, while the daemon retains only its digest.
 
 Use `session attach` rather than `session --resume` on a session that is running right now: resuming opens a second agent on the same conversation, and the two do not share the daemon's turn lock.
 
@@ -242,7 +256,7 @@ There is a supported way to have both halves talk to the same process, and it wo
 
 To use it:
 
-1. Start the daemon yourself and keep it running: `BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent` (prefix `BIOROUTER_PORT=<port>` for anything other than 3000).
+1. Start the daemon yourself and keep it running with the user-action digest piped on stdin, as shown above (add `BIOROUTER_PORT=<port>` for anything other than 3000).
 2. Add `"externalBiorouterd": { "enabled": true, "url": "http://127.0.0.1:3000", "secret": "<key>" }` to the app's `settings.json`, which lives in Electron's `userData` directory (`ui/desktop/src/utils/settings.ts:26`) — on macOS `~/Library/Application Support/Biorouter/settings.json`.
 3. Restart the app. The setting is read once at launch.
 4. Export the same `BIOROUTER_SERVER__SECRET_KEY` (and `BIOROUTER_PORT`, if not 3000) in the terminal you run `biorouter session` from.

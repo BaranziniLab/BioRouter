@@ -342,6 +342,23 @@ describe('KnowledgeContext', () => {
     expect(screen.getByTestId('hidden').textContent).toBe('beta');
   });
 
+  it('clears a stale primary after an empty base list has arrived', async () => {
+    mocks.listBases.mockResolvedValue({ data: [] });
+    daemon.session.hidden_kbs = [];
+    mocks.setActive.mockResolvedValue({
+      data: { kb_ids: [], primary_kb: null, active_kb: null, hidden_kbs: [] },
+    });
+
+    renderProvider();
+
+    await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('none'));
+    await waitFor(() => expect(mocks.setActive).toHaveBeenCalled());
+    expect(mocks.setActive.mock.calls[0]?.[0]?.body).toMatchObject({
+      clear_primary: true,
+      session_id: 'chat-1',
+    });
+  });
+
   // Same, by the other door: a list request that fails is not a list of zero
   // bases. Emptying the list on failure hands the prune the same false evidence.
   it('keeps the base list when a refresh fails', async () => {

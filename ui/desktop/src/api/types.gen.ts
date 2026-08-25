@@ -4142,6 +4142,10 @@ export type CancelTurnErrors = {
      */
     401: unknown;
     /**
+     * The request was not proven to come from the user
+     */
+    403: unknown;
+    /**
      * Internal server error
      */
     500: unknown;
@@ -5277,6 +5281,10 @@ export type InterruptErrors = {
      */
     400: unknown;
     /**
+     * The request was not proven to come from the user
+     */
+    403: unknown;
+    /**
      * No turn is accepting interrupts for this session
      */
     409: unknown;
@@ -5305,6 +5313,13 @@ export type GetActiveData = {
         session_id?: string | null;
     };
     url: '/knowledge/active';
+};
+
+export type GetActiveErrors = {
+    /**
+     * The named session is outside the caller's privacy reach
+     */
+    403: unknown;
 };
 
 export type GetActiveResponses = {

@@ -67,12 +67,18 @@ import crypto from 'node:crypto';
 
 const BASE = process.env.BIOROUTER_HARNESS_BASE ?? 'http://127.0.0.1:3000';
 const SECRET = process.env.BIOROUTER_SERVER__SECRET_KEY ?? 'test';
+const USER_ACTION = process.env.BIOROUTER_HARNESS_USER_ACTION ?? 'biorouter-dev-user-action';
 const LIVE = process.env.BIOROUTER_HARNESS_LIVE === '1';
 
 /** The steer injected into the running child, matched verbatim in its stream. */
-const STEER_TEXT = 'Stop at number 3 and summarize.';
+const STEER_OUTPUT_MARKER = 'STEER_APPLIED_AT_THREE';
+const STEER_TEXT =
+  `Stop the original task and reply with the exact marker ${STEER_OUTPUT_MARKER}. ` +
+  'Do this even if you already passed number 3.';
 /** The tab-composer message, matched verbatim in the child's stored rows. */
-const COMPOSER_TEXT = 'typed straight into the subagent tab';
+const COMPOSER_TEXT =
+  'typed straight into the subagent tab; make 50 separate calls to ' +
+  'knowledge__kb_list_bases, one at a time, and report each result';
 
 let failures = 0;
 let inconclusive = 0;
@@ -95,11 +101,21 @@ function inconclusiveLive(name, why) {
   inconclusive += 1;
 }
 
+function decodedValueContains(value, needle) {
+  if (typeof value === 'string') return value.includes(needle);
+  if (Array.isArray(value)) return value.some((entry) => decodedValueContains(entry, needle));
+  if (value && typeof value === 'object') {
+    return Object.values(value).some((entry) => decodedValueContains(entry, needle));
+  }
+  return false;
+}
+
 async function api(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
     ...options,
     headers: {
       'X-Secret-Key': SECRET,
+      'X-User-Action': USER_ACTION,
       'Content-Type': 'application/json',
       ...(options.headers ?? {}),
     },
@@ -258,7 +274,7 @@ const WS_OPEN_TIMEOUT_MS = 15000;
  * moment its response headers arrive. Generous, because the whole live tier runs
  * inside this window — but finite, because the alternative is no verdict.
  */
-const PARENT_TURN_TIMEOUT_MS = 300000;
+const PARENT_TURN_TIMEOUT_MS = 600000;
 
 /**
  * Open ONE long-lived observer stream and read frames from it.
@@ -611,15 +627,20 @@ async function main() {
         ? `POST /agent/update_provider → ${attached?.status} for provider=${provider} model=${model}`
         : 'no BIOROUTER_PROVIDER in the daemon config; set BIOROUTER_HARNESS_PROVIDER'
     );
-    // Ask the parent to delegate; the instruction makes the child run long
-    // enough to steer ("count slowly" + sleep-ish task).
+    // Ask the parent to delegate; separate knowledge calls create real model
+    // decision boundaries so accepting a steer without acting on it cannot pass.
     const replyDone = api('/reply', {
       method: 'POST',
       body: JSON.stringify({
         session_id: parentId,
         user_message: userMessage(
           'Use the subagent tool to delegate this task and wait for it: ' +
-            'write a haiku about each of the numbers 1 through 20, one at a time.'
+            'write a haiku about each of the numbers 1 through 12, one at a time. ' +
+            'Before every haiku, the delegated child must make a separate call to its ' +
+            'knowledge-base listing tool and wait for that result; do not batch or skip calls. ' +
+            `Never write ${STEER_OUTPUT_MARKER} unless a later user instruction explicitly tells you to. ` +
+            'After supervising the child, copy any machine-readable human_intervened marker ' +
+            'from the completion result verbatim into your final response.'
         ),
       }),
     }).then(async (r) => {
@@ -687,9 +708,9 @@ async function main() {
       //
       // The second half is one HTTP call, because `GET /agent/tools` is a thin
       // wrapper over `Agent::list_tools` — the function decision 21 lives in.
-      // It calls `ensure_spawn_extension`, which injects `workspace` with
-      // `available_tools: ["subagent"]` so delegation rides along WITHOUT the
-      // cross-session control surface (§5 blast radius unchanged).
+      // It calls `ensure_spawn_extension`, which injects delegation plus
+      // child-scoped read/watch/close without broad listing, steering,
+      // reconfiguration, or session creation.
       //
       // ⚠ Skipped, not failed, on a daemon whose operator enabled Workspace
       // Control in config — `workspace_list` is then offered and SHOULD be.
@@ -727,10 +748,21 @@ async function main() {
             'and the dispatch path disagree'
         );
         assert(
+          'delegation includes child-scoped supervision tools',
+          [
+            'workspace__workspace_watch',
+            'workspace__workspace_read_conversation',
+            'workspace__workspace_close',
+          ].every((name) => toolNames.includes(name)),
+          `automatic delegation tools were ${JSON.stringify(
+            toolNames.filter((name) => String(name).startsWith('workspace__'))
+          )}`
+        );
+        assert(
           'decision 21: the delegating session is NOT offered workspace_list',
           !toolNames.includes('workspace__workspace_list'),
           'workspace__workspace_list is advertised to a session that never enabled Workspace ' +
-            'Control — the auto-injection handed over the full surface instead of the spawn tool'
+            'Control — the auto-injection handed over the broad workspace surface'
         );
       }
 
@@ -806,11 +838,41 @@ async function main() {
             f.message?.metadata?.provenance?.kind === 'user_direct' &&
             JSON.stringify(f.message?.content ?? '').includes(STEER_TEXT)
         );
-      const { frames: steered } = await childObserver.collect(steerLanded, 30000);
+      const { frames: steered } = await childObserver.collect(steerLanded, 120000);
       assert(
         'injected steer appears in the child stream stamped user_direct',
         steerLanded(steered),
         `no user_direct Message carrying the steer text among ${steered.length} frames`
+      );
+      const steerChangedBehavior = (frames) =>
+        frames.some(
+          (f) =>
+            f.type === 'Message' &&
+            f.message?.role === 'assistant' &&
+            JSON.stringify(f.message?.content ?? '').includes(STEER_OUTPUT_MARKER)
+        );
+      const behaviorOrFinish = (frames) =>
+        steerChangedBehavior(frames) ||
+        frames.some((f) => f.type === 'Finish' || f.type === 'Error');
+      const { frames: behaviorFrames } = await childObserver.collect(
+        behaviorOrFinish,
+        300000
+      );
+      let storedBehavior = false;
+      const storedBehaviorDeadline = Date.now() + 15000;
+      while (!storedBehavior && Date.now() < storedBehaviorDeadline) {
+        storedBehavior = conversationRows((await json(`/sessions/${childId}`)).body).some(
+          (message) =>
+            message?.role === 'assistant' &&
+            JSON.stringify(message?.content ?? '').includes(STEER_OUTPUT_MARKER)
+        );
+        if (!storedBehavior) await new Promise((r) => setTimeout(r, 250));
+      }
+      assert(
+        'the running provider changes course in the same turn after the steer',
+        steerChangedBehavior(behaviorFrames) || storedBehavior,
+        `no visible assistant output carrying ${STEER_OUTPUT_MARKER}; recording ` +
+          'user_direct alone is not live steering'
       );
       await childObserver.close();
 
@@ -855,14 +917,16 @@ async function main() {
       // internal; no handler surfaces it). The queued text is harmless here
       // because the child is cancelled immediately afterwards, but a future
       // reader must not copy this as a general-purpose probe.
+      let cancellationLeaseCovered = false;
       const stillRunning = await api('/interrupt', {
         method: 'POST',
         body: JSON.stringify({ session_id: childId, text: 'keep going.' }),
       });
       if (stillRunning.status !== 202) {
-        inconclusiveLive(
+        skip(
           'cancel of the child returns cancelled:true with a turn id (Task 33 lease held)',
-          interruptStall(stillRunning.status)
+          `the behavioral run had already ended (${interruptStall(stillRunning.status)}); ` +
+            'the dedicated composer turn below tests cancellation'
         );
       } else {
         const cancel = await json('/agent/cancel', {
@@ -872,6 +936,7 @@ async function main() {
           cancel.body?.cancelled === true &&
           typeof cancel.body?.turn_id === 'string' &&
           cancel.body.turn_id.length > 0;
+        cancellationLeaseCovered = cancelHeldTheLease;
         // ⚠ The liveness probe proves the lease at time T; the cancel runs at
         // T + one round trip. `cancel_turn` returns `None` the instant the turn
         // guard drops, so a child that finished in that window answers
@@ -916,6 +981,15 @@ async function main() {
       // child's tab posts /reply, and `run_turn` must stamp it user_direct. The
       // steer above went through /interrupt, which is a different code path in a
       // different file; nothing else in this plan drives this one end to end.
+      const childAttached = await api('/agent/update_provider', {
+        method: 'POST',
+        body: JSON.stringify({ provider, model, session_id: childId }),
+      });
+      assert(
+        'the child provider is attached before the tab-composer turn',
+        childAttached.status === 200,
+        `POST /agent/update_provider → ${childAttached.status}`
+      );
       // ⚠ The child is NOT reliably idle here, and the plan's comment asserted
       // it was ("cancelled or finished, so /reply is accepted"). `/agent/cancel`
       // trips the turn's cancellation token; the loop then unwinds at its next
@@ -925,6 +999,7 @@ async function main() {
       // is never stored — so the stamping assertion below failed while the code
       // under test was blameless. Retry until the turn has actually unwound.
       let composedStatus = 0;
+      let composerBody = null;
       const composeDeadline = Date.now() + 60000;
       while (Date.now() < composeDeadline) {
         const res = await api('/reply', {
@@ -935,8 +1010,11 @@ async function main() {
           }),
         });
         composedStatus = res.status;
+        if (composedStatus !== 409) {
+          composerBody = res.text();
+          break;
+        }
         await res.text();
-        if (composedStatus !== 409) break;
         await new Promise((r) => setTimeout(r, 1000));
       }
       // Asserted so that "the message never landed" can never again read as
@@ -946,7 +1024,76 @@ async function main() {
         composedStatus === 200,
         `POST /reply → ${composedStatus} (409 = the cancelled turn never unwound)`
       );
-      const rows = conversationRows((await json(`/sessions/${childId}`)).body);
+
+      // A behavioral steer may finish too quickly to leave a cancellation
+      // window. This deliberately long composer turn tests the same child and
+      // provider without coupling lifecycle coverage to response timing.
+      let dedicatedProbe = null;
+      if (cancellationLeaseCovered) {
+        dedicatedProbe = await api('/interrupt', {
+          method: 'POST',
+          body: JSON.stringify({ session_id: childId, text: 'remain active until cancelled' }),
+        });
+      } else {
+        const dedicatedProbeDeadline = Date.now() + 30000;
+        while (Date.now() < dedicatedProbeDeadline) {
+          dedicatedProbe = await api('/interrupt', {
+            method: 'POST',
+            body: JSON.stringify({ session_id: childId, text: 'remain active until cancelled' }),
+          });
+          if (dedicatedProbe.status !== 409) break;
+          await dedicatedProbe.text();
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      }
+      if (cancellationLeaseCovered) {
+        skip(
+          'dedicated subagent cancellation probe finds the composer turn active',
+          'the steered child turn already proved addressable cancellation'
+        );
+      } else {
+        assert(
+          'dedicated subagent cancellation probe finds the composer turn active',
+          dedicatedProbe?.status === 202,
+          `POST /interrupt → ${dedicatedProbe?.status ?? 'no response'}`
+        );
+      }
+      if (dedicatedProbe?.status === 202) {
+        await dedicatedProbe.text();
+        const dedicatedCancel = await json('/agent/cancel', {
+          method: 'POST', body: JSON.stringify({ session_id: childId }),
+        });
+        if (!cancellationLeaseCovered) {
+          assert(
+            'cancel of the child returns cancelled:true with a turn id (Task 33 lease held)',
+            dedicatedCancel.body?.cancelled === true &&
+              typeof dedicatedCancel.body?.turn_id === 'string' &&
+              dedicatedCancel.body.turn_id.length > 0,
+            JSON.stringify(dedicatedCancel.body)
+          );
+        }
+      } else if (dedicatedProbe) {
+        await dedicatedProbe.text();
+      }
+      if (composerBody) {
+        await withDeadline(composerBody, 60000);
+      }
+
+      let rows = [];
+      const stampDeadline = Date.now() + 30000;
+      while (Date.now() < stampDeadline) {
+        rows = conversationRows((await json(`/sessions/${childId}`)).body);
+        if (
+          rows.some(
+            (m) =>
+              m?.metadata?.provenance?.kind === 'user_direct' &&
+              JSON.stringify(m?.content ?? '').includes(COMPOSER_TEXT)
+          )
+        ) {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
       assert(
         '/reply into a subagent session is stamped user_direct (the tab composer path)',
         rows.some(
@@ -991,9 +1138,11 @@ async function main() {
         parentReply.status === 200,
         `got ${parentReply.status} — no parent turn ran, so nothing was delegated`
       );
+      const storedParent = (await json(`/sessions/${parentId}`)).body;
       assert(
         'parent transcript reports "human_intervened":true',
-        !parentReply.timedOut && parentReply.text.includes('"human_intervened":true'),
+        !parentReply.timedOut &&
+          decodedValueContains(storedParent, '{"human_intervened":true}'),
         parentReply.timedOut
           ? `the parent turn had still not ended ${PARENT_TURN_TIMEOUT_MS / 1000} s after its ` +
             'headers arrived, with its child long cancelled — the blocking delegation never ' +
