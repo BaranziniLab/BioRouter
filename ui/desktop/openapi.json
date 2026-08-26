@@ -11805,7 +11805,7 @@
           },
           "parent_session_id": {
             "type": "string",
-            "description": "Id of the parent session that spawned this one as a subagent (BR-71).\nSibling of `diverged_from` (branch lineage): `diverged_from` records a\nuser fork; this records a delegation. `None` for non-subagent sessions.\nIt is also what the §7 capability matrix's `L` axis reads (issue #56).",
+            "description": "Id of the parent session that spawned this one as a subagent (BR-71).\nSibling of `diverged_from` (branch lineage): `diverged_from` records a\nuser fork; this records a delegation. `None` for non-subagent sessions.\nIt is what the interface groups tabs by, and what\n`refuse_unless_direct_subagent_child` reads to keep a delegation-scoped\ngrant pointed at its own children. It is NOT read by the §7 capability\nmatrix any more: that matrix had an `L` axis until lineage stopped being\na boundary for writes (issue #56).",
             "nullable": true
           },
           "privacy_reason": {

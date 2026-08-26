@@ -9406,6 +9406,7 @@ pub(crate) mod tests {
     /// that needs it most: it starts no turn, so there is no other frame of any
     /// kind heading for that tab.
     #[tokio::test]
+    #[serial_test::serial(workspace_services)]
     async fn every_injection_asks_the_targets_tab_for_a_live_feed() {
         use crate::agents::agent::TurnId;
         let c = client();
@@ -9496,6 +9497,7 @@ pub(crate) mod tests {
     /// that is about the privacy tier — would confirm to the caller's window
     /// that the named conversation exists.
     #[tokio::test]
+    #[serial_test::serial(workspace_services)]
     async fn a_refused_injection_asks_for_no_live_feed() {
         let c = client();
         let caller = c
