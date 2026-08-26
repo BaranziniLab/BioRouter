@@ -22,10 +22,15 @@ package one well.
 Biorouter uses **progressive disclosure**: load the cheap thing always, the
 expensive thing on demand:
 
-1. **Metadata (always loaded).** At session start the agent sees only each
-   skill's `name` + `description`. This is the entire always-on cost, so the
-   description must do all the triggering work.
-2. **Body (loaded on trigger).** When a description matches the task, the agent
+1. **Discovery (always on, and it is one sentence).** The always-on system
+   prompt carries a *count* of the enabled skills and the names of the tools
+   that reach them — not the catalog. The agent finds a skill by calling
+   **`searchSkills`** (or **`listSkills`** to page the catalog), and what it
+   matches against there is the `name` + `description`. So the description
+   still does all the triggering work; it simply has to survive a search rather
+   than sit permanently in front of the model, which makes concrete trigger
+   keywords more important, not less.
+2. **Body (loaded on trigger).** Once a description matches the task, the agent
    calls the **`loadSkill`** tool to pull in the full `SKILL.md` body. Keep it
    lean, because it competes with the live conversation for context.
 3. **Supporting files (loaded as needed).** Files next to `SKILL.md` are listed
@@ -74,8 +79,16 @@ as `user-invocable: true` are tolerated and ignored by the loader):
 
 | Field | Required | Standard |
 |---|---|---|
-| `name` | yes | Must equal the folder slug. Lowercase letters, numbers, hyphens; ≤ 64 chars. Avoid reserved words "anthropic"/"claude". Prefer a gerund or action phrase (`analyzing-spreadsheets`, `figure-style`), never `helper`/`utils`/`tools`. |
+| `name` | yes | Make it equal the folder slug. Lowercase letters, numbers, hyphens; ≤ 64 chars. Avoid reserved words "anthropic"/"claude". Prefer a gerund or action phrase (`analyzing-spreadsheets`, `figure-style`), never `helper`/`utils`/`tools`. |
 | `description` | yes | Non-empty, ≤ ~1024 chars. **Third person.** State both *what it does* and *when to use it*, with concrete trigger keywords. |
+
+⚠ **Those standards are authoring conventions, not validation.** The loader
+requires exactly two things: that the frontmatter parses and that `name` is
+non-empty. Nothing checks the length of `name` or `description`, nothing rejects
+a reserved word, and nothing enforces that `name` matches the folder — a skill
+whose `name` disagrees with its directory installs happily and then answers to a
+different label than the one on disk. Hold yourself to the table; the tooling
+will not.
 
 **Body standards:**
 - Keep the body **under ~500 lines**. Past that, split detail into supporting
@@ -208,6 +221,17 @@ Share a skill by zipping its folder. Accepted layouts:
 - **Single skill:** `SKILL.md` at the zip root, **or** one folder deep
   `<slug>/SKILL.md`.
 - **Bundle:** `<bundle>/<slug>/SKILL.md` (two levels deep).
+- **Declared by a manifest:** a `biorouter-package.json`,
+  `.codex-plugin/plugin.json`, `.claude-plugin/plugin.json` or
+  `skills-manifest.json` names the components explicitly, and that beats the
+  shape on disk.
+- **Ambiguous — refused until you answer:** two or more skill folders sitting
+  *loose at the archive root* with **no** manifest. That is equally the shape of
+  one package and of a folder somebody happened to zip, so Biorouter asks
+  instead of guessing. Resolve it with `--as bundle` or `--as individual` (over
+  HTTP the question comes back as a 200 with `needsChoice`, not an error). A
+  named parent directory is **not** ambiguous — putting the skills inside
+  `my-bundle/` has already said they belong together.
 
 ```bash
 # Single skill
@@ -220,9 +244,15 @@ zip -r my-skill.zip my-skill/
 Install it with the CLI or the GUI:
 
 ```bash
-biorouter skill install my-skill.zip          # add --force to overwrite an existing slug
-biorouter skill list                           # verify it registered
+biorouter skill install my-skill.zip                    # a local .zip
+biorouter skill install https://github.com/you/skills   # or a repository URL
+biorouter skill install my-skills.zip --as bundle       # answer the ambiguity above
+biorouter skill list                                    # verify it registered
 ```
+
+`install` takes one `source` argument — a path to a `.zip` **or** a repository
+URL — plus `--force` to replace an already-installed slug and
+`--as bundle|individual` for a source that could be either.
 
 In the desktop app, the **Skills** page → **Add Skill** (or drag the zip in)
 does the same, unpacking into `~/.config/biorouter/skills/<slug>/`. You can also
@@ -242,6 +272,8 @@ quickly.
 [ ] Trigger-tested in a fresh session without naming the skill (and a
     negative case), repeated for consistency
 [ ] Critical steps emit visible output so execution can be verified
-[ ] Packs as SKILL.md at root or <slug>/SKILL.md; installs cleanly via
-    `biorouter skill install`
+[ ] Packs as SKILL.md at root, <slug>/SKILL.md, or a named parent for a
+    bundle — never several skills loose at the zip root with no manifest,
+    which install refuses as ambiguous
+[ ] Installs cleanly via `biorouter skill install <zip-or-repo-url>`
 ```

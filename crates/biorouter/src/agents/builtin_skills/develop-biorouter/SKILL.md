@@ -32,7 +32,7 @@ read as application bugs, not version problems.
 After a fresh clone, install the frontend dependencies once:
 
 ```bash
-just install-deps             # npm ci in ui/desktop, yarn in documentation
+just install-deps             # npm ci in ui/desktop — the only JS tree in the repo
 ```
 
 ## Repository layout
@@ -142,8 +142,14 @@ cd ui/desktop && npm run test-e2e            # Playwright
 cargo fmt
 ./scripts/clippy-lint.sh
 cd ui/desktop && npm run lint:check
-just check-everything             # what CI gates on; the single precommit entry point
+just check-everything             # every style/lint gate in one command
 ```
+
+`just check-everything` is the single precommit entry point for **style and
+lint** — fmt, clippy, `npm run lint:check`, the OpenAPI schema check, and the
+version, brand, cross-drift and BAAM-registry checks. It runs **no tests**. Run
+`cargo test` and `npm run test:run` yourself as well before you claim a change
+is done.
 
 `npm test` with no arguments is **watch mode and never exits**. Use
 `npm run test:run` in any non-interactive context.
@@ -202,7 +208,11 @@ build.
   `## Related documentation` (see `docs/contributing/documentation-style.md`).
 - The user-facing brand spelling is **Biorouter**, capital B and lowercase r.
   `./scripts/check-brand-consistency.sh` enforces it.
-- Commit messages and PR bodies in this repo reject AI co-author trailers.
+- **Commit messages** in this repo reject AI co-author trailers. The
+  `check-commits` workflow greps every commit message in the push or pull
+  request for a `Co-Authored-By:` line naming anthropic, claude, openai,
+  chatgpt, gemini or copilot, and fails the job on a hit. Only commit messages
+  are inspected — PR bodies are not — but do not put one there either.
 
 ## Code style the reviewers apply
 

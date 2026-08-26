@@ -95,9 +95,10 @@ edge.
 
 ## Edges
 
-**Only `edges:` entries are part of the graph.** Prose may restate a
-relationship and markdown links are fine for navigation, but a relationship you
-want in the graph goes in `edges:`.
+**Only `edges:` entries carry a predicate and provenance.** Bundle-local
+markdown links and `[[…]]` links are recorded as graph edges too, but as
+*untyped* ones — so a relationship you want typed, attributed and queryable goes
+in `edges:`. A typed entry wins the tie-break against a prose link restating it.
 
 Predicates:
 

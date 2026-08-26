@@ -65,8 +65,10 @@ sympathetic tone.[^pmid-32504360]
 ```
 
 A link to a page that does not exist yet is legal and is recorded — create it when you
-know enough to write it. Do not write `[[double brackets]]`; that retired syntax is not
-part of an OKF or BioOKF knowledge base.
+know enough to write it. Do not write untyped `[[double brackets]]`: pages that already
+carry them are still read, permanently, and must not be rewritten, but do not write new
+ones. (BioOKF has its own `[[predicate:: Object | key=value]]` inline edge form. That is
+a different grammar and belongs only in a BioOKF base.)
 
 **8 — Bookkeep.** Update `index.md` so the new pages are catalogued, then
 `kb_append_log` with `kind: "ingest"` and a one-line summary plus a `delta` like

@@ -429,7 +429,6 @@ run-dev:
 # Install all dependencies (run once after fresh clone)
 install-deps:
     cd ui/desktop && npm ci
-    cd documentation && yarn
 
 ensure-release-branch:
     #!/usr/bin/env bash

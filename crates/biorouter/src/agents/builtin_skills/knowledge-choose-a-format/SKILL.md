@@ -82,11 +82,15 @@ Read its `schema.md` first: `kb_read_page { kb_id: "…", path: "schema.md" }`. 
 which format the base is in and, for BioOKF, carries the full vocabulary. Do not infer
 the format from the pages you happen to have read.
 
-Some bases predate this format entirely. They use `title:` / `kind:` frontmatter and
-`[[wiki links]]`, they keep working exactly as they always did, and Biorouter never
-rewrites them. `kb_validate_page` reports nothing for such a base — that is the correct
-answer for it, not a failure. Match the style already in the base rather than
-introducing a third one.
+Some bases predate both formats — `title:` / `kind:` frontmatter and untyped
+`[[wiki links]]`. That storage is **retired**: Biorouter purges it on startup, and until
+it has, every knowledge tool refuses such a base rather than reading it. `kb_validate_page`,
+`kb_lint` and `kb_add_raw_source` all return "uses the retired pre-OKF format; restart
+Biorouter to finish the legacy purge". If you meet one, stop and tell the user to restart
+Biorouter; do not try to repair the base yourself.
+
+`biorouter kb create` has no `--format` flag, so a base created from the terminal is
+always OKF. Use `kb_create_base` to pick BioOKF.
 
 ## Next
 
