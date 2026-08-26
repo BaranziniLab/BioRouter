@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { GENERATED_THEMES, THEME_FAMILY_IDS } from '../../styles/themes.generated';
@@ -54,7 +54,7 @@ vi.mock('docx-preview', () => ({ renderAsync: renderDocx }));
 // The non-legacy entry point, and `workerPort` rather than `workerSrc` — both
 // deliberate. jsdom has no Worker, so the component's `new Worker(...)` is
 // stubbed in the setup below.
-vi.mock('pdfjs-dist', () => ({
+vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
   getDocument: getPdfDocument,
   GlobalWorkerOptions: { workerPort: null },
 }));
@@ -91,6 +91,7 @@ function documentFile(format: ArtifactDocumentFormat) {
 describe('DocumentPreview', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal('IntersectionObserver', undefined);
     vi.stubGlobal(
       'ResizeObserver',
       class {
@@ -120,6 +121,42 @@ describe('DocumentPreview', () => {
     expect(await screen.findByLabelText('Page 1 of 2')).toBeVisible();
     expect(screen.getByLabelText('Page 2 of 2')).toBeVisible();
     await waitFor(() => expect(getPdfPage).toHaveBeenCalledTimes(2));
+    await waitFor(() => {
+      expect(document.querySelectorAll('canvas[data-rendered="true"]')).toHaveLength(2);
+    });
+  });
+
+  it('releases a PDF page canvas backing store after the page leaves the viewport margin', async () => {
+    const intersectionCallbacks: Array<(entries: Array<{ isIntersecting: boolean }>) => void> = [];
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        constructor(callback: (entries: Array<{ isIntersecting: boolean }>) => void) {
+          intersectionCallbacks.push(callback);
+        }
+
+        observe() {}
+        disconnect() {}
+        unobserve() {}
+      }
+    );
+
+    render(<DocumentPreview file={documentFile('pdf')} resolvedTheme="light" isResizing={false} />);
+
+    await screen.findByLabelText('preview.pdf PDF preview');
+    await waitFor(() => expect(intersectionCallbacks).toHaveLength(2));
+    const firstCanvas = screen.getByLabelText('Page 1 of 2').querySelector('canvas');
+    expect(firstCanvas).not.toBeNull();
+    await waitFor(() => expect(firstCanvas).toHaveProperty('width', 0));
+
+    act(() => intersectionCallbacks[0]([{ isIntersecting: true }]));
+    await waitFor(() => expect(firstCanvas!.width).toBeGreaterThan(0));
+    await waitFor(() => expect(firstCanvas).toHaveAttribute('data-rendered', 'true'));
+
+    act(() => intersectionCallbacks[0]([{ isIntersecting: false }]));
+    await waitFor(() => expect(firstCanvas).toHaveProperty('width', 0));
+    expect(firstCanvas).toHaveProperty('height', 0);
+    expect(cleanupPdfPage).toHaveBeenCalled();
   });
 
   // The regression this guards is not cosmetic and does not announce itself.
@@ -144,6 +181,23 @@ describe('DocumentPreview', () => {
     expect(options.cMapPacked).toBe(true);
   });
 
+  // pdf.js defaults `maxImageSize` to -1, meaning unlimited, and the page-level
+  // cap cannot substitute: it reads the viewport, which comes from the declared
+  // MediaBox. A 612x792 page carrying one `/Width 30000 /Height 30000` image
+  // clears that cap and still asks the worker for ~3.6 GB.
+  it('bounds the pixels pdf.js will decode for a single embedded image', async () => {
+    render(<DocumentPreview file={documentFile('pdf')} resolvedTheme="light" isResizing={false} />);
+    await screen.findByLabelText('preview.pdf PDF preview');
+
+    const { maxImageSize } = getPdfDocument.mock.calls[0][0];
+    expect(maxImageSize).toEqual(expect.any(Number));
+    expect(maxImageSize).toBeGreaterThan(0);
+    // Above a 600 DPI full-page scan (~35 MP), which this panel has to render,
+    // and far below the gigapixel decode the cap exists to refuse.
+    expect(maxImageSize).toBeGreaterThanOrEqual(35_000_000);
+    expect(maxImageSize).toBeLessThanOrEqual(100_000_000);
+  });
+
   it('renders Word documents as pages fitted to the preview width', async () => {
     render(
       <DocumentPreview file={documentFile('docx')} resolvedTheme="light" isResizing={false} />
@@ -166,6 +220,65 @@ describe('DocumentPreview', () => {
     expect(frame).toHaveAttribute('sandbox', '');
   });
 
+  it('revokes workbook blob URLs discovered after the preview unmounts', async () => {
+    let resolveWorkbook!: (sheets: string[]) => void;
+    renderWorkbook.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveWorkbook = resolve;
+        })
+    );
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: revokeObjectURL,
+    });
+    const view = render(
+      <DocumentPreview file={documentFile('xlsx')} resolvedTheme="light" isResizing={false} />
+    );
+    await waitFor(() => expect(renderWorkbook).toHaveBeenCalledOnce());
+
+    view.unmount();
+    resolveWorkbook([
+      '<html><head></head><body><img src="blob:https://preview.test/late-unmount"></body></html>',
+    ]);
+
+    await waitFor(() =>
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:https://preview.test/late-unmount')
+    );
+  });
+
+  it('revokes blob URLs from a workbook conversion invalidated by a theme change', async () => {
+    let resolveWorkbook!: (sheets: string[]) => void;
+    renderWorkbook.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveWorkbook = resolve;
+        })
+    );
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: revokeObjectURL,
+    });
+    const view = render(
+      <DocumentPreview file={documentFile('xlsx')} resolvedTheme="light" isResizing={false} />
+    );
+    await waitFor(() => expect(renderWorkbook).toHaveBeenCalledOnce());
+
+    view.rerender(
+      <DocumentPreview file={documentFile('xlsx')} resolvedTheme="dark" isResizing={false} />
+    );
+    await waitFor(() => expect(renderWorkbook).toHaveBeenCalledTimes(2));
+    resolveWorkbook([
+      '<html><head></head><body><img src="blob:https://preview.test/late-theme"></body></html>',
+    ]);
+
+    await waitFor(() =>
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:https://preview.test/late-theme')
+    );
+  });
+
   it('renders PowerPoint slides and disposes the viewer on unmount', async () => {
     const view = render(
       <DocumentPreview file={documentFile('pptx')} resolvedTheme="light" isResizing={false} />
@@ -173,6 +286,12 @@ describe('DocumentPreview', () => {
 
     expect(await screen.findByText('PowerPoint slide')).toBeInTheDocument();
     expect(renderPresentation).toHaveBeenCalledOnce();
+    await waitFor(() => {
+      expect(document.querySelector('.artifact-pptx-preview')).toHaveAttribute(
+        'data-rendered',
+        'true'
+      );
+    });
     view.unmount();
     expect(destroyPresentation).toHaveBeenCalledOnce();
   });

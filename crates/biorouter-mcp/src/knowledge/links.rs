@@ -53,10 +53,12 @@
 //! `external` node and a lint that disagreed with the picture beside it is the
 //! bug being fixed.
 //!
-//! `macros/query.rs` keeps the `[[…]]`-only view, unchanged and for the reason
-//! stated: a citation list is prose shown to the user, and `../raw/pmid-1/
-//! original.pdf` is not a citation. Widening *that* one is still its own change
-//! with its own evidence, and this header is still where it should be argued.
+//! `macros/query.rs` now reads native Markdown citations directly, but only
+//! accepts bundle page targets under `knowledge/` and rejects parent traversal.
+//! That keeps `../raw/pmid-1/original.pdf` out of the user-facing citation list
+//! without making this legacy helper mean two different things. Wiki-link
+//! compatibility still comes through [`wiki_links`], then both forms share the
+//! same page-target normalization in the query module.
 
 use crate::knowledge::okf::links::{extract_links, LinkForm, LinkRef};
 use std::collections::HashMap;
@@ -212,8 +214,8 @@ mod tests {
         assert_eq!(
             targets,
             vec!["A", "C"],
-            "the graph deriver reads markdown links; lint and query deliberately \
-             do not — see the module header"
+            "this compatibility helper deliberately excludes markdown links; \
+             graph, lint, and native query citations read them at their own boundaries"
         );
     }
 

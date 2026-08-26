@@ -8,6 +8,9 @@ const mocks = vi.hoisted(() => ({
   listSavedWorkflows: vi.fn(),
   refreshConfig: vi.fn(),
   setWorkflowSlashCommand: vi.fn(),
+  startAgent: vi.fn(),
+  setView: vi.fn(),
+  userActionHeaders: vi.fn(),
 }));
 
 vi.mock('../../workflow/workflow_management', () => ({
@@ -15,11 +18,14 @@ vi.mock('../../workflow/workflow_management', () => ({
   convertToLocaleDateString: () => 'Jul 11, 2026',
 }));
 
-vi.mock('../../hooks/useNavigation', () => ({ useNavigation: () => vi.fn() }));
+vi.mock('../../hooks/useNavigation', () => ({ useNavigation: () => mocks.setView }));
 vi.mock('../../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api')>()),
   setWorkflowSlashCommand: mocks.setWorkflowSlashCommand,
+  startAgent: mocks.startAgent,
 }));
+vi.mock('../../utils/userAction', () => ({ userActionHeaders: mocks.userActionHeaders }));
+vi.mock('../../utils/workingDir', () => ({ getInitialWorkingDir: () => '/tmp/workspace' }));
 vi.mock('../ConfigContext', () => ({
   useConfig: () => ({ refreshConfig: mocks.refreshConfig }),
 }));
@@ -31,6 +37,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.refreshConfig.mockResolvedValue(undefined);
   mocks.setWorkflowSlashCommand.mockResolvedValue({ data: undefined });
+  mocks.userActionHeaders.mockResolvedValue({ 'X-User-Action': 'proof-of-user' });
 });
 
 describe('WorkflowsView loading transition', () => {
@@ -107,5 +114,38 @@ describe('WorkflowsView loading transition', () => {
     );
     expect(screen.getByRole('button', { name: 'Create workflow' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Import workflow' })).toBeInTheDocument();
+  });
+
+  it('proves that starting a workflow came from the renderer user', async () => {
+    const workflow = { title: 'Cohort Review', description: 'Review cohort results' };
+    mocks.listSavedWorkflows.mockResolvedValueOnce([
+      {
+        id: 'workflow-1',
+        file_path: '/tmp/workflow.yaml',
+        last_modified: '2026-07-11',
+        workflow,
+      },
+    ]);
+    mocks.startAgent.mockResolvedValueOnce({ data: { id: 'workflow-session' } });
+
+    render(
+      <MemoryRouter>
+        <WorkflowsView />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(await screen.findByTitle('Use workflow'));
+
+    await waitFor(() => {
+      expect(mocks.startAgent).toHaveBeenCalledWith({
+        body: { working_dir: '/tmp/workspace', workflow },
+        headers: { 'X-User-Action': 'proof-of-user' },
+        throwOnError: true,
+      });
+    });
+    expect(mocks.setView).toHaveBeenCalledWith('pair', {
+      disableAnimation: true,
+      resumeSessionId: 'workflow-session',
+    });
   });
 });

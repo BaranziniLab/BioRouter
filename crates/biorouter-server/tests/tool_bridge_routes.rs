@@ -1181,7 +1181,7 @@ async fn a_slow_bridged_call_survives_claude_codes_per_call_deadline() {
             "biorouter": {
                 "type": "http",
                 "url": lease.url(),
-                "timeout": bridge::CHILD_TOOL_CALL_TIMEOUT.as_millis() as u64,
+                "timeout": bridge::child_tool_call_timeout().as_millis() as u64,
             }
         }
     });

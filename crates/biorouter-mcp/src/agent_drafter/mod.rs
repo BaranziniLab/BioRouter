@@ -1315,9 +1315,7 @@ fn find_biorouterd_binary() -> Option<PathBuf> {
     };
     if let Ok(p) = std::env::var("BIOROUTERD_BIN") {
         let pb = PathBuf::from(p);
-        if pb.is_file() {
-            return Some(pb);
-        }
+        return pb.is_file().then_some(pb);
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -4385,11 +4383,10 @@ br.run("hello", "#missing");
     #[tokio::test]
     #[serial_test::serial]
     async fn export_bundle_daemon_falls_back_to_thin_when_daemon_absent() {
-        // Point BIOROUTERD_BIN at a non-existent path and blank PATH so discovery
-        // fails deterministically.
-        std::env::set_var("BIOROUTERD_BIN", "/nonexistent/biorouterd-xyz");
-        let saved_path = std::env::var("PATH").ok();
-        std::env::set_var("PATH", "");
+        let _bg = EnvGuard::set(
+            "BIOROUTERD_BIN",
+            std::path::Path::new("/nonexistent/biorouterd-xyz"),
+        );
 
         let (_d, s) = server();
         let mut p = create("NoDaemon", None);
@@ -4409,11 +4406,6 @@ br.run("hello", "#missing");
             }))
             .await
             .unwrap();
-
-        std::env::remove_var("BIOROUTERD_BIN");
-        if let Some(pp) = saved_path {
-            std::env::set_var("PATH", pp);
-        }
 
         assert!(!out.path().join("payload/bin").exists(), "no daemon staged");
         assert!(text_of(&res).contains("thin export"));

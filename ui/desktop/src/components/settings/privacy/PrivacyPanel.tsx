@@ -118,8 +118,8 @@ export default function PrivacyPanel() {
         >
           <strong>Privacy tiers are off.</strong> Nothing on this machine is separating private
           chats, extensions or knowledge bases from public models, and Biorouter is not recording
-          which chats touch private material. Every badge in the app reads{' '}
-          <em>enforcement off</em> while this is the case.
+          which chats touch private material. Every badge in the app reads <em>enforcement off</em>{' '}
+          while this is the case.
         </div>
       )}
 
@@ -189,8 +189,8 @@ export default function PrivacyPanel() {
               Private is defined by the rule, not by naming a provider. */}
           <p className="text-xs text-text-muted mt-0.5">
             Chats on private models stay private: a public model can&rsquo;t read them and
-            can&rsquo;t call a private extension. A private model is one your institution hosts,
-            or one that runs on this machine.
+            can&rsquo;t call a private extension. A private model is one your institution hosts, or
+            one that runs on this machine.
           </p>
         </div>
         <Switch
@@ -240,8 +240,7 @@ export default function PrivacyPanel() {
           className="rounded-lg border border-borderStandard px-3 py-3 space-y-3"
         >
           <p className="text-sm text-text-default">
-            This turns off <strong>every</strong> privacy guardrail on this machine, for every
-            chat.
+            This turns off <strong>every</strong> privacy guardrail on this machine, for every chat.
           </p>
           {/* ⚠ The shell clause moved OUT of this list, and that is the point.
               Everything here is a consequence of turning the switch off, so

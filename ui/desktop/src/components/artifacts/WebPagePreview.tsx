@@ -1,14 +1,28 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, ExternalLink, RefreshCw, X } from '../icons/app-icons';
+import {
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  RefreshCw,
+  Share2,
+  Trash2,
+  X,
+} from '../icons/app-icons';
 import { cn } from '../../utils';
 
 export type EmbeddedBrowserState = {
   url: string;
   title: string;
+  sourceRevision: string;
   canGoBack: boolean;
   canGoForward: boolean;
   isLoading: boolean;
   error: string | null;
+};
+
+export type LiveBrowserShare = {
+  viewId: string;
+  state: EmbeddedBrowserState;
 };
 
 /**
@@ -16,9 +30,11 @@ export type EmbeddedBrowserState = {
  *
  * **This component renders no page content.** The page lives in a
  * `WebContentsView` owned by the main process — a real top-level browsing
- * context, so clicking, typing, scrolling, JS, cookies and sign-ins behave
- * exactly as they do in Chrome, and sites that refuse to be framed (about half
- * the ones this audience opens) load normally.
+ * context, so clicking, typing, scrolling, JavaScript and ordinary site cookies
+ * behave as they do in Chrome, and sites that refuse to be framed (about half
+ * the ones this audience opens) load normally. Sign-in navigations leave for
+ * the system browser because this isolated partition cannot share their callback
+ * state safely or reliably.
  *
  * What this component owns is the *hole* the native view is painted into, and
  * the chrome around it. The native view has no shared z-index with the DOM, so
@@ -32,12 +48,19 @@ export type EmbeddedBrowserState = {
 export default function WebPagePreview({
   url,
   isSuspended = false,
+  snapshotDataUrl,
   onOpenExternal,
+  onViewIdChange,
+  onAgentShareChange,
 }: {
   url: string;
   /** Hide the native view because something must paint above it. */
   isSuspended?: boolean;
+  /** A compositor snapshot shown while the native view is hidden for annotation. */
+  snapshotDataUrl?: string | null;
   onOpenExternal: (url: string) => void;
+  onViewIdChange?: (viewId: string | null) => void;
+  onAgentShareChange?: (share: LiveBrowserShare | null) => void;
 }) {
   const slotRef = useRef<HTMLDivElement | null>(null);
   const reactId = useId();
@@ -46,6 +69,7 @@ export default function WebPagePreview({
   const [addressDraft, setAddressDraft] = useState(url);
   const [isEditingAddress, setIsEditingAddress] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
+  const [sharedWithAgent, setSharedWithAgent] = useState(false);
 
   const viewId = viewIdRef.current;
   const browser = window.electron?.embeddedBrowser;
@@ -59,6 +83,7 @@ export default function WebPagePreview({
     }
     let disposed = false;
     setUnavailable(false);
+    setSharedWithAgent(false);
 
     const stopListening = browser.onState((payload) => {
       if (payload.viewId === viewId && !disposed) setState(payload.state);
@@ -71,14 +96,23 @@ export default function WebPagePreview({
         return;
       }
       setState(initial);
+      onViewIdChange?.(viewId);
     });
 
     return () => {
       disposed = true;
       stopListening();
+      onViewIdChange?.(null);
+      onAgentShareChange?.(null);
       void browser.destroy(viewId);
     };
-  }, [browser, url, viewId]);
+  }, [browser, onAgentShareChange, onViewIdChange, url, viewId]);
+
+  useEffect(() => {
+    onAgentShareChange?.(sharedWithAgent && !unavailable && state ? { viewId, state } : null);
+  }, [onAgentShareChange, sharedWithAgent, state, unavailable, viewId]);
+
+  useEffect(() => () => onAgentShareChange?.(null), [onAgentShareChange]);
 
   // Keep the native view over the slot. A ResizeObserver alone is not enough:
   // the panel can move without changing size (the window moves, the chat pane
@@ -105,8 +139,7 @@ export default function WebPagePreview({
     // Guarded like the panel's other previews: jsdom implements no
     // ResizeObserver, and the window/scroll listeners below still give correct
     // (if less responsive) behaviour without it.
-    const observer =
-      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(sync);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(sync);
     observer?.observe(slot);
     window.addEventListener('resize', sync);
     // Capture phase: a scroll anywhere in an ancestor moves the slot.
@@ -213,6 +246,21 @@ export default function WebPagePreview({
           />
         </form>
         <ToolbarButton
+          label={sharedWithAgent ? 'Stop sharing with agent' : 'Share with agent'}
+          onClick={() => setSharedWithAgent((current) => !current)}
+          icon={<Share2 className="h-3.5 w-3.5" aria-hidden="true" />}
+        />
+        <ToolbarButton
+          label="Clear site data"
+          onClick={() => {
+            if (!browser) return;
+            void browser.clearData(viewId).then((cleared) => {
+              if (cleared) control('reload');
+            });
+          }}
+          icon={<Trash2 className="h-3.5 w-3.5" aria-hidden="true" />}
+        />
+        <ToolbarButton
           label="Open in browser"
           onClick={() => onOpenExternal(state?.url || url)}
           icon={<ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />}
@@ -237,8 +285,19 @@ export default function WebPagePreview({
         ref={slotRef}
         data-testid="embedded-browser-slot"
         aria-label={state?.title || url}
-        className={cn('min-h-0 flex-1 overflow-hidden', isSuspended && 'bg-background-muted')}
-      />
+        className={cn(
+          'relative min-h-0 flex-1 overflow-hidden',
+          isSuspended && 'bg-background-muted'
+        )}
+      >
+        {snapshotDataUrl && (
+          <img
+            src={snapshotDataUrl}
+            alt="Snapshot of the live page for region selection"
+            className="absolute inset-0 h-full w-full object-fill"
+          />
+        )}
+      </div>
     </div>
   );
 }

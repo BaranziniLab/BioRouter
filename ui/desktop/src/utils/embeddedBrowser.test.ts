@@ -15,6 +15,7 @@ import { isNavigableEmbeddedUrl } from './permissionPolicy';
  */
 
 const source = readFileSync(join(__dirname, 'embeddedBrowser.ts'), 'utf8');
+const proxySource = readFileSync(join(__dirname, 'embeddedBrowserProxy.ts'), 'utf8');
 
 describe('isNavigableEmbeddedUrl', () => {
   it.each(['https://www.ucsf.edu/', 'http://example.test/path?q=1', 'https://pubmed.gov'])(
@@ -78,16 +79,76 @@ describe('the embedded session is hardened, not inherited', () => {
     // The daemon listens on loopback under a per-launch secret; a page that
     // could reach it would own the agent's tools.
     expect(source).toContain('onBeforeRequest');
-    expect(source).toContain("hostname === '127.0.0.1'");
-    expect(source).toContain("hostname === 'localhost'");
-    expect(source).toContain("protocol === 'file:'");
+    expect(source).toContain("urls: ['<all_urls>']");
+    expect(source).toContain('isAllowedEmbeddedRequestUrl(details.url)');
+    expect(source).toContain("proxyBypassRules: '<-loopback>'");
+    expect(source).toContain("setWebRTCIPHandlingPolicy('disable_non_proxied_udp')");
+    expect(proxySource).toContain('host: target.address');
+    expect(proxySource).not.toContain('host: candidate');
   });
 
-  it('sends window.open to the OS browser and blocks non-http navigation', () => {
+  it('blocks page-created windows and auth navigation without opening native dialogs', () => {
     expect(source).toContain('setWindowOpenHandler');
     expect(source).toContain("action: 'deny'");
-    expect(source).toContain("contents.on('will-navigate', blockNonHttp)");
-    expect(source).toContain("contents.on('will-redirect', blockNonHttp)");
+    expect(source).toContain("contents.on('will-navigate', guardNavigation)");
+    expect(source).toContain("contents.on('will-redirect', guardNavigation)");
+    const remoteNavigationHandlers = source.slice(
+      source.indexOf('contents.setWindowOpenHandler'),
+      source.indexOf("contents.on('did-start-loading'")
+    );
+    expect(remoteNavigationHandlers).not.toContain('requestAuthenticationConfirmation');
+    expect(remoteNavigationHandlers).not.toContain('dialog.');
+    expect(remoteNavigationHandlers).not.toContain('shell.openExternal');
+  });
+
+  it('requires exact-host native confirmation and fresh validation for external navigation', () => {
+    const confirmation = source.slice(
+      source.indexOf('async function confirmPublicExternalNavigation'),
+      source.indexOf('async function confirmExternalAuthenticationNavigation')
+    );
+    expect(confirmation).toContain('dialog.showMessageBox');
+    expect(confirmation.match(/validateExternalBrowserTarget/g)).toHaveLength(2);
+    expect(confirmation).toContain('result.response !== 1');
+    expect(confirmation).toContain('Destination hostname: ${validated.hostname}');
+    expect(confirmation).toContain('revalidated.hostname !== validated.hostname');
+    const guard = source.slice(
+      source.indexOf('const guardNavigation'),
+      source.indexOf("contents.on('will-navigate'")
+    );
+    expect(guard).not.toContain('shell.openExternal');
+  });
+
+  it('never loads initial or address-bar authentication URLs without native confirmation', () => {
+    const initialLoad = source.slice(
+      source.indexOf('void prepareEmbeddedNetwork(embedded).then'),
+      source.indexOf('return readState(entry)')
+    );
+    expect(initialLoad).toContain('isAuthenticationNavigation(initialUrl)');
+    expect(initialLoad).toContain('entry.requestAuthenticationConfirmation(initialUrl)');
+
+    const addressBarLoad = source.slice(
+      source.indexOf('export function navigateEmbeddedBrowser'),
+      source.indexOf('export function controlEmbeddedBrowser')
+    );
+    expect(addressBarLoad).toContain('isAuthenticationNavigation(url)');
+    expect(addressBarLoad).toContain('entry.requestAuthenticationConfirmation(url)');
+  });
+
+  it('routes every renderer-controlled system-browser open through the confirmation policy', () => {
+    const main = readFileSync(join(__dirname, '..', 'main.ts'), 'utf8');
+    const genericOpen = main.slice(
+      main.indexOf("ipcMain.handle('open-external'"),
+      main.indexOf("ipcMain.handle('directory-chooser'")
+    );
+    expect(genericOpen).toContain('openExternalBrowserNavigation(window, url)');
+    expect(genericOpen).not.toContain('shell.openExternal');
+
+    const legacyOpen = main.slice(
+      main.indexOf("ipcMain.on('open-in-chrome'"),
+      main.indexOf("ipcMain.on('restart-app'")
+    );
+    expect(legacyOpen).toContain('openExternalBrowserNavigation(window, url)');
+    expect(legacyOpen).not.toContain('shell.openExternal');
   });
 
   it('intercepts downloads rather than letting a page write to disk', () => {
@@ -108,6 +169,17 @@ describe('the panel keeps the native view honest', () => {
     // capturePage returns a zero-byte image for a hidden-then-navigated view
     // and does not reject, so the empty case has to be checked explicitly.
     expect(source).toContain('image.isEmpty()');
+    expect(source).toContain('revision !== sourceRevision(entry)');
+  });
+
+  it('revisions committed navigation and never returns a mixed-document text snapshot', () => {
+    expect(source).toContain("contents.on('did-navigate'");
+    expect(source).toContain("contents.on('did-navigate-in-page'");
+    expect(source).toContain('entry.revision += 1');
+    expect(source).toContain('if (contents.isLoadingMainFrame()) return null');
+    expect(source).toContain('revision !== entry.revision || url !== contents.getURL()');
+    expect(source).toContain('sourceRevision: sourceRevision(entry)');
+    expect(source).not.toMatch(/executeJavaScript\([\s\S]{0,500},\s*true\s*\)/);
   });
 
   it('tears views down with the window that owns them', () => {
@@ -121,6 +193,14 @@ describe('the panel keeps the native view honest', () => {
   it('resolves the owning window from the event sender, not from the renderer', () => {
     // Otherwise one window could drive another window's view.
     const main = readFileSync(join(__dirname, '..', 'main.ts'), 'utf8');
-    expect(main).toContain('BrowserWindow.fromWebContents(event.sender)');
+    const embeddedHandlers = main.slice(main.indexOf("'embedded-browser:create'"));
+    expect(
+      embeddedHandlers.match(/BrowserWindow\.fromWebContents\(event\.sender\)/g)?.length
+    ).toBeGreaterThanOrEqual(9);
+    expect(source).toContain('views.get(viewKey(window, viewId))');
+  });
+
+  it('answers display-capture denial instead of leaving the page pending', () => {
+    expect(source).toContain('setDisplayMediaRequestHandler((_request, callback) => callback({}))');
   });
 });

@@ -16,7 +16,9 @@ use super::{
     ollama::OllamaProvider,
     openai::OpenAiProvider,
     openrouter::OpenRouterProvider,
-    provider_binding::ProviderRestoreBinding,
+    provider_binding::{
+        ensure_no_restore_marker, PersistedStandaloneProviderBinding, ProviderRestoreBinding,
+    },
     provider_registry::ProviderRegistry,
     snowflake::SnowflakeProvider,
     tetrate::TetrateProvider,
@@ -146,10 +148,26 @@ async fn get_from_registry(name: &str) -> Result<ProviderEntry> {
 }
 
 pub async fn create(name: &str, model: ModelConfig) -> Result<Arc<dyn Provider>> {
+    ensure_no_restore_marker(&model)?;
+    create_unpersisted(name, model).await
+}
+
+pub(crate) async fn create_from_persisted(
+    name: &str,
+    model: ModelConfig,
+) -> Result<Arc<dyn Provider>> {
+    if let Some(persisted) = PersistedStandaloneProviderBinding::from_model_config(&model)? {
+        return create_provider_from_binding(persisted.into_binding(name)?, get_registry().await)
+            .await;
+    }
     if let Some(persisted) = PersistedProviderConfig::from_model_config(&model)? {
         return create_lead_worker_from_persisted(persisted, get_registry().await).await;
     }
 
+    create_unpersisted(name, model).await
+}
+
+async fn create_unpersisted(name: &str, model: ModelConfig) -> Result<Arc<dyn Provider>> {
     let config = crate::config::Config::global();
 
     if let Ok(lead_model_name) = config.get_param::<String>("BIOROUTER_LEAD_MODEL") {
@@ -1188,6 +1206,47 @@ pub(crate) mod tests {
         assert!(error
             .to_string()
             .contains("invalid persisted provider configuration"));
+    }
+
+    #[tokio::test]
+    async fn untrusted_azure_restore_markers_cannot_rebind_credentials_to_an_endpoint() {
+        let binding = ProviderRestoreBinding::VersaAzure {
+            model: restore_test_model("credential-capture"),
+            endpoint: crate::providers::provider_binding::SecretFreeEndpoint::new(
+                "https://credential-capture.invalid/exfiltrate".into(),
+            )
+            .unwrap(),
+            deployment: "credential-capture".into(),
+            api_version: "2025-04-01-preview".into(),
+            credential_source:
+                crate::providers::provider_binding::VersaAzureCredentialSource::ApiKey,
+        };
+        let standalone = PersistedStandaloneProviderBinding::new(binding)
+            .unwrap()
+            .to_model_config()
+            .unwrap();
+        let mut composite = restore_test_model("credential-capture");
+        composite.request_params = Some(std::collections::HashMap::from([(
+            crate::providers::provider_binding::RESTORE_CONFIG_KEY.into(),
+            serde_json::json!({"type": "lead_worker_v2"}),
+        )]));
+
+        for model in [standalone, composite] {
+            let error = match create("versa_azure", model).await {
+                Ok(_) => panic!("external request parameters entered the restore path"),
+                Err(error) => error,
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("reserved for trusted session state"),
+                "unexpected error: {error}"
+            );
+            assert!(
+                !error.to_string().contains("credential-capture.invalid"),
+                "the rejected endpoint leaked into the public error: {error}"
+            );
+        }
     }
 
     #[tokio::test]

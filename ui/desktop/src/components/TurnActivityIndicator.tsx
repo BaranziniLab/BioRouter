@@ -30,10 +30,7 @@ interface TurnActivityIndicatorProps {
  * for everything; the pulse degrades to a static dot. Do not add a per-component
  * check here — that fights the global rule.
  */
-export default function TurnActivityIndicator({
-  activity,
-  className,
-}: TurnActivityIndicatorProps) {
+export default function TurnActivityIndicator({ activity, className }: TurnActivityIndicatorProps) {
   const elapsedMs = useElapsedMs(activity.since);
   const showElapsed = elapsedMs !== null && elapsedMs >= ELAPSED_REVEAL_MS;
   const showNudge = elapsedMs !== null && elapsedMs >= NUDGE_MS;

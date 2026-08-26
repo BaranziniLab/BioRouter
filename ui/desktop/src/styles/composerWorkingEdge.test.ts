@@ -181,7 +181,7 @@ describe('the composer working edge', () => {
      */
     it('is set on the composer card in ChatInput', () => {
       expect(CHAT_INPUT).toContain('biorouter-composer-card');
-      expect(CHAT_INPUT).toMatch(/data-working=\{isLoading \? 'true' : undefined\}/);
+      expect(CHAT_INPUT).toMatch(/data-working=\{isWorking \? 'true' : undefined\}/);
     });
 
     it('is absent from the DOM when idle, rather than "false"', () => {

@@ -43,6 +43,22 @@ pub const RULE_CONTRADICTION: &str = "kb.contradiction";
 pub const RULE_STALE_SOURCE: &str = "kb.stale_source";
 pub const RULE_MISSING_CONCEPT_PAGE: &str = "kb.missing_concept_page";
 
+/// The base has no `knowledge/` directory, so it holds no pages at all.
+///
+/// A structural finding rather than a hygiene one, and it exists because the
+/// alternative was silence: this used to return `LintReport::default()`, which
+/// is four empty lists and no diagnostics — byte-identical to the report a
+/// *perfect* base produces. The MCP `kb_lint` tool calls [`scan`] directly
+/// rather than going through [`lint`], so a model asking about a structurally
+/// broken base was told it was healthy.
+pub const RULE_MISSING_KNOWLEDGE_DIR: &str = "kb.structure.missing-knowledge-dir";
+
+/// The base's `manifest.yaml` could not be read, so no format layer could run.
+///
+/// Distinct from a base that is *legitimately* legacy, which correctly gets no
+/// format diagnostics; see [`format_diagnostics`].
+pub const RULE_UNREADABLE_MANIFEST: &str = "kb.structure.unreadable-manifest";
+
 /// The payload of the lint stream's terminal `event: done` frame, and — since
 /// Stage 6 — a published schema.
 ///
@@ -97,7 +113,17 @@ pub(crate) fn scan_with_cancellation(
 ) -> Result<LintReport> {
     super::ensure_not_cancelled(cancel, "the lint scan")?;
     if !kb_root.join("knowledge").exists() {
-        return Ok(LintReport::default());
+        // Reported, not returned empty: see `RULE_MISSING_KNOWLEDGE_DIR`.
+        return Ok(LintReport {
+            diagnostics: Diagnostics::new(vec![Diagnostic::scan(
+                RULE_MISSING_KNOWLEDGE_DIR,
+                Severity::Error,
+                "knowledge/",
+                "the base has no `knowledge/` directory, so it holds no pages; \
+                 restore it from git history or re-create the base",
+            )]),
+            ..LintReport::default()
+        });
     }
 
     // Collect all pages and their bodies — for the checks that read a page's own
@@ -265,11 +291,26 @@ fn scan_diagnostics(report: &LintReport) -> impl Iterator<Item = Diagnostic> + '
 /// `Manifest::profile` is the accessor that answers this and `Manifest::format`
 /// is the trap: it reads `Okf` on every base written before Stage 3.
 ///
-/// An unreadable manifest is treated as legacy, for the same reason: guessing
-/// `Okf` for a base whose generation we could not establish produces exactly the
-/// flood the paragraph above describes.
+/// An unreadable manifest gets no format layer either, for the same reason:
+/// guessing `Okf` for a base whose generation we could not establish produces
+/// exactly the flood the paragraph above describes. It does **not** get silence,
+/// though — that is the difference between the two cases. A legacy base is
+/// working as designed; a base whose manifest will not parse is damaged in a way
+/// that costs the user their `.active-kb` pointers (DR-12), and reporting it as
+/// clean is how nobody finds out.
 fn format_diagnostics(kb_root: &Path, pages: &HashMap<String, String>) -> Vec<Diagnostic> {
-    let Some(format) = manifest::load(kb_root).ok().and_then(|m| m.profile()) else {
+    let manifest = match manifest::load(kb_root) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            return vec![Diagnostic::scan(
+                RULE_UNREADABLE_MANIFEST,
+                Severity::Error,
+                "manifest.yaml",
+                &format!("the base's manifest could not be read, so no conformance check could run: {error:#}"),
+            )]
+        }
+    };
+    let Some(format) = manifest.profile() else {
         return Vec::new();
     };
     let mut checked: Vec<(&String, &String, Option<okf::Page>)> = pages
@@ -500,6 +541,7 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
         args.caller_is_private,
         &args.caller_affiliation,
     )?;
+    let format = svc.require_current_profile(&args.kb_id)?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
     // Migrate a stale `schema.md` (the sub-agent's system prompt) and refresh a
@@ -540,7 +582,7 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
         });
     }
 
-    run_autofix(svc, args, &kb_root, report, cancel.as_ref()).await
+    run_autofix(svc, args, &kb_root, report, format, cancel.as_ref()).await
 }
 
 async fn run_autofix(
@@ -548,6 +590,7 @@ async fn run_autofix(
     args: LintArgs,
     kb_root: &Path,
     report: LintReport,
+    format: KbFormat,
     cancel: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<LintResult> {
     // Issue #56, both axes in one call under one lock — see
@@ -572,7 +615,7 @@ async fn run_autofix(
     let repo = GitRepo::open(kb_root)?;
     let txn = repo.begin_txn("lint")?;
 
-    let prompt = match prepare_autofix_prompt(kb_root, &report) {
+    let prompt = match prepare_autofix_prompt(kb_root, &report, format) {
         Ok(prompt) => prompt,
         Err(error) => return Err(repo.abort_after_failure(&txn, "lint autofix", error)),
     };
@@ -585,7 +628,7 @@ async fn run_autofix(
     };
     let agent = SubAgent {
         completer,
-        tools: tool_specs(prompt.format),
+        tools: tool_specs(Some(prompt.format)),
         system_prompt: prompt.system,
         bounds: args.bounds,
     };
@@ -603,12 +646,16 @@ async fn run_autofix(
 }
 
 struct AutofixPrompt {
-    format: Option<KbFormat>,
+    format: KbFormat,
     system: String,
     user: String,
 }
 
-fn prepare_autofix_prompt(kb_root: &Path, report: &LintReport) -> Result<AutofixPrompt> {
+fn prepare_autofix_prompt(
+    kb_root: &Path,
+    report: &LintReport,
+    format: KbFormat,
+) -> Result<AutofixPrompt> {
     let schema_path = crate::knowledge::store::resolve_readable_path(kb_root, "schema.md")
         .context("resolving schema.md for lint")?;
     let schema = std::fs::read_to_string(schema_path).context("read schema.md")?;
@@ -623,10 +670,7 @@ fn prepare_autofix_prompt(kb_root: &Path, report: &LintReport) -> Result<Autofix
         "missing_concept_pages": report.missing_concept_pages,
         "diagnostics": report.diagnostics,
     }))?;
-    // See `query`'s note on `profile()` vs `format`: an autofix run on a legacy
-    // base must not be handed BioOKF's typed writer.
-    let format = manifest::load(kb_root).ok().and_then(|m| m.profile());
-    let system = system_prompt(&schema, lint_procedure(format));
+    let system = system_prompt(&schema, lint_procedure(Some(format)));
     let user = format!(
         "autofix=true. Here is the current lint report:\n```json\n{report_json}\n```\nPlease fix the issues."
     );
@@ -844,6 +888,55 @@ mod tests {
             "a legacy base was checked against OKF: {:?}",
             rules(&report)
         );
+    }
+
+    /// A base with no `knowledge/` directory holds no pages at all, and used to
+    /// return `LintReport::default()` — four empty lists and no diagnostics,
+    /// byte-identical to the report a *perfect* base produces. The MCP
+    /// `kb_lint` tool calls `scan` directly, so the model asking about a
+    /// structurally broken base was told it was healthy.
+    #[test]
+    fn a_base_with_no_knowledge_directory_lints_as_an_error_not_as_perfect() {
+        let (_dir, svc) = fresh_svc();
+        let kb = svc.root().join("k");
+        std::fs::remove_dir_all(kb.join("knowledge")).unwrap();
+
+        let report = scan(&kb).unwrap();
+
+        assert!(
+            report.diagnostics.has(RULE_MISSING_KNOWLEDGE_DIR),
+            "{:?}",
+            rules(&report)
+        );
+        assert_eq!(report.diagnostics.errors(), 1);
+        assert_ne!(
+            report.diagnostics,
+            LintReport::default().diagnostics,
+            "a broken base must not be indistinguishable from a clean one"
+        );
+    }
+
+    /// D8's half of the same class. A base whose `manifest.yaml` will not parse
+    /// is damaged in a way that costs the user their `.active-kb` pointers
+    /// (DR-12); it must not be filed under the same silence as a base that is
+    /// legitimately legacy.
+    #[test]
+    fn an_unreadable_manifest_is_reported_rather_than_read_as_legacy() {
+        let (_dir, svc) = svc_in(KbFormat::Okf);
+        let kb = svc.root().join("k");
+        std::fs::write(manifest::manifest_path(&kb), "id: [unclosed\n").unwrap();
+        assert!(manifest::load(&kb).is_err(), "the fixture must be broken");
+
+        let report = scan(&kb).unwrap();
+
+        let found = report
+            .diagnostics
+            .items
+            .iter()
+            .find(|d| d.rule == RULE_UNREADABLE_MANIFEST)
+            .unwrap_or_else(|| panic!("missing from {:?}", rules(&report)));
+        assert_eq!(found.severity, Severity::Error);
+        assert_eq!(found.subject, "manifest.yaml");
     }
 
     /// The same page in an OKF base **is** checked, which is what makes the

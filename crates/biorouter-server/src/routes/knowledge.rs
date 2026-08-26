@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{FromRequest, Multipart, Path, Query, Request, State},
+    extract::{DefaultBodyLimit, FromRequest, Multipart, Path, Query, Request, State},
     http::{header, HeaderMap, StatusCode},
     response::Response,
     routing::{get, post, put},
@@ -37,7 +37,12 @@ use utoipa::ToSchema;
 pub fn router(svc: Arc<KnowledgeService>) -> Router {
     Router::new()
         .route("/bases", get(list_bases).post(create_base))
-        .route("/bases/import", post(import_brkb))
+        .route(
+            "/bases/import",
+            post(import_brkb).layer(DefaultBodyLimit::max(
+                biorouter_mcp::knowledge::brkb::MAX_ARCHIVE_HTTP_BODY_BYTES,
+            )),
+        )
         .route(
             "/bases/{id}",
             get(get_base).put(update_base).delete(delete_base),
@@ -894,6 +899,8 @@ pub async fn write_page(
         .lock_kb(&id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    svc.require_current_profile(&id)
+        .map_err(knowledge_service_http_error)?;
     let kb_root = paths::kb_root(svc.root(), &id);
     let sha_opt = store::write_page(
         &kb_root,
@@ -1266,7 +1273,7 @@ pub async fn restore_state(
     let new_commit_sha = svc
         .restore_state_async(&id, &body.commit_sha, None)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(knowledge_service_http_error)?;
     Ok(Json(RestoreResponse { new_commit_sha }))
 }
 
@@ -1648,6 +1655,8 @@ pub async fn ingest(
     req: Request,
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
     let (source, model, focus) = parse_ingest_request(&headers, req).await?;
+    svc.require_current_profile(&id)
+        .map_err(knowledge_service_http_error)?;
 
     let cancel = CancellationToken::new();
     let (completer, caller_capability, caller_affiliation) =
@@ -1808,6 +1817,8 @@ pub async fn query_kb(
     Path(id): Path<String>,
     Json(body): Json<QueryBody>,
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
+    svc.require_current_profile(&id)
+        .map_err(knowledge_service_http_error)?;
     let cancel = CancellationToken::new();
     let (completer, caller_capability, caller_affiliation) =
         build_completer(&body.model, Some(cancel.clone())).await?;
@@ -1865,10 +1876,9 @@ pub async fn query_kb(
 /// response's body, because the body is an event stream and typing it as JSON
 /// would be a false statement the generated client believes.
 ///
-/// A **legacy** base (below the OKF generation) is given the hygiene rules and
-/// no format layer, so its report carries `kb.*` diagnostics only — DR-26: this
-/// build has promised never to rewrite those pages, and reporting that decision
-/// as one conformance error per page would bury the findings that are real.
+/// Retired pre-OKF bases are refused before the macro starts. Startup removes
+/// them, and every remaining base receives its current OKF or BioOKF format
+/// layer in addition to the shared hygiene rules.
 #[utoipa::path(
     post, path = "/knowledge/bases/{id}/lint",
     request_body = LintBody,
@@ -1884,6 +1894,8 @@ pub async fn lint(
     Path(id): Path<String>,
     Json(body): Json<LintBody>,
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
+    svc.require_current_profile(&id)
+        .map_err(knowledge_service_http_error)?;
     let autofix = body.autofix.unwrap_or(false);
     let cancel = CancellationToken::new();
     // Only build a *completer* when autofix is requested (it requires an LLM).
@@ -2056,6 +2068,8 @@ pub async fn add_raw_source(
         .lock_kb(&id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    svc.require_current_profile(&id)
+        .map_err(knowledge_service_http_error)?;
     let res = svc
         .add_raw_source(&id, input, None)
         .await
@@ -2126,13 +2140,20 @@ pub async fn import_brkb(
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
     {
         if field.name() == Some("file") {
-            file_bytes = Some(
-                field
-                    .bytes()
-                    .await
-                    .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-                    .to_vec(),
-            );
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+            if bytes.len() as u64 > biorouter_mcp::knowledge::brkb::MAX_ARCHIVE_FILE_BYTES {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "compressed archive exceeds the {} MiB limit",
+                        biorouter_mcp::knowledge::brkb::MAX_ARCHIVE_FILE_BYTES / (1024 * 1024)
+                    ),
+                ));
+            }
+            file_bytes = Some(bytes.to_vec());
         }
     }
 
@@ -2149,9 +2170,30 @@ pub async fn import_brkb(
             /* importer_is_private */ false,
             &biorouter_mcp::knowledge::affiliation::CallerAffiliation::Unstated,
         )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(knowledge_service_http_error)?;
 
     Ok(Json(serde_json::json!({ "id": new_id })))
+}
+
+fn knowledge_service_http_error(error: anyhow::Error) -> (StatusCode, String) {
+    let bad_request = error
+        .downcast_ref::<biorouter_mcp::knowledge::service::LegacyKnowledgeArchiveUnsupported>()
+        .is_some()
+        || error
+            .downcast_ref::<biorouter_mcp::knowledge::service::LegacyKnowledgeBaseUnsupported>()
+            .is_some()
+        || error
+            .downcast_ref::<biorouter_mcp::knowledge::service::LegacyKnowledgeRestoreUnsupported>()
+            .is_some()
+        || error
+            .downcast_ref::<biorouter_mcp::knowledge::brkb::InvalidKnowledgeArchive>()
+            .is_some();
+    let status = if bad_request {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (status, error.to_string())
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -2252,7 +2294,7 @@ pub async fn merge_bases(
             body.dry_run,
         )
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        .map_err(knowledge_service_http_error)?;
     Ok(Json(report))
 }
 

@@ -200,9 +200,9 @@ export default function ExternalBackendSection() {
                   disabled={isSaving}
                 />
                 <p className="text-xs text-text-muted">
-                  Proves a request came from you rather than from the model. The server is given
-                  the SHA-256 of this key on stdin when it starts. Without it, private chats cannot
-                  be opened, branched, or reported through this backend.
+                  Proves a request came from you rather than from the model. The server is given the
+                  SHA-256 of this key on stdin when it starts. Without it, private chats cannot be
+                  opened, branched, or reported through this backend.
                 </p>
               </div>
 

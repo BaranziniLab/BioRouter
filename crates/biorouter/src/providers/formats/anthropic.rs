@@ -5,7 +5,10 @@ use crate::providers::errors::ProviderError;
 use crate::providers::formats::audience;
 use crate::providers::utils::{convert_image, ImageFormat};
 use anyhow::{anyhow, Result};
-use rmcp::model::{object, CallToolRequestParams, ErrorCode, ErrorData, JsonObject, Role, Tool};
+use rmcp::model::{
+    object, AnnotateAble, CallToolRequestParams, ErrorCode, ErrorData, JsonObject, RawContent,
+    Role, Tool,
+};
 use rmcp::object as json_object;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -76,19 +79,46 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                 }
                 MessageContent::ToolResponse(tool_response) => match &tool_response.tool_result {
                     Ok(result) => {
-                        let text = result
+                        let visible = result
                             .content
                             .iter()
                             // Send only what the tool addressed to the model.
                             .filter(|c| audience::is_for_model(c))
-                            .filter_map(audience::flattened_text)
-                            .collect::<Vec<_>>()
-                            .join("\n");
+                            .collect::<Vec<_>>();
+                        let carries_image = visible
+                            .iter()
+                            .any(|content| matches!(&content.raw, RawContent::Image(_)));
+                        let tool_content = if carries_image {
+                            Value::Array(
+                                visible
+                                    .iter()
+                                    .filter_map(|content| {
+                                        match &content.raw {
+                                        RawContent::Image(image) => Some(convert_image(
+                                            &image.clone().no_annotation(),
+                                            &ImageFormat::Anthropic,
+                                        )),
+                                        _ => audience::flattened_text(content).map(|text| {
+                                            json!({ TYPE_FIELD: TEXT_TYPE, TEXT_TYPE: text })
+                                        }),
+                                    }
+                                    })
+                                    .collect(),
+                            )
+                        } else {
+                            Value::String(
+                                visible
+                                    .iter()
+                                    .filter_map(|content| audience::flattened_text(content))
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                            )
+                        };
 
                         content.push(json!({
                             TYPE_FIELD: TOOL_RESULT_TYPE,
                             TOOL_USE_ID_FIELD: tool_response.id,
-                            CONTENT_FIELD: text
+                            CONTENT_FIELD: tool_content
                         }));
                     }
                     Err(tool_error) => {
@@ -2061,6 +2091,30 @@ data: [DONE]
         for withheld in crate::providers::formats::audience::MODEL_HIDDEN {
             assert!(!sent.contains(withheld), "{withheld} reached the model");
         }
+    }
+
+    #[test]
+    fn image_tool_results_remain_visual_for_anthropic() {
+        let message = Message::user().with_tool_response(
+            "call-image",
+            Ok(rmcp::model::CallToolResult {
+                content: vec![
+                    rmcp::model::Content::text("panel capture"),
+                    rmcp::model::Content::image("iVBORw0KGgo=", "image/png"),
+                ],
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+        );
+
+        let spec = format_messages(&[message]);
+        let blocks = spec[0]["content"][0]["content"]
+            .as_array()
+            .expect("an image tool_result uses Anthropic content blocks");
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["source"]["media_type"], "image/png");
     }
 
     /// A `text_editor view` through the real Anthropic formatter.

@@ -19,7 +19,6 @@ use crate::config::paths::Paths;
 use crate::config::{resolve_extensions_for_new_session, Config};
 use crate::conversation::message::Message;
 use crate::conversation::Conversation;
-use crate::providers::create;
 use crate::scheduler_trait::SchedulerTrait;
 use crate::session::session_manager::SessionType;
 use crate::session::{Session, SessionManager};
@@ -967,7 +966,8 @@ async fn execute_job(
     // Failing loudly is therefore the correct outcome, and it is no longer
     // invisible: `run_workflow_job` records the error on the job as
     // `last_error`, and both schedule views render it.
-    let agent_provider = create(&provider_name, model_config).await?;
+    let agent_provider =
+        crate::providers::create_from_persisted(&provider_name, model_config).await?;
 
     let extensions = resolve_extensions_for_new_session(workflow.extensions.as_deref(), None);
     for ext in extensions {

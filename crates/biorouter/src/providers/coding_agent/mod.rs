@@ -66,7 +66,57 @@ pub use discovery::{
     CodingAgentKind,
 };
 
+use std::future::Future;
+use std::time::Duration;
+
 use super::errors::ProviderError;
+
+/// Optional wall-clock ceiling for one Claude Code or Codex turn.
+///
+/// Coding-agent turns are unbounded by default: they may legitimately spend a
+/// long time inside a supervised delegated task, and completion or explicit
+/// cancellation is the normal terminal condition. Operators who need a hard
+/// resource ceiling can set `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS` to a
+/// positive number. Missing, invalid and zero values all keep the default
+/// unbounded behaviour.
+pub const TURN_TIMEOUT_CONFIG_KEY: &str = "BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnTimeoutElapsed {
+    duration: Duration,
+}
+
+impl TurnTimeoutElapsed {
+    pub fn duration(self) -> Duration {
+        self.duration
+    }
+}
+
+fn turn_timeout_from_seconds(seconds: u64) -> Option<Duration> {
+    (seconds > 0).then_some(Duration::from_secs(seconds))
+}
+
+pub fn turn_timeout() -> Option<Duration> {
+    crate::config::Config::global()
+        .get_param::<u64>(TURN_TIMEOUT_CONFIG_KEY)
+        .ok()
+        .and_then(turn_timeout_from_seconds)
+}
+
+pub async fn await_turn<F>(
+    future: F,
+    limit: Option<Duration>,
+) -> Result<F::Output, TurnTimeoutElapsed>
+where
+    F: Future,
+{
+    match limit {
+        Some(duration) => tokio::time::timeout(duration, future)
+            .await
+            .map_err(|_| TurnTimeoutElapsed { duration }),
+        None => Ok(future.await),
+    }
+}
 
 /// Aborts a spawned task when dropped — the streaming path's equivalent of
 /// `kill_on_drop`.
@@ -138,6 +188,8 @@ pub fn unavailable_error(kind: CodingAgentKind, availability: &AgentAvailability
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     fn availability(kind: CodingAgentKind, auth: AuthState) -> AgentAvailability {
         AgentAvailability {
@@ -248,5 +300,113 @@ mod tests {
                 "{label} sets kill_on_drop AFTER the spawn it is meant to govern"
             );
         }
+    }
+
+    #[test]
+    fn turn_timeout_is_opt_in_and_zero_disables_it() {
+        assert_eq!(turn_timeout_from_seconds(0), None);
+        assert_eq!(turn_timeout_from_seconds(90), Some(Duration::from_secs(90)));
+    }
+
+    #[test]
+    fn every_vendor_turn_uses_the_shared_opt_in_timeout_policy() {
+        for (label, src) in [
+            ("claude_code.rs", include_str!("../claude_code.rs")),
+            ("codex.rs", include_str!("../codex.rs")),
+        ] {
+            assert!(
+                src.contains("coding_agent::turn_timeout()"),
+                "{label} bypasses the shared default-unbounded turn policy"
+            );
+            assert!(
+                !src.contains("const TURN_TIMEOUT"),
+                "{label} reintroduced a hard-coded provider turn ceiling"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_default_turn_has_no_hidden_wall_clock_deadline() {
+        let turn = tokio::spawn(await_turn(std::future::pending::<()>(), None));
+
+        tokio::time::advance(Duration::from_secs(24 * 60 * 60)).await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !turn.is_finished(),
+            "an unconfigured coding-agent turn must end only on completion or cancellation"
+        );
+        turn.abort();
+        assert!(turn.await.unwrap_err().is_cancelled());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_explicit_turn_timeout_is_enforced() {
+        let limit = Duration::from_secs(90);
+        let turn = tokio::spawn(await_turn(std::future::pending::<()>(), Some(limit)));
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(limit - Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(!turn.is_finished());
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let elapsed = turn.await.unwrap().unwrap_err();
+        assert_eq!(elapsed.duration(), limit);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn supervision_activity_does_not_create_a_turn_deadline() {
+        let (supervisor, mut observed) = tokio::sync::watch::channel(0_u8);
+        let turn = tokio::spawn(await_turn(
+            async move { while observed.changed().await.is_ok() {} },
+            None,
+        ));
+
+        for tick in 1..=12 {
+            supervisor.send_replace(tick);
+            tokio::time::advance(Duration::from_secs(10 * 60)).await;
+            tokio::task::yield_now().await;
+            assert!(
+                !turn.is_finished(),
+                "watching a supervised turn must not impose a hidden lifetime"
+            );
+        }
+
+        drop(supervisor);
+        assert!(turn.await.unwrap().is_ok());
+    }
+
+    struct PendingUntilDropped(Arc<AtomicBool>);
+
+    impl Future for PendingUntilDropped {
+        type Output = ();
+
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl Drop for PendingUntilDropped {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_still_drops_an_unbounded_turn_immediately() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let turn = tokio::spawn(await_turn(PendingUntilDropped(Arc::clone(&dropped)), None));
+        tokio::task::yield_now().await;
+
+        turn.abort();
+        assert!(turn.await.unwrap_err().is_cancelled());
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "cancelling the provider future must drop and reap its child process"
+        );
     }
 }

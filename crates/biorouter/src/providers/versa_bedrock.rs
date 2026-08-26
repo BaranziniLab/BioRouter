@@ -64,6 +64,12 @@ pub const VERSA_BEDROCK_DEFAULT_INITIAL_RETRY_INTERVAL_MS: u64 = 2000;
 pub const VERSA_BEDROCK_DEFAULT_BACKOFF_MULTIPLIER: f64 = 2.0;
 pub const VERSA_BEDROCK_DEFAULT_MAX_RETRY_INTERVAL_MS: u64 = 120_000;
 
+#[cfg(test)]
+fn with_test_http_client(loader: aws_config::ConfigLoader) -> aws_config::ConfigLoader {
+    let (http_client, _captured) = aws_smithy_http_client::test_util::capture_request(None);
+    loader.http_client(http_client)
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct VersaBedrockProvider {
     #[serde(skip)]
@@ -176,10 +182,13 @@ impl VersaBedrockProvider {
 
         let credentials =
             Credentials::new(access_key_id, secret_access_key, None, None, "VersaBedrock");
-        let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        let loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .credentials_provider(credentials)
             .region(aws_config::Region::new(region.clone()))
             .endpoint_url(endpoint.as_str());
+        #[cfg(test)]
+        let loader = with_test_http_client(loader);
+        let mut loader = loader;
         if let Some(secs) = operation_timeout_secs {
             loader = loader.timeout_config(
                 aws_smithy_types::timeout::TimeoutConfig::builder()
@@ -485,6 +494,10 @@ impl Provider for VersaBedrockProvider {
     fn supports_streaming(&self) -> bool {
         true
     }
+
+    fn supports_restart_steering(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -499,18 +512,19 @@ mod tests {
     /// `aws_config` loader production uses so the struct literal cannot drift
     /// from a real one.
     async fn provider_at(endpoint: &str) -> VersaBedrockProvider {
-        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .credentials_provider(Credentials::new(
-                "test-access-key",
-                "test-secret-key",
-                None,
-                None,
-                "VersaBedrockTest",
-            ))
-            .region(aws_config::Region::new(VERSA_BEDROCK_DEFAULT_REGION))
-            .endpoint_url(endpoint.to_string())
-            .load()
-            .await;
+        let sdk_config =
+            with_test_http_client(aws_config::defaults(aws_config::BehaviorVersion::latest()))
+                .credentials_provider(Credentials::new(
+                    "test-access-key",
+                    "test-secret-key",
+                    None,
+                    None,
+                    "VersaBedrockTest",
+                ))
+                .region(aws_config::Region::new(VERSA_BEDROCK_DEFAULT_REGION))
+                .endpoint_url(endpoint.to_string())
+                .load()
+                .await;
 
         VersaBedrockProvider {
             client: Client::new(&sdk_config),
@@ -575,6 +589,17 @@ mod tests {
         let text = encoded.to_string();
         assert!(!text.contains("test-access-key"));
         assert!(!text.contains("test-secret-key"));
+    }
+
+    #[tokio::test]
+    async fn provider_advertises_restart_steering() {
+        let provider = provider_at(VERSA_BEDROCK_DEFAULT_ENDPOINT).await;
+        assert!(provider.supports_streaming());
+        assert!(!provider.supports_live_steering());
+        assert!(
+            provider.supports_restart_steering(),
+            "Versa Bedrock cannot inject into ConverseStream, so a queued steer must restart it"
+        );
     }
 
     #[tokio::test]

@@ -72,6 +72,7 @@ struct ActiveTurn {
 struct TurnRegistry {
     turns: HashMap<String, ActiveTurn>,
     continuation_leases: HashMap<String, ContinuationLeaseRecord>,
+    stopping_sessions: HashMap<String, usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -310,6 +311,40 @@ pub struct TurnGuard {
     retirement: Arc<TurnRetirement>,
     continuation_lease_token: Option<String>,
     active_turns: Arc<StdMutex<TurnRegistry>>,
+}
+
+/// Admission barrier held while an agent is being stopped and evicted.
+///
+/// The refcount lives under the same lock as turn admission. A successor can
+/// therefore observe neither the retired predecessor nor an absent barrier in
+/// the gap where the stop path awaits agent eviction.
+#[derive(Debug)]
+pub struct AgentStopGuard {
+    session_id: String,
+    cancelled_turn_id: Option<String>,
+    active_turns: Arc<StdMutex<TurnRegistry>>,
+}
+
+impl AgentStopGuard {
+    pub fn cancelled_turn_id(&self) -> Option<&str> {
+        self.cancelled_turn_id.as_deref()
+    }
+}
+
+impl Drop for AgentStopGuard {
+    fn drop(&mut self) {
+        let mut registry = self
+            .active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(stops) = registry.stopping_sessions.get_mut(&self.session_id) else {
+            return;
+        };
+        *stops = stops.saturating_sub(1);
+        if *stops == 0 {
+            registry.stopping_sessions.remove(&self.session_id);
+        }
+    }
 }
 
 impl TurnGuard {
@@ -583,6 +618,9 @@ fn reserve_continuation_admission(
     group_id: String,
     owner_id: &str,
 ) -> Result<ContinuationAdmission, ContinuationLeaseFailure> {
+    if registry.stopping_sessions.contains_key(session_id) {
+        return Err(ContinuationLeaseFailure::ParentClosing);
+    }
     let mark = biorouter::agents::subagent_handle::mark_continuation_pending_for_turn(
         session_id,
         Some(turn.turn_id.clone()),
@@ -627,6 +665,25 @@ fn conflicting_turn(
         stream: Arc::clone(&running.stream),
         finished,
     })
+}
+
+fn stopping_conflict(registry: &TurnRegistry, session_id: &str) -> TurnConflict {
+    if let Some(turn) = registry.turns.get(session_id) {
+        return TurnConflict {
+            running_turn_id: turn.turn_id.clone(),
+            duplicate: false,
+            stream: Arc::clone(&turn.stream),
+            finished: turn.finished_at.is_some(),
+        };
+    }
+
+    let stream = TurnStream::new(session_id, "agent-stop");
+    TurnConflict {
+        running_turn_id: "agent-stop".to_string(),
+        duplicate: false,
+        stream,
+        finished: false,
+    }
 }
 
 fn consume_continuation_claim_group(
@@ -891,6 +948,11 @@ impl AppState {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         prune_finished_turns(&mut registry);
 
+        if registry.stopping_sessions.contains_key(session_id) {
+            return Err(TurnBeginFailure::Conflict(stopping_conflict(
+                &registry, session_id,
+            )));
+        }
         let lease_use = continuation_lease_use(
             &registry,
             session_id,
@@ -944,6 +1006,38 @@ impl AppState {
             continuation_lease_token,
             active_turns: Arc::clone(&self.active_turns),
         })
+    }
+
+    /// Block successor admission while a stop operation cancels and evicts the
+    /// current agent. The barrier and active-turn snapshot are taken under the
+    /// same registry lock used by [`Self::try_begin_turn_idempotent`].
+    pub fn begin_agent_stop(&self, session_id: &str) -> AgentStopGuard {
+        let (cancel, cancelled_turn_id) = {
+            let mut registry = self
+                .active_turns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            prune_finished_turns(&mut registry);
+            *registry
+                .stopping_sessions
+                .entry(session_id.to_string())
+                .or_default() += 1;
+            registry
+                .turns
+                .get(session_id)
+                .filter(|turn| turn.finished_at.is_none())
+                .map_or((None, None), |turn| {
+                    (Some(turn.cancel.clone()), Some(turn.turn_id.clone()))
+                })
+        };
+        if let Some(cancel) = cancel {
+            cancel.cancel();
+        }
+        AgentStopGuard {
+            session_id: session_id.to_string(),
+            cancelled_turn_id,
+            active_turns: Arc::clone(&self.active_turns),
+        }
     }
 
     /// Cancel the turn in flight for `session_id`, returning its id. `None` when
@@ -1024,6 +1118,9 @@ impl AppState {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             prune_finished_turns(&mut registry);
+            if registry.stopping_sessions.contains_key(session_id) {
+                return ContinuationCancelAttempt::ParentClosing;
+            }
             let Some(turn) = registry.turns.get(session_id).cloned() else {
                 return ContinuationCancelAttempt::Idle;
             };
@@ -1199,6 +1296,9 @@ impl AppState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         prune_finished_turns(&mut registry);
+        if registry.stopping_sessions.contains_key(session_id) {
+            return Err(ContinuationLeaseFailure::ParentClosing);
+        }
         let exact_retired_generation = registry
             .turns
             .get(session_id)
@@ -1321,6 +1421,43 @@ impl AppState {
         })
     }
 
+    /// Resolve every Stop-and-Send admission for a session that is being
+    /// stopped. The route calls this before it cancels the turn or evicts the
+    /// agent, so neither a reserved mark nor a live lease can outlast the child.
+    pub fn abandon_pending_continuations_for_session(&self, session_id: &str) -> bool {
+        let lease_abandoned = {
+            let mut registry = self
+                .active_turns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            prune_finished_turns(&mut registry);
+            let resolved_at = Instant::now();
+            let mut abandoned = false;
+            for lease in registry
+                .continuation_leases
+                .values_mut()
+                .filter(|lease| lease.session_id == session_id)
+            {
+                let was_pending = match &lease.state {
+                    ContinuationLeaseState::Reserved { mark } => {
+                        mark.rollback();
+                        true
+                    }
+                    ContinuationLeaseState::Live => true,
+                    ContinuationLeaseState::Consumed { .. }
+                    | ContinuationLeaseState::Lost { .. }
+                    | ContinuationLeaseState::Abandoned { .. } => false,
+                };
+                if was_pending {
+                    lease.state = ContinuationLeaseState::Abandoned { resolved_at };
+                    abandoned = true;
+                }
+            }
+            abandoned
+        };
+        biorouter::agents::subagent_handle::abandon_continuation(session_id) || lease_abandoned
+    }
+
     pub fn abandon_continuation_lease(
         &self,
         session_id: &str,
@@ -1426,23 +1563,21 @@ impl AppState {
     /// class. Returns `None` for a retired (already finished) turn: there is
     /// nothing live to attach to.
     ///
-    /// It also returns `None` for a turn whose stream has no WRITER, and that
-    /// filter is not an optimisation. Several callers take this same turn lock
-    /// for reasons that have nothing to do with streaming — an in-place edit and
-    /// a working-directory change hold it as a plain mutex, and the workspace
-    /// and app turn runners hold it without a `/reply` pump. Advertising one of
-    /// those as attachable told a reloading window to follow a log that nothing
-    /// will ever write to and nothing will ever close: the window parked on it,
-    /// set `chatState: Streaming`, and its composer was dead until the user
-    /// reloaded. What a client may attach to and what a pump is writing are the
-    /// same set, by construction, here.
+    /// It also returns `None` for a turn whose stream has no LIVE writer, and
+    /// that filter is not an optimisation. Several callers take this same turn
+    /// lock for reasons that have nothing to do with streaming — an in-place edit
+    /// and a working-directory change hold it as a plain mutex, and some app turn
+    /// runners hold it without a `/reply` pump. A claimed writer is not enough
+    /// either: that ownership latch stays set after the writer drops, while the
+    /// closed log can no longer deliver a terminal to a new observer. Advertising
+    /// either shape as attachable parks the window in `Streaming` forever.
     pub fn active_turn_id(&self, session_id: &str) -> Option<String> {
         self.active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .turns
             .get(session_id)
-            .filter(|turn| turn.finished_at.is_none() && turn.stream.has_writer())
+            .filter(|turn| turn.finished_at.is_none() && turn.stream.has_live_writer())
             .map(|turn| turn.turn_id.clone())
     }
 
@@ -1808,6 +1943,39 @@ mod tests {
         assert!(token.is_cancelled(), "the running turn's token was tripped");
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_stop_blocks_successor_and_continuation_admission_until_eviction_finishes() {
+        let state = AppState::new().await.unwrap();
+        let token = CancellationToken::new();
+        let first = state
+            .try_begin_turn_idempotent("stop-barrier", token.clone(), None)
+            .expect("the first turn starts");
+        let first_turn_id = first.turn_id().to_string();
+
+        let stop = state.begin_agent_stop("stop-barrier");
+        assert_eq!(stop.cancelled_turn_id(), Some(first_turn_id.as_str()));
+        assert!(token.is_cancelled());
+        assert!(matches!(
+            state.cancel_turn_for_continuation_owned(
+                "stop-barrier",
+                &first_turn_id,
+                "stop-barrier-owner"
+            ),
+            ContinuationCancelAttempt::ParentClosing
+        ));
+
+        drop(first);
+        let conflict = state
+            .try_begin_turn_idempotent("stop-barrier", CancellationToken::new(), None)
+            .expect_err("a successor crossed the stop/eviction barrier");
+        assert!(!conflict.duplicate);
+
+        drop(stop);
+        state
+            .try_begin_turn_idempotent("stop-barrier", CancellationToken::new(), None)
+            .expect("admission reopens after the stop operation ends");
+    }
+
     /// The guard may retire between the route tripping its token and registering
     /// its async wait. The retained state bit must make that edge observable;
     /// `Notify` alone would lose a `notify_waiters` sent in this window.
@@ -1939,6 +2107,35 @@ mod tests {
             .try_begin_turn_idempotent("tg-session-test", CancellationToken::new(), None)
             .unwrap();
         assert_eq!(guard.session_id(), "tg-session-test");
+    }
+
+    #[tokio::test]
+    async fn a_closed_writer_is_not_advertised_as_an_active_attachable_turn() {
+        let state = AppState::new().await.unwrap();
+        let guard = state
+            .try_begin_turn_idempotent("closed-writer", CancellationToken::new(), None)
+            .unwrap();
+        let stream = guard.stream();
+        let writer = stream
+            .claim_writer()
+            .expect("the turn owns its stream writer");
+        let turn_id = guard.turn_id().to_string();
+
+        assert_eq!(state.active_turn_id("closed-writer"), Some(turn_id));
+        drop(writer);
+
+        assert!(stream.is_closed());
+        assert!(
+            stream.has_writer(),
+            "writer ownership remains a permanent latch"
+        );
+        assert!(!stream.has_live_writer());
+        assert!(
+            state.is_turn_active("closed-writer"),
+            "the guard remains live so this test isolates stream closure"
+        );
+        assert_eq!(state.active_turn_id("closed-writer"), None);
+        drop(guard);
     }
 
     /// A turn that has ENDED is retired, not deleted — its entry survives so a
@@ -2479,6 +2676,55 @@ mod tests {
         assert!(handle.result_is_current());
         let _ordinary_successor = begin(&state, "abandoned-lease-child")
             .expect("abandonment must release the replacement admission barrier");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stopping_a_child_abandons_every_pending_continuation_for_the_session() {
+        let state = AppState::new().await.unwrap();
+        let child = "stopped-continuation-child";
+        let retired = begin(&state, child).unwrap();
+        let retired_id = retired.turn_id().to_string();
+        drop(retired);
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            "stopped-continuation-parent",
+            child,
+            "delegated work",
+            CancellationToken::new(),
+        );
+        biorouter::agents::subagent_handle::begin_child_turn(child);
+        handle.complete(
+            biorouter::agents::subagent_result::SubagentResult::from_error("original result"),
+        );
+        let admission = match state.cancel_turn_for_continuation_owned(
+            child,
+            &retired_id,
+            "stopped-child-window",
+        ) {
+            ContinuationCancelAttempt::Retired { admission, .. } => admission,
+            other => panic!("expected retained exact generation, got {other:?}"),
+        };
+        admission.mark().unwrap().commit();
+        assert!(state.commit_continuation_lease(admission.token()));
+        assert!(handle.continuation_pending());
+
+        assert!(state.abandon_pending_continuations_for_session(child));
+        assert!(!handle.continuation_pending());
+        assert!(handle.result_is_current());
+        assert!(state
+            .pending_continuation_for_owner(child, Some("stopped-child-window"))
+            .is_none());
+        assert!(!state.abandon_pending_continuations_for_session(child));
+        assert!(matches!(
+            state.try_begin_turn_idempotent_with_continuation(
+                child,
+                CancellationToken::new(),
+                Some("stale-successor".into()),
+                Some(admission.token())
+            ),
+            Err(TurnBeginFailure::ContinuationLease(
+                ContinuationLeaseFailure::Replayed
+            ))
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread")]

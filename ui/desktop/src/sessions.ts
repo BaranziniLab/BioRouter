@@ -6,6 +6,7 @@ import {
   hasExtensionOverrides,
 } from './store/extensionOverrides';
 import type { FixedExtensionEntry } from './components/ConfigContext';
+import { userActionHeaders } from './utils/userAction';
 
 export function resumeSession(session: Session, setView: setViewType) {
   setView('pair', {
@@ -52,6 +53,7 @@ export async function createSession(
 
   const newAgent = await startAgent({
     body,
+    headers: await userActionHeaders(),
     throwOnError: true,
   });
 

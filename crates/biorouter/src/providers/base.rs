@@ -984,6 +984,20 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// Whether a queued mid-turn instruction can be delivered by abandoning the
+    /// current response stream and immediately reissuing the turn with that
+    /// instruction in the conversation.
+    ///
+    /// This is deliberately distinct from [`Self::supports_live_steering`]. A
+    /// live-steering provider keeps one request running and transports the steer
+    /// inside it; a restart-steering provider has no such transport and relies on
+    /// dropping the in-flight stream to cancel the request. The default is false
+    /// because not every streaming transport documents cancellation-on-drop as a
+    /// safe way to restart a turn after partial output has been emitted.
+    fn supports_restart_steering(&self) -> bool {
+        false
+    }
+
     /// Whether the `tools` argument of [`Provider::complete`] actually reaches
     /// the model — i.e. whether this provider can drive a **tool-calling loop
     /// that Biorouter itself runs**, such as the knowledge sub-agent behind the
@@ -1412,6 +1426,11 @@ mod affiliation_view_tests {
     #[test]
     fn a_provider_that_states_neither_axis_renders_nothing() {
         assert_eq!(ProviderAffiliation::of(&SaysNothing), None);
+    }
+
+    #[test]
+    fn restart_steering_is_opt_in() {
+        assert!(!SaysNothing.supports_restart_steering());
     }
 
     /// ⚠ **The point of the whole task.** Two instances of one provider *type*

@@ -195,6 +195,13 @@ impl KnowledgeTransactionCoordinator {
             .or_insert_with(|| Arc::new(Mutex::new(None)))
             .clone()
     }
+
+    fn slots(&self) -> Vec<(String, ActiveKnowledgeTransactionSlot)> {
+        self.active
+            .iter()
+            .map(|entry| (entry.key().clone(), Arc::clone(entry.value())))
+            .collect()
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -491,6 +498,81 @@ impl KnowledgeServer {
             .filter(|session_id| !session_id.is_empty())
             .map(ToOwned::to_owned)
             .ok_or_else(transaction_unavailable)
+    }
+
+    async fn abort_transaction_slot(
+        &self,
+        kb_id: &str,
+        slot: ActiveKnowledgeTransactionSlot,
+        required_session_id: Option<&str>,
+    ) -> (bool, Option<anyhow::Error>) {
+        let mut stored = slot.lock().await;
+        if stored.as_ref().is_none_or(|active| {
+            required_session_id.is_some_and(|session_id| active.session_id != session_id)
+        }) {
+            return (false, None);
+        }
+        let Some(active) = stored.take() else {
+            return (false, None);
+        };
+        let kb_root = crate::knowledge::paths::kb_root(self.service.root(), kb_id);
+        let result = crate::knowledge::git::GitRepo::open(&kb_root)
+            .and_then(|repo| repo.abort_txn(&active.txn));
+        (true, result.err())
+    }
+
+    async fn abort_transaction_slots(
+        &self,
+        slots: Vec<(String, ActiveKnowledgeTransactionSlot)>,
+        required_session_id: Option<&str>,
+    ) -> Result<usize> {
+        let mut released = 0;
+        let mut errors = Vec::new();
+        for (kb_id, slot) in slots {
+            let (was_released, error) = self
+                .abort_transaction_slot(&kb_id, slot, required_session_id)
+                .await;
+            released += usize::from(was_released);
+            if let Some(error) = error {
+                errors.push(format!("{kb_id}: {error:#}"));
+            }
+        }
+        if errors.is_empty() {
+            Ok(released)
+        } else {
+            anyhow::bail!(
+                "released {released} abandoned knowledge transaction lock(s), but repository cleanup failed: {}",
+                errors.join("; ")
+            );
+        }
+    }
+
+    /// End every transaction owned by a session that is being torn down.
+    pub async fn abort_transactions_for_session(&self, session_id: &str) -> Result<usize> {
+        anyhow::ensure!(!session_id.is_empty(), "knowledge session id is empty");
+        self.abort_transaction_slots(self.transactions.slots(), Some(session_id))
+            .await
+    }
+
+    /// Supervisor-only recovery for an owner that cannot issue `kb_abort_txn`.
+    pub async fn force_abort_transaction(&self, kb_id: &str) -> Result<bool> {
+        let Some(slot) = self
+            .transactions
+            .active
+            .get(kb_id)
+            .map(|entry| Arc::clone(entry.value()))
+        else {
+            return Ok(false);
+        };
+        self.abort_transaction_slots(vec![(kb_id.to_string(), slot)], None)
+            .await
+            .map(|released| released != 0)
+    }
+
+    /// Release every transaction owned by this MCP connection during teardown.
+    pub async fn abort_all_transactions(&self) -> Result<usize> {
+        self.abort_transaction_slots(self.transactions.slots(), None)
+            .await
     }
 
     fn active_transaction_branch<'a>(
@@ -944,33 +1026,29 @@ impl KnowledgeServer {
                        instead of at the end of a whole ingest. In an **OKF** base it checks OKF \
                        v0.2 conformance only: a parseable frontmatter block, a non-empty `type`, \
                        footnotes that resolve to a `sources[]` entry, and sources that name a \
-                       resource.\n\
-                       \n\
-                       A base created before this format shipped is checked for nothing and \
-                       reports an empty list; that is the correct answer for it, not a failure."
+                       resource. Retired pre-OKF bases are refused; restart Biorouter to finish \
+                       the legacy purge before validating or writing."
     )]
     pub async fn kb_validate_page(
         &self,
         p: Parameters<ValidatePageParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        // `Manifest::profile`, never `Manifest::format` — the field reads `Okf`
-        // on every base written before Stage 3, so checking it alone would run
-        // OKF conformance over a legacy base and report a decision (DR-26) as
-        // one error per page.
-        let manifest = self.service.get_base(&p.kb_id).map_err(into_err)?;
-        let profile = manifest.profile();
+        let profile = self
+            .service
+            .require_current_profile(&p.kb_id)
+            .map_err(into_err)?;
         // Only BioOKF has cross-document rules, so only BioOKF pays to read the
         // bundle. In OKF mode the page is checked entirely against itself.
         let pages = match profile {
-            Some(crate::knowledge::types::KbFormat::Biookf) => {
+            crate::knowledge::types::KbFormat::Biookf => {
                 let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
                 crate::knowledge::validate::load_bundle(&kb_root).map_err(into_err)?
             }
             _ => Vec::new(),
         };
         let diagnostics = crate::knowledge::validate::validate_page(
-            profile,
+            Some(profile),
             p.path.as_deref(),
             &p.content,
             &pages,
@@ -978,9 +1056,7 @@ impl KnowledgeServer {
         ok_json(&serde_json::json!({
             "kb_id": p.kb_id,
             "path": p.path,
-            // The profile as the caller should read it: `null` for a base below
-            // the OKF generation, which is why nothing was checked.
-            "format": profile.map(|f| f.as_str()),
+            "format": profile.as_str(),
             // DR-7 keeps this a *producer's* verdict and nothing else: a page
             // that is not `ok` is still read, still rendered and still linked.
             // It is a statement about writing it, made by the one actor DR-7
@@ -1015,8 +1091,8 @@ impl KnowledgeServer {
                        were. Fix a batch and run it again.\n\
                        \n\
                        Fixing is yours to do with kb_write_page; this tool never edits anything. \
-                       A base created before this format shipped is checked for housekeeping only \
-                       — that is the correct answer for it, not a failure."
+                       Retired pre-OKF bases are refused; restart Biorouter to finish the legacy \
+                       purge before linting."
     )]
     pub async fn kb_lint(
         &self,
@@ -1042,11 +1118,19 @@ impl KnowledgeServer {
         // The autofix path stays where a caller can be held to it: `biorouter kb
         // lint --fix` and `POST /knowledge/bases/{id}/lint`, both of which name a
         // provider and therefore have a tier to ratchet with.
+        let caller = CallerIdentity::from_context(Some(&context));
         let cancel = context.ct;
         let lock = self
             .service
-            .lock_kb_cancellable(&kb_id, Some(&cancel))
+            .lock_existing_kb_cancellable(&kb_id, Some(&cancel))
             .await
+            .map_err(into_err)?;
+        // CP1 ran before this potentially long lock wait. A private writer can
+        // finish while lint is queued, so authorize the snapshot scan will read.
+        self.assert_kb_reachable(&kb_id, &caller)?;
+        let profile = self
+            .service
+            .require_current_profile(&kb_id)
             .map_err(into_err)?;
         let scan_root = kb_root.clone();
         let scan_cancel = cancel.clone();
@@ -1060,15 +1144,10 @@ impl KnowledgeServer {
         .await
         .map_err(|error| into_err(anyhow::anyhow!("knowledge lint scan task failed: {error}")))?
         .map_err(into_err)?;
-        // `Manifest::profile`, never `Manifest::format` — the field reads `Okf`
-        // on every base written before Stage 3, so reporting it would tell the
-        // caller a legacy base is OKF and leave the empty `okf.*` list looking
-        // like a bug rather than DR-26's decision.
-        let profile = self.service.get_base(&kb_id).ok().and_then(|m| m.profile());
         let diagnostics = &report.diagnostics;
         ok_json(&serde_json::json!({
             "kb_id": kb_id,
-            "format": profile.map(|f| f.as_str()),
+            "format": profile.as_str(),
             // DR-7: a producer's verdict about writing, not a statement that
             // anything will stop being read. Nothing here rejects a page.
             "ok": diagnostics.errors() == 0,
@@ -1131,13 +1210,16 @@ impl KnowledgeServer {
         let _write_guard = if txn_branch.is_none() {
             Some(
                 self.service
-                    .lock_kb_cancellable(&p.kb_id, Some(&context.ct))
+                    .lock_existing_kb_cancellable(&p.kb_id, Some(&context.ct))
                     .await
                     .map_err(into_err)?,
             )
         } else {
             None
         };
+        self.service
+            .require_current_profile(&p.kb_id)
+            .map_err(into_err)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let sha = crate::knowledge::store::write_page(
             &kb_root,
@@ -1198,13 +1280,16 @@ impl KnowledgeServer {
         let _write_guard = if txn_branch.is_none() {
             Some(
                 self.service
-                    .lock_kb_cancellable(&p.kb_id, Some(&context.ct))
+                    .lock_existing_kb_cancellable(&p.kb_id, Some(&context.ct))
                     .await
                     .map_err(into_err)?,
             )
         } else {
             None
         };
+        self.service
+            .require_current_profile(&p.kb_id)
+            .map_err(into_err)?;
         let res = self
             .service
             .add_raw_source_cancelled_by(
@@ -1302,8 +1387,11 @@ impl KnowledgeServer {
         }
         let write_guard = self
             .service
-            .lock_kb_cancellable(&p.kb_id, Some(&context.ct))
+            .lock_existing_kb_cancellable(&p.kb_id, Some(&context.ct))
             .await
+            .map_err(into_err)?;
+        self.service
+            .require_current_profile(&p.kb_id)
             .map_err(into_err)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let repo = crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
@@ -1467,13 +1555,16 @@ impl KnowledgeServer {
         let _write_guard = if txn_branch.is_none() {
             Some(
                 self.service
-                    .lock_kb_cancellable(&p.kb_id, Some(&context.ct))
+                    .lock_existing_kb_cancellable(&p.kb_id, Some(&context.ct))
                     .await
                     .map_err(into_err)?,
             )
         } else {
             None
         };
+        self.service
+            .require_current_profile(&p.kb_id)
+            .map_err(into_err)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let sha = crate::knowledge::log::append(
             &kb_root,
@@ -1636,7 +1727,11 @@ impl KnowledgeServer {
         p: Parameters<ExportArchiveParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let _lock = self
+            .service
+            .lock_existing_kb_cancellable(&p.kb_id, None)
+            .await
+            .map_err(into_err)?;
         let bytes = self.service.export_brkb(&p.kb_id).map_err(into_err)?;
         // Issue #56, decision (2b). A MODEL's export of a PRIVATE base is not
         // written where the model asked; it goes to `<knowledge-root>/.exports/`.
@@ -1714,8 +1809,8 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let bytes = std::fs::read(&p.src_path)
-            .map_err(|e| into_err(anyhow::anyhow!("read .brkb '{}': {e}", p.src_path)))?;
+        let bytes = crate::knowledge::brkb::read_archive_path(std::path::Path::new(&p.src_path))
+            .map_err(into_err)?;
         // Issue #56. The second of exactly TWO tools that take a
         // `RequestContext`: the new base's id is chosen by `brkb::import`'s
         // collision loop, so it is not knowable before the call. The importer's
@@ -1876,22 +1971,6 @@ impl ServerHandler for KnowledgeServer {
                 // over-raise is a badge the user can see; the failure direction
                 // of an under-raise is silent.
                 //
-                // ⚠ Residual of raising first: a write naming a kb_id that has
-                // no base registers that id at the caller's tier even though the
-                // call then fails, and nothing ever removes it (`forget_tier`
-                // fires on delete, and this base was never created). It is NOT a
-                // new denial-of-service on the id, which is the shape it looks
-                // like: `lock_kb` and `store::write_page` both `create_dir_all`
-                // their way to the target, so the same failed call already
-                // leaves `<root>/<kb_id>/.internal/` behind and `create_base`
-                // bails on "already exists" whatever the tier store says — that
-                // is pre-existing behaviour, independent of #56. And a directory
-                // with no entry already READS private (decision 3), so for a
-                // private caller the entry only makes explicit what `is_private`
-                // was inferring anyway. What it costs is a public caller's
-                // stamp landing on that litter, which discloses nothing because
-                // the failed write left no content.
-                //
                 // Issue #56 DR-26 / Task 50 Step 1. BOTH axes, in one call under
                 // one lock: a write that raised the tier and not the affiliation
                 // would put an institution's content into a base no institution
@@ -1936,6 +2015,26 @@ fn ok_json<T: Serialize>(v: &T) -> Result<CallToolResult, ErrorData> {
 }
 
 fn into_err(e: anyhow::Error) -> ErrorData {
+    if let Some(failure) = e.downcast_ref::<crate::knowledge::git::KnowledgeWriteFailure>() {
+        return ErrorData::internal_error(
+            format!("{e:#}"),
+            Some(serde_json::json!({
+                "phase": failure.phase.as_str(),
+                "commit_sha": failure.commit_sha.as_deref(),
+            })),
+        );
+    }
+    if e.downcast_ref::<crate::knowledge::service::LegacyKnowledgeBaseUnsupported>()
+        .is_some()
+        || e.downcast_ref::<crate::knowledge::service::LegacyKnowledgeArchiveUnsupported>()
+            .is_some()
+        || e.downcast_ref::<crate::knowledge::service::LegacyKnowledgeRestoreUnsupported>()
+            .is_some()
+        || e.downcast_ref::<crate::knowledge::brkb::InvalidKnowledgeArchive>()
+            .is_some()
+    {
+        return ErrorData::invalid_request(e.to_string(), None);
+    }
     ErrorData::internal_error(format!("{e:#}"), None)
 }
 
@@ -1994,6 +2093,22 @@ mod tests {
             instructions.contains("hidden") && instructions.to_lowercase().contains("explicit"),
             "instructions must explain searching a hidden KB by explicit kb_id"
         );
+    }
+
+    #[test]
+    fn committed_write_failures_include_the_durable_phase_and_sha_on_the_wire() {
+        let error = into_err(
+            crate::knowledge::git::KnowledgeWriteFailure::committed(
+                "knowledge transaction",
+                "abc123",
+                anyhow::anyhow!("injected cleanup failure"),
+            )
+            .into(),
+        );
+        let data = error.data.as_ref().expect("phase-aware error data");
+        assert_eq!(data["phase"], "committed");
+        assert_eq!(data["commit_sha"], "abc123");
+        assert!(error.message.contains("must not be retried"), "{error:?}");
     }
 
     /// A private caller with no stated affiliation — what the unit tests below
@@ -2365,7 +2480,18 @@ mod tests {
         .await
         .expect_err("the injected post-commit refresh must be reported");
         assert!(error.message.contains("committed in commit"), "{error:?}");
-        assert!(error.message.contains("do not retry"), "{error:?}");
+        assert_eq!(
+            error.data.as_ref().and_then(|data| data["phase"].as_str()),
+            Some("committed")
+        );
+        assert!(
+            error
+                .data
+                .as_ref()
+                .and_then(|data| data["commit_sha"].as_str())
+                .is_some(),
+            "{error:?}"
+        );
         assert!(kb.join("knowledge/concept/b.md").exists());
         assert!(
             !crate::knowledge::graph::cache_path(&kb).exists(),
@@ -2471,6 +2597,69 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn transaction_open_refuses_a_legacy_profile_without_retaining_the_lock() {
+        let (server, _tmp, root) = migrated_server_with_bases(&["kb"]);
+        let kb_root = root.join("kb");
+        let mut manifest = crate::knowledge::manifest::load(&kb_root).unwrap();
+        manifest.schema_version = crate::knowledge::types::AUTOMATIC_SCHEMA_CEILING;
+        crate::knowledge::manifest::save(&kb_root, &manifest).unwrap();
+
+        for session_id in ["session-a", "session-b"] {
+            let error = call_tool_as_session(
+                &server,
+                "kb_begin_txn",
+                serde_json::json!({ "kb_id": "kb", "label": "legacy" }),
+                Some(session_id),
+                Private,
+            )
+            .await
+            .expect_err("retired knowledge must not retain a transaction lock");
+            assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+            assert!(error.message.contains("retired pre-OKF"), "{error:?}");
+            assert!(!server.service.kb_queue_is_occupied("kb"));
+        }
+    }
+
+    #[tokio::test]
+    async fn owner_teardown_releases_the_kb_lock_without_a_timeout() -> anyhow::Result<()> {
+        let (server, _tmp, _root) = migrated_server_with_bases(&["kb"]);
+        begin_transaction_handle(&server, "kb", "session-a").await;
+        assert!(server.service.kb_queue_is_occupied("kb"));
+
+        let waiting_service = server.service.clone();
+        let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
+        let waiter = tokio::spawn(async move {
+            let _guard = waiting_service.lock_kb("kb").await?;
+            let _ = acquired_tx.send(());
+            Ok::<_, anyhow::Error>(())
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "a live owner still holds the KB lock"
+        );
+        assert_eq!(
+            server.abort_transactions_for_session("session-b").await?,
+            0,
+            "tearing down another session must not affect the owner"
+        );
+        assert!(!waiter.is_finished());
+
+        assert_eq!(server.abort_transactions_for_session("session-a").await?, 1);
+        tokio::time::timeout(std::time::Duration::from_secs(1), acquired_rx)
+            .await
+            .expect("the abandoned transaction lock must be released")
+            .expect("the lock waiter remains alive");
+        waiter.await??;
+
+        begin_transaction_handle(&server, "kb", "session-b").await;
+        assert!(server.force_abort_transaction("kb").await?);
+        assert!(!server.force_abort_transaction("kb").await?);
+        assert!(!server.service.kb_queue_is_occupied("kb"));
+        Ok(())
     }
 
     #[tokio::test]
@@ -2913,6 +3102,22 @@ mod tests {
         (tmp, path.to_string_lossy().to_string())
     }
 
+    fn legacy_brkb_fixture() -> (tempfile::TempDir, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_root = tmp.path().join("src-root");
+        std::fs::create_dir_all(&src_root).unwrap();
+        let svc = KnowledgeService::new(src_root.clone());
+        svc.create_base("shipped", "Shipped", None).unwrap();
+        let kb = src_root.join("shipped");
+        let mut manifest = crate::knowledge::manifest::load(&kb).unwrap();
+        manifest.schema_version = crate::knowledge::types::AUTOMATIC_SCHEMA_CEILING;
+        crate::knowledge::manifest::save(&kb, &manifest).unwrap();
+        let bytes = svc.export_brkb("shipped").unwrap();
+        let path = tmp.path().join("legacy.brkb");
+        std::fs::write(&path, &bytes).unwrap();
+        (tmp, path.to_string_lossy().to_string())
+    }
+
     /// The same fixture on DR-26's axis: a base whose content belongs to
     /// `institution`, stamped through the production ratchet rather than by
     /// writing the store, and exported to a file.
@@ -3254,6 +3459,50 @@ mod tests {
                 probe.name, probe.ratchets
             );
         }
+    }
+
+    #[tokio::test]
+    async fn missing_base_mutations_leave_no_directory_lock_or_classification_residue() {
+        for probe in KB_TOOL_PROBES.iter().filter(|probe| probe.ratchets) {
+            let (srv, _tmp, root) = migrated_server_with_bases(&[]);
+            let result = call_tool_as(&srv, probe.name, probe.args_for("retryable"), Private).await;
+            assert!(
+                result.is_err(),
+                "{} unexpectedly accepted a missing base",
+                probe.name
+            );
+            assert!(
+                !root.join("retryable").exists(),
+                "{} created a partial base or write lock",
+                probe.name
+            );
+            assert!(
+                !crate::knowledge::tier::has_metadata_unlocked(&root, "retryable").unwrap(),
+                "{} classified an id that does not exist",
+                probe.name
+            );
+            assert!(srv.service.list_bases().unwrap().is_empty());
+            srv.service
+                .create_base("retryable", "Retryable", None)
+                .unwrap_or_else(|error| {
+                    panic!("{} left the id uncreatable: {error:#}", probe.name)
+                });
+        }
+
+        let (srv, _tmp, root) = migrated_server_with_bases(&[]);
+        let result = call_tool_as(
+            &srv,
+            "kb_begin_txn",
+            serde_json::json!({ "kb_id": "retryable", "label": "missing" }),
+            Private,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(!root.join("retryable").exists());
+        assert!(!crate::knowledge::tier::has_metadata_unlocked(&root, "retryable").unwrap());
+        srv.service
+            .create_base("retryable", "Retryable", None)
+            .unwrap();
     }
 
     /// The end-to-end shape of DR-26 for knowledge bases, through CP1: a base
@@ -3665,33 +3914,34 @@ mod tests {
         assert_eq!(before, after);
     }
 
-    /// DR-26. A base below the OKF generation is checked against nothing and
-    /// says so — `format: null` — rather than reporting one error per page for a
-    /// format this build has promised never to migrate it to.
+    /// A retired pre-OKF base must never be treated as an empty OKF validation.
+    /// Startup purges these bases; this boundary catches an out-of-band stale
+    /// store before an agent can extend it with more legacy pages.
     #[tokio::test]
-    async fn validate_reports_nothing_for_a_legacy_base_and_says_why() {
+    async fn validate_refuses_a_legacy_base() {
         let (srv, _tmp, root) = migrated_server_with_bases(&["old"]);
         let kb = root.join("old");
         let mut m = crate::knowledge::manifest::load(&kb).unwrap();
         m.schema_version = 1;
         crate::knowledge::manifest::save(&kb, &m).unwrap();
 
-        let out = json_of(
-            &call_tool_as(
-                &srv,
-                "kb_validate_page",
-                serde_json::json!({
-                    "kb_id": "old",
-                    "path": "knowledge/a.md",
-                    "content": "---\ntitle: A\nkind: entity\n---\n\nbody\n",
-                }),
-                Public,
-            )
-            .await,
+        let out = call_tool_as(
+            &srv,
+            "kb_validate_page",
+            serde_json::json!({
+                "kb_id": "old",
+                "path": "knowledge/a.md",
+                "content": "---\ntitle: A\nkind: entity\n---\n\nbody\n",
+            }),
+            Public,
+        )
+        .await;
+        assert!(out.is_err(), "{}", rendered(&out));
+        assert!(
+            rendered(&out).contains("retired pre-OKF"),
+            "{}",
+            rendered(&out)
         );
-        assert_eq!(out["format"], serde_json::Value::Null, "{out}");
-        assert_eq!(out["ok"], true);
-        assert_eq!(out["diagnostics"]["total"], 0);
     }
 
     /// `kb_lint` exists as a tool at all, and answers about the base rather than
@@ -3759,6 +4009,55 @@ mod tests {
         assert_eq!(
             before,
             crate::knowledge::store::list_pages(&root.join("lit"), None).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn kb_lint_reauthorizes_after_waiting_for_the_kb_lock() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["lit"]);
+        let private_writer = KnowledgeService::new(root.clone());
+        let writer_lock = private_writer.lock_kb("lit").await.unwrap();
+
+        let lint_server = srv.clone();
+        let lint = tokio::spawn(async move {
+            call_tool_as(
+                &lint_server,
+                "kb_lint",
+                serde_json::json!({"kb_id": "lit"}),
+                Public,
+            )
+            .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while !srv.service.kb_queue_is_occupied("lit") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("lint did not reach the cross-process KB lock wait");
+
+        private_writer
+            .raise_tier_and_affiliation("lit", true, &CallerAffiliation::Unstated)
+            .unwrap();
+        crate::knowledge::store::write_page(
+            &root.join("lit"),
+            "knowledge/observation/private.md",
+            "---\ntype: Observation\nidentifier: Private note\n---\n\nprivate\n",
+            "private writer",
+            None,
+        )
+        .unwrap();
+        drop(writer_lock);
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), lint)
+            .await
+            .expect("lint did not resume after the writer released the KB lock")
+            .unwrap();
+        assert!(
+            is_privacy_refusal(&result),
+            "public lint read a base that became private while queued: {}",
+            rendered(&result)
         );
     }
 
@@ -3984,6 +4283,56 @@ mod tests {
             &root,
             &imported_kb_id(&out)
         ));
+    }
+
+    #[tokio::test]
+    async fn kb_import_reports_a_legacy_archive_as_invalid_input() {
+        let (srv, _tmp, _root) = migrated_server_with_bases(&["default"]);
+        let (_fixture, path) = legacy_brkb_fixture();
+        let out = call_tool_as(
+            &srv,
+            "kb_import",
+            serde_json::json!({ "src_path": path }),
+            Public,
+        )
+        .await;
+        let error = out.expect_err("the retired archive must be refused");
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(error.message.contains("legacy pre-OKF"), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn kb_import_bounds_the_selected_file_before_reading_it() {
+        let (srv, _tmp, _root) = migrated_server_with_bases(&["default"]);
+        let missing = call_tool_as(
+            &srv,
+            "kb_import",
+            serde_json::json!({ "src_path": "/path/that/does/not/exist.brkb" }),
+            Public,
+        )
+        .await
+        .expect_err("an invalid selected path must be a caller-correctable error");
+        assert_eq!(missing.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(
+            missing.message.contains("cannot open archive"),
+            "{missing:?}"
+        );
+
+        let archive = tempfile::NamedTempFile::new().unwrap();
+        archive
+            .as_file()
+            .set_len(crate::knowledge::brkb::MAX_ARCHIVE_FILE_BYTES + 1)
+            .unwrap();
+        let error = call_tool_as(
+            &srv,
+            "kb_import",
+            serde_json::json!({ "src_path": archive.path() }),
+            Public,
+        )
+        .await
+        .expect_err("a sparse over-limit archive must be refused before read-to-end");
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(error.message.contains("128 MiB"), "{error:?}");
     }
 
     #[tokio::test]

@@ -21,6 +21,7 @@ export type PanelDescriptor = {
   title?: string;
   /** Absolute path for a file, or the URL for a live page. */
   locator?: string;
+  sourceRevision?: string;
   /** How many tabs the panel is holding. */
   tabCount?: number;
 };
@@ -29,6 +30,7 @@ export type PanelTextSnapshot = {
   kind: string;
   title: string;
   locator?: string;
+  sourceRevision?: string;
   text: string;
   /** True when `text` was cut short. */
   truncated: boolean;

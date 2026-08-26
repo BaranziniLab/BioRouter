@@ -199,9 +199,7 @@ export function layoutMinWidth(layout: GroupLayout): number {
   if (layout.children.length === 0) return CHAT_MIN_WIDTH;
   const children = layout.children.map(layoutMinWidth);
   if (layout.dir === 'col') return Math.max(...children);
-  return (
-    children.reduce((a, b) => a + b, 0) + (children.length - 1) * GROUP_SPLITTER_WIDTH
-  );
+  return children.reduce((a, b) => a + b, 0) + (children.length - 1) * GROUP_SPLITTER_WIDTH;
 }
 
 export function layoutFitsWidth(layout: GroupLayout, availableWidth: number): boolean {
@@ -265,8 +263,7 @@ export function splitYieldSample(opts: {
 }): { wasFitting: boolean | null; isFitting: boolean } {
   const reference = opts.snapshotLayout ?? opts.layout;
   return {
-    wasFitting:
-      opts.lastWidth === null ? null : layoutFitsWidth(reference, opts.lastWidth),
+    wasFitting: opts.lastWidth === null ? null : layoutFitsWidth(reference, opts.lastWidth),
     isFitting: layoutFitsWidth(reference, opts.width),
   };
 }

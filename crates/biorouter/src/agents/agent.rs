@@ -2233,6 +2233,9 @@ pub(super) struct SoftInterrupts {
     turn: Option<TurnId>,
     /// Cleared by `close_and_drain` once the loop has committed to exiting.
     accepting: bool,
+    /// True only for the explicit delegated handoff before the reply stream's
+    /// first poll claims this queue.
+    prepared: bool,
     queued: Vec<QueuedInterrupt>,
 }
 
@@ -2241,6 +2244,7 @@ impl SoftInterrupts {
         Self {
             turn: None,
             accepting: false,
+            prepared: false,
             queued: Vec::new(),
         }
     }
@@ -2670,7 +2674,7 @@ async fn next_provider_wake<T, S>(
     stream: &mut S,
     session_id: &str,
     interrupt_notify: &Notify,
-    live_steering: bool,
+    wake_for_steer: bool,
 ) -> ProviderWake<T>
 where
     S: Stream<Item = T> + Unpin,
@@ -2687,7 +2691,7 @@ where
             ProviderWake::ElicitationReady
         }
         _ = async {
-            if live_steering {
+            if wake_for_steer {
                 interrupt_notify.notified().await;
             } else {
                 std::future::pending::<()>().await;
@@ -3231,9 +3235,9 @@ impl Agent {
     /// dropped and logged rather than silently injected — that is the #69 bug's
     /// own shape.
     ///
-    /// `pub` because the *route-level* tests have to be able to put an agent into
-    /// the accepting state without running a whole reply loop; the only production
-    /// caller is the reply loop itself.
+    /// `pub` because route-level tests put an agent into the accepting state
+    /// without running a whole reply loop. Production opens through the reply
+    /// loop or the delegated handoff helper below.
     pub fn open_for_turn(&self, turn: TurnId) {
         let mut q = self.lock_interrupts();
         if !q.queued.is_empty() {
@@ -3245,6 +3249,42 @@ impl Agent {
         }
         q.turn = Some(turn);
         q.accepting = true;
+        q.prepared = false;
+    }
+
+    /// Open the interrupt queue immediately before a delegated initial prompt
+    /// crosses from the initialization queue into the agent loop. The loop
+    /// claims this exact turn on its first poll, so there is no admission gap
+    /// between the two queues.
+    pub(crate) fn prepare_soft_interrupt_turn(&self) -> TurnId {
+        let turn = TurnId::mint();
+        let mut q = self.lock_interrupts();
+        if !q.queued.is_empty() {
+            warn!(
+                count = q.queued.len(),
+                "dropping interrupts left by a previous turn; they were never accepted"
+            );
+            q.queued.clear();
+        }
+        q.turn = Some(turn.clone());
+        q.accepting = true;
+        q.prepared = true;
+        turn
+    }
+
+    fn open_or_reuse_prepared_turn(&self) -> TurnId {
+        {
+            let mut q = self.lock_interrupts();
+            if q.accepting && q.prepared {
+                if let Some(turn) = q.turn.clone() {
+                    q.prepared = false;
+                    return turn;
+                }
+            }
+        }
+        let turn = TurnId::mint();
+        self.open_for_turn(turn.clone());
+        turn
     }
 
     /// Re-open the queue after the loop decided *not* to exit at a point where it
@@ -3387,6 +3427,7 @@ impl Agent {
             return Vec::new();
         }
         q.accepting = false;
+        q.prepared = false;
         q.turn = None;
         std::mem::take(&mut q.queued)
     }
@@ -3394,6 +3435,7 @@ impl Agent {
     fn close_and_take_current_turn(&self) -> Vec<QueuedInterrupt> {
         let mut q = self.lock_interrupts();
         q.accepting = false;
+        q.prepared = false;
         q.turn = None;
         std::mem::take(&mut q.queued)
     }
@@ -3478,6 +3520,7 @@ impl Agent {
         let taken = std::mem::take(&mut q.queued);
         if taken.is_empty() {
             q.accepting = false;
+            q.prepared = false;
             Drained::Empty
         } else {
             Drained::Some(taken)
@@ -5303,10 +5346,11 @@ impl Agent {
             &provider_name,
         ) {
             Some(provider) => provider,
-            None => crate::providers::create(&provider_name, model_config).await?,
+            None => crate::providers::create_from_persisted(&provider_name, model_config).await?,
         };
         #[cfg(not(test))]
-        let provider = crate::providers::create(&provider_name, model_config).await?;
+        let provider =
+            crate::providers::create_from_persisted(&provider_name, model_config).await?;
 
         if !crate::privacy::bind_allowed(provider.tier(), row.privacy_tier) {
             return Ok(false);
@@ -5360,8 +5404,19 @@ impl Agent {
             return Ok(None);
         }
 
-        let model_config = effort.apply_to_model(provider.get_model_config());
-        match crate::providers::create(provider.get_name(), model_config).await {
+        let mut binding = provider.restore_binding();
+        let model_config = effort.apply_to_model(binding.model().clone());
+        *binding.model_mut() = model_config;
+        let rebuilt = match crate::providers::persisted_model_config_from_binding(
+            provider.get_name(),
+            binding,
+        ) {
+            Ok(model_config) => {
+                crate::providers::create_from_persisted(provider.get_name(), model_config).await
+            }
+            Err(error) => Err(error),
+        };
+        match rebuilt {
             Ok(rebuilt) => Ok(Some(rebuilt)),
             Err(e) => {
                 warn!(
@@ -6657,6 +6712,7 @@ impl Agent {
         session_config: SessionConfig,
         cancel_token: Option<CancellationToken>,
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
+        crate::agents::subagent_handle::admit_child_turn(&session_config.id);
         let session_manager = self.config.session_manager.clone();
         // #59: everything this function persists BEFORE the reply stream is
         // constructed — the user's own message, a slash command's resolution,
@@ -7055,9 +7111,6 @@ impl Agent {
         // [`RewriteBasis`]).
         let (session, mut rewrite_basis) =
             RewriteBasis::read_with_session(&session_manager, &session_config.id).await?;
-        if session.session_type == SessionType::SubAgent {
-            crate::agents::subagent_handle::begin_child_turn(&session_config.id);
-        }
         let stored_conversation = rewrite_basis.known().clone();
         let conversation = crate::conversation::without_bedrock_reasoning(rewrite_basis.known());
 
@@ -7564,13 +7617,16 @@ impl Agent {
             // where the stream was built — means acceptance begins and ends with a
             // real consumer, and anything a previous turn left behind is dropped
             // with a warning instead of ambushing this one.
-            let this_turn = TurnId::mint();
+            let this_turn = self.open_or_reuse_prepared_turn();
             crate::agents::subagent_handle::open_parent_continuation_admission(
                 &session_config.id,
             );
-            self.open_for_turn(this_turn.clone());
             let mut native_supervision_required = false;
             let mut deferred_turn_abort: Option<(TurnAbortCode, String)> = None;
+            // A dropped stream is reissued to apply a direct user steer. It is
+            // still the same logical action, including when that action already
+            // occupies the final `max_turns` slot.
+            let mut restart_steer_reissue = false;
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -7617,7 +7673,9 @@ impl Agent {
                     }
                 }
 
-                turns_taken += 1;
+                if !std::mem::take(&mut restart_steer_reissue) {
+                    turns_taken += 1;
+                }
                 // Surface turn progress so an observer (CLI/GUI/logs) can tell how
                 // much of the per-turn action budget has been used, and so a
                 // budget-exhaustion stop is distinguishable from a normal completion.
@@ -7933,6 +7991,8 @@ impl Agent {
                     )
                     .await;
                 let bridge_url = bridge_lease.as_ref().map(|l| l.url().to_string());
+                let restart_steering = iteration_provider.supports_streaming()
+                    && iteration_provider.supports_restart_steering();
                 let (mut live_steer_sender, live_steer_receiver) =
                     if iteration_provider.supports_streaming()
                         && iteration_provider.supports_live_steering()
@@ -7966,6 +8026,11 @@ impl Agent {
                 // hint pushed into `messages_to_add`; the turn continues instead of
                 // ending on the error.
                 let mut did_recover_provider_error_this_iteration = false;
+                // Some streamed APIs cannot transport a steer inside an existing
+                // request but can cancel that request on stream drop. In that case
+                // the emitted prefix is persisted below and the queued UserDirect
+                // message is consumed at the next ordinary loop boundary.
+                let mut did_restart_for_steer_this_iteration = false;
                 // finish_reason of this turn's response (from the provider usage),
                 // used below to auto-continue a length-truncated turn.
                 let mut last_finish_reason: Option<String> = None;
@@ -8016,7 +8081,7 @@ impl Agent {
                         &mut stream,
                         &session_config.id,
                         &self.soft_interrupt_notify,
-                        live_steer_sender.is_some(),
+                        live_steer_sender.is_some() || restart_steering,
                     )
                     .await
                     {
@@ -8029,6 +8094,16 @@ impl Agent {
                         }
                         ProviderWake::SteerReady => {
                             let Some(sender) = live_steer_sender.as_ref() else {
+                                if restart_steering && self.has_soft_interrupts() {
+                                    info!(
+                                        provider = reply_provider.get_name(),
+                                        "queued steer is restarting the provider stream"
+                                    );
+                                    drop(stream);
+                                    did_restart_for_steer_this_iteration = true;
+                                    restart_steer_reissue = true;
+                                    break;
+                                }
                                 continue;
                             };
                             match self
@@ -8053,7 +8128,19 @@ impl Agent {
                                         yield AgentEvent::Message(message);
                                     }
                                 }
-                                LiveSteerOutcome::Disabled => live_steer_sender = None,
+                                LiveSteerOutcome::Disabled => {
+                                    live_steer_sender = None;
+                                    if restart_steering && self.has_soft_interrupts() {
+                                        info!(
+                                            provider = reply_provider.get_name(),
+                                            "live steer was unavailable; restarting the provider stream"
+                                        );
+                                        drop(stream);
+                                        did_restart_for_steer_this_iteration = true;
+                                        restart_steer_reissue = true;
+                                        break;
+                                    }
+                                }
                                 LiveSteerOutcome::Cancelled(messages) => {
                                     for message in messages {
                                         conversation.push(message.clone());
@@ -8883,6 +8970,11 @@ impl Agent {
                 if pending_turn_abort.is_some() {
                     // The typed failure is emitted after this iteration's messages
                     // and usage have been persisted below.
+                } else if did_restart_for_steer_this_iteration {
+                    // The stream was deliberately dropped at a safe boundary. Do
+                    // not treat the missing finish reason as a natural stop: first
+                    // persist its emitted prefix below, then the next loop step
+                    // drains and persists the queued steer before reissuing.
                 } else if last_finish_reason.as_deref() == Some("length") {
                         // The provider cut the response off at the output-length
                         // limit (not a natural stop) and the model called no tool,
@@ -9418,7 +9510,7 @@ impl Agent {
         session_id: &str,
     ) -> Result<()> {
         let provider_name = provider.get_name().to_string();
-        let model_config = provider.get_model_config();
+        let model_config = crate::providers::persisted_model_config(provider.as_ref())?;
         let tier = provider.tier();
         let model_config_json = serde_json::to_string(&model_config)
             .context("Failed to serialize the provider's model config")?;
@@ -9744,12 +9836,12 @@ impl Agent {
             &provider_name,
         ) {
             Some(provider) => provider,
-            None => crate::providers::create(&provider_name, model_config)
+            None => crate::providers::create_from_persisted(&provider_name, model_config)
                 .await
                 .map_err(|e| anyhow!("Could not create provider: {}", e))?,
         };
         #[cfg(not(test))]
-        let provider = crate::providers::create(&provider_name, model_config)
+        let provider = crate::providers::create_from_persisted(&provider_name, model_config)
             .await
             .map_err(|e| anyhow!("Could not create provider: {}", e))?;
 
@@ -11006,6 +11098,256 @@ mod tests {
         assert!(matches!(wake, ProviderWake::SteerReady));
     }
 
+    struct StreamDropSignal(Arc<AtomicBool>);
+
+    impl Drop for StreamDropSignal {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    struct RestartSteeringProvider {
+        calls: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
+        first_stream_dropped: Arc<AtomicBool>,
+        second_request_started_after_drop: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for RestartSteeringProvider {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::empty()
+        }
+
+        fn get_name(&self) -> &str {
+            "restart-steering-test"
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("restart-steering-model")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> std::result::Result<(Message, crate::providers::base::ProviderUsage), ProviderError>
+        {
+            Err(ProviderError::NotImplemented(
+                "restart steering test is streaming-only".into(),
+            ))
+        }
+
+        fn supports_streaming(&self) -> bool {
+            true
+        }
+
+        fn supports_restart_steering(&self) -> bool {
+            true
+        }
+
+        async fn stream(
+            &self,
+            _system: &str,
+            messages: &[Message],
+            _tools: &[Tool],
+        ) -> std::result::Result<crate::providers::base::MessageStream, ProviderError> {
+            let call = {
+                let mut calls = self.calls.lock().expect("restart call log poisoned");
+                calls.push(messages.to_vec());
+                calls.len()
+            };
+            if call == 1 {
+                let signal = StreamDropSignal(Arc::clone(&self.first_stream_dropped));
+                let mut emitted = false;
+                return Ok(Box::pin(futures::stream::poll_fn(move |_cx| {
+                    let _keep_signal_alive = &signal;
+                    if emitted {
+                        std::task::Poll::Pending
+                    } else {
+                        emitted = true;
+                        std::task::Poll::Ready(Some(Ok((
+                            Some(
+                                Message::assistant()
+                                    .with_id("restart-partial")
+                                    .with_text("partial before steer"),
+                            ),
+                            None,
+                            None,
+                        ))))
+                    }
+                })));
+            }
+
+            self.second_request_started_after_drop.store(
+                self.first_stream_dropped.load(Ordering::SeqCst),
+                Ordering::SeqCst,
+            );
+            Ok(crate::providers::base::stream_from_single_message(
+                Message::assistant().with_text("finished after steer"),
+                crate::providers::base::ProviderUsage::new(
+                    "restart-steering-model".into(),
+                    crate::providers::base::Usage::default(),
+                ),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn restart_steering_drops_stream_and_reissues_with_user_direct_context_once() {
+        use crate::conversation::message::{MessageProvenance, ProvenanceKind};
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let permission_manager = Arc::new(crate::config::permission::PermissionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let agent = Arc::new(Agent::with_config(AgentConfig::new(
+            Arc::clone(&session_manager),
+            permission_manager,
+            None,
+            crate::config::BioRouterMode::Auto,
+        )));
+        let session = loop {
+            let candidate = session_manager
+                .create_session(
+                    temp.path().to_path_buf(),
+                    "restart-steering".into(),
+                    SessionType::SubAgent,
+                )
+                .await
+                .unwrap();
+            if crate::agents::subagent_handle::list_for_session(&candidate.id).is_empty() {
+                break candidate;
+            }
+        };
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let first_stream_dropped = Arc::new(AtomicBool::new(false));
+        let second_request_started_after_drop = Arc::new(AtomicBool::new(false));
+        agent
+            .update_provider(
+                Arc::new(RestartSteeringProvider {
+                    calls: Arc::clone(&calls),
+                    first_stream_dropped: Arc::clone(&first_stream_dropped),
+                    second_request_started_after_drop: Arc::clone(
+                        &second_request_started_after_drop,
+                    ),
+                }),
+                &session.id,
+            )
+            .await
+            .unwrap();
+
+        let provenance = MessageProvenance {
+            kind: ProvenanceKind::UserDirect,
+            from_session_id: Some("parent-session".into()),
+            from_session_name: Some("Parent".into()),
+        };
+        let reply = agent
+            .reply(
+                Message::user().with_text("start the streamed turn"),
+                SessionConfig {
+                    id: session.id.clone(),
+                    schedule_id: None,
+                    max_turns: Some(1),
+                    max_tool_calls: None,
+                    budget: None,
+                    retry_config: None,
+                    reasoning_effort: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::pin!(reply);
+        let mut queued = false;
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while let Some(event) = reply.next().await {
+                let event = event.expect("reply event");
+                if let AgentEvent::Message(message) = event {
+                    if message.as_concat_text() == "partial before steer" && !queued {
+                        agent
+                            .try_queue_soft_interrupt(
+                                "change course immediately".into(),
+                                Some(provenance.clone()),
+                            )
+                            .expect("running subagent accepts direct steer");
+                        queued = true;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("the pending first request must be dropped rather than awaited");
+
+        assert!(queued, "the first stream must emit its partial prefix");
+        assert!(first_stream_dropped.load(Ordering::SeqCst));
+        assert!(second_request_started_after_drop.load(Ordering::SeqCst));
+        {
+            let calls = calls.lock().expect("restart call log poisoned");
+            assert_eq!(calls.len(), 2, "the same provider is reissued exactly once");
+            assert!(
+                calls[0]
+                    .iter()
+                    .all(|message| message.as_concat_text() != "change course immediately"),
+                "the steer is queued only after the first request starts"
+            );
+            let second = &calls[1];
+            let partial_index = second
+                .iter()
+                .position(|message| message.as_concat_text() == "partial before steer")
+                .expect("persisted partial output reaches the replacement request");
+            let steer_index = second
+                .iter()
+                .position(|message| message.as_concat_text() == "change course immediately")
+                .expect("queued steer reaches the replacement request");
+            assert_eq!(
+                second
+                    .iter()
+                    .filter(|message| message.as_concat_text() == "partial before steer")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                second
+                    .iter()
+                    .filter(|message| message.as_concat_text() == "change course immediately")
+                    .count(),
+                1
+            );
+            assert!(partial_index < steer_index);
+            assert_eq!(
+                second[steer_index].metadata.provenance,
+                Some(provenance.clone())
+            );
+        }
+
+        let stored = session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .expect("reply messages are durable");
+        assert_eq!(
+            stored
+                .messages()
+                .iter()
+                .filter(|message| message.as_concat_text() == "partial before steer")
+                .count(),
+            1
+        );
+        let persisted_steers: Vec<_> = stored
+            .messages()
+            .iter()
+            .filter(|message| message.as_concat_text() == "change course immediately")
+            .collect();
+        assert_eq!(persisted_steers.len(), 1);
+        assert_eq!(persisted_steers[0].metadata.provenance, Some(provenance));
+    }
+
     #[tokio::test]
     async fn rejected_live_interrupt_is_requeued_exactly_once() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -11220,6 +11562,43 @@ mod tests {
             }
             Drained::Empty => panic!("the queued steer must be drained by its own turn"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn delegated_handoff_reuses_the_prepared_interrupt_turn_without_dropping_input() {
+        let agent = test_agent().await;
+        let prepared = agent.prepare_soft_interrupt_turn();
+        let accepted = agent
+            .try_queue_soft_interrupt("arrived during handoff".into(), None)
+            .expect("the prepared handoff must accept");
+        assert_eq!(accepted, prepared);
+
+        let claimed = agent.open_or_reuse_prepared_turn();
+        assert_eq!(claimed, prepared);
+        match agent.close_and_drain() {
+            Drained::Some(items) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].text, "arrived during handoff");
+            }
+            Drained::Empty => panic!("claiming the prepared turn must not clear its steer"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_unprepared_stale_queue_is_not_reused_by_a_new_reply_loop() {
+        let agent = test_agent().await;
+        let stale = TurnId::new("stale-turn");
+        agent.open_for_turn(stale.clone());
+        agent
+            .try_queue_soft_interrupt("must not ambush the successor".into(), None)
+            .unwrap();
+
+        let successor = agent.open_or_reuse_prepared_turn();
+        assert_ne!(successor, stale);
+        assert!(
+            matches!(agent.close_and_drain(), Drained::Empty),
+            "ordinary stale interrupts must retain the existing drop-on-new-turn contract"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -11840,6 +12219,50 @@ mod tests {
         assert!(claim.result.summary.contains("replacement result"));
         assert!(!claim.result.summary.contains("superseded result"));
         assert!(handle.mark_terminal_generation_collected_if_generation(claim.generation));
+        assert!(matches!(
+            next_native_supervision_claim(&parent, &None).await,
+            NativeSupervisionWake::Complete
+        ));
+        crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
+    }
+
+    #[tokio::test]
+    async fn direct_child_followup_reopens_supervision_for_one_generation_only() {
+        let parent = format!("native-direct-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("native-direct-child-{}", uuid::Uuid::new_v4());
+        let handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "directly steered child",
+            CancellationToken::new(),
+        );
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        handle.complete(crate::agents::subagent_result::SubagentResult::from_error(
+            "idle draft",
+        ));
+        let initial_generation = handle.child_turn_generation();
+        assert!(handle.mark_terminal_generation_collected_if_generation(initial_generation));
+
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        let steered_generation = handle.child_turn_generation();
+        crate::agents::subagent_handle::record_child_turn_terminal(
+            &child,
+            crate::agents::subagent_result::SubagentResult::from_error("STEERED_CLAUDE"),
+        );
+        assert!(steered_generation > initial_generation);
+        assert!(delegated_work_supervision_prompt(&parent).is_some());
+
+        crate::agents::subagent_handle::begin_parent_closing(&parent);
+        let NativeSupervisionWake::Ready(claim) =
+            next_native_supervision_claim(&parent, &None).await
+        else {
+            panic!("the direct follow-up terminal must reopen supervision once")
+        };
+        assert_eq!(claim.generation, steered_generation);
+        assert!(claim.result.summary.contains("STEERED_CLAUDE"));
+        assert!(handle.mark_terminal_generation_collected_if_generation(claim.generation));
+
+        assert!(delegated_work_supervision_prompt(&parent).is_none());
         assert!(matches!(
             next_native_supervision_claim(&parent, &None).await,
             NativeSupervisionWake::Complete
@@ -13982,6 +14405,251 @@ mod gate_a_bind_tests {
             Arc::ptr_eq(&expected, &actual),
             "turn preparation must not replace a live Codex/Claude-style provider instance"
         );
+    }
+
+    #[tokio::test]
+    async fn standalone_child_session_round_trips_specialized_restore_binding() {
+        #[cfg(feature = "aws-providers")]
+        use crate::providers::provider_binding::PersistedRetryConfig;
+        use crate::providers::provider_binding::{
+            AbsoluteCommandPath, SecretFreeEndpoint, VersaAzureCredentialSource,
+            STANDALONE_RESTORE_CONFIG_KEY,
+        };
+        use std::collections::HashMap;
+
+        let dir = TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Arc::new(Agent::with_config(AgentConfig::new(
+            Arc::clone(&session_manager),
+            Arc::clone(&permission_manager),
+            None,
+            BioRouterMode::Auto,
+        )));
+        let command = AbsoluteCommandPath::new(std::env::current_exe().unwrap()).unwrap();
+        let azure_secret = "standalone-azure-secret-must-not-persist";
+        let bedrock_access = "standalone-bedrock-access-must-not-persist";
+        let bedrock_secret = "standalone-bedrock-secret-must-not-persist";
+
+        crate::config::with_config_overrides(
+            HashMap::from([
+                ("VERSA_AZURE_API_KEY".into(), azure_secret.into()),
+                ("VERSA_BEDROCK_ACCESS_KEY_ID".into(), bedrock_access.into()),
+                (
+                    "VERSA_BEDROCK_SECRET_ACCESS_KEY".into(),
+                    bedrock_secret.into(),
+                ),
+            ]),
+            async {
+                let providers: Vec<Arc<dyn Provider>> = vec![
+                    Arc::new(
+                        crate::providers::codex::CodexProvider::from_resolved(
+                            ModelConfig::new_or_fail("gpt-5.5"),
+                            command.clone(),
+                        )
+                        .unwrap(),
+                    ),
+                    Arc::new(
+                        crate::providers::claude_code::ClaudeCodeProvider::from_resolved(
+                            ModelConfig::new_or_fail("claude-sonnet-4-6"),
+                            command,
+                        )
+                        .unwrap(),
+                    ),
+                    Arc::new(
+                        crate::providers::versa_azure::VersaAzureProvider::from_resolved(
+                            ModelConfig::new_or_fail("standalone-azure-deployment"),
+                            SecretFreeEndpoint::new(
+                                "https://standalone-azure.invalid/exact".into(),
+                            )
+                            .unwrap(),
+                            "standalone-azure-deployment".into(),
+                            "2025-04-01-preview".into(),
+                            VersaAzureCredentialSource::ApiKey,
+                        )
+                        .unwrap(),
+                    ),
+                ];
+                #[cfg(feature = "aws-providers")]
+                let providers = {
+                    let mut providers = providers;
+                    providers.push(Arc::new(
+                        crate::providers::versa_bedrock::VersaBedrockProvider::from_resolved(
+                            ModelConfig::new_or_fail("anthropic.claude-sonnet-4-6"),
+                            SecretFreeEndpoint::new(
+                                "https://standalone-bedrock.invalid/exact".into(),
+                            )
+                            .unwrap(),
+                            "us-west-2".into(),
+                            PersistedRetryConfig {
+                                max_retries: 7,
+                                initial_interval_ms: 1_234,
+                                backoff_multiplier: 2.5,
+                                max_interval_ms: 54_321,
+                            },
+                            Some(777),
+                        )
+                        .await
+                        .unwrap(),
+                    ));
+                    providers
+                };
+
+                for provider in providers {
+                    let session = session_manager
+                        .create_session(
+                            PathBuf::from("."),
+                            format!("{} standalone child", provider.get_name()),
+                            SessionType::SubAgent,
+                        )
+                        .await
+                        .unwrap();
+                    let expected_binding =
+                        serde_json::to_value(provider.restore_binding()).unwrap();
+                    agent.update_provider(provider, &session.id).await.unwrap();
+                    let row = reread(&session_manager, &session.id).await;
+                    let stored = serde_json::to_string(&row).unwrap();
+                    assert!(
+                        row.model_config
+                            .as_ref()
+                            .and_then(|model| model.request_params.as_ref())
+                            .is_some_and(|params| {
+                                params.contains_key(STANDALONE_RESTORE_CONFIG_KEY)
+                            }),
+                        "{} child row has no exact restore binding",
+                        row.provider_name.as_deref().unwrap_or("unknown")
+                    );
+                    for secret in [azure_secret, bedrock_access, bedrock_secret] {
+                        assert!(
+                            !stored.contains(secret),
+                            "child row persisted credential material"
+                        );
+                    }
+
+                    let cold = Agent::with_config(AgentConfig::new(
+                        Arc::clone(&session_manager),
+                        Arc::clone(&permission_manager),
+                        None,
+                        BioRouterMode::Auto,
+                    ));
+                    cold.restore_provider_from_session(&row).await.unwrap();
+                    let restored = cold.bound_provider_unchecked().await.unwrap();
+                    assert_eq!(
+                        serde_json::to_value(restored.restore_binding()).unwrap(),
+                        expected_binding,
+                        "{} child did not restore its exact provider binding",
+                        restored.get_name()
+                    );
+                }
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn reasoning_effort_override_preserves_specialized_provider_bindings() {
+        #[cfg(feature = "aws-providers")]
+        use crate::providers::provider_binding::PersistedRetryConfig;
+        use crate::providers::provider_binding::{
+            AbsoluteCommandPath, SecretFreeEndpoint, VersaAzureCredentialSource,
+        };
+        use std::collections::HashMap;
+
+        fn route(binding: &crate::providers::provider_binding::ProviderRestoreBinding) -> Value {
+            let mut value = serde_json::to_value(binding).unwrap();
+            value.as_object_mut().unwrap().remove("model");
+            value
+        }
+
+        let command = AbsoluteCommandPath::new(std::env::current_exe().unwrap()).unwrap();
+        crate::config::with_config_overrides(
+            HashMap::from([
+                ("VERSA_AZURE_API_KEY".into(), "effort-azure-key".into()),
+                (
+                    "VERSA_BEDROCK_ACCESS_KEY_ID".into(),
+                    "effort-bedrock-access".into(),
+                ),
+                (
+                    "VERSA_BEDROCK_SECRET_ACCESS_KEY".into(),
+                    "effort-bedrock-secret".into(),
+                ),
+            ]),
+            async move {
+                let providers: Vec<Arc<dyn Provider>> = vec![
+                    Arc::new(
+                        crate::providers::codex::CodexProvider::from_resolved(
+                            ModelConfig::new_or_fail("gpt-5.5"),
+                            command.clone(),
+                        )
+                        .unwrap(),
+                    ),
+                    Arc::new(
+                        crate::providers::claude_code::ClaudeCodeProvider::from_resolved(
+                            ModelConfig::new_or_fail("claude-sonnet-4-6"),
+                            command,
+                        )
+                        .unwrap(),
+                    ),
+                    Arc::new(
+                        crate::providers::versa_azure::VersaAzureProvider::from_resolved(
+                            ModelConfig::new_or_fail("effort-azure"),
+                            SecretFreeEndpoint::new("https://effort-azure.invalid/exact".into())
+                                .unwrap(),
+                            "effort-azure".into(),
+                            "2025-04-01-preview".into(),
+                            VersaAzureCredentialSource::ApiKey,
+                        )
+                        .unwrap(),
+                    ),
+                ];
+                #[cfg(feature = "aws-providers")]
+                let providers = {
+                    let mut providers = providers;
+                    providers.push(Arc::new(
+                        crate::providers::versa_bedrock::VersaBedrockProvider::from_resolved(
+                            ModelConfig::new_or_fail("anthropic.claude-sonnet-4-6"),
+                            SecretFreeEndpoint::new("https://effort-bedrock.invalid/exact".into())
+                                .unwrap(),
+                            "us-west-2".into(),
+                            PersistedRetryConfig {
+                                max_retries: 7,
+                                initial_interval_ms: 1_234,
+                                backoff_multiplier: 2.5,
+                                max_interval_ms: 54_321,
+                            },
+                            Some(777),
+                        )
+                        .await
+                        .unwrap(),
+                    ));
+                    providers
+                };
+
+                for provider in providers {
+                    let expected_route = route(&provider.restore_binding());
+                    let expected_model = provider.get_model_config().model_name;
+                    let (_dir, agent, _session) = agent_on(provider).await;
+                    let rebuilt = agent
+                        .provider_with_effort(crate::agents::effort::ReasoningEffort::Deep)
+                        .await
+                        .unwrap()
+                        .expect("specialized provider must accept the effort override");
+                    let actual = rebuilt.restore_binding();
+                    assert_eq!(
+                        route(&actual),
+                        expected_route,
+                        "{} effort override changed its route",
+                        actual.provider_name()
+                    );
+                    assert_eq!(actual.model().model_name, expected_model);
+                    assert_eq!(
+                        actual.model().reasoning_effort,
+                        Some(crate::agents::effort::ReasoningEffort::Deep)
+                    );
+                }
+            },
+        )
+        .await;
     }
 
     #[tokio::test]

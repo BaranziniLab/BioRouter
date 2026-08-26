@@ -2,6 +2,7 @@ import type { EmbeddedResource, RawResource, ResourceContents } from '../../api'
 import type { ThemeFamily } from '../../contexts/ThemeContext';
 import { GENERATED_THEMES } from '../../styles/themes.generated';
 import { IMAGE_EXTENSIONS } from '../../utils/imageFormats';
+import { sanitizeArtifactTitle } from '../../utils/untrustedText';
 import type { ArtifactSource } from './artifactTypes';
 
 const TEXT_EXTENSIONS = new Set([
@@ -385,22 +386,6 @@ export function pathFromArtifactHref(href: string): string {
 const MAX_EMBEDDED_HTML_BYTES = 16 * 1024 * 1024;
 const MAX_ENCODED_HTML_BYTES = Math.ceil((MAX_EMBEDDED_HTML_BYTES * 4) / 3) + 4;
 const MAX_URI_LIST_BYTES = 64 * 1024;
-const MAX_ARTIFACT_TITLE_CHARS = 256;
-
-function sanitizeArtifactTitle(title: string, fallback = 'Artifact'): string {
-  const sanitized = title
-    .replace(/[\p{Cc}\p{Cf}]/gu, '')
-    .trim()
-    .slice(0, MAX_ARTIFACT_TITLE_CHARS);
-  if (sanitized) return sanitized;
-  return (
-    fallback
-      .replace(/[\p{Cc}\p{Cf}]/gu, '')
-      .trim()
-      .slice(0, MAX_ARTIFACT_TITLE_CHARS) || 'Artifact'
-  );
-}
-
 function isHtmlMime(mimeType?: string): boolean {
   const essence = mimeType?.split(';', 1)[0]?.trim().toLowerCase();
   return essence === 'text/html' || essence === 'application/xhtml+xml';

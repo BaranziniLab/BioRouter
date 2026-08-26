@@ -224,11 +224,41 @@ pub struct BridgeGrant {
 /// | Claude Code | `timeout` (**milliseconds**) in the `--mcp-config` server entry. Its own help calls it a "hard wall-clock limit per call; progress notifications do not extend it". |
 /// | Codex | `mcp_servers.<name>.tool_timeout_sec` (**seconds**) in the `thread/start` config override. |
 ///
-/// Deliberately above the providers' 30-minute turn ceiling, so the bridge is
-/// never the first layer to abandon a valid tool call. Parking tools return
-/// inside [`child_tool_call_budget`], and delegation returns a background handle
-/// immediately for the parent to supervise through the workspace collectors.
-pub const CHILD_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(31 * 60);
+/// This is a transport safeguard, not a delegated-turn lifetime. Delegation
+/// returns a background handle immediately, and every bridged parking tool must
+/// return within [`child_tool_call_budget`], so this deadline cannot end a child
+/// the parent is supervising. Coding-agent turns themselves are unbounded by
+/// default; see [`super::turn_timeout`].
+///
+/// Operators can raise this with
+/// `BIOROUTER_CODING_AGENT_TOOL_TIMEOUT_SECS`. Values below the parking budget
+/// plus a 30-second response margin are clamped upward: a configuration typo
+/// must not revive the vendor CLIs' short hidden deadline for `workspace_watch`.
+pub const DEFAULT_CHILD_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(31 * 60);
+pub const MAX_CHILD_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+pub const CHILD_TOOL_CALL_TIMEOUT_CONFIG_KEY: &str = "BIOROUTER_CODING_AGENT_TOOL_TIMEOUT_SECS";
+
+fn child_tool_call_timeout_from_seconds(configured: Option<u64>) -> Duration {
+    let configured = configured
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_CHILD_TOOL_CALL_TIMEOUT);
+    configured.clamp(
+        child_tool_call_budget() + Duration::from_secs(30),
+        MAX_CHILD_TOOL_CALL_TIMEOUT,
+    )
+}
+
+pub fn child_tool_call_timeout() -> Duration {
+    let configured = crate::config::Config::global()
+        .get_param::<u64>(CHILD_TOOL_CALL_TIMEOUT_CONFIG_KEY)
+        .ok();
+    child_tool_call_timeout_from_seconds(configured)
+}
+
+pub fn child_tool_call_timeout_millis() -> u64 {
+    u64::try_from(child_tool_call_timeout().as_millis()).unwrap_or(u64::MAX)
+}
 
 /// How long a bridged parking call may spend before it must answer.
 ///
@@ -2368,6 +2398,28 @@ mod tests {
         assert!(
             approval_ttl() >= Duration::from_secs(30),
             "a window this short is not a decision, it is a race"
+        );
+    }
+
+    #[test]
+    fn tool_transport_timeout_cannot_undercut_a_watching_call() {
+        let minimum = child_tool_call_budget() + Duration::from_secs(30);
+        assert_eq!(
+            child_tool_call_timeout_from_seconds(Some(1)),
+            minimum,
+            "an explicit typo must not make workspace_watch fail in the transport"
+        );
+        assert_eq!(
+            child_tool_call_timeout_from_seconds(None),
+            DEFAULT_CHILD_TOOL_CALL_TIMEOUT
+        );
+        assert_eq!(
+            child_tool_call_timeout_from_seconds(Some(3600)),
+            Duration::from_secs(3600)
+        );
+        assert_eq!(
+            child_tool_call_timeout_from_seconds(Some(u64::MAX)),
+            MAX_CHILD_TOOL_CALL_TIMEOUT
         );
     }
 

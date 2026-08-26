@@ -134,23 +134,23 @@ describe('the composer working edge attribute', () => {
     expect(card()!.hasAttribute('data-working')).toBe(false);
   });
 
-  /**
-   * Every non-Idle state, which is exactly the set the removed status row used
-   * to render for (`chatState !== ChatState.Idle`). Keeping that set identical
-   * is what makes this a replacement rather than a behaviour change.
-   */
+  /** The same live-turn states used by the running-tab registry. */
   const RUNNING = [
     ChatState.Thinking,
     ChatState.Streaming,
     ChatState.WaitingForUserInput,
     ChatState.Compacting,
-    ChatState.LoadingConversation,
     ChatState.RestartingAgent,
   ];
 
   it.each(RUNNING)('is set while the chat state is %s', (state) => {
     renderComposer(state);
     expect(card()!.getAttribute('data-working')).toBe('true');
+  });
+
+  it('does not report conversation loading as live work', () => {
+    renderComposer(ChatState.LoadingConversation);
+    expect(card()!.hasAttribute('data-working')).toBe(false);
   });
 
   it('appears when a turn starts and clears when it ends', () => {

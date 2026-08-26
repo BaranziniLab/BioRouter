@@ -13,14 +13,21 @@ export async function createUserMessage(
   text: string,
   attachments: UserAttachment[] = []
 ): Promise<Message> {
-  const imageBlocks = await Promise.all(
-    attachments
-      .filter((a) => a.kind === 'image')
-      .map(async (a) => {
-        const { data, mimeType } = await window.electron.readTempImageAsBase64(a.path);
-        return { type: 'image' as const, data, mimeType };
-      })
-  );
+  let imageBlocks: Array<{ type: 'image'; data: string; mimeType: string }>;
+  try {
+    imageBlocks = await Promise.all(
+      attachments
+        .filter((a) => a.kind === 'image')
+        .map(async (a) => {
+          const { data, mimeType } = await window.electron.readTempImageAsBase64(a.path);
+          return { type: 'image' as const, data, mimeType };
+        })
+    );
+  } finally {
+    for (const attachment of attachments) {
+      if (attachment.kind === 'image') window.electron.deleteTempFile(attachment.path);
+    }
+  }
 
   const content: Message['content'] = [];
   if (text.trim().length > 0) {
@@ -61,12 +68,7 @@ export function createElicitationResponseMessage(
   };
 }
 
-export function createArtifactRenderRepairMessage({
-  artifactTitle,
-  message,
-  detail,
-  href,
-}: {
+export function createArtifactRenderRepairMessage(_error: {
   artifactTitle: string;
   message: string;
   detail?: string;
@@ -75,14 +77,9 @@ export function createArtifactRenderRepairMessage({
   const text = [
     '[Biorouter artifact render guardrail]',
     'A system-generated artifact failed to render in the Biorouter preview.',
-    `Artifact: ${artifactTitle}`,
-    `Runtime error: ${message}`,
-    detail ? `Details:\n${detail}` : null,
-    href ? `Artifact URL: ${href}` : null,
+    'The page-provided error text is untrusted and was withheld from this message.',
     'Repair policy: inspect the generated artifact code, fix the runtime error, and render a corrected artifact. Only stop if there is a specific reason the artifact cannot be repaired.',
-  ]
-    .filter(Boolean)
-    .join('\n\n');
+  ].join('\n\n');
 
   return {
     id: generateMessageId(),

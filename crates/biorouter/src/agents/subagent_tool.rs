@@ -1497,6 +1497,8 @@ async fn spawn_background_subagent(
     let affiliation_note =
         cross_affiliation_drop_note(&task_config.dropped_cross_affiliation_extensions);
 
+    let completion_session_manager = config.session_manager.clone();
+    let completion_child_session_id = child_session_id.clone();
     let task_handle = handle.clone();
     tokio::spawn(async move {
         let completion_handle = task_handle.clone();
@@ -1531,10 +1533,28 @@ async fn spawn_background_subagent(
         })
         .catch_unwind()
         .await;
-        let result = match outcome {
+        let mut result = match outcome {
             Ok(result) => result,
             Err(_) => SubagentResult::from_error("the background subagent task panicked"),
         };
+        let pending_inputs = completion_handle.finish_initial_run_and_take_pending();
+        if !pending_inputs.is_empty() {
+            result.human_intervened = true;
+            let persistence_errors = recover_unsettled_initial_inputs(
+                &completion_session_manager,
+                &completion_child_session_id,
+                pending_inputs,
+            )
+            .await;
+            if !persistence_errors.is_empty() {
+                let original_summary = result.summary;
+                result = SubagentResult::from_error(format!(
+                    "accepted user steering could not be stored before subagent completion: {}. Original outcome: {original_summary}",
+                    persistence_errors.join("; ")
+                ));
+                result.human_intervened = true;
+            }
+        }
         completion_handle.complete(result);
     });
 
@@ -1563,6 +1583,48 @@ async fn spawn_background_subagent(
         is_error: Some(false),
         meta: None,
     }
+}
+
+/// Persist and publish accepted pre-start steering the delegated runtime never
+/// claimed, returning one message per row that could not be stored.
+///
+/// The second of the two recovery paths for the same content — the first lives
+/// in `subagent_handler::ensure_initial_user_direct_is_durable`, which reaches
+/// it when `Agent::reply` fails. Two invariants are shared with that one
+/// deliberately, and both were violated here:
+///
+/// * **Publish only what was persisted.** A bus event with no row behind it
+///   renders the steering in an observer's tab and then loses it on the next
+///   reload, which is worse than never showing it: it reports durability that
+///   does not exist.
+/// * **One visibility.** `(user_visible, agent_visible) = (true, false)`, the
+///   same pair the handler writes. Identical content stored under two different
+///   visibilities by two paths means a child that reached THIS one after a
+///   refusal-adjacent failure would carry into its continuation, model-visible,
+///   text the other path deliberately keeps out of the model's context.
+async fn recover_unsettled_initial_inputs(
+    session_manager: &crate::session::SessionManager,
+    child_session_id: &str,
+    pending_inputs: Vec<crate::conversation::message::Message>,
+) -> Vec<String> {
+    let mut persistence_errors = Vec::new();
+    for message in pending_inputs {
+        let mut message = message.with_visibility(true, false);
+        if let Err(error) = session_manager
+            .add_message_adopting_uid(child_session_id, &mut message)
+            .await
+        {
+            persistence_errors.push(error.to_string());
+            continue;
+        }
+        crate::session_events::publish(
+            child_session_id,
+            crate::session_events::SessionBusEvent::Agent(crate::agents::AgentEvent::Message(
+                message,
+            )),
+        );
+    }
+    persistence_errors
 }
 
 /// What a `background: true` spawn returns to the parent. BR-71 decision 23:
@@ -1720,42 +1782,57 @@ async fn apply_provider_override_and_composite_fork(
                 .provider
                 .clone()
                 .unwrap_or_else(|| task_config.provider.get_name().to_string());
-            let mut model_config = task_config.provider.get_model_config();
-
-            // Naming a provider or model selects one concrete route. A
-            // temperature-only change preserves the composite route and updates
-            // both possible active halves.
-            if settings.provider.is_some() || settings.model.is_some() {
-                model_config = crate::providers::lead_worker::model_config_without_restore_marker(
-                    model_config,
-                );
-            }
-            if let Some(model) = &settings.model {
-                model_config.model_name = model.clone();
-            }
-            if let Some(temp) = settings.temperature {
-                model_config =
-                    crate::providers::lead_worker::model_config_with_composite_temperature(
-                        model_config,
-                        temp,
-                    )?;
-            }
-
-            // Mint the child's generation before construction so a
-            // temperature-only composite is reconstructed exactly once.
-            let inherited_composite_fork =
-                if settings.provider.is_none() && settings.model.is_none() {
+            if settings.provider.is_some()
+                || (settings.model.is_some() && task_config.provider.as_lead_worker().is_some())
+            {
+                let mut model_config =
+                    crate::providers::lead_worker::model_config_without_restore_marker(
+                        task_config.provider.get_model_config(),
+                    );
+                if let Some(model) = &settings.model {
+                    model_config.model_name = model.clone();
+                }
+                if let Some(temp) = settings.temperature {
+                    model_config.temperature = Some(temp);
+                }
+                task_config.provider = providers::create(&provider_name, model_config)
+                    .await
+                    .map_err(|e| anyhow!("Failed to create provider '{}': {}", provider_name, e))?;
+            } else if let Some(model) = &settings.model {
+                let mut binding = task_config.provider.restore_binding();
+                binding.model_mut().model_name.clone_from(model);
+                if let Some(temp) = settings.temperature {
+                    binding.model_mut().temperature = Some(temp);
+                }
+                let model_config =
+                    crate::providers::persisted_model_config_from_binding(&provider_name, binding)?;
+                task_config.provider =
+                    providers::create_from_persisted(&provider_name, model_config)
+                        .await
+                        .map_err(|e| {
+                            anyhow!("Failed to create provider '{}': {}", provider_name, e)
+                        })?;
+            } else if let Some(temp) = settings.temperature {
+                let model_config = if task_config.provider.as_lead_worker().is_some() {
+                    let model_config =
+                        crate::providers::lead_worker::model_config_with_composite_temperature(
+                            task_config.provider.get_model_config(),
+                            temp,
+                        )?;
                     crate::providers::lead_worker::model_config_for_session_fork(&model_config)?
+                        .ok_or_else(|| anyhow!("composite provider has no restore binding"))?
                 } else {
-                    None
+                    let mut binding = task_config.provider.restore_binding();
+                    binding.model_mut().temperature = Some(temp);
+                    crate::providers::persisted_model_config_from_binding(&provider_name, binding)?
                 };
-            if let Some(forked) = inherited_composite_fork {
-                model_config = forked;
+                task_config.provider =
+                    providers::create_from_persisted(&provider_name, model_config)
+                        .await
+                        .map_err(|e| {
+                            anyhow!("Failed to create provider '{}': {}", provider_name, e)
+                        })?;
             }
-
-            task_config.provider = providers::create(&provider_name, model_config)
-                .await
-                .map_err(|e| anyhow!("Failed to create provider '{}': {}", provider_name, e))?;
             provider_rebuilt = true;
         }
     }
@@ -1767,7 +1844,7 @@ async fn apply_provider_override_and_composite_fork(
         if let Some(model_config) = crate::providers::lead_worker::model_config_for_session_fork(
             &task_config.provider.get_model_config(),
         )? {
-            task_config.provider = providers::create(&provider_name, model_config)
+            task_config.provider = providers::create_from_persisted(&provider_name, model_config)
                 .await
                 .map_err(|e| anyhow!("Failed to fork provider '{}': {}", provider_name, e))?;
         }
@@ -1962,6 +2039,37 @@ mod tests {
     }
 
     // --- the pending queue ------------------------------------------------
+
+    /// Burn `spacers` session ids in this test's own store, so the child it
+    /// spawns next cannot share an id with another test's child.
+    ///
+    /// Session ids are `<YYYYMMDD>_<n>` counted **per store** (the INSERT in
+    /// `session_manager` reads `MAX(...) + 1`), and every test here gets a fresh
+    /// `TempDir` — so each test's FIRST child is `<today>_1`. The handle registry
+    /// is process-GLOBAL and `queue_initializing_child_input` locates a child by
+    /// that id alone, so two tests in one process hand each other's pre-start
+    /// steering to the wrong handle. Observed, not theorised: this test read a
+    /// completed run with `human_intervened == false` and no recovery row,
+    /// because its steer had been queued onto a sibling test's parked child.
+    ///
+    /// Each caller passes a DIFFERENT count, which is the whole point — one
+    /// shared offset would only move every test's collision to a higher number.
+    async fn reserve_child_session_ids(
+        session_manager: &crate::session::SessionManager,
+        working_dir: &std::path::Path,
+        spacers: usize,
+    ) {
+        for _ in 0..spacers {
+            session_manager
+                .create_session(
+                    working_dir.to_path_buf(),
+                    "session id spacer".into(),
+                    crate::session::session_manager::SessionType::SubAgent,
+                )
+                .await
+                .expect("the scratch store accepts a spacer session");
+        }
+    }
 
     /// Poll `cond` until it holds, with a ceiling so a wiring mistake fails as a
     /// timeout instead of hanging the suite.
@@ -2168,6 +2276,7 @@ mod tests {
         );
         let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
             std::sync::Arc::new(SuccessfulQueuedChildProvider);
+        reserve_child_session_ids(&session_manager, &root, 40).await;
         let task_config = TaskConfig::new(provider, "queued-parent", &root, vec![]);
 
         let started = handle_subagent_tool(
@@ -2243,12 +2352,414 @@ mod tests {
             .map(crate::conversation::message::Message::as_concat_text)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(stored_text.contains("include the user's changed emphasis"));
+        // OD-1: `contains` is satisfied by a duplicate, and the steer this test
+        // queues carries NO id — exactly the shape that made the handler's
+        // idempotency probe skip itself and write a second row on top of the one
+        // `Agent::reply` had already persisted. Count, so the duplicate fails.
+        assert_eq!(
+            stored_text
+                .matches("include the user's changed emphasis")
+                .count(),
+            1,
+            "one accepted steer must produce exactly one row, not one per \
+             persistence path: {stored_text}"
+        );
         wait_until(
             || pending_subagent_count() == 0,
             "the completed child to leave the pending queue",
         )
         .await;
+    }
+
+    /// OD-2, at the call site rather than at the predicate. The success branch
+    /// used to acknowledge the initialization queue unconditionally, including
+    /// after a call that verified nothing — and the call verifies nothing
+    /// whenever the accepted message is not `UserDirect`, because the probe has
+    /// no message to look for. Pair that with one of `reply`'s two early returns
+    /// that never persist (the privacy refusal, an `execute_command` error) and
+    /// the input existed in no transcript, no bus event and no recovery copy.
+    ///
+    /// Driven with a run that DOES persist, because that is the case the two
+    /// behaviours differ on observably: settled means the recovery copy is gone,
+    /// unsettled means completion writes the raw steer as its own row. The
+    /// duplicated text is the deliberate trade — a second copy of the user's
+    /// words is recoverable, a missing one is not.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[serial_test::serial(workspace_services)]
+    async fn unverified_steering_stays_recoverable_through_a_successful_run() {
+        struct ClearWorkspaceServices;
+        impl Drop for ClearWorkspaceServices {
+            fn drop(&mut self) {
+                crate::workspace_services::clear_test_override();
+            }
+        }
+
+        crate::workspace_services::set_for_tests(None);
+        let _workspace_services = ClearWorkspaceServices;
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let held = hold_every_subagent_permit().await;
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        let session_manager =
+            std::sync::Arc::new(crate::session::SessionManager::new(root.clone()));
+        let config = AgentConfig::new(
+            session_manager.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
+            std::sync::Arc::new(SuccessfulQueuedChildProvider);
+        reserve_child_session_ids(&session_manager, &root, 80).await;
+        let task_config = TaskConfig::new(provider, "unverified-parent", &root, vec![]);
+
+        let started = handle_subagent_tool(
+            &config,
+            json!({
+                "instructions": "produce the delegated result",
+                "visible": false,
+            }),
+            task_config,
+            HashMap::new(),
+            root,
+            None,
+        )
+        .result
+        .await
+        .expect("the supervised background spawn returns its handle");
+        let child_session_id = started
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("child_session_id"))
+            .and_then(Value::as_str)
+            .expect("the handle snapshot names the child session")
+            .to_string();
+        wait_until(
+            || pending_subagent_count() == 1,
+            "the background child to wait behind the saturated semaphore",
+        )
+        .await;
+        let handle = crate::agents::subagent_handle::list_for_session("unverified-parent")
+            .into_iter()
+            .find(|handle| handle.child_session_id == child_session_id)
+            .expect("the parent retains the original background handle");
+
+        // Not `UserDirect`: another session's agent steering this child. The
+        // combined prompt then carries no provenance the probe can look for.
+        let steer = crate::conversation::message::Message::user()
+            .with_text("include the user's changed emphasis")
+            .with_provenance(crate::conversation::message::MessageProvenance {
+                kind: crate::conversation::message::ProvenanceKind::AgentInjection,
+                from_session_id: Some("unverified-parent".into()),
+                from_session_name: None,
+            });
+        assert_eq!(
+            crate::agents::subagent_handle::queue_initializing_child_input(
+                &child_session_id,
+                Some("unverified-turn".into()),
+                steer,
+            ),
+            crate::agents::subagent_handle::InitialInputDisposition::Queued
+        );
+
+        drop(held);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            handle.wait_until_complete(),
+        )
+        .await
+        .expect("the child starts when a permit is released");
+        assert!(
+            result.human_intervened,
+            "an unsettled accepted input is human intervention: {result:?}"
+        );
+
+        let stored = session_manager
+            .get_session(&child_session_id, true)
+            .await
+            .expect("the delegated child session remains readable")
+            .conversation
+            .expect("the delegated turn persisted its conversation");
+        assert_eq!(
+            stored
+                .messages()
+                .iter()
+                .filter(|message| message.as_concat_text() == "include the user's changed emphasis")
+                .count(),
+            1,
+            "an unverified accepted input keeps its recovery copy, so completion \
+             writes it as its own row"
+        );
+        wait_until(
+            || pending_subagent_count() == 0,
+            "the completed child to leave the pending queue",
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[serial_test::serial(workspace_services)]
+    async fn prestart_cancellation_persists_and_publishes_accepted_user_steering() {
+        struct ClearWorkspaceServices;
+        impl Drop for ClearWorkspaceServices {
+            fn drop(&mut self) {
+                crate::workspace_services::clear_test_override();
+            }
+        }
+
+        crate::workspace_services::set_for_tests(None);
+        let _workspace_services = ClearWorkspaceServices;
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let held = hold_every_subagent_permit().await;
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        let session_manager =
+            std::sync::Arc::new(crate::session::SessionManager::new(root.clone()));
+        let config = AgentConfig::new(
+            session_manager.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
+            std::sync::Arc::new(SuccessfulQueuedChildProvider);
+        reserve_child_session_ids(&session_manager, &root, 120).await;
+        let task_config = TaskConfig::new(provider, "cancelled-parent", &root, vec![]);
+
+        let started = handle_subagent_tool(
+            &config,
+            json!({
+                "instructions": "this child must remain queued",
+                "visible": false,
+            }),
+            task_config,
+            HashMap::new(),
+            root,
+            None,
+        )
+        .result
+        .await
+        .expect("the supervised background spawn returns its handle");
+        let child_session_id = started
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("child_session_id"))
+            .and_then(Value::as_str)
+            .expect("the handle snapshot names the child session")
+            .to_string();
+        wait_until(
+            || pending_subagent_count() == 1,
+            "the background child to wait behind the saturated semaphore",
+        )
+        .await;
+        let handle = crate::agents::subagent_handle::list_for_session("cancelled-parent")
+            .into_iter()
+            .find(|handle| handle.child_session_id == child_session_id)
+            .expect("the parent retains the initializing handle");
+        let mut events = crate::session_events::subscribe(&child_session_id);
+        let steer = crate::conversation::message::Message::user()
+            .with_id("cancelled-prestart-turn")
+            .with_text("retain this even though the child never starts")
+            .with_provenance(crate::conversation::message::MessageProvenance {
+                kind: crate::conversation::message::ProvenanceKind::UserDirect,
+                from_session_id: None,
+                from_session_name: None,
+            });
+        assert_eq!(
+            crate::agents::subagent_handle::queue_initializing_child_input(
+                &child_session_id,
+                Some("cancelled-prestart-turn".into()),
+                steer,
+            ),
+            crate::agents::subagent_handle::InitialInputDisposition::Queued
+        );
+
+        handle.cancel();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            handle.wait_until_complete(),
+        )
+        .await
+        .expect("pre-start cancellation completes without a permit");
+        assert!(result.human_intervened);
+        assert_eq!(
+            result.status,
+            crate::agents::subagent_result::SubagentStatus::Incomplete
+        );
+
+        let stored = session_manager
+            .get_session(&child_session_id, true)
+            .await
+            .expect("the cancelled child session remains readable");
+        let conversation = stored.conversation.expect("the accepted input is durable");
+        let accepted = conversation
+            .messages()
+            .iter()
+            .find(|message| message.id.as_deref() == Some("cancelled-prestart-turn"))
+            .expect("the exact accepted turn id is stored");
+        assert_eq!(
+            accepted.as_concat_text(),
+            "retain this even though the child never starts"
+        );
+        assert_eq!(
+            accepted
+                .metadata
+                .provenance
+                .as_ref()
+                .map(|value| value.kind),
+            Some(crate::conversation::message::ProvenanceKind::UserDirect)
+        );
+        // OD-4(b): the SAME visibility the handler's recovery writes. The client
+        // sends `(true, true)`; storing it as sent here meant one steer became
+        // model-visible or not depending purely on which of the two recovery
+        // paths a failure happened to take.
+        assert!(accepted.metadata.user_visible);
+        assert!(
+            !accepted.metadata.agent_visible,
+            "both recovery paths store accepted steering agent-invisible"
+        );
+
+        let published = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+            .await
+            .expect("an observer receives the accepted input")
+            .expect("the session bus remains open");
+        assert!(matches!(
+            published,
+            crate::session_events::SessionBusEvent::Agent(
+                crate::agents::AgentEvent::Message(message)
+            ) if message.id.as_deref() == Some("cancelled-prestart-turn")
+        ));
+
+        drop(held);
+        wait_until(
+            || pending_subagent_count() == 0,
+            "the cancelled child to leave the pending queue",
+        )
+        .await;
+    }
+
+    /// A session store every query fails against: the sqlite file exists but is
+    /// not a database, so the lazy pool errors on first use. As close as a test
+    /// gets to a store that is simply gone.
+    fn unwritable_session_manager(temp: &tempfile::TempDir) -> crate::session::SessionManager {
+        let sessions = temp
+            .path()
+            .join(crate::session::session_manager::SESSIONS_FOLDER);
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(
+            sessions.join(crate::session::session_manager::DB_NAME),
+            b"this is not a sqlite database",
+        )
+        .unwrap();
+        crate::session::SessionManager::new(temp.path().to_path_buf())
+    }
+
+    fn user_direct(text: &str) -> crate::conversation::message::Message {
+        crate::conversation::message::Message::user()
+            .with_text(text)
+            .with_provenance(crate::conversation::message::MessageProvenance {
+                kind: crate::conversation::message::ProvenanceKind::UserDirect,
+                from_session_id: None,
+                from_session_name: None,
+            })
+    }
+
+    /// OD-4(a). The loop recorded the persistence error and published anyway, so
+    /// an observer's tab rendered steering that no row backed — it disappeared on
+    /// the next reload, having reported a durability that never existed.
+    #[tokio::test]
+    async fn recovery_never_publishes_what_it_could_not_persist() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let session_manager = unwritable_session_manager(&temp);
+        let child_session_id = "recovery-unwritable-child";
+        let mut events = crate::session_events::subscribe(child_session_id);
+
+        let errors = recover_unsettled_initial_inputs(
+            &session_manager,
+            child_session_id,
+            vec![user_direct("this can never be stored")],
+        )
+        .await;
+
+        assert_eq!(errors.len(), 1, "the failure is reported: {errors:?}");
+        assert!(
+            events.try_recv().is_err(),
+            "nothing may be published for a row that was never written"
+        );
+    }
+
+    /// OD-4(b) and audit OD-6, recovery half. Each unsettled input becomes its
+    /// OWN row here — the normal path collapses the same N into one combined
+    /// delegated message (pinned in `subagent_handler::tests`). The divergence is
+    /// deliberate (recovery has no prompt to fold them into) and is pinned at
+    /// both ends so it cannot drift unnoticed.
+    #[tokio::test]
+    async fn recovery_persists_each_unsettled_input_separately_and_agent_invisible() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        let session_manager = crate::session::SessionManager::new(root.clone());
+        // This test PUBLISHES on the session bus, which is keyed by session id —
+        // so a colliding id does not merely confuse this test, it injects events
+        // into another test's observer. Observed: it fed two steering messages
+        // into `the_run_holds_the_server_turn_lease_for_its_whole_run`, whose
+        // first-event assertion then reported a bracket bug that did not exist.
+        reserve_child_session_ids(&session_manager, &root, 160).await;
+        let session = session_manager
+            .create_session(
+                root,
+                "recovery target".into(),
+                crate::session::session_manager::SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let mut events = crate::session_events::subscribe(&session.id);
+
+        let errors = recover_unsettled_initial_inputs(
+            &session_manager,
+            &session.id,
+            vec![user_direct("first steer"), user_direct("second steer")],
+        )
+        .await;
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let conversation = session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .expect("the recovered inputs are durable");
+        let recovered: Vec<_> = conversation
+            .messages()
+            .iter()
+            .filter(|message| {
+                message.metadata.provenance.as_ref().is_some_and(|value| {
+                    value.kind == crate::conversation::message::ProvenanceKind::UserDirect
+                })
+            })
+            .collect();
+        assert_eq!(recovered.len(), 2, "one row per unsettled input");
+        assert_eq!(recovered[0].as_concat_text(), "first steer");
+        assert_eq!(recovered[1].as_concat_text(), "second steer");
+        for message in &recovered {
+            assert!(message.metadata.user_visible);
+            assert!(
+                !message.metadata.agent_visible,
+                "the same visibility the handler's recovery writes"
+            );
+        }
+
+        for expected in ["first steer", "second steer"] {
+            let published = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+                .await
+                .expect("an observer receives each recovered input")
+                .expect("the session bus remains open");
+            assert!(matches!(
+                published,
+                crate::session_events::SessionBusEvent::Agent(
+                    crate::agents::AgentEvent::Message(message)
+                ) if message.as_concat_text() == expected
+            ));
+        }
     }
 
     /// **Both** internal spawn doors, with every concurrency slot taken so the
@@ -4121,6 +4632,141 @@ mod tests {
                 .all(|temperature| temperature == Some(0.25)),
             "the selected half can change between turns, so both must receive the override"
         );
+    }
+
+    #[tokio::test]
+    async fn model_and_temperature_overrides_preserve_specialized_provider_bindings() {
+        #[cfg(feature = "aws-providers")]
+        use crate::providers::provider_binding::PersistedRetryConfig;
+        use crate::providers::provider_binding::{
+            AbsoluteCommandPath, SecretFreeEndpoint, VersaAzureCredentialSource,
+        };
+
+        fn route(binding: &crate::providers::provider_binding::ProviderRestoreBinding) -> Value {
+            let mut value = serde_json::to_value(binding).unwrap();
+            value.as_object_mut().unwrap().remove("model");
+            value
+        }
+
+        let temperature_params: SubagentParams = serde_json::from_value(json!({
+            "instructions": "do the thing",
+            "settings": { "temperature": 0.37 }
+        }))
+        .unwrap();
+        let model_params: SubagentParams = serde_json::from_value(json!({
+            "instructions": "do the thing",
+            "settings": { "model": "replacement-model", "temperature": 0.19 }
+        }))
+        .unwrap();
+        let command = AbsoluteCommandPath::new(std::env::current_exe().unwrap()).unwrap();
+
+        crate::config::with_config_overrides(
+            HashMap::from([
+                ("VERSA_AZURE_API_KEY".into(), "temperature-azure-key".into()),
+                (
+                    "VERSA_BEDROCK_ACCESS_KEY_ID".into(),
+                    "temperature-bedrock-access".into(),
+                ),
+                (
+                    "VERSA_BEDROCK_SECRET_ACCESS_KEY".into(),
+                    "temperature-bedrock-secret".into(),
+                ),
+            ]),
+            async move {
+                let providers: Vec<std::sync::Arc<dyn crate::providers::base::Provider>> = vec![
+                    std::sync::Arc::new(
+                        crate::providers::codex::CodexProvider::from_resolved(
+                            crate::model::ModelConfig::new_or_fail("gpt-5.5"),
+                            command.clone(),
+                        )
+                        .unwrap(),
+                    ),
+                    std::sync::Arc::new(
+                        crate::providers::claude_code::ClaudeCodeProvider::from_resolved(
+                            crate::model::ModelConfig::new_or_fail("claude-sonnet-4-6"),
+                            command,
+                        )
+                        .unwrap(),
+                    ),
+                    std::sync::Arc::new(
+                        crate::providers::versa_azure::VersaAzureProvider::from_resolved(
+                            crate::model::ModelConfig::new_or_fail("temperature-azure"),
+                            SecretFreeEndpoint::new(
+                                "https://temperature-azure.invalid/exact".into(),
+                            )
+                            .unwrap(),
+                            "temperature-azure".into(),
+                            "2025-04-01-preview".into(),
+                            VersaAzureCredentialSource::ApiKey,
+                        )
+                        .unwrap(),
+                    ),
+                ];
+                #[cfg(feature = "aws-providers")]
+                let providers = {
+                    let mut providers = providers;
+                    providers.push(std::sync::Arc::new(
+                        crate::providers::versa_bedrock::VersaBedrockProvider::from_resolved(
+                            crate::model::ModelConfig::new_or_fail("anthropic.claude-sonnet-4-6"),
+                            SecretFreeEndpoint::new(
+                                "https://temperature-bedrock.invalid/exact".into(),
+                            )
+                            .unwrap(),
+                            "us-west-2".into(),
+                            PersistedRetryConfig {
+                                max_retries: 7,
+                                initial_interval_ms: 1_234,
+                                backoff_multiplier: 2.5,
+                                max_interval_ms: 54_321,
+                            },
+                            Some(777),
+                        )
+                        .await
+                        .unwrap(),
+                    ));
+                    providers
+                };
+
+                for provider in providers {
+                    let expected_route = route(&provider.restore_binding());
+                    let expected_model = provider.get_model_config().model_name;
+                    let task_config = TaskConfig::new(
+                        std::sync::Arc::clone(&provider),
+                        "parent-1",
+                        std::path::Path::new("."),
+                        vec![],
+                    );
+                    let child = apply_settings_overrides(task_config, &temperature_params)
+                        .await
+                        .unwrap();
+                    let actual = child.provider.restore_binding();
+                    assert_eq!(
+                        route(&actual),
+                        expected_route,
+                        "{} temperature override changed its route",
+                        actual.provider_name()
+                    );
+                    assert_eq!(actual.model().model_name, expected_model);
+                    assert_eq!(actual.model().temperature, Some(0.37));
+
+                    let task_config =
+                        TaskConfig::new(provider, "parent-1", std::path::Path::new("."), vec![]);
+                    let child = apply_settings_overrides(task_config, &model_params)
+                        .await
+                        .unwrap();
+                    let actual = child.provider.restore_binding();
+                    assert_eq!(
+                        route(&actual),
+                        expected_route,
+                        "{} model override changed its route",
+                        actual.provider_name()
+                    );
+                    assert_eq!(actual.model().model_name, "replacement-model");
+                    assert_eq!(actual.model().temperature, Some(0.19));
+                }
+            },
+        )
+        .await;
     }
 
     /// Delegation copies the parent's current composite snapshot into a fresh

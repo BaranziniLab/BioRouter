@@ -522,10 +522,9 @@ export const ingestConversation = <ThrowOnError extends boolean = false>(options
  * response's body, because the body is an event stream and typing it as JSON
  * would be a false statement the generated client believes.
  *
- * A **legacy** base (below the OKF generation) is given the hygiene rules and
- * no format layer, so its report carries `kb.*` diagnostics only — DR-26: this
- * build has promised never to rewrite those pages, and reporting that decision
- * as one conformance error per page would bury the findings that are real.
+ * Retired pre-OKF bases are refused before the macro starts. Startup removes
+ * them, and every remaining base receives its current OKF or BioOKF format
+ * layer in addition to the shared hygiene rules.
  */
 export const lint = <ThrowOnError extends boolean = false>(options: Options<LintData, ThrowOnError>) => (options.client ?? client).post<LintResponses, LintErrors, ThrowOnError>({
     url: '/knowledge/bases/{id}/lint',

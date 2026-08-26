@@ -45,6 +45,11 @@ hex = "0.4.3"
 # Issue #56 DR-16: the daemon holds the SHA-256 DIGEST of the user-action key,
 # never the key. Same 0.10 line the other two crates already pin.
 sha2 = "0.10"
+# `routes::shell` identifies the exact bytes it previewed with a digest KEYED on
+# a per-process secret, so a revision handed to a model is not a reusable
+# dictionary-attack hash of the user's local file. The 0.12 line is the one that
+# pairs with `sha2` 0.10's `digest` traits.
+hmac = "0.12"
 socket2 = "0.6.1"
 fs2 = "0.4.3"
 # `routes::shell` unpacks skill archives and `.brxt` extension bundles, which the
@@ -59,6 +64,12 @@ rustls = { version = "0.23", features = ["ring"] }
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
 tikv-jemalloc-ctl = { workspace = true, optional = true }
+
+# `routes::shell` opens a previewed artifact with `O_NOFOLLOW`, which has no
+# portable spelling in `std` and a per-architecture value on Linux. Unix only:
+# the flag does not exist elsewhere and the code that uses it is `cfg(unix)`.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [features]
 default = ["jemalloc"]

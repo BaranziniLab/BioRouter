@@ -200,19 +200,21 @@ describe('splitYieldFits (which layout the fit is judged against)', () => {
 
   it('judges the live layout when we hold no snapshot', () => {
     expect(splitYieldFits({ layout: split, snapshotLayout: null, availableWidth: 900 })).toBe(true);
-    expect(splitYieldFits({ layout: split, snapshotLayout: null, availableWidth: 700 })).toBe(false);
+    expect(splitYieldFits({ layout: split, snapshotLayout: null, availableWidth: 700 })).toBe(
+      false
+    );
   });
 
   it('THE TRAP: while merged, judges the layout we OWE, not the merged leaf', () => {
     // After a merge the live layout is one leaf, which fits at every width. Ask
     // it and the next shrink-step reads as a crossing back INTO fitting — and
     // the window re-splits at 500px, which is the sidebar bug in a new costume.
-    expect(
-      splitYieldFits({ layout: leaf('a'), snapshotLayout: split, availableWidth: 500 })
-    ).toBe(false);
-    expect(
-      splitYieldFits({ layout: leaf('a'), snapshotLayout: split, availableWidth: 900 })
-    ).toBe(true);
+    expect(splitYieldFits({ layout: leaf('a'), snapshotLayout: split, availableWidth: 500 })).toBe(
+      false
+    );
+    expect(splitYieldFits({ layout: leaf('a'), snapshotLayout: split, availableWidth: 900 })).toBe(
+      true
+    );
   });
 });
 

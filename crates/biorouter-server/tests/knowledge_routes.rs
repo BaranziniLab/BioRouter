@@ -1113,6 +1113,93 @@ async fn export_then_import_roundtrip() {
     );
 }
 
+#[tokio::test]
+async fn import_route_allows_archives_above_axums_default_and_reports_bad_zip_as_400() {
+    let (_d, app) = build_test_router();
+    let bytes = vec![0_u8; 3 * 1024 * 1024];
+    let res = app
+        .oneshot(multipart_file_request(
+            "/bases/import",
+            "large-invalid.brkb",
+            Some("application/octet-stream"),
+            bytes,
+            &[],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        400,
+        "the route must override Axum's 2 MiB default and let archive validation answer"
+    );
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&body).contains("readable zip archive"),
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+}
+
+#[tokio::test]
+async fn import_route_maps_scaffold_and_strict_manifest_errors_to_400() {
+    use std::io::Write;
+
+    for (format, include_schema, expected) in [("okf", false, "schema.md"), ("okff", true, "okff")]
+    {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut bytes);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("fixture/manifest.yaml", options).unwrap();
+            zip.write_all(
+                format!("id: fixture\nname: Fixture\nschema_version: 3\nformat: {format}\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+            for required in ["index.md", "log.md"] {
+                zip.start_file(format!("fixture/{required}"), options)
+                    .unwrap();
+                zip.write_all(b"# fixture\n").unwrap();
+            }
+            if include_schema {
+                zip.start_file("fixture/schema.md", options).unwrap();
+                zip.write_all(b"# schema\n").unwrap();
+            }
+            zip.start_file("fixture/knowledge/x.md", options).unwrap();
+            zip.write_all(b"---\ntype: Note\nidentifier: x\n---\n")
+                .unwrap();
+            zip.start_file("fixture/.brkb-provenance", options).unwrap();
+            zip.write_all(br#"{"schema":3,"tier":"public","owners":[],"format":"okf"}"#)
+                .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let (_d, app) = build_test_router();
+        let res = app
+            .oneshot(multipart_file_request(
+                "/bases/import",
+                "fixture.brkb",
+                Some("application/octet-stream"),
+                bytes.into_inner(),
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Task 11: reclassify + override_credibility routes
 // ──────────────────────────────────────────────────────────────────────────────

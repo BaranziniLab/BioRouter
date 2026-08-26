@@ -303,11 +303,26 @@ impl IntoResponse for SseResponse {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(tag = "type")]
 pub enum MessageEvent {
+    /// Authoritative lifecycle edge for a turn visible on the read-only session
+    /// observer. It lets a quiet turn render as active without inferring work
+    /// from model output or polling `/agent/resume` across initialization.
+    TurnStarted {
+        turn_id: String,
+    },
+    /// Authoritative observer snapshot of the session's current lifecycle.
+    /// `None` is meaningful: it retires a turn whose terminal edge was missed
+    /// while the observer was disconnected.
+    TurnState {
+        #[schema(required)]
+        active_turn_id: Option<String>,
+    },
     Message {
         message: Message,
         token_state: TokenState,
     },
     Error {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
         error: String,
         code: String,
         scope: TurnErrorScope,
@@ -316,6 +331,8 @@ pub enum MessageEvent {
         provider_kind: Option<String>,
     },
     Finish {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
         reason: String,
         token_state: TokenState,
     },
@@ -419,6 +436,7 @@ impl MessageEvent {
         provider_kind: Option<String>,
     ) -> Self {
         Self::Error {
+            turn_id: None,
             error: error.into(),
             code: code.into(),
             scope,
@@ -479,7 +497,7 @@ fn stream_event(event: MessageEvent, stream: &TurnStream) {
 /// frame per provider chunk. A non-zero value (e.g. `50`) batches same-id text
 /// deltas on that millisecond window — the flush is bounded to the window and
 /// happens immediately at any real boundary (see [`DeltaCoalescer`]).
-fn sse_coalesce_window() -> Duration {
+pub(crate) fn sse_coalesce_window() -> Duration {
     std::env::var("BIOROUTER_SSE_COALESCE_MS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
@@ -750,7 +768,7 @@ async fn supervise_turn(
 /// probe, it carries no turn content, and numbering it would fill the replay
 /// buffer with keepalives a re-attaching client would then have to skip. It
 /// lives in [`drain_stream_to_client`], unnumbered.
-async fn pump_bus_into_stream(
+pub(crate) async fn pump_bus_into_stream(
     state: Arc<AppState>,
     session_id: String,
     mut bus: biorouter::session_events::Subscription,
@@ -1599,6 +1617,18 @@ pub async fn reply(
     // into the gap between "turn started" and "we are listening".
     let bus = biorouter::session_events::subscribe(&session_id);
 
+    if user_action && is_subagent && request.continuation_lease.is_none() {
+        if let Some(session) = target_session.as_ref() {
+            if let Some(parent_session_id) = session.parent_session_id.as_deref() {
+                biorouter::agents::subagent_handle::ensure_direct_followup_handle(
+                    parent_session_id,
+                    &session_id,
+                    &session.name,
+                );
+            }
+        }
+    }
+
     // The supervisor outlives both the turn task and the pump, so it needs its
     // own stream handle and token clone.
     let supervisor_stream = Arc::clone(&turn_stream);
@@ -1650,9 +1680,9 @@ pub async fn reply(
     ));
 
     // The only thing that ends a turn because of its AUDIENCE, and only after
-    // minutes of nobody watching (`crate::turn_stream::DEFAULT_ORPHAN_TIMEOUT`).
-    // Without it, decoupling the turn from its listeners would let an abandoned
-    // turn spend tokens forever.
+    // minutes of nobody watching. The reaper consults the live exact-generation
+    // handle registry atomically with cancellation, so a supervised parent or
+    // child is protected while a merely persisted SubAgent session is not.
     turn_stream.spawn_orphan_reaper(cancel_token.clone(), crate::turn_stream::orphan_timeout());
 
     tokio::spawn(supervise_turn(
@@ -1672,6 +1702,11 @@ pub async fn reply(
 pub struct InterruptRequest {
     pub session_id: String,
     pub text: String,
+    /// Client idempotency key for a steer submitted while a delegated child is
+    /// still waiting for its initial runtime. Ordinary active-turn interrupts
+    /// do not require it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
 }
 
 /// Response body for an accepted soft interrupt (#69).
@@ -1725,6 +1760,25 @@ pub async fn interrupt(
     }
     if req.text.trim().is_empty() {
         return Err(StatusCode::BAD_REQUEST);
+    }
+    if let Some(turn_id) = req.turn_id.clone() {
+        let queued_message = crate::workspace::turn::stamp_user_direct_if_subagent(
+            Message::user()
+                .with_id(turn_id.clone())
+                .with_text(req.text.clone()),
+            biorouter::session::session_manager::SessionType::SubAgent,
+        );
+        match biorouter::agents::subagent_handle::queue_initializing_child_input(
+            &req.session_id,
+            Some(turn_id.clone()),
+            queued_message,
+        ) {
+            biorouter::agents::subagent_handle::InitialInputDisposition::Queued
+            | biorouter::agents::subagent_handle::InitialInputDisposition::Duplicate => {
+                return Ok((StatusCode::ACCEPTED, Json(InterruptAccepted { turn_id })));
+            }
+            biorouter::agents::subagent_handle::InitialInputDisposition::NotInitializing => {}
+        }
     }
     // Cheap early-out only: it avoids constructing an agent for an idle session.
     // It is no longer the guard — see `try_queue_soft_interrupt` below.
@@ -2472,16 +2526,19 @@ mod tests {
         );
 
         // What the /reply CLIENT actually received, heartbeats dropped and the
-        // stream envelope (`seq` / `turn_id` / `replay`) stripped. Those three
-        // fields are per-stream bookkeeping the observer route does not carry;
-        // everything under them must still match frame for frame.
+        // stream envelope (`seq` / `turn_id` / `replay`) stripped. `turn_id` is
+        // also the semantic payload of TurnStarted, so that opening frame keeps
+        // it while every other frame drops the stream-bookkeeping copy.
         let client: Vec<serde_json::Value> = text
             .lines()
             .filter_map(sse_frame)
             .map(|mut frame| {
                 if let Some(object) = frame.as_object_mut() {
                     object.remove("seq");
-                    object.remove("turn_id");
+                    if object.get("type").and_then(serde_json::Value::as_str) != Some("TurnStarted")
+                    {
+                        object.remove("turn_id");
+                    }
                     object.remove("replay");
                 }
                 frame
@@ -2517,8 +2574,8 @@ mod tests {
         );
         assert_eq!(
             frame_types(&client),
-            vec!["Error"],
-            "a provider-less turn is one terminal frame and nothing else: {client:?}"
+            vec!["TurnStarted", "Error"],
+            "a provider-less turn has one opening and one terminal frame: {client:?}"
         );
     }
 
@@ -2592,6 +2649,7 @@ mod tests {
         // deliberately does not — see `TurnGuard::drop`); this test has no pump,
         // so it stands in for one.
         stream.publish(&MessageEvent::Finish {
+            turn_id: None,
             reason: "stop".to_string(),
             token_state: TokenState::default(),
         });
@@ -2803,6 +2861,7 @@ mod tests {
             token_state: TokenState::default(),
         });
         stream.publish(&MessageEvent::Finish {
+            turn_id: None,
             reason: "stop".to_string(),
             token_state: TokenState::default(),
         });
@@ -2860,6 +2919,7 @@ mod tests {
             });
         }
         stream.publish(&MessageEvent::Finish {
+            turn_id: None,
             reason: "stop".to_string(),
             token_state: TokenState::default(),
         });
@@ -2930,6 +2990,7 @@ mod tests {
             token_state: TokenState::default(),
         });
         stream.publish(&MessageEvent::Finish {
+            turn_id: None,
             reason: "stop".to_string(),
             token_state: TokenState::default(),
         });
@@ -3196,6 +3257,7 @@ mod tests {
         assert_eq!(response.status(), axum::http::StatusCode::OK);
 
         stream.publish(&MessageEvent::Finish {
+            turn_id: None,
             reason: "stop".to_string(),
             token_state: TokenState::default(),
         });
@@ -3453,7 +3515,10 @@ mod tests {
                     .map(str::to_string)
             })
             .collect();
-        assert_eq!(observer, vec!["Message", "Message", "Finish"]);
+        assert_eq!(
+            observer,
+            vec!["TurnStarted", "Message", "Message", "Finish"]
+        );
 
         // /reply: a 50 ms window merges the two same-id deltas into ONE frame,
         // which must still precede the terminal frame.
@@ -3481,7 +3546,7 @@ mod tests {
         }
         assert_eq!(
             client,
-            vec!["Message", "Finish"],
+            vec!["TurnStarted", "Message", "Finish"],
             "the coalescer must flush before the terminal frame"
         );
     }
@@ -3593,6 +3658,7 @@ mod tests {
         flush_coalesced(&mut coalescer, &stream, &TokenState::default());
         stream_event(
             MessageEvent::Finish {
+                turn_id: None,
                 reason: "stop".to_string(),
                 token_state: TokenState::default(),
             },
@@ -4413,6 +4479,14 @@ mod tests {
         }
 
         fn interrupt_request(session_id: &str, text: &str) -> Request<Body> {
+            interrupt_request_with_turn(session_id, text, None)
+        }
+
+        fn interrupt_request_with_turn(
+            session_id: &str,
+            text: &str,
+            turn_id: Option<&str>,
+        ) -> Request<Body> {
             Request::builder()
                 .uri("/interrupt")
                 .method("POST")
@@ -4423,6 +4497,7 @@ mod tests {
                     serde_json::to_string(&InterruptRequest {
                         session_id: session_id.to_string(),
                         text: text.to_string(),
+                        turn_id: turn_id.map(str::to_string),
                     })
                     .unwrap(),
                 ))
@@ -4681,6 +4756,52 @@ mod tests {
                     .as_ref()
                     .is_none_or(|conversation| conversation.messages().is_empty()),
                 "the refused request must not persist an attributed user message"
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn interrupt_queues_an_idempotent_steer_before_a_child_turn_exists() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let child = "queued-child-interrupt";
+            let handle =
+                biorouter::agents::subagent_handle::BackgroundSubagent::register_initializing(
+                    "queued-parent-interrupt",
+                    child,
+                    "delegated work",
+                    CancellationToken::new(),
+                );
+
+            for _ in 0..2 {
+                let response = routes(Arc::clone(&state))
+                    .oneshot(interrupt_request_with_turn(
+                        child,
+                        "change the delegated plan",
+                        Some("queued-steer-1"),
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::ACCEPTED);
+                assert_eq!(
+                    json_body(response).await["turn_id"],
+                    serde_json::json!("queued-steer-1")
+                );
+            }
+
+            assert!(!state.is_turn_active(child));
+            let pending = biorouter::agents::subagent_handle::mark_initial_runtime_ready(child);
+            assert_eq!(
+                pending.len(),
+                1,
+                "the idempotency key must deduplicate retries"
+            );
+            assert_eq!(pending[0].as_concat_text(), "change the delegated plan");
+            assert_eq!(
+                pending[0].metadata.provenance.as_ref().unwrap().kind,
+                biorouter::conversation::message::ProvenanceKind::UserDirect
+            );
+            handle.complete(
+                biorouter::agents::subagent_result::SubagentResult::from_error("test cleanup"),
             );
         }
 
@@ -5408,6 +5529,7 @@ mod adversarial_output_correctness {
             token_state: TokenState::default(),
         });
         stream.publish(&MessageEvent::Finish {
+            turn_id: None,
             reason: "stop".to_string(),
             token_state: TokenState::default(),
         });
@@ -5494,6 +5616,7 @@ mod adversarial_output_correctness {
             tx,
         ));
         stream.publish(&MessageEvent::Finish {
+            turn_id: None,
             reason: "stop".to_string(),
             token_state: TokenState::default(),
         });
@@ -5535,6 +5658,7 @@ mod adversarial_output_correctness {
             });
         }
         stream.publish(&MessageEvent::Finish {
+            turn_id: None,
             reason: "stop".to_string(),
             token_state: TokenState::default(),
         });

@@ -67,9 +67,16 @@ import {
 } from './dragGhostWindow';
 import { expandTilde } from './utils/pathUtils';
 import { friendlyArtifactFileError } from './utils/artifactFileErrors';
+import {
+  assertSafeRasterImageDimensions,
+  readFileHandleBounded,
+  validateOfficeDocumentShape,
+  validatedOfficeZip,
+} from './utils/artifactPreviewLimits';
+import { artifactSourceRevision } from './utils/artifactSourceRevision';
+import { sanitizeUntrustedLabel } from './utils/untrustedText';
 import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
 import { isFilePathAllowedForPreview } from './utils/pathContainment';
-import { normalizeExternalHttpUrl } from './utils/externalUrl';
 import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
 import log from './utils/logger';
 import { ensureWinShims } from './utils/winShims';
@@ -125,12 +132,15 @@ import {
 import { readGitArtifactTree } from './utils/artifactGit';
 import {
   captureEmbeddedBrowser,
+  clearEmbeddedBrowserData,
   controlEmbeddedBrowser,
   createEmbeddedBrowser,
   destroyEmbeddedBrowser,
   destroyEmbeddedBrowsersForWindow,
   navigateEmbeddedBrowser,
+  openExternalBrowserNavigation,
   readEmbeddedBrowserText,
+  registerEmbeddedBrowserOwnerTeardown,
   setEmbeddedBrowserBounds,
   setEmbeddedBrowserVisible,
   type EmbeddedBrowserBounds,
@@ -300,6 +310,85 @@ async function assertPublicHttpUrl(candidate: string): Promise<URL> {
 
 /** Largest artifact the previewer will read into memory. */
 const ARTIFACT_PREVIEW_MAX_BYTES = 16 * 1024 * 1024;
+const OFFICE_TEXT_MAX_CHARS = 100_000;
+
+function decodeOfficeXmlText(value: string): string {
+  return value
+    .replace(/<w:tab\s*\/?\s*>/g, '\t')
+    .replace(/<w:br\s*\/?\s*>/g, '\n')
+    .replace(/<\/w:p>|<\/a:p>|<\/row>/g, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function extractOfficeText(
+  zip: AdmZip,
+  format: 'docx' | 'xlsx' | 'pptx'
+): { text: string; truncated: boolean } {
+  let text = '';
+  if (format === 'docx') {
+    const names = zip
+      .getEntries()
+      .map((entry) => entry.entryName)
+      .filter((name) =>
+        /^word\/(document|header\d+|footer\d+|footnotes|endnotes)\.xml$/.test(name)
+      );
+    text = names
+      .map((name) => decodeOfficeXmlText(zip.getEntry(name)?.getData().toString('utf8') ?? ''))
+      .filter(Boolean)
+      .join('\n\n');
+  } else if (format === 'pptx') {
+    const slides = zip
+      .getEntries()
+      .map((entry) => entry.entryName)
+      .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    text = slides
+      .map(
+        (name, index) =>
+          `[Slide ${index + 1}]\n${decodeOfficeXmlText(zip.getEntry(name)?.getData().toString('utf8') ?? '')}`
+      )
+      .join('\n\n');
+  } else {
+    const sharedXml = zip.getEntry('xl/sharedStrings.xml')?.getData().toString('utf8') ?? '';
+    const shared = [...sharedXml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)].map((match) =>
+      decodeOfficeXmlText(match[1])
+    );
+    const sheets = zip
+      .getEntries()
+      .map((entry) => entry.entryName)
+      .filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/.test(name))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    const rows: string[] = [];
+    for (const [sheetIndex, name] of sheets.entries()) {
+      rows.push(`[Sheet ${sheetIndex + 1}]`);
+      const xml = zip.getEntry(name)?.getData().toString('utf8') ?? '';
+      for (const cell of xml.matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
+        if (rows.length >= 10_000) break;
+        const reference = cell[1].match(/\br="([^"]+)"/)?.[1] ?? '?';
+        const kind = cell[1].match(/\bt="([^"]+)"/)?.[1];
+        const raw = cell[2].match(/<v>([\s\S]*?)<\/v>/)?.[1];
+        const inline = cell[2].match(/<is>([\s\S]*?)<\/is>/)?.[1];
+        const value =
+          kind === 's' && raw ? shared[Number(raw)] : decodeOfficeXmlText(inline ?? raw ?? '');
+        if (value) rows.push(`${reference}: ${value}`);
+      }
+    }
+    text = rows.join('\n');
+  }
+
+  return {
+    text: text.slice(0, OFFICE_TEXT_MAX_CHARS),
+    truncated: text.length > OFFICE_TEXT_MAX_CHARS,
+  };
+}
 
 /** Only http(s) may be handed to the OS opener. */
 export function isExternallyOpenableUrl(candidate: string): boolean {
@@ -396,7 +485,7 @@ async function ensureTempDirExists(): Promise<string> {
       // If it exists but is not a directory, remove it and recreate
       if (!stats.isDirectory()) {
         await fs.unlink(biorouterTempDir);
-        await fs.mkdir(biorouterTempDir, { recursive: true });
+        await fs.mkdir(biorouterTempDir, { recursive: true, mode: 0o700 });
       }
 
       // Startup cleanup: remove old files and any symlinks
@@ -441,14 +530,13 @@ async function ensureTempDirExists(): Promise<string> {
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
         // Directory doesn't exist, create it
-        await fs.mkdir(biorouterTempDir, { recursive: true });
+        await fs.mkdir(biorouterTempDir, { recursive: true, mode: 0o700 });
       } else {
         throw error;
       }
     }
 
-    // Set proper permissions on the directory (0755 = rwxr-xr-x)
-    await fs.chmod(biorouterTempDir, 0o755);
+    await fs.chmod(biorouterTempDir, 0o700);
 
     console.log('[Main] Temporary directory for pasted images ensured:', biorouterTempDir);
   } catch (error) {
@@ -1367,7 +1455,7 @@ const createChat = async (
   // never reach such a window.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (shouldOpenExternalNavigation(url, rendererEntryUrl())) {
-      shell.openExternal(url);
+      void openExternalBrowserNavigation(mainWindow, url);
     }
     return { action: 'deny' };
   });
@@ -1380,7 +1468,7 @@ const createChat = async (
     // Unlike setWindowOpenHandler above, this legacy path used to hand any
     // scheme -- including file:// and custom protocols -- to the OS opener.
     if (shouldOpenExternalNavigation(url, rendererEntryUrl())) {
-      shell.openExternal(url);
+      void openExternalBrowserNavigation(mainWindow, url);
     }
   });
 
@@ -1391,7 +1479,7 @@ const createChat = async (
     log.warn('[Main] Blocked off-origin navigation to', url);
     event.preventDefault();
     if (isExternallyOpenableUrl(url)) {
-      shell.openExternal(url);
+      void openExternalBrowserNavigation(mainWindow, url);
     }
   };
   mainWindow.webContents.on('will-navigate', blockOffOriginNavigation);
@@ -1539,6 +1627,7 @@ const createChat = async (
   // `closed` is not enough on its own: a reload or a renderer crash keeps the
   // window and kills the drag. See registerTabDragOwnerTeardown.
   registerTabDragOwnerTeardown(mainWindow, windowId);
+  registerEmbeddedBrowserOwnerTeardown(mainWindow);
 
   // Handle window closure
   mainWindow.on('closed', () => {
@@ -2311,9 +2400,10 @@ ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {
   };
 });
 
-ipcMain.handle('open-external', async (_event, url: string) => {
+ipcMain.handle('open-external', async (event, url: string) => {
   try {
-    await shell.openExternal(normalizeExternalHttpUrl(url));
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (window) await openExternalBrowserNavigation(window, url);
   } catch (err) {
     console.error('open-external blocked:', err);
   }
@@ -2677,7 +2767,7 @@ ipcMain.handle('save-data-url-to-temp', async (_event, dataUrl: string, uniqueId
       return { id: uniqueId, error: 'Invalid file path' };
     }
 
-    await fs.writeFile(filePath, buffer);
+    await fs.writeFile(filePath, buffer, { mode: 0o600 });
     console.log(`[Main] Saved image for ID ${uniqueId} to: ${filePath}`);
     return { id: uniqueId, filePath: filePath };
   } catch (error) {
@@ -2688,74 +2778,10 @@ ipcMain.handle('save-data-url-to-temp', async (_event, dataUrl: string, uniqueId
 
 // IPC handler to serve temporary image files
 ipcMain.handle('get-temp-image', async (_event, filePath: string) => {
-  console.log(`[Main] Received get-temp-image for path: ${filePath}`);
-
-  // Input validation
-  if (!filePath || typeof filePath !== 'string') {
-    console.warn('[Main] Invalid file path provided for image serving');
-    return null;
-  }
-
-  // Ensure the path is within the designated temp directory
-  const resolvedPath = path.resolve(filePath);
-  const resolvedTempDir = path.resolve(biorouterTempDir);
-
-  if (!resolvedPath.startsWith(resolvedTempDir + path.sep)) {
-    console.warn(`[Main] Attempted to access file outside designated temp directory: ${filePath}`);
-    return null;
-  }
-
   try {
-    // Check if it's a regular file first, before trying realpath
-    const stats = await fs.lstat(filePath);
-    if (!stats.isFile()) {
-      console.warn(`[Main] Not a regular file, refusing to serve: ${filePath}`);
-      return null;
-    }
-
-    // Get the real paths for both the temp directory and the file to handle symlinks properly
-    let realTempDir: string;
-    let actualPath = filePath;
-
-    try {
-      realTempDir = await fs.realpath(biorouterTempDir);
-      const realPath = await fs.realpath(filePath);
-
-      // Double-check that the real path is still within our real temp directory
-      if (!realPath.startsWith(realTempDir + path.sep)) {
-        console.warn(
-          `[Main] Real path is outside designated temp directory: ${realPath} not in ${realTempDir}`
-        );
-        return null;
-      }
-      actualPath = realPath;
-    } catch (realpathError) {
-      // If realpath fails, use the original path validation
-      console.log(
-        `[Main] realpath failed for ${filePath}, using original path validation:`,
-        realpathError instanceof Error ? realpathError.message : String(realpathError)
-      );
-    }
-
-    // Read the file and return as base64 data URL
-    const fileBuffer = await fs.readFile(actualPath);
-    const fileExtension = path.extname(actualPath).toLowerCase().substring(1);
-
-    // Validate file extension
-    const allowedExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
-    if (!allowedExtensions.includes(fileExtension)) {
-      console.warn(`[Main] Unsupported file extension: ${fileExtension}`);
-      return null;
-    }
-
-    const mimeType = fileExtension === 'jpg' ? 'image/jpeg' : `image/${fileExtension}`;
-    const base64Data = fileBuffer.toString('base64');
-    const dataUrl = `data:${mimeType};base64,${base64Data}`;
-
-    console.log(`[Main] Served temp image: ${filePath}`);
-    return dataUrl;
-  } catch (error) {
-    console.error(`[Main] Failed to serve temp image: ${filePath}`, error);
+    const { buffer, mimeType } = await readTrustedTempImage(filePath, 16 * 1024 * 1024);
+    return `data:${mimeType};base64,${buffer.toString('base64')}`;
+  } catch {
     return null;
   }
 });
@@ -2820,83 +2846,70 @@ ipcMain.on('delete-temp-file', async (_event, filePath: string) => {
   }
 });
 
-// IPC handler to read a temporary image file and return raw base64 + mimeType
-ipcMain.handle('read-temp-image-as-base64', async (_event, filePath: string) => {
-  console.log(`[Main] Received read-temp-image-as-base64 for path: ${filePath}`);
+function tempImageMimeType(filePath: string): string | null {
+  const extension = path.extname(filePath).slice(1).toLowerCase();
+  if (!['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(extension)) return null;
+  return IMAGE_MIME_TYPES[extension] ?? null;
+}
 
-  // Input validation
+function hasImageSignature(buffer: Buffer, mimeType: string): boolean {
+  if (mimeType === 'image/png')
+    return buffer.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'));
+  if (mimeType === 'image/jpeg') return buffer[0] === 0xff && buffer[1] === 0xd8;
+  if (mimeType === 'image/gif') return buffer.subarray(0, 4).toString('ascii') === 'GIF8';
+  return (
+    mimeType === 'image/webp' &&
+    buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  );
+}
+
+async function readTrustedTempImage(filePath: string, maxBytes: number) {
   if (!filePath || typeof filePath !== 'string') {
     throw new Error('Invalid file path provided');
   }
-
-  // Ensure the path is within the designated temp directory
   const resolvedPath = path.resolve(filePath);
   const resolvedTempDir = path.resolve(biorouterTempDir);
-
   if (!resolvedPath.startsWith(resolvedTempDir + path.sep)) {
-    console.warn(`[Main] Attempted to access file outside designated temp directory: ${filePath}`);
     throw new Error('File path is outside the designated temp directory');
   }
-
-  // Check if it's a regular file first, before trying realpath
-  const stats = await fs.lstat(filePath);
-  if (!stats.isFile()) {
-    console.warn(`[Main] Not a regular file, refusing to read: ${filePath}`);
+  const linkStats = await fs.lstat(resolvedPath);
+  if (!linkStats.isFile() || linkStats.isSymbolicLink()) {
     throw new Error('Path is not a regular file');
   }
-
-  // Get the real paths for both the temp directory and the file to handle symlinks properly
-  let actualPath = filePath;
-
-  try {
-    const realTempDir = await fs.realpath(biorouterTempDir);
-    const realPath = await fs.realpath(filePath);
-
-    // Double-check that the real path is still within our real temp directory
-    if (!realPath.startsWith(realTempDir + path.sep)) {
-      console.warn(
-        `[Main] Real path is outside designated temp directory: ${realPath} not in ${realTempDir}`
-      );
-      throw new Error('File path resolves outside the designated temp directory');
-    }
-    actualPath = realPath;
-  } catch (realpathError) {
-    // If realpath itself threw our own error, re-throw it
-    if (
-      realpathError instanceof Error &&
-      realpathError.message.startsWith('File path resolves outside')
-    ) {
-      throw realpathError;
-    }
-    // Otherwise realpath syscall failed; fall back to original path validation
-    console.log(
-      `[Main] realpath failed for ${filePath}, using original path validation:`,
-      realpathError instanceof Error ? realpathError.message : String(realpathError)
-    );
+  const realTempDir = await fs.realpath(biorouterTempDir);
+  const realPath = await fs.realpath(resolvedPath);
+  if (!realPath.startsWith(realTempDir + path.sep)) {
+    throw new Error('File path resolves outside the designated temp directory');
   }
-
-  const fileExtension = path.extname(actualPath).toLowerCase().substring(1);
-
-  // Determine MIME type from extension
-  const mimeTypeMap: Record<string, string> = {
-    png: 'image/png',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    gif: 'image/gif',
-    webp: 'image/webp',
-  };
-
-  const mimeType = mimeTypeMap[fileExtension];
+  const mimeType = tempImageMimeType(realPath);
   if (!mimeType) {
-    console.warn(`[Main] Unsupported file extension for base64 read: ${fileExtension}`);
-    throw new Error(`Unsupported image type: ${fileExtension}`);
+    throw new Error('Unsupported image type');
   }
+  const handle = await fs.open(
+    realPath,
+    fsSync.constants.O_RDONLY | (fsSync.constants.O_NOFOLLOW ?? 0)
+  );
+  try {
+    const stats = await handle.stat().catch(async (error) => {
+      await handle.close();
+      throw error;
+    });
+    if (!stats.isFile() || stats.size <= 0 || stats.size > maxBytes) {
+      throw new Error('Temporary image exceeds the allowed size');
+    }
+    const buffer = await handle.readFile();
+    if (!hasImageSignature(buffer, mimeType)) throw new Error('Invalid image content');
+    return { buffer, mimeType };
+  } finally {
+    await handle.close();
+  }
+}
 
-  const fileBuffer = await fs.readFile(actualPath);
-  const data = fileBuffer.toString('base64');
-
-  console.log(`[Main] Read temp image as base64: ${filePath}`);
-  return { data, mimeType };
+// IPC handler to read a temporary image file and return raw base64 + mimeType
+ipcMain.handle('read-temp-image-as-base64', async (_event, filePath: string) => {
+  const { buffer, mimeType } = await readTrustedTempImage(filePath, 8 * 1024 * 1024);
+  return { data: buffer.toString('base64'), mimeType };
 });
 
 ipcMain.handle('check-ollama', async () => {
@@ -2978,8 +2991,6 @@ ipcMain.handle('read-file', async (_event, filePath) => {
   }
 });
 
-
-
 /**
  * A PNG of a rectangle of this window, written to the temp dir.
  *
@@ -2997,17 +3008,57 @@ ipcMain.handle(
   'capture-region',
   async (
     event,
-    payload: { x: number; y: number; width: number; height: number; label?: string }
+    payload: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      label?: string;
+      containment?: { x: number; y: number; width: number; height: number };
+    }
   ) => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (!window) return null;
-    const width = Math.round(payload?.width ?? 0);
-    const height = Math.round(payload?.height ?? 0);
-    if (width <= 0 || height <= 0) return null;
+    const numbers = [payload?.x, payload?.y, payload?.width, payload?.height];
+    if (!numbers.every((value) => Number.isFinite(value))) return null;
+    const width = Math.round(payload.width);
+    const height = Math.round(payload.height);
+    if (width <= 0 || height <= 0 || width > 8192 || height > 8192 || width * height > 32_000_000) {
+      return null;
+    }
+    const x = Math.round(payload.x);
+    const y = Math.round(payload.y);
+    const contentBounds = window.getContentBounds();
+    if (x < 0 || y < 0 || x + width > contentBounds.width || y + height > contentBounds.height) {
+      return null;
+    }
+    if (payload.containment) {
+      const containmentNumbers = [
+        payload.containment.x,
+        payload.containment.y,
+        payload.containment.width,
+        payload.containment.height,
+      ];
+      if (!containmentNumbers.every((value) => Number.isFinite(value))) return null;
+      const left = Math.round(payload.containment.x);
+      const top = Math.round(payload.containment.y);
+      const right = Math.round(payload.containment.x + payload.containment.width);
+      const bottom = Math.round(payload.containment.y + payload.containment.height);
+      if (
+        payload.containment.width <= 0 ||
+        payload.containment.height <= 0 ||
+        x < left ||
+        y < top ||
+        x + width > right ||
+        y + height > bottom
+      ) {
+        return null;
+      }
+    }
 
     const image = await window.webContents.capturePage({
-      x: Math.round(payload.x),
-      y: Math.round(payload.y),
+      x,
+      y,
       width,
       height,
     });
@@ -3029,46 +3080,47 @@ ipcMain.handle(
 
 // ── Embedded browser (the artifact panel's live web view) ────────────────────
 //
-// Every handler resolves the owning window from the *event sender* rather than
-// taking a window id from the renderer, so one window can never drive another's
-// view. The view id is renderer-supplied but is only ever used as a map key.
-ipcMain.handle(
-  'embedded-browser:create',
-  (event, payload: { viewId: string; url: string }) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (!window || typeof payload?.viewId !== 'string') return null;
-    return createEmbeddedBrowser(window, payload.viewId, payload.url, (state) => {
-      if (!event.sender.isDestroyed()) {
-        event.sender.send('embedded-browser:state', { viewId: payload.viewId, state });
-      }
-    });
-  }
-);
+// Every handler resolves the owning window from the *event sender*. The main
+// registry keys renderer view ids by that owner, so an identical React id in a
+// second window cannot drive, read, capture, or destroy the first window's view.
+ipcMain.handle('embedded-browser:create', (event, payload: { viewId: string; url: string }) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window || typeof payload?.viewId !== 'string') return null;
+  return createEmbeddedBrowser(window, payload.viewId, payload.url, (state) => {
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('embedded-browser:state', { viewId: payload.viewId, state });
+    }
+  });
+});
 
 ipcMain.handle(
   'embedded-browser:set-bounds',
-  (_event, payload: { viewId: string; bounds: EmbeddedBrowserBounds }) => {
-    setEmbeddedBrowserBounds(payload.viewId, payload.bounds);
+  (event, payload: { viewId: string; bounds: EmbeddedBrowserBounds }) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (window) setEmbeddedBrowserBounds(window, payload.viewId, payload.bounds);
   }
 );
 
 ipcMain.handle(
   'embedded-browser:set-visible',
-  (_event, payload: { viewId: string; visible: boolean }) => {
-    setEmbeddedBrowserVisible(payload.viewId, payload.visible);
+  (event, payload: { viewId: string; visible: boolean }) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (window) setEmbeddedBrowserVisible(window, payload.viewId, payload.visible);
   }
 );
 
-ipcMain.handle('embedded-browser:navigate', (_event, payload: { viewId: string; url: string }) =>
-  navigateEmbeddedBrowser(payload.viewId, payload.url)
-);
+ipcMain.handle('embedded-browser:navigate', (event, payload: { viewId: string; url: string }) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  return window ? navigateEmbeddedBrowser(window, payload.viewId, payload.url) : false;
+});
 
 ipcMain.handle(
   'embedded-browser:control',
-  (_event, payload: { viewId: string; action: 'back' | 'forward' | 'reload' | 'stop' }) =>
-    controlEmbeddedBrowser(payload.viewId, payload.action)
+  (event, payload: { viewId: string; action: 'back' | 'forward' | 'reload' | 'stop' }) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    return window ? controlEmbeddedBrowser(window, payload.viewId, payload.action) : false;
+  }
 );
-
 
 /**
  * Text and pixels from the embedded browser.
@@ -3081,21 +3133,41 @@ ipcMain.handle(
  */
 ipcMain.handle(
   'embedded-browser:read-text',
-  async (_event, payload: { viewId: string; maxChars?: number }) =>
-    readEmbeddedBrowserText(payload.viewId, Math.max(0, payload.maxChars ?? 20_000))
+  async (event, payload: { viewId: string; maxChars?: number }) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) return null;
+    const requested = payload.maxChars ?? 20_000;
+    const limit = Number.isFinite(requested)
+      ? Math.min(40_000, Math.max(0, Math.floor(requested)))
+      : 20_000;
+    return readEmbeddedBrowserText(window, payload.viewId, limit);
+  }
 );
 
-ipcMain.handle('embedded-browser:capture', async (_event, payload: { viewId: string }) => {
-  const png = await captureEmbeddedBrowser(payload.viewId);
-  if (!png) return null;
+ipcMain.handle('embedded-browser:capture', async (event, payload: { viewId: string }) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) return null;
+  const shot = await captureEmbeddedBrowser(window, payload.viewId);
+  if (!shot) return null;
   const dir = await ensureTempDirExists();
   const filePath = path.join(dir, `capture-page-${crypto.randomBytes(6).toString('hex')}.png`);
-  await fs.writeFile(filePath, png, { mode: 0o600 });
-  return { path: filePath };
+  await fs.writeFile(filePath, shot.png, { mode: 0o600 });
+  return {
+    path: filePath,
+    width: shot.width,
+    height: shot.height,
+    sourceRevision: shot.sourceRevision,
+  };
 });
 
-ipcMain.handle('embedded-browser:destroy', (_event, payload: { viewId: string }) => {
-  destroyEmbeddedBrowser(payload.viewId);
+ipcMain.handle('embedded-browser:clear-data', async (event, payload: { viewId: string }) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  return window ? clearEmbeddedBrowserData(window, payload.viewId) : false;
+});
+
+ipcMain.handle('embedded-browser:destroy', (event, payload: { viewId: string }) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (window) destroyEmbeddedBrowser(window, payload.viewId);
 });
 
 ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
@@ -3107,8 +3179,11 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
       throw new Error(`Access denied: path '${resolvedPath}' is outside allowed directories`);
     }
 
-    const stats = await fs.stat(resolvedPath);
-    if (stats.isDirectory()) {
+    const pathStats = await fs.lstat(resolvedPath);
+    if (pathStats.isSymbolicLink()) {
+      throw new Error('Symbolic links cannot be previewed');
+    }
+    if (pathStats.isDirectory()) {
       const gitTree = await readGitArtifactTree(resolvedPath);
       if (gitTree) {
         return {
@@ -3129,9 +3204,15 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
       };
     }
 
-    if (!stats.isFile()) {
+    if (!pathStats.isFile()) {
       throw new Error('Path is not a regular file or directory');
     }
+
+    const handle = await fs.open(
+      resolvedPath,
+      fsSync.constants.O_RDONLY | (fsSync.constants.O_NOFOLLOW ?? 0)
+    );
+    const stats = await handle.stat();
 
     const mimeType = mimeTypeForArtifactPath(resolvedPath);
 
@@ -3140,6 +3221,7 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
     // main process buffer it (images additionally grow ~4/3 as base64).
     // Report oversized files as binary: the UI shows metadata, not content.
     if (stats.size > ARTIFACT_PREVIEW_MAX_BYTES) {
+      await handle.close();
       return {
         kind: 'binary',
         title,
@@ -3150,9 +3232,21 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
       };
     }
 
-    const buffer = await fs.readFile(resolvedPath);
+    let buffer: Buffer;
+    try {
+      buffer = await readFileHandleBounded(handle, ARTIFACT_PREVIEW_MAX_BYTES);
+    } finally {
+      await handle.close();
+    }
+    const revision = artifactSourceRevision(stats.size, stats.mtimeMs, buffer);
     const documentFormat = documentFormatForArtifactPath(resolvedPath);
     if (documentFormat) {
+      let officeText: { text: string; truncated: boolean } | null = null;
+      if (documentFormat !== 'pdf') {
+        const zip = validatedOfficeZip(buffer);
+        validateOfficeDocumentShape(zip, documentFormat);
+        officeText = extractOfficeText(zip, documentFormat);
+      }
       return {
         kind: 'document',
         format: documentFormat,
@@ -3161,6 +3255,10 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
         mimeType,
         data: Uint8Array.from(buffer).buffer,
         size: stats.size,
+        revision,
+        ...(officeText
+          ? { extractedText: officeText.text, textTruncated: officeText.truncated }
+          : {}),
         found: true,
       };
     }
@@ -3174,6 +3272,7 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
       if (mimeType === 'image/heic' || mimeType === 'image/heif') {
         const png = await heicToPng(resolvedPath);
         if (png) {
+          assertSafeRasterImageDimensions(png, 'image/png');
           return {
             kind: 'image',
             title,
@@ -3181,10 +3280,18 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
             mimeType: 'image/png',
             bytes: Uint8Array.from(png).buffer,
             size: stats.size,
+            revision,
             found: true,
           };
         }
-        return { kind: 'binary', title, path: resolvedPath, mimeType, size: stats.size, found: true };
+        return {
+          kind: 'binary',
+          title,
+          path: resolvedPath,
+          mimeType,
+          size: stats.size,
+          found: true,
+        };
       }
 
       // Small images travel as a data URL because a `blob:` needs revoking and
@@ -3192,8 +3299,8 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
       // bytes: base64 would cost ~4/3 of the file as a JS string, twice.
       // TIFF always takes the bytes path — the renderer has to decode it before
       // anything can be shown, so a data URL would be pure waste.
-      const asBytes =
-        stats.size > IMAGE_BLOB_URL_THRESHOLD_BYTES || mimeType === 'image/tiff';
+      assertSafeRasterImageDimensions(buffer, mimeType);
+      const asBytes = stats.size > IMAGE_BLOB_URL_THRESHOLD_BYTES || mimeType === 'image/tiff';
       return {
         kind: 'image',
         title,
@@ -3203,6 +3310,7 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
           ? { bytes: Uint8Array.from(buffer).buffer }
           : { dataUrl: `data:${mimeType};base64,${buffer.toString('base64')}` }),
         size: stats.size,
+        revision,
         found: true,
       };
     }
@@ -3215,6 +3323,7 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
         mimeType,
         text: buffer.toString('utf8'),
         size: stats.size,
+        revision,
         found: true,
       };
     }
@@ -3740,7 +3849,6 @@ ipcMain.handle('brxt:uninstall', async (_event, { extensionName }: { extensionNa
     return { error: `Uninstall failed: ${(err as Error).message}` };
   }
 });
-
 
 function handleBrxtFileOpen(filePath: string) {
   // Find the main window (or store for when one is ready)
@@ -5408,11 +5516,12 @@ async function appMain() {
     }
   });
 
-  ipcMain.on('open-in-chrome', async (_event, url) => {
+  ipcMain.on('open-in-chrome', async (event, url) => {
     try {
       // Despite the legacy channel name, use Electron's non-shell URL opener.
       // Passing a renderer URL through cmd.exe made &, | and ^ executable.
-      await shell.openExternal(normalizeExternalHttpUrl(url));
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (window) await openExternalBrowserNavigation(window, url);
     } catch (error) {
       console.error('Error opening URL in browser:', error);
     }
@@ -5485,9 +5594,7 @@ async function appMain() {
       return null;
     }
     const title =
-      typeof value.title === 'string'
-        ? value.title.replace(/[\p{Cc}\p{Cf}]/gu, '').slice(0, 256)
-        : undefined;
+      typeof value.title === 'string' ? sanitizeUntrustedLabel(value.title) : undefined;
     const finiteDimension = (dimension: unknown) =>
       typeof dimension === 'number' && Number.isFinite(dimension) ? dimension : undefined;
     return {

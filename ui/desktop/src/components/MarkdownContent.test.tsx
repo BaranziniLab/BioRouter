@@ -263,6 +263,74 @@ console.log('Hello, World!');
       expect(screen.queryByRole('link', { name: 'analysis.sql' })).not.toBeInTheDocument();
     });
 
+    it('decodes markdown URL escapes before opening a local file with spaces', async () => {
+      const onOpenArtifact = vi.fn();
+      const content = '[Preview PowerPoint](/private/tmp/BioOKF%20Presentation.pptx)';
+
+      render(<MarkdownContent content={content} onOpenArtifact={onOpenArtifact} />);
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview PowerPoint' }));
+
+      expect(onOpenArtifact).toHaveBeenCalledWith({
+        kind: 'file',
+        title: 'BioOKF Presentation.pptx',
+        path: '/private/tmp/BioOKF Presentation.pptx',
+      });
+    });
+
+    it('decodes a Claude-style percent-escaped path from inline code', async () => {
+      const onOpenArtifact = vi.fn();
+      const content = 'Open `/private/tmp/BioOKF%20Presentation.pptx` in the preview.';
+
+      render(<MarkdownContent content={content} onOpenArtifact={onOpenArtifact} />);
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: '/private/tmp/BioOKF%20Presentation.pptx',
+        })
+      );
+
+      expect(onOpenArtifact).toHaveBeenCalledWith({
+        kind: 'file',
+        title: 'BioOKF Presentation.pptx',
+        path: '/private/tmp/BioOKF Presentation.pptx',
+      });
+    });
+
+    it('decodes a percent-escaped path discovered in plain Markdown text', async () => {
+      const onOpenArtifact = vi.fn();
+      const content = 'Saved to /private/tmp/BioOKF%20Presentation.pptx';
+
+      render(<MarkdownContent content={content} onOpenArtifact={onOpenArtifact} />);
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: '/private/tmp/BioOKF%20Presentation.pptx',
+        })
+      );
+
+      expect(onOpenArtifact).toHaveBeenCalledWith({
+        kind: 'file',
+        title: 'BioOKF Presentation.pptx',
+        path: '/private/tmp/BioOKF Presentation.pptx',
+      });
+    });
+
+    it('decodes a file URL once without turning double-encoded traversal into path segments', async () => {
+      const onOpenArtifact = vi.fn();
+      const content = '[Preview](file:///private/tmp/%252e%252e/BioOKF%2520Presentation.pptx)';
+
+      render(<MarkdownContent content={content} onOpenArtifact={onOpenArtifact} />);
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+
+      expect(onOpenArtifact).toHaveBeenCalledWith({
+        kind: 'file',
+        title: 'BioOKF Presentation.pptx',
+        path: '/private/tmp/%2e%2e/BioOKF%20Presentation.pptx',
+      });
+    });
+
     it('keeps file URI links inside the artifact preview instead of opening localhost', async () => {
       const onOpenArtifact = vi.fn();
 
@@ -880,6 +948,62 @@ for the result.`;
 
       expect(electron.openExternal).toHaveBeenCalledWith('https://example.com/docs');
       expect(notPrevented).toBe(false);
+    });
+
+    it('opens a public HTTP link in the artifact panel when one is available', async () => {
+      const electron = installElectronMock();
+      const onOpenArtifact = vi.fn();
+
+      render(
+        <MarkdownContent
+          content="[Docs](https://example.com/docs)"
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Docs' }));
+
+      expect(onOpenArtifact).toHaveBeenCalledWith({
+        kind: 'externalUrl',
+        title: 'https://example.com/docs',
+        url: 'https://example.com/docs',
+      });
+      expect(electron.openExternal).not.toHaveBeenCalled();
+    });
+
+    it('keeps loopback HTTP links on the artifact-panel route', async () => {
+      const onOpenArtifact = vi.fn();
+
+      render(
+        <MarkdownContent
+          content="[Local app](http://127.0.0.1:4173/dashboard)"
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Local app' }));
+
+      expect(onOpenArtifact).toHaveBeenCalledWith({
+        kind: 'externalUrl',
+        title: 'http://127.0.0.1:4173/dashboard',
+        url: 'http://127.0.0.1:4173/dashboard',
+      });
+    });
+
+    it('does not route unsafe URL schemes into the artifact panel', async () => {
+      const onOpenArtifact = vi.fn();
+
+      render(
+        <MarkdownContent
+          content="[Run script](javascript:alert%281%29)"
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      expect(await screen.findByText('Run script')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Run script' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Run script' })).not.toBeInTheDocument();
+      expect(onOpenArtifact).not.toHaveBeenCalled();
     });
   });
 });

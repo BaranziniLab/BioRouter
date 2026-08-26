@@ -53,7 +53,11 @@ function skill(name: string, extras: Partial<CatalogSkill> = {}): CatalogSkill {
   };
 }
 
-function bundle(name: string, members: string[], extras: Partial<CatalogBundle> = {}): CatalogBundle {
+function bundle(
+  name: string,
+  members: string[],
+  extras: Partial<CatalogBundle> = {}
+): CatalogBundle {
   return {
     name,
     displayName: name,
@@ -300,7 +304,10 @@ describe('BottomMenuSkillSelection', () => {
     serve(view({ skills: [], bundles: [bundle('hyperframes', ['hyperframes', 'media-use'])] }));
     mocks.setSessionSkills.mockResolvedValue({
       data: {
-        catalog: view({ skills: [], bundles: [bundle('hyperframes', ['hyperframes', 'media-use'])] }),
+        catalog: view({
+          skills: [],
+          bundles: [bundle('hyperframes', ['hyperframes', 'media-use'])],
+        }),
         sessionAdd: [],
         sessionRemove: ['hyperframes'],
       },

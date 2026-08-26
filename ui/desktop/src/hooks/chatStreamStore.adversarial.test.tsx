@@ -82,7 +82,11 @@ const replayed = (seq: number, e: MessageEvent) => envelope(e, seq, TURN, true);
 const live = (seq: number, e: MessageEvent) => envelope(e, seq, TURN);
 
 function messageFrame(id: string, text: string): MessageEvent {
-  return { type: 'Message', message: assistantMessage(id, text), token_state: tokenState } as MessageEvent;
+  return {
+    type: 'Message',
+    message: assistantMessage(id, text),
+    token_state: tokenState,
+  } as MessageEvent;
 }
 const finishFrame = { type: 'Finish', reason: 'stop', token_state: tokenState } as MessageEvent;
 
@@ -253,9 +257,7 @@ describe('rejoining a MULTI-ROUND turn after a reload', () => {
 
     const controller = registry.getController(SID);
     await controller.loadSession();
-    await vi.waitFor(() =>
-      expect(vi.mocked(reply).mock.calls.length).toBeGreaterThan(0)
-    );
+    await vi.waitFor(() => expect(vi.mocked(reply).mock.calls.length).toBeGreaterThan(0));
     await vi.waitFor(() =>
       expect(
         controller

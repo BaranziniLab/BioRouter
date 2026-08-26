@@ -73,13 +73,11 @@ fn strip_ornament(s: &str) -> &str {
 fn blocked_question(closing: &str) -> Option<String> {
     let mut lines = closing.lines().skip_while(|line| line.trim().is_empty());
     let first = strip_ornament(lines.next()?);
-    if first.len() < BLOCKED_MARKER.len() {
-        return None;
-    }
-    let (word, rest) = first.split_at(BLOCKED_MARKER.len());
+    let word = first.get(..BLOCKED_MARKER.len())?;
     if !word.eq_ignore_ascii_case(BLOCKED_MARKER) {
         return None;
     }
+    let rest = first.get(BLOCKED_MARKER.len()..)?;
     // `BLOCKED: q` · `**BLOCKED**: q` · `BLOCKED - q` · `BLOCKED` alone with the
     // question on the next line. Anything else is a word that merely starts with
     // "blocked" ("blockedTests failed"), which is not the marker.
@@ -182,7 +180,7 @@ impl SubagentResult {
     /// Reclassify a partially produced result when the run's cancellation token
     /// won. Preserve any useful work and artifacts, but never report a stopped
     /// child as completed or as a provider failure.
-    pub(crate) fn mark_cancelled(&mut self) {
+    pub fn mark_cancelled(&mut self) {
         self.status = SubagentStatus::Incomplete;
         self.error = None;
         self.question = None;
@@ -851,6 +849,8 @@ mod tests {
     fn prose_that_merely_mentions_being_blocked_is_still_completed() {
         for summary in [
             "Done. The deploy is blocked on CI approval, which is expected.",
+            "Done — the child reached terminal, returned exactly `CHILD_ORIGINAL`, and its \
+             transcript shows no tool calls.",
             "I fixed `a/config.rs`.\n\nBLOCKED: is this a note you wanted?",
             "blockedTests failed, so I skipped them.",
         ] {

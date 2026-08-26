@@ -2,7 +2,10 @@ use crate::knowledge::{
     biookf, convert, credibility,
     git::{GitRepo, KnowledgeWriteFailure},
     manifest, okf, paths, raw, registry,
-    types::{Credibility, KbFormat, Manifest, ModelRef, RegistryEntry, SourceMeta},
+    types::{
+        manifest_generation, Credibility, KbFormat, Manifest, ManifestGeneration, ModelRef,
+        RegistryEntry, SourceMeta,
+    },
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -43,12 +46,103 @@ const DEFAULT_LOG: &str = "# Log\n\n";
 const GITIGNORE: &str =
     "raw/*/original.*\n.biorouter-knowledge/.crossref-cache/\n.biorouter-knowledge/write.lock\n";
 
+/// What a directory under the knowledge root is, as far as a caller that may
+/// **destroy** it is allowed to conclude.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaseFormat {
+    /// The manifest states a pre-OKF generation *and* the tree has the shape a
+    /// Biorouter knowledge base has. The only verdict that authorizes deletion.
+    Legacy,
+    /// The manifest states the OKF generation or a later one.
+    Current,
+    /// Neither could be established. Carries the reason, because a caller that
+    /// leaves a directory alone has to be able to say which one and why.
+    Undiagnosable(String),
+}
+
+/// Classify a directory strictly enough to destroy it.
+///
+/// [`Manifest::is_legacy_format`] is the wrong question here and the difference
+/// is the whole of this function: it is `schema_version < CURRENT_SCHEMA_VERSION`
+/// over a struct whose every field defaults, so a `manifest.yaml` of `{}`, a
+/// current BioOKF base that lost its `schema_version` line to a partial write,
+/// and an unrelated tool's directory with an id-shaped name all answer "legacy"
+/// — and the startup purge would `remove_dir_all` every one of them, `.git`
+/// history included, logging a success.
+///
+/// So two things the accident cannot produce are required: the file must
+/// **state** its generation ([`manifest_generation`]), and the tree must carry
+/// the two things every base this build has ever written carries. Anything else
+/// is [`BaseFormat::Undiagnosable`], which callers must read as "leave it
+/// exactly where it is, and say so".
+///
+/// Deliberately **not** `Result`: an unreadable directory is a verdict here, not
+/// an error, because the one caller runs on the daemon's startup path and an
+/// `Err` there is a machine that will not boot over a base nobody asked about.
+pub fn classify_base_format(kb_root: &Path) -> BaseFormat {
+    let manifest_path = manifest::manifest_path(kb_root);
+    let yaml = match std::fs::read_to_string(&manifest_path) {
+        Ok(yaml) => yaml,
+        Err(error) => {
+            return BaseFormat::Undiagnosable(format!(
+                "cannot read {}: {error}",
+                manifest_path.display()
+            ))
+        }
+    };
+    match manifest_generation(&yaml) {
+        ManifestGeneration::DeclaredCurrent(_) => BaseFormat::Current,
+        ManifestGeneration::Undeclared => BaseFormat::Undiagnosable(format!(
+            "{} states no schema_version this build can read, so its generation is unknown",
+            manifest_path.display()
+        )),
+        // A stated pre-OKF generation is necessary and not sufficient. Any YAML
+        // document may carry a `schema_version` key meaning something else
+        // entirely; a base this build wrote also has a `knowledge/` tree and the
+        // `schema.md` that is its sub-agent's system prompt.
+        ManifestGeneration::DeclaredLegacy(stated) => {
+            if kb_root.join("knowledge").is_dir() && kb_root.join("schema.md").is_file() {
+                BaseFormat::Legacy
+            } else {
+                BaseFormat::Undiagnosable(format!(
+                    "{} states schema_version {stated}, but the directory has no knowledge/ \
+                     tree and schema.md, so it is not a knowledge base this build wrote",
+                    kb_root.display()
+                ))
+            }
+        }
+    }
+}
+
 /// The generation this build writes, and the ceiling an automatic migration may
 /// reach. Both live on [`crate::knowledge::types`] beside [`Manifest`] itself,
 /// because [`Manifest::profile`] — the accessor every reader should use — has to
 /// fold the first one in, and a second declaration of a number is one more than
 /// can be kept in step.
 pub use crate::knowledge::types::{AUTOMATIC_SCHEMA_CEILING, CURRENT_SCHEMA_VERSION};
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "legacy pre-OKF knowledge-base archives are no longer supported; import an OKF or BioOKF archive"
+)]
+pub struct LegacyKnowledgeArchiveUnsupported;
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "knowledge base '{kb_id}' uses the retired pre-OKF format; restart Biorouter to finish the legacy purge, then use an OKF or BioOKF knowledge base"
+)]
+pub struct LegacyKnowledgeBaseUnsupported {
+    pub kb_id: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "cannot restore knowledge base '{kb_id}' to commit '{commit_sha}': that commit uses the retired pre-OKF format"
+)]
+pub struct LegacyKnowledgeRestoreUnsupported {
+    pub kb_id: String,
+    pub commit_sha: String,
+}
 
 /// A raw source commit succeeded, but the derived graph cache could not be
 /// refreshed afterwards.
@@ -423,6 +517,255 @@ enum StoredPrimary {
     NoPrimary,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DeletePathState {
+    Missing,
+    File(Vec<u8>),
+    Directory(Vec<(std::ffi::OsString, DeletePathState)>),
+}
+
+impl DeletePathState {
+    fn capture(path: &Path) -> Result<Self> {
+        let metadata = match std::fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::Missing);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.is_file() {
+            return Ok(Self::File(std::fs::read(path)?));
+        }
+        anyhow::ensure!(
+            metadata.is_dir(),
+            "knowledge deletion metadata path is neither a file nor a directory: {}",
+            path.display()
+        );
+        let mut names = std::fs::read_dir(path)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        names.sort();
+        let mut entries = Vec::with_capacity(names.len());
+        for name in names {
+            entries.push((name.clone(), Self::capture(&path.join(name))?));
+        }
+        Ok(Self::Directory(entries))
+    }
+
+    fn restore(&self, path: &Path) -> Result<()> {
+        remove_path_if_present(path)?;
+        match self {
+            Self::Missing => Ok(()),
+            Self::File(contents) => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(path, contents)?;
+                Ok(())
+            }
+            Self::Directory(entries) => {
+                std::fs::create_dir_all(path)?;
+                for (name, state) in entries {
+                    state.restore(&path.join(name))?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+fn remove_path_if_present(path: &Path) -> Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.is_dir() {
+        std::fs::remove_dir_all(path)?;
+    } else {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn staged_delete_id(name: &std::ffi::OsStr) -> Option<String> {
+    let name = name.to_str()?.strip_prefix(".deleting-")?;
+    let separator = name.len().checked_sub(37)?;
+    let id = name.get(..separator)?;
+    let uuid = name.get(separator..)?.strip_prefix('-')?;
+    uuid::Uuid::parse_str(uuid).ok()?;
+    paths::validate_kb_id(id).ok()?;
+    Some(id.to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeleteMetadataSnapshot {
+    paths: Vec<(PathBuf, DeletePathState)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BasePublicationSnapshot {
+    paths: Vec<(PathBuf, DeletePathState)>,
+}
+
+impl BasePublicationSnapshot {
+    fn capture(root: &Path) -> Result<Self> {
+        let registry_path = registry::registry_path(root);
+        let tiers_path = paths::kb_tiers_path(root);
+        let paths = [
+            registry_path.clone(),
+            registry_path.with_extension("yaml.tmp"),
+            tiers_path.clone(),
+            tiers_path.with_extension("tmp"),
+        ]
+        .into_iter()
+        .map(|path| Ok((path.clone(), DeletePathState::capture(&path)?)))
+        .collect::<Result<Vec<_>>>()?;
+        Ok(Self { paths })
+    }
+
+    fn restore(&self) -> Result<()> {
+        let mut failures = Vec::new();
+        for (path, state) in &self.paths {
+            if let Err(error) = state.restore(path) {
+                failures.push(format!("{}: {error}", path.display()));
+            }
+        }
+        anyhow::ensure!(
+            failures.is_empty(),
+            "could not restore knowledge publication metadata: {}",
+            failures.join("; ")
+        );
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CreateCheckpoint {
+    Files,
+    Repository,
+    GraphCache,
+    Classification,
+    Registry,
+    Published,
+}
+
+struct CreateBaseSpec<'a> {
+    id: &'a str,
+    name: &'a str,
+    color: Option<&'a str>,
+    format: KbFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportCheckpoint {
+    Staged,
+    Classification,
+    Registry,
+    Published,
+}
+
+fn staged_publication_id(name: &std::ffi::OsStr) -> Option<String> {
+    let name = name.to_str()?;
+    let name = [".importing-", ".creating-"]
+        .into_iter()
+        .find_map(|prefix| name.strip_prefix(prefix))?;
+    let separator = name.len().checked_sub(37)?;
+    let id = name.get(..separator)?;
+    let uuid = name.get(separator..)?.strip_prefix('-')?;
+    uuid::Uuid::parse_str(uuid).ok()?;
+    paths::validate_kb_id(id).ok()?;
+    Some(id.to_string())
+}
+
+fn publication_rollback_failure(
+    operation: &str,
+    error: anyhow::Error,
+    paths: &[PathBuf],
+    metadata: &BasePublicationSnapshot,
+) -> KnowledgeWriteFailure {
+    let mut rollback_failures = Vec::new();
+    for path in paths {
+        if let Err(rollback_error) = remove_path_if_present(path) {
+            rollback_failures.push(format!("remove {}: {rollback_error:#}", path.display()));
+        }
+    }
+    if let Err(rollback_error) = metadata.restore() {
+        rollback_failures.push(format!("restore metadata: {rollback_error:#}"));
+    }
+    if rollback_failures.is_empty() {
+        KnowledgeWriteFailure::rolled_back(operation, error)
+    } else {
+        KnowledgeWriteFailure::outcome_uncertain(
+            operation,
+            anyhow::anyhow!(
+                "{error:#}; rollback also failed: {}",
+                rollback_failures.join("; ")
+            ),
+        )
+    }
+}
+
+impl DeleteMetadataSnapshot {
+    fn capture(root: &Path) -> Result<Self> {
+        let registry_path = registry::registry_path(root);
+        let primary_path = paths::primary_kb_path(root);
+        let hidden_path = paths::hidden_kbs_path(root);
+        let tiers_path = paths::kb_tiers_path(root);
+        let paths = vec![
+            tiers_path.clone(),
+            tiers_path.with_extension("tmp"),
+            primary_path.clone(),
+            primary_path.with_extension("tmp"),
+            paths::primary_kb_sessions_dir(root),
+            hidden_path.clone(),
+            hidden_path.with_extension("tmp"),
+            paths::hidden_kb_sessions_dir(root),
+            registry_path.clone(),
+            registry_path.with_extension("yaml.tmp"),
+        ];
+        let paths = paths
+            .into_iter()
+            .map(|path| Ok((path.clone(), DeletePathState::capture(&path)?)))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self { paths })
+    }
+
+    fn restore(&self) -> Result<()> {
+        let mut failures = Vec::new();
+        for (path, state) in &self.paths {
+            if let Err(error) = state.restore(path) {
+                failures.push(format!("{}: {error}", path.display()));
+            }
+        }
+        anyhow::ensure!(
+            failures.is_empty(),
+            "could not restore knowledge deletion metadata: {}",
+            failures.join("; ")
+        );
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeleteCheckpoint {
+    Staged,
+    Registry,
+    MachinePrimary,
+    SessionPrimaries,
+    HiddenSelections,
+    Classification,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "knowledge base '{kb_id}' was removed from the active store, but its staged files could not be fully erased: {cause}"
+)]
+pub struct KnowledgeDeleteCleanupFailure {
+    pub kb_id: String,
+    cause: String,
+}
+
 impl StoredPrimary {
     /// The pinned id, if any. Both `Inherit` and `NoPrimary` are "no id here";
     /// only [`KnowledgeService::primary_for_session`] cares which.
@@ -688,6 +1031,9 @@ impl KnowledgeService {
             root,
             locks: Arc::new(DashMap::new()),
         };
+        if let Err(e) = svc.resume_pending_import_cleanup() {
+            tracing::warn!("knowledge: could not recover an interrupted base publication: {e:#}");
+        }
         // Issue #56. Best-effort: `new` is infallible and a failure here must
         // not stop the app from opening. A root that never migrates reads every
         // base PUBLIC (the file is absent ⇒ "not migrated"), which is AR-2's
@@ -724,13 +1070,18 @@ impl KnowledgeService {
         if !kb_root.exists() {
             anyhow::bail!("kb '{kb_id}' not found");
         }
-        FileLockGuard::acquire_existing(&self.kb_lock_path(kb_id)).map_err(|error| {
-            if !kb_root.exists() {
-                anyhow::anyhow!("kb '{kb_id}' not found")
-            } else {
-                error
-            }
-        })
+        let guard =
+            FileLockGuard::acquire_existing(&self.kb_lock_path(kb_id)).map_err(|error| {
+                if !kb_root.exists() {
+                    anyhow::anyhow!("kb '{kb_id}' not found")
+                } else {
+                    error
+                }
+            })?;
+        if kb_root.join(".git").is_dir() {
+            GitRepo::open(&kb_root)?.recover_orphaned_txn()?;
+        }
+        Ok(guard)
     }
 
     fn lock_root(&self) -> Result<FileLockGuard> {
@@ -786,8 +1137,17 @@ impl KnowledgeService {
         if cancel.is_some_and(CancellationToken::is_cancelled) {
             anyhow::bail!("knowledge privacy ratchet cancelled before mutation");
         }
-        crate::knowledge::tier::raise_unlocked(&self.root, kb_id, caller_is_private)?;
-        crate::knowledge::tier::raise_affiliation_unlocked(&self.root, kb_id, caller)
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        if !kb_root.exists() {
+            anyhow::bail!("kb '{kb_id}' not found");
+        }
+        manifest::load(&kb_root)?;
+        crate::knowledge::tier::stamp_unlocked(
+            &self.root,
+            kb_id,
+            caller_is_private,
+            crate::knowledge::affiliation::contributed_owners(caller),
+        )
     }
 
     /// Async entry point for the privacy ratchet. The root's process-wide file
@@ -861,8 +1221,7 @@ impl KnowledgeService {
         caller_is_private: bool,
         owners: std::collections::BTreeSet<String>,
     ) -> Result<()> {
-        crate::knowledge::tier::raise_unlocked(&self.root, kb_id, caller_is_private)?;
-        crate::knowledge::tier::add_owners_unlocked(&self.root, kb_id, owners)
+        crate::knowledge::tier::stamp_unlocked(&self.root, kb_id, caller_is_private, owners)
     }
 
     /// Take the root lock and SET `kb_id`'s tier on the user's behalf (issue #56
@@ -946,6 +1305,13 @@ impl KnowledgeService {
         self.lock_kb_cancellable(kb_id, None).await
     }
 
+    #[cfg(test)]
+    pub(crate) fn kb_queue_is_occupied(&self, kb_id: &str) -> bool {
+        self.locks
+            .get(kb_id)
+            .is_some_and(|slot| Arc::clone(slot.value()).try_lock_owned().is_err())
+    }
+
     /// [`Self::lock_kb`] with level-triggered cancellation while queued on
     /// either the in-process mutex or the cross-process file lock.
     pub async fn lock_kb_cancellable(
@@ -956,7 +1322,7 @@ impl KnowledgeService {
         self.lock_kb_path_cancellable(kb_id, cancel, false).await
     }
 
-    async fn lock_existing_kb_cancellable(
+    pub(crate) async fn lock_existing_kb_cancellable(
         &self,
         kb_id: &str,
         cancel: Option<&CancellationToken>,
@@ -1123,86 +1489,144 @@ impl KnowledgeService {
         caller_is_private: bool,
         caller_affiliation: &crate::knowledge::affiliation::CallerAffiliation,
     ) -> Result<Manifest> {
+        self.create_base_as_with_checkpoint(
+            CreateBaseSpec {
+                id,
+                name,
+                color,
+                format,
+            },
+            caller_is_private,
+            caller_affiliation,
+            |_| Ok(()),
+        )
+    }
+
+    fn create_base_as_with_checkpoint(
+        &self,
+        spec: CreateBaseSpec<'_>,
+        caller_is_private: bool,
+        caller_affiliation: &crate::knowledge::affiliation::CallerAffiliation,
+        mut checkpoint: impl FnMut(CreateCheckpoint) -> Result<()>,
+    ) -> Result<Manifest> {
+        let CreateBaseSpec {
+            id,
+            name,
+            color,
+            format,
+        } = spec;
         let _lock = self.lock_root()?;
         paths::validate_kb_id(id)?;
         let kb_root = paths::kb_root(&self.root, id);
         if kb_root.exists() {
             anyhow::bail!("kb '{id}' already exists at {}", kb_root.display());
         }
-        // The four hardcoded directories this replaced (`entities`, `concepts`,
-        // `sources`, `notes`) were the pre-OKF taxonomy, encoded in a `kind:`
-        // frontmatter key. Under OKF the axis is `type` and the layout is the
-        // producer's — see `scaffold_dirs`, including why every one of these is
-        // still under `knowledge/`.
-        let knowledge_dir = paths::kb_knowledge_dir(&self.root, id);
-        std::fs::create_dir_all(&knowledge_dir)?;
-        for dir in scaffold_dirs(format) {
-            std::fs::create_dir_all(knowledge_dir.join(dir))?;
-        }
-        std::fs::create_dir_all(paths::kb_raw_dir(&self.root, id))?;
-        std::fs::create_dir_all(paths::kb_internal_dir(&self.root, id))?;
+        let metadata = BasePublicationSnapshot::capture(&self.root)?;
+        anyhow::ensure!(
+            !registry::load(&self.root)?
+                .iter()
+                .any(|entry| entry.id == id),
+            "kb-id '{id}' already registered"
+        );
+        let staged_root = self
+            .root
+            .join(format!(".creating-{id}-{}", uuid::Uuid::new_v4()));
+        let mutation = (|| -> Result<Manifest> {
+            if crate::knowledge::tier::has_metadata_unlocked(&self.root, id)? {
+                crate::knowledge::tier::forget_unlocked(&self.root, id)?;
+            }
+            // The four hardcoded directories this replaced (`entities`, `concepts`,
+            // `sources`, `notes`) were the pre-OKF taxonomy, encoded in a `kind:`
+            // frontmatter key. Under OKF the axis is `type` and the layout is the
+            // producer's — see `scaffold_dirs`, including why every one of these is
+            // still under `knowledge/`.
+            let knowledge_dir = staged_root.join("knowledge");
+            std::fs::create_dir_all(&knowledge_dir)?;
+            for dir in scaffold_dirs(format) {
+                std::fs::create_dir_all(knowledge_dir.join(dir))?;
+            }
+            std::fs::create_dir_all(staged_root.join("raw"))?;
+            std::fs::create_dir_all(staged_root.join(".biorouter-knowledge"))?;
 
-        let m = Manifest {
-            id: id.to_string(),
-            name: name.to_string(),
-            color: color.unwrap_or("#5a6394").to_string(),
-            created_at: Utc::now(),
-            // The generation of the `schema.md` written below, not a constant 1.
-            // A manifest that under-reports what its own base carries makes the
-            // migration ladder run on a base that is already current, which is
-            // only harmless for as long as every step happens to be idempotent.
-            schema_version: CURRENT_SCHEMA_VERSION,
-            default_model: None,
-            format,
-            // Written for BOTH profiles, because a BioOKF bundle is an OKF
-            // bundle — the profile only adds constraints. It mirrors what
-            // `index_scaffold` puts in the bundle-root `index.md`, which is the
-            // one place OKF permits it.
-            okf_version: Some(okf::OKF_VERSION.to_string()),
-            // …and this one is here rather than in `index.md` (DR-23's
-            // corollary): OKF §8 permits `okf_version` there and nothing else.
-            biookf_version: format
-                .is_biookf()
-                .then(|| biookf::BIOOKF_VERSION.to_string()),
-        };
-        manifest::save(&kb_root, &m)?;
-
-        std::fs::write(kb_root.join("schema.md"), schema_for(format))?;
-        std::fs::write(kb_root.join("index.md"), index_scaffold())?;
-        std::fs::write(kb_root.join("log.md"), DEFAULT_LOG)?;
-        std::fs::write(kb_root.join(".gitignore"), GITIGNORE)?;
-
-        let repo = GitRepo::init(&kb_root)?;
-        repo.commit_all(
-            crate::knowledge::types::ChangeKind::Manual,
-            &format!("create knowledge base {id}"),
-            None,
-        )
-        .context("initial commit")?;
-
-        registry::register(
-            &self.root,
-            RegistryEntry {
+            let m = Manifest {
                 id: id.to_string(),
-                path: kb_root,
-            },
-        )?;
-        self.rebuild_graph_cache(id)?;
-        // Issue #56, decision (5a). A base with no entry reads PRIVATE
-        // (unknown provenance), so an unregistered base would lock its own
-        // creator out. `raise_unlocked` registers an absent id at the caller's
-        // tier and can never lower an existing entry, so it subsumes
-        // `register_public_if_absent_unlocked` for the `false` case that the
-        // ~90 user-facing `create_base` call sites take. Inside the root lock,
-        // so the `_unlocked` twin is the one that must be called — and in the
-        // SAME transaction as the directory, so there is no window in which a
-        // private session's new base reads PUBLIC.
-        self.stamp_base_unlocked(
-            id,
-            caller_is_private,
-            crate::knowledge::affiliation::contributed_owners(caller_affiliation),
-        )?;
-        Ok(m)
+                name: name.to_string(),
+                color: color.unwrap_or("#5a6394").to_string(),
+                created_at: Utc::now(),
+                // The generation of the `schema.md` written below, not a constant 1.
+                // A manifest that under-reports what its own base carries makes the
+                // migration ladder run on a base that is already current, which is
+                // only harmless for as long as every step happens to be idempotent.
+                schema_version: CURRENT_SCHEMA_VERSION,
+                default_model: None,
+                format,
+                // Written for BOTH profiles, because a BioOKF bundle is an OKF
+                // bundle — the profile only adds constraints. It mirrors what
+                // `index_scaffold` puts in the bundle-root `index.md`, which is the
+                // one place OKF permits it.
+                okf_version: Some(okf::OKF_VERSION.to_string()),
+                // …and this one is here rather than in `index.md` (DR-23's
+                // corollary): OKF §8 permits `okf_version` there and nothing else.
+                biookf_version: format
+                    .is_biookf()
+                    .then(|| biookf::BIOOKF_VERSION.to_string()),
+            };
+            manifest::save(&staged_root, &m)?;
+
+            std::fs::write(staged_root.join("schema.md"), schema_for(format))?;
+            std::fs::write(staged_root.join("index.md"), index_scaffold())?;
+            std::fs::write(staged_root.join("log.md"), DEFAULT_LOG)?;
+            std::fs::write(staged_root.join(".gitignore"), GITIGNORE)?;
+            checkpoint(CreateCheckpoint::Files)?;
+
+            let repo = GitRepo::init(&staged_root)?;
+            repo.commit_all(
+                crate::knowledge::types::ChangeKind::Manual,
+                &format!("create knowledge base {id}"),
+                None,
+            )
+            .context("initial commit")?;
+            checkpoint(CreateCheckpoint::Repository)?;
+
+            let graph = crate::knowledge::graph::derive(&staged_root)?;
+            crate::knowledge::graph::write_cache(&staged_root, &graph)?;
+            checkpoint(CreateCheckpoint::GraphCache)?;
+            // Issue #56, decision (5a). A base with no entry reads PRIVATE
+            // (unknown provenance), so an unregistered base would lock its own
+            // creator out. `raise_unlocked` registers an absent id at the caller's
+            // tier and can never lower an existing entry, so it subsumes
+            // `register_public_if_absent_unlocked` for the `false` case that the
+            // ~90 user-facing `create_base` call sites take. Inside the root lock,
+            // so the `_unlocked` twin is the one that must be called — and in the
+            // SAME transaction as the directory, so there is no window in which a
+            // private session's new base reads PUBLIC.
+            self.stamp_base_unlocked(
+                id,
+                caller_is_private,
+                crate::knowledge::affiliation::contributed_owners(caller_affiliation),
+            )?;
+            checkpoint(CreateCheckpoint::Classification)?;
+            registry::register(
+                &self.root,
+                RegistryEntry {
+                    id: id.to_string(),
+                    path: kb_root.clone(),
+                },
+            )?;
+            checkpoint(CreateCheckpoint::Registry)?;
+            std::fs::rename(&staged_root, &kb_root).context("publish new knowledge base")?;
+            checkpoint(CreateCheckpoint::Published)?;
+            Ok(m)
+        })();
+        mutation.map_err(|error| {
+            publication_rollback_failure(
+                &format!("knowledge base creation for {id}"),
+                error,
+                &[staged_root, kb_root],
+                &metadata,
+            )
+            .into()
+        })
     }
 
     pub fn export_brkb(&self, kb_id: &str) -> Result<Vec<u8>> {
@@ -1262,43 +1686,72 @@ impl KnowledgeService {
         importer_is_private: bool,
         importer_affiliation: &crate::knowledge::affiliation::CallerAffiliation,
     ) -> Result<String> {
+        self.import_brkb_with_checkpoint(
+            zip_bytes,
+            importer_is_private,
+            importer_affiliation,
+            |_| Ok(()),
+        )
+    }
+
+    fn import_brkb_with_checkpoint(
+        &self,
+        zip_bytes: &[u8],
+        importer_is_private: bool,
+        importer_affiliation: &crate::knowledge::affiliation::CallerAffiliation,
+        mut checkpoint: impl FnMut(ImportCheckpoint) -> Result<()>,
+    ) -> Result<String> {
+        if zip_bytes.len() as u64 > crate::knowledge::brkb::MAX_ARCHIVE_FILE_BYTES {
+            return Err(
+                crate::knowledge::brkb::InvalidKnowledgeArchive::new(format!(
+                    "compressed archive exceeds the {} MiB limit",
+                    crate::knowledge::brkb::MAX_ARCHIVE_FILE_BYTES / (1024 * 1024)
+                ))
+                .into(),
+            );
+        }
         let _lock = self.lock_root()?;
         std::fs::create_dir_all(&self.root)?;
+        let metadata = BasePublicationSnapshot::capture(&self.root)?;
         let cursor = std::io::Cursor::new(zip_bytes);
-        let imported = crate::knowledge::brkb::import(cursor, &self.root)?;
+        let staged = crate::knowledge::brkb::stage_import(cursor, &self.root)?;
+        let crate::knowledge::brkb::StagedImport {
+            imported,
+            staged_path,
+            final_path,
+        } = staged;
         let new_id = imported.id;
         let provenance_private = imported.provenance_private;
         let mut owners = imported.owners;
         owners.extend(crate::knowledge::affiliation::contributed_owners(
             importer_affiliation,
         ));
-        // Register in the top-level manifest.
-        let path = paths::kb_root(&self.root, &new_id);
-        crate::knowledge::registry::register(
-            &self.root,
-            crate::knowledge::types::RegistryEntry {
-                id: new_id.clone(),
-                path,
-            },
-        )?;
-        // Issue #56. ONE store write, not a register followed by a raise.
-        // `raise_unlocked` registers an absent id at the caller's tier
-        // (`raise_is_monotone_and_registers_an_absent_base_at_the_callers_tier`),
-        // so the pair was redundant — and it was worse than redundant: each call
-        // ends in its own `save`, and `is_private` is deliberately lock-free, so
-        // a reader landing between the two renames would have seen a base whose
-        // private content was already fully extracted on disk classified PUBLIC.
-        // With a single write the reader sees either the pre-import state (a
-        // directory with no entry, which reads private) or the final tier.
-        //
-        // The floor is a disjunction, never the marker alone: a hostile archive
-        // claiming "public" must not lower a private importer's base.
-        self.stamp_base_unlocked(
-            &new_id,
-            provenance_private.unwrap_or(false) || importer_is_private,
-            owners,
-        )?;
-        Ok(new_id)
+        let mutation = (|| -> Result<String> {
+            checkpoint(ImportCheckpoint::Staged)?;
+            self.stamp_base_unlocked(&new_id, provenance_private || importer_is_private, owners)?;
+            checkpoint(ImportCheckpoint::Classification)?;
+            crate::knowledge::registry::register(
+                &self.root,
+                crate::knowledge::types::RegistryEntry {
+                    id: new_id.clone(),
+                    path: final_path.clone(),
+                },
+            )?;
+            checkpoint(ImportCheckpoint::Registry)?;
+            std::fs::rename(&staged_path, &final_path)
+                .context("publish imported knowledge base")?;
+            checkpoint(ImportCheckpoint::Published)?;
+            Ok(new_id.clone())
+        })();
+        mutation.map_err(|error| {
+            publication_rollback_failure(
+                &format!("knowledge base import for {new_id}"),
+                error,
+                &[staged_path, final_path],
+                &metadata,
+            )
+            .into()
+        })
     }
 
     /// Merge `source_kb_id` **into** `destination_kb_id`. The deterministic half
@@ -1372,6 +1825,13 @@ impl KnowledgeService {
         };
         let _first = self.lock_kb(first).await?;
         let _second = self.lock_kb(second).await?;
+
+        // A caller can wait here while another writer raises either base and
+        // commits private content. Re-authorize over the locked snapshots before
+        // the plan reads page paths, identifiers, or raw-source metadata.
+        authority.assert_may_merge(&self.root, destination_kb_id, source_kb_id)?;
+        self.require_current_profile(destination_kb_id)?;
+        self.require_current_profile(source_kb_id)?;
 
         let plan = crate::knowledge::merge::plan(&dst_root, &src_root, source_kb_id)?;
         if dry_run {
@@ -1547,6 +2007,15 @@ impl KnowledgeService {
             anyhow::bail!("kb '{id}' not found");
         }
         manifest::load(&kb_root)
+    }
+
+    pub fn require_current_profile(&self, id: &str) -> Result<KbFormat> {
+        self.get_base(id)?.profile().ok_or_else(|| {
+            LegacyKnowledgeBaseUnsupported {
+                kb_id: id.to_string(),
+            }
+            .into()
+        })
     }
 
     pub fn update_base(
@@ -1739,6 +2208,104 @@ impl KnowledgeService {
         self.delete_base_under_kb_lock(id, None)
     }
 
+    /// Remove a **registered** legacy base, re-deciding under the locks that
+    /// authorize the deletion that it is still the base the caller classified.
+    ///
+    /// `Ok(false)` — nothing touched — when it is no longer legacy, no longer
+    /// registered at its canonical path, or already gone.
+    ///
+    /// The revalidation is not belt-and-braces. A caller classifies with no lock
+    /// held, and then [`Self::lock_existing_kb`] blocks on `flock` with no
+    /// deadline, for as long as whoever holds it takes; the delete itself only
+    /// ever checked `kb_root.exists()`, and existence is neither identity nor
+    /// format. The interleaving that costs a user their data is ordinary rather
+    /// than exotic: there is no in-place legacy → OKF upgrade in this build
+    /// (`AUTOMATIC_SCHEMA_CEILING` sits below `CURRENT_SCHEMA_VERSION` on
+    /// purpose), so delete-then-recreate at the same id is the *only* way to
+    /// move an id off the legacy format — which is to say, the racing operation
+    /// is precisely the one this build's own error text tells the user to
+    /// perform.
+    pub fn delete_registered_legacy_base(&self, id: &str) -> Result<bool> {
+        paths::validate_kb_id(id)?;
+        if !paths::kb_root(&self.root, id).exists() {
+            return Ok(false);
+        }
+        let _kb_lock = self.lock_existing_kb(id)?;
+        self.delete_base_under_locks(
+            id,
+            None,
+            |svc| {
+                let kb_root = paths::kb_root(&svc.root, id);
+                // `lock_existing_kb` opens the lock file **by path**, so holding
+                // it proves nothing about which base now lives there. The
+                // registry has to still name this id at this exact path, and the
+                // manifest has to still say pre-OKF.
+                if !registry::load(&svc.root)?
+                    .iter()
+                    .any(|entry| entry.id == id && entry.path == kb_root)
+                {
+                    return Ok(false);
+                }
+                Ok(classify_base_format(&kb_root) == BaseFormat::Legacy)
+            },
+            |_| Ok(()),
+        )
+    }
+
+    /// Remove an on-disk legacy base that is no longer present in the registry.
+    /// Startup migration uses this for interrupted upgrades where the old
+    /// directory survived but its registry row did not.
+    pub fn delete_unregistered_legacy_base(&self, id: &str) -> Result<bool> {
+        let _kb_lock = self.lock_existing_kb(id)?;
+        let _root_lock = self.lock_root()?;
+        let kb_root = paths::kb_root(&self.root, id);
+        let entries = registry::load(&self.root)?;
+        if entries
+            .iter()
+            .any(|entry| entry.id == id || entry.path == kb_root)
+        {
+            return Ok(false);
+        }
+        // `classify_base_format` and not `Manifest::is_legacy_format`: the
+        // latter reads "legacy" off any YAML mapping at all, so it would hand
+        // this `remove_dir_all` a foreign directory or a current base with one
+        // line missing from its manifest.
+        if classify_base_format(&kb_root) != BaseFormat::Legacy {
+            return Ok(false);
+        }
+
+        let metadata = DeleteMetadataSnapshot::capture(&self.root)?;
+        let staged_root = self
+            .root
+            .join(format!(".deleting-{id}-{}", uuid::Uuid::new_v4()));
+        std::fs::rename(&kb_root, &staged_root)
+            .with_context(|| format!("stage unregistered legacy knowledge base '{id}'"))?;
+        let mutation = (|| -> Result<()> {
+            if self.get_primary_persisted_unlocked()?.as_deref() == Some(id) {
+                self.set_primary_persisted_unlocked(None)?;
+            }
+            self.rewrite_session_primary_refs_unlocked(id, None)?;
+            self.rewrite_hidden_refs_unlocked(id, None)?;
+            crate::knowledge::tier::forget_unlocked(&self.root, id)?;
+            Ok(())
+        })();
+        if let Err(error) = mutation {
+            let metadata_restore = metadata.restore();
+            let directory_restore = std::fs::rename(&staged_root, &kb_root);
+            if let Err(rollback_error) = metadata_restore.and(directory_restore.map_err(Into::into))
+            {
+                anyhow::bail!(
+                    "unregistered legacy purge failed ({error:#}); rollback also failed: {rollback_error:#}"
+                );
+            }
+            return Err(error);
+        }
+        std::fs::remove_dir_all(&staged_root).with_context(|| {
+            format!("finish deletion of unregistered legacy knowledge base '{id}'")
+        })?;
+        Ok(true)
+    }
+
     pub async fn delete_base_async(
         &self,
         id: &str,
@@ -1757,37 +2324,323 @@ impl KnowledgeService {
         id: &str,
         cancel: Option<&CancellationToken>,
     ) -> Result<()> {
+        self.delete_base_under_kb_lock_with_checkpoint(id, cancel, |_| Ok(()))
+    }
+
+    fn delete_base_under_kb_lock_with_checkpoint(
+        &self,
+        id: &str,
+        cancel: Option<&CancellationToken>,
+        checkpoint: impl FnMut(DeleteCheckpoint) -> Result<()>,
+    ) -> Result<()> {
+        self.delete_base_under_locks(id, cancel, |_| Ok(true), checkpoint)
+            .map(|_| ())
+    }
+
+    /// The delete transaction itself.
+    ///
+    /// `authorize` runs with the root lock held and nothing yet moved, and
+    /// `Ok(false)` abandons the deletion leaving the base untouched. It is the
+    /// one place a caller that made its decision *before* the locks can re-make
+    /// it *under* them — see [`Self::delete_registered_legacy_base`], where that
+    /// is the difference between purging a legacy base and destroying the
+    /// replacement someone created while the purge was parked on `flock`.
+    fn delete_base_under_locks(
+        &self,
+        id: &str,
+        cancel: Option<&CancellationToken>,
+        authorize: impl FnOnce(&Self) -> Result<bool>,
+        mut checkpoint: impl FnMut(DeleteCheckpoint) -> Result<()>,
+    ) -> Result<bool> {
         let _lock = self.lock_root_cancellable(cancel)?;
         if cancel.is_some_and(CancellationToken::is_cancelled) {
             anyhow::bail!("knowledge base deletion cancelled before mutation");
+        }
+        if !authorize(self)? {
+            return Ok(false);
         }
         let kb_root = paths::kb_root(&self.root, id);
         if !kb_root.exists() {
             anyhow::bail!("kb '{id}' not found");
         }
 
-        registry::unregister(&self.root, id)?;
-        if let Err(err) = std::fs::remove_dir_all(&kb_root) {
-            let _ = registry::register(
-                &self.root,
-                RegistryEntry {
-                    id: id.to_string(),
-                    path: kb_root.clone(),
-                },
+        let metadata = DeleteMetadataSnapshot::capture(&self.root)?;
+        let staged_root = self
+            .root
+            .join(format!(".deleting-{id}-{}", uuid::Uuid::new_v4()));
+        std::fs::rename(&kb_root, &staged_root)
+            .with_context(|| format!("stage knowledge base '{id}' for deletion"))?;
+
+        let mutation = (|| -> Result<()> {
+            checkpoint(DeleteCheckpoint::Staged)?;
+            registry::unregister(&self.root, id)?;
+            checkpoint(DeleteCheckpoint::Registry)?;
+
+            if self.get_primary_persisted_unlocked()?.as_deref() == Some(id) {
+                self.set_primary_persisted_unlocked(None)?;
+            }
+            checkpoint(DeleteCheckpoint::MachinePrimary)?;
+
+            self.rewrite_session_primary_refs_unlocked(id, None)?;
+            checkpoint(DeleteCheckpoint::SessionPrimaries)?;
+
+            self.rewrite_hidden_refs_unlocked(id, None)?;
+            checkpoint(DeleteCheckpoint::HiddenSelections)?;
+
+            crate::knowledge::tier::forget_unlocked(&self.root, id)?;
+            checkpoint(DeleteCheckpoint::Classification)?;
+            Ok(())
+        })();
+
+        if let Err(error) = mutation {
+            if let Err(rollback_error) = metadata.restore() {
+                anyhow::bail!(
+                    "knowledge base deletion failed ({error:#}); metadata rollback also failed: {rollback_error:#}. The base remains staged and unavailable"
+                );
+            }
+            if let Err(rollback_error) = std::fs::rename(&staged_root, &kb_root) {
+                anyhow::bail!(
+                    "knowledge base deletion failed ({error:#}); its metadata was restored but its directory could not be moved back: {rollback_error}. The base remains staged and unavailable"
+                );
+            }
+            return Err(error).context("knowledge base deletion was fully rolled back");
+        }
+
+        match std::fs::remove_dir_all(&staged_root) {
+            Ok(()) => Ok(true),
+            Err(_) if !staged_root.exists() => Ok(true),
+            Err(error) => Err(KnowledgeDeleteCleanupFailure {
+                kb_id: id.to_string(),
+                cause: error.to_string(),
+            }
+            .into()),
+        }
+    }
+
+    pub fn base_is_current_or_fully_removed(&self, id: &str) -> Result<bool> {
+        paths::validate_kb_id(id)?;
+        let _lock = self.lock_root()?;
+        let kb_root = paths::kb_root(&self.root, id);
+        let registry = registry::load(&self.root)?;
+        let registered = registry
+            .iter()
+            .any(|entry| entry.id == id && entry.path == kb_root);
+
+        if kb_root.exists() {
+            return Ok(registered
+                && manifest::load(&kb_root).is_ok_and(|manifest| manifest.profile().is_some()));
+        }
+        if registry.iter().any(|entry| entry.id == id) {
+            return Ok(false);
+        }
+        if self
+            .staged_delete_paths_unlocked()?
+            .iter()
+            .any(|(staged_id, _)| staged_id == id)
+            || self
+                .staged_publication_paths_unlocked()?
+                .iter()
+                .any(|(staged_id, _)| staged_id == id)
+        {
+            return Ok(false);
+        }
+        if self.get_primary_persisted_unlocked()?.as_deref() == Some(id)
+            || self.session_primary_references_unlocked(id)?
+            || self.hidden_references_unlocked(id)?
+            || crate::knowledge::tier::has_metadata_unlocked(&self.root, id)?
+        {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// Finish or roll back a delete that was interrupted after its atomic
+    /// directory rename. Completed logical deletes are cleaned idempotently;
+    /// a base that is still registered is restored instead of destroyed.
+    pub fn resume_pending_delete_cleanup(&self) -> Result<Vec<String>> {
+        let _lock = self.lock_root()?;
+        let mut grouped = std::collections::BTreeMap::<String, Vec<PathBuf>>::new();
+        for (id, path) in self.staged_delete_paths_unlocked()? {
+            grouped.entry(id).or_default().push(path);
+        }
+        let registered = registry::load(&self.root)?
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect::<std::collections::HashSet<_>>();
+        let mut cleaned = Vec::new();
+
+        for (id, mut staged_paths) in grouped {
+            staged_paths.sort();
+            let kb_root = paths::kb_root(&self.root, &id);
+            if registered.contains(&id) {
+                if kb_root.exists() {
+                    for staged in staged_paths {
+                        std::fs::remove_dir_all(&staged).with_context(|| {
+                            format!(
+                                "remove stale completed-delete directory {}",
+                                staged.display()
+                            )
+                        })?;
+                    }
+                    cleaned.push(id);
+                    continue;
+                }
+                anyhow::ensure!(
+                    staged_paths.len() == 1,
+                    "registered knowledge base '{id}' has multiple staged delete directories"
+                );
+                std::fs::rename(&staged_paths[0], &kb_root).with_context(|| {
+                    format!("restore interrupted deletion of registered knowledge base '{id}'")
+                })?;
+                continue;
+            }
+
+            anyhow::ensure!(
+                !kb_root.exists(),
+                "unregistered knowledge base '{id}' has both an active and a staged directory"
             );
-            return Err(err.into());
+            if self.get_primary_persisted_unlocked()?.as_deref() == Some(id.as_str()) {
+                self.set_primary_persisted_unlocked(None)?;
+            }
+            self.rewrite_session_primary_refs_unlocked(&id, None)?;
+            self.rewrite_hidden_refs_unlocked(&id, None)?;
+            crate::knowledge::tier::forget_unlocked(&self.root, &id)?;
+            for staged in staged_paths {
+                std::fs::remove_dir_all(&staged).with_context(|| {
+                    format!("finish interrupted deletion of knowledge base '{id}'")
+                })?;
+            }
+            cleaned.push(id);
         }
 
-        if self.get_primary_persisted_unlocked()?.as_deref() == Some(id) {
-            self.set_primary_persisted_unlocked(None)?;
-        }
-        self.rewrite_session_primary_refs_unlocked(id, None)?;
-        self.rewrite_hidden_refs_unlocked(id, None)?;
-        // Issue #56: drop the tier with the base, so a later base reusing the
-        // id is classified by its own creator. Inside the root lock.
-        crate::knowledge::tier::forget_unlocked(&self.root, id)?;
+        Ok(cleaned)
+    }
 
-        Ok(())
+    /// Roll back new-base publications interrupted before their final directory
+    /// rename. A staged directory is never a readable base, and its id was chosen
+    /// while holding the root lock before metadata was written.
+    pub fn resume_pending_import_cleanup(&self) -> Result<Vec<String>> {
+        if !self.root.exists() {
+            return Ok(Vec::new());
+        }
+        if self.staged_publication_paths_unlocked()?.is_empty() {
+            return Ok(Vec::new());
+        }
+        let _lock = self.lock_root()?;
+        let mut grouped = std::collections::BTreeMap::<String, Vec<PathBuf>>::new();
+        for (id, path) in self.staged_publication_paths_unlocked()? {
+            grouped.entry(id).or_default().push(path);
+        }
+        if grouped.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut cleaned = Vec::new();
+        for (id, mut staged_paths) in grouped {
+            staged_paths.sort();
+            if paths::kb_root(&self.root, &id).exists() {
+                for staged in staged_paths {
+                    remove_path_if_present(&staged)?;
+                }
+                cleaned.push(id);
+                continue;
+            }
+            if registry::load(&self.root)?
+                .iter()
+                .any(|entry| entry.id == id)
+            {
+                registry::unregister(&self.root, &id)?;
+            }
+            crate::knowledge::tier::forget_unlocked(&self.root, &id)?;
+            for staged in staged_paths {
+                remove_path_if_present(&staged).with_context(|| {
+                    format!(
+                        "remove interrupted base publication at {}",
+                        staged.display()
+                    )
+                })?;
+            }
+            cleaned.push(id);
+        }
+        Ok(cleaned)
+    }
+
+    fn staged_delete_paths_unlocked(&self) -> Result<Vec<(String, PathBuf)>> {
+        if !self.root.exists() {
+            return Ok(Vec::new());
+        }
+        let mut staged = Vec::new();
+        for entry in std::fs::read_dir(&self.root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            if let Some(id) = staged_delete_id(&entry.file_name()) {
+                staged.push((id, entry.path()));
+            }
+        }
+        Ok(staged)
+    }
+
+    fn staged_publication_paths_unlocked(&self) -> Result<Vec<(String, PathBuf)>> {
+        if !self.root.exists() {
+            return Ok(Vec::new());
+        }
+        let mut staged = Vec::new();
+        for entry in std::fs::read_dir(&self.root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            if let Some(id) = staged_publication_id(&entry.file_name()) {
+                staged.push((id, entry.path()));
+            }
+        }
+        Ok(staged)
+    }
+
+    fn session_primary_references_unlocked(&self, id: &str) -> Result<bool> {
+        let dir = paths::primary_kb_sessions_dir(self.root());
+        if !dir.exists() {
+            return Ok(false);
+        }
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() || !is_session_digest(&entry.file_name()) {
+                continue;
+            }
+            if self.read_primary_file_unlocked(&entry.path())?.pinned() == Some(id) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn hidden_references_unlocked(&self, id: &str) -> Result<bool> {
+        if self
+            .get_hidden_path_unlocked(&paths::hidden_kbs_path(self.root()))?
+            .iter()
+            .any(|hidden| hidden == id)
+        {
+            return Ok(true);
+        }
+        let dir = paths::hidden_kb_sessions_dir(self.root());
+        if !dir.exists() {
+            return Ok(false);
+        }
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() || !is_session_digest(&entry.file_name()) {
+                continue;
+            }
+            if self
+                .get_hidden_path_unlocked(&entry.path())?
+                .iter()
+                .any(|hidden| hidden == id)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -1834,6 +2687,7 @@ impl KnowledgeService {
         cancel: Option<&CancellationToken>,
     ) -> Result<raw::RawWrite> {
         paths::validate_kb_id(kb_id)?;
+        self.require_current_profile(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         if !kb_root.exists() {
             anyhow::bail!("kb '{kb_id}' does not exist");
@@ -2357,7 +3211,7 @@ impl KnowledgeService {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         anyhow::ensure!(kb_root.exists(), "kb '{kb_id}' does not exist");
-        let _file_guard = FileLockGuard::acquire(&self.kb_lock_path(kb_id))?;
+        let _file_guard = self.lock_existing_kb(kb_id)?;
         self.get_graph_unlocked(kb_id)
     }
 
@@ -3054,8 +3908,20 @@ impl KnowledgeService {
         if cancel.is_some_and(CancellationToken::is_cancelled) {
             anyhow::bail!("knowledge restore cancelled before mutation");
         }
+        self.require_current_profile(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         let repo = GitRepo::open(&kb_root)?;
+        let target_manifest = repo
+            .read_file_at(commit_sha, "manifest.yaml")?
+            .ok_or_else(|| anyhow::anyhow!("commit '{commit_sha}' has no knowledge manifest"))?;
+        let target_manifest: Manifest =
+            serde_yaml::from_str(&target_manifest).context("read target knowledge manifest")?;
+        if target_manifest.profile().is_none() {
+            anyhow::bail!(LegacyKnowledgeRestoreUnsupported {
+                kb_id: kb_id.to_string(),
+                commit_sha: commit_sha.to_string(),
+            });
+        }
         let summary = format!("restore to {}", commit_sha.get(..7).unwrap_or(commit_sha));
         let sha = repo.restore_to(commit_sha, &summary)?;
         if let Err(error) = self.rebuild_graph_cache(kb_id) {
@@ -3265,17 +4131,259 @@ mod tests {
         (dir, svc)
     }
 
+    #[test]
+    fn service_rejects_and_cleans_up_a_legacy_archive() {
+        let (dir, svc) = svc();
+        svc.create_base("legacy", "Legacy", None).unwrap();
+        let root = dir.path().join("legacy");
+        let mut manifest = crate::knowledge::manifest::load(&root).unwrap();
+        manifest.schema_version = crate::knowledge::types::AUTOMATIC_SCHEMA_CEILING;
+        crate::knowledge::manifest::save(&root, &manifest).unwrap();
+        let archive = svc.export_brkb("legacy").unwrap();
+
+        let error = svc
+            .import_brkb(
+                &archive,
+                false,
+                &crate::knowledge::affiliation::CallerAffiliation::Unstated,
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<LegacyKnowledgeArchiveUnsupported>()
+                .is_some(),
+            "{error:#}"
+        );
+        assert!(!dir.path().join("legacy-2").exists());
+        assert_eq!(svc.list_bases().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn creation_rolls_back_files_registry_and_classification_at_every_phase() -> anyhow::Result<()>
+    {
+        for fault in [
+            CreateCheckpoint::Files,
+            CreateCheckpoint::Repository,
+            CreateCheckpoint::GraphCache,
+            CreateCheckpoint::Classification,
+            CreateCheckpoint::Registry,
+            CreateCheckpoint::Published,
+        ] {
+            let (_dir, svc) = svc();
+            let before = BasePublicationSnapshot::capture(svc.root())?;
+            let error = svc
+                .create_base_as_with_checkpoint(
+                    CreateBaseSpec {
+                        id: "retryable",
+                        name: "Retryable",
+                        color: None,
+                        format: KbFormat::Okf,
+                    },
+                    true,
+                    &crate::knowledge::affiliation::CallerAffiliation::Institution(
+                        "ucsf".to_string(),
+                    ),
+                    |checkpoint| {
+                        anyhow::ensure!(checkpoint != fault, "injected failure after {fault:?}");
+                        Ok(())
+                    },
+                )
+                .expect_err("the selected create checkpoint must fail");
+            let failure = error
+                .downcast_ref::<KnowledgeWriteFailure>()
+                .expect("a failed publication reports whether retry is safe");
+            assert_eq!(
+                failure.phase,
+                crate::knowledge::git::KnowledgeWriteFailurePhase::RolledBack,
+                "{fault:?}: {error:#}"
+            );
+            assert!(!svc.root().join("retryable").exists(), "{fault:?}");
+            assert!(!std::fs::read_dir(svc.root())?.any(|entry| {
+                entry.is_ok_and(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".creating-retryable-")
+                })
+            }));
+            assert_eq!(
+                BasePublicationSnapshot::capture(svc.root())?,
+                before,
+                "{fault:?}"
+            );
+            svc.create_base("retryable", "Retryable", None)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn import_rolls_back_staging_registry_and_classification_at_every_phase() -> anyhow::Result<()>
+    {
+        let source_dir = tempfile::tempdir()?;
+        let source = KnowledgeService::new(source_dir.path().to_path_buf());
+        source.create_base("retryable", "Retryable", None)?;
+        let archive = source.export_brkb("retryable")?;
+
+        for fault in [
+            ImportCheckpoint::Staged,
+            ImportCheckpoint::Classification,
+            ImportCheckpoint::Registry,
+            ImportCheckpoint::Published,
+        ] {
+            let (_dir, svc) = svc();
+            let before = BasePublicationSnapshot::capture(svc.root())?;
+            let error = svc
+                .import_brkb_with_checkpoint(
+                    &archive,
+                    true,
+                    &crate::knowledge::affiliation::CallerAffiliation::Institution(
+                        "ucsf".to_string(),
+                    ),
+                    |checkpoint| {
+                        anyhow::ensure!(checkpoint != fault, "injected failure after {fault:?}");
+                        Ok(())
+                    },
+                )
+                .expect_err("the selected import checkpoint must fail");
+            let failure = error
+                .downcast_ref::<KnowledgeWriteFailure>()
+                .expect("a failed publication reports whether retry is safe");
+            assert_eq!(
+                failure.phase,
+                crate::knowledge::git::KnowledgeWriteFailurePhase::RolledBack,
+                "{fault:?}: {error:#}"
+            );
+            assert!(!svc.root().join("retryable").exists(), "{fault:?}");
+            assert!(!std::fs::read_dir(svc.root())?.any(|entry| {
+                entry.is_ok_and(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".importing-retryable-")
+                })
+            }));
+            assert_eq!(
+                BasePublicationSnapshot::capture(svc.root())?,
+                before,
+                "{fault:?}"
+            );
+            svc.create_base("retryable", "Retryable", None)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn startup_rolls_back_an_interrupted_import_before_publication() -> anyhow::Result<()> {
+        let source_dir = tempfile::tempdir()?;
+        let source = KnowledgeService::new(source_dir.path().to_path_buf());
+        source.create_base("interrupted", "Interrupted", None)?;
+        let archive = source.export_brkb("interrupted")?;
+
+        let destination = tempfile::tempdir()?;
+        let svc = KnowledgeService::new(destination.path().to_path_buf());
+        let staged = crate::knowledge::brkb::stage_import(
+            std::io::Cursor::new(&archive),
+            destination.path(),
+        )?;
+        svc.stamp_base_unlocked(
+            &staged.imported.id,
+            true,
+            std::collections::BTreeSet::from(["ucsf".to_string()]),
+        )?;
+        registry::register(
+            destination.path(),
+            RegistryEntry {
+                id: staged.imported.id.clone(),
+                path: staged.final_path.clone(),
+            },
+        )?;
+        assert!(staged.staged_path.exists());
+
+        let reopened = KnowledgeService::new(destination.path().to_path_buf());
+        assert!(!staged.staged_path.exists());
+        assert!(!staged.final_path.exists());
+        assert!(!crate::knowledge::tier::has_metadata_unlocked(
+            destination.path(),
+            "interrupted"
+        )?);
+        assert!(registry::load(destination.path())?.is_empty());
+        reopened.create_base("interrupted", "Interrupted", None)?;
+        Ok(())
+    }
+
+    #[test]
+    fn startup_rolls_back_an_interrupted_creation_before_publication() -> anyhow::Result<()> {
+        let destination = tempfile::tempdir()?;
+        let svc = KnowledgeService::new(destination.path().to_path_buf());
+        let staged = destination
+            .path()
+            .join(format!(".creating-interrupted-{}", uuid::Uuid::new_v4()));
+        let final_path = destination.path().join("interrupted");
+        std::fs::create_dir_all(staged.join("knowledge"))?;
+        svc.stamp_base_unlocked(
+            "interrupted",
+            true,
+            std::collections::BTreeSet::from(["ucsf".to_string()]),
+        )?;
+        registry::register(
+            destination.path(),
+            RegistryEntry {
+                id: "interrupted".to_string(),
+                path: final_path.clone(),
+            },
+        )?;
+
+        let reopened = KnowledgeService::new(destination.path().to_path_buf());
+        assert!(!staged.exists());
+        assert!(!final_path.exists());
+        assert!(!crate::knowledge::tier::has_metadata_unlocked(
+            destination.path(),
+            "interrupted"
+        )?);
+        assert!(registry::load(destination.path())?.is_empty());
+        reopened.create_base("interrupted", "Interrupted", None)?;
+        Ok(())
+    }
+
+    #[test]
+    fn current_profile_boundary_refuses_a_pre_okf_base() {
+        let (dir, svc) = svc();
+        svc.create_base("old", "Old", None).unwrap();
+        let root = dir.path().join("old");
+        let mut manifest = crate::knowledge::manifest::load(&root).unwrap();
+        manifest.schema_version = crate::knowledge::types::AUTOMATIC_SCHEMA_CEILING;
+        crate::knowledge::manifest::save(&root, &manifest).unwrap();
+
+        let error = svc.require_current_profile("old").unwrap_err();
+        let typed = error
+            .downcast_ref::<LegacyKnowledgeBaseUnsupported>()
+            .expect("legacy base error stays typed");
+        assert_eq!(typed.kb_id, "old");
+        assert!(svc
+            .require_current_profile("missing")
+            .unwrap_err()
+            .downcast_ref::<LegacyKnowledgeBaseUnsupported>()
+            .is_none());
+    }
+
+    #[test]
+    fn staged_delete_id_rejects_non_ascii_ids_without_byte_slicing() {
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let valid = format!(".deleting-victim-{uuid}");
+        let non_ascii = format!(".deleting-victím-{uuid}");
+
+        assert_eq!(
+            staged_delete_id(std::ffi::OsStr::new(&valid)),
+            Some("victim".to_string())
+        );
+        assert_eq!(staged_delete_id(std::ffi::OsStr::new(&non_ascii)), None);
+    }
+
     /// Issue #56 DR-26 / Task 50, and the regression that made it necessary.
     ///
-    /// This module is the whole production surface of the tier ratchet: every
-    /// other caller in the tree goes through `KnowledgeService::raise_tier` or is
-    /// a test. Task 50 shipped with three `raise_unlocked` call sites here and an
-    /// affiliation twin on only one, so `kb_create_base` and `kb_import` moved
-    /// the tier and left the base reading UNCLAIMED — which
-    /// `affiliation::reachable` treats as permissive for every private model. A
-    /// UCSF chat could export a base it owns and any other institution's chat
-    /// could import the archive and read it, both endpoints Private, no gate
-    /// crossed.
+    /// This module is the whole production surface of the combined classification
+    /// ratchet. Both callers use `stamp_unlocked`, whose single store replacement
+    /// moves the tier and affiliation axes together.
     ///
     /// ⚠ **The count stayed at 2 when the merge landed, and that is the shape a
     /// new choke point should have.** `merge_bases` is a fifth privacy write
@@ -3300,7 +4408,7 @@ mod tests {
         let src = std::fs::read_to_string(&this)
             .unwrap_or_else(|e| panic!("the audit could not read {}: {e}", this.display()));
         // Composed, so the audit does not match itself.
-        let needle = concat!("tier::", "raise_unlocked(");
+        let needle = concat!("tier::", "stamp_unlocked(");
         let sites: Vec<&str> = src
             .lines()
             .filter(|l| !l.trim_start().starts_with("//") && l.contains(needle))
@@ -3308,24 +4416,11 @@ mod tests {
         assert_eq!(
             sites.len(),
             2,
-            "the tier ratchet is called {} times in service.rs, not 2. Every \
-             production raise must be paired with the affiliation raise in the \
-             same function: use `stamp_base_unlocked` for a base this call \
-             is minting, or `raise_tier_and_affiliation` for one that already \
-             exists. Sites found: {sites:#?}",
+            "the combined classification ratchet is called {} times in service.rs, not 2. Use \
+             `stamp_base_unlocked` for a base this call is minting, or \
+             `raise_tier_and_affiliation` for one that already exists. Sites \
+             found: {sites:#?}",
             sites.len()
-        );
-        assert_eq!(
-            src.matches(concat!("tier::", "add_owners_unlocked("))
-                .count()
-                + src
-                    .matches(concat!("tier::", "raise_affiliation_unlocked("))
-                    .count(),
-            2,
-            "the affiliation ratchet is reached from somewhere new. It must be \
-             reached from exactly the two functions the tier ratchet is, and \
-             from the same line of each: `raise_tier_and_affiliation` and \
-             `stamp_base_unlocked`."
         );
     }
 
@@ -3893,6 +4988,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn merge_reauthorizes_after_waiting_for_both_kb_locks() {
+        let (_dir, svc) = svc();
+        svc.create_base("a-destination", "Destination", None)
+            .unwrap();
+        svc.create_base("z-source", "Source", None).unwrap();
+
+        let source_lock = svc.lock_kb("z-source").await.unwrap();
+        let merge_svc = svc.clone();
+        let merge = tokio::spawn(async move {
+            let caller = crate::knowledge::caller::KbCaller::new(
+                false,
+                crate::knowledge::affiliation::CallerAffiliation::Unstated,
+            );
+            merge_svc
+                .merge_bases(
+                    "a-destination",
+                    "z-source",
+                    &crate::knowledge::merge::MergeAuthority::Model(&caller),
+                    true,
+                )
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while !svc.kb_queue_is_occupied("a-destination") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("merge did not acquire its first KB lock");
+
+        svc.raise_tier_and_affiliation(
+            "z-source",
+            true,
+            &crate::knowledge::affiliation::CallerAffiliation::Unstated,
+        )
+        .unwrap();
+        crate::knowledge::store::write_page(
+            &svc.root().join("z-source"),
+            "knowledge/observation/private.md",
+            "---\ntype: Observation\nidentifier: Private source\n---\n\nprivate\n",
+            "private writer",
+            None,
+        )
+        .unwrap();
+        drop(source_lock);
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(3), merge)
+            .await
+            .expect("merge did not resume after the source lock was released")
+            .unwrap()
+            .expect_err("the public merge read a source that became private while queued");
+        assert!(
+            error
+                .to_string()
+                .contains(crate::knowledge::tier::KB_PRIVATE_REFUSAL),
+            "{error:#}"
+        );
+    }
+
+    #[tokio::test]
     async fn lock_kb_serializes_writers() {
         let (_dir, svc) = svc();
         svc.create_base("k", "K", None).unwrap();
@@ -3929,6 +5085,29 @@ mod tests {
         drop(repo);
 
         let _guard = svc.lock_kb("k").await.unwrap();
+        assert!(!kb.join("orphan.md").exists());
+        let recovered = git2::Repository::open(&kb).unwrap();
+        assert!(recovered
+            .find_branch(&txn.branch, git2::BranchType::Local)
+            .is_err());
+        assert!(matches!(
+            recovered.head().unwrap().shorthand(),
+            Some("main" | "master")
+        ));
+    }
+
+    #[test]
+    fn a_synchronous_lock_recovers_a_crash_orphan_without_a_timeout() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let kb = svc.root().join("k");
+        let repo = GitRepo::open(&kb).unwrap();
+        let txn = repo.begin_txn("sync-orphan").unwrap();
+        std::fs::write(kb.join("orphan.md"), "uncommitted after crash").unwrap();
+        repo.commit_on_txn(&txn, "orphaned write").unwrap();
+        drop(repo);
+
+        svc.get_graph("k").unwrap();
         assert!(!kb.join("orphan.md").exists());
         let recovered = git2::Repository::open(&kb).unwrap();
         assert!(recovered
@@ -4457,6 +5636,43 @@ mod tests {
             history_after_restore[0].kind,
             crate::knowledge::types::ChangeKind::Restore
         );
+    }
+
+    #[tokio::test]
+    async fn restore_refuses_a_pre_okf_commit_without_mutating_the_current_base() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let kb = svc.root().join("k");
+        let repo = GitRepo::open(&kb).unwrap();
+
+        let mut manifest = manifest::load(&kb).unwrap();
+        manifest.schema_version = AUTOMATIC_SCHEMA_CEILING;
+        manifest::save(&kb, &manifest).unwrap();
+        let legacy_sha = repo
+            .commit_all(ChangeKind::Manual, "legacy checkpoint", None)
+            .unwrap();
+
+        manifest.schema_version = CURRENT_SCHEMA_VERSION;
+        manifest.format = KbFormat::Okf;
+        manifest.okf_version = Some("0.2".to_string());
+        manifest::save(&kb, &manifest).unwrap();
+        let current_sha = repo
+            .commit_all(ChangeKind::Manual, "current checkpoint", None)
+            .unwrap();
+
+        let error = svc
+            .restore_state_async("k", &legacy_sha, None)
+            .await
+            .expect_err("a restore must not reintroduce the retired format");
+        assert!(
+            error
+                .downcast_ref::<LegacyKnowledgeRestoreUnsupported>()
+                .is_some(),
+            "{error:#}"
+        );
+        assert_eq!(svc.list_history("k", 1).unwrap()[0].commit_sha, current_sha);
+        assert_eq!(svc.require_current_profile("k").unwrap(), KbFormat::Okf);
+        assert!(kb.exists());
     }
 
     #[tokio::test]
@@ -5304,6 +6520,195 @@ mod tests {
             Some("alpha"),
             "a chat that never chose one still follows the machine default"
         );
+        Ok(())
+    }
+
+    /// The four ways a directory can fail to be a legacy base, against the one
+    /// way it can be one. `Manifest::is_legacy_format` answers `true` for every
+    /// row below, which is why nothing destructive may consult it.
+    #[test]
+    fn only_a_stated_generation_over_a_knowledge_base_tree_classifies_as_legacy(
+    ) -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base_in("real", "Real", None, KbFormat::Biookf)?;
+        let real = svc.root().join("real");
+        assert_eq!(classify_base_format(&real), BaseFormat::Current);
+
+        let mut stamped = manifest::load(&real)?;
+        stamped.schema_version = crate::knowledge::types::AUTOMATIC_SCHEMA_CEILING;
+        manifest::save(&real, &stamped)?;
+        assert_eq!(classify_base_format(&real), BaseFormat::Legacy);
+
+        // The same generation, minus the tree that makes it a base of ours.
+        let foreign = svc.root().join("foreign");
+        std::fs::create_dir_all(&foreign)?;
+        std::fs::write(manifest::manifest_path(&foreign), "schema_version: 1\n")?;
+        assert!(matches!(
+            classify_base_format(&foreign),
+            BaseFormat::Undiagnosable(_)
+        ));
+
+        // The tree, minus the statement. A mapping that deserializes cleanly
+        // and reads as legacy…
+        let undeclared = svc.root().join("undeclared");
+        std::fs::create_dir_all(undeclared.join("knowledge"))?;
+        std::fs::write(undeclared.join("schema.md"), "# schema\n")?;
+        std::fs::write(manifest::manifest_path(&undeclared), "{}\n")?;
+        assert!(
+            manifest::load(&undeclared)?.is_legacy_format(),
+            "fixture must reproduce the trap"
+        );
+        assert!(matches!(
+            classify_base_format(&undeclared),
+            BaseFormat::Undiagnosable(_)
+        ));
+
+        // …and one that does not deserialize at all.
+        std::fs::write(manifest::manifest_path(&undeclared), "id: [unclosed\n")?;
+        assert!(manifest::load(&undeclared).is_err());
+        assert!(matches!(
+            classify_base_format(&undeclared),
+            BaseFormat::Undiagnosable(_)
+        ));
+
+        // No manifest at all.
+        let bare = svc.root().join("bare");
+        std::fs::create_dir_all(&bare)?;
+        assert!(matches!(
+            classify_base_format(&bare),
+            BaseFormat::Undiagnosable(_)
+        ));
+        Ok(())
+    }
+
+    fn deletion_fixture(
+    ) -> anyhow::Result<(tempfile::TempDir, KnowledgeService, DeleteMetadataSnapshot)> {
+        let tmp = tempfile::tempdir()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("victim", "Victim", None)?;
+        svc.create_base("keep", "Keep", None)?;
+        std::fs::write(
+            svc.root().join("victim/knowledge/marker.md"),
+            "---\ntype: Observation\nidentifier: marker\n---\n",
+        )?;
+        svc.set_hidden_persisted(&["victim".to_string()])?;
+        svc.set_hidden_for_session("session-a", &["victim".to_string()])?;
+        svc.set_primary_persisted(Some("victim"))?;
+        svc.set_primary_for_session("session-a", Some("victim"))?;
+        svc.raise_tier_and_affiliation(
+            "victim",
+            true,
+            &crate::knowledge::affiliation::CallerAffiliation::Institution("ucsf".to_string()),
+        )?;
+        let snapshot = DeleteMetadataSnapshot::capture(svc.root())?;
+        Ok((tmp, svc, snapshot))
+    }
+
+    #[test]
+    fn deletion_rolls_back_every_metadata_phase_and_the_full_base_tree() -> anyhow::Result<()> {
+        for fault in [
+            DeleteCheckpoint::Staged,
+            DeleteCheckpoint::Registry,
+            DeleteCheckpoint::MachinePrimary,
+            DeleteCheckpoint::SessionPrimaries,
+            DeleteCheckpoint::HiddenSelections,
+            DeleteCheckpoint::Classification,
+        ] {
+            let (_tmp, svc, before) = deletion_fixture()?;
+            let _kb_lock = svc.lock_existing_kb("victim")?;
+            let error = svc
+                .delete_base_under_kb_lock_with_checkpoint("victim", None, |checkpoint| {
+                    anyhow::ensure!(checkpoint != fault, "injected failure after {fault:?}");
+                    Ok(())
+                })
+                .expect_err("the selected delete checkpoint must fail");
+            assert!(error.to_string().contains("fully rolled back"), "{error:#}");
+            assert_eq!(
+                DeleteMetadataSnapshot::capture(svc.root())?,
+                before,
+                "{fault:?}"
+            );
+            assert!(svc.root().join("victim/knowledge/marker.md").exists());
+            assert!(svc.get_base("victim").is_ok());
+            assert!(!std::fs::read_dir(svc.root())?.any(|entry| {
+                entry.is_ok_and(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".deleting-victim-")
+                })
+            }));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn successful_delete_cleans_every_reference_and_classification() -> anyhow::Result<()> {
+        let (_tmp, svc, _before) = deletion_fixture()?;
+        svc.delete_base("victim")?;
+
+        assert!(!svc.root().join("victim").exists());
+        assert!(svc.get_base("victim").is_err());
+        assert_eq!(svc.get_primary_persisted()?, None);
+        assert_eq!(svc.get_primary_for_session("session-a")?, None);
+        assert!(svc.get_hidden_persisted()?.is_empty());
+        assert!(svc.get_hidden_for_session("session-a")?.is_empty());
+        assert!(!crate::knowledge::tier::has_metadata_unlocked(
+            svc.root(),
+            "victim"
+        )?);
+        assert!(svc.base_is_current_or_fully_removed("victim")?);
+        assert_eq!(
+            registry::load(svc.root())?
+                .into_iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            vec!["keep".to_string()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_finishes_a_logically_committed_delete_and_erases_the_staged_tree(
+    ) -> anyhow::Result<()> {
+        let (_tmp, svc, _before) = deletion_fixture()?;
+        let staged = svc
+            .root()
+            .join(format!(".deleting-victim-{}", uuid::Uuid::new_v4()));
+        std::fs::rename(svc.root().join("victim"), &staged)?;
+        registry::unregister(svc.root(), "victim")?;
+
+        assert!(!svc.base_is_current_or_fully_removed("victim")?);
+        assert_eq!(
+            svc.resume_pending_delete_cleanup()?,
+            vec!["victim".to_string()]
+        );
+        assert!(!staged.exists());
+        assert!(svc.base_is_current_or_fully_removed("victim")?);
+        assert_eq!(svc.get_primary_persisted()?, None);
+        assert_eq!(svc.get_primary_for_session("session-a")?, None);
+        assert!(svc.get_hidden_persisted()?.is_empty());
+        assert!(svc.get_hidden_for_session("session-a")?.is_empty());
+        assert!(!crate::knowledge::tier::has_metadata_unlocked(
+            svc.root(),
+            "victim"
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_restores_a_staged_base_that_is_still_registered() -> anyhow::Result<()> {
+        let (_tmp, svc, _before) = deletion_fixture()?;
+        let staged = svc
+            .root()
+            .join(format!(".deleting-victim-{}", uuid::Uuid::new_v4()));
+        std::fs::rename(svc.root().join("victim"), &staged)?;
+
+        assert!(svc.resume_pending_delete_cleanup()?.is_empty());
+        assert!(!staged.exists());
+        assert!(svc.root().join("victim/knowledge/marker.md").exists());
+        assert!(svc.get_base("victim").is_ok());
         Ok(())
     }
 

@@ -226,9 +226,9 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 /// frontmatter and `[[wiki]]` links into typed OKF frontmatter. DR-17 is
 /// explicit that such a migration is a fifth privacy write choke point that
 /// bypasses all four that exist — an eager one has no caller identity at all —
-/// and DR-22 defers it outright. So the ladder stops here, a legacy base keeps
-/// working untouched at generation 2, and nothing automatic ever stamps a base
-/// as OKF that is not.
+/// and DR-22 defers it outright. So the ladder stops here: the 1.89.7 startup
+/// reconciliation can identify and retire a legacy base without ever stamping
+/// its pages as OKF or rewriting them into a different format.
 pub const AUTOMATIC_SCHEMA_CEILING: u32 = 2;
 
 /// The gap above, asserted at **compile time** rather than in a test.
@@ -249,8 +249,62 @@ const _: () = assert!(
 /// explicit `schema_version: 1`, so a manifest that is *missing* the key is a
 /// hand-edited or externally produced one, and the right reading of it is "the
 /// oldest generation we know", not "a generation that never existed".
+///
+/// ⚠ That reading is correct for the *migration ladder*, which only ever stamps
+/// a base forward, and it is **not** correct for a caller that is about to
+/// delete the directory. See [`manifest_generation`], which is what a
+/// destructive caller must ask instead.
 fn default_schema_version() -> u32 {
     1
+}
+
+/// What a `manifest.yaml` **states** about its own generation, read from the
+/// document's keys rather than from a deserialized [`Manifest`].
+///
+/// [`Manifest::is_legacy_format`] cannot answer this and must not be asked to.
+/// Every field of `Manifest` carries `#[serde(default)]` (DR-12) and nothing
+/// carries `deny_unknown_fields`, so *any* YAML mapping deserializes into an
+/// all-defaults manifest whose `schema_version` reads
+/// [`default_schema_version`] — and `is_legacy_format` then reports it as
+/// pre-OKF with no way to tell it apart from a base that really said so. The
+/// mappings that reach that verdict by accident are not exotic: `{}`, a current
+/// BioOKF base whose manifest lost its `schema_version` line to a partial write
+/// or a sync conflict, and another tool's `manifest.yaml` sitting in a directory
+/// whose name happens to satisfy [`crate::knowledge::paths::validate_kb_id`].
+///
+/// Deletion therefore needs a POSITIVE signal — the file saying which
+/// generation it belongs to — not merely the absence of a current one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestGeneration {
+    /// The document states a generation below [`CURRENT_SCHEMA_VERSION`].
+    DeclaredLegacy(u32),
+    /// The document states [`CURRENT_SCHEMA_VERSION`] or a later one.
+    DeclaredCurrent(u32),
+    /// The document is not a YAML mapping, or states no `schema_version` at
+    /// all. Neither answer, and never a licence to destroy anything.
+    Undeclared,
+}
+
+/// Read [`ManifestGeneration`] out of raw `manifest.yaml` bytes.
+pub fn manifest_generation(yaml: &str) -> ManifestGeneration {
+    let Ok(serde_yaml::Value::Mapping(document)) = serde_yaml::from_str::<serde_yaml::Value>(yaml)
+    else {
+        return ManifestGeneration::Undeclared;
+    };
+    let Some(stated) = document
+        .get(serde_yaml::Value::String("schema_version".to_string()))
+        .and_then(serde_yaml::Value::as_u64)
+    else {
+        return ManifestGeneration::Undeclared;
+    };
+    // A generation that does not fit a `u32` is a generation this build has
+    // never written, so it is ahead of us, not behind us.
+    let stated = u32::try_from(stated).unwrap_or(u32::MAX);
+    if stated < CURRENT_SCHEMA_VERSION {
+        ManifestGeneration::DeclaredLegacy(stated)
+    } else {
+        ManifestGeneration::DeclaredCurrent(stated)
+    }
 }
 
 /// The creation date a `manifest.yaml` that does not say gets.
@@ -362,14 +416,22 @@ impl Manifest {
     /// directly is the DR-6 trap: `format` defaults to `Okf` on the millions of
     /// bytes of `manifest.yaml` that predate it, so a check written against the
     /// field alone treats every legacy base as already-migrated. A legacy base
-    /// gets `None` here and "is read through its own generation's path,
-    /// unchanged, until the user migrates it".
+    /// gets `None` here so startup can purge it and every current-format write
+    /// boundary can refuse it before mutation.
     pub fn profile(&self) -> Option<KbFormat> {
         (self.schema_version >= CURRENT_SCHEMA_VERSION).then_some(self.format)
     }
 
     /// True for a base below the OKF generation: `title`/`kind` frontmatter and
-    /// `[[wiki]]` links, still fully readable and never rewritten by this build.
+    /// `[[wiki]]` links. Low-level readers can identify it without rewriting it
+    /// and refuse it at a write boundary.
+    ///
+    /// ⚠ **Not a licence to delete the base.** This is the absence of a current
+    /// signal, not the presence of a legacy one, and every field defaults — so
+    /// `manifest.yaml: {}` answers `true` here, and so does a current BioOKF
+    /// base whose manifest lost one line. A caller that is about to destroy the
+    /// directory must ask
+    /// [`crate::knowledge::service::classify_base_format`] instead.
     pub fn is_legacy_format(&self) -> bool {
         self.profile().is_none()
     }
@@ -815,5 +877,62 @@ mod tests {
         assert_eq!(AUTOMATIC_SCHEMA_CEILING, 2);
         // The ordering between them is asserted at compile time beside the
         // constants themselves — a test can be skipped, a `const` block cannot.
+    }
+
+    /// Every one of these deserializes into an all-defaults [`Manifest`] whose
+    /// `schema_version` reads 1, so [`Manifest::is_legacy_format`] answers
+    /// `true` for all of them. That is the reading a *destructive* caller must
+    /// not be given.
+    #[test]
+    fn a_mapping_that_states_no_generation_is_undeclared_however_it_deserializes() {
+        for document in [
+            "{}",
+            "name: Something Else\nversion: 4\n",
+            "id: ms\nname: MS\ncolor: '#5a6394'\nformat: biookf\nokf_version: '0.2'\n",
+        ] {
+            assert!(
+                serde_yaml::from_str::<Manifest>(document)
+                    .unwrap()
+                    .is_legacy_format(),
+                "fixture must reproduce the trap: {document}"
+            );
+            assert_eq!(
+                manifest_generation(document),
+                ManifestGeneration::Undeclared,
+                "{document}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stated_generation_is_read_from_the_document_not_from_the_default() {
+        assert_eq!(
+            manifest_generation("schema_version: 1\n"),
+            ManifestGeneration::DeclaredLegacy(1)
+        );
+        assert_eq!(
+            manifest_generation(&format!("schema_version: {AUTOMATIC_SCHEMA_CEILING}\n")),
+            ManifestGeneration::DeclaredLegacy(AUTOMATIC_SCHEMA_CEILING)
+        );
+        assert_eq!(
+            manifest_generation(&format!("schema_version: {CURRENT_SCHEMA_VERSION}\n")),
+            ManifestGeneration::DeclaredCurrent(CURRENT_SCHEMA_VERSION)
+        );
+        // A generation from a later build is ahead of us, never behind us.
+        assert_eq!(
+            manifest_generation("schema_version: 99\n"),
+            ManifestGeneration::DeclaredCurrent(99)
+        );
+    }
+
+    #[test]
+    fn a_document_that_is_not_a_yaml_mapping_is_undeclared_rather_than_legacy() {
+        for document in ["id: [unclosed\n", "- a\n- b\n", "just a string\n", ""] {
+            assert_eq!(
+                manifest_generation(document),
+                ManifestGeneration::Undeclared,
+                "{document:?}"
+            );
+        }
     }
 }

@@ -30,8 +30,20 @@ function preview(overrides: Partial<ImportPreview> = {}): ImportPreview {
     entryPoint: 'hyperframes',
     groups: {},
     components: [
-      { name: 'hyperframes', description: 'Router', directory: 'hyperframes', group: 'core', entryPoint: true },
-      { name: 'media-use', description: 'Media', directory: 'media-use', group: null, entryPoint: false },
+      {
+        name: 'hyperframes',
+        description: 'Router',
+        directory: 'hyperframes',
+        group: 'core',
+        entryPoint: true,
+      },
+      {
+        name: 'media-use',
+        description: 'Media',
+        directory: 'media-use',
+        group: null,
+        entryPoint: false,
+      },
     ],
     evidence: 'codexPlugin',
     ambiguity: null,

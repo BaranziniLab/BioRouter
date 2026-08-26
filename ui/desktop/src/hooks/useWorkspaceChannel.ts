@@ -18,10 +18,7 @@ import {
 // State + layout types live in chatGroupsTypes, never in chatGroupsReducer —
 // the reducer imports them and re-exports nothing.
 import { leafGroupIds, type ChatGroupsState } from '../components/chatGroups/chatGroupsTypes';
-import {
-  describePanel,
-  type PanelDescriptor,
-} from '../components/artifacts/panelAccessRegistry';
+import { describePanel, type PanelDescriptor } from '../components/artifacts/panelAccessRegistry';
 
 type EchoLayoutGroup = {
   group_id: string;

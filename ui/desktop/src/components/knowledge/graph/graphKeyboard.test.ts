@@ -119,9 +119,9 @@ describe('announce — the channel that replaced the shape encoding', () => {
   });
 
   it('falls back to the label when a node carries no identifier', () => {
-    expect(announce({ identifier: null, label: 'il6.md', nodeType: 'Gene', family: 'Genomic' })).toBe(
-      'il6.md, Gene, Genomic'
-    );
+    expect(
+      announce({ identifier: null, label: 'il6.md', nodeType: 'Gene', family: 'Genomic' })
+    ).toBe('il6.md, Gene, Genomic');
     expect(announce({ identifier: '   ', label: 'il6.md' })).toBe('il6.md');
   });
 

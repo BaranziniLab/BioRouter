@@ -68,9 +68,7 @@ describe('deriveTrailingActivity', () => {
     ];
 
     for (const messages of fixtures) {
-      expect(
-        deriveTrailingActivity({ ...live, isTurnActive: false, messages })
-      ).toBeNull();
+      expect(deriveTrailingActivity({ ...live, isTurnActive: false, messages })).toBeNull();
     }
   });
 

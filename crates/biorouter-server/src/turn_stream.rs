@@ -398,6 +398,16 @@ impl TurnStream {
         self.lock().writer_claimed
     }
 
+    /// Is this log both owned by a writer and still open for live delivery?
+    ///
+    /// `writer_claimed` is intentionally a permanent ownership latch, so it
+    /// cannot by itself distinguish a running pump from one whose writer has
+    /// already dropped and closed the stream.
+    pub fn has_live_writer(&self) -> bool {
+        let inner = self.lock();
+        inner.writer_claimed && !inner.closed
+    }
+
     /// Take ownership of this turn's log. `None` when somebody already has it.
     ///
     /// The returned [`TurnWriter`] closes the log when it drops, which is the
@@ -551,6 +561,7 @@ impl TurnStream {
         let stream = Arc::clone(self);
         let tick = reaper_tick(timeout);
         tokio::spawn(async move {
+            let mut supervision_was_active = false;
             loop {
                 tokio::select! {
                     () = cancel.cancelled() => return,
@@ -564,21 +575,40 @@ impl TurnStream {
                 // takes this same lock, so it either lands before the re-check
                 // (and the turn lives) or after the cancel (and reads a
                 // cancelled turn, whose pump closes the log and answers it).
-                let reaped = {
-                    let inner = stream.lock();
-                    if inner.closed {
-                        return;
-                    }
-                    let idle_long_enough = inner.ever_attached
-                        && inner.observers == 0
-                        && inner
-                            .idle_since
-                            .is_some_and(|since| since.elapsed() >= timeout);
-                    if idle_long_enough {
-                        cancel.cancel();
-                    }
-                    idle_long_enough
-                };
+                let mut supervising_delegated_work = false;
+                let mut stream_closed = false;
+                let reaped = biorouter::agents::subagent_handle::with_live_delegated_supervision(
+                    &stream.session_id,
+                    |supervised| {
+                        supervising_delegated_work = supervised;
+                        let supervision_just_settled = supervision_was_active && !supervised;
+                        let mut inner = stream.lock();
+                        if inner.closed {
+                            stream_closed = true;
+                            return false;
+                        }
+                        // A parent and child are supervised through an exact
+                        // live handle generation, not through either turn's SSE
+                        // audience. The registry decision remains locked until
+                        // this cancel decision is complete, so a new generation
+                        // cannot land after a stale "not supervised" sample.
+                        if (supervised || supervision_just_settled) && inner.observers == 0 {
+                            inner.idle_since = Some(Instant::now());
+                        }
+                        let idle_long_enough = inner.ever_attached
+                            && inner.observers == 0
+                            && inner
+                                .idle_since
+                                .is_some_and(|since| since.elapsed() >= timeout);
+                        if idle_long_enough {
+                            cancel.cancel();
+                        }
+                        idle_long_enough
+                    },
+                );
+                if stream_closed {
+                    return;
+                }
                 if reaped {
                     tracing::warn!(
                         counter.biorouter.turn_orphan_reaped = 1,
@@ -589,6 +619,7 @@ impl TurnStream {
                     );
                     return;
                 }
+                supervision_was_active = supervising_delegated_work;
             }
         })
     }
@@ -909,6 +940,7 @@ mod tests {
 
     fn finish() -> MessageEvent {
         MessageEvent::Finish {
+            turn_id: None,
             reason: "stop".to_string(),
             token_state: TokenState::default(),
         }
@@ -1211,6 +1243,47 @@ mod tests {
         );
         drop(new_window);
         reaper.abort();
+    }
+
+    #[test]
+    fn a_persisted_subagent_without_a_live_handle_has_no_audience_exemption() {
+        let supervised = biorouter::agents::subagent_handle::with_live_delegated_supervision(
+            "persisted-subagent-without-live-handle",
+            |supervised| supervised,
+        );
+        assert!(!supervised);
+    }
+
+    #[test]
+    fn unsettled_child_generations_keep_both_turns_supervised() {
+        let parent = "turn-stream-supervised-parent";
+        let child = "turn-stream-supervised-child";
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            parent,
+            child,
+            "supervised work",
+            CancellationToken::new(),
+        );
+        let supervised = |session_id: &str| {
+            biorouter::agents::subagent_handle::with_live_delegated_supervision(
+                session_id,
+                |supervised| supervised,
+            )
+        };
+        assert!(supervised(parent));
+        assert!(supervised(child));
+
+        let generation = handle.child_turn_generation();
+        handle.complete(
+            biorouter::agents::subagent_result::SubagentResult::from_error("test terminal"),
+        );
+        assert!(
+            supervised(parent) && supervised(child),
+            "a finished but uncollected result still belongs to the parent's supervision gate"
+        );
+        assert!(handle.mark_current_result_collected_if_generation(generation));
+        assert!(!supervised(parent));
+        assert!(!supervised(child));
     }
 
     /// A reader that falls off the live ring is repaired from the replay

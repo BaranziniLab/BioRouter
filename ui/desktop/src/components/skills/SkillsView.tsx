@@ -83,9 +83,7 @@ export default function SkillsView() {
     const visible = entries.filter(match);
     const biorouter = visible.filter((e) => sourceOf(e).kind === 'biorouter');
     const project = visible.filter((e) => sourceOf(e).kind === 'project');
-    const other = visible.filter((e) =>
-      ['claudeHome', 'agentsHome'].includes(sourceOf(e).kind)
-    );
+    const other = visible.filter((e) => ['claudeHome', 'agentsHome'].includes(sourceOf(e).kind));
 
     // One group per extension, so a bundled skill says which extension it came
     // from rather than appearing among the user's own installs.
@@ -99,7 +97,12 @@ export default function SkillsView() {
 
     const out: Group[] = [];
     if (biorouter.length)
-      out.push({ key: 'biorouter', title: 'Biorouter Skills', entries: biorouter, fromExtension: false });
+      out.push({
+        key: 'biorouter',
+        title: 'Biorouter Skills',
+        entries: biorouter,
+        fromExtension: false,
+      });
     for (const [extension, extensionEntries] of [...byExtension].sort()) {
       out.push({
         key: `extension:${extension}`,
@@ -109,9 +112,19 @@ export default function SkillsView() {
       });
     }
     if (other.length)
-      out.push({ key: 'other', title: 'Skills From Other Agents', entries: other, fromExtension: false });
+      out.push({
+        key: 'other',
+        title: 'Skills From Other Agents',
+        entries: other,
+        fromExtension: false,
+      });
     if (project.length)
-      out.push({ key: 'project', title: 'From This Project', entries: project, fromExtension: false });
+      out.push({
+        key: 'project',
+        title: 'From This Project',
+        entries: project,
+        fromExtension: false,
+      });
     return out;
   }, [entries, searchTerm]);
 

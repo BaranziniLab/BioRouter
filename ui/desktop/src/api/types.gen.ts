@@ -1475,6 +1475,12 @@ export type InterruptAccepted = {
 export type InterruptRequest = {
     session_id: string;
     text: string;
+    /**
+     * Client idempotency key for a steer submitted while a delegated child is
+     * still waiting for its initial runtime. Ordinary active-turn interrupts
+     * do not require it.
+     */
+    turn_id?: string | null;
 };
 
 export type JsonObject = {
@@ -2122,6 +2128,12 @@ export type MessageContent = (TextContent & {
 });
 
 export type MessageEvent = {
+    turn_id: string;
+    type: 'TurnStarted';
+} | {
+    active_turn_id: string | null;
+    type: 'TurnState';
+} | {
     message: Message;
     token_state: TokenState;
     type: 'Message';
@@ -2131,10 +2143,12 @@ export type MessageEvent = {
     provider_kind?: string | null;
     retryable: boolean;
     scope: TurnErrorScope;
+    turn_id?: string | null;
     type: 'Error';
 } | {
     reason: string;
     token_state: TokenState;
+    turn_id?: string | null;
     type: 'Finish';
 } | {
     mode: string;
@@ -4517,6 +4531,10 @@ export type RestartAgentErrors = {
      */
     404: unknown;
     /**
+     * The delegated child is still initializing
+     */
+    424: unknown;
+    /**
      * Internal server error
      */
     500: unknown;
@@ -4548,6 +4566,14 @@ export type ResumeAgentErrors = {
      */
     401: unknown;
     /**
+     * The session is out of reach, or the target is a subagent and the request lacks user-action proof
+     */
+    403: unknown;
+    /**
+     * Session not found
+     */
+    404: unknown;
+    /**
      * Internal server error
      */
     500: unknown;
@@ -4578,6 +4604,10 @@ export type StartAgentErrors = {
      * Unauthorized - invalid secret key
      */
     401: unknown;
+    /**
+     * The selected private provider requires user-action proof
+     */
+    409: ErrorResponse;
     /**
      * Internal server error
      */
@@ -4687,9 +4717,17 @@ export type UpdateFromSessionErrors = {
      */
     401: unknown;
     /**
+     * The session is out of reach, or the target is a subagent and the request lacks user-action proof
+     */
+    403: unknown;
+    /**
      * Agent not initialized
      */
     424: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
 };
 
 export type UpdateFromSessionResponses = {

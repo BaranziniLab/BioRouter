@@ -70,6 +70,7 @@ interface SaveDataUrlResponse {
 type EmbeddedBrowserState = {
   url: string;
   title: string;
+  sourceRevision: string;
   canGoBack: boolean;
   canGoForward: boolean;
   isLoading: boolean;
@@ -106,6 +107,7 @@ type ArtifactFilePreview =
       mimeType: string;
       text: string;
       size: number;
+      revision?: string;
       found: true;
     }
   | {
@@ -113,8 +115,10 @@ type ArtifactFilePreview =
       title: string;
       path: string;
       mimeType: string;
-      dataUrl: string;
+      dataUrl?: string;
+      bytes?: ArrayBuffer;
       size: number;
+      revision?: string;
       found: true;
     }
   | {
@@ -125,6 +129,9 @@ type ArtifactFilePreview =
       mimeType: string;
       data: ArrayBuffer;
       size: number;
+      revision?: string;
+      extractedText?: string;
+      textTruncated?: boolean;
       found: true;
     }
   | {
@@ -287,7 +294,7 @@ type ElectronAPI = {
   // Functions for image pasting
   saveDataUrlToTemp: (dataUrl: string, uniqueId: string) => Promise<SaveDataUrlResponse>;
   deleteTempFile: (filePath: string) => void;
-  // Function for opening external URLs securely
+  // Opens only after public-target validation and exact-host native confirmation.
   openExternal: (url: string) => Promise<void>;
   // Function to serve temp images
   getTempImage: (filePath: string) => Promise<string | null>;
@@ -328,6 +335,7 @@ type ElectronAPI = {
     width: number;
     height: number;
     label?: string;
+    containment?: { x: number; y: number; width: number; height: number };
   }) => Promise<{ path: string; width: number; height: number } | null>;
   embeddedBrowser: {
     create: (viewId: string, url: string) => Promise<EmbeddedBrowserState | null>;
@@ -342,8 +350,20 @@ type ElectronAPI = {
     readText: (
       viewId: string,
       maxChars: number
-    ) => Promise<{ url: string; title: string; text: string } | null>;
-    capture: (viewId: string) => Promise<{ path: string } | null>;
+    ) => Promise<{
+      url: string;
+      title: string;
+      sourceRevision: string;
+      text: string;
+      truncated: boolean;
+    } | null>;
+    capture: (viewId: string) => Promise<{
+      path: string;
+      width: number;
+      height: number;
+      sourceRevision: string;
+    } | null>;
+    clearData: (viewId: string) => Promise<boolean>;
     onState: (
       callback: (payload: { viewId: string; state: EmbeddedBrowserState }) => void
     ) => () => void;
@@ -683,6 +703,7 @@ const electronAPI: ElectronAPI = {
     width: number;
     height: number;
     label?: string;
+    containment?: { x: number; y: number; width: number; height: number };
   }) => ipcRenderer.invoke('capture-region', payload),
   embeddedBrowser: {
     create: (viewId: string, url: string) =>
@@ -699,11 +720,10 @@ const electronAPI: ElectronAPI = {
     readText: (viewId: string, maxChars: number) =>
       ipcRenderer.invoke('embedded-browser:read-text', { viewId, maxChars }),
     capture: (viewId: string) => ipcRenderer.invoke('embedded-browser:capture', { viewId }),
+    clearData: (viewId: string) => ipcRenderer.invoke('embedded-browser:clear-data', { viewId }),
     onState: (callback: (payload: { viewId: string; state: EmbeddedBrowserState }) => void) => {
-      const wrapped = (
-        _event: unknown,
-        payload: { viewId: string; state: EmbeddedBrowserState }
-      ) => callback(payload);
+      const wrapped = (_event: unknown, payload: { viewId: string; state: EmbeddedBrowserState }) =>
+        callback(payload);
       ipcRenderer.on('embedded-browser:state', wrapped);
       return () => {
         ipcRenderer.removeListener('embedded-browser:state', wrapped);

@@ -3583,6 +3583,10 @@ async fn handle_kb_frame(
                 );
                 return;
             }
+            if let Err(error) = knowledge.require_current_profile(&kb_id) {
+                emit_kb_error(ui_bridge, req_id, &error.to_string());
+                return;
+            }
             // Issue #56. `resolve_kb_grant` above reads the app manifest, which
             // the drafting model authored — an integrity control over WHICH
             // base, not a privacy control over WHICH CALLER. The ratchet has to
@@ -8449,6 +8453,43 @@ mod tests {
                 }
             }
             panic!("no kb_result for {req}");
+        }
+
+        #[tokio::test]
+        async fn br_kb_ingest_refuses_a_retired_pre_okf_base() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let svc = std::sync::Arc::new(KnowledgeService::new(root.clone()));
+            svc.create_base("legacy", "Legacy", None).unwrap();
+            let kb = root.join("legacy");
+            let mut manifest = biorouter_mcp::knowledge::manifest::load(&kb).unwrap();
+            manifest.schema_version = biorouter_mcp::knowledge::types::AUTOMATIC_SCHEMA_CEILING;
+            biorouter_mcp::knowledge::manifest::save(&kb, &manifest).unwrap();
+
+            let cfg = cfg_with(vec![knowledge_src(&["legacy"], false)], Some("legacy"));
+            let bridge = biorouter_mcp::agent_drafter::control::UiBridge::new();
+            let (mut rx, _tok) = bridge.attach();
+            super::super::handle_kb_frame(
+                &bridge,
+                &svc,
+                Some(&cfg),
+                KbCaller::new(false, Default::default()),
+                "ingest",
+                &serde_json::json!({ "kb_id": "legacy", "text": "must not land" }),
+                "legacy-ingest",
+            )
+            .await;
+
+            let result = await_kb_result(&mut rx, "legacy-ingest").await;
+            assert!(
+                result["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("retired pre-OKF")),
+                "{result}"
+            );
+            assert!(biorouter_mcp::knowledge::raw::list_sources(&kb)
+                .unwrap()
+                .is_empty());
         }
 
         #[tokio::test]

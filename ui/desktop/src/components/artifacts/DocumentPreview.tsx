@@ -10,6 +10,7 @@ import { cn } from '../../utils';
 import type { ArtifactFilePreview } from './artifactTypes';
 import { DOCUMENT_FIDELITY_NOTES } from '../../utils/formatSupport';
 import { sandboxedSurface } from './artifactUtils';
+import { createPdfWorker } from '../../utils/pdfCompat';
 
 type DocumentFile = Extract<ArtifactFilePreview, { kind: 'document' }>;
 
@@ -25,6 +26,11 @@ function PreviewStatus({ message }: { message: string }) {
       {message}
     </div>
   );
+}
+
+function releaseCanvasBackingStore(canvas: HTMLCanvasElement) {
+  canvas.width = 0;
+  canvas.height = 0;
 }
 
 function PdfPageCanvas({
@@ -44,6 +50,7 @@ function PdfPageCanvas({
   );
   const [pageHeight, setPageHeight] = useState<number | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [rendered, setRendered] = useState(false);
 
   useEffect(() => {
     const wrapper = wrapperRef.current;
@@ -66,12 +73,7 @@ function PdfPageCanvas({
     if (!wrapper || typeof IntersectionObserver === 'undefined') return;
 
     const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setIsNearViewport(true);
-          observer.disconnect();
-        }
-      },
+      (entries) => setIsNearViewport(entries.some((entry) => entry.isIntersecting)),
       { rootMargin: '700px 0px' }
     );
     observer.observe(wrapper);
@@ -79,13 +81,19 @@ function PdfPageCanvas({
   }, []);
 
   useEffect(() => {
-    if (!isNearViewport || availableWidth === 0) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
+    if (!isNearViewport || availableWidth === 0) {
+      releaseCanvasBackingStore(canvas);
+      setRendered(false);
+      return;
+    }
 
     let cancelled = false;
     let page: PDFPageProxy | null = null;
     let renderTask: RenderTask | null = null;
+    setRendered(false);
+    setRenderError(null);
 
     void document
       .getPage(pageNumber)
@@ -93,8 +101,17 @@ function PdfPageCanvas({
         if (cancelled) return;
         page = nextPage;
         const initialViewport = page.getViewport({ scale: 1 });
-        const viewport = page.getViewport({ scale: availableWidth / initialViewport.width });
+        const targetWidth = Math.min(4096, availableWidth);
+        const viewport = page.getViewport({ scale: targetWidth / initialViewport.width });
         const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+
+        if (
+          viewport.width * pixelRatio > 8192 ||
+          viewport.height * pixelRatio > 8192 ||
+          viewport.width * viewport.height * pixelRatio * pixelRatio > 32_000_000
+        ) {
+          throw new Error('Page dimensions exceed the safe preview limit.');
+        }
 
         canvas.width = Math.floor(viewport.width * pixelRatio);
         canvas.height = Math.floor(viewport.height * pixelRatio);
@@ -107,7 +124,9 @@ function PdfPageCanvas({
           viewport,
           transform: pixelRatio === 1 ? undefined : [pixelRatio, 0, 0, pixelRatio, 0, 0],
         });
-        return renderTask.promise;
+        return renderTask.promise.then(() => {
+          if (!cancelled) setRendered(true);
+        });
       })
       .catch((cause: unknown) => {
         if (
@@ -122,6 +141,7 @@ function PdfPageCanvas({
       cancelled = true;
       renderTask?.cancel();
       page?.cleanup();
+      releaseCanvasBackingStore(canvas);
     };
   }, [availableWidth, document, isNearViewport, pageNumber]);
 
@@ -132,7 +152,11 @@ function PdfPageCanvas({
       className="flex w-full shrink-0 justify-center"
       style={{ minHeight: pageHeight ?? '48vh' }}
     >
-      <canvas ref={canvasRef} className={cn('bg-white shadow-md', renderError && 'hidden')} />
+      <canvas
+        ref={canvasRef}
+        data-rendered={rendered ? 'true' : 'false'}
+        className={cn('bg-white shadow-md', renderError && 'hidden')}
+      />
       {renderError && (
         <div className="flex min-h-48 w-full flex-col items-center justify-center gap-1 bg-background-default px-6 text-center text-body text-text-muted shadow-md">
           <span>Could not render page {pageNumber}</span>
@@ -166,6 +190,24 @@ function pdfAssetOptions() {
   };
 }
 
+/**
+ * Total pixels pdf.js may decode for a single embedded image.
+ *
+ * ⚠ **pdf.js defaults this to `-1`, meaning unlimited**, and the page-level cap
+ * above cannot stand in for it: that one reads the `viewport`, which comes from
+ * the page's declared MediaBox — the *output* canvas — and says nothing about
+ * the resolution of the image XObjects drawn onto it. A one-page PDF sized 612
+ * x 792 can carry a `/Width 30000 /Height 30000` image over near-uniform data
+ * in a few hundred KB; the page cap passes trivially and the worker allocates
+ * ~3.6 GB decoding it before scaling down to 612px.
+ *
+ * 64 megapixels sits above the legitimate high-water mark this panel exists to
+ * serve — a 600 DPI full-page scan is ~35 MP, and even 800 DPI is ~61 MP — while
+ * capping one image's decode at ~256 MB of RGBA. Images past it are skipped by
+ * pdf.js rather than failing the page.
+ */
+const PDF_MAX_IMAGE_PIXELS = 64_000_000;
+
 function PdfPreview({ file, isResizing }: Pick<DocumentPreviewProps, 'file' | 'isResizing'>) {
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -173,13 +215,23 @@ function PdfPreview({ file, isResizing }: Pick<DocumentPreviewProps, 'file' | 'i
   useEffect(() => {
     let cancelled = false;
     let loadingTask: PDFDocumentLoadingTask | null = null;
+    let pdfWorker: Worker | null = null;
+    let pdfjsModule: typeof import('pdfjs-dist/legacy/build/pdf.mjs') | null = null;
+    const disposePdfRuntime = async () => {
+      const task = loadingTask;
+      const worker = pdfWorker;
+      loadingTask = null;
+      pdfWorker = null;
+      await task?.destroy();
+      worker?.terminate();
+      if (pdfjsModule?.GlobalWorkerOptions.workerPort === worker) {
+        pdfjsModule.GlobalWorkerOptions.workerPort = null;
+      }
+    };
     setDocument(null);
     setError(null);
 
-    // `pdfjs-dist` (not the `legacy/` build): legacy targets browsers years
-    // older than the Chromium Electron ships and is ~13% larger for nothing.
-    // The bare specifier is also the only one carrying type declarations.
-    void import('pdfjs-dist')
+    void import('pdfjs-dist/legacy/build/pdf.mjs')
       .then((pdfjs) => {
         if (cancelled) return null;
         // `workerPort`, not `workerSrc`. Under `file://` the origin serializes
@@ -188,12 +240,12 @@ function PdfPreview({ file, isResizing }: Pick<DocumentPreviewProps, 'file' | 'i
         // `worker-src 'self'` forbids, killing every PDF in the packaged app
         // while working fine against the dev server. `workerPort` hands pdf.js
         // a Worker we constructed and never touches that path.
-        pdfjs.GlobalWorkerOptions.workerPort = new Worker(
-          new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url),
-          { type: 'module' }
-        );
+        pdfWorker = createPdfWorker();
+        pdfjsModule = pdfjs;
+        pdfjs.GlobalWorkerOptions.workerPort = pdfWorker;
         const task = pdfjs.getDocument({
           data: new Uint8Array(file.data.slice(0)),
+          maxImageSize: PDF_MAX_IMAGE_PIXELS,
           ...pdfAssetOptions(),
         });
         loadingTask = task;
@@ -201,17 +253,22 @@ function PdfPreview({ file, isResizing }: Pick<DocumentPreviewProps, 'file' | 'i
       })
       .then((nextDocument) => {
         if (!nextDocument || cancelled) return;
+        if (nextDocument.numPages > 500) {
+          nextDocument.cleanup();
+          throw new Error('This PDF has too many pages to preview safely.');
+        }
         setDocument(nextDocument);
       })
       .catch((cause: unknown) => {
         if (!cancelled) {
           setError(cause instanceof Error ? cause.message : 'Could not render this PDF.');
         }
+        void disposePdfRuntime();
       });
 
     return () => {
       cancelled = true;
-      void loadingTask?.destroy();
+      void disposePdfRuntime();
     };
   }, [file.data, file.path]);
 
@@ -322,7 +379,24 @@ function prepareSpreadsheetHtml(
   themeFamily: ThemeFamily
 ) {
   const document = new DOMParser().parseFromString(source, 'text/html');
-  document.querySelectorAll('script').forEach((script) => script.remove());
+  document
+    .querySelectorAll(
+      'script, base, link, iframe, frame, frameset, embed, form, input, button, textarea, select, video, audio, meta[http-equiv]'
+    )
+    .forEach((element) => element.remove());
+  document.querySelectorAll<HTMLElement>('*').forEach((element) => {
+    for (const attribute of [...element.attributes]) {
+      const name = attribute.name.toLowerCase();
+      if (
+        name.startsWith('on') ||
+        ['href', 'action', 'formaction', 'srcdoc', 'target'].includes(name) ||
+        (name === 'src' &&
+          !(element instanceof HTMLImageElement && /^(data:image\/|blob:)/i.test(attribute.value)))
+      ) {
+        element.removeAttribute(attribute.name);
+      }
+    }
+  });
   document.querySelectorAll<HTMLElement>('[style]').forEach((element) => {
     for (const property of ['color', 'backgroundColor'] as const) {
       const value = element.style[property];
@@ -380,6 +454,7 @@ function SpreadsheetPreview({
 
   useEffect(() => {
     let cancelled = false;
+    const blobUrls: string[] = [];
     setSheets([]);
     setActiveSheet(0);
     setError(null);
@@ -392,10 +467,15 @@ function SpreadsheetPreview({
         })
       )
       .then((result) => {
-        if (cancelled) return;
         if (!Array.isArray(result) || !result.every((sheet) => typeof sheet === 'string')) {
           throw new Error('Could not read the workbook sheets.');
         }
+        const resultBlobUrls = result.flatMap((sheet) => sheet.match(/blob:[^"'\s<>]+/g) ?? []);
+        if (cancelled) {
+          for (const url of resultBlobUrls) URL.revokeObjectURL(url);
+          return;
+        }
+        blobUrls.push(...resultBlobUrls);
         setSheets(result.map((sheet) => prepareSpreadsheetHtml(sheet, resolvedTheme, themeFamily)));
       })
       .catch((cause: unknown) => {
@@ -406,6 +486,7 @@ function SpreadsheetPreview({
 
     return () => {
       cancelled = true;
+      for (const url of blobUrls) URL.revokeObjectURL(url);
     };
     // `themeFamily` belongs here for the same reason `resolvedTheme` does: the
     // sheet HTML is built once and cached in state, so switching family has to
@@ -419,8 +500,10 @@ function SpreadsheetPreview({
     <div className="flex h-full min-h-0 flex-col bg-background-default">
       <iframe
         key={activeSheet}
+        name="biorouter-spreadsheet-preview"
         srcDoc={sheets[activeSheet]}
         sandbox=""
+        referrerPolicy="no-referrer"
         aria-label={`${file.title}, sheet ${activeSheet + 1}`}
         // The sheet document paints the family ground itself; this only shows
         // before it loads, so it must agree rather than flash white on a dark
@@ -505,7 +588,11 @@ function PowerPointPreview({ file }: Pick<DocumentPreviewProps, 'file'>) {
 
   return (
     <div className="relative h-full bg-background-medium">
-      <div ref={containerRef} className="artifact-pptx-preview h-full overflow-auto px-3 py-4" />
+      <div
+        ref={containerRef}
+        data-rendered={rendered ? 'true' : 'false'}
+        className="artifact-pptx-preview h-full overflow-auto px-3 py-4"
+      />
       {!rendered && !error && <PreviewStatus message="Rendering PowerPoint" />}
       {error && <PreviewStatus message={error} />}
     </div>

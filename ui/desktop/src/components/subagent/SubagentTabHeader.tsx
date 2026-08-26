@@ -37,68 +37,68 @@ export function SubagentTabHeader({
   return (
     <>
       <div
-      /*
-       * ⚠ One band's worth of height, on the chat's own ground.
-       *
-       * This used to be `bg-background-muted` with content-driven height — a
-       * THIRD ground beside the header's `bg-sidebar` and the transcript's
-       * canvas, growing taller with every grant because the chip row below was
-       * an uncapped flex-wrap of one chip per extension and per knowledge base.
-       * A subagent tab was visibly taller than an ordinary one, and the taller
-       * it got the more it looked like a debug panel rather than a chat.
-       *
-       * The ordinary chat already settled this question: counts in the
-       * composer's row 1, names behind a popover, never a list in a header
-       * (`ChatInput.tsx:2668-2670` records the decision). This now follows that
-       * convention.
-       */
-      className="flex h-chrome items-center gap-2 border-b border-border-subtle bg-sidebar px-4 text-secondary"
-      data-testid={`subagent-header-${sessionId}`}
-    >
-      {/* The tab strip already badges this tab as a subagent, so the standalone
+        /*
+         * ⚠ One band's worth of height, on the chat's own ground.
+         *
+         * This used to be `bg-background-muted` with content-driven height — a
+         * THIRD ground beside the header's `bg-sidebar` and the transcript's
+         * canvas, growing taller with every grant because the chip row below was
+         * an uncapped flex-wrap of one chip per extension and per knowledge base.
+         * A subagent tab was visibly taller than an ordinary one, and the taller
+         * it got the more it looked like a debug panel rather than a chat.
+         *
+         * The ordinary chat already settled this question: counts in the
+         * composer's row 1, names behind a popover, never a list in a header
+         * (`ChatInput.tsx:2668-2670` records the decision). This now follows that
+         * convention.
+         */
+        className="flex h-chrome items-center gap-2 border-b border-border-subtle bg-sidebar px-4 text-secondary"
+        data-testid={`subagent-header-${sessionId}`}
+      >
+        {/* The tab strip already badges this tab as a subagent, so the standalone
           "subagent" pill said the same thing twice on one screen. */}
-      <span className="min-w-0 truncate text-text-subtle">
-        spawned by{' '}
-        <button className="underline" onClick={onOpenParent}>
-          {parentSessionName ?? parentSessionId}
-        </button>
-      </span>
-      {/* Counts, not names. The names are one click away and the count is the
+        <span className="min-w-0 truncate text-text-subtle">
+          spawned by{' '}
+          <button className="underline" onClick={onOpenParent}>
+            {parentSessionName ?? parentSessionId}
+          </button>
+        </span>
+        {/* Counts, not names. The names are one click away and the count is the
           part that survives a glance — the same trade the composer's three
           chips make. `title` carries the full list so it is still reachable
           without opening anything. */}
-      {extensions.length > 0 && (
-        <span
-          className="flex-none rounded bg-background-code px-1.5 py-0.5 text-supporting text-text-subtle"
-          title={extensions.join(', ')}
-        >
-          {extensions.length} extension{extensions.length === 1 ? '' : 's'}
-        </span>
-      )}
-      {knowledgeBases.length > 0 && (
-        <span
-          className="flex-none rounded bg-background-code px-1.5 py-0.5 text-supporting text-text-subtle"
-          title={knowledgeBases.join(', ')}
-        >
-          {knowledgeBases.length} knowledge base{knowledgeBases.length === 1 ? '' : 's'}
-        </span>
-      )}
-      {/* Only offered when there is something to disclose. The backend's
+        {extensions.length > 0 && (
+          <span
+            className="flex-none rounded bg-background-code px-1.5 py-0.5 text-supporting text-text-subtle"
+            title={extensions.join(', ')}
+          >
+            {extensions.length} extension{extensions.length === 1 ? '' : 's'}
+          </span>
+        )}
+        {knowledgeBases.length > 0 && (
+          <span
+            className="flex-none rounded bg-background-code px-1.5 py-0.5 text-supporting text-text-subtle"
+            title={knowledgeBases.join(', ')}
+          >
+            {knowledgeBases.length} knowledge base{knowledgeBases.length === 1 ? '' : 's'}
+          </span>
+        )}
+        {/* Only offered when there is something to disclose. The backend's
           `persist_spawn_context` is best-effort (a failure only warns) and
           sessions older than it have no record, so `spawnContext` really can
           be absent while the header itself is still worth showing — and a
           toggle that can only ever open onto nothing is a dead control. */}
-      {spawnContext && (
-        <button
-          className="flex-none underline"
-          onClick={() => setExpanded((e) => !e)}
-          aria-expanded={expanded}
-          aria-controls={spawnContextId}
-        >
-          spawn context
-        </button>
-      )}
-      {running && (
+        {spawnContext && (
+          <button
+            className="flex-none underline"
+            onClick={() => setExpanded((e) => !e)}
+            aria-expanded={expanded}
+            aria-controls={spawnContextId}
+          >
+            spawn context
+          </button>
+        )}
+        {running && (
           <Button
             variant="ghost"
             size="sm"

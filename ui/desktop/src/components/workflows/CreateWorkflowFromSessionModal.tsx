@@ -377,10 +377,7 @@ export default function CreateWorkflowFromSessionModal({
       console.error('Failed to create workflow:', error);
       toastError({
         title: 'Failed to create workflow',
-        msg:
-          error instanceof Error
-            ? error.message
-            : 'Could not create the workflow. Try again.',
+        msg: error instanceof Error ? error.message : 'Could not create the workflow. Try again.',
       });
     } finally {
       setIsCreating(false);

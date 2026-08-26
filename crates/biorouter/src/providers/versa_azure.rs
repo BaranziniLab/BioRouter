@@ -337,6 +337,10 @@ impl Provider for VersaAzureProvider {
         true
     }
 
+    fn supports_restart_steering(&self) -> bool {
+        true
+    }
+
     async fn stream(
         &self,
         system: &str,
@@ -539,13 +543,18 @@ mod tests {
     /// removed the provider would quietly fall back to blocking generation and
     /// the latency win this change exists for would vanish with a green suite.
     #[test]
-    fn provider_streams_and_posts_to_the_deployment_path() {
+    fn provider_streams_posts_and_advertises_restart_steering() {
         let provider = test_provider();
 
         assert!(
             provider.supports_streaming(),
             "versa_azure must advertise streaming; without it the agent takes the \
              blocking complete() path and tool cards only appear at end of generation"
+        );
+        assert!(!provider.supports_live_steering());
+        assert!(
+            provider.supports_restart_steering(),
+            "Versa Azure cannot inject into a running HTTP response, so a queued steer must restart it"
         );
         assert_eq!(
             provider.chat_completions_path(),

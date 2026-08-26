@@ -14,7 +14,7 @@ check-everything:
     @echo "  → Checking UI code formatting..."
     cd ui/desktop && npm run lint:check
     @echo "  → Validating OpenAPI schema..."
-    ./scripts/check-openapi-schema.sh
+    just check-openapi-schema
     @echo "  → Checking CLI/daemon/GUI version consistency..."
     ./scripts/check-version-consistency.sh
     @echo "  → Checking Biorouter name and logo consistency..."
@@ -339,6 +339,15 @@ debug-server:
 # Check if OpenAPI schema is up-to-date
 check-openapi-schema: generate-openapi
     ./scripts/check-openapi-schema.sh
+
+# Exercise the shipping image/PDF/Office preview components in a real Electron
+# renderer. This is deliberately not folded into `check-everything`: it needs a
+# native Electron runtime and display. The dedicated macOS Frontend CI job runs
+# it for every PR and uploads the screenshots. Live websites are a separate
+# packaged/dev-app release gate because this harness cannot create the app main
+# process's native WebContentsView.
+preview-panel-e2e:
+    cd ui/desktop && npm run test:preview-panel
 
 # Generate OpenAPI specification without starting the UI
 generate-openapi:

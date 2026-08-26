@@ -151,7 +151,7 @@ fn fail_query_txn_if_open(
 struct PreparedQuery {
     kb_root: std::path::PathBuf,
     txn_branch: Option<String>,
-    format: Option<KbFormat>,
+    format: KbFormat,
     system_prompt: String,
 }
 
@@ -171,6 +171,7 @@ async fn prepare_query(
         args.caller_is_private,
         &args.caller_affiliation,
     )?;
+    let format = svc.require_current_profile(&args.kb_id)?;
     if args.file_as_page {
         // Issue #56, both axes in one call under one lock — see
         // `KnowledgeService::raise_tier_and_affiliation` for why they cannot be
@@ -202,8 +203,8 @@ async fn prepare_query(
     } else {
         None
     };
-    let (format, system_prompt) =
-        load_query_prompt(&kb_root, txn_branch.as_deref(), args.file_as_page)?;
+    let system_prompt =
+        load_query_prompt(&kb_root, txn_branch.as_deref(), args.file_as_page, format)?;
     Ok(PreparedQuery {
         kb_root,
         txn_branch,
@@ -216,15 +217,8 @@ fn load_query_prompt(
     kb_root: &std::path::Path,
     txn_branch: Option<&str>,
     file_as_page: bool,
-) -> Result<(Option<KbFormat>, String)> {
-    // Build the system prompt: schema.md + the profile's query procedure +
-    // optional read-only reminder. `Manifest::profile` and never
-    // `Manifest::format`, which reads `Okf` on every base written before Stage 3
-    // (DR-6's trap, reached from the reader): a legacy base would then be taught
-    // OKF's page contract and handed BioOKF's tools.
-    let format = crate::knowledge::manifest::load(kb_root)
-        .ok()
-        .and_then(|manifest| manifest.profile());
+    format: KbFormat,
+) -> Result<String> {
     let schema_path = match crate::knowledge::store::resolve_readable_path(kb_root, "schema.md") {
         Ok(path) => path,
         Err(error) => {
@@ -239,14 +233,14 @@ fn load_query_prompt(
         Ok(schema) => schema,
         Err(error) => return Err(fail_query_txn_if_open(kb_root, txn_branch, error)),
     };
-    let mut system = system_prompt(&schema, query_procedure(format));
+    let mut system = system_prompt(&schema, query_procedure(Some(format)));
     if !file_as_page {
         system.push_str(
             "\n\nIMPORTANT: file_as_page is FALSE for this call. \
              Do NOT write any pages. Read-only.",
         );
     }
-    Ok((format, system))
+    Ok(system)
 }
 
 fn settle_query(
@@ -278,7 +272,7 @@ fn settle_query(
                 commit_txn_if_a_page_was_filed(svc, kb_id, kb_root, txn_branch, result.steps_used)?;
             Ok(QueryResult {
                 answer: result.final_text,
-                cited_pages: extract_wiki_links(&result.events),
+                cited_pages: extract_cited_pages(&result.events),
                 commit_sha,
             })
         }
@@ -327,9 +321,9 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
     let agent = SubAgent {
         completer: args.completer,
         tools: if args.file_as_page {
-            tool_specs(format)
+            tool_specs(Some(format))
         } else {
-            read_only_tool_specs(format)
+            read_only_tool_specs(Some(format))
         },
         system_prompt,
         bounds: args.bounds,
@@ -354,13 +348,18 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
     )
 }
 
-/// Extract `[[Page Name]]` wiki-link references from all Step events in order,
-/// deduplicating while preserving first-occurrence order.
-fn extract_wiki_links(events: &[SubAgentEvent]) -> Vec<String> {
+/// Extract native OKF/BioOKF Markdown page links and legacy wiki links in
+/// written order, deduplicating while preserving first occurrence.
+fn extract_cited_pages(events: &[SubAgentEvent]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for e in events {
-        if let SubAgentEvent::Step { assistant_text, .. } = e {
-            for cited in extract_wiki_links_from_text(assistant_text) {
+        let text = match e {
+            SubAgentEvent::Step { assistant_text, .. } => Some(assistant_text.as_str()),
+            SubAgentEvent::Done { final_text, .. } => Some(final_text.as_str()),
+            _ => None,
+        };
+        if let Some(text) = text {
+            for cited in extract_citations_from_text(text) {
                 if !out.contains(&cited) {
                     out.push(cited);
                 }
@@ -385,10 +384,29 @@ fn extract_wiki_links(events: &[SubAgentEvent]) -> Vec<String> {
 /// a citation is prose, and there is no bundle in hand here. `pub(crate)` so the
 /// equivalence test in `knowledge::links` can drive this consumer beside the
 /// other two.
+#[cfg(test)]
 pub(crate) fn extract_wiki_links_from_text(text: &str) -> Vec<String> {
-    crate::knowledge::links::wiki_links(text)
+    extract_citations_from_text(text)
+}
+
+fn extract_citations_from_text(text: &str) -> Vec<String> {
+    crate::knowledge::okf::extract_links(text)
         .into_iter()
-        .map(|link| link.target)
+        .filter_map(|link| match link.form {
+            crate::knowledge::okf::LinkForm::LegacyWiki => Some(link.target),
+            crate::knowledge::okf::LinkForm::OkfMarkdown if link.is_bundle_link() => {
+                let target = link.target.trim_start_matches("./").trim_start_matches('/');
+                if target.starts_with("knowledge/")
+                    && target.ends_with(".md")
+                    && !target.split('/').any(|component| component == "..")
+                {
+                    Some(target.to_string())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
         .collect()
 }
 
@@ -571,6 +589,16 @@ mod tests {
     // -------------------------------------------------------------------------
     // Test 1: read-only query returns answer with citations, no commit
     // -------------------------------------------------------------------------
+
+    #[test]
+    fn native_markdown_page_links_are_reported_as_citations() {
+        assert_eq!(
+            extract_citations_from_text(
+                "See [HRV](/knowledge/concept/hrv.md) and [paper](https://example.org/paper)."
+            ),
+            vec!["knowledge/concept/hrv.md"]
+        );
+    }
 
     #[tokio::test]
     async fn query_read_only_returns_answer_with_citations() {

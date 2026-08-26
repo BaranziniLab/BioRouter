@@ -14,18 +14,20 @@ const mocks = vi.hoisted(() => ({
   toggleKbHidden: vi.fn(),
   refresh: vi.fn().mockResolvedValue(undefined),
   onOpenChange: vi.fn(),
+  create: vi.fn(),
 }));
 
 const state = vi.hoisted(() => ({
   primaryKbId: 'alpha' as string | null,
+  bases: [
+    { id: 'alpha', name: 'Alpha', color: '#cf6d47', tier: 'private' },
+    { id: 'beta', name: 'Beta', color: '#b85a32', tier: 'public' },
+  ],
 }));
 
 vi.mock('../KnowledgeContext', () => ({
   useKnowledge: () => ({
-    bases: [
-      { id: 'alpha', name: 'Alpha', color: '#cf6d47', tier: 'private' },
-      { id: 'beta', name: 'Beta', color: '#b85a32', tier: 'public' },
-    ],
+    bases: state.bases,
     loading: false,
     primaryKbId: state.primaryKbId,
     hiddenKbIds: ['beta'],
@@ -37,7 +39,7 @@ vi.mock('../KnowledgeContext', () => ({
 
 vi.mock('../hooks/useKnowledgeBases', () => ({
   useKnowledgeBases: () => ({
-    create: vi.fn(),
+    create: mocks.create,
     exportArchive: vi.fn(),
     importArchive: vi.fn(),
     remove: vi.fn(),
@@ -62,6 +64,11 @@ afterAll(() => vi.unstubAllGlobals());
 beforeEach(() => {
   vi.clearAllMocks();
   state.primaryKbId = 'alpha';
+  state.bases = [
+    { id: 'alpha', name: 'Alpha', color: '#cf6d47', tier: 'private' },
+    { id: 'beta', name: 'Beta', color: '#b85a32', tier: 'public' },
+  ];
+  mocks.create.mockResolvedValue({ id: 'first-base' });
 });
 
 function open() {
@@ -69,6 +76,22 @@ function open() {
 }
 
 describe('KBManagerDialog', () => {
+  it('lets a zero-base install create its first OKF base through one usable dialog', async () => {
+    state.primaryKbId = null;
+    state.bases = [];
+    render(<KBManagerDialog open startInCreate onOpenChange={mocks.onOpenChange} />);
+
+    expect(screen.getByRole('dialog', { name: 'Create knowledge base' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Knowledge bases' })).toBeNull();
+
+    await userEvent.type(screen.getByTestId('knowledge-format-name'), 'First Base');
+    await userEvent.click(screen.getByTestId('knowledge-format-submit'));
+
+    expect(mocks.create).toHaveBeenCalledWith('first-base', 'First Base', { format: 'okf' });
+    expect(mocks.setPrimaryKbId).toHaveBeenCalledWith('first-base');
+    expect(mocks.refresh).toHaveBeenCalled();
+  });
+
   // Two states per row, never three. Under the merged model membership and the
   // primary are the only two things a base can be, and the row body is the
   // "make primary" affordance.

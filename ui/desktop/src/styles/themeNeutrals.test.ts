@@ -81,19 +81,20 @@ describe.each(['light', 'dark'] as const)('%s: the neutral scaffolding is shared
   const reference = FAMILIES[REFERENCE][mode].tokens as Record<string, string>;
   const sharedKeys = Object.keys(reference).filter((key) => !PER_FAMILY.has(key));
 
-  it.each(
-    (Object.keys(FAMILIES) as (keyof typeof FAMILIES)[]).filter((id) => id !== REFERENCE)
-  )(`%s matches ${REFERENCE} on every shared token`, (id) => {
-    const tokens = FAMILIES[id][mode].tokens as Record<string, string>;
-    const drifted = sharedKeys
-      .filter((key) => tokens[key] !== reference[key])
-      .map((key) => `${key}: ${tokens[key]} !== ${reference[key]}`);
+  it.each((Object.keys(FAMILIES) as (keyof typeof FAMILIES)[]).filter((id) => id !== REFERENCE))(
+    `%s matches ${REFERENCE} on every shared token`,
+    (id) => {
+      const tokens = FAMILIES[id][mode].tokens as Record<string, string>;
+      const drifted = sharedKeys
+        .filter((key) => tokens[key] !== reference[key])
+        .map((key) => `${key}: ${tokens[key]} !== ${reference[key]}`);
 
-    // Reported as a list rather than one key at a time: a real divergence is
-    // usually a whole ramp, and seeing it whole is what tells you whether
-    // someone re-tuned a family or fat-fingered a single value.
-    expect(drifted).toEqual([]);
-  });
+      // Reported as a list rather than one key at a time: a real divergence is
+      // usually a whole ramp, and seeing it whole is what tells you whether
+      // someone re-tuned a family or fat-fingered a single value.
+      expect(drifted).toEqual([]);
+    }
+  );
 
   /**
    * Guards the guard. If a rename or a refactor emptied `sharedKeys`, every

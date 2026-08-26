@@ -5,7 +5,7 @@ use crate::knowledge::{
     biookf,
     convert::SourceInput,
     git::{GitRepo, Txn},
-    manifest, paths,
+    paths,
     service::{KnowledgeService, RawSourceRefreshFailure},
     subagent::{
         events::{DoneReason, SubAgentEvent},
@@ -246,7 +246,7 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
     let _lock = svc
         .lock_kb_cancellable(&args.kb_id, cancel.as_ref())
         .await?;
-    let kb_root = prepare_ingest_base(svc, &args, cancel.as_ref()).await?;
+    let (kb_root, format) = prepare_ingest_base(svc, &args, cancel.as_ref()).await?;
     let raw = stage_raw_source(svc, &args.kb_id, args.source, cancel.as_ref()).await?;
     if super::ensure_not_cancelled(cancel.as_ref(), "the ingest transaction").is_err() {
         return Err(retained_raw_failure(
@@ -259,12 +259,6 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
     }
     let (repo, txn) = begin_ingest_transaction(&kb_root, &raw)?;
 
-    // `Manifest::profile`, never `Manifest::format` — the field reads `Okf` on
-    // every base written before Stage 3, so a legacy base would be taught OKF's
-    // page contract and handed BioOKF's typed writer (DR-6's trap, reached from
-    // the reader). `None` is legacy and gets the permissive path.
-    let format = manifest::load(&kb_root).ok().and_then(|m| m.profile());
-
     // ⚠ Everything from here to the sub-agent runs INSIDE the transaction, so a
     // failure must abort it. `begin_txn` moves HEAD onto the txn branch, and an
     // early `?` would leave it parked there — which is how the next write to
@@ -272,7 +266,7 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
     // arms below already guard. The `schema.md` read predates this stage and had
     // exactly that bug; the two DR-24 steps join it rather than each growing
     // their own `match`.
-    let setup = ingest_setup(svc, &kb_root, &repo, &txn, format, &raw.source_id);
+    let setup = ingest_setup(svc, &kb_root, &repo, &txn, Some(format), &raw.source_id);
     let (source_node, baseline_knowledge, schema) = match setup {
         Ok(setup) => setup,
         Err(e) => {
@@ -285,7 +279,7 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
             ));
         }
     };
-    let system = system_prompt(&schema, ingest_procedure(format));
+    let system = system_prompt(&schema, ingest_procedure(Some(format)));
 
     let dispatch = KbToolDispatch {
         svc: svc.clone(),
@@ -295,7 +289,7 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
     };
     let agent = SubAgent {
         completer: args.completer,
-        tools: tool_specs(format),
+        tools: tool_specs(Some(format)),
         system_prompt: system,
         bounds: args.bounds,
     };
@@ -325,7 +319,7 @@ async fn prepare_ingest_base(
     svc: &KnowledgeService,
     args: &IngestArgs,
     cancel: Option<&tokio_util::sync::CancellationToken>,
-) -> Result<std::path::PathBuf> {
+) -> Result<(std::path::PathBuf, KbFormat)> {
     super::ensure_not_cancelled(cancel, "ingest preflight")?;
     // Issue #56. This barrier must precede the ratchet because the sub-agent's
     // KB tools reach the store directly and cannot enforce it at a lower seam.
@@ -335,6 +329,7 @@ async fn prepare_ingest_base(
         args.caller_is_private,
         &args.caller_affiliation,
     )?;
+    let format = svc.require_current_profile(&args.kb_id)?;
     super::ensure_not_cancelled(cancel, "the ingest privacy ratchet")?;
     // Both privacy axes move together under the ingest lock.
     svc.raise_tier_and_affiliation_cancelled_by(
@@ -351,7 +346,7 @@ async fn prepare_ingest_base(
     super::ensure_not_cancelled(cancel, "the ingest refresh")?;
     super::refresh_base(svc, &args.kb_id).await?;
     super::ensure_not_cancelled(cancel, "raw source staging")?;
-    Ok(kb_root)
+    Ok((kb_root, format))
 }
 
 async fn stage_raw_source(

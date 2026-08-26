@@ -17,9 +17,7 @@ describe('TerminalDockProvider — per-chat-tab terminals', () => {
     act(() => ctx.current.setOpen('tab-1', true, '/work/a'));
 
     expect(ctx.current.isOpenFor('tab-1')).toBe(true);
-    expect(ctx.current.terminals).toEqual([
-      { key: 'tab-1', workingDir: '/work/a', showing: true },
-    ]);
+    expect(ctx.current.terminals).toEqual([{ key: 'tab-1', workingDir: '/work/a', showing: true }]);
   });
 
   it('keeps each tab independent — opening one never opens another', () => {
@@ -46,9 +44,7 @@ describe('TerminalDockProvider — per-chat-tab terminals', () => {
 
     // Re-showing a hidden terminal keeps its FROZEN cwd — never respawns it.
     act(() => ctx.current.setOpen('tab-1', true, '/work/CHANGED'));
-    expect(ctx.current.terminals).toEqual([
-      { key: 'tab-1', workingDir: '/work/a', showing: true },
-    ]);
+    expect(ctx.current.terminals).toEqual([{ key: 'tab-1', workingDir: '/work/a', showing: true }]);
   });
 
   it('does not overwrite the frozen cwd of an already-open terminal', () => {

@@ -17,6 +17,7 @@ import { Button } from './ui/button';
 
 import { Check, Copy, Image as ImageIcon } from './icons/app-icons';
 import { wrapHTMLInCodeBlock } from '../utils/htmlSecurity';
+import { normalizeExternalHttpUrl } from '../utils/externalUrl';
 import type { ArtifactFilePreview, ArtifactSource } from './artifacts/artifactTypes';
 import {
   basenameFromPath,
@@ -148,6 +149,27 @@ function artifactAwareUrlTransform(value: string) {
   return defaultUrlTransform(value);
 }
 
+function pathFromMarkdownArtifactValue(value: string): string {
+  const path = pathFromArtifactHref(value);
+  // `pathFromArtifactHref` already decodes a file URL's pathname exactly once.
+  // Plain Markdown paths do not pass through URL parsing, so decode those here.
+  // Keeping the branches separate prevents `%252e%252e` from becoming `..`.
+  if (/^file:\/\//i.test(value)) return path;
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+}
+
+function previewableExternalUrl(href: string): string | null {
+  try {
+    return normalizeExternalHttpUrl(href);
+  } catch {
+    return null;
+  }
+}
+
 function artifactSourceFromMarkdownValue(
   value: string,
   workingDir?: string
@@ -158,7 +180,7 @@ function artifactSourceFromMarkdownValue(
     return { kind: 'externalUrl', title: candidate, url: candidate };
   }
   if (!looksLikePreviewableFile(candidate)) return null;
-  const rawPath = pathFromArtifactHref(candidate);
+  const rawPath = pathFromMarkdownArtifactValue(candidate);
   const path = resolveArtifactPath(rawPath, workingDir) ?? rawPath;
   return { kind: 'file', title: basenameFromPath(path), path };
 }
@@ -236,7 +258,10 @@ const MarkdownImage = memo(function MarkdownImage({
   alt?: string;
   workingDir?: string;
 }) {
-  const source = useMemo(() => resolveMarkdownImageSource(src ?? '', workingDir), [src, workingDir]);
+  const source = useMemo(
+    () => resolveMarkdownImageSource(src ?? '', workingDir),
+    [src, workingDir]
+  );
   const [resolvedSrc, setResolvedSrc] = useState<string | null>(
     source.kind === 'remote' ? source.url : null
   );
@@ -314,13 +339,7 @@ const MarkdownImage = memo(function MarkdownImage({
 // keep the preload bridge). target=_blank alone leans on the main process's
 // window-open handler; calling openExternal here makes it explicit and testable.
 function openExternalLink(event: React.MouseEvent<HTMLAnchorElement>, href: string) {
-  if (
-    event.button !== 0 ||
-    event.metaKey ||
-    event.ctrlKey ||
-    event.shiftKey ||
-    event.altKey
-  ) {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
     return;
   }
   const opener = window.electron?.openExternal;
@@ -495,7 +514,7 @@ const MarkdownContent = memo(function MarkdownContent({
           a: ({ href, children, node: _node, ...props }) => {
             if (!href) return <>{children}</>;
             const artifactPath =
-              href && looksLikePreviewableFile(href) ? pathFromArtifactHref(href) : null;
+              href && looksLikePreviewableFile(href) ? pathFromMarkdownArtifactValue(href) : null;
             if (artifactPath) {
               // A link to a sibling/local file. If there is a panel to open it in,
               // preview it there; otherwise render it as styled, inert text with a
@@ -524,18 +543,15 @@ const MarkdownContent = memo(function MarkdownContent({
                 </span>
               );
             }
-            // Loopback/app URLs (the daemon serves Biorouter apps on 127.0.0.1)
-            // can be framed, so preview them inline in the side panel. Public
-            // websites almost always send X-Frame-Options / frame-ancestors and
-            // would render as a BLANK iframe, so those open in the real browser
-            // (via the <a> below) where they actually load.
-            const isLoopbackUrl = !!href && LOOPBACK_URL_RE.test(href);
-            if (isLoopbackUrl && onOpenArtifact) {
+            const externalUrl = previewableExternalUrl(href);
+            if (externalUrl && onOpenArtifact) {
               return (
                 <button
                   type="button"
                   className={`inline break-all text-left ${LINK_CLASS}`}
-                  onClick={() => onOpenArtifact({ kind: 'externalUrl', title: href, url: href })}
+                  onClick={() =>
+                    onOpenArtifact({ kind: 'externalUrl', title: href, url: externalUrl })
+                  }
                 >
                   {children}
                 </button>

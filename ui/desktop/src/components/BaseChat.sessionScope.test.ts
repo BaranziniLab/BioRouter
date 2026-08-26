@@ -44,10 +44,22 @@ describe('broadcast window events are scoped to their own chat', () => {
 
   const mountTwoChats = () => {
     const handlers: Array<[string, globalThis.EventListener]> = [
-      ['scroll-chat-to-bottom', createScrollToBottomHandler({ sessionId: SESSION_A, scrollToBottom: scrollA })],
-      ['scroll-chat-to-bottom', createScrollToBottomHandler({ sessionId: SESSION_B, scrollToBottom: scrollB })],
-      ['session-diverged', createSessionDivergedHandler({ sessionId: SESSION_A, navigate: navigateA })],
-      ['session-diverged', createSessionDivergedHandler({ sessionId: SESSION_B, navigate: navigateB })],
+      [
+        'scroll-chat-to-bottom',
+        createScrollToBottomHandler({ sessionId: SESSION_A, scrollToBottom: scrollA }),
+      ],
+      [
+        'scroll-chat-to-bottom',
+        createScrollToBottomHandler({ sessionId: SESSION_B, scrollToBottom: scrollB }),
+      ],
+      [
+        'session-diverged',
+        createSessionDivergedHandler({ sessionId: SESSION_A, navigate: navigateA }),
+      ],
+      [
+        'session-diverged',
+        createSessionDivergedHandler({ sessionId: SESSION_B, navigate: navigateB }),
+      ],
     ];
     handlers.forEach(([type, fn]) => window.addEventListener(type, fn));
     listeners = handlers;
@@ -97,9 +109,12 @@ describe('broadcast window events are scoped to their own chat', () => {
         })
       );
 
-      expect(navigateA).toHaveBeenCalledWith('/pair?resumeSessionId=session-new&shouldStartAgent=true', {
-        state: { disableAnimation: true, initialMessage: 'rerun with n=20' },
-      });
+      expect(navigateA).toHaveBeenCalledWith(
+        '/pair?resumeSessionId=session-new&shouldStartAgent=true',
+        {
+          state: { disableAnimation: true, initialMessage: 'rerun with n=20' },
+        }
+      );
     });
 
     it('omits shouldStartAgent from the query when it is not set', () => {

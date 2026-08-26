@@ -76,6 +76,11 @@ pub trait WorkspaceServices: Send + Sync {
     fn is_turn_active(&self, session_id: &str) -> bool;
     /// Trip the running turn's cancellation token; `None` when idle (BR-62).
     fn cancel_turn(&self, session_id: &str) -> Option<String>;
+    /// Abandon daemon and in-process continuation admissions for a session
+    /// that is being explicitly cancelled or stopped.
+    fn abandon_pending_continuations(&self, session_id: &str) -> bool {
+        crate::agents::subagent_handle::abandon_continuation(session_id)
+    }
     /// Acquire the per-session turn lock for a turn this crate is about to run
     /// itself (a subagent run — reconciliation #2). `cancel` is registered as
     /// the token `cancel_turn` trips. Errors with the running turn's id when

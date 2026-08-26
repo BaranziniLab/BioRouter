@@ -29,6 +29,14 @@ use biorouter::workspace_services::{
 
 use crate::state::AppState;
 
+/// `WorkspaceServices` answers with a bare `String`, so the machine-readable
+/// half of a refusal has to travel inside the prose. These are the codes
+/// `POST /agent/resume` and the turn runner publish for the same two
+/// conditions; an interface branches on the substring rather than on wording it
+/// would have to keep in step.
+const SUBAGENT_PROFILE_MISSING: &str = "subagent_runtime_profile_missing";
+const SUBAGENT_PROFILE_RESTORE_FAILED: &str = "subagent_runtime_profile_restore_failed";
+
 pub struct ServerWorkspaceServices {
     state: Arc<AppState>,
 }
@@ -61,6 +69,18 @@ impl ServerWorkspaceServices {
             return results;
         }
         agent.load_extensions_from_session(session).await
+    }
+
+    /// Drop a child whose delegated runtime profile could not be restored.
+    ///
+    /// `restore_subagent_runtime_profile` installs the profile's grants one at
+    /// a time, so a failure part-way leaves a half-built agent cached under the
+    /// session id — reachable, and already holding whichever extensions landed
+    /// before the error. Without this the next injected turn would take that
+    /// agent as-is. `POST /agent/resume` evicts on both of its refusal paths
+    /// for the same reason.
+    async fn evict_partially_restored_child(&self, session_id: &str) {
+        let _ = self.state.agent_manager.remove_session(session_id).await;
     }
 }
 
@@ -96,11 +116,17 @@ impl WorkspaceServices for ServerWorkspaceServices {
         self.state.cancel_turn(session_id)
     }
 
+    fn abandon_pending_continuations(&self, session_id: &str) -> bool {
+        self.state
+            .abandon_pending_continuations_for_session(session_id)
+    }
+
     fn begin_turn(
         &self,
         session_id: &str,
         cancel: tokio_util::sync::CancellationToken,
     ) -> Result<Box<dyn WorkspaceTurnLease>, String> {
+        let pump_cancel = cancel.clone();
         let guard = self
             .state
             .try_begin_turn_idempotent(session_id, cancel, None)
@@ -110,13 +136,26 @@ impl WorkspaceServices for ServerWorkspaceServices {
                     conflict.running_turn_id
                 )
             })?;
+        let stream = guard.stream();
+        let bus = biorouter::session_events::subscribe(session_id);
+        let writer = stream
+            .claim_writer()
+            .expect("a newly acquired workspace turn owns its stream");
+        tokio::spawn(crate::routes::reply::pump_bus_into_stream(
+            Arc::clone(&self.state),
+            session_id.to_string(),
+            bus,
+            writer,
+            pump_cancel,
+            crate::routes::reply::sse_coalesce_window(),
+        ));
         Ok(Box::new(ServerTurnLease { guard }))
     }
 
     async fn stop_agent(&self, session_id: &str) -> Result<(), String> {
-        // Mirror POST /agent/stop: cancel the turn, then evict — the session
-        // record remains.
-        let _ = self.state.cancel_turn(session_id);
+        let _stop_guard = self.state.begin_agent_stop(session_id);
+        self.state
+            .abandon_pending_continuations_for_session(session_id);
         self.state
             .agent_manager
             .remove_session(session_id)
@@ -129,16 +168,27 @@ impl WorkspaceServices for ServerWorkspaceServices {
         session_id: &str,
         message: Message,
     ) -> Result<String, String> {
-        // HYDRATE FIRST. A target the user has not opened this run has no live
-        // agent, and `get_agent` (inside `start_turn`) creates a BARE one: no
-        // extensions, and NO PROVIDER — `AgentManager::default_provider` has no
-        // production setter, so `Agent::provider()` returns
-        // `Err("Provider not set")` and the injected turn dies on its first
-        // step. This mirrors what `/agent/resume` and `restart_agent_internal`
-        // do, and it is what makes `workspace_send_prompt mode:"turn"` work on
-        // exactly the sessions the tool exists to reach. Without it the turn
-        // would also run with none of the tools `workspace_list` reports the
-        // target as having.
+        let request = super::turn::TurnRequest::new(session_id.to_string(), message);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let turn_guard = self
+            .state
+            .try_begin_turn_idempotent(
+                session_id,
+                cancel.clone(),
+                request.extras.idempotency_key.clone(),
+            )
+            .map_err(|conflict| {
+                format!(
+                    "a turn is already in flight for this session (running turn {})",
+                    conflict.running_turn_id
+                )
+            })?;
+        let turn_id = turn_guard.turn_id().to_string();
+
+        // Hydration happens only after the turn lock is ours. Besides making a
+        // rejected follow-up side-effect free, this keeps a live delegated
+        // child's exact capability profile from being replaced by the generic
+        // extension snapshot used by ordinary sessions.
         let session = self
             .state
             .session_manager()
@@ -150,21 +200,75 @@ impl WorkspaceServices for ServerWorkspaceServices {
             .get_agent(session_id.to_string())
             .await
             .map_err(|e| e.to_string())?;
-        let (provider_result, _extension_results) = tokio::join!(
-            agent.restore_provider_from_session(&session),
-            self.hydrate_extensions(&agent, &session),
-        );
-        provider_result.map_err(|e| e.to_string())?;
 
-        // The ONE turn runner (Task 6). An injected turn and a `/reply` turn
-        // differ only in their `TurnExtras`.
-        super::turn::start_turn(
-            self.state.clone(),
-            super::turn::TurnRequest::new(session_id.to_string(), message),
-        )
-        .await
-        .map(|started| started.turn_id)
-        .map_err(|e| e.to_string())
+        if session.session_type == SessionType::SubAgent {
+            agent
+                .restore_persisted_provider_if_missing(&session)
+                .await
+                .map_err(|e| e.to_string())?;
+            // A child with no runtime profile has no daemon-authored grant set,
+            // and its legacy `EnabledExtensionsState` snapshot is not a stand-in
+            // for one: that snapshot can name `workspace` with an empty
+            // `available_tools`, which means EVERY tool, and
+            // `load_extensions_from_session` would install it as an Explicit
+            // entry OVER the four-tool injection delegation actually granted.
+            // The child could then `workspace_open { new: { prompt } }` itself a
+            // fresh User session carrying the machine's whole default extension
+            // set — an escape from the delegated grant, out of a row the parent
+            // never authored.
+            let restored = match agent.restore_subagent_runtime_profile(&session).await {
+                Ok(restored) => restored,
+                Err(e) => {
+                    self.evict_partially_restored_child(session_id).await;
+                    return Err(format!(
+                        "{SUBAGENT_PROFILE_RESTORE_FAILED}: this subagent's delegated runtime \
+                         profile could not be restored ({e}). Ask the parent conversation to \
+                         delegate the work again."
+                    ));
+                }
+            };
+            if !restored {
+                self.evict_partially_restored_child(session_id).await;
+                return Err(format!(
+                    "{SUBAGENT_PROFILE_MISSING}: this subagent has no delegated runtime profile, \
+                     so Biorouter cannot tell which tools it was granted and will not guess from \
+                     its saved extension list. Ask the parent conversation to delegate the work \
+                     again."
+                ));
+            }
+        } else {
+            let (provider_result, _extension_results) = tokio::join!(
+                agent.restore_provider_from_session(&session),
+                self.hydrate_extensions(&agent, &session),
+            );
+            provider_result.map_err(|e| e.to_string())?;
+        }
+
+        // A detached turn still owns a replay stream. The bus subscription is
+        // opened before the runner and pumped independently of any tab, so a
+        // closed child keeps running and `/agent/resume` can reattach later.
+        let stream = turn_guard.stream();
+        let bus = biorouter::session_events::subscribe(session_id);
+        let writer = stream
+            .claim_writer()
+            .expect("a newly acquired detached turn owns its stream");
+        tokio::spawn(crate::routes::reply::pump_bus_into_stream(
+            Arc::clone(&self.state),
+            session_id.to_string(),
+            bus,
+            writer,
+            cancel.clone(),
+            crate::routes::reply::sse_coalesce_window(),
+        ));
+        stream.spawn_orphan_reaper(cancel.clone(), crate::turn_stream::orphan_timeout());
+        tokio::spawn(super::turn::run_turn(
+            Arc::clone(&self.state),
+            request,
+            turn_guard,
+            cancel,
+        ));
+
+        Ok(turn_id)
     }
 
     async fn start_session(
@@ -448,8 +552,115 @@ impl biorouter::workspace_services::WorkspaceTurnLease for ServerTurnLease {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use biorouter::model::ModelConfig;
+    use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage};
+    use biorouter::providers::errors::ProviderError;
     use biorouter::session::session_manager::SessionType;
     use biorouter::workspace_services::WorkspaceServices;
+    use rmcp::model::Tool;
+
+    /// The shape a pre-runtime-profile child row carries. An empty
+    /// `available_tools` means EVERY tool of that extension
+    /// (`extension_manager.rs`), so this one value is a full grant of workspace
+    /// control — including `workspace_open { new: { prompt } }`, which mints a
+    /// User session holding the machine's default extension set. It is
+    /// `workspace` and not some innocuous extension on purpose: with `todo`
+    /// here, a "no `workspace__` tools" assertion passes against code that
+    /// restores the snapshot verbatim.
+    fn broad_workspace_snapshot() -> biorouter::agents::ExtensionConfig {
+        biorouter::agents::ExtensionConfig::Platform {
+            name: "workspace".into(),
+            description: "Legacy broad workspace snapshot".into(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        }
+    }
+
+    async fn seed_extension_data(
+        state: &Arc<crate::state::AppState>,
+        name: &str,
+        session_type: SessionType,
+        seed: impl FnOnce(&mut biorouter::session::ExtensionData),
+    ) -> (tempfile::TempDir, String) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut session = state
+            .session_manager()
+            .create_session(temp.path().to_path_buf(), name.to_string(), session_type)
+            .await
+            .unwrap();
+        seed(&mut session.extension_data);
+        state
+            .session_manager()
+            .update(&session.id)
+            .extension_data(session.extension_data)
+            .apply()
+            .await
+            .unwrap();
+        (temp, session.id)
+    }
+
+    /// The minimum daemon-authored profile a child needs to be allowed a turn:
+    /// a prompt and no grants at all.
+    async fn seed_runtime_profile(
+        state: &Arc<crate::state::AppState>,
+        session_id: &str,
+        prompt: &str,
+    ) {
+        let mut extension_data = state
+            .session_manager()
+            .get_session(session_id, false)
+            .await
+            .unwrap()
+            .extension_data;
+        extension_data.set_extension_state(
+            "subagent_runtime_profile",
+            "v2",
+            serde_json::json!({ "format_version": 2, "system_prompt": prompt }),
+        );
+        state
+            .session_manager()
+            .update(session_id)
+            .extension_data(extension_data)
+            .apply()
+            .await
+            .unwrap();
+    }
+
+    async fn tool_names(agent: &Arc<biorouter::agents::Agent>, session_id: &str) -> Vec<String> {
+        agent
+            .list_tools(session_id, None)
+            .await
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
+    }
+
+    struct NeverCompletesProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for NeverCompletesProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::empty()
+        }
+
+        fn get_name(&self) -> &str {
+            "workspace-services-never-completes"
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("workspace-services-test")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            std::future::pending().await
+        }
+    }
 
     /// NOTE — what these tests share with the rest of this crate's unit tests,
     /// and what they deliberately do not.
@@ -601,7 +812,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn begin_turn_lease_holds_the_lock_and_cancel_turn_trips_its_token() {
+    async fn begin_turn_lease_is_attachable_and_cancel_turn_trips_its_token() {
         use tokio_util::sync::CancellationToken;
         let state = crate::state::AppState::new().await.unwrap();
         let services = ServerWorkspaceServices::new(state.clone());
@@ -612,6 +823,46 @@ mod tests {
             .expect("lock acquired");
         assert!(lease.turn_id().starts_with("turn-"));
         assert!(services.is_turn_active("lease-s1"));
+        assert_eq!(
+            state.active_turn_id("lease-s1").as_deref(),
+            Some(lease.turn_id()),
+            "a delegated turn must be discoverable by /agent/resume"
+        );
+
+        let stream = match state.try_begin_turn_idempotent(
+            "lease-s1",
+            CancellationToken::new(),
+            Some("attach-probe".into()),
+        ) {
+            Ok(_) => panic!("the live workspace turn must retain the session lock"),
+            Err(conflict) => conflict.stream,
+        };
+        assert!(
+            stream.has_writer(),
+            "resume must never advertise a turn whose replay stream has no owner"
+        );
+        let mut reader = stream.attach(0);
+        biorouter::session_events::publish(
+            "lease-s1",
+            biorouter::session_events::SessionBusEvent::TurnFinished {
+                reason: "stop".into(),
+                token_state: None,
+            },
+        );
+        let terminal = tokio::time::timeout(std::time::Duration::from_secs(10), reader.recv())
+            .await
+            .expect("the workspace bus pump must deliver a terminal frame");
+        let terminal = match terminal {
+            crate::turn_stream::ReaderEvent::Frame(frame, _) => frame.live_sse(),
+            other => panic!("expected a terminal frame from the workspace bus, got {other:?}"),
+        };
+        assert!(terminal.contains("\"type\":\"Finish\""), "got: {terminal}");
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), reader.recv())
+                .await
+                .expect("the workspace bus pump must close after its terminal frame"),
+            crate::turn_stream::ReaderEvent::Closed
+        ));
 
         // A second begin_turn conflicts — the one-turn-per-session invariant.
         // Matched rather than `unwrap_err()`: the Ok arm is a
@@ -701,6 +952,247 @@ mod tests {
         // And the failure happened before any turn was started, so nothing
         // acquired the session's turn slot and leaked it.
         assert!(!state.is_turn_active(&session.id));
+    }
+
+    #[tokio::test]
+    async fn a_detached_turn_is_immediately_attachable_through_its_replay_stream() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let services = ServerWorkspaceServices::new(state.clone());
+        let temp = tempfile::TempDir::new().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "br71 attachable detached turn".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        // A child takes a turn only with its delegated runtime profile in
+        // hand; without one `start_detached_turn` refuses before it ever
+        // reaches the stream this test is about.
+        seed_runtime_profile(&state, &session.id, "BR71 ATTACHABLE CHILD").await;
+        let agent = state.get_agent(session.id.clone()).await.unwrap();
+        agent
+            .update_provider(Arc::new(NeverCompletesProvider), &session.id)
+            .await
+            .unwrap();
+
+        let turn_id = services
+            .start_detached_turn(&session.id, Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        assert_eq!(
+            state.active_turn_id(&session.id).as_deref(),
+            Some(turn_id.as_str())
+        );
+        let conflict = state
+            .try_begin_turn_idempotent(
+                &session.id,
+                tokio_util::sync::CancellationToken::new(),
+                None,
+            )
+            .unwrap_err();
+        assert!(conflict.stream.has_live_writer());
+        state.cancel_turn(&session.id);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_busy_child_followup_does_not_hydrate_or_mutate_the_child() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let services = ServerWorkspaceServices::new(state.clone());
+        let temp = tempfile::TempDir::new().unwrap();
+        let child = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "br71 busy cold child".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        assert!(!state.agent_manager.has_session(&child.id).await);
+        let _guard = state
+            .try_begin_turn_idempotent(&child.id, tokio_util::sync::CancellationToken::new(), None)
+            .unwrap();
+
+        let error = services
+            .start_detached_turn(&child.id, Message::user().with_text("steer"))
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("already in flight"), "{error}");
+        assert!(
+            !state.agent_manager.has_session(&child.id).await,
+            "a rejected follow-up must not create or hydrate the child agent"
+        );
+    }
+
+    /// The injected half of the delegation gate: `workspace_send_prompt
+    /// mode:"turn"` reaches a cold child through here, and a child with no
+    /// daemon-authored runtime profile must be refused rather than rebuilt from
+    /// its saved extension list.
+    ///
+    /// That list is the escalation vector, not a fallback: nothing that wrote
+    /// it was a delegation decision, `load_extensions_from_session` applies none
+    /// of the clamps `restore_subagent_runtime_profile` applies, and it
+    /// deliberately replaces an auto-injected entry with an Explicit one — so
+    /// the four-tool `workspace` injection a subagent is granted becomes the
+    /// whole extension, and the child can `workspace_open { new: { prompt } }`
+    /// itself a User session with the machine's default extension set.
+    #[tokio::test]
+    async fn an_injected_turn_on_a_child_with_no_runtime_profile_is_refused_not_hydrated() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let services = ServerWorkspaceServices::new(state.clone());
+        let (_temp, child_id) = seed_extension_data(
+            &state,
+            "br71 injected child no profile",
+            SessionType::SubAgent,
+            |extension_data| {
+                biorouter::session::EnabledExtensionsState::new(vec![broad_workspace_snapshot()])
+                    .to_extension_data(extension_data)
+                    .unwrap();
+            },
+        )
+        .await;
+        // Held across the call so the tools can be read after the refusal has
+        // evicted the agent from the manager.
+        let agent = state.get_agent(child_id.clone()).await.unwrap();
+
+        let error = services
+            .start_detached_turn(&child_id, Message::user().with_text("steer"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error.contains(SUBAGENT_PROFILE_MISSING),
+            "the refusal must carry a code an interface can branch on: {error}"
+        );
+        assert!(
+            error.contains("delegate the work again"),
+            "the refusal must say what to do: {error}"
+        );
+        let tools = tool_names(&agent, &child_id).await;
+        assert!(
+            tools.iter().all(|name| !name.starts_with("workspace__")),
+            "the legacy snapshot granted workspace control to a subagent: {tools:?}"
+        );
+        assert!(
+            !state.agent_manager.has_session(&child_id).await,
+            "a refused child must not stay cached for the next turn to reuse"
+        );
+        assert!(
+            !state.is_turn_active(&child_id),
+            "a refused follow-up must release the turn slot it took"
+        );
+    }
+
+    /// The other half of the same gate: a profile that exists but cannot be
+    /// read is a refusal too, and it must not fall back to the snapshot either.
+    #[tokio::test]
+    async fn an_injected_turn_on_a_child_with_an_unreadable_runtime_profile_is_refused() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let services = ServerWorkspaceServices::new(state.clone());
+        let (_temp, child_id) = seed_extension_data(
+            &state,
+            "br71 injected child corrupt profile",
+            SessionType::SubAgent,
+            |extension_data| {
+                biorouter::session::EnabledExtensionsState::new(vec![broad_workspace_snapshot()])
+                    .to_extension_data(extension_data)
+                    .unwrap();
+                extension_data.set_extension_state(
+                    "subagent_runtime_profile",
+                    "v999",
+                    serde_json::json!({"system_prompt": "do not install"}),
+                );
+            },
+        )
+        .await;
+        let agent = state.get_agent(child_id.clone()).await.unwrap();
+
+        let error = services
+            .start_detached_turn(&child_id, Message::user().with_text("steer"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error.contains(SUBAGENT_PROFILE_RESTORE_FAILED),
+            "the refusal must carry a code an interface can branch on: {error}"
+        );
+        let tools = tool_names(&agent, &child_id).await;
+        assert!(
+            tools.iter().all(|name| !name.starts_with("workspace__")),
+            "a failed restore fell back to the legacy snapshot: {tools:?}"
+        );
+        assert!(
+            !state.agent_manager.has_session(&child_id).await,
+            "a partially restored child must not stay cached"
+        );
+        assert!(!state.is_turn_active(&child_id));
+    }
+
+    /// The over-correction guard. The gate is scoped to `SubAgent` rows: an
+    /// ordinary chat has no runtime profile either, and refusing it would take
+    /// the whole application down rather than close a delegation hole. An
+    /// ordinary chat's saved extension list is still exactly how a cold session
+    /// is rebuilt, so it must still be applied here.
+    ///
+    /// The provider is deliberately unconstructible: `start_detached_turn`
+    /// hydrates and restores the provider in one `join!`, so the provider error
+    /// proves the call reached the ordinary-session arm while the tool list
+    /// proves the snapshot was applied — without firing a live turn.
+    #[tokio::test]
+    async fn an_injected_turn_on_a_user_session_still_hydrates_its_saved_extensions() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let services = ServerWorkspaceServices::new(state.clone());
+        let (_temp, session_id) = seed_extension_data(
+            &state,
+            "br71 injected user session snapshot",
+            SessionType::User,
+            |extension_data| {
+                biorouter::session::EnabledExtensionsState::new(vec![
+                    biorouter::agents::ExtensionConfig::Platform {
+                        name: "todo".into(),
+                        description: "Todo".into(),
+                        bundled: Some(true),
+                        available_tools: Vec::new(),
+                    },
+                ])
+                .to_extension_data(extension_data)
+                .unwrap();
+            },
+        )
+        .await;
+        state
+            .session_manager()
+            .update(&session_id)
+            .provider_name("br71-user-provider-not-in-the-factory")
+            .model_config(ModelConfig::new("br71-user-model").unwrap())
+            .apply()
+            .await
+            .unwrap();
+        let agent = state.get_agent(session_id.clone()).await.unwrap();
+
+        let error = services
+            .start_detached_turn(&session_id, Message::user().with_text("steer"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            !error.contains(SUBAGENT_PROFILE_MISSING)
+                && !error.contains(SUBAGENT_PROFILE_RESTORE_FAILED),
+            "the subagent gate must not refuse an ordinary chat: {error}"
+        );
+        assert!(
+            error.contains("br71-user-provider-not-in-the-factory"),
+            "expected the ordinary-session arm's provider restore, got: {error}"
+        );
+        let tools = tool_names(&agent, &session_id).await;
+        assert!(
+            tools.iter().any(|name| name == "todo__todo_write"),
+            "an ordinary chat's saved extensions must still be hydrated: {tools:?}"
+        );
     }
 
     /// The KB pair is the only non-trivial *decision* in this file: resolving

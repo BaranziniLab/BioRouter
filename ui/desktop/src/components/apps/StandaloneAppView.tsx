@@ -60,6 +60,7 @@ export default function StandaloneAppView() {
       try {
         const startResponse = await startAgent({
           body: { working_dir: workingDir },
+          headers: await userActionHeaders(),
           throwOnError: true,
         });
 

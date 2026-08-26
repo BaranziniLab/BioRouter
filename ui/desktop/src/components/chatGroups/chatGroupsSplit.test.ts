@@ -5,7 +5,13 @@ import {
   ChatGroupsAction,
 } from './chatGroupsReducer';
 import { ChatGroupsState, GroupLayout, firstLeaf, leafGroupIds } from './chatGroupsTypes';
-import { MAX_GROUPS, normalizeSizes, removeLeaf, splitLeaf, setSizesAtPath } from './chatGroupsLayout';
+import {
+  MAX_GROUPS,
+  normalizeSizes,
+  removeLeaf,
+  splitLeaf,
+  setSizesAtPath,
+} from './chatGroupsLayout';
 
 function run(state: ChatGroupsState, ...actions: ChatGroupsAction[]): ChatGroupsState {
   return actions.reduce(chatGroupsReducer, state);
@@ -21,7 +27,8 @@ function twoTabs(): ChatGroupsState {
   return run(createInitialChatGroupsState(), open('s1'), open('s2'));
 }
 
-const branchOf = (state: ChatGroupsState) => state.layout as Extract<GroupLayout, { kind: 'branch' }>;
+const branchOf = (state: ChatGroupsState) =>
+  state.layout as Extract<GroupLayout, { kind: 'branch' }>;
 
 describe('splitLeaf / removeLeaf / normalizeSizes', () => {
   it('splitLeaf replaces the leaf with a branch and puts the new group on the named side', () => {
@@ -31,7 +38,10 @@ describe('splitLeaf / removeLeaf / normalizeSizes', () => {
     expect(right).toEqual({
       kind: 'branch',
       dir: 'row',
-      children: [{ kind: 'leaf', groupId: 'a' }, { kind: 'leaf', groupId: 'b' }],
+      children: [
+        { kind: 'leaf', groupId: 'a' },
+        { kind: 'leaf', groupId: 'b' },
+      ],
       sizes: [0.5, 0.5],
     });
 
@@ -55,7 +65,10 @@ describe('splitLeaf / removeLeaf / normalizeSizes', () => {
         {
           kind: 'branch',
           dir: 'col',
-          children: [{ kind: 'leaf', groupId: 'b' }, { kind: 'leaf', groupId: 'c' }],
+          children: [
+            { kind: 'leaf', groupId: 'b' },
+            { kind: 'leaf', groupId: 'c' },
+          ],
           sizes: [0.5, 0.5],
         },
       ],
@@ -114,7 +127,10 @@ describe('splitLeaf / removeLeaf / normalizeSizes', () => {
         {
           kind: 'branch',
           dir: 'col',
-          children: [{ kind: 'leaf', groupId: 'b' }, { kind: 'leaf', groupId: 'c' }],
+          children: [
+            { kind: 'leaf', groupId: 'b' },
+            { kind: 'leaf', groupId: 'c' },
+          ],
           sizes: [0.5, 0.5],
         },
       ],
@@ -122,7 +138,9 @@ describe('splitLeaf / removeLeaf / normalizeSizes', () => {
     };
     const next = setSizesAtPath(tree, [1], [0.8, 0.2]) as Extract<GroupLayout, { kind: 'branch' }>;
     // The NESTED branch resized; the root untouched.
-    expect((next.children[1] as Extract<GroupLayout, { kind: 'branch' }>).sizes).toEqual([0.8, 0.2]);
+    expect((next.children[1] as Extract<GroupLayout, { kind: 'branch' }>).sizes).toEqual([
+      0.8, 0.2,
+    ]);
     expect(next.sizes).toEqual([0.5, 0.5]);
   });
 });

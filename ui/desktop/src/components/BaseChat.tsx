@@ -75,6 +75,7 @@ import InAppTerminalDock from './InAppTerminalDock';
 import { ChatTurnError, hasVisibleTurnErrorMessage } from './conversation/ChatTurnError';
 import type { ArtifactRenderError } from './artifacts/ArtifactViewer';
 import type { ArtifactSource } from './artifacts/artifactTypes';
+import type { LiveBrowserShare } from './artifacts/WebPagePreview';
 import {
   artifactSourceFromResourceLink,
   artifactSourceFromResource,
@@ -1095,12 +1096,17 @@ function BaseChatContent({
     openArtifact: handleOpenArtifact,
     reset: resetArtifactPanel,
   } = artifactPanel;
+  const [liveBrowserShare, setLiveBrowserShare] = useState<LiveBrowserShare | null>(null);
+  const [filePreviewRevision, setFilePreviewRevision] = useState<string | null>(null);
   // Publishes this panel to the agent. Chat-only: reading a saved transcript's
   // panel would be reading a different conversation's screen.
   useArtifactPanelAccess({
     sessionId,
     artifact: presentedArtifact,
     isOpen: Boolean(presentedArtifact && artifactPanelEnabled),
+    liveBrowserShare,
+    panelRootRef: splitPaneRef,
+    fileSourceRevision: filePreviewRevision,
   });
   const { state: sidebarState } = useSidebar();
   const [isSidebarCompact, setIsSidebarCompact] = useState(() => {
@@ -1347,6 +1353,8 @@ function BaseChatContent({
       return;
     }
     let cancelled = false;
+    setSessionSupportsVision(false);
+    setSessionSupportedInputMimeTypes(null);
     (async () => {
       try {
         const metadata = await getProviderMetadata(sessionProvider, getProviders);
@@ -1933,7 +1941,7 @@ function BaseChatContent({
         workflowAccepted={!hasNotAcceptedWorkflow}
         initialPrompt={initialPrompt}
         toolCount={toolCount || 0}
-        supportsVisionOverride={sessionSupportsVision ?? undefined}
+        supportsVisionOverride={session ? (sessionSupportsVision ?? false) : undefined}
         supportedInputMimeTypesOverride={sessionSupportedInputMimeTypes}
         // #39 — capture a pre-session directory choice so the first message
         // creates the session in it. Before the customChatInputProps spread,
@@ -2317,6 +2325,8 @@ function BaseChatContent({
               // all: a read-only transcript passes nothing here, so
               // ArtifactViewer never installs the postMessage listener.
               onRenderError={handleArtifactRenderError}
+              onLiveBrowserShareChange={setLiveBrowserShare}
+              onFilePreviewRevisionChange={setFilePreviewRevision}
               // Chat-only, for the same reason as onRenderError above: it is
               // what enables the annotate control, and a saved transcript has
               // no running conversation to attach a region to.

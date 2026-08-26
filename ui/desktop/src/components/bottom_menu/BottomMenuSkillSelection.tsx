@@ -182,7 +182,9 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
               {emptyMessage()}
             </div>
           ) : (
-            filteredEntries.map((entry) => <SkillRow key={entry.key} entry={entry} onToggle={handleToggle} />)
+            filteredEntries.map((entry) => (
+              <SkillRow key={entry.key} entry={entry} onToggle={handleToggle} />
+            ))
           )}
         </div>
       </DropdownMenuContent>

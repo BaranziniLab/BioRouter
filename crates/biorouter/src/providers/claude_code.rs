@@ -113,12 +113,6 @@ pub const CLAUDE_CODE_DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 
 pub const CLAUDE_CODE_DOC_URL: &str = "https://code.claude.com/docs/en/headless";
 
-/// A turn's wall-clock ceiling. Generous because a real coding-agent turn can
-/// legitimately run for minutes, but finite: none of the previous CLI-agent
-/// providers had a timeout at all, so a wedged child held a session open forever
-/// with no way to stop it.
-const TURN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-
 /// Models advertised in the picker, with the context window each alias resolves
 /// to today.
 ///
@@ -131,10 +125,10 @@ fn known_models() -> Vec<ModelInfo> {
     // `tests/context_windows.rs::provider_declared_windows_match_the_registry`
     // compares the two.
     vec![
-        ModelInfo::new("claude-sonnet-4-6", 1_000_000),
-        ModelInfo::new("claude-opus-5", 1_000_000),
-        ModelInfo::new("claude-fable-5", 1_000_000),
-        ModelInfo::new("claude-haiku-4-5", 200_000),
+        ModelInfo::new("claude-sonnet-4-6", 1_000_000).with_vision(),
+        ModelInfo::new("claude-opus-5", 1_000_000).with_vision(),
+        ModelInfo::new("claude-fable-5", 1_000_000).with_vision(),
+        ModelInfo::new("claude-haiku-4-5", 200_000).with_vision(),
     ]
 }
 
@@ -298,6 +292,28 @@ impl ClaudeCodeProvider {
         cmd
     }
 
+    fn completion_command(
+        &self,
+        model_config: &ModelConfig,
+        system: &str,
+        mcp_config: Option<&std::path::Path>,
+        prompt: &transcript::Prompt,
+    ) -> tokio::process::Command {
+        let multimodal = !prompt.images.is_empty();
+        let mut cmd = self.command_for(
+            model_config,
+            system,
+            if multimodal { "stream-json" } else { "json" },
+            mcp_config,
+        );
+        if multimodal {
+            cmd.arg("--input-format");
+            cmd.arg("stream-json");
+            cmd.arg("--verbose");
+        }
+        cmd
+    }
+
     /// Refuse to continue if the run is not actually on the subscription.
     ///
     /// `system/init` reports `apiKeySource`, which is `"none"` under subscription
@@ -353,7 +369,7 @@ impl ClaudeCodeProvider {
     async fn run(
         &self,
         mut cmd: tokio::process::Command,
-        prompt: &str,
+        prompt: &transcript::Prompt,
     ) -> Result<(Vec<String>, String, std::process::ExitStatus), ProviderError> {
         // ⚠ `kill_on_drop`, because a cancelled turn drops this future rather
         // than unwinding it. `drive_stream`'s hard-cancellation escape breaks
@@ -375,7 +391,7 @@ impl ClaudeCodeProvider {
         // be far larger than the platform's argv limit, and the deleted provider
         // put the whole thing in a single `-p` argument.
         if let Some(mut stdin) = child.stdin.take() {
-            let bytes = prompt.as_bytes().to_vec();
+            let bytes = encode_claude_completion_input(prompt)?;
             tokio::spawn(async move {
                 let _ = stdin.write_all(&bytes).await;
                 let _ = stdin.shutdown().await;
@@ -409,7 +425,7 @@ impl ClaudeCodeProvider {
             out
         });
 
-        let waited = tokio::time::timeout(TURN_TIMEOUT, child.wait()).await;
+        let waited = coding_agent::await_turn(child.wait(), coding_agent::turn_timeout()).await;
         let status = match waited {
             Ok(Ok(status)) => status,
             Ok(Err(e)) => {
@@ -417,11 +433,11 @@ impl ClaudeCodeProvider {
                     "waiting for `claude` failed: {e}"
                 )))
             }
-            Err(_) => {
+            Err(elapsed) => {
                 let _ = child.start_kill();
                 return Err(ProviderError::ExecutionError(format!(
                     "`claude` did not finish within {}s and was stopped",
-                    TURN_TIMEOUT.as_secs()
+                    elapsed.duration().as_secs()
                 )));
             }
         };
@@ -431,8 +447,7 @@ impl ClaudeCodeProvider {
         Ok((lines, errors, status))
     }
 
-    /// Parse `--output-format json`: one object carrying the final text and the
-    /// authoritative usage.
+    /// Parse the result object emitted by either JSON output mode.
     fn parse_result_object(
         &self,
         model: &str,
@@ -728,7 +743,7 @@ struct PumpInputs {
     stdin: tokio::process::ChildStdin,
     stdout: tokio::process::ChildStdout,
     stderr_task: tokio::task::JoinHandle<String>,
-    initial_prompt: String,
+    initial_prompt: transcript::Prompt,
     steering: Option<ProviderSteerReceiver>,
     model_name: String,
     out_tx: tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
@@ -737,13 +752,13 @@ struct PumpInputs {
 enum ClaudePumpInput {
     Output(std::io::Result<Option<String>>),
     Steer(Option<ProviderSteerRequest>),
-    Timeout,
+    Timeout(Duration),
 }
 
 async fn next_claude_pump_input(
     lines: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
     steering: &mut Option<ProviderSteerReceiver>,
-    deadline: tokio::time::Instant,
+    deadline: Option<(tokio::time::Instant, Duration)>,
 ) -> ClaudePumpInput {
     tokio::select! {
         line = lines.next_line() => ClaudePumpInput::Output(line),
@@ -753,7 +768,15 @@ async fn next_claude_pump_input(
                 None => std::future::pending().await,
             }
         } => ClaudePumpInput::Steer(request),
-        _ = tokio::time::sleep_until(deadline) => ClaudePumpInput::Timeout,
+        duration = async {
+            match deadline {
+                Some((deadline, duration)) => {
+                    tokio::time::sleep_until(deadline).await;
+                    duration
+                }
+                None => std::future::pending().await,
+            }
+        } => ClaudePumpInput::Timeout(duration),
     }
 }
 
@@ -761,17 +784,55 @@ async fn write_claude_user_message(
     stdin: &mut tokio::process::ChildStdin,
     text: &str,
 ) -> Result<(), ProviderError> {
+    write_claude_line(stdin, encode_claude_user_message(serde_json::json!(text))?).await
+}
+
+fn encode_claude_prompt(prompt: &transcript::Prompt) -> Result<Vec<u8>, ProviderError> {
+    let content = if prompt.images.is_empty() {
+        serde_json::json!(prompt.text)
+    } else {
+        let mut content = vec![serde_json::json!({ "type": "text", "text": prompt.text })];
+        content.extend(prompt.images.iter().map(|image| {
+            serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image.mime_type,
+                    "data": image.data,
+                }
+            })
+        }));
+        Value::Array(content)
+    };
+    encode_claude_user_message(content)
+}
+
+fn encode_claude_completion_input(prompt: &transcript::Prompt) -> Result<Vec<u8>, ProviderError> {
+    if prompt.images.is_empty() {
+        return Ok(prompt.text.as_bytes().to_vec());
+    }
+    encode_claude_prompt(prompt)
+}
+
+fn encode_claude_user_message(content: Value) -> Result<Vec<u8>, ProviderError> {
     let message = serde_json::json!({
         "type": "user",
         "message": {
             "role": "user",
-            "content": text,
+            "content": content,
         },
         "parent_tool_use_id": null,
     });
     let mut line = serde_json::to_vec(&message)
         .map_err(|e| ProviderError::ExecutionError(format!("encoding Claude input failed: {e}")))?;
     line.push(b'\n');
+    Ok(line)
+}
+
+async fn write_claude_line(
+    stdin: &mut tokio::process::ChildStdin,
+    line: Vec<u8>,
+) -> Result<(), ProviderError> {
     stdin.write_all(&line).await.map_err(|e| {
         ProviderError::ExecutionError(format!("writing to the running `claude` turn failed: {e}"))
     })?;
@@ -795,13 +856,13 @@ async fn next_claude_line(
     lines: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
     steering: &mut Option<ProviderSteerReceiver>,
     stdin: &mut tokio::process::ChildStdin,
-    deadline: tokio::time::Instant,
+    deadline: Option<(tokio::time::Instant, Duration)>,
 ) -> ClaudeLineOutcome {
     match next_claude_pump_input(lines, steering, deadline).await {
-        ClaudePumpInput::Timeout => ClaudeLineOutcome::Failure {
+        ClaudePumpInput::Timeout(duration) => ClaudeLineOutcome::Failure {
             error: ProviderError::ExecutionError(format!(
                 "`claude` did not finish within {}s and was stopped",
-                TURN_TIMEOUT.as_secs()
+                duration.as_secs()
             )),
             kill_child: true,
         },
@@ -998,13 +1059,18 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
     let mut partial_args: std::collections::HashMap<String, PendingArgs> =
         std::collections::HashMap::new();
 
-    let deadline = tokio::time::Instant::now() + TURN_TIMEOUT;
+    let deadline = coding_agent::turn_timeout()
+        .map(|duration| (tokio::time::Instant::now() + duration, duration));
     let mut terminal: Option<Result<ProviderUsage, ProviderError>> = None;
     let mut completed_usage: Option<ProviderUsage> = None;
     let mut outstanding_turns = 1usize;
     let mut pending_steers = std::collections::VecDeque::new();
 
-    if let Err(error) = write_claude_user_message(&mut stdin, &initial_prompt).await {
+    let initial_line = encode_claude_prompt(&initial_prompt);
+    if let Err(error) = match initial_line {
+        Ok(line) => write_claude_line(&mut stdin, line).await,
+        Err(error) => Err(error),
+    } {
         let _ = child.start_kill();
         let _ = out_tx.send(Err(error));
         return;
@@ -1119,7 +1185,7 @@ fn bridge_mcp_config() -> Result<Option<tempfile::NamedTempFile>, ProviderError>
             "biorouter": {
                 "type": "http",
                 "url": url,
-                "timeout": bridge::CHILD_TOOL_CALL_TIMEOUT.as_millis() as u64,
+                "timeout": bridge::child_tool_call_timeout_millis(),
             }
         }
     });
@@ -1183,7 +1249,7 @@ impl ClaudeCodeProvider {
         messages: &[Message],
         steering: Option<ProviderSteerReceiver>,
     ) -> Result<MessageStream, ProviderError> {
-        let prompt = transcript::flatten(messages).ok_or_else(|| {
+        let prompt = transcript::flatten_with_images(messages).ok_or_else(|| {
             ProviderError::RequestFailed(
                 "there is no user message for `claude` to answer".to_string(),
             )
@@ -1314,7 +1380,7 @@ impl Provider for ClaudeCodeProvider {
     ) -> Result<(Message, ProviderUsage), ProviderError> {
         // Tools are accepted and not forwarded yet. They cannot simply be dropped
         // once the MCP bridge lands, so this is the one seam that changes then.
-        let prompt = transcript::flatten(messages).ok_or_else(|| {
+        let prompt = transcript::flatten_with_images(messages).ok_or_else(|| {
             ProviderError::RequestFailed(
                 "there is no user message for `claude` to answer".to_string(),
             )
@@ -1324,11 +1390,11 @@ impl Provider for ClaudeCodeProvider {
         // inlined: dropping a `NamedTempFile` deletes it, and a child that started
         // a moment later would find no configuration.
         let bridge_config = bridge_mcp_config()?;
-        let cmd = self.command_for(
+        let cmd = self.completion_command(
             model_config,
             system,
-            "json",
             bridge_config.as_ref().map(|f| f.path()),
+            &prompt,
         );
         let (lines, stderr, status) = self.run(cmd, &prompt).await?;
         self.parse_result_object(&model_config.model_name, &lines, &stderr, status)
@@ -1458,7 +1524,7 @@ mod tests {
         assert_eq!(server["url"], "http://127.0.0.1:9/tool_bridge/deadbeef");
         assert_eq!(
             server["timeout"],
-            bridge::CHILD_TOOL_CALL_TIMEOUT.as_millis() as u64,
+            bridge::child_tool_call_timeout().as_millis() as u64,
             "milliseconds — Claude Code's unit, not Codex's seconds"
         );
         // The unit is easy to get wrong in the direction that looks fine: 660
@@ -1737,6 +1803,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn blocking_completion_pairs_compatible_input_and_output_formats() {
+        fn value_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+            let index = args
+                .iter()
+                .position(|arg| arg == flag)
+                .unwrap_or_else(|| panic!("missing {flag}"));
+            args.get(index + 1).map(String::as_str)
+        }
+
+        let provider = provider();
+        let model = ModelConfig::new("claude-sonnet-4-6").unwrap();
+
+        let text_prompt = transcript::Prompt::text_only("Name this chat");
+        let text_command = provider.completion_command(&model, "SYS", None, &text_prompt);
+        let text_args: Vec<String> = text_command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(value_after(&text_args, "--output-format"), Some("json"));
+        assert!(!text_args.iter().any(|arg| arg == "--input-format"));
+        assert_eq!(
+            encode_claude_completion_input(&text_prompt).unwrap(),
+            b"Name this chat"
+        );
+
+        let image_prompt = transcript::Prompt {
+            text: "Describe this".to_string(),
+            images: vec![transcript::ImageInput {
+                data: "cGl4ZWxz".to_string(),
+                mime_type: "image/png",
+            }],
+        };
+        let image_command = provider.completion_command(&model, "SYS", None, &image_prompt);
+        let image_args: Vec<String> = image_command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            value_after(&image_args, "--output-format"),
+            Some("stream-json")
+        );
+        assert_eq!(
+            value_after(&image_args, "--input-format"),
+            Some("stream-json")
+        );
+        assert!(image_args.iter().any(|arg| arg == "--verbose"));
+        let frame: Value =
+            serde_json::from_slice(&encode_claude_completion_input(&image_prompt).unwrap())
+                .unwrap();
+        assert!(frame["message"]["content"].is_array());
+    }
+
     /// An `apiKeySource` other than "none" means the run would be billed to a
     /// metered account, which is the one outcome this provider exists to prevent.
     #[test]
@@ -1907,6 +2028,46 @@ mod tests {
         assert!(m.config_keys[0].required);
         assert!(!m.config_keys[0].secret);
         assert_eq!(m.config_keys[0].default.as_deref(), Some("claude"));
+        assert!(
+            m.known_models
+                .iter()
+                .all(|model| model.supports_vision == Some(true)),
+            "every current Claude model accepts image inputs"
+        );
+    }
+
+    #[test]
+    fn multimodal_prompt_uses_claude_stream_json_content_blocks() {
+        let prompt = transcript::Prompt {
+            text: "describe".to_string(),
+            images: vec![transcript::ImageInput {
+                data: "cGl4ZWxz".to_string(),
+                mime_type: "image/webp",
+            }],
+        };
+
+        let line = encode_claude_prompt(&prompt).expect("the input frame encodes");
+        let frame: Value = serde_json::from_slice(&line).expect("the frame is JSON");
+        assert_eq!(frame["type"], "user");
+        assert_eq!(frame["message"]["role"], "user");
+        assert_eq!(
+            frame["message"]["content"][0],
+            serde_json::json!({
+                "type": "text",
+                "text": "describe",
+            })
+        );
+        assert_eq!(
+            frame["message"]["content"][1],
+            serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/webp",
+                    "data": "cGl4ZWxz",
+                }
+            })
+        );
     }
 
     fn exit_ok() -> std::process::ExitStatus {

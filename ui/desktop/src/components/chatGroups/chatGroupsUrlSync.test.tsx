@@ -75,7 +75,11 @@ function renderAt(
         <Route
           path="/pair"
           element={
-            <Harness onOpen={onOpen} initialActive={initialActive} activateOnOpen={activateOnOpen} />
+            <Harness
+              onOpen={onOpen}
+              initialActive={initialActive}
+              activateOnOpen={activateOnOpen}
+            />
           }
         />
       </Routes>

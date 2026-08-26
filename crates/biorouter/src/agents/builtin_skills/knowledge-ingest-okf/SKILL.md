@@ -8,8 +8,9 @@ description: "The loop for ingesting a source into an OKF knowledge base: turnin
 This is the loop for a base whose `format` is `okf`. Check first — read the base's
 `schema.md` — because a **BioOKF** base has a controlled vocabulary and a required
 provenance triplet, and the skill for it is **knowledge-ingest-biookf**. If the base
-predates the format entirely (`title:` / `kind:` frontmatter, `[[wiki links]]`), match
-what is already there instead of introducing a third style.
+has no `format`, stop and tell the user that its retired pre-OKF storage must be
+purged by restarting Biorouter. Never create or extend legacy `title:` / `kind:`
+pages or `[[wiki links]]`.
 
 You own `knowledge/`, `index.md` and `log.md`. **Never write under `raw/`** — it holds
 the original bytes and is read-only by design.
@@ -64,8 +65,8 @@ sympathetic tone.[^pmid-32504360]
 ```
 
 A link to a page that does not exist yet is legal and is recorded — create it when you
-know enough to write it. Older pages may use `[[double brackets]]`; those are still read
-forever, but do not write new ones and do not go rewriting old ones.
+know enough to write it. Do not write `[[double brackets]]`; that retired syntax is not
+part of an OKF or BioOKF knowledge base.
 
 **8 — Bookkeep.** Update `index.md` so the new pages are catalogued, then
 `kb_append_log` with `kind: "ingest"` and a one-line summary plus a `delta` like

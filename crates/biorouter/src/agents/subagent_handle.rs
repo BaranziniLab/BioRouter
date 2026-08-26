@@ -74,6 +74,11 @@ const MAX_RETAINED_FINISHED_TOTAL: usize = 512;
 static NEXT_HANDLE_ID: AtomicU64 = AtomicU64::new(1);
 static HANDLES: LazyLock<Mutex<Vec<Arc<BackgroundSubagent>>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
+/// Serializes a reaper's supervision decision with every transition that can
+/// make an exact child generation newly authoritative. The reaper holds this
+/// through cancellation, so registration cannot land between "not supervised"
+/// and `cancel()`.
+static SUPERVISION_DECISION_GATE: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Default)]
 struct ContinuationPendingState {
@@ -89,6 +94,7 @@ struct ContinuationPendingState {
 struct InitialRunState {
     runtime_ready: bool,
     finished: bool,
+    human_intervened: bool,
     pending_user_inputs: Vec<PendingInitialInput>,
 }
 
@@ -96,6 +102,55 @@ struct InitialRunState {
 struct PendingInitialInput {
     turn_id: Option<String>,
     message: Message,
+}
+
+/// How many distinct pre-start inputs one initializing child will retain.
+///
+/// A bound rather than an unbounded `Vec`, because this queue is fed by clients
+/// that retry: the exact-identity check in [`queue_initializing_child_input`]
+/// already collapses a retry storm of the SAME text, so reaching this cap means
+/// a client is generating genuinely different messages in a loop. Every message
+/// here is concatenated into ONE delegated prompt, so 64 distinct pre-start
+/// steers is already far past anything a human produces before a permit frees.
+///
+/// A count cap and not also a byte cap: each message arrives through a request
+/// body the server already bounds, so bounding the count bounds the memory.
+const MAX_PENDING_INITIAL_INPUTS: usize = 64;
+
+/// Whether two accepted pre-start inputs are the SAME user turn.
+///
+/// One definition, shared by the queue's admission check and the transcript
+/// idempotency probe in [`crate::agents::subagent_handler`], because those two
+/// answer the same question at opposite ends of the same pipe — "have we
+/// already taken this?" — and two definitions would disagree exactly where it
+/// hurts: the queue accepting a retry the transcript then stores twice.
+///
+/// Identity is the client's `id` when both sides carry one, and otherwise the
+/// `(role, content, provenance)` tuple.
+///
+/// ⚠ `created` is deliberately NOT part of the tuple, and that is a departure
+/// from `SessionManager::add_message`'s replay detector, which does compare it.
+/// The clients that send id-less input restamp `created` on every attempt —
+/// `biorouter session send` builds its body with `Utc::now().timestamp()` — so a
+/// one-second-granularity timestamp makes two attempts at the same text look
+/// like two different turns whenever they straddle a second boundary, which is
+/// every SSE retry. Including it would make this predicate blind to precisely
+/// the duplicates it exists to catch. What it costs is that a user who
+/// deliberately sends identical text twice *before the child starts* has it
+/// carried once — and since every pre-start input is concatenated into one
+/// prompt, the second copy carried no meaning the first did not.
+pub(crate) fn is_same_accepted_input(candidate: &Message, existing: &Message) -> bool {
+    let ids_agree = match (candidate.id.as_deref(), existing.id.as_deref()) {
+        // Two client-supplied ids settle identity outright.
+        (Some(candidate_id), Some(existing_id)) => candidate_id == existing_id,
+        // Either side unnamed: the content tuple below is the only identity
+        // there is.
+        _ => true,
+    };
+    ids_agree
+        && candidate.role == existing.role
+        && candidate.content == existing.content
+        && candidate.metadata.provenance == existing.metadata.provenance
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +241,9 @@ impl BackgroundSubagent {
         cancel: CancellationToken,
         runtime_ready: bool,
     ) -> Arc<Self> {
+        let _decision = SUPERVISION_DECISION_GATE
+            .lock()
+            .expect("subagent supervision decision gate poisoned");
         let parent_session_id = parent_session_id.into();
         let mut handles = HANDLES.lock().expect("subagent handle registry poisoned");
         let parent_closing = handles
@@ -230,14 +288,33 @@ impl BackgroundSubagent {
     /// `send_replace`, not `send`: a `watch` sender with no live receivers treats
     /// `send` as a failure and **throws the value away**, which for a background
     /// subagent nobody happens to be waiting on would silently lose its result.
-    pub fn complete(&self, result: SubagentResult) {
-        let mut state = self
-            .initial_run
+    pub fn complete(&self, mut result: SubagentResult) {
+        // Closes admission WITHOUT draining. `complete` is synchronous and holds
+        // no session manager, so anything it took it could only drop — which
+        // would make the act of reporting a result destroy the user's steering,
+        // and the report would not even say which words were lost. Ownership of
+        // the drain stays with the detached completion path, the one caller that
+        // can persist what it takes; leaving the messages queued keeps a later
+        // `finish_initial_run_and_take_pending` able to recover them.
+        //
+        // The result is ANNOTATED rather than replaced for the same reason: a
+        // completed run's summary is the only record of work the child actually
+        // did, and swapping it for an error about the queue threw that away too.
+        if self.finish_initial_run_retaining_pending() {
+            result.human_intervened = true;
+            result.summary = format!(
+                "{}\n\n[accepted user steering was not settled before this subagent \
+                 completed; it is still queued and was not applied to the run above]",
+                result.summary
+            );
+        }
+        if self.initial_run_human_intervened() {
+            result.human_intervened = true;
+        }
+
+        let _decision = SUPERVISION_DECISION_GATE
             .lock()
-            .expect("subagent initial-run state poisoned");
-        state.finished = true;
-        state.pending_user_inputs.clear();
-        drop(state);
+            .expect("subagent supervision decision gate poisoned");
         let _continuation = self
             .continuation_pending
             .lock()
@@ -249,6 +326,49 @@ impl BackgroundSubagent {
                 result,
             }));
         self.signal_state_change();
+    }
+
+    /// Close initial-turn admission and report whether any accepted input is
+    /// still unsettled, WITHOUT claiming it.
+    ///
+    /// The non-draining sibling of [`finish_initial_run_and_take_pending`], for
+    /// the one caller ([`complete`](Self::complete)) that can observe the queue
+    /// but cannot persist it.
+    fn finish_initial_run_retaining_pending(&self) -> bool {
+        let _decision = SUPERVISION_DECISION_GATE
+            .lock()
+            .expect("subagent supervision decision gate poisoned");
+        let mut state = self
+            .initial_run
+            .lock()
+            .expect("subagent initial-run state poisoned");
+        state.finished = true;
+        !state.pending_user_inputs.is_empty()
+    }
+
+    /// Close initial-turn admission and atomically claim every accepted input
+    /// that could not reach the delegated runtime. The detached completion path
+    /// persists and publishes these messages before publishing its result.
+    pub(crate) fn finish_initial_run_and_take_pending(&self) -> Vec<Message> {
+        let _decision = SUPERVISION_DECISION_GATE
+            .lock()
+            .expect("subagent supervision decision gate poisoned");
+        let mut state = self
+            .initial_run
+            .lock()
+            .expect("subagent initial-run state poisoned");
+        state.finished = true;
+        std::mem::take(&mut state.pending_user_inputs)
+            .into_iter()
+            .map(|pending| pending.message)
+            .collect()
+    }
+
+    fn initial_run_human_intervened(&self) -> bool {
+        self.initial_run
+            .lock()
+            .expect("subagent initial-run state poisoned")
+            .human_intervened
     }
 
     fn signal_state_change(&self) {
@@ -293,6 +413,10 @@ impl BackgroundSubagent {
         state.committed || state.reservations > 0
     }
 
+    fn has_unsettled_generation(&self) -> bool {
+        self.is_running() || self.continuation_pending() || !self.latest_generation_collected()
+    }
+
     pub fn child_turn_generation(&self) -> u64 {
         self.child_turn_generation.load(Ordering::Acquire)
     }
@@ -310,6 +434,9 @@ impl BackgroundSubagent {
     /// A successor beginning between a watch/read and this call makes the
     /// collection stale rather than accidentally collecting the successor.
     pub fn mark_collected_if_generation(&self, generation: u64) -> bool {
+        let _decision = SUPERVISION_DECISION_GATE
+            .lock()
+            .expect("subagent supervision decision gate poisoned");
         let mut collected = self
             .collected_generation
             .lock()
@@ -331,6 +458,9 @@ impl BackgroundSubagent {
     /// after taking the collection lock because `begin_child_turn` advances it
     /// under that lock before invalidating the retained result.
     pub fn mark_current_result_collected_if_generation(&self, generation: u64) -> bool {
+        let _decision = SUPERVISION_DECISION_GATE
+            .lock()
+            .expect("subagent supervision decision gate poisoned");
         let continuation = self
             .continuation_pending
             .lock()
@@ -358,6 +488,9 @@ impl BackgroundSubagent {
     }
 
     pub fn mark_terminal_generation_collected_if_generation(&self, generation: u64) -> bool {
+        let _decision = SUPERVISION_DECISION_GATE
+            .lock()
+            .expect("subagent supervision decision gate poisoned");
         let continuation = self
             .continuation_pending
             .lock()
@@ -390,6 +523,9 @@ impl BackgroundSubagent {
     }
 
     pub fn rollback_terminal_generation_collection(&self, generation: u64) {
+        let _decision = SUPERVISION_DECISION_GATE
+            .lock()
+            .expect("subagent supervision decision gate poisoned");
         let mut collected = self
             .collected_generation
             .lock()
@@ -535,17 +671,39 @@ pub fn queue_initializing_child_input(
     if state.runtime_ready || state.finished {
         return InitialInputDisposition::NotInitializing;
     }
-    if turn_id.is_some()
-        && state
-            .pending_user_inputs
-            .iter()
-            .any(|pending| pending.turn_id == turn_id)
-    {
+    // A client-supplied turn id is the cheapest and most exact answer, but it is
+    // OPTIONAL on the wire: `/reply` forwards `request.turn_id`, and the CLI's
+    // `session send` sends none. Without a fallback the push was unconditional,
+    // so a renderer that re-POSTs after reading 202-with-no-event-stream as a
+    // dropped connection appended another copy of the user's text on every
+    // retry — and `mark_initial_runtime_ready` then spliced all of them into the
+    // child's opening prompt.
+    let already_accepted = state.pending_user_inputs.iter().any(|pending| {
+        match (pending.turn_id.as_deref(), turn_id.as_deref()) {
+            (Some(accepted), Some(candidate)) => accepted == candidate,
+            _ => is_same_accepted_input(&message, &pending.message),
+        }
+    });
+    if already_accepted {
+        return InitialInputDisposition::Duplicate;
+    }
+    if state.pending_user_inputs.len() >= MAX_PENDING_INITIAL_INPUTS {
+        // Reported as `Duplicate` because that is the disposition's only other
+        // "accepted, nothing new queued" answer and the three variants are the
+        // HTTP route's contract in another crate; a fourth would be a
+        // cross-crate breaking change for a case that means a runaway client.
+        // Logged rather than silent, so the drop is diagnosable.
+        tracing::warn!(
+            child_session_id,
+            queued = state.pending_user_inputs.len(),
+            "pre-start steering queue is at its cap; dropping further input for this child"
+        );
         return InitialInputDisposition::Duplicate;
     }
     state
         .pending_user_inputs
         .push(PendingInitialInput { turn_id, message });
+    state.human_intervened = true;
     InitialInputDisposition::Queued
 }
 
@@ -567,10 +725,34 @@ pub fn mark_initial_runtime_ready(child_session_id: &str) -> Vec<Message> {
         return Vec::new();
     }
     state.runtime_ready = true;
-    std::mem::take(&mut state.pending_user_inputs)
-        .into_iter()
-        .map(|pending| pending.message)
+    if !state.pending_user_inputs.is_empty() {
+        state.human_intervened = true;
+    }
+    state
+        .pending_user_inputs
+        .iter()
+        .map(|pending| pending.message.clone())
         .collect()
+}
+
+/// Acknowledge the initialization queue only after its combined delegated
+/// message is durable. Until this point completion can still recover the exact
+/// accepted inputs if setup fails or panics after runtime admission.
+pub fn settle_initial_runtime_inputs(child_session_id: &str) {
+    let handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    let Some(handle) = handles
+        .iter()
+        .find(|handle| handle.child_session_id == child_session_id && handle.is_running())
+    else {
+        return;
+    };
+    let mut state = handle
+        .initial_run
+        .lock()
+        .expect("subagent initial-run state poisoned");
+    if state.runtime_ready && !state.finished {
+        state.pending_user_inputs.clear();
+    }
 }
 
 pub fn is_child_initializing(child_session_id: &str) -> bool {
@@ -630,6 +812,9 @@ pub fn begin_parent_closing(parent_session_id: &str) {
 }
 
 pub fn record_child_turn_terminal(child_session_id: &str, result: SubagentResult) {
+    let _decision = SUPERVISION_DECISION_GATE
+        .lock()
+        .expect("subagent supervision decision gate poisoned");
     let handles = HANDLES.lock().expect("subagent handle registry poisoned");
     for handle in handles
         .iter()
@@ -657,6 +842,9 @@ pub fn record_child_turn_terminal(child_session_id: &str, result: SubagentResult
 /// call means the user has continued or redirected the child and any retained
 /// result from the original delegated run is now historical.
 pub fn begin_child_turn(child_session_id: &str) {
+    let _decision = SUPERVISION_DECISION_GATE
+        .lock()
+        .expect("subagent supervision decision gate poisoned");
     let handles = HANDLES.lock().expect("subagent handle registry poisoned");
     for handle in handles
         .iter()
@@ -670,44 +858,85 @@ pub fn begin_child_turn(child_session_id: &str) {
         {
             continue;
         }
-        let mut state = handle
-            .continuation_pending
+        advance_child_turn(handle);
+    }
+}
+
+/// Admit a child turn once, even when more than one runtime layer observes its
+/// start. The server calls this before fallible setup;
+/// [`crate::agents::Agent::reply`] calls it again as a fallback for non-server
+/// callers. A generation with no matching terminal is already in flight and
+/// must not be advanced twice.
+pub fn admit_child_turn(child_session_id: &str) -> bool {
+    let _decision = SUPERVISION_DECISION_GATE
+        .lock()
+        .expect("subagent supervision decision gate poisoned");
+    let handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    let mut admitted = false;
+    for handle in handles
+        .iter()
+        .filter(|handle| handle.child_session_id == child_session_id)
+    {
+        if !handle
+            .initial_run
             .lock()
-            .expect("subagent continuation state poisoned");
-        let _collection = handle
-            .collected_generation
-            .lock()
-            .expect("subagent collection state poisoned");
-        let next_generation = handle.child_turn_generation.fetch_add(1, Ordering::AcqRel) + 1;
-        let is_initial_running_turn =
-            handle.is_running() && !handle.initial_turn_started.swap(true, Ordering::AcqRel);
-        if is_initial_running_turn {
-            // A fast Stop-and-Send can reserve the continuation after the
-            // server publishes the initial TurnStarted but before the agent
-            // reaches this hook. That initial turn is still the superseded
-            // generation, not the promised replacement.
-            if state.committed || state.reservations > 0 {
-                state.superseded_generation = next_generation;
-            }
-            drop(state);
-            handle.signal_state_change();
+            .expect("subagent initial-run state poisoned")
+            .runtime_ready
+        {
             continue;
         }
-        let was_pending = state.committed || state.reservations > 0;
-        if was_pending {
-            state.generation = state.generation.wrapping_add(1);
-            state.reservations = 0;
-            state.committed = false;
+        admitted = true;
+        let current_generation = handle.child_turn_generation();
+        let generation_in_flight = handle.initial_turn_started.load(Ordering::Acquire)
+            && handle
+                .terminal_generation()
+                .is_none_or(|terminal| terminal.generation != current_generation);
+        if generation_in_flight {
+            continue;
         }
-        if !was_pending {
-            state.generation = state.generation.wrapping_add(1);
-            state.superseded_generation = next_generation.saturating_sub(1);
-            state.superseded_turn_id = None;
+        advance_child_turn(handle);
+    }
+    admitted
+}
+
+fn advance_child_turn(handle: &BackgroundSubagent) {
+    let mut state = handle
+        .continuation_pending
+        .lock()
+        .expect("subagent continuation state poisoned");
+    let _collection = handle
+        .collected_generation
+        .lock()
+        .expect("subagent collection state poisoned");
+    let next_generation = handle.child_turn_generation.fetch_add(1, Ordering::AcqRel) + 1;
+    let initial_turn_was_unclaimed = !handle.initial_turn_started.swap(true, Ordering::AcqRel);
+    let is_initial_running_turn = handle.is_running() && initial_turn_was_unclaimed;
+    if is_initial_running_turn {
+        // A fast Stop-and-Send can reserve the continuation after the server
+        // publishes the initial TurnStarted but before the agent reaches this
+        // hook. That initial turn is still the superseded generation, not the
+        // promised replacement.
+        if state.committed || state.reservations > 0 {
+            state.superseded_generation = next_generation;
         }
-        handle.result_is_current.store(false, Ordering::Release);
         drop(state);
         handle.signal_state_change();
+        return;
     }
+    let was_pending = state.committed || state.reservations > 0;
+    if was_pending {
+        state.generation = state.generation.wrapping_add(1);
+        state.reservations = 0;
+        state.committed = false;
+    }
+    if !was_pending {
+        state.generation = state.generation.wrapping_add(1);
+        state.superseded_generation = next_generation.saturating_sub(1);
+        state.superseded_turn_id = None;
+    }
+    handle.result_is_current.store(false, Ordering::Release);
+    drop(state);
+    handle.signal_state_change();
 }
 
 /// A reversible Stop-and-Send admission mark.
@@ -770,6 +999,9 @@ impl ContinuationReservation {
             return;
         }
 
+        let _decision = SUPERVISION_DECISION_GATE
+            .lock()
+            .expect("subagent supervision decision gate poisoned");
         let mut state = self
             .handle
             .continuation_pending
@@ -805,6 +1037,9 @@ pub fn mark_continuation_pending_for_turn(
     child_session_id: &str,
     superseded_turn_id: Option<String>,
 ) -> ContinuationPendingMark {
+    let _decision = SUPERVISION_DECISION_GATE
+        .lock()
+        .expect("subagent supervision decision gate poisoned");
     let handles = HANDLES.lock().expect("subagent handle registry poisoned");
     if handles.iter().any(|handle| {
         handle.child_session_id == child_session_id && handle.parent_closing.load(Ordering::Acquire)
@@ -860,6 +1095,9 @@ pub fn abandon_continuation_for_turn(child_session_id: &str, superseded_turn_id:
 }
 
 fn abandon_continuation_matching(child_session_id: &str, superseded_turn_id: Option<&str>) -> bool {
+    let _decision = SUPERVISION_DECISION_GATE
+        .lock()
+        .expect("subagent supervision decision gate poisoned");
     let handles = HANDLES.lock().expect("subagent handle registry poisoned");
     let mut abandoned = false;
     for handle in handles
@@ -959,6 +1197,86 @@ pub fn list_for_session(parent_session_id: &str) -> Vec<Arc<BackgroundSubagent>>
         .filter(|h| h.parent_session_id == parent_session_id)
         .cloned()
         .collect()
+}
+
+/// Reattach supervision when a direct child follow-up starts after its fully
+/// collected handle was pruned from the bounded registry.
+///
+/// The replacement is born as generation one with no matching terminal and a
+/// collected historical generation zero. That makes the new generation live
+/// immediately at admission, while [`admit_child_turn`] remains idempotent when
+/// the runner observes the same start a moment later.
+pub fn ensure_direct_followup_handle(
+    parent_session_id: &str,
+    child_session_id: &str,
+    title: &str,
+) -> Arc<BackgroundSubagent> {
+    let _decision = SUPERVISION_DECISION_GATE
+        .lock()
+        .expect("subagent supervision decision gate poisoned");
+    let mut handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    if let Some(handle) = handles.iter().find(|handle| {
+        handle.parent_session_id == parent_session_id && handle.child_session_id == child_session_id
+    }) {
+        return Arc::clone(handle);
+    }
+
+    let parent_closing = handles
+        .iter()
+        .find(|handle| handle.parent_session_id == parent_session_id)
+        .map(|handle| Arc::clone(&handle.parent_closing))
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let historical = SubagentResult::from_error("previous child generation already collected");
+    let (result, _) = watch::channel(Some(historical));
+    let (terminal_generation, _) = watch::channel(None);
+    let (state_version, _) = watch::channel(0);
+    let handle = Arc::new(BackgroundSubagent {
+        id: format!("sub_{}", NEXT_HANDLE_ID.fetch_add(1, Ordering::SeqCst)),
+        parent_session_id: parent_session_id.to_string(),
+        child_session_id: child_session_id.to_string(),
+        title: title.to_string(),
+        parent_closing,
+        started: Instant::now(),
+        cancel: CancellationToken::new(),
+        result,
+        terminal_generation,
+        state_version,
+        result_is_current: AtomicBool::new(false),
+        initial_turn_started: AtomicBool::new(true),
+        initial_run: Mutex::new(InitialRunState {
+            runtime_ready: true,
+            finished: true,
+            ..InitialRunState::default()
+        }),
+        child_turn_generation: AtomicU64::new(1),
+        collected_generation: Mutex::new(Some(0)),
+        continuation_pending: Mutex::new(ContinuationPendingState::default()),
+    });
+    handles.push(Arc::clone(&handle));
+    prune_locked(&mut handles, parent_session_id);
+    handle
+}
+
+/// Evaluate whether `session_id` participates in a live delegated supervision
+/// boundary, then run `decide` while that answer cannot become stale in the
+/// unsafe direction.
+///
+/// Both sides are covered: a parent owns the handles it must collect, and a
+/// child is supervised by any handle retaining its exact current generation.
+/// Finished, collected handles do not exempt either session. The callback must
+/// not call another subagent-handle state mutation; the audience reaper uses it
+/// only to renew its idle clock or cancel the turn.
+pub fn with_live_delegated_supervision<R>(session_id: &str, decide: impl FnOnce(bool) -> R) -> R {
+    let _decision = SUPERVISION_DECISION_GATE
+        .lock()
+        .expect("subagent supervision decision gate poisoned");
+    let handles = HANDLES.lock().expect("subagent handle registry poisoned");
+    let supervised = handles.iter().any(|handle| {
+        (handle.parent_session_id == session_id || handle.child_session_id == session_id)
+            && handle.has_unsettled_generation()
+    });
+    drop(handles);
+    decide(supervised)
 }
 
 /// Look a handle up within its owning session.
@@ -1092,6 +1410,74 @@ mod tests {
     }
 
     #[test]
+    fn audience_supervision_tracks_only_a_live_exact_generation() {
+        let parent = "audience-live-parent";
+        let handle = new_handle(parent);
+        let child = handle.child_session_id.clone();
+        let supervised =
+            |session_id: &str| with_live_delegated_supervision(session_id, |supervised| supervised);
+
+        assert!(supervised(parent));
+        assert!(supervised(&child));
+        assert!(!supervised("persisted-subagent-with-no-live-handle"));
+
+        let generation = handle.child_turn_generation();
+        handle.complete(done("finished but not yet collected"));
+        assert!(supervised(parent));
+        assert!(supervised(&child));
+
+        assert!(handle.mark_current_result_collected_if_generation(generation));
+        assert!(!supervised(parent));
+        assert!(!supervised(&child));
+    }
+
+    #[test]
+    fn supervision_decision_serializes_new_handle_registration() {
+        let parent = "audience-atomic-parent".to_string();
+        let child = "audience-atomic-child".to_string();
+        let (decision_entered_tx, decision_entered_rx) = std::sync::mpsc::channel();
+        let (registration_attempted_tx, registration_attempted_rx) = std::sync::mpsc::channel();
+        let (registration_finished_tx, registration_finished_rx) = std::sync::mpsc::channel();
+
+        let decision_parent = parent.clone();
+        let decision = std::thread::spawn(move || {
+            with_live_delegated_supervision(&decision_parent, |supervised| {
+                assert!(!supervised);
+                decision_entered_tx.send(()).unwrap();
+                registration_attempted_rx.recv().unwrap();
+                assert!(
+                    registration_finished_rx
+                        .recv_timeout(Duration::from_millis(100))
+                        .is_err(),
+                    "registration crossed a reaper decision that had already sampled no supervision"
+                );
+            });
+        });
+
+        decision_entered_rx.recv().unwrap();
+        let registration_parent = parent.clone();
+        let registration = std::thread::spawn(move || {
+            registration_attempted_tx.send(()).unwrap();
+            let handle = BackgroundSubagent::register(
+                registration_parent,
+                child,
+                "new supervision",
+                CancellationToken::new(),
+            );
+            let _ = registration_finished_tx.send(());
+            handle
+        });
+
+        decision.join().unwrap();
+        let handle = registration.join().unwrap();
+        assert!(with_live_delegated_supervision(&parent, |live| live));
+
+        let generation = handle.child_turn_generation();
+        handle.complete(done("cleanup"));
+        assert!(handle.mark_current_result_collected_if_generation(generation));
+    }
+
+    #[test]
     fn cancel_marks_the_handle_cancelling() {
         let handle = new_handle("parent-cancel");
         assert!(!handle.is_cancelled());
@@ -1127,6 +1513,298 @@ mod tests {
         begin_child_turn(&child);
         assert_eq!(handle.child_turn_generation(), 1);
         assert!(handle.result_is_current());
+    }
+
+    /// Exactly what `/reply` forwards for a `biorouter session send`: no id, no
+    /// turn id, and a `created` stamped fresh on every attempt.
+    fn reply_shaped_steer(text: &str, created: i64) -> Message {
+        let mut message = Message::user().with_text(text).with_provenance(
+            crate::conversation::message::MessageProvenance {
+                kind: crate::conversation::message::ProvenanceKind::UserDirect,
+                from_session_id: None,
+                from_session_name: None,
+            },
+        );
+        message.created = created;
+        message
+    }
+
+    /// The dedup branch used to be guarded by `turn_id.is_some()`, so an
+    /// id-less push was appended unconditionally. A renderer that reads
+    /// `202 ACCEPTED` with an empty body as a dropped event stream re-POSTs, and
+    /// every retry added another copy of the same text to the child's opening
+    /// prompt.
+    ///
+    /// The retries carry DIFFERENT `created` stamps on purpose: that is what a
+    /// real retry looks like (each body is built with `Utc::now().timestamp()`),
+    /// and it is the case a timestamp-sensitive identity would miss.
+    #[test]
+    fn identical_id_less_retries_queue_once() {
+        let handle = new_initializing_handle("parent-retry-storm");
+        let child = handle.child_session_id.clone();
+
+        assert_eq!(
+            queue_initializing_child_input(&child, None, reply_shaped_steer("run it again", 100)),
+            InitialInputDisposition::Queued
+        );
+        for retry in 1..=4 {
+            assert_eq!(
+                queue_initializing_child_input(
+                    &child,
+                    None,
+                    reply_shaped_steer("run it again", 100 + retry),
+                ),
+                InitialInputDisposition::Duplicate,
+                "retry {retry} is the same accepted turn"
+            );
+        }
+
+        let queued = mark_initial_runtime_ready(&child);
+        assert_eq!(queued.len(), 1, "one user turn, one queued input");
+        assert_eq!(queued[0].as_concat_text(), "run it again");
+    }
+
+    /// The other direction, so the fix above cannot quietly become "collapse
+    /// everything": genuinely different steering still queues separately, and so
+    /// does the same text under two distinct client turn ids.
+    #[test]
+    fn distinct_pre_start_steering_still_queues_separately() {
+        let handle = new_initializing_handle("parent-distinct-steers");
+        let child = handle.child_session_id.clone();
+
+        assert_eq!(
+            queue_initializing_child_input(&child, None, reply_shaped_steer("first point", 10)),
+            InitialInputDisposition::Queued
+        );
+        assert_eq!(
+            queue_initializing_child_input(&child, None, reply_shaped_steer("second point", 10)),
+            InitialInputDisposition::Queued
+        );
+        assert_eq!(
+            queue_initializing_child_input(
+                &child,
+                Some("turn-a".into()),
+                reply_shaped_steer("same words", 10),
+            ),
+            InitialInputDisposition::Queued
+        );
+        assert_eq!(
+            queue_initializing_child_input(
+                &child,
+                Some("turn-b".into()),
+                reply_shaped_steer("same words", 10),
+            ),
+            InitialInputDisposition::Queued,
+            "two client turn ids are two turns, whatever they say"
+        );
+
+        let queued = mark_initial_runtime_ready(&child);
+        assert_eq!(queued.len(), 4);
+        // Multiple pre-start inputs preserve their provenance — that is what
+        // makes the delegated result report human intervention.
+        assert!(queued.iter().all(|message| message
+            .metadata
+            .provenance
+            .as_ref()
+            .is_some_and(|provenance| provenance.kind
+                == crate::conversation::message::ProvenanceKind::UserDirect)));
+        assert!(handle.initial_run_human_intervened());
+    }
+
+    /// Identity, stated once and shared with the transcript probe in
+    /// `subagent_handler`. `created` is excluded deliberately; ids decide when
+    /// both sides have one.
+    #[test]
+    fn accepted_input_identity_ignores_the_restamped_timestamp() {
+        let base = reply_shaped_steer("hold on", 1);
+        let restamped = reply_shaped_steer("hold on", 2);
+        assert!(is_same_accepted_input(&base, &restamped));
+
+        let different_text = reply_shaped_steer("carry on", 1);
+        assert!(!is_same_accepted_input(&base, &different_text));
+
+        let unstamped = Message::user().with_text("hold on");
+        assert!(
+            !is_same_accepted_input(&base, &unstamped),
+            "provenance is part of identity"
+        );
+
+        let named = base.clone().with_id("turn-1");
+        let renamed = base.clone().with_id("turn-2");
+        assert!(
+            !is_same_accepted_input(&named, &renamed),
+            "two client-supplied ids settle identity outright"
+        );
+        assert!(
+            is_same_accepted_input(&named, &base),
+            "one side unnamed falls back to the content tuple"
+        );
+    }
+
+    /// The queue is bounded. Reaching the cap means a client is generating
+    /// genuinely distinct messages in a loop, since retries of the same text no
+    /// longer grow it at all.
+    #[test]
+    fn the_pre_start_queue_is_bounded() {
+        let handle = new_initializing_handle("parent-queue-cap");
+        let child = handle.child_session_id.clone();
+
+        for index in 0..MAX_PENDING_INITIAL_INPUTS {
+            assert_eq!(
+                queue_initializing_child_input(
+                    &child,
+                    None,
+                    reply_shaped_steer(&format!("steer {index}"), 1),
+                ),
+                InitialInputDisposition::Queued
+            );
+        }
+        assert_eq!(
+            queue_initializing_child_input(&child, None, reply_shaped_steer("one too many", 1)),
+            InitialInputDisposition::Duplicate,
+            "past the cap nothing more is queued"
+        );
+        assert_eq!(
+            mark_initial_runtime_ready(&child).len(),
+            MAX_PENDING_INITIAL_INPUTS
+        );
+    }
+
+    /// OD-5. `complete` is synchronous and holds no session manager, so the
+    /// drain it used to perform could only end in dropping the messages — and it
+    /// threw away the run's real result on the way. It must destroy neither.
+    #[test]
+    fn completion_never_destroys_unsettled_steering() {
+        let handle = new_initializing_handle("parent-unsettled-completion");
+        let child = handle.child_session_id.clone();
+        assert_eq!(
+            queue_initializing_child_input(
+                &child,
+                Some("never-settled".into()),
+                Message::user().with_text("this must survive completion"),
+            ),
+            InitialInputDisposition::Queued
+        );
+
+        handle.complete(done("the child did real work"));
+
+        let result = handle.result().expect("the run still reports a result");
+        assert!(
+            result.summary.starts_with("the child did real work"),
+            "the real summary is kept, not replaced: {}",
+            result.summary
+        );
+        assert!(
+            result.summary.contains("was not settled"),
+            "and the anomaly is still reported: {}",
+            result.summary
+        );
+        assert!(result.human_intervened);
+
+        let recovered = handle.finish_initial_run_and_take_pending();
+        assert_eq!(
+            recovered.len(),
+            1,
+            "completion left the accepted steering recoverable"
+        );
+        assert_eq!(
+            recovered[0].as_concat_text(),
+            "this must survive completion"
+        );
+
+        // Admission is still closed, which is the half of the old behaviour that
+        // was correct.
+        assert_eq!(
+            queue_initializing_child_input(
+                &child,
+                Some("too-late".into()),
+                Message::user().with_text("too late"),
+            ),
+            InitialInputDisposition::NotInitializing
+        );
+    }
+
+    #[test]
+    fn completion_leaves_a_settled_result_untouched() {
+        let handle = new_initializing_handle("parent-settled-completion");
+        handle.complete(done("nothing was queued"));
+        assert_eq!(handle.result().unwrap().summary, "nothing was queued");
+    }
+
+    #[test]
+    fn completion_atomically_claims_accepted_initial_input_once() {
+        let handle = new_initializing_handle("parent-initial-completion");
+        let child = handle.child_session_id.clone();
+        let steer = Message::user().with_text("preserve this accepted steering");
+
+        assert_eq!(
+            queue_initializing_child_input(&child, Some("client-turn-final".into()), steer),
+            InitialInputDisposition::Queued
+        );
+        let claimed = handle.finish_initial_run_and_take_pending();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(
+            claimed[0].as_concat_text(),
+            "preserve this accepted steering"
+        );
+        assert!(handle.finish_initial_run_and_take_pending().is_empty());
+        assert_eq!(
+            queue_initializing_child_input(
+                &child,
+                Some("client-turn-too-late".into()),
+                Message::user().with_text("too late"),
+            ),
+            InitialInputDisposition::NotInitializing
+        );
+
+        handle.complete(done("failed before runtime setup"));
+        assert_eq!(
+            handle.result().unwrap().summary,
+            "failed before runtime setup"
+        );
+    }
+
+    #[test]
+    fn runtime_handoff_keeps_accepted_input_recoverable_until_durable_ack() {
+        let handle = new_initializing_handle("parent-runtime-handoff");
+        let child = handle.child_session_id.clone();
+        let steer = Message::user().with_text("survive a post-ready setup failure");
+
+        assert_eq!(
+            queue_initializing_child_input(&child, Some("handoff-turn".into()), steer),
+            InitialInputDisposition::Queued
+        );
+        let handed_off = mark_initial_runtime_ready(&child);
+        assert_eq!(handed_off.len(), 1);
+        assert_eq!(
+            handed_off[0].as_concat_text(),
+            "survive a post-ready setup failure"
+        );
+
+        let recovered = handle.finish_initial_run_and_take_pending();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(
+            recovered[0].as_concat_text(),
+            handed_off[0].as_concat_text()
+        );
+    }
+
+    #[test]
+    fn durable_runtime_handoff_acknowledgement_clears_recovery_copy() {
+        let handle = new_initializing_handle("parent-runtime-ack");
+        let child = handle.child_session_id.clone();
+        let steer = Message::user().with_text("already durable");
+
+        assert_eq!(
+            queue_initializing_child_input(&child, Some("acked-turn".into()), steer),
+            InitialInputDisposition::Queued
+        );
+        assert_eq!(mark_initial_runtime_ready(&child).len(), 1);
+        settle_initial_runtime_inputs(&child);
+        assert!(handle.finish_initial_run_and_take_pending().is_empty());
+
+        handle.complete(done("finished after durable intervention"));
+        assert!(handle.result().unwrap().human_intervened);
     }
 
     #[test]
@@ -1229,6 +1907,55 @@ mod tests {
     }
 
     #[test]
+    fn direct_followup_reattaches_a_pruned_child_generation_once() {
+        let parent = "parent-pruned-direct-followup";
+        let child = "child-pruned-direct-followup";
+        let original =
+            BackgroundSubagent::register(parent, child, "original child", CancellationToken::new());
+        original.complete(done("original result"));
+        assert!(original.mark_current_result_collected_if_generation(0));
+
+        for index in 0..=MAX_RETAINED_FINISHED {
+            let handle = BackgroundSubagent::register(
+                parent,
+                format!("replacement-child-{index}"),
+                "retained child",
+                CancellationToken::new(),
+            );
+            handle.complete(done("retained result"));
+            assert!(handle.mark_current_result_collected_if_generation(0));
+        }
+        assert!(
+            list_for_session(parent)
+                .iter()
+                .all(|handle| handle.child_session_id != child),
+            "the setup did not prune the original collected handle"
+        );
+
+        let reattached = ensure_direct_followup_handle(parent, child, "continued child");
+        assert_eq!(reattached.child_turn_generation(), 1);
+        assert!(reattached.terminal_generation().is_none());
+        assert!(!reattached.latest_generation_collected());
+        assert!(with_live_delegated_supervision(parent, |live| live));
+        assert!(admit_child_turn(child));
+        assert_eq!(
+            reattached.child_turn_generation(),
+            1,
+            "the runner advanced the already-admitted follow-up twice"
+        );
+
+        record_child_turn_terminal(child, done("direct follow-up result"));
+        let terminal = reattached.terminal_generation().unwrap();
+        assert_eq!(terminal.generation, 1);
+        assert_eq!(terminal.result.summary, "direct follow-up result");
+        assert!(reattached.mark_terminal_generation_collected_if_generation(1));
+        assert!(!with_live_delegated_supervision(parent, |live| live));
+
+        let same = ensure_direct_followup_handle(parent, child, "continued child");
+        assert!(Arc::ptr_eq(&reattached, &same));
+    }
+
+    #[test]
     fn pruning_one_session_never_evicts_another_sessions_results() {
         let quiet = "parent-quiet";
         let busy = "parent-busy";
@@ -1265,6 +1992,38 @@ mod tests {
         assert!(
             !handle.mark_collected_if_generation(initial_generation),
             "a late collector for the initial turn cannot collect its successor"
+        );
+    }
+
+    #[test]
+    fn child_turn_admission_advances_once_before_terminal_settlement() {
+        let handle = new_handle("parent-idempotent-admission");
+
+        assert!(admit_child_turn(&handle.child_session_id));
+        let initial_generation = handle.child_turn_generation();
+        assert_eq!(initial_generation, 1);
+        assert!(admit_child_turn(&handle.child_session_id));
+        assert_eq!(
+            handle.child_turn_generation(),
+            initial_generation,
+            "the Agent::reply fallback must not advance an already admitted turn"
+        );
+
+        record_child_turn_terminal(&handle.child_session_id, done("first terminal"));
+        assert!(admit_child_turn(&handle.child_session_id));
+        assert_eq!(handle.child_turn_generation(), initial_generation + 1);
+        assert!(admit_child_turn(&handle.child_session_id));
+        assert_eq!(handle.child_turn_generation(), initial_generation + 1);
+
+        let pre_admission_failure = new_handle("parent-pre-admission-failure");
+        pre_admission_failure.complete(done("generation zero terminal"));
+        assert!(admit_child_turn(&pre_admission_failure.child_session_id));
+        assert_eq!(pre_admission_failure.child_turn_generation(), 1);
+        assert!(admit_child_turn(&pre_admission_failure.child_session_id));
+        assert_eq!(
+            pre_admission_failure.child_turn_generation(),
+            1,
+            "a retained generation-zero result still admits its successor only once"
         );
     }
 

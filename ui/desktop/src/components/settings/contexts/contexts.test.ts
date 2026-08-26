@@ -65,10 +65,7 @@ describe('contexts', () => {
  */
 describe('Settings -> Chat section order', () => {
   it('puts Contexts after Capabilities and Memory, and before App SDK', () => {
-    const src = readFileSync(
-      join(__dirname, '..', 'chat', 'ChatSettingsSection.tsx'),
-      'utf8'
-    );
+    const src = readFileSync(join(__dirname, '..', 'chat', 'ChatSettingsSection.tsx'), 'utf8');
     const at = (needle: string) => {
       const i = src.indexOf(needle);
       expect(i, `${needle} missing from ChatSettingsSection`).toBeGreaterThan(-1);
@@ -153,9 +150,7 @@ describe('the built-in skill list, across all three copies', () => {
       skills.indexOf('KNOWLEDGE_SKILLS'),
       skills.indexOf('];', skills.indexOf('KNOWLEDGE_SKILLS'))
     );
-    const knowledge = [...block.matchAll(/"([a-z0-9-]+)",\s*\n?\s*include_str!/g)].map(
-      (m) => m[1]
-    );
+    const knowledge = [...block.matchAll(/"([a-z0-9-]+)",\s*\n?\s*include_str!/g)].map((m) => m[1]);
     expect(knowledge.length, 'KNOWLEDGE_SKILLS not found in skills_extension.rs').toBeGreaterThan(
       0
     );
@@ -167,10 +162,7 @@ describe('the built-in skill list, across all three copies', () => {
   });
 
   it('the renderer keeps no second list of the skills Rust seeds', () => {
-    const source = readFileSync(
-      join(__dirname, '..', '..', 'skills', 'skillUtils.ts'),
-      'utf8'
-    );
+    const source = readFileSync(join(__dirname, '..', '..', 'skills', 'skillUtils.ts'), 'utf8');
     // `shippedNames()` is still called, so the extractor it exercises stays
     // honest: a name Rust seeds must be findable from here even though nothing
     // in the renderer mirrors the list any more.

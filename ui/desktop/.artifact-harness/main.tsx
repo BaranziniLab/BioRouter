@@ -24,6 +24,13 @@ const MIME: Record<string, string> = {
   tsv: 'text/tab-separated-values',
 };
 
+const OFFICE_MIME: Record<string, string> = {
+  pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+};
+
 const extOf = (path: string) => path.split('.').pop()!.toLowerCase();
 
 // A git repository listing is the only place the panel renders the branch ref
@@ -45,12 +52,42 @@ const GIT_ENTRIES: {
   isDirectory: boolean;
   status: 'untracked' | 'modified' | 'staged' | 'committed' | 'pushed';
 }[] = [
-  { name: 'pipeline.R', relativePath: 'pipeline.R', parentPath: '', isDirectory: false, status: 'modified' },
-  { name: 'scratch.py', relativePath: 'scratch.py', parentPath: '', isDirectory: false, status: 'untracked' },
-  { name: 'manifest.json', relativePath: 'manifest.json', parentPath: '', isDirectory: false, status: 'staged' },
+  {
+    name: 'pipeline.R',
+    relativePath: 'pipeline.R',
+    parentPath: '',
+    isDirectory: false,
+    status: 'modified',
+  },
+  {
+    name: 'scratch.py',
+    relativePath: 'scratch.py',
+    parentPath: '',
+    isDirectory: false,
+    status: 'untracked',
+  },
+  {
+    name: 'manifest.json',
+    relativePath: 'manifest.json',
+    parentPath: '',
+    isDirectory: false,
+    status: 'staged',
+  },
   { name: 'R', relativePath: 'R', parentPath: '', isDirectory: true, status: 'committed' },
-  { name: 'statistics.R', relativePath: 'R/statistics.R', parentPath: 'R', isDirectory: false, status: 'committed' },
-  { name: 'README.md', relativePath: 'README.md', parentPath: '', isDirectory: false, status: 'pushed' },
+  {
+    name: 'statistics.R',
+    relativePath: 'R/statistics.R',
+    parentPath: 'R',
+    isDirectory: false,
+    status: 'committed',
+  },
+  {
+    name: 'README.md',
+    relativePath: 'README.md',
+    parentPath: '',
+    isDirectory: false,
+    status: 'pushed',
+  },
 ];
 
 const gitDirectoryFixture = () => ({
@@ -59,7 +96,10 @@ const gitDirectoryFixture = () => ({
   path: GIT_DIR_PATH,
   branch: 'feat/redesign-ui-cohesion',
   found: true as const,
-  entries: GIT_ENTRIES.map((entry) => ({ ...entry, path: `${GIT_DIR_PATH}/${entry.relativePath}` })),
+  entries: GIT_ENTRIES.map((entry) => ({
+    ...entry,
+    path: `${GIT_DIR_PATH}/${entry.relativePath}`,
+  })),
 });
 
 async function readFixture(path: string) {
@@ -71,14 +111,37 @@ async function readFixture(path: string) {
   }
   const ext = extOf(name);
   const imageMime = IMAGE_MIME_TYPES[ext];
-  const mimeType = imageMime ?? MIME[ext] ?? 'text/plain';
+  const officeMime = OFFICE_MIME[ext];
+  const mimeType = imageMime ?? officeMime ?? MIME[ext] ?? 'text/plain';
+
+  if (officeMime) {
+    const buffer = await response.arrayBuffer();
+    return {
+      kind: 'document',
+      format: ext as 'pdf' | 'docx' | 'xlsx' | 'pptx',
+      title: name,
+      path,
+      mimeType,
+      data: buffer,
+      size: buffer.byteLength,
+      found: true,
+    };
+  }
 
   if (imageMime) {
     const buffer = await response.arrayBuffer();
     // TIFF is handed over as bytes, exactly as the main process does: the
     // renderer has to decode it before anything can be shown.
     if (imageMime === 'image/tiff') {
-      return { kind: 'image', title: name, path, mimeType, bytes: buffer, size: buffer.byteLength, found: true };
+      return {
+        kind: 'image',
+        title: name,
+        path,
+        mimeType,
+        bytes: buffer,
+        size: buffer.byteLength,
+        found: true,
+      };
     }
     let binary = '';
     new Uint8Array(buffer).forEach((byte) => (binary += String.fromCharCode(byte)));
@@ -95,9 +158,20 @@ async function readFixture(path: string) {
 
   // Anything the app would treat as an opaque binary, so the harness can show
   // the format-specific refusal card rather than only the happy paths.
-  if (['doc', 'ppt', 'xls', 'odt', 'ods', 'odp', 'rtf', 'pages', 'numbers', 'key', 'heic'].includes(ext)) {
+  if (
+    ['doc', 'ppt', 'xls', 'odt', 'ods', 'odp', 'rtf', 'pages', 'numbers', 'key', 'heic'].includes(
+      ext
+    )
+  ) {
     const buffer = await response.arrayBuffer();
-    return { kind: 'binary', title: name, path, mimeType: 'application/octet-stream', size: buffer.byteLength, found: true };
+    return {
+      kind: 'binary',
+      title: name,
+      path,
+      mimeType: 'application/octet-stream',
+      size: buffer.byteLength,
+      found: true,
+    };
   }
 
   const text = await response.text();
@@ -130,6 +204,7 @@ Object.defineProperty(window, 'electron', {
       (window as unknown as { __lastCapture?: unknown }).__lastCapture = rect;
       return { path: '/tmp/harness-capture.png', width: rect.width, height: rect.height };
     },
+    deleteTempFile: () => undefined,
   },
 });
 
@@ -152,7 +227,11 @@ const ARTIFACTS: { label: string; make: () => Promise<ArtifactSource> }[] = [
   },
   {
     label: 'git repository',
-    make: async (): Promise<ArtifactSource> => ({ kind: 'file', title: 'repo', path: GIT_DIR_PATH }),
+    make: async (): Promise<ArtifactSource> => ({
+      kind: 'file',
+      title: 'repo',
+      path: GIT_DIR_PATH,
+    }),
   },
   // One entry per file kind the agent can create, so the whole preview surface can
   // be swept in a real browser (jsdom cannot see the Tailwind/Prism class clash).
@@ -174,6 +253,10 @@ const ARTIFACTS: { label: string; make: () => Promise<ArtifactSource> }[] = [
     'lib.rs',
     'app.ts',
     'volcano.png',
+    'test.pdf',
+    'sample.docx',
+    'FinancialSample.xlsx',
+    'sample.pptx',
     // The formats this panel gained: three Chromium already decoded and the
     // panel refused for no reason, one that needs a real decoder, and two it
     // declines by name rather than with a shrug.
@@ -195,7 +278,6 @@ function Harness() {
   const [active, setActive] = useState<string>('');
 
   const open = async (entry: (typeof ARTIFACTS)[number]) => {
-    setArtifact(null);
     setActive(entry.label);
     setArtifact(await entry.make());
   };

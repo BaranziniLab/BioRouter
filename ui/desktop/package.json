@@ -32,6 +32,7 @@
     "test-e2e:debug": "npm run generate-api && npm run build:e2e && playwright test --debug",
     "test-e2e:report": "playwright show-report",
     "test-e2e:single": "npm run generate-api && npm run build:e2e && playwright test -g",
+    "test:preview-panel": "node scripts/preview-panel-e2e.mjs",
     "lint": "eslint \"src/**/*.{ts,tsx}\" --fix --no-warn-ignored",
     "lint:check": "npm run typecheck && eslint \"src/**/*.{ts,tsx}\" --max-warnings 0 --no-warn-ignored && npm run check:themes && npm run check:contrast && npm run check:tokens",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",

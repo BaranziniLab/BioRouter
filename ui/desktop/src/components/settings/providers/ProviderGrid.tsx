@@ -3,7 +3,9 @@ import { ProviderCard } from './subcomponents/ProviderCard';
 import ProviderConfigurationModal from './modal/ProviderConfiguationModal';
 import {
   DeclarativeProviderConfig,
+  getCustomProvider,
   ProviderDetails,
+  updateCustomProvider,
   UpdateCustomProviderRequest,
 } from '../../../api';
 import { Plus } from '../../icons/app-icons';
@@ -72,7 +74,6 @@ function ProviderCards({
   const configureProviderViaModal = useCallback(
     async (provider: ProviderDetails) => {
       if (provider.provider_type === 'Custom' || provider.provider_type === 'Declarative') {
-        const { getCustomProvider } = await import('../../../api');
         const result = await getCustomProvider({ path: { id: provider.name }, throwOnError: true });
 
         if (result.data) {
@@ -94,7 +95,6 @@ function ProviderCards({
     async (data: UpdateCustomProviderRequest) => {
       if (!editingProvider) return;
 
-      const { updateCustomProvider } = await import('../../../api');
       await updateCustomProvider({
         path: { id: editingProvider.id },
         body: data,

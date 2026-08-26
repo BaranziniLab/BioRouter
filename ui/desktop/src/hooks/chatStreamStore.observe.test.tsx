@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   // `fetch` or on how fast the machine is).
   reply: vi.fn(),
   resumeAgent: vi.fn(),
+  interrupt: vi.fn(async () => ({ data: {} })),
   cancelTurn: vi.fn(async () => ({
     data: { cancelled: true, settled: true, continuation_lease: 'observer-test-lease' },
   })),
@@ -26,7 +27,8 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...mocks };
 });
 
-import { ChatStreamRegistry, defaultChatStreamRegistry } from './chatStreamStore';
+import { ChatStreamRegistry, defaultChatStreamRegistry, isRunningState } from './chatStreamStore';
+import { ChatState } from '../types/chatState';
 
 /** The `{ stream }` shape the generated .sse.get returns: an AsyncIterable of
  * parsed MessageEvent frames. */
@@ -43,6 +45,10 @@ async function* frames() {
     },
   };
   yield { type: 'Finish', reason: 'stop', token_state: {} };
+}
+
+async function* emptyFrames(): AsyncGenerator<MessageEvent> {
+  yield* [];
 }
 
 const tokenState: TokenState = {
@@ -172,6 +178,8 @@ beforeEach(() => {
   mocks.observeSessionEvents.mockReset();
   mocks.reply.mockReset();
   mocks.resumeAgent.mockReset();
+  mocks.interrupt.mockReset();
+  mocks.interrupt.mockResolvedValue({ data: {} });
   mocks.cancelTurn.mockReset();
   mocks.cancelTurn.mockResolvedValue({
     data: { cancelled: true, settled: true, continuation_lease: 'observer-test-lease' },
@@ -242,7 +250,7 @@ describe('ChatStreamController.observeSession', () => {
         };
       });
       mocks.reply.mockResolvedValue({
-        stream: (async function* () {})(),
+        stream: emptyFrames(),
       });
       const observed = createControlledStream();
       mocks.observeSessionEvents.mockResolvedValue({ stream: observed.stream });
@@ -257,6 +265,8 @@ describe('ChatStreamController.observeSession', () => {
       expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(1);
       expect(controller.getSnapshot().turnError).toBeUndefined();
       expect(controller.getSnapshot().agentReady).toBe(false);
+      expect(isRunningState(controller.getSnapshot().chatState)).toBe(true);
+      expect(registry.isSessionRunning(child.id)).toBe(true);
 
       observed.push({
         type: 'UpdateConversation',
@@ -283,6 +293,213 @@ describe('ChatStreamController.observeSession', () => {
       controller.stopObserving();
       observed.close();
       await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows an authoritative child turn as running and steers it without posting reply', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = {
+        ...session('running-child'),
+        session_type: 'sub_agent' as const,
+        parent_session_id: 'parent',
+      };
+      const observed = createControlledStream();
+      mocks.observeSessionEvents.mockResolvedValue({ stream: observed.stream });
+      mocks.resumeAgent.mockResolvedValue({
+        data: {
+          session: child,
+          initializing: false,
+          active_turn: { turn_id: 'delegated-turn' },
+        },
+      });
+
+      const registry = new ChatStreamRegistry();
+      const controller = registry.getController(child.id);
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      await controller.loadSession();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+      expect(registry.isSessionRunning(child.id)).toBe(true);
+      expect(mocks.reply, 'an observer must not claim the delegated turn').not.toHaveBeenCalled();
+
+      await expect(controller.steer('change the delegated plan')).resolves.toBe(true);
+      expect(mocks.interrupt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            session_id: child.id,
+            text: 'change the delegated plan',
+            turn_id: expect.any(String),
+          }),
+        })
+      );
+      expect(
+        mocks.reply,
+        'steering must stay on the authoritative child turn'
+      ).not.toHaveBeenCalled();
+
+      observed.push(
+        observerFrame(
+          { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent,
+          'delegated-turn',
+          0
+        )
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+
+      controller.releaseOwnership();
+      observed.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('queues a steer into an initializing child before its delegated turn starts', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = {
+        ...session('initializing-steer-child'),
+        session_type: 'sub_agent' as const,
+        parent_session_id: 'parent',
+      };
+      const observed = createControlledStream();
+      mocks.observeSessionEvents.mockResolvedValue({ stream: observed.stream });
+      mocks.resumeAgent.mockResolvedValue({
+        data: { session: child, initializing: true },
+      });
+      const registry = new ChatStreamRegistry();
+      const controller = registry.getController(child.id);
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      await controller.loadSession();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Thinking);
+      await expect(controller.steer('change the queued plan')).resolves.toBe(true);
+      expect(mocks.reply).not.toHaveBeenCalled();
+      expect(mocks.interrupt).toHaveBeenCalledTimes(1);
+      expect(mocks.interrupt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            session_id: child.id,
+            text: 'change the queued plan',
+            turn_id: expect.any(String),
+          }),
+        })
+      );
+
+      controller.releaseOwnership();
+      observed.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses the lifecycle edge after a child initializes for longer than six seconds', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = {
+        ...session('late-running-child'),
+        session_type: 'sub_agent' as const,
+        parent_session_id: 'parent',
+      };
+      let initializing = true;
+      const observed = createControlledStream();
+      mocks.observeSessionEvents.mockResolvedValue({ stream: observed.stream });
+      mocks.resumeAgent.mockImplementation(async () => ({
+        data: { session: child, initializing },
+      }));
+
+      const registry = new ChatStreamRegistry();
+      const controller = registry.getController(child.id);
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      await controller.loadSession();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Thinking);
+      expect(registry.isSessionRunning(child.id)).toBe(true);
+      expect(mocks.reply).not.toHaveBeenCalled();
+
+      // The child remains legitimately queued for longer than the old 5.5 s
+      // ceiling. Heartbeats are transport lifecycle, not model output, so the
+      // visible observer feed is still quiet throughout.
+      for (let second = 0; second < 6; second += 1) {
+        await vi.advanceTimersByTimeAsync(1000);
+        observed.push({ type: 'Ping' } as MessageEvent);
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Thinking);
+      expect(registry.getRunningSnapshot().map(({ sessionId }) => sessionId)).toContain(child.id);
+
+      // Runtime installation can clear `initializing` just before begin_turn
+      // publishes its lifecycle edge. That transient resume is deliberately
+      // inactive; model output may remain quiet for arbitrarily long.
+      initializing = false;
+      await vi.advanceTimersByTimeAsync(1000);
+      observed.push({ type: 'Ping' } as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Thinking);
+
+      observed.push({
+        type: 'TurnStarted',
+        turn_id: 'late-delegated-turn',
+      } as unknown as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(32);
+
+      expect(
+        mocks.resumeAgent.mock.calls.some(([options]) => !options.body.load_model_and_extensions)
+      ).toBe(true);
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+      expect(registry.isSessionRunning(child.id)).toBe(true);
+      expect(registry.getRunningSnapshot().map(({ sessionId }) => sessionId)).toContain(child.id);
+      expect(mocks.reply).not.toHaveBeenCalled();
+
+      controller.releaseOwnership();
+      observed.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops initialization refreshes when the child tab closes', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = {
+        ...session('closed-initializing-child'),
+        session_type: 'sub_agent' as const,
+        parent_session_id: 'parent',
+      };
+      const observed = createControlledStream();
+      mocks.observeSessionEvents.mockResolvedValue({ stream: observed.stream });
+      mocks.resumeAgent.mockResolvedValue({
+        data: { session: child, initializing: true },
+      });
+
+      const registry = new ChatStreamRegistry();
+      const controller = registry.getController(child.id);
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      await controller.loadSession();
+      await vi.advanceTimersByTimeAsync(0);
+      const callsAtClose = mocks.resumeAgent.mock.calls.length;
+
+      controller.releaseOwnership();
+      observed.push({ type: 'Ping' } as MessageEvent);
+      observed.close();
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(mocks.resumeAgent).toHaveBeenCalledTimes(callsAtClose);
+      expect(mocks.cancelTurn).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -375,6 +592,251 @@ describe('ChatStreamController.observeSession', () => {
 
 describe('ChatStreamController.observeSession — who owns the socket', () => {
   afterEach(() => vi.clearAllMocks());
+
+  it('closing a running child tab detaches only its observer and never cancels the turn', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = {
+        ...session('child-tab-close'),
+        session_type: 'sub_agent' as const,
+        parent_session_id: 'parent',
+      };
+      const observed = createControlledStream();
+      mocks.observeSessionEvents.mockResolvedValue({ stream: observed.stream });
+      mocks.resumeAgent.mockResolvedValue({
+        data: { session: child, active_turn: { turn_id: 'child-running-turn' } },
+      });
+
+      const registry = new ChatStreamRegistry();
+      const controller = registry.getController(child.id);
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      await controller.loadSession();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+
+      const observerSignal = mocks.observeSessionEvents.mock.calls[0][0].signal as AbortSignal;
+      controller.releaseOwnership();
+
+      expect(observerSignal.aborted).toBe(true);
+      expect(mocks.cancelTurn).not.toHaveBeenCalled();
+      expect(mocks.reply).not.toHaveBeenCalled();
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+
+      observed.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reopens a closed child tab on a fresh observer and clears stale running state', async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new ChatStreamRegistry();
+      const first = createControlledStream();
+      const reopened = createControlledStream();
+      const child = {
+        ...session('child-tab-reopen'),
+        session_type: 'sub_agent' as const,
+        parent_session_id: 'parent',
+      };
+      mocks.observeSessionEvents
+        .mockResolvedValueOnce({ stream: first.stream })
+        .mockResolvedValueOnce({ stream: reopened.stream });
+      mocks.resumeAgent.mockResolvedValue({ data: { session: child } });
+
+      const controller = registry.getController(child.id);
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      await controller.loadSession();
+      await vi.advanceTimersByTimeAsync(0);
+      first.push({
+        type: 'TurnState',
+        active_turn_id: 'turn-finished-while-closed',
+      } as unknown as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+
+      const firstSignal = mocks.observeSessionEvents.mock.calls[0][0].signal as AbortSignal;
+      controller.releaseOwnership();
+      expect(firstSignal.aborted).toBe(true);
+
+      // The real reopen path remounts BaseChat, which calls loadSession against
+      // this retained, already-painted controller. It must reattach the observer
+      // even though both the transcript and agent load are cached.
+      await controller.loadSession();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(2);
+      reopened.push({
+        type: 'TurnState',
+        active_turn_id: null,
+      } as unknown as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+      expect(registry.isSessionRunning(child.id)).toBe(false);
+      expect(mocks.cancelTurn).not.toHaveBeenCalled();
+
+      controller.releaseOwnership();
+      first.close();
+      reopened.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not reopen an invisible observer when the initial resume resolves after close', async () => {
+    const registry = new ChatStreamRegistry();
+    const child = {
+      ...session('child-close-during-load'),
+      session_type: 'sub_agent' as const,
+      parent_session_id: 'parent',
+    };
+    const pendingResume = deferred<{ data: { session: Session } }>();
+    mocks.resumeAgent
+      .mockReturnValueOnce(pendingResume.promise)
+      .mockResolvedValue({ data: { session: child } });
+
+    const controller = registry.getController(child.id);
+    const loading = controller.loadSession();
+    await vi.waitFor(() => expect(mocks.resumeAgent).toHaveBeenCalledTimes(1));
+    controller.releaseOwnership();
+
+    pendingResume.resolve({ data: { session: child } });
+    await loading;
+    await Promise.resolve();
+
+    expect(mocks.observeSessionEvents).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().session?.id).toBe(child.id);
+    expect(mocks.cancelTurn).not.toHaveBeenCalled();
+  });
+
+  it('does not let a queued terminal for an older turn retire the snapshot successor', async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new ChatStreamRegistry();
+      const observed = createControlledStream();
+      mocks.observeSessionEvents.mockResolvedValue({ stream: observed.stream });
+
+      const controller = registry.getController('observer-terminal-order');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      observed.push({
+        type: 'TurnState',
+        active_turn_id: 'turn-successor',
+      } as unknown as MessageEvent);
+      observed.push({
+        type: 'Finish',
+        turn_id: 'turn-before-snapshot',
+        reason: 'done',
+        token_state: tokenState,
+      } as unknown as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+      expect(registry.isSessionRunning('observer-terminal-order')).toBe(true);
+
+      observed.push({
+        type: 'Finish',
+        turn_id: 'turn-successor',
+        reason: 'done',
+        token_state: tokenState,
+      } as unknown as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+
+      controller.releaseOwnership();
+      observed.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps an authoritative successor through an unsequenced predecessor terminal and reconnect', async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new ChatStreamRegistry();
+      const original = createControlledStream();
+      const reconnected = createControlledStream();
+      mocks.observeSessionEvents
+        .mockResolvedValueOnce({ stream: original.stream })
+        .mockResolvedValueOnce({ stream: reconnected.stream });
+
+      const controller = registry.getController('observer-unsequenced-terminal-order');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      original.push({
+        type: 'TurnState',
+        active_turn_id: 'turn-successor',
+      } as unknown as MessageEvent);
+      // This is the legacy/race shape that motivated the identity gate: the
+      // predecessor's terminal was queued before the authoritative snapshot,
+      // but carries no turn id and arrives after TurnState named its successor.
+      original.push({
+        type: 'Finish',
+        reason: 'done',
+        token_state: tokenState,
+      } as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+      expect(registry.isSessionRunning('observer-unsequenced-terminal-order')).toBe(true);
+
+      original.close();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(2);
+      reconnected.push({
+        type: 'TurnState',
+        active_turn_id: 'turn-successor',
+      } as unknown as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+      expect(registry.isSessionRunning('observer-unsequenced-terminal-order')).toBe(true);
+
+      controller.releaseOwnership();
+      reconnected.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not surface an unclaimed terminal after an authoritative idle snapshot', async () => {
+    vi.useFakeTimers();
+    try {
+      const observed = createControlledStream();
+      mocks.observeSessionEvents.mockResolvedValue({ stream: observed.stream });
+      const controller = new ChatStreamRegistry().getController('observer-idle-terminal');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+
+      observed.push({
+        type: 'TurnState',
+        active_turn_id: null,
+      } as unknown as MessageEvent);
+      observed.push({
+        type: 'Error',
+        error: 'older turn failed',
+        code: 'internal_error',
+        scope: 'internal',
+        retryable: true,
+      } as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+      expect(controller.getSnapshot().turnError).toBeUndefined();
+
+      controller.releaseOwnership();
+      observed.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('caps the generated SSE client at one attempt and hands it an abortable signal', async () => {
     // Both options are load-bearing and both are invisible to every other test
@@ -734,11 +1196,16 @@ describe('ChatStreamController.observeSession — who owns the socket', () => {
       void controller.observeSession();
       await vi.advanceTimersByTimeAsync(0);
       dropped.push({
+        type: 'TurnState',
+        active_turn_id: 'turn-that-finishes-in-the-gap',
+      } as unknown as MessageEvent);
+      dropped.push({
         type: 'Message',
         message: assistantMessage('a1', 'mid turn'),
         token_state: tokenState,
       });
       await vi.advanceTimersByTimeAsync(0);
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
 
       // The feed drops mid-turn: the stream ends with no `Finish`. For a driver
       // that means the turn died and the red "connection closed before Biorouter
@@ -753,6 +1220,18 @@ describe('ChatStreamController.observeSession — who owns the socket', () => {
 
       await vi.advanceTimersByTimeAsync(1100);
       expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(2);
+      expect(controller.getSnapshot().turnError).toBeUndefined();
+
+      // The terminal landed while no observer was attached. Reconnect cannot
+      // replay that ephemeral bus edge, so the snapshot's explicit null is the
+      // authoritative lifecycle edge that retires stale Streaming.
+      reconnected.push({
+        type: 'TurnState',
+        active_turn_id: null,
+      } as unknown as MessageEvent);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+      expect(registry.isSessionRunning('obs-dropped-feed')).toBe(false);
       expect(controller.getSnapshot().turnError).toBeUndefined();
 
       controller.stopObserving();
@@ -783,6 +1262,22 @@ describe('ChatStreamController.observeSession — who owns the socket', () => {
       driving.close();
       await submit;
       expect(JSON.stringify(controller.getSnapshot().messages)).toContain('survived the detach');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('closing an ordinary running tab aborts only its reply reader', async () => {
+    vi.useFakeTimers();
+    try {
+      const { controller, driving, submit, signal } = await drivingController('driver-tab-release');
+
+      controller.releaseOwnership();
+      expect(signal.aborted).toBe(true);
+      expect(mocks.cancelTurn).not.toHaveBeenCalled();
+
+      driving.close();
+      await submit;
     } finally {
       vi.useRealTimers();
     }

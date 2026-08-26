@@ -41,6 +41,8 @@ export default function AnnotationOverlay({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
+  const [isCommitting, setIsCommitting] = useState(false);
+  const commitFrames = useRef<number[]>([]);
   // Held in refs so the pointer handlers read the live value without
   // re-subscribing on every keystroke.
   const modifiers = useRef({ shift: false, alt: false, space: false });
@@ -85,10 +87,39 @@ export default function AnnotationOverlay({
     };
   }, [drag, onCancel]);
 
+  useEffect(
+    () => () => {
+      for (const frame of commitFrames.current) cancelAnimationFrame(frame);
+    },
+    []
+  );
+
   const localPoint = useCallback((event: React.PointerEvent) => {
     const rect = rootRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
-    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    if (rect.width <= 0 || rect.height <= 0) {
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    }
+    return {
+      x: Math.min(rect.width, Math.max(0, event.clientX - rect.left)),
+      y: Math.min(rect.height, Math.max(0, event.clientY - rect.top)),
+    };
+  }, []);
+
+  const contained = useCallback((next: Drag): Drag => {
+    const root = rootRef.current;
+    if (!root) return next;
+    const bounds = root.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return next;
+    const width = Math.min(next.width, bounds.width);
+    const height = Math.min(next.height, bounds.height);
+    return {
+      ...next,
+      x: Math.min(bounds.width - width, Math.max(0, next.x)),
+      y: Math.min(bounds.height - height, Math.max(0, next.y)),
+      width,
+      height,
+    };
   }, []);
 
   const handleDown = useCallback(
@@ -119,12 +150,17 @@ export default function AnnotationOverlay({
           const dx = point.x - spaceAnchor.current.x;
           const dy = point.y - spaceAnchor.current.y;
           spaceAnchor.current = point;
-          return {
+          const next = contained({
             ...current,
             originX: current.originX + dx,
             originY: current.originY + dy,
             x: current.x + dx,
             y: current.y + dy,
+          });
+          return {
+            ...next,
+            originX: current.originX + (next.x - current.x),
+            originY: current.originY + (next.y - current.y),
           };
         }
 
@@ -137,47 +173,56 @@ export default function AnnotationOverlay({
         }
 
         if (modifiers.current.alt) {
-          return {
+          return contained({
             ...current,
             x: current.originX - Math.abs(dx),
             y: current.originY - Math.abs(dy),
             width: Math.abs(dx) * 2,
             height: Math.abs(dy) * 2,
-          };
+          });
         }
 
-        return {
+        return contained({
           ...current,
           x: dx < 0 ? current.originX + dx : current.originX,
           y: dy < 0 ? current.originY + dy : current.originY,
           width: Math.abs(dx),
           height: Math.abs(dy),
-        };
+        });
       });
     },
-    [localPoint]
+    [contained, localPoint]
   );
 
   const handleUp = useCallback(() => {
-    setDrag((current) => {
-      if (!current) return null;
-      if (current.width < MIN_REGION_PX || current.height < MIN_REGION_PX) {
-        // A click, not a selection. Stay in the mode rather than cancelling —
-        // reviewing a figure produces several notes, not one, and a mode that
-        // exits on a stray click is the most-complained-about detail in every
-        // shipped version of this feature.
-        return null;
-      }
-      onSelect({
-        x: current.x,
-        y: current.y,
-        width: current.width,
-        height: current.height,
-      });
-      return null;
-    });
+    const current = drag;
+    setDrag(null);
     spaceAnchor.current = null;
-  }, [onSelect]);
+    if (!current || current.width < MIN_REGION_PX || current.height < MIN_REGION_PX) {
+      // A click, not a selection. Stay in the mode rather than cancelling —
+      // reviewing a figure produces several notes, not one, and a mode that
+      // exits on a stray click is the most-complained-about detail in every
+      // shipped version of this feature.
+      return;
+    }
+
+    const region = {
+      x: current.x,
+      y: current.y,
+      width: current.width,
+      height: current.height,
+    };
+    // Hide the dimmer, marquee and size badge before the compositor capture.
+    // Two animation frames ensure Chromium has painted the clean underlying
+    // preview; otherwise the image sent to the model contains its own selection
+    // chrome around the requested pixels.
+    setIsCommitting(true);
+    const first = requestAnimationFrame(() => {
+      const second = requestAnimationFrame(() => onSelect(region));
+      commitFrames.current = [second];
+    });
+    commitFrames.current = [first];
+  }, [drag, onSelect]);
 
   const badge = drag && drag.width >= 1 && drag.height >= 1;
 
@@ -191,7 +236,9 @@ export default function AnnotationOverlay({
       onPointerMove={handleMove}
       onPointerUp={handleUp}
       onPointerCancel={() => setDrag(null)}
-      className="absolute inset-0 z-30 cursor-crosshair select-none bg-black/25"
+      className={`absolute inset-0 z-30 cursor-crosshair select-none bg-black/25 ${
+        isCommitting ? 'invisible pointer-events-none' : ''
+      }`}
     >
       {drag && (
         <div

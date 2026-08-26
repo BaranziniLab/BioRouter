@@ -466,9 +466,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
    * to actually load.
    */
   const handleSessionLoaded = useCallback(
-    (
-      session: { id: string; name: string; userSetName: boolean; workingDir?: string } | null
-    ) => {
+    (session: { id: string; name: string; userSetName: boolean; workingDir?: string } | null) => {
       if (!session?.id) return;
       // ⚠ Recorded BEFORE the name guard below, and separately from it.
       //

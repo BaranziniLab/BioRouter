@@ -601,6 +601,9 @@
           "404": {
             "description": "Session not found"
           },
+          "424": {
+            "description": "The delegated child is still initializing"
+          },
           "500": {
             "description": "Internal server error"
           }
@@ -639,6 +642,12 @@
           },
           "401": {
             "description": "Unauthorized - invalid secret key"
+          },
+          "403": {
+            "description": "The session is out of reach, or the target is a subagent and the request lacks user-action proof"
+          },
+          "404": {
+            "description": "Session not found"
           },
           "500": {
             "description": "Internal server error"
@@ -685,6 +694,16 @@
           },
           "401": {
             "description": "Unauthorized - invalid secret key"
+          },
+          "409": {
+            "description": "The selected private provider requires user-action proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Internal server error",
@@ -820,8 +839,14 @@
           "401": {
             "description": "Unauthorized - invalid secret key"
           },
+          "403": {
+            "description": "The session is out of reach, or the target is a subagent and the request lacks user-action proof"
+          },
           "424": {
             "description": "Agent not initialized"
+          },
+          "500": {
+            "description": "Internal server error"
           }
         }
       }
@@ -2293,7 +2318,7 @@
           "super::routes::knowledge"
         ],
         "summary": "Lint a knowledge base and stream the result.",
-        "description": "The stream's terminal `event: done` frame carries a `LintResult`: the\nautofix commit, if any, wrapped around a `LintReport` — the four hygiene\nlists this route has always returned, plus `diagnostics`, the typed findings.\nEach of those is a stable rule id (`kb.` for hygiene, `okf.` and `biookf.`\nfor the format layers), a severity, the subject it is about and a message;\na consumer matches on `rule` and never on `message`, which is prose.\n\nBoth schemas are published under `components.schemas` rather than as this\nresponse's body, because the body is an event stream and typing it as JSON\nwould be a false statement the generated client believes.\n\nA **legacy** base (below the OKF generation) is given the hygiene rules and\nno format layer, so its report carries `kb.*` diagnostics only — DR-26: this\nbuild has promised never to rewrite those pages, and reporting that decision\nas one conformance error per page would bury the findings that are real.",
+        "description": "The stream's terminal `event: done` frame carries a `LintResult`: the\nautofix commit, if any, wrapped around a `LintReport` — the four hygiene\nlists this route has always returned, plus `diagnostics`, the typed findings.\nEach of those is a stable rule id (`kb.` for hygiene, `okf.` and `biookf.`\nfor the format layers), a severity, the subject it is about and a message;\na consumer matches on `rule` and never on `message`, which is prose.\n\nBoth schemas are published under `components.schemas` rather than as this\nresponse's body, because the body is an event stream and typing it as JSON\nwould be a false statement the generated client believes.\n\nRetired pre-OKF bases are refused before the macro starts. Startup removes\nthem, and every remaining base receives its current OKF or BioOKF format\nlayer in addition to the shared hygiene rules.",
         "operationId": "lint",
         "parameters": [
           {
@@ -8534,6 +8559,11 @@
           },
           "text": {
             "type": "string"
+          },
+          "turn_id": {
+            "type": "string",
+            "description": "Client idempotency key for a steer submitted while a delegated child is\nstill waiting for its initial runtime. Ordinary active-turn interrupts\ndo not require it.",
+            "nullable": true
           }
         }
       },
@@ -9734,6 +9764,45 @@
         "oneOf": [
           {
             "type": "object",
+            "description": "Authoritative lifecycle edge for a turn visible on the read-only session\nobserver. It lets a quiet turn render as active without inferring work\nfrom model output or polling `/agent/resume` across initialization.",
+            "required": [
+              "turn_id",
+              "type"
+            ],
+            "properties": {
+              "turn_id": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "TurnStarted"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Authoritative observer snapshot of the session's current lifecycle.\n`None` is meaningful: it retires a turn whose terminal edge was missed\nwhile the observer was disconnected.",
+            "required": [
+              "active_turn_id",
+              "type"
+            ],
+            "properties": {
+              "active_turn_id": {
+                "type": "string",
+                "nullable": true
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "TurnState"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "message",
               "token_state",
@@ -9780,6 +9849,10 @@
               "scope": {
                 "$ref": "#/components/schemas/TurnErrorScope"
               },
+              "turn_id": {
+                "type": "string",
+                "nullable": true
+              },
               "type": {
                 "type": "string",
                 "enum": [
@@ -9801,6 +9874,10 @@
               },
               "token_state": {
                 "$ref": "#/components/schemas/TokenState"
+              },
+              "turn_id": {
+                "type": "string",
+                "nullable": true
               },
               "type": {
                 "type": "string",

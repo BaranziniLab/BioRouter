@@ -53,7 +53,7 @@ import {
 } from '../ui/dropdown-menu';
 import AnnotationOverlay, { type SelectedRegion } from './AnnotationOverlay';
 import DocumentPreview from './DocumentPreview';
-import WebPagePreview from './WebPagePreview';
+import WebPagePreview, { type LiveBrowserShare } from './WebPagePreview';
 import NotebookPreview from './NotebookPreview';
 import type {
   ArtifactFileEntry,
@@ -85,6 +85,30 @@ const MAX_TABLE_ROWS = 500;
 
 // Line numbers stop helping once a file is long enough that nobody is counting.
 const MAX_LINE_NUMBERED_LINES = 5_000;
+
+const MAX_TIFF_DIMENSION = 8_192;
+const MAX_TIFF_PIXELS = 32_000_000;
+const MAX_TIFF_RGBA_BYTES = 128_000_000;
+
+export function safeTiffDimensions(page: { width: number; height: number }) {
+  const { width, height } = page;
+  if (
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
+    width <= 0 ||
+    height <= 0 ||
+    width > MAX_TIFF_DIMENSION ||
+    height > MAX_TIFF_DIMENSION
+  ) {
+    throw new Error('TIFF dimensions exceed the safe preview limit.');
+  }
+  const pixels = width * height;
+  const rgbaBytes = pixels * 4;
+  if (pixels > MAX_TIFF_PIXELS || rgbaBytes > MAX_TIFF_RGBA_BYTES) {
+    throw new Error('TIFF dimensions exceed the safe preview limit.');
+  }
+  return { width, height, rgbaBytes };
+}
 
 // Text files conventionally end with a newline. Left in, it renders a phantom
 // last line — numbered, empty, and one more than the file actually has.
@@ -120,6 +144,10 @@ interface ArtifactViewerProps {
   onOpenArtifact: (artifact: ArtifactSource) => void;
   onResizeStart?: (event: PointerEvent<HTMLDivElement>) => void;
   onRenderError?: (error: ArtifactRenderError) => void;
+  /** Present only while the user has explicitly shared a live web tab. */
+  onLiveBrowserShareChange?: (share: LiveBrowserShare | null) => void;
+  /** Exact revision of the file bytes currently rendered in this panel. */
+  onFilePreviewRevisionChange?: (revision: string | null) => void;
   /**
    * The chat this panel belongs to. Chat-only, exactly like `onRenderError`:
    * a read-only transcript passes nothing, so the annotate control never
@@ -289,6 +317,8 @@ export default function ArtifactViewer({
   onOpenArtifact,
   onResizeStart,
   onRenderError,
+  onLiveBrowserShareChange,
+  onFilePreviewRevisionChange,
   sessionId,
   className,
   style,
@@ -317,7 +347,24 @@ export default function ArtifactViewer({
    */
   const [browsingUrls, setBrowsingUrls] = useState<ReadonlySet<string>>(() => new Set());
   const [isAnnotating, setIsAnnotating] = useState(false);
+  const [liveBrowserViewId, setLiveBrowserViewId] = useState<string | null>(null);
+  const liveBrowserViewIdRef = useRef(liveBrowserViewId);
+  const handleLiveBrowserViewChange = useCallback((viewId: string | null) => {
+    liveBrowserViewIdRef.current = viewId;
+    setLiveBrowserViewId(viewId);
+  }, []);
+  const [annotationSnapshot, setAnnotationSnapshot] = useState<{
+    path: string;
+    dataUrl: string;
+    sourceTitle: string;
+    sourceUrl: string;
+    sourceRevision: string;
+  } | null>(null);
+  const annotationSnapshotRef = useRef(annotationSnapshot);
+  annotationSnapshotRef.current = annotationSnapshot;
   const previewBodyRef = useRef<HTMLDivElement | null>(null);
+  const activeSourceKeyRef = useRef<string | null>(null);
+  const activeSourceGenerationRef = useRef(0);
 
   const pendingNavigationKeyRef = useRef<string | null>(null);
   const draggedTabIdRef = useRef<string | null>(null);
@@ -350,38 +397,193 @@ export default function ArtifactViewer({
    * see into the sandboxed `srcdoc` frames most artifacts render in — a
    * DOM-walking screenshot library would return an empty box for a figure.
    */
+  const finishAnnotation = useCallback(() => {
+    setIsAnnotating(false);
+    setAnnotationSnapshot((current) => {
+      if (current) window.electron?.deleteTempFile(current.path);
+      return null;
+    });
+  }, []);
+
   const captureAnnotation = useCallback(
     async (region: SelectedRegion) => {
-      setIsAnnotating(false);
       const body = previewBodyRef.current;
-      if (!body || !sessionId) return;
+      if (!body || !sessionId) {
+        finishAnnotation();
+        return;
+      }
+      const sourceKey = activeSourceKeyRef.current;
+      const sourceGeneration = activeSourceGenerationRef.current;
+      const liveSnapshot = activeArtifact?.kind === 'externalUrl' ? annotationSnapshot : null;
       const bodyRect = body.getBoundingClientRect();
+      const hasMeasuredBounds = bodyRect.width > 0 && bodyRect.height > 0;
+      const x = hasMeasuredBounds ? Math.min(bodyRect.width, Math.max(0, region.x)) : region.x;
+      const y = hasMeasuredBounds ? Math.min(bodyRect.height, Math.max(0, region.y)) : region.y;
+      const width = hasMeasuredBounds ? Math.min(region.width, bodyRect.width - x) : region.width;
+      const height = hasMeasuredBounds
+        ? Math.min(region.height, bodyRect.height - y)
+        : region.height;
+      if (width <= 0 || height <= 0) {
+        finishAnnotation();
+        return;
+      }
       const shot = await window.electron?.captureRegion({
-        x: bodyRect.left + region.x,
-        y: bodyRect.top + region.y,
-        width: region.width,
-        height: region.height,
+        x: bodyRect.left + x,
+        y: bodyRect.top + y,
+        width,
+        height,
         label: 'annotation',
+        ...(hasMeasuredBounds
+          ? {
+              containment: {
+                x: bodyRect.left,
+                y: bodyRect.top,
+                width: bodyRect.width,
+                height: bodyRect.height,
+              },
+            }
+          : {}),
       });
-      if (!shot) return;
+      if (!shot) {
+        finishAnnotation();
+        return;
+      }
+      if (
+        !sourceKey ||
+        sourceKey !== activeSourceKeyRef.current ||
+        sourceGeneration !== activeSourceGenerationRef.current
+      ) {
+        window.electron?.deleteTempFile(shot.path);
+        finishAnnotation();
+        return;
+      }
       sendArtifactAnnotation({
         sessionId,
         imagePath: shot.path,
-        sourceTitle: activeArtifact?.title ?? 'Preview',
+        sourceTitle: liveSnapshot?.sourceTitle || activeArtifact?.title || 'Preview',
         sourceLocator:
-          activeArtifact?.kind === 'file'
+          liveSnapshot?.sourceUrl ??
+          (activeArtifact?.kind === 'file'
             ? activeArtifact.path
             : activeArtifact?.kind === 'externalUrl'
               ? activeArtifact.url
-              : undefined,
-        width: region.width,
-        height: region.height,
+              : undefined),
+        sourceRevision:
+          liveSnapshot?.sourceRevision ??
+          (preview.kind === 'file' &&
+          previewSourceKey === activeSourceKeyRef.current &&
+          'revision' in preview.preview
+            ? preview.preview.revision
+            : undefined),
+        sourceTrust:
+          liveSnapshot || activeArtifact?.kind === 'externalUrl' ? 'untrusted_external' : 'local',
+        region: {
+          x,
+          y,
+          width,
+          height,
+          surfaceWidth: bodyRect.width,
+          surfaceHeight: bodyRect.height,
+        },
+        width,
+        height,
       });
+      finishAnnotation();
     },
-    [activeArtifact, sessionId]
+    [activeArtifact, annotationSnapshot, finishAnnotation, preview, previewSourceKey, sessionId]
   );
 
   const activeSourceKey = activeArtifact ? artifactSourceKey(activeArtifact) : null;
+  activeSourceKeyRef.current = activeSourceKey;
+
+  useEffect(() => {
+    activeSourceGenerationRef.current += 1;
+    finishAnnotation();
+    handleLiveBrowserViewChange(null);
+  }, [activeSourceKey, finishAnnotation, handleLiveBrowserViewChange]);
+
+  useEffect(
+    () => () => {
+      activeSourceGenerationRef.current += 1;
+      activeSourceKeyRef.current = null;
+      liveBrowserViewIdRef.current = null;
+      const snapshot = annotationSnapshotRef.current;
+      if (snapshot) window.electron?.deleteTempFile(snapshot.path);
+      onLiveBrowserShareChange?.(null);
+    },
+    [onLiveBrowserShareChange]
+  );
+
+  const toggleAnnotation = useCallback(async () => {
+    if (isAnnotating) {
+      finishAnnotation();
+      return;
+    }
+    if (activeArtifact?.kind !== 'externalUrl') {
+      setIsAnnotating(true);
+      return;
+    }
+
+    const sourceKey = activeSourceKeyRef.current;
+    const sourceGeneration = activeSourceGenerationRef.current;
+    const viewId = liveBrowserViewId;
+    if (!viewId) return;
+    const shot = await window.electron?.embeddedBrowser?.capture(viewId);
+    if (!shot) return;
+
+    let viewHidden = false;
+    const rejectCapture = () => {
+      window.electron?.deleteTempFile(shot.path);
+      if (viewHidden) void window.electron?.embeddedBrowser?.setVisible(viewId, true);
+    };
+    const sourceIsCurrent = () =>
+      sourceKey !== null &&
+      sourceKey === activeSourceKeyRef.current &&
+      sourceGeneration === activeSourceGenerationRef.current &&
+      liveBrowserViewIdRef.current === viewId;
+    const pageIsCurrent = async (expected?: { url: string; sourceRevision: string }) => {
+      if (!sourceIsCurrent()) return null;
+      const page = await window.electron?.embeddedBrowser?.readText(viewId, 0);
+      if (
+        !page ||
+        !sourceIsCurrent() ||
+        shot.sourceRevision !== page.sourceRevision ||
+        (expected && (page.url !== expected.url || page.sourceRevision !== expected.sourceRevision))
+      ) {
+        return null;
+      }
+      return page;
+    };
+
+    try {
+      const capturedPage = await pageIsCurrent();
+      if (!capturedPage) {
+        rejectCapture();
+        return;
+      }
+      const dataUrl = await window.electron?.getTempImage(shot.path);
+      if (!dataUrl || !(await pageIsCurrent(capturedPage))) {
+        rejectCapture();
+        return;
+      }
+      await window.electron?.embeddedBrowser?.setVisible(viewId, false);
+      viewHidden = true;
+      if (!(await pageIsCurrent(capturedPage))) {
+        rejectCapture();
+        return;
+      }
+      setAnnotationSnapshot({
+        path: shot.path,
+        dataUrl,
+        sourceTitle: capturedPage.title || activeArtifact.title,
+        sourceUrl: capturedPage.url,
+        sourceRevision: capturedPage.sourceRevision,
+      });
+      setIsAnnotating(true);
+    } catch {
+      rejectCapture();
+    }
+  }, [activeArtifact, finishAnnotation, isAnnotating, liveBrowserViewId]);
 
   const openArtifactInTab = useCallback(
     (nextArtifact: ArtifactSource) => {
@@ -601,6 +803,23 @@ export default function ArtifactViewer({
       cancelled = true;
     };
   }, [activeArtifact, activeSourceKey]);
+
+  useEffect(() => {
+    const revision =
+      preview.kind === 'file' && previewSourceKey === activeSourceKey
+        ? 'revision' in preview.preview
+          ? preview.preview.revision || null
+          : null
+        : null;
+    onFilePreviewRevisionChange?.(revision);
+  }, [activeSourceKey, onFilePreviewRevisionChange, preview, previewSourceKey]);
+
+  useEffect(
+    () => () => {
+      onFilePreviewRevisionChange?.(null);
+    },
+    [onFilePreviewRevisionChange]
+  );
 
   useEffect(() => {
     if (!activeArtifact || !onRenderError) return;
@@ -865,7 +1084,7 @@ export default function ArtifactViewer({
             type="button"
             data-testid="artifact-annotate"
             aria-pressed={isAnnotating}
-            onClick={() => setIsAnnotating((current) => !current)}
+            onClick={() => void toggleAnnotation()}
             className={cn(
               HEADER_ACTION_BUTTON_CLASS,
               'relative z-50 ml-0.5 shrink-0',
@@ -919,7 +1138,7 @@ export default function ArtifactViewer({
         )}
         {isAnnotating && (
           <AnnotationOverlay
-            onCancel={() => setIsAnnotating(false)}
+            onCancel={finishAnnotation}
             onSelect={(region) => {
               void captureAnnotation(region);
             }}
@@ -936,6 +1155,10 @@ export default function ArtifactViewer({
             activeArtifact.kind === 'externalUrl' && browsingUrls.has(activeArtifact.url)
           }
           onStartBrowsing={(url) => setBrowsingUrls((current) => new Set(current).add(url))}
+          onLiveBrowserViewChange={handleLiveBrowserViewChange}
+          onLiveBrowserShareChange={onLiveBrowserShareChange}
+          isAnnotating={isAnnotating}
+          annotationSnapshotDataUrl={annotationSnapshot?.dataUrl ?? null}
         />
       </div>
     </aside>
@@ -982,6 +1205,10 @@ function ArtifactPreviewBody({
   onOpenArtifactInTab,
   isBrowsingUrl,
   onStartBrowsing,
+  onLiveBrowserViewChange = () => {},
+  onLiveBrowserShareChange,
+  isAnnotating = false,
+  annotationSnapshotDataUrl = null,
 }: {
   preview: PreviewState;
   artifact: ArtifactSource;
@@ -992,6 +1219,10 @@ function ArtifactPreviewBody({
   /** The user has clicked "Open here" for this URL in this tab. */
   isBrowsingUrl: boolean;
   onStartBrowsing?: (url: string) => void;
+  onLiveBrowserViewChange?: (viewId: string | null) => void;
+  onLiveBrowserShareChange?: (share: LiveBrowserShare | null) => void;
+  isAnnotating?: boolean;
+  annotationSnapshotDataUrl?: string | null;
 }) {
   if (preview.kind === 'loading') {
     return (
@@ -1039,7 +1270,10 @@ function ArtifactPreviewBody({
           url={preview.url}
           // The native view has no shared z-index with the DOM, so it has to be
           // hidden while the resize shield is up or it paints straight over it.
-          isSuspended={isResizing}
+          isSuspended={isResizing || isAnnotating}
+          snapshotDataUrl={annotationSnapshotDataUrl}
+          onViewIdChange={onLiveBrowserViewChange}
+          onAgentShareChange={onLiveBrowserShareChange}
           onOpenExternal={(url) => void window.electron.openExternal(url)}
         />
       );
@@ -1551,17 +1785,25 @@ function ImageFilePreview({
           // The first page only. Multi-page TIFF is real in microscopy and
           // deserves a page control; showing page 1 is the honest first step,
           // not a claim to have handled the stack.
+          const { width, height, rgbaBytes } = safeTiffDimensions(pages[0]);
           UTIF.decodeImage(bytes, pages[0]);
           const rgba = UTIF.toRGBA8(pages[0]);
+          if (rgba.byteLength !== rgbaBytes) throw new Error('invalid decoded pixel data');
           const canvas = document.createElement('canvas');
-          canvas.width = pages[0].width;
-          canvas.height = pages[0].height;
+          canvas.width = width;
+          canvas.height = height;
           const ctx = canvas.getContext('2d');
           if (!ctx) throw new Error('no 2d context');
-          ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), canvas.width, canvas.height), 0, 0);
+          ctx.putImageData(
+            new ImageData(new Uint8ClampedArray(rgba), canvas.width, canvas.height),
+            0,
+            0
+          );
           const blob = await new Promise<Blob | null>((resolve) =>
             canvas.toBlob(resolve, 'image/png')
           );
+          canvas.width = 0;
+          canvas.height = 0;
           if (!blob || cancelled) return;
           const url = URL.createObjectURL(blob);
           revoke = () => URL.revokeObjectURL(url);

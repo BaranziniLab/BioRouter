@@ -37,6 +37,7 @@ import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUt
 import { getNavigationShortcutText } from '../utils/keyboardShortcuts';
 import type { UserAttachment } from '../types/message';
 import { useStopAcknowledgement } from '../hooks/useStopAcknowledgement';
+import { isRunningState } from '../hooks/chatStreamStore';
 import { toastWarning } from '../toasts';
 import { cn } from '../utils';
 import {
@@ -369,8 +370,10 @@ export default function ChatInput({
   const pastedImagesRef = useRef(pastedImages);
   pastedImagesRef.current = pastedImages;
 
-  // Derived state - chatState != Idle means we're in some form of loading state
+  // Loading gates composer operations; live work drives the visual activity
+  // indicator. LoadingConversation is intentionally only in the former.
   const isLoading = chatState !== ChatState.Idle;
+  const isWorking = isRunningState(chatState);
   const wasLoadingRef = useRef(isLoading);
 
   // Queue functionality - renderer-memory only, scoped to this chat. An offer
@@ -2535,7 +2538,7 @@ export default function ChatInput({
         //
         // `undefined` rather than `'false'` when idle, so the attribute is
         // absent from the DOM and `[data-working]` is the whole test.
-        data-working={isLoading ? 'true' : undefined}
+        data-working={isWorking ? 'true' : undefined}
       >
         {/* Message Queue Display */}
         {queuedMessages.length > 0 && (

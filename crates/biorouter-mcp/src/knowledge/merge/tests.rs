@@ -10,7 +10,7 @@ use crate::knowledge::{
     caller::KbCaller,
     okf::model::Page,
     raw as raw_store,
-    service::KnowledgeService,
+    service::{KnowledgeService, LegacyKnowledgeBaseUnsupported},
     types::{Credibility, CredibilityTier, SourceMeta},
 };
 use std::collections::BTreeMap;
@@ -865,6 +865,59 @@ async fn a_failure_mid_merge_leaves_the_destination_byte_identical() {
     assert!(dst.join("knowledge/after.md").exists());
 }
 
+#[test]
+fn post_commit_failures_never_remove_the_pages_or_raw_sources_main_now_owns() {
+    for checkpoint in [
+        CommitTxnCheckpoint::MainRefAdvanced,
+        CommitTxnCheckpoint::WorkingTreeCheckedOut,
+        CommitTxnCheckpoint::TransactionBranchDeleted,
+    ] {
+        let (_dir, svc) = service();
+        let dst = base(&svc, "dst");
+        let src = base(&svc, "src");
+        put_raw(&src, "incoming", "sha-incoming", "incoming bytes");
+        put_page(
+            &src,
+            "knowledge/concept/incoming.md",
+            &PageSpec {
+                r#type: "Concept",
+                identifier: "Incoming",
+                raw_source: vec!["raw/incoming/original.txt"],
+                edges: vec![],
+                body: "incoming page",
+            }
+            .render(),
+        );
+        let merge_plan = plan(&dst, &src, "src").unwrap();
+        let page_path = merge_plan.pages[0].destination_path.clone();
+        let raw_id = merge_plan.raw_copies[0].to.clone();
+
+        let error = apply_with_commit_checkpoint(&dst, &src, &merge_plan, |reached| {
+            if reached == checkpoint {
+                anyhow::bail!("injected failure at {reached:?}");
+            }
+            Ok(())
+        })
+        .expect_err("the post-commit checkpoint must fail");
+        let failure = error
+            .downcast_ref::<KnowledgeWriteFailure>()
+            .expect("post-commit merge failures remain phase-aware");
+        assert_eq!(failure.phase, KnowledgeWriteFailurePhase::Committed);
+        assert!(
+            dst.join(&page_path).exists(),
+            "the committed page was removed after {checkpoint:?}"
+        );
+        assert!(
+            dst.join("raw").join(&raw_id).join("original.txt").exists(),
+            "the committed raw source was removed after {checkpoint:?}"
+        );
+
+        GitRepo::open(&dst).unwrap().recover_orphaned_txn().unwrap();
+        assert!(dst.join(&page_path).exists());
+        assert!(dst.join("raw").join(raw_id).join("original.txt").exists());
+    }
+}
+
 /// The source base is only read. Nothing about a merge moves, renames or empties
 /// it — the deliberate deviation from `bokf-core::merge_raw`, which relocates.
 #[tokio::test]
@@ -1532,7 +1585,7 @@ fn the_profile_table_allows_exactly_the_directions_that_preserve_conformance() {
     use crate::knowledge::types::KbFormat::{Biookf, Okf};
     // (destination, source, allowed)
     let table = [
-        (None, None, true),
+        (None, None, false),
         (Some(Okf), Some(Okf), true),
         (Some(Biookf), Some(Biookf), true),
         // The one asymmetric cell: a BioOKF bundle is a valid OKF bundle, so it
@@ -1581,10 +1634,16 @@ async fn a_legacy_base_is_refused_a_merge_into_a_biookf_base_in_both_modes() {
             .merge_bases("dst", "src", &MergeAuthority::User(&user()), dry_run)
             .await
             .expect_err("an incompatible merge was allowed");
+        let typed = err
+            .downcast_ref::<LegacyKnowledgeBaseUnsupported>()
+            .expect("the legacy merge refusal must stay typed");
+        assert_eq!(typed.kb_id, "src");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("legacy (pre-OKF)") && msg.contains("biookf"),
-            "the refusal must name both profiles (dry_run={dry_run}): {msg}"
+            msg.contains("retired pre-OKF format")
+                && msg.contains("restart Biorouter")
+                && msg.contains("OKF or BioOKF knowledge base"),
+            "the refusal must explain how to finish the purge and recover (dry_run={dry_run}): {msg}"
         );
     }
     assert_eq!(

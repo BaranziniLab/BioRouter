@@ -71,7 +71,11 @@ function skill(name: string, overrides: Partial<CatalogSkill> = {}): CatalogSkil
   };
 }
 
-function bundle(name: string, members: string[], overrides: Partial<CatalogBundle> = {}): CatalogBundle {
+function bundle(
+  name: string,
+  members: string[],
+  overrides: Partial<CatalogBundle> = {}
+): CatalogBundle {
   return {
     name,
     displayName: name,
@@ -202,7 +206,9 @@ describe('SkillsView', () => {
    * INSTALLED directory or it would miss the folder entirely.
    */
   it('removes a single skill by its installed directory, not its declared name', async () => {
-    serve({ skills: [skill('gwas-pipeline', { slug: 'run-gwas', directory: '/skills/run-gwas' })] });
+    serve({
+      skills: [skill('gwas-pipeline', { slug: 'run-gwas', directory: '/skills/run-gwas' })],
+    });
     mocks.removeSkillPackage.mockResolvedValue({ data: { id: 'run-gwas' } });
     render(<SkillsView />);
 

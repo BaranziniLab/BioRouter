@@ -632,6 +632,15 @@ impl Provider for LeadWorkerProvider {
         self.lead_provider.supports_live_steering() || self.worker_provider.supports_live_steering()
     }
 
+    /// Restart steering is a property of the provider selected for this exact
+    /// turn. Unlike live steering, there is no receiver for
+    /// `stream_from_active` to route or reject: the agent itself drops the outer
+    /// stream. Ask the same routing snapshot that `stream_from_active` asks so a
+    /// mixed pair restarts only when its active half explicitly supports it.
+    fn supports_restart_steering(&self) -> bool {
+        self.get_active_provider().supports_restart_steering()
+    }
+
     /// Stream from the active provider **and keep the rotation accounting**.
     ///
     /// ⚠ The accounting is the whole difficulty here, and omitting it silently
@@ -1154,6 +1163,7 @@ mod tests {
     struct StreamingCapability {
         streams: bool,
         steers: bool,
+        restarts: bool,
         model: ModelConfig,
     }
 
@@ -1185,6 +1195,9 @@ mod tests {
         }
         fn supports_live_steering(&self) -> bool {
             self.steers
+        }
+        fn supports_restart_steering(&self) -> bool {
+            self.restarts
         }
         async fn stream(
             &self,
@@ -1222,6 +1235,7 @@ mod tests {
         Arc::new(StreamingCapability {
             streams,
             steers: streams,
+            restarts: false,
             model: ModelConfig::new("m").unwrap(),
         })
     }
@@ -1230,6 +1244,16 @@ mod tests {
         Arc::new(StreamingCapability {
             streams: true,
             steers,
+            restarts: false,
+            model: ModelConfig::new("m").unwrap(),
+        })
+    }
+
+    fn restart_capability(restarts: bool) -> Arc<dyn Provider> {
+        Arc::new(StreamingCapability {
+            streams: true,
+            steers: false,
+            restarts,
             model: ModelConfig::new("m").unwrap(),
         })
     }
@@ -1339,6 +1363,44 @@ mod tests {
         );
         futures::pin_mut!(stream);
         while futures::StreamExt::next(&mut stream).await.is_some() {}
+    }
+
+    #[tokio::test]
+    async fn restart_steering_tracks_the_active_half_without_changing_rotation() {
+        let pair = LeadWorkerProvider::new(
+            restart_capability(true),
+            streaming_capability(true),
+            Some(1),
+        );
+        assert!(pair.supports_live_steering());
+        assert!(
+            pair.supports_restart_steering(),
+            "the restart-capable lead is active"
+        );
+
+        let lead = pair.stream("SYS", &[], &[]).await.expect("lead stream");
+        futures::pin_mut!(lead);
+        while futures::StreamExt::next(&mut lead).await.is_some() {}
+
+        assert_eq!(pair.get_turn_count().await, 1);
+        assert!(pair.supports_live_steering());
+        assert!(
+            !pair.supports_restart_steering(),
+            "the live-only worker must not inherit restart steering"
+        );
+
+        let inverse = LeadWorkerProvider::new(
+            streaming_capability(true),
+            restart_capability(true),
+            Some(1),
+        );
+        assert!(inverse.supports_live_steering());
+        assert!(!inverse.supports_restart_steering());
+        let lead = inverse.stream("SYS", &[], &[]).await.expect("lead stream");
+        futures::pin_mut!(lead);
+        while futures::StreamExt::next(&mut lead).await.is_some() {}
+        assert!(inverse.supports_live_steering());
+        assert!(inverse.supports_restart_steering());
     }
 
     /// **The turn must still rotate on the streaming path.**

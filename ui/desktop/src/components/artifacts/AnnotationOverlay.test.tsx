@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import AnnotationOverlay from './AnnotationOverlay';
 
@@ -14,7 +14,16 @@ beforeEach(() => {
   Element.prototype.releasePointerCapture = vi.fn();
   Element.prototype.getBoundingClientRect = vi.fn(
     () =>
-      ({ left: 0, top: 0, width: 1000, height: 800, right: 1000, bottom: 800, x: 0, y: 0 }) as DOMRect
+      ({
+        left: 0,
+        top: 0,
+        width: 1000,
+        height: 800,
+        right: 1000,
+        bottom: 800,
+        x: 0,
+        y: 0,
+      }) as DOMRect
   );
 });
 
@@ -31,18 +40,23 @@ const drag = (overlay: HTMLElement, from: [number, number], to: [number, number]
 };
 
 describe('selecting a region', () => {
-  it('reports the dragged rectangle', () => {
+  it('reports the dragged rectangle after hiding the capture chrome', async () => {
     const { onSelect, overlay } = setup();
     drag(overlay, [100, 100], [340, 280]);
     fireEvent.pointerUp(overlay, { pointerId: 1 });
-    expect(onSelect).toHaveBeenCalledWith({ x: 100, y: 100, width: 240, height: 180 });
+    expect(overlay).toHaveClass('invisible');
+    await waitFor(() =>
+      expect(onSelect).toHaveBeenCalledWith({ x: 100, y: 100, width: 240, height: 180 })
+    );
   });
 
-  it('normalises a drag that goes up and to the left', () => {
+  it('normalises a drag that goes up and to the left', async () => {
     const { onSelect, overlay } = setup();
     drag(overlay, [400, 400], [300, 250]);
     fireEvent.pointerUp(overlay, { pointerId: 1 });
-    expect(onSelect).toHaveBeenCalledWith({ x: 300, y: 250, width: 100, height: 150 });
+    await waitFor(() =>
+      expect(onSelect).toHaveBeenCalledWith({ x: 300, y: 250, width: 100, height: 150 })
+    );
   });
 
   // The live readout is the detail that makes drag-to-crop feel precise; it is
@@ -66,25 +80,29 @@ describe('selecting a region', () => {
 });
 
 describe('the modifiers', () => {
-  it('Shift constrains to a square, on the larger axis', () => {
+  it('Shift constrains to a square, on the larger axis', async () => {
     const { onSelect, overlay } = setup();
     fireEvent.pointerDown(overlay, { button: 0, clientX: 100, clientY: 100, pointerId: 1 });
     fireEvent.keyDown(window, { key: 'Shift' });
     fireEvent.pointerMove(overlay, { clientX: 300, clientY: 180, pointerId: 1 });
     fireEvent.pointerUp(overlay, { pointerId: 1 });
-    expect(onSelect).toHaveBeenCalledWith({ x: 100, y: 100, width: 200, height: 200 });
+    await waitFor(() =>
+      expect(onSelect).toHaveBeenCalledWith({ x: 100, y: 100, width: 200, height: 200 })
+    );
   });
 
-  it('Option sizes from the centre', () => {
+  it('Option sizes from the centre', async () => {
     const { onSelect, overlay } = setup();
     fireEvent.pointerDown(overlay, { button: 0, clientX: 500, clientY: 400, pointerId: 1 });
     fireEvent.keyDown(window, { key: 'Alt' });
     fireEvent.pointerMove(overlay, { clientX: 600, clientY: 450, pointerId: 1 });
     fireEvent.pointerUp(overlay, { pointerId: 1 });
-    expect(onSelect).toHaveBeenCalledWith({ x: 400, y: 350, width: 200, height: 100 });
+    await waitFor(() =>
+      expect(onSelect).toHaveBeenCalledWith({ x: 400, y: 350, width: 200, height: 100 })
+    );
   });
 
-  it('Space moves the marquee without resizing it', () => {
+  it('Space moves the marquee without resizing it', async () => {
     const { onSelect, overlay } = setup();
     drag(overlay, [100, 100], [300, 250]);
     fireEvent.keyDown(window, { key: ' ' });
@@ -92,6 +110,7 @@ describe('the modifiers', () => {
     fireEvent.keyUp(window, { key: ' ' });
     fireEvent.pointerUp(overlay, { pointerId: 1 });
 
+    await waitFor(() => expect(onSelect).toHaveBeenCalledOnce());
     const region = onSelect.mock.calls[0][0];
     expect(region.width).toBe(200);
     expect(region.height).toBe(150);

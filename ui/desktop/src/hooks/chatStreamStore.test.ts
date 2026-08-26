@@ -142,6 +142,7 @@ beforeEach(() => {
     electron: {
       openExternal: vi.fn(async () => undefined),
       readTempImageAsBase64: vi.fn(async () => ({ data: 'B64-image', mimeType: 'image/png' })),
+      deleteTempFile: vi.fn(),
       showNotification: vi.fn(),
       logInfo: vi.fn(),
     },
@@ -818,6 +819,7 @@ describe('ChatStreamRegistry', () => {
     expect(vi.mocked(interrupt).mock.calls[0][0].body).toEqual({
       session_id: 's1',
       text: 'actually, use R',
+      turn_id: expect.any(String),
     });
     expect(vi.mocked(interrupt).mock.calls[0][0].headers).toEqual({
       'X-User-Action': 'test-key',

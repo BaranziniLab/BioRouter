@@ -6,6 +6,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::model::ModelConfig;
 
 pub(crate) const RESTORE_CONFIG_KEY: &str = "__biorouter_provider_restore";
+pub(crate) const STANDALONE_RESTORE_CONFIG_KEY: &str = "__biorouter_standalone_provider_restore";
+
+const STANDALONE_RESTORE_FORMAT_VERSION: u32 = 1;
 
 const MAX_RETRIES: usize = 100;
 const MAX_RETRY_INTERVAL_MS: u64 = 3_600_000;
@@ -171,6 +174,68 @@ pub enum ProviderRestoreBinding {
     },
 }
 
+/// Exact, secret-free provider construction state stored with an ordinary
+/// session. The binding contains route/auth-source references only; credentials
+/// are resolved again when the provider is reconstructed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PersistedStandaloneProviderBinding {
+    format_version: u32,
+    binding: ProviderRestoreBinding,
+}
+
+impl PersistedStandaloneProviderBinding {
+    pub(crate) fn new(binding: ProviderRestoreBinding) -> Result<Self> {
+        binding.validate()?;
+        Ok(Self {
+            format_version: STANDALONE_RESTORE_FORMAT_VERSION,
+            binding,
+        })
+    }
+
+    pub(crate) fn from_model_config(model: &ModelConfig) -> Result<Option<Self>> {
+        let Some(params) = model.request_params.as_ref() else {
+            return Ok(None);
+        };
+        let Some(value) = params.get(STANDALONE_RESTORE_CONFIG_KEY) else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            !params.contains_key(RESTORE_CONFIG_KEY),
+            "conflicting persisted provider restore markers"
+        );
+        let persisted: Self = serde_json::from_value(value.clone())
+            .context("invalid persisted standalone provider binding")?;
+        anyhow::ensure!(
+            persisted.format_version == STANDALONE_RESTORE_FORMAT_VERSION,
+            "unsupported persisted standalone provider binding version"
+        );
+        persisted.binding.validate()?;
+        Ok(Some(persisted))
+    }
+
+    pub(crate) fn to_model_config(&self) -> Result<ModelConfig> {
+        let mut model = model_without_restore_marker(self.binding.model().clone());
+        model
+            .request_params
+            .get_or_insert_with(Default::default)
+            .insert(
+                STANDALONE_RESTORE_CONFIG_KEY.to_string(),
+                serde_json::to_value(self)
+                    .context("persisted standalone provider binding serialization")?,
+            );
+        Ok(model)
+    }
+
+    pub(crate) fn into_binding(self, provider_name: &str) -> Result<ProviderRestoreBinding> {
+        anyhow::ensure!(
+            self.binding.provider_name() == provider_name,
+            "persisted standalone provider binding does not match provider '{provider_name}'"
+        );
+        Ok(self.binding)
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum UncheckedProviderRestoreBinding {
@@ -300,6 +365,10 @@ impl ProviderRestoreBinding {
         }
     }
 
+    pub(crate) fn requires_exact_restore(&self) -> bool {
+        !matches!(self, Self::Registry { .. })
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         anyhow::ensure!(
             !self.provider_name().trim().is_empty(),
@@ -342,6 +411,7 @@ impl ProviderRestoreBinding {
 pub(crate) fn model_without_restore_marker(mut model: ModelConfig) -> ModelConfig {
     if let Some(params) = model.request_params.as_mut() {
         params.remove(RESTORE_CONFIG_KEY);
+        params.remove(STANDALONE_RESTORE_CONFIG_KEY);
         if params.is_empty() {
             model.request_params = None;
         }
@@ -349,11 +419,19 @@ pub(crate) fn model_without_restore_marker(mut model: ModelConfig) -> ModelConfi
     model
 }
 
+pub(crate) fn ensure_no_restore_marker(model: &ModelConfig) -> Result<()> {
+    anyhow::ensure!(
+        !model_has_restore_marker(model),
+        "provider restore parameters are reserved for trusted session state"
+    );
+    Ok(())
+}
+
 fn model_has_restore_marker(model: &ModelConfig) -> bool {
-    model
-        .request_params
-        .as_ref()
-        .is_some_and(|params| params.contains_key(RESTORE_CONFIG_KEY))
+    model.request_params.as_ref().is_some_and(|params| {
+        params.contains_key(RESTORE_CONFIG_KEY)
+            || params.contains_key(STANDALONE_RESTORE_CONFIG_KEY)
+    })
 }
 
 fn validate_path_component(value: &str, label: &str) -> Result<()> {
@@ -469,6 +547,32 @@ mod tests {
             "model": nested
         });
         assert!(serde_json::from_value::<ProviderRestoreBinding>(value).is_err());
+    }
+
+    #[test]
+    fn standalone_restore_envelopes_are_versioned_and_provider_bound() {
+        let envelope = PersistedStandaloneProviderBinding::new(ProviderRestoreBinding::registry(
+            "test-provider".into(),
+            model(),
+        ))
+        .unwrap();
+        let model = envelope.to_model_config().unwrap();
+        let restored = PersistedStandaloneProviderBinding::from_model_config(&model)
+            .unwrap()
+            .unwrap();
+        assert!(restored.into_binding("different-provider").is_err());
+
+        let mut unsupported = model;
+        unsupported
+            .request_params
+            .as_mut()
+            .unwrap()
+            .get_mut(STANDALONE_RESTORE_CONFIG_KEY)
+            .unwrap()["format_version"] = serde_json::json!(999);
+        assert!(
+            PersistedStandaloneProviderBinding::from_model_config(&unsupported).is_err(),
+            "an unknown standalone restore version was silently accepted"
+        );
     }
 
     #[test]
