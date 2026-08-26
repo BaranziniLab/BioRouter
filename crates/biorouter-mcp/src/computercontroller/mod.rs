@@ -381,10 +381,13 @@ pub struct ComputerControllerServer {
     tool_router: ToolRouter<Self>,
     cache_dir: PathBuf,
     active_resources: Arc<Mutex<HashMap<String, ResourceContents>>>,
-    http_client: Client,
+    http_client: Arc<Mutex<Option<Client>>>,
+    web_scrape_timeout: std::time::Duration,
     instructions: String,
     system_automation: Arc<Box<dyn SystemAutomation + Send + Sync>>,
 }
+
+static WEB_SCRAPE_CLIENT_BUILD_LOCK: Mutex<()> = Mutex::new(());
 
 impl Default for ComputerControllerServer {
     fn default() -> Self {
@@ -582,14 +585,40 @@ impl ComputerControllerServer {
             tool_router: Self::tool_router(),
             cache_dir,
             active_resources: Arc::new(Mutex::new(HashMap::new())),
-            http_client: Client::builder()
-                .user_agent(WEB_SCRAPE_USER_AGENT)
-                .timeout(std::time::Duration::from_secs(WEB_SCRAPE_TIMEOUT_SECS))
-                .build()
-                .unwrap(),
+            http_client: Arc::new(Mutex::new(None)),
+            web_scrape_timeout: std::time::Duration::from_secs(WEB_SCRAPE_TIMEOUT_SECS),
             instructions,
             system_automation,
         }
+    }
+
+    fn http_client(&self) -> Result<Client, ErrorData> {
+        let mut slot = self
+            .http_client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(client) = slot.as_ref() {
+            return Ok(client.clone());
+        }
+
+        // macOS SystemConfiguration can return -36 while several extension
+        // instances read the system proxy settings concurrently.
+        let _build_guard = WEB_SCRAPE_CLIENT_BUILD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let client = Client::builder()
+            .user_agent(WEB_SCRAPE_USER_AGENT)
+            .timeout(std::time::Duration::from_secs(WEB_SCRAPE_TIMEOUT_SECS))
+            .build()
+            .map_err(|error| {
+                ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    format!("Failed to initialize the web client: {error}"),
+                    None,
+                )
+            })?;
+        *slot = Some(client.clone());
+        Ok(client)
     }
 
     // Helper function to generate a cache file path
@@ -660,6 +689,7 @@ impl ComputerControllerServer {
         let params = params.0;
         let url = &params.url;
         let save_as = params.save_as;
+        let http_client = self.http_client()?;
 
         // Fetch the content, with ONE retry on transient failures only —
         // connect errors, 429, and 5xx. Deterministic client errors (403/404/…)
@@ -677,9 +707,9 @@ impl ComputerControllerServer {
                 ))
                 .await;
             }
-            match self
-                .http_client
+            match http_client
                 .get(url)
+                .timeout(self.web_scrape_timeout)
                 .header("Accept", "text/markdown, */*")
                 .send()
                 .await
@@ -1892,6 +1922,12 @@ mod web_and_script_tests {
         assert!(bounded.is_char_boundary(bounded.len()));
     }
 
+    #[test]
+    fn construction_defers_fallible_http_initialization() {
+        let server = ComputerControllerServer::new();
+        assert!(server.http_client.lock().unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn web_scrape_returns_text_inline_and_keeps_cached_copy() {
         let mock_server = MockServer::start().await;
@@ -2040,13 +2076,7 @@ mod web_and_script_tests {
         let cache = tempfile::tempdir().unwrap();
         let mut server = ComputerControllerServer::new();
         server.cache_dir = cache.path().to_path_buf();
-        // Production client shape with the 30 s timeout shrunk, so the test
-        // observes the timeout path in milliseconds instead of half a minute.
-        server.http_client = Client::builder()
-            .user_agent(WEB_SCRAPE_USER_AGENT)
-            .timeout(std::time::Duration::from_millis(200))
-            .build()
-            .unwrap();
+        server.web_scrape_timeout = std::time::Duration::from_millis(200);
 
         let error = server
             .web_scrape(Parameters(WebScrapeParams {

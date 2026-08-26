@@ -1683,15 +1683,9 @@ impl CodeExecutionClient {
             .get_prefixed_tools_excluding(EXTENSION_NAME, admitted)
             .await
         {
-            Ok(tools) if !tools.is_empty() => tools
-                .iter()
-                // Spawning needs the parent agent's provider and task context;
-                // ExtensionManager cannot safely execute it as a nested call.
-                .filter(|tool| {
-                    tool.name.as_ref() != crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED
-                })
-                .filter_map(ToolInfo::from_mcp_tool)
-                .collect(),
+            Ok(tools) if !tools.is_empty() => {
+                tools.iter().filter_map(ToolInfo::from_mcp_tool).collect()
+            }
             _ => Vec::new(),
         }
     }

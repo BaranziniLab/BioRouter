@@ -5,10 +5,10 @@ use biorouter::session::SessionManager;
 use biorouter_mcp::knowledge::service::KnowledgeService;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -63,6 +63,216 @@ struct ActiveTurn {
     /// a finished entry blocks nothing and is swept after
     /// [`FINISHED_TURN_RETENTION`].
     finished_at: Option<Instant>,
+    /// Exact-turn retirement signal for a cancel caller that must not submit a
+    /// replacement until this guard has released the session lock.
+    retirement: Arc<TurnRetirement>,
+}
+
+#[derive(Debug, Default)]
+struct TurnRegistry {
+    turns: HashMap<String, ActiveTurn>,
+    continuation_leases: HashMap<String, ContinuationLeaseRecord>,
+    stopping_sessions: HashMap<String, usize>,
+}
+
+#[derive(Debug, Clone)]
+struct ContinuationLeaseRecord {
+    group_id: String,
+    owner_id: String,
+    session_id: String,
+    superseded_turn_id: String,
+    state: ContinuationLeaseState,
+}
+
+#[derive(Debug, Clone)]
+enum ContinuationLeaseState {
+    Reserved {
+        mark: biorouter::agents::subagent_handle::ContinuationPendingMark,
+    },
+    Live,
+    Consumed {
+        successor_idempotency_key: String,
+        resolved_at: Instant,
+    },
+    Lost {
+        resolved_at: Instant,
+    },
+    Abandoned {
+        resolved_at: Instant,
+    },
+}
+
+#[derive(Debug)]
+enum ContinuationLeaseUse {
+    Unclaimed,
+    Live { token: String, group_id: String },
+    ConsumedRetry,
+}
+
+/// Event-driven completion signal owned by one turn, never by a session slot.
+///
+/// Pairing the notification with an atomic state bit makes the wait safe when
+/// the guard drops just before the waiter registers. Keeping it per turn means
+/// a successor cannot satisfy, consume, or prolong its predecessor's wait.
+#[derive(Debug)]
+struct TurnRetirement {
+    retired: AtomicBool,
+    notify: Notify,
+}
+
+impl TurnRetirement {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            retired: AtomicBool::new(false),
+            notify: Notify::new(),
+        })
+    }
+
+    fn is_retired(&self) -> bool {
+        self.retired.load(Ordering::Acquire)
+    }
+
+    fn retire(&self) {
+        self.retired.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    async fn wait(&self) {
+        loop {
+            if self.is_retired() {
+                return;
+            }
+
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            if self.is_retired() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+/// The exact turn whose cancellation token was tripped.
+///
+/// A caller may wait on this handle without looking the session up again. That
+/// distinction is what prevents a fast successor from being mistaken for the
+/// cancelled turn that the caller is waiting to retire.
+#[derive(Debug, Clone)]
+pub struct CancelledTurn {
+    turn_id: String,
+    retirement: Arc<TurnRetirement>,
+}
+
+impl CancelledTurn {
+    pub fn turn_id(&self) -> &str {
+        &self.turn_id
+    }
+
+    pub fn is_settled(&self) -> bool {
+        self.retirement.is_retired()
+    }
+
+    pub async fn wait_until_settled(&self) {
+        self.retirement.wait().await;
+    }
+}
+
+/// Outcome of an atomic, optionally generation-conditional cancel attempt.
+#[derive(Debug, Clone)]
+pub enum CancelTurnAttempt {
+    Cancelled(CancelledTurn),
+    Idle,
+    TurnMismatch { active_turn_id: String },
+}
+
+/// Outcome of a Stop-and-Send cancellation whose exact generation is also the
+/// admission point for a replacement child turn.
+#[derive(Debug, Clone)]
+pub enum ContinuationCancelAttempt {
+    Cancelled {
+        turn: CancelledTurn,
+        admission: ContinuationAdmission,
+    },
+    Retired {
+        turn_id: String,
+        admission: ContinuationAdmission,
+    },
+    Idle,
+    TurnMismatch {
+        active_turn_id: String,
+    },
+    OwnerConflict,
+    AdmissionInProgress,
+    ParentClosing,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContinuationAdmission {
+    token: String,
+    mark: Option<biorouter::agents::subagent_handle::ContinuationPendingMark>,
+}
+
+impl ContinuationAdmission {
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    pub fn mark(&self) -> Option<&biorouter::agents::subagent_handle::ContinuationPendingMark> {
+        self.mark.as_ref()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContinuationLeaseFailure {
+    Required,
+    Invalid,
+    CrossSession,
+    Replayed,
+    MissingSuccessorTurnId,
+    OwnedByAnother,
+    AdmissionInProgress,
+    ParentClosing,
+}
+
+#[derive(Debug, Clone)]
+pub enum TurnBeginFailure {
+    Conflict(TurnConflict),
+    ContinuationLease(ContinuationLeaseFailure),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContinuationLeaseAbandonment {
+    Abandoned,
+    AlreadyAbandoned,
+    AlreadyConsumed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingContinuationStatus {
+    pub superseded_turn_id: String,
+    pub continuation_lease: Option<String>,
+    pub ownership: PendingContinuationOwnership,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingContinuationOwnership {
+    Owned,
+    Foreign,
+    Settling,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContinuationRecovery {
+    Recovered {
+        continuation_lease: String,
+        superseded_turn_id: String,
+    },
+    Abandoned {
+        superseded_turn_id: String,
+    },
 }
 
 /// Why `AppState::try_begin_turn_idempotent` refused to start a turn.
@@ -98,7 +308,43 @@ pub struct TurnGuard {
     /// This turn's frame log, so the runner can publish into it without a second
     /// registry lookup — and so `Drop` can close it.
     stream: Arc<TurnStream>,
-    active_turns: Arc<StdMutex<HashMap<String, ActiveTurn>>>,
+    retirement: Arc<TurnRetirement>,
+    continuation_lease_token: Option<String>,
+    active_turns: Arc<StdMutex<TurnRegistry>>,
+}
+
+/// Admission barrier held while an agent is being stopped and evicted.
+///
+/// The refcount lives under the same lock as turn admission. A successor can
+/// therefore observe neither the retired predecessor nor an absent barrier in
+/// the gap where the stop path awaits agent eviction.
+#[derive(Debug)]
+pub struct AgentStopGuard {
+    session_id: String,
+    cancelled_turn_id: Option<String>,
+    active_turns: Arc<StdMutex<TurnRegistry>>,
+}
+
+impl AgentStopGuard {
+    pub fn cancelled_turn_id(&self) -> Option<&str> {
+        self.cancelled_turn_id.as_deref()
+    }
+}
+
+impl Drop for AgentStopGuard {
+    fn drop(&mut self) {
+        let mut registry = self
+            .active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(stops) = registry.stopping_sessions.get_mut(&self.session_id) else {
+            return;
+        };
+        *stops = stops.saturating_sub(1);
+        if *stops == 0 {
+            registry.stopping_sessions.remove(&self.session_id);
+        }
+    }
 }
 
 impl TurnGuard {
@@ -140,23 +386,73 @@ impl Drop for TurnGuard {
         // lifetime and closes it on every one of its exit paths
         // (`pump_bus_into_stream`); a turn with no pump is only ever attached to
         // through the retired path, which closes on demand.
-        let mut turns = self
+        let retired = {
+            let mut turns = self
+                .active_turns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Only touch the slot if it is still ours.
+            let retired = if let Some(turn) = turns.turns.get_mut(&self.session_id) {
+                if turn.turn_id == self.turn_id {
+                    // NOT `remove`. The entry is retired, not deleted: a re-POST of
+                    // this turn's idempotency key inside FINISHED_TURN_RETENTION
+                    // must attach to the replay above, not start a second turn and
+                    // spend the tokens twice. `finished_at` is what every "is a turn
+                    // running?" reader below filters on, so a retired entry blocks
+                    // nothing.
+                    turn.finished_at = Some(Instant::now());
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            prune_finished_turns(&mut turns);
+            retired
+        };
+
+        // Publish retirement only after `finished_at` is visible. A waiter that
+        // wakes is therefore guaranteed that the exact guard no longer blocks a
+        // replacement turn; it never observes an optimistic acknowledgement.
+        if retired {
+            self.retirement.retire();
+        }
+
+        let Some(token) = self.continuation_lease_token.as_deref() else {
+            return;
+        };
+        let superseded_turn_id = {
+            let registry = self
+                .active_turns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            registry.continuation_leases.get(token).and_then(|lease| {
+                matches!(&lease.state, ContinuationLeaseState::Consumed { .. })
+                    .then(|| lease.superseded_turn_id.clone())
+            })
+        };
+        let Some(superseded_turn_id) = superseded_turn_id else {
+            return;
+        };
+        if !biorouter::agents::subagent_handle::abandon_continuation_for_turn(
+            &self.session_id,
+            &superseded_turn_id,
+        ) {
+            return;
+        }
+        let mut registry = self
             .active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Only touch the slot if it is still ours.
-        if let Some(turn) = turns.get_mut(&self.session_id) {
-            if turn.turn_id == self.turn_id {
-                // NOT `remove`. The entry is retired, not deleted: a re-POST of
-                // this turn's idempotency key inside FINISHED_TURN_RETENTION
-                // must attach to the replay above, not start a second turn and
-                // spend the tokens twice. `finished_at` is what every "is a turn
-                // running?" reader below filters on, so a retired entry blocks
-                // nothing.
-                turn.finished_at = Some(Instant::now());
-            }
+        let Some(lease) = registry.continuation_leases.get_mut(token) else {
+            return;
+        };
+        if matches!(&lease.state, ContinuationLeaseState::Consumed { .. }) {
+            lease.state = ContinuationLeaseState::Abandoned {
+                resolved_at: Instant::now(),
+            };
         }
-        prune_finished_turns(&mut turns);
     }
 }
 
@@ -166,11 +462,262 @@ impl Drop for TurnGuard {
 /// dropping and a turn beginning — so there is no sweeper task to leak, and the
 /// map stays bounded by "sessions that ran a turn in the last five minutes"
 /// rather than by every session id the process has ever seen.
-fn prune_finished_turns(turns: &mut HashMap<String, ActiveTurn>) {
-    turns.retain(|_, turn| {
-        turn.finished_at
-            .is_none_or(|at| at.elapsed() < FINISHED_TURN_RETENTION)
+fn prune_finished_turns(registry: &mut TurnRegistry) {
+    registry
+        .continuation_leases
+        .retain(|_, lease| match &lease.state {
+            ContinuationLeaseState::Consumed { resolved_at, .. }
+            | ContinuationLeaseState::Lost { resolved_at }
+            | ContinuationLeaseState::Abandoned { resolved_at } => {
+                resolved_at.elapsed() < FINISHED_TURN_RETENTION
+            }
+            ContinuationLeaseState::Reserved { .. } | ContinuationLeaseState::Live => true,
+        });
+    let continuation_leases = &registry.continuation_leases;
+    registry.turns.retain(|session_id, turn| {
+        turn.finished_at.is_none_or(|at| {
+            at.elapsed() < FINISHED_TURN_RETENTION
+                || continuation_leases.values().any(|lease| {
+                    lease.session_id == *session_id
+                        && lease.superseded_turn_id == turn.turn_id
+                        && matches!(
+                            &lease.state,
+                            ContinuationLeaseState::Reserved { .. } | ContinuationLeaseState::Live
+                        )
+                })
+        })
     });
+}
+
+fn continuation_lease_use(
+    registry: &TurnRegistry,
+    session_id: &str,
+    successor_key: Option<&str>,
+    continuation_lease: Option<&str>,
+) -> Result<ContinuationLeaseUse, TurnBeginFailure> {
+    let Some(token) = continuation_lease else {
+        let claim_required = registry.continuation_leases.values().any(|lease| {
+            lease.session_id == session_id
+                && matches!(
+                    &lease.state,
+                    ContinuationLeaseState::Reserved { .. } | ContinuationLeaseState::Live
+                )
+        });
+        return if claim_required {
+            Err(TurnBeginFailure::ContinuationLease(
+                ContinuationLeaseFailure::Required,
+            ))
+        } else {
+            Ok(ContinuationLeaseUse::Unclaimed)
+        };
+    };
+
+    let lease =
+        registry
+            .continuation_leases
+            .get(token)
+            .ok_or(TurnBeginFailure::ContinuationLease(
+                ContinuationLeaseFailure::Invalid,
+            ))?;
+    if lease.session_id != session_id {
+        return Err(TurnBeginFailure::ContinuationLease(
+            ContinuationLeaseFailure::CrossSession,
+        ));
+    }
+    match &lease.state {
+        ContinuationLeaseState::Reserved { .. } => Err(TurnBeginFailure::ContinuationLease(
+            ContinuationLeaseFailure::Invalid,
+        )),
+        ContinuationLeaseState::Live => {
+            let successor_key = successor_key.ok_or(TurnBeginFailure::ContinuationLease(
+                ContinuationLeaseFailure::MissingSuccessorTurnId,
+            ))?;
+            let exact_retired_generation = registry.turns.get(session_id).is_some_and(|turn| {
+                turn.finished_at.is_some() && turn.turn_id == lease.superseded_turn_id
+            });
+            if !exact_retired_generation || successor_key.is_empty() {
+                return Err(TurnBeginFailure::ContinuationLease(
+                    ContinuationLeaseFailure::Replayed,
+                ));
+            }
+            Ok(ContinuationLeaseUse::Live {
+                token: token.to_string(),
+                group_id: lease.group_id.clone(),
+            })
+        }
+        ContinuationLeaseState::Consumed {
+            successor_idempotency_key,
+            ..
+        } if successor_key == Some(successor_idempotency_key.as_str()) => {
+            Ok(ContinuationLeaseUse::ConsumedRetry)
+        }
+        ContinuationLeaseState::Consumed { .. }
+        | ContinuationLeaseState::Lost { .. }
+        | ContinuationLeaseState::Abandoned { .. } => Err(TurnBeginFailure::ContinuationLease(
+            ContinuationLeaseFailure::Replayed,
+        )),
+    }
+}
+
+fn active_continuation_group(
+    registry: &TurnRegistry,
+    session_id: &str,
+    superseded_turn_id: &str,
+) -> Option<String> {
+    registry
+        .continuation_leases
+        .values()
+        .find(|lease| {
+            lease.session_id == session_id
+                && lease.superseded_turn_id == superseded_turn_id
+                && matches!(
+                    &lease.state,
+                    ContinuationLeaseState::Reserved { .. } | ContinuationLeaseState::Live
+                )
+        })
+        .map(|lease| lease.group_id.clone())
+}
+
+fn existing_owner_admission(
+    registry: &TurnRegistry,
+    group_id: &str,
+    owner_id: &str,
+    turn: &ActiveTurn,
+) -> Option<ContinuationCancelAttempt> {
+    let (token, lease) = registry.continuation_leases.iter().find(|(_, lease)| {
+        lease.group_id == group_id
+            && lease.owner_id == owner_id
+            && matches!(
+                &lease.state,
+                ContinuationLeaseState::Reserved { .. } | ContinuationLeaseState::Live
+            )
+    })?;
+    Some(match &lease.state {
+        ContinuationLeaseState::Live if turn.finished_at.is_some() => {
+            ContinuationCancelAttempt::Retired {
+                turn_id: turn.turn_id.clone(),
+                admission: ContinuationAdmission {
+                    token: token.clone(),
+                    mark: None,
+                },
+            }
+        }
+        ContinuationLeaseState::Live | ContinuationLeaseState::Reserved { .. } => {
+            ContinuationCancelAttempt::AdmissionInProgress
+        }
+        ContinuationLeaseState::Consumed { .. }
+        | ContinuationLeaseState::Lost { .. }
+        | ContinuationLeaseState::Abandoned { .. } => unreachable!(),
+    })
+}
+
+fn reserve_continuation_admission(
+    registry: &mut TurnRegistry,
+    session_id: &str,
+    turn: &ActiveTurn,
+    group_id: String,
+    owner_id: &str,
+) -> Result<ContinuationAdmission, ContinuationLeaseFailure> {
+    if registry.stopping_sessions.contains_key(session_id) {
+        return Err(ContinuationLeaseFailure::ParentClosing);
+    }
+    let mark = biorouter::agents::subagent_handle::mark_continuation_pending_for_turn(
+        session_id,
+        Some(turn.turn_id.clone()),
+    );
+    if mark.refused_parent_closing() {
+        return Err(ContinuationLeaseFailure::ParentClosing);
+    }
+    let token = format!("{:032x}", rand::random::<u128>());
+    registry.continuation_leases.insert(
+        token.clone(),
+        ContinuationLeaseRecord {
+            group_id,
+            owner_id: owner_id.to_string(),
+            session_id: session_id.to_string(),
+            superseded_turn_id: turn.turn_id.clone(),
+            state: ContinuationLeaseState::Reserved { mark: mark.clone() },
+        },
+    );
+    Ok(ContinuationAdmission {
+        token,
+        mark: Some(mark),
+    })
+}
+
+fn conflicting_turn(
+    registry: &TurnRegistry,
+    session_id: &str,
+    idempotency_key: Option<&str>,
+) -> Option<TurnConflict> {
+    let running = registry.turns.get(session_id)?;
+    // Either the client key or the server-assigned turn id identifies a
+    // re-delivered turn. A keyless request is always a distinct turn.
+    let duplicate = idempotency_key.is_some()
+        && (idempotency_key == running.idempotency_key.as_deref()
+            || idempotency_key == Some(running.turn_id.as_str()));
+    let finished = running.finished_at.is_some();
+    // Running turns always conflict. Finished turns conflict only when the
+    // caller is re-posting that exact turn into its retained replay.
+    (!finished || duplicate).then(|| TurnConflict {
+        running_turn_id: running.turn_id.clone(),
+        duplicate,
+        stream: Arc::clone(&running.stream),
+        finished,
+    })
+}
+
+fn stopping_conflict(registry: &TurnRegistry, session_id: &str) -> TurnConflict {
+    if let Some(turn) = registry.turns.get(session_id) {
+        return TurnConflict {
+            running_turn_id: turn.turn_id.clone(),
+            duplicate: false,
+            stream: Arc::clone(&turn.stream),
+            finished: turn.finished_at.is_some(),
+        };
+    }
+
+    let stream = TurnStream::new(session_id, "agent-stop");
+    TurnConflict {
+        running_turn_id: "agent-stop".to_string(),
+        duplicate: false,
+        stream,
+        finished: false,
+    }
+}
+
+fn consume_continuation_claim_group(
+    registry: &mut TurnRegistry,
+    token: &str,
+    group_id: &str,
+    successor_idempotency_key: &str,
+) {
+    let resolved_at = Instant::now();
+    for (claim_token, lease) in &mut registry.continuation_leases {
+        if lease.group_id != group_id {
+            continue;
+        }
+        if claim_token == token {
+            lease.state = ContinuationLeaseState::Consumed {
+                successor_idempotency_key: successor_idempotency_key.to_string(),
+                resolved_at,
+            };
+            continue;
+        }
+        let sibling_lost = match &lease.state {
+            ContinuationLeaseState::Reserved { mark } => {
+                mark.rollback();
+                true
+            }
+            ContinuationLeaseState::Live => true,
+            ContinuationLeaseState::Consumed { .. }
+            | ContinuationLeaseState::Lost { .. }
+            | ContinuationLeaseState::Abandoned { .. } => false,
+        };
+        if sibling_lost {
+            lease.state = ContinuationLeaseState::Lost { resolved_at };
+        }
+    }
 }
 
 /// How many session-observer streams (`GET /sessions/{id}/events`) this daemon
@@ -248,7 +795,7 @@ pub struct AppState {
     /// check-compact-persist) with the running turn (BR-33), and holds each
     /// running turn's cancellation token so cancel is addressable by session id
     /// rather than only by dropping the SSE socket (BR-62).
-    active_turns: Arc<StdMutex<HashMap<String, ActiveTurn>>>,
+    active_turns: Arc<StdMutex<TurnRegistry>>,
     /// Session-observer SSE responses this daemon is holding open right now.
     /// See [`MAX_LIVE_OBSERVER_STREAMS`] for why the count is bounded at all.
     observer_streams: Arc<AtomicUsize>,
@@ -268,7 +815,7 @@ impl AppState {
             agent_manager,
             workflow_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
             workflow_session_tracker: Arc::new(Mutex::new(HashSet::new())),
-            active_turns: Arc::new(StdMutex::new(HashMap::new())),
+            active_turns: Arc::new(StdMutex::new(TurnRegistry::default())),
             observer_streams: Arc::new(AtomicUsize::new(0)),
             tunnel_manager,
             extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
@@ -300,7 +847,7 @@ impl AppState {
             agent_manager,
             workflow_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
             workflow_session_tracker: Arc::new(Mutex::new(HashSet::new())),
-            active_turns: Arc::new(StdMutex::new(HashMap::new())),
+            active_turns: Arc::new(StdMutex::new(TurnRegistry::default())),
             observer_streams: Arc::new(AtomicUsize::new(0)),
             tunnel_manager,
             extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
@@ -361,44 +908,72 @@ impl AppState {
         cancel: CancellationToken,
         idempotency_key: Option<String>,
     ) -> Result<TurnGuard, TurnConflict> {
-        let mut turns = self
+        match self.try_begin_turn_idempotent_with_continuation(
+            session_id,
+            cancel,
+            idempotency_key,
+            None,
+        ) {
+            Ok(guard) => Ok(guard),
+            Err(TurnBeginFailure::Conflict(conflict)) => Err(conflict),
+            Err(TurnBeginFailure::ContinuationLease(_)) => {
+                let turns = self
+                    .active_turns
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let turn = turns
+                    .turns
+                    .get(session_id)
+                    .expect("a live continuation lease pins its retired turn");
+                Err(TurnConflict {
+                    running_turn_id: turn.turn_id.clone(),
+                    duplicate: false,
+                    stream: Arc::clone(&turn.stream),
+                    finished: turn.finished_at.is_some(),
+                })
+            }
+        }
+    }
+
+    pub fn try_begin_turn_idempotent_with_continuation(
+        &self,
+        session_id: &str,
+        cancel: CancellationToken,
+        idempotency_key: Option<String>,
+        continuation_lease: Option<&str>,
+    ) -> Result<TurnGuard, TurnBeginFailure> {
+        let mut registry = self
             .active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        prune_finished_turns(&mut turns);
+        prune_finished_turns(&mut registry);
 
-        if let Some(running) = turns.get(session_id) {
-            // A key only marks a duplicate when the client actually supplied one
-            // *and* it names the running turn. Two keyless turns are two turns.
-            //
-            // EITHER NAME identifies the turn: the key the client chose, or the
-            // server-assigned `turn-N`. A client that reloaded did not keep its
-            // own key — what it has is the `turn_id` stamped on the last frame it
-            // rendered, or the one `POST /agent/resume` handed it, and both of
-            // those are the server's. Matching only the client's key would 409
-            // every reload-then-reattach, which is the case this exists for.
-            let duplicate = idempotency_key.is_some()
-                && (idempotency_key == running.idempotency_key
-                    || idempotency_key.as_deref() == Some(running.turn_id.as_str()));
-            let finished = running.finished_at.is_some();
-            // A RUNNING turn always conflicts. A FINISHED one conflicts only for
-            // the client re-POSTing its own key — that caller is re-delivering a
-            // turn it already paid for and must be given the replay, while
-            // anyone else is simply sending the next message and gets a fresh
-            // turn (the insert below replaces the retired entry).
-            if !finished || duplicate {
-                return Err(TurnConflict {
-                    running_turn_id: running.turn_id.clone(),
-                    duplicate,
-                    stream: Arc::clone(&running.stream),
-                    finished,
-                });
-            }
+        if registry.stopping_sessions.contains_key(session_id) {
+            return Err(TurnBeginFailure::Conflict(stopping_conflict(
+                &registry, session_id,
+            )));
+        }
+        let lease_use = continuation_lease_use(
+            &registry,
+            session_id,
+            idempotency_key.as_deref(),
+            continuation_lease,
+        )?;
+        if let Some(conflict) = conflicting_turn(&registry, session_id, idempotency_key.as_deref())
+        {
+            return Err(TurnBeginFailure::Conflict(conflict));
+        }
+        if matches!(lease_use, ContinuationLeaseUse::ConsumedRetry) {
+            return Err(TurnBeginFailure::ContinuationLease(
+                ContinuationLeaseFailure::Replayed,
+            ));
         }
 
         let turn_id = format!("turn-{}", TURN_SEQ.fetch_add(1, Ordering::Relaxed));
         let stream = TurnStream::new(session_id, &turn_id);
-        turns.insert(
+        let retirement = TurnRetirement::new();
+        let successor_idempotency_key = idempotency_key.clone();
+        registry.turns.insert(
             session_id.to_string(),
             ActiveTurn {
                 turn_id: turn_id.clone(),
@@ -406,14 +981,63 @@ impl AppState {
                 cancel,
                 stream: Arc::clone(&stream),
                 finished_at: None,
+                retirement: Arc::clone(&retirement),
             },
         );
+        let continuation_lease_token =
+            if let ContinuationLeaseUse::Live { token, group_id } = lease_use {
+                consume_continuation_claim_group(
+                    &mut registry,
+                    &token,
+                    &group_id,
+                    successor_idempotency_key
+                        .as_deref()
+                        .expect("a consumed continuation lease requires an idempotency key"),
+                );
+                Some(token)
+            } else {
+                None
+            };
         Ok(TurnGuard {
             session_id: session_id.to_string(),
             turn_id,
             stream,
+            retirement,
+            continuation_lease_token,
             active_turns: Arc::clone(&self.active_turns),
         })
+    }
+
+    /// Block successor admission while a stop operation cancels and evicts the
+    /// current agent. The barrier and active-turn snapshot are taken under the
+    /// same registry lock used by [`Self::try_begin_turn_idempotent`].
+    pub fn begin_agent_stop(&self, session_id: &str) -> AgentStopGuard {
+        let (cancel, cancelled_turn_id) = {
+            let mut registry = self
+                .active_turns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            prune_finished_turns(&mut registry);
+            *registry
+                .stopping_sessions
+                .entry(session_id.to_string())
+                .or_default() += 1;
+            registry
+                .turns
+                .get(session_id)
+                .filter(|turn| turn.finished_at.is_none())
+                .map_or((None, None), |turn| {
+                    (Some(turn.cancel.clone()), Some(turn.turn_id.clone()))
+                })
+        };
+        if let Some(cancel) = cancel {
+            cancel.cancel();
+        }
+        AgentStopGuard {
+            session_id: session_id.to_string(),
+            cancelled_turn_id,
+            active_turns: Arc::clone(&self.active_turns),
+        }
     }
 
     /// Cancel the turn in flight for `session_id`, returning its id. `None` when
@@ -428,18 +1052,471 @@ impl AppState {
     /// idempotent (a second call finds the same token, already tripped) rather
     /// than racing the guard.
     pub fn cancel_turn(&self, session_id: &str) -> Option<String> {
-        let turn = self
+        match self.cancel_turn_waitable(session_id, None) {
+            CancelTurnAttempt::Cancelled(turn) => Some(turn.turn_id),
+            CancelTurnAttempt::Idle | CancelTurnAttempt::TurnMismatch { .. } => None,
+        }
+    }
+
+    /// Cancel the turn in flight and return an exact-turn retirement handle.
+    ///
+    /// Unlike re-reading `active_turns` by session id, this handle cannot become
+    /// confused with a successor that starts after the cancelled guard drops.
+    pub fn cancel_turn_waitable(
+        &self,
+        session_id: &str,
+        expected_turn_id: Option<&str>,
+    ) -> CancelTurnAttempt {
+        let turn = {
+            let turns = self
+                .active_turns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(turn) = turns.turns.get(session_id) else {
+                return CancelTurnAttempt::Idle;
+            };
+
+            if expected_turn_id.is_some_and(|expected| {
+                expected != turn.turn_id && turn.idempotency_key.as_deref() != Some(expected)
+            }) {
+                return CancelTurnAttempt::TurnMismatch {
+                    active_turn_id: turn.turn_id.clone(),
+                };
+            }
+            // A retired matching generation is not a turn: cancelling a turn
+            // that already ended stays the 200 no-op it has always been. A
+            // DIFFERENT retained generation was handled as a mismatch above.
+            if turn.finished_at.is_some() {
+                return CancelTurnAttempt::Idle;
+            }
+            turn.clone()
+        };
+        turn.cancel.cancel();
+        CancelTurnAttempt::Cancelled(CancelledTurn {
+            turn_id: turn.turn_id,
+            retirement: turn.retirement,
+        })
+    }
+
+    /// Mark an exact child-turn generation as awaiting a replacement, then
+    /// cancel it if it is still active.
+    ///
+    /// The generation match, continuation mark, and active-turn snapshot happen
+    /// while holding the same registry lock. A successor therefore cannot slip
+    /// between the match and the mark. An exactly retained retired generation
+    /// is safe to mark too: its guard is already settled, but the parent still
+    /// needs the pending state during the gap before the replacement starts.
+    pub fn cancel_turn_for_continuation_owned(
+        &self,
+        session_id: &str,
+        expected_turn_id: &str,
+        owner_id: &str,
+    ) -> ContinuationCancelAttempt {
+        let (turn, admission) = {
+            let mut registry = self
+                .active_turns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            prune_finished_turns(&mut registry);
+            if registry.stopping_sessions.contains_key(session_id) {
+                return ContinuationCancelAttempt::ParentClosing;
+            }
+            let Some(turn) = registry.turns.get(session_id).cloned() else {
+                return ContinuationCancelAttempt::Idle;
+            };
+            let matches = turn.turn_id == expected_turn_id
+                || turn.idempotency_key.as_deref() == Some(expected_turn_id);
+            if !matches {
+                return ContinuationCancelAttempt::TurnMismatch {
+                    active_turn_id: turn.turn_id.clone(),
+                };
+            }
+
+            let existing_group_id = active_continuation_group(&registry, session_id, &turn.turn_id);
+            if let Some(group_id) = existing_group_id.as_deref() {
+                if let Some(attempt) =
+                    existing_owner_admission(&registry, group_id, owner_id, &turn)
+                {
+                    return attempt;
+                }
+                return ContinuationCancelAttempt::OwnerConflict;
+            }
+
+            let group_id = format!("{:032x}", rand::random::<u128>());
+            let admission = match reserve_continuation_admission(
+                &mut registry,
+                session_id,
+                &turn,
+                group_id,
+                owner_id,
+            ) {
+                Ok(admission) => admission,
+                Err(ContinuationLeaseFailure::ParentClosing) => {
+                    return ContinuationCancelAttempt::ParentClosing
+                }
+                Err(_) => unreachable!("reservation only refuses a closing parent"),
+            };
+            if turn.finished_at.is_some() {
+                return ContinuationCancelAttempt::Retired {
+                    turn_id: turn.turn_id.clone(),
+                    admission,
+                };
+            }
+            (turn, admission)
+        };
+
+        turn.cancel.cancel();
+        ContinuationCancelAttempt::Cancelled {
+            turn: CancelledTurn {
+                turn_id: turn.turn_id,
+                retirement: turn.retirement,
+            },
+            admission,
+        }
+    }
+
+    pub fn commit_continuation_lease(&self, token: &str) -> bool {
+        let mut registry = self
             .active_turns
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(lease) = registry.continuation_leases.get_mut(token) else {
+            return false;
+        };
+        if matches!(&lease.state, ContinuationLeaseState::Reserved { .. }) {
+            lease.state = ContinuationLeaseState::Live;
+            return true;
+        }
+        matches!(&lease.state, ContinuationLeaseState::Live)
+    }
+
+    pub fn rollback_continuation_lease(&self, token: &str) {
+        let release_supervision = {
+            let mut registry = self
+                .active_turns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(lease) = registry.continuation_leases.get(token) else {
+                return;
+            };
+            let (group_id, session_id, superseded_turn_id) =
+                if let ContinuationLeaseState::Reserved { mark } = &lease.state {
+                    mark.rollback();
+                    (
+                        lease.group_id.clone(),
+                        lease.session_id.clone(),
+                        lease.superseded_turn_id.clone(),
+                    )
+                } else {
+                    return;
+                };
+            registry.continuation_leases.remove(token);
+            let release_supervision = !registry.continuation_leases.values().any(|lease| {
+                lease.group_id == group_id
+                    && matches!(
+                        &lease.state,
+                        ContinuationLeaseState::Reserved { .. } | ContinuationLeaseState::Live
+                    )
+            });
+            release_supervision.then_some((session_id, superseded_turn_id))
+        };
+        if let Some((session_id, superseded_turn_id)) = release_supervision {
+            biorouter::agents::subagent_handle::abandon_continuation_for_turn(
+                &session_id,
+                &superseded_turn_id,
+            );
+        }
+    }
+
+    pub fn pending_continuation_for_owner(
+        &self,
+        session_id: &str,
+        owner_id: Option<&str>,
+    ) -> Option<PendingContinuationStatus> {
+        let mut registry = self
+            .active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        prune_finished_turns(&mut registry);
+        let owned = owner_id.and_then(|owner_id| {
+            registry
+                .continuation_leases
+                .iter()
+                .find(|(_, lease)| {
+                    lease.session_id == session_id
+                        && lease.owner_id == owner_id
+                        && matches!(
+                            &lease.state,
+                            ContinuationLeaseState::Reserved { .. } | ContinuationLeaseState::Live
+                        )
+                })
+                .map(|(token, lease)| (token.clone(), lease.clone()))
+        });
+        if let Some((token, lease)) = owned {
+            let (ownership, continuation_lease) = match lease.state {
+                ContinuationLeaseState::Live => (PendingContinuationOwnership::Owned, Some(token)),
+                ContinuationLeaseState::Reserved { .. } => {
+                    (PendingContinuationOwnership::Settling, None)
+                }
+                ContinuationLeaseState::Consumed { .. }
+                | ContinuationLeaseState::Lost { .. }
+                | ContinuationLeaseState::Abandoned { .. } => unreachable!(),
+            };
+            return Some(PendingContinuationStatus {
+                superseded_turn_id: lease.superseded_turn_id,
+                continuation_lease,
+                ownership,
+            });
+        }
+        registry
+            .continuation_leases
+            .values()
+            .find(|lease| {
+                lease.session_id == session_id
+                    && matches!(
+                        &lease.state,
+                        ContinuationLeaseState::Reserved { .. } | ContinuationLeaseState::Live
+                    )
+            })
+            .map(|lease| PendingContinuationStatus {
+                superseded_turn_id: lease.superseded_turn_id.clone(),
+                continuation_lease: None,
+                ownership: PendingContinuationOwnership::Foreign,
+            })
+    }
+
+    pub fn recover_continuation_for_owner(
+        &self,
+        session_id: &str,
+        superseded_turn_id: &str,
+        owner_id: &str,
+    ) -> Result<ContinuationRecovery, ContinuationLeaseFailure> {
+        let mut registry = self
+            .active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        prune_finished_turns(&mut registry);
+        if registry.stopping_sessions.contains_key(session_id) {
+            return Err(ContinuationLeaseFailure::ParentClosing);
+        }
+        let exact_retired_generation = registry
+            .turns
             .get(session_id)
-            // A retired entry is not a turn: cancelling a turn that already
-            // ended must stay the 200 `cancelled: false` no-op it has always
-            // been, not report that it stopped something.
-            .filter(|turn| turn.finished_at.is_none())
-            .cloned()?;
-        turn.cancel.cancel();
-        Some(turn.turn_id)
+            .is_some_and(|turn| turn.finished_at.is_some() && turn.turn_id == superseded_turn_id);
+        if !exact_retired_generation {
+            return Err(ContinuationLeaseFailure::Replayed);
+        }
+        let group_id = active_continuation_group(&registry, session_id, superseded_turn_id)
+            .ok_or(ContinuationLeaseFailure::Replayed)?;
+        if let Some((token, _)) = registry.continuation_leases.iter().find(|(_, lease)| {
+            lease.group_id == group_id
+                && lease.owner_id == owner_id
+                && matches!(&lease.state, ContinuationLeaseState::Live)
+        }) {
+            return Ok(ContinuationRecovery::Recovered {
+                continuation_lease: token.clone(),
+                superseded_turn_id: superseded_turn_id.to_string(),
+            });
+        }
+
+        let mark = biorouter::agents::subagent_handle::mark_continuation_pending_for_turn(
+            session_id,
+            Some(superseded_turn_id.to_string()),
+        );
+        if mark.refused_parent_closing() {
+            return Err(ContinuationLeaseFailure::ParentClosing);
+        }
+
+        let resolved_at = Instant::now();
+        for lease in registry.continuation_leases.values_mut() {
+            if lease.group_id != group_id {
+                continue;
+            }
+            let was_pending = match &lease.state {
+                ContinuationLeaseState::Reserved { mark } => {
+                    mark.rollback();
+                    true
+                }
+                ContinuationLeaseState::Live => true,
+                ContinuationLeaseState::Consumed { .. }
+                | ContinuationLeaseState::Lost { .. }
+                | ContinuationLeaseState::Abandoned { .. } => false,
+            };
+            if was_pending {
+                lease.state = ContinuationLeaseState::Lost { resolved_at };
+            }
+        }
+
+        mark.commit();
+        let token = format!("{:032x}", rand::random::<u128>());
+        registry.continuation_leases.insert(
+            token.clone(),
+            ContinuationLeaseRecord {
+                group_id,
+                owner_id: owner_id.to_string(),
+                session_id: session_id.to_string(),
+                superseded_turn_id: superseded_turn_id.to_string(),
+                state: ContinuationLeaseState::Live,
+            },
+        );
+        Ok(ContinuationRecovery::Recovered {
+            continuation_lease: token,
+            superseded_turn_id: superseded_turn_id.to_string(),
+        })
+    }
+
+    pub fn abandon_continuation_group(
+        &self,
+        session_id: &str,
+        superseded_turn_id: &str,
+    ) -> Result<ContinuationRecovery, ContinuationLeaseFailure> {
+        {
+            let mut registry = self
+                .active_turns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            prune_finished_turns(&mut registry);
+            let Some(group_id) =
+                active_continuation_group(&registry, session_id, superseded_turn_id)
+            else {
+                let already_abandoned = registry.continuation_leases.values().any(|lease| {
+                    lease.session_id == session_id
+                        && lease.superseded_turn_id == superseded_turn_id
+                        && matches!(&lease.state, ContinuationLeaseState::Abandoned { .. })
+                });
+                return if already_abandoned {
+                    Ok(ContinuationRecovery::Abandoned {
+                        superseded_turn_id: superseded_turn_id.to_string(),
+                    })
+                } else {
+                    Err(ContinuationLeaseFailure::Replayed)
+                };
+            };
+            let resolved_at = Instant::now();
+            for lease in registry.continuation_leases.values_mut() {
+                if lease.group_id != group_id {
+                    continue;
+                }
+                let was_pending = match &lease.state {
+                    ContinuationLeaseState::Reserved { mark } => {
+                        mark.rollback();
+                        true
+                    }
+                    ContinuationLeaseState::Live => true,
+                    ContinuationLeaseState::Consumed { .. }
+                    | ContinuationLeaseState::Lost { .. }
+                    | ContinuationLeaseState::Abandoned { .. } => false,
+                };
+                if was_pending {
+                    lease.state = ContinuationLeaseState::Abandoned { resolved_at };
+                }
+            }
+        }
+        biorouter::agents::subagent_handle::abandon_continuation_for_turn(
+            session_id,
+            superseded_turn_id,
+        );
+        Ok(ContinuationRecovery::Abandoned {
+            superseded_turn_id: superseded_turn_id.to_string(),
+        })
+    }
+
+    /// Resolve every Stop-and-Send admission for a session that is being
+    /// stopped. The route calls this before it cancels the turn or evicts the
+    /// agent, so neither a reserved mark nor a live lease can outlast the child.
+    pub fn abandon_pending_continuations_for_session(&self, session_id: &str) -> bool {
+        let lease_abandoned = {
+            let mut registry = self
+                .active_turns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            prune_finished_turns(&mut registry);
+            let resolved_at = Instant::now();
+            let mut abandoned = false;
+            for lease in registry
+                .continuation_leases
+                .values_mut()
+                .filter(|lease| lease.session_id == session_id)
+            {
+                let was_pending = match &lease.state {
+                    ContinuationLeaseState::Reserved { mark } => {
+                        mark.rollback();
+                        true
+                    }
+                    ContinuationLeaseState::Live => true,
+                    ContinuationLeaseState::Consumed { .. }
+                    | ContinuationLeaseState::Lost { .. }
+                    | ContinuationLeaseState::Abandoned { .. } => false,
+                };
+                if was_pending {
+                    lease.state = ContinuationLeaseState::Abandoned { resolved_at };
+                    abandoned = true;
+                }
+            }
+            abandoned
+        };
+        biorouter::agents::subagent_handle::abandon_continuation(session_id) || lease_abandoned
+    }
+
+    pub fn abandon_continuation_lease(
+        &self,
+        session_id: &str,
+        token: &str,
+    ) -> Result<ContinuationLeaseAbandonment, ContinuationLeaseFailure> {
+        let (superseded_turn_id, release_supervision) = {
+            let mut registry = self
+                .active_turns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            prune_finished_turns(&mut registry);
+            let lease = registry
+                .continuation_leases
+                .get_mut(token)
+                .ok_or(ContinuationLeaseFailure::Invalid)?;
+            if lease.session_id != session_id {
+                return Err(ContinuationLeaseFailure::CrossSession);
+            }
+            let (group_id, superseded_turn_id) = match &lease.state {
+                ContinuationLeaseState::Reserved { mark } => {
+                    mark.rollback();
+                    let group_id = lease.group_id.clone();
+                    let superseded_turn_id = lease.superseded_turn_id.clone();
+                    lease.state = ContinuationLeaseState::Abandoned {
+                        resolved_at: Instant::now(),
+                    };
+                    (group_id, superseded_turn_id)
+                }
+                ContinuationLeaseState::Live => {
+                    let group_id = lease.group_id.clone();
+                    let superseded_turn_id = lease.superseded_turn_id.clone();
+                    lease.state = ContinuationLeaseState::Abandoned {
+                        resolved_at: Instant::now(),
+                    };
+                    (group_id, superseded_turn_id)
+                }
+                ContinuationLeaseState::Abandoned { .. } => {
+                    return Ok(ContinuationLeaseAbandonment::AlreadyAbandoned);
+                }
+                ContinuationLeaseState::Consumed { .. } | ContinuationLeaseState::Lost { .. } => {
+                    return Ok(ContinuationLeaseAbandonment::AlreadyConsumed);
+                }
+            };
+            let release_supervision = !registry.continuation_leases.values().any(|lease| {
+                lease.group_id == group_id
+                    && matches!(
+                        &lease.state,
+                        ContinuationLeaseState::Reserved { .. } | ContinuationLeaseState::Live
+                    )
+            });
+            (superseded_turn_id, release_supervision)
+        };
+        if release_supervision {
+            biorouter::agents::subagent_handle::abandon_continuation_for_turn(
+                session_id,
+                &superseded_turn_id,
+            );
+        }
+        Ok(ContinuationLeaseAbandonment::Abandoned)
     }
 
     /// True while an interactive turn is in flight for `session_id` (the BR-33
@@ -454,6 +1531,7 @@ impl AppState {
         self.active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .turns
             .get(session_id)
             .is_some_and(|turn| turn.finished_at.is_none())
     }
@@ -467,6 +1545,7 @@ impl AppState {
         self.active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .turns
             .iter()
             .filter(|(_, turn)| turn.finished_at.is_none())
             .map(|(session_id, _)| session_id.clone())
@@ -484,22 +1563,21 @@ impl AppState {
     /// class. Returns `None` for a retired (already finished) turn: there is
     /// nothing live to attach to.
     ///
-    /// It also returns `None` for a turn whose stream has no WRITER, and that
-    /// filter is not an optimisation. Several callers take this same turn lock
-    /// for reasons that have nothing to do with streaming — an in-place edit and
-    /// a working-directory change hold it as a plain mutex, and the workspace
-    /// and app turn runners hold it without a `/reply` pump. Advertising one of
-    /// those as attachable told a reloading window to follow a log that nothing
-    /// will ever write to and nothing will ever close: the window parked on it,
-    /// set `chatState: Streaming`, and its composer was dead until the user
-    /// reloaded. What a client may attach to and what a pump is writing are the
-    /// same set, by construction, here.
+    /// It also returns `None` for a turn whose stream has no LIVE writer, and
+    /// that filter is not an optimisation. Several callers take this same turn
+    /// lock for reasons that have nothing to do with streaming — an in-place edit
+    /// and a working-directory change hold it as a plain mutex, and some app turn
+    /// runners hold it without a `/reply` pump. A claimed writer is not enough
+    /// either: that ownership latch stays set after the writer drops, while the
+    /// closed log can no longer deliver a terminal to a new observer. Advertising
+    /// either shape as attachable parks the window in `Streaming` forever.
     pub fn active_turn_id(&self, session_id: &str) -> Option<String> {
         self.active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .turns
             .get(session_id)
-            .filter(|turn| turn.finished_at.is_none() && turn.stream.has_writer())
+            .filter(|turn| turn.finished_at.is_none() && turn.stream.has_live_writer())
             .map(|turn| turn.turn_id.clone())
     }
 
@@ -515,6 +1593,7 @@ impl AppState {
         self.active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .turns
             .get(session_id)
             .is_some_and(|turn| {
                 turn.turn_id == turn_id || turn.idempotency_key.as_deref() == Some(turn_id)
@@ -525,6 +1604,7 @@ impl AppState {
         self.active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .turns
             .values()
             .any(|turn| turn.finished_at.is_none())
     }
@@ -863,6 +1943,84 @@ mod tests {
         assert!(token.is_cancelled(), "the running turn's token was tripped");
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_stop_blocks_successor_and_continuation_admission_until_eviction_finishes() {
+        let state = AppState::new().await.unwrap();
+        let token = CancellationToken::new();
+        let first = state
+            .try_begin_turn_idempotent("stop-barrier", token.clone(), None)
+            .expect("the first turn starts");
+        let first_turn_id = first.turn_id().to_string();
+
+        let stop = state.begin_agent_stop("stop-barrier");
+        assert_eq!(stop.cancelled_turn_id(), Some(first_turn_id.as_str()));
+        assert!(token.is_cancelled());
+        assert!(matches!(
+            state.cancel_turn_for_continuation_owned(
+                "stop-barrier",
+                &first_turn_id,
+                "stop-barrier-owner"
+            ),
+            ContinuationCancelAttempt::ParentClosing
+        ));
+
+        drop(first);
+        let conflict = state
+            .try_begin_turn_idempotent("stop-barrier", CancellationToken::new(), None)
+            .expect_err("a successor crossed the stop/eviction barrier");
+        assert!(!conflict.duplicate);
+
+        drop(stop);
+        state
+            .try_begin_turn_idempotent("stop-barrier", CancellationToken::new(), None)
+            .expect("admission reopens after the stop operation ends");
+    }
+
+    /// The guard may retire between the route tripping its token and registering
+    /// its async wait. The retained state bit must make that edge observable;
+    /// `Notify` alone would lose a `notify_waiters` sent in this window.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn retirement_wait_cannot_miss_a_guard_that_already_dropped() {
+        let state = AppState::new().await.unwrap();
+        let guard = begin(&state, "retire-before-wait").unwrap();
+        let turn_id = guard.turn_id().to_string();
+        let cancelled = match state.cancel_turn_waitable("retire-before-wait", Some(&turn_id)) {
+            CancelTurnAttempt::Cancelled(turn) => turn,
+            other => panic!("expected the running turn, got {other:?}"),
+        };
+
+        drop(guard);
+        tokio::time::timeout(Duration::from_millis(100), cancelled.wait_until_settled())
+            .await
+            .expect("a retirement notification was lost before the waiter registered");
+        assert!(cancelled.is_settled());
+    }
+
+    /// A wait handle belongs to a turn generation, not to the session slot. A
+    /// successor neither prolongs the old wait nor gets its token tripped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn retirement_wait_is_not_confused_by_a_successor() {
+        let state = AppState::new().await.unwrap();
+        let first = begin(&state, "generation-wait").unwrap();
+        let first_id = first.turn_id().to_string();
+        let cancelled = match state.cancel_turn_waitable("generation-wait", Some(&first_id)) {
+            CancelTurnAttempt::Cancelled(turn) => turn,
+            other => panic!("expected the first turn, got {other:?}"),
+        };
+        drop(first);
+
+        let successor_token = CancellationToken::new();
+        let _successor = state
+            .try_begin_turn_idempotent("generation-wait", successor_token.clone(), None)
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_millis(100), cancelled.wait_until_settled())
+            .await
+            .expect("the successor incorrectly prolonged the predecessor's wait");
+        assert!(state.is_turn_active("generation-wait"));
+        assert!(!successor_token.is_cancelled());
+    }
+
     /// Cancelling a session with no turn in flight — a double-clicked Stop, a
     /// cancel that raced the turn's own completion — is a no-op, never an error.
     #[tokio::test(flavor = "multi_thread")]
@@ -949,6 +2107,35 @@ mod tests {
             .try_begin_turn_idempotent("tg-session-test", CancellationToken::new(), None)
             .unwrap();
         assert_eq!(guard.session_id(), "tg-session-test");
+    }
+
+    #[tokio::test]
+    async fn a_closed_writer_is_not_advertised_as_an_active_attachable_turn() {
+        let state = AppState::new().await.unwrap();
+        let guard = state
+            .try_begin_turn_idempotent("closed-writer", CancellationToken::new(), None)
+            .unwrap();
+        let stream = guard.stream();
+        let writer = stream
+            .claim_writer()
+            .expect("the turn owns its stream writer");
+        let turn_id = guard.turn_id().to_string();
+
+        assert_eq!(state.active_turn_id("closed-writer"), Some(turn_id));
+        drop(writer);
+
+        assert!(stream.is_closed());
+        assert!(
+            stream.has_writer(),
+            "writer ownership remains a permanent latch"
+        );
+        assert!(!stream.has_live_writer());
+        assert!(
+            state.is_turn_active("closed-writer"),
+            "the guard remains live so this test isolates stream closure"
+        );
+        assert_eq!(state.active_turn_id("closed-writer"), None);
+        drop(guard);
     }
 
     /// A turn that has ENDED is retired, not deleted — its entry survives so a
@@ -1043,5 +2230,546 @@ mod tests {
         assert!(state.is_turn_active("s1"));
         assert!(state.cancel_turn("s1").is_some());
         assert!(second_token.is_cancelled());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn continuation_status_returns_the_token_only_to_its_stable_owner() {
+        let state = AppState::new().await.unwrap();
+        let retired = begin(&state, "owner-bound-child").unwrap();
+        let retired_id = retired.turn_id().to_string();
+        drop(retired);
+        let admission = match state.cancel_turn_for_continuation_owned(
+            "owner-bound-child",
+            &retired_id,
+            "window-owner-a",
+        ) {
+            ContinuationCancelAttempt::Retired { admission, .. } => admission,
+            other => panic!("expected exact retired admission, got {other:?}"),
+        };
+        let settling = state
+            .pending_continuation_for_owner("owner-bound-child", Some("window-owner-a"))
+            .unwrap();
+        assert_eq!(settling.ownership, PendingContinuationOwnership::Settling);
+        assert_eq!(settling.continuation_lease, None);
+        assert!(matches!(
+            state.cancel_turn_for_continuation_owned(
+                "owner-bound-child",
+                &retired_id,
+                "window-owner-a"
+            ),
+            ContinuationCancelAttempt::AdmissionInProgress
+        ));
+        admission.mark().unwrap().commit();
+        assert!(state.commit_continuation_lease(admission.token()));
+
+        let owned = state
+            .pending_continuation_for_owner("owner-bound-child", Some("window-owner-a"))
+            .unwrap();
+        assert_eq!(owned.ownership, PendingContinuationOwnership::Owned);
+        assert_eq!(owned.continuation_lease.as_deref(), Some(admission.token()));
+        let repeated = match state.cancel_turn_for_continuation_owned(
+            "owner-bound-child",
+            &retired_id,
+            "window-owner-a",
+        ) {
+            ContinuationCancelAttempt::Retired { admission, .. } => admission,
+            other => panic!("same-owner retry must reuse its lease, got {other:?}"),
+        };
+        assert_eq!(repeated.token(), admission.token());
+        assert!(repeated.mark().is_none());
+
+        let foreign = state
+            .pending_continuation_for_owner("owner-bound-child", Some("window-owner-b"))
+            .unwrap();
+        assert_eq!(foreign.ownership, PendingContinuationOwnership::Foreign);
+        assert_eq!(foreign.continuation_lease, None);
+        assert!(matches!(
+            state.cancel_turn_for_continuation_owned(
+                "owner-bound-child",
+                &retired_id,
+                "window-owner-b"
+            ),
+            ContinuationCancelAttempt::OwnerConflict
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_takeover_is_atomic_and_keeps_one_token_per_owner() {
+        let state = AppState::new().await.unwrap();
+        let retired = begin(&state, "takeover-child").unwrap();
+        let retired_id = retired.turn_id().to_string();
+        drop(retired);
+        let original = match state.cancel_turn_for_continuation_owned(
+            "takeover-child",
+            &retired_id,
+            "old-window",
+        ) {
+            ContinuationCancelAttempt::Retired { admission, .. } => admission,
+            other => panic!("expected exact retired admission, got {other:?}"),
+        };
+        original.mark().unwrap().commit();
+        assert!(state.commit_continuation_lease(original.token()));
+
+        let recovered = state
+            .recover_continuation_for_owner("takeover-child", &retired_id, "new-window")
+            .unwrap();
+        let ContinuationRecovery::Recovered {
+            continuation_lease, ..
+        } = recovered
+        else {
+            panic!("takeover must return its replacement lease")
+        };
+        assert_ne!(continuation_lease, original.token());
+        assert!(matches!(
+            state.try_begin_turn_idempotent_with_continuation(
+                "takeover-child",
+                CancellationToken::new(),
+                Some("old-window-successor".into()),
+                Some(original.token())
+            ),
+            Err(TurnBeginFailure::ContinuationLease(
+                ContinuationLeaseFailure::Replayed
+            ))
+        ));
+
+        let same_owner = state
+            .recover_continuation_for_owner("takeover-child", &retired_id, "new-window")
+            .unwrap();
+        assert_eq!(
+            same_owner,
+            ContinuationRecovery::Recovered {
+                continuation_lease: continuation_lease.clone(),
+                superseded_turn_id: retired_id.clone(),
+            }
+        );
+        assert_eq!(
+            state
+                .pending_continuation_for_owner("takeover-child", Some("new-window"))
+                .unwrap()
+                .continuation_lease
+                .as_deref(),
+            Some(continuation_lease.as_str())
+        );
+        let successor = state
+            .try_begin_turn_idempotent_with_continuation(
+                "takeover-child",
+                CancellationToken::new(),
+                Some("recovered-successor".into()),
+                Some(&continuation_lease),
+            )
+            .expect("the recovered owner admits exactly one successor");
+        assert!(state
+            .pending_continuation_for_owner("takeover-child", Some("new-window"))
+            .is_none());
+        assert!(matches!(
+            state.try_begin_turn_idempotent_with_continuation(
+                "takeover-child",
+                CancellationToken::new(),
+                Some("different-successor".into()),
+                Some(&continuation_lease)
+            ),
+            Err(TurnBeginFailure::ContinuationLease(
+                ContinuationLeaseFailure::Replayed
+            ))
+        ));
+        drop(successor);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closing_parent_refuses_a_new_continuation_admission() {
+        let state = AppState::new().await.unwrap();
+        let parent = "closing-admission-parent";
+        let child = "closing-admission-child";
+        let _handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            parent,
+            child,
+            "closing child",
+            CancellationToken::new(),
+        );
+        let turn = begin(&state, child).unwrap();
+
+        biorouter::agents::subagent_handle::begin_parent_closing(parent);
+        assert!(matches!(
+            state.cancel_turn_for_continuation_owned(child, turn.turn_id(), "window"),
+            ContinuationCancelAttempt::ParentClosing
+        ));
+        assert!(state.is_turn_active(child));
+        assert!(state
+            .pending_continuation_for_owner(child, Some("window"))
+            .is_none());
+
+        biorouter::agents::subagent_handle::open_parent_continuation_admission(parent);
+        drop(turn);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closing_parent_takeover_refusal_preserves_the_existing_owner() {
+        let state = AppState::new().await.unwrap();
+        let parent = "closing-takeover-parent";
+        let child = "closing-takeover-child";
+        let _handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            parent,
+            child,
+            "closing takeover child",
+            CancellationToken::new(),
+        );
+        let retired = begin(&state, child).unwrap();
+        let retired_id = retired.turn_id().to_string();
+        drop(retired);
+        let original =
+            match state.cancel_turn_for_continuation_owned(child, &retired_id, "original-window") {
+                ContinuationCancelAttempt::Retired { admission, .. } => admission,
+                other => panic!("expected retired admission, got {other:?}"),
+            };
+        original.mark().unwrap().commit();
+        assert!(state.commit_continuation_lease(original.token()));
+
+        biorouter::agents::subagent_handle::begin_parent_closing(parent);
+        assert_eq!(
+            state.recover_continuation_for_owner(child, &retired_id, "new-window"),
+            Err(ContinuationLeaseFailure::ParentClosing)
+        );
+        let pending = state
+            .pending_continuation_for_owner(child, Some("original-window"))
+            .expect("a refused takeover cannot destroy the existing owner's lease");
+        assert_eq!(pending.ownership, PendingContinuationOwnership::Owned);
+        assert_eq!(
+            pending.continuation_lease.as_deref(),
+            Some(original.token())
+        );
+
+        biorouter::agents::subagent_handle::open_parent_continuation_admission(parent);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn takeover_wins_atomically_against_a_delayed_cancel_admission_commit() {
+        let state = AppState::new().await.unwrap();
+        let retired = begin(&state, "reserved-takeover-child").unwrap();
+        let retired_id = retired.turn_id().to_string();
+        drop(retired);
+        let delayed = match state.cancel_turn_for_continuation_owned(
+            "reserved-takeover-child",
+            &retired_id,
+            "departed-window",
+        ) {
+            ContinuationCancelAttempt::Retired { admission, .. } => admission,
+            other => panic!("expected exact retired admission, got {other:?}"),
+        };
+
+        let recovered = state
+            .recover_continuation_for_owner(
+                "reserved-takeover-child",
+                &retired_id,
+                "replacement-window",
+            )
+            .unwrap();
+        delayed.mark().unwrap().commit();
+        assert!(
+            !state.commit_continuation_lease(delayed.token()),
+            "the delayed cancel response must not resurrect or return its superseded token"
+        );
+        let ContinuationRecovery::Recovered {
+            continuation_lease, ..
+        } = recovered
+        else {
+            panic!("takeover must return its replacement lease")
+        };
+        assert_eq!(
+            state
+                .pending_continuation_for_owner(
+                    "reserved-takeover-child",
+                    Some("replacement-window")
+                )
+                .unwrap()
+                .continuation_lease
+                .as_deref(),
+            Some(continuation_lease.as_str())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_group_abandon_invalidates_every_claim_for_the_exact_generation() {
+        let state = AppState::new().await.unwrap();
+        let retired = begin(&state, "group-abandon-child").unwrap();
+        let retired_id = retired.turn_id().to_string();
+        drop(retired);
+        let admission = match state.cancel_turn_for_continuation_owned(
+            "group-abandon-child",
+            &retired_id,
+            "departed-window",
+        ) {
+            ContinuationCancelAttempt::Retired { admission, .. } => admission,
+            other => panic!("expected exact retired admission, got {other:?}"),
+        };
+        admission.mark().unwrap().commit();
+        assert!(state.commit_continuation_lease(admission.token()));
+
+        assert!(matches!(
+            state
+                .abandon_continuation_group("group-abandon-child", &retired_id)
+                .unwrap(),
+            ContinuationRecovery::Abandoned { .. }
+        ));
+        assert!(matches!(
+            state
+                .abandon_continuation_group("group-abandon-child", &retired_id)
+                .unwrap(),
+            ContinuationRecovery::Abandoned { .. }
+        ));
+        assert!(state
+            .pending_continuation_for_owner("group-abandon-child", Some("departed-window"))
+            .is_none());
+        assert!(matches!(
+            state.try_begin_turn_idempotent_with_continuation(
+                "group-abandon-child",
+                CancellationToken::new(),
+                Some("late-successor".into()),
+                Some(admission.token())
+            ),
+            Err(TurnBeginFailure::ContinuationLease(
+                ContinuationLeaseFailure::Replayed
+            ))
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_continuation_lease_is_exact_session_bound_and_single_successor_only() {
+        let state = AppState::new().await.unwrap();
+        let retired = state
+            .try_begin_turn_idempotent(
+                "lease-child",
+                CancellationToken::new(),
+                Some("superseded-client-turn".into()),
+            )
+            .unwrap();
+        let retired_id = retired.turn_id().to_string();
+        drop(retired);
+        let admission = match state.cancel_turn_for_continuation_owned(
+            "lease-child",
+            &retired_id,
+            "lease-test-owner",
+        ) {
+            ContinuationCancelAttempt::Retired { admission, .. } => admission,
+            other => panic!("expected retained exact generation, got {other:?}"),
+        };
+        if let Some(mark) = admission.mark() {
+            mark.commit();
+        }
+        state.commit_continuation_lease(admission.token());
+        let lease = admission.token().to_string();
+
+        assert!(matches!(
+            state.try_begin_turn_idempotent_with_continuation(
+                "lease-child",
+                CancellationToken::new(),
+                Some("successor-client-turn".into()),
+                Some("not-a-lease")
+            ),
+            Err(TurnBeginFailure::ContinuationLease(
+                ContinuationLeaseFailure::Invalid
+            ))
+        ));
+        assert!(matches!(
+            state.try_begin_turn_idempotent_with_continuation(
+                "other-child",
+                CancellationToken::new(),
+                Some("successor-client-turn".into()),
+                Some(&lease)
+            ),
+            Err(TurnBeginFailure::ContinuationLease(
+                ContinuationLeaseFailure::CrossSession
+            ))
+        ));
+        assert!(matches!(
+            state.try_begin_turn_idempotent_with_continuation(
+                "lease-child",
+                CancellationToken::new(),
+                Some("successor-client-turn".into()),
+                None
+            ),
+            Err(TurnBeginFailure::ContinuationLease(
+                ContinuationLeaseFailure::Required
+            ))
+        ));
+
+        let successor = state
+            .try_begin_turn_idempotent_with_continuation(
+                "lease-child",
+                CancellationToken::new(),
+                Some("successor-client-turn".into()),
+                Some(&lease),
+            )
+            .expect("the exact session and retired generation consume the lease");
+        assert!(matches!(
+            state.try_begin_turn_idempotent_with_continuation(
+                "lease-child",
+                CancellationToken::new(),
+                Some("successor-client-turn".into()),
+                Some(&lease)
+            ),
+            Err(TurnBeginFailure::Conflict(TurnConflict {
+                duplicate: true,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            state.try_begin_turn_idempotent_with_continuation(
+                "lease-child",
+                CancellationToken::new(),
+                Some("different-successor".into()),
+                Some(&lease)
+            ),
+            Err(TurnBeginFailure::ContinuationLease(
+                ContinuationLeaseFailure::Replayed
+            ))
+        ));
+        drop(successor);
+        assert_eq!(
+            state
+                .abandon_continuation_lease("lease-child", &lease)
+                .unwrap(),
+            ContinuationLeaseAbandonment::AlreadyConsumed
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn abandoning_a_live_lease_is_idempotent_and_releases_supervision() {
+        let state = AppState::new().await.unwrap();
+        let retired = begin(&state, "abandoned-lease-child").unwrap();
+        let retired_id = retired.turn_id().to_string();
+        drop(retired);
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            "abandoned-lease-parent",
+            "abandoned-lease-child",
+            "delegated work",
+            CancellationToken::new(),
+        );
+        biorouter::agents::subagent_handle::begin_child_turn("abandoned-lease-child");
+        handle.complete(
+            biorouter::agents::subagent_result::SubagentResult::from_error("original result"),
+        );
+        let admission = match state.cancel_turn_for_continuation_owned(
+            "abandoned-lease-child",
+            &retired_id,
+            "abandon-test-owner",
+        ) {
+            ContinuationCancelAttempt::Retired { admission, .. } => admission,
+            other => panic!("expected retained exact generation, got {other:?}"),
+        };
+        admission.mark().unwrap().commit();
+        state.commit_continuation_lease(admission.token());
+        assert!(handle.continuation_pending());
+
+        assert_eq!(
+            state
+                .abandon_continuation_lease("abandoned-lease-child", admission.token())
+                .unwrap(),
+            ContinuationLeaseAbandonment::Abandoned
+        );
+        assert_eq!(
+            state
+                .abandon_continuation_lease("abandoned-lease-child", admission.token())
+                .unwrap(),
+            ContinuationLeaseAbandonment::AlreadyAbandoned
+        );
+        assert!(!handle.continuation_pending());
+        assert!(handle.result_is_current());
+        let _ordinary_successor = begin(&state, "abandoned-lease-child")
+            .expect("abandonment must release the replacement admission barrier");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stopping_a_child_abandons_every_pending_continuation_for_the_session() {
+        let state = AppState::new().await.unwrap();
+        let child = "stopped-continuation-child";
+        let retired = begin(&state, child).unwrap();
+        let retired_id = retired.turn_id().to_string();
+        drop(retired);
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            "stopped-continuation-parent",
+            child,
+            "delegated work",
+            CancellationToken::new(),
+        );
+        biorouter::agents::subagent_handle::begin_child_turn(child);
+        handle.complete(
+            biorouter::agents::subagent_result::SubagentResult::from_error("original result"),
+        );
+        let admission = match state.cancel_turn_for_continuation_owned(
+            child,
+            &retired_id,
+            "stopped-child-window",
+        ) {
+            ContinuationCancelAttempt::Retired { admission, .. } => admission,
+            other => panic!("expected retained exact generation, got {other:?}"),
+        };
+        admission.mark().unwrap().commit();
+        assert!(state.commit_continuation_lease(admission.token()));
+        assert!(handle.continuation_pending());
+
+        assert!(state.abandon_pending_continuations_for_session(child));
+        assert!(!handle.continuation_pending());
+        assert!(handle.result_is_current());
+        assert!(state
+            .pending_continuation_for_owner(child, Some("stopped-child-window"))
+            .is_none());
+        assert!(!state.abandon_pending_continuations_for_session(child));
+        assert!(matches!(
+            state.try_begin_turn_idempotent_with_continuation(
+                child,
+                CancellationToken::new(),
+                Some("stale-successor".into()),
+                Some(admission.token())
+            ),
+            Err(TurnBeginFailure::ContinuationLease(
+                ContinuationLeaseFailure::Replayed
+            ))
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_successor_that_never_reaches_child_start_cannot_strand_supervision() {
+        let state = AppState::new().await.unwrap();
+        let retired = begin(&state, "unstarted-successor-child").unwrap();
+        let retired_id = retired.turn_id().to_string();
+        drop(retired);
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            "unstarted-successor-parent",
+            "unstarted-successor-child",
+            "delegated work",
+            CancellationToken::new(),
+        );
+        biorouter::agents::subagent_handle::begin_child_turn("unstarted-successor-child");
+        handle.complete(
+            biorouter::agents::subagent_result::SubagentResult::from_error("original result"),
+        );
+        let admission = match state.cancel_turn_for_continuation_owned(
+            "unstarted-successor-child",
+            &retired_id,
+            "unstarted-test-owner",
+        ) {
+            ContinuationCancelAttempt::Retired { admission, .. } => admission,
+            other => panic!("expected retained exact generation, got {other:?}"),
+        };
+        admission.mark().unwrap().commit();
+        state.commit_continuation_lease(admission.token());
+        let successor = state
+            .try_begin_turn_idempotent_with_continuation(
+                "unstarted-successor-child",
+                CancellationToken::new(),
+                Some("replacement-client-turn".into()),
+                Some(admission.token()),
+            )
+            .unwrap();
+        assert!(handle.continuation_pending());
+
+        drop(successor);
+        assert!(!handle.continuation_pending());
+        assert_eq!(
+            state
+                .abandon_continuation_lease("unstarted-successor-child", admission.token())
+                .unwrap(),
+            ContinuationLeaseAbandonment::AlreadyAbandoned
+        );
     }
 }

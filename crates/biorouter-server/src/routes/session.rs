@@ -1478,10 +1478,19 @@ async fn get_session_extensions(
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
-    // Try to get session-specific extensions, fall back to global config
-    let extensions = EnabledExtensionsState::from_extension_data(&session.extension_data)
-        .map(|state| state.extensions)
-        .unwrap_or_else(biorouter::config::get_enabled_extensions);
+    let extensions = if session.session_type == SessionType::SubAgent {
+        match biorouter::agents::persisted_subagent_extension_projection(&session.extension_data) {
+            Ok(Some(extensions)) => extensions,
+            Ok(None) => EnabledExtensionsState::from_extension_data(&session.extension_data)
+                .map(|state| state.extensions)
+                .unwrap_or_default(),
+            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        }
+    } else {
+        EnabledExtensionsState::from_extension_data(&session.extension_data)
+            .map(|state| state.extensions)
+            .unwrap_or_else(biorouter::config::get_enabled_extensions)
+    };
 
     Ok(Json(SessionExtensionsResponse { extensions }))
 }

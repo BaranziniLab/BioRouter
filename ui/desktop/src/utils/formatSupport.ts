@@ -1,4 +1,3 @@
-
 /**
  * Why the panel cannot show a particular file.
  *
@@ -118,8 +117,7 @@ export function describeUnsupportedFormat(
   if (imageLabel) {
     return {
       label: imageLabel,
-      reason:
-        'No browser can decode this format, and this system has no converter for it either.',
+      reason: 'No browser can decode this format, and this system has no converter for it either.',
       suggestion: 'Convert it to PNG or JPEG to preview it here.',
     };
   }

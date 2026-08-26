@@ -25,6 +25,7 @@ import { render, screen } from '@testing-library/react';
  */
 
 vi.mock('./ConfigContext', () => ({
+  usePrivacyTiersEnabled: () => false,
   useConfig: () => ({
     getProviders: vi.fn(async () => []),
     read: vi.fn(async () => null),
@@ -75,6 +76,7 @@ vi.mock('../toasts', () => ({
 
 import ChatInput from './ChatInput';
 import { ChatState } from '../types/chatState';
+import { ChatTabStrip } from './chatGroups/ChatTabStrip';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -132,23 +134,23 @@ describe('the composer working edge attribute', () => {
     expect(card()!.hasAttribute('data-working')).toBe(false);
   });
 
-  /**
-   * Every non-Idle state, which is exactly the set the removed status row used
-   * to render for (`chatState !== ChatState.Idle`). Keeping that set identical
-   * is what makes this a replacement rather than a behaviour change.
-   */
+  /** The same live-turn states used by the running-tab registry. */
   const RUNNING = [
     ChatState.Thinking,
     ChatState.Streaming,
     ChatState.WaitingForUserInput,
     ChatState.Compacting,
-    ChatState.LoadingConversation,
     ChatState.RestartingAgent,
   ];
 
   it.each(RUNNING)('is set while the chat state is %s', (state) => {
     renderComposer(state);
     expect(card()!.getAttribute('data-working')).toBe('true');
+  });
+
+  it('does not report conversation loading as live work', () => {
+    renderComposer(ChatState.LoadingConversation);
+    expect(card()!.hasAttribute('data-working')).toBe(false);
   });
 
   it('appears when a turn starts and clears when it ends', () => {
@@ -191,5 +193,35 @@ describe('the composer working edge attribute', () => {
     // The edge is decoration on an otherwise untouched composer: no layout
     // change, no disabled input, nothing removed.
     expect(screen.getByTestId('chat-input')).toBeTruthy();
+  });
+
+  it('shows the shared running tab marker and working composer for a delegated child', () => {
+    renderComposer(ChatState.Streaming);
+    render(
+      <ChatTabStrip
+        tabs={[
+          {
+            tabId: 'child-tab',
+            sessionId: 'child-session',
+            title: 'Delegated child',
+            userSetName: false,
+          },
+        ]}
+        activeTabId="child-tab"
+        runningSessionIds={['child-session']}
+        tabAnnotations={{
+          'child-session': { badge: 'subagent', parentSessionId: 'parent-session' },
+        }}
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onReorder={vi.fn()}
+        reserveTitlebar={false}
+        isCompactSidebarOverlayOpen={false}
+      />
+    );
+
+    expect(screen.getByTestId('chat-tab-running-child-tab')).toBeTruthy();
+    expect(card()!.getAttribute('data-working')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Stop response' })).toBeTruthy();
   });
 });

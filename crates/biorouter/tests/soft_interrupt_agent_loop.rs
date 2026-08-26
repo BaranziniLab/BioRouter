@@ -28,6 +28,18 @@ use futures::StreamExt;
 use rmcp::model::Tool;
 use tempfile::TempDir;
 
+fn shared_session_manager() -> Arc<SessionManager> {
+    static SESSION_MANAGER: OnceLock<Arc<SessionManager>> = OnceLock::new();
+    SESSION_MANAGER
+        .get_or_init(|| {
+            let data_dir = TempDir::new().expect("shared test data directory");
+            let session_manager = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
+            std::mem::forget(data_dir);
+            session_manager
+        })
+        .clone()
+}
+
 /// Text-only provider that queues a soft interrupt on its first completion —
 /// i.e. the user hits "steer" while the model is writing what would have been
 /// the last message of the turn.
@@ -157,8 +169,7 @@ impl Provider for SteeringProvider {
 
 async fn agent_with_provider(provider: Arc<SteeringProvider>) -> (Arc<Agent>, String, TempDir) {
     let work_dir = TempDir::new().unwrap();
-    let data_dir = TempDir::new().unwrap();
-    let session_manager = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
+    let session_manager = shared_session_manager();
     let config = AgentConfig::new(
         session_manager.clone(),
         PermissionManager::instance(),
@@ -184,8 +195,6 @@ async fn agent_with_provider(provider: Arc<SteeringProvider>) -> (Arc<Agent>, St
     let agent = Arc::new(agent);
     let _ = provider.agent.set(agent.clone());
 
-    // The session store lives under data_dir for the life of the agent.
-    std::mem::forget(data_dir);
     (agent, session.id, work_dir)
 }
 
@@ -414,8 +423,7 @@ async fn no_steer_means_no_extra_provider_call() {
     }
 
     let work_dir = TempDir::new().unwrap();
-    let data_dir = TempDir::new().unwrap();
-    let session_manager = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
+    let session_manager = shared_session_manager();
     let agent = Agent::with_config(AgentConfig::new(
         session_manager.clone(),
         PermissionManager::instance(),
@@ -435,7 +443,6 @@ async fn no_steer_means_no_extra_provider_call() {
         .update_provider(provider.clone() as Arc<dyn Provider>, &session.id)
         .await
         .unwrap();
-    std::mem::forget(data_dir);
 
     drain(&agent, "Say hi", &session.id).await.unwrap();
 
@@ -527,8 +534,7 @@ async fn the_reply_loop_opens_the_acceptance_window_and_closes_it_at_exit() {
     }
 
     let work_dir = TempDir::new().unwrap();
-    let data_dir = TempDir::new().unwrap();
-    let session_manager = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
+    let session_manager = shared_session_manager();
     let agent = Agent::with_config(AgentConfig::new(
         session_manager.clone(),
         PermissionManager::instance(),
@@ -555,7 +561,6 @@ async fn the_reply_loop_opens_the_acceptance_window_and_closes_it_at_exit() {
         .unwrap();
     let agent = Arc::new(agent);
     let _ = provider.agent.set(agent.clone());
-    std::mem::forget(data_dir);
 
     // A steer offered before the loop starts has no turn to land in.
     assert!(
@@ -606,4 +611,169 @@ async fn the_reply_loop_opens_the_acceptance_window_and_closes_it_at_exit() {
         !agent.has_soft_interrupts(),
         "a refused steer must leave nothing behind"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn max_turn_stop_carries_an_already_accepted_user_direct_interrupt() {
+    use biorouter::agents::InterruptRefused;
+
+    struct LimitSteeringProvider {
+        calls: AtomicUsize,
+        agent: OnceLock<Arc<Agent>>,
+    }
+
+    #[async_trait]
+    impl Provider for LimitSteeringProvider {
+        async fn complete(
+            &self,
+            _system_prompt: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.agent
+                .get()
+                .expect("agent installed before the provider runs")
+                .try_queue_soft_interrupt(
+                    "accepted just before the action limit".into(),
+                    Some(MessageProvenance {
+                        kind: ProvenanceKind::UserDirect,
+                        from_session_id: Some("parent-session".into()),
+                        from_session_name: Some("Parent".into()),
+                    }),
+                )
+                .expect("the first provider call runs inside an accepting turn");
+            Ok((
+                Message::assistant().with_text("This would normally finish."),
+                ProviderUsage::new(
+                    "mock-model".to_string(),
+                    Usage::new(Some(1), Some(1), Some(2)),
+                ),
+            ))
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            system_prompt: &str,
+            messages: &[Message],
+            tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.complete(system_prompt, messages, tools).await
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new("mock-model").unwrap()
+        }
+
+        fn metadata() -> ProviderMetadata {
+            SteeringProvider::metadata()
+        }
+
+        fn get_name(&self) -> &str {
+            "mock-limit-steer"
+        }
+    }
+
+    let work_dir = TempDir::new().unwrap();
+    let session_manager = shared_session_manager();
+    let agent = Agent::with_config(AgentConfig::new(
+        Arc::clone(&session_manager),
+        PermissionManager::instance(),
+        None,
+        BioRouterMode::Auto,
+    ));
+    let session = session_manager
+        .create_session(
+            work_dir.path().to_path_buf(),
+            "max-turn carried interrupt".into(),
+            SessionType::Hidden,
+        )
+        .await
+        .unwrap();
+    let delegated = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+        &session.id,
+        "max-turn-child",
+        "max-turn delegated child",
+        tokio_util::sync::CancellationToken::new(),
+    );
+    biorouter::agents::subagent_handle::begin_child_turn("max-turn-child");
+    delegated.complete(biorouter::agents::SubagentResult::from_error(
+        "finished under native supervision",
+    ));
+    let provider = Arc::new(LimitSteeringProvider {
+        calls: AtomicUsize::new(0),
+        agent: OnceLock::new(),
+    });
+    agent
+        .update_provider(provider.clone() as Arc<dyn Provider>, &session.id)
+        .await
+        .unwrap();
+    let agent = Arc::new(agent);
+    assert!(provider.agent.set(Arc::clone(&agent)).is_ok());
+
+    let stream = agent
+        .reply(
+            Message::user().with_text("do one action"),
+            SessionConfig {
+                id: session.id.clone(),
+                schedule_id: None,
+                max_turns: Some(1),
+                max_tool_calls: None,
+                retry_config: None,
+                budget: None,
+                reasoning_effort: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    tokio::pin!(stream);
+    let mut emitted = Vec::new();
+    while let Some(event) = stream.next().await {
+        if let AgentEvent::Message(message) = event.unwrap() {
+            emitted.push(message);
+        }
+    }
+
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        1,
+        "the action limit must stop before a second provider call"
+    );
+    let carried = emitted
+        .iter()
+        .find(|message| message.as_concat_text() == "accepted just before the action limit")
+        .expect("the accepted interrupt must be emitted after the safety stop");
+    assert_eq!(
+        carried.metadata.provenance.as_ref().map(|p| &p.kind),
+        Some(&ProvenanceKind::UserDirect)
+    );
+
+    let stored = session_manager
+        .get_session(&session.id, true)
+        .await
+        .unwrap()
+        .conversation
+        .unwrap();
+    let durable = stored
+        .messages()
+        .iter()
+        .find(|message| message.as_concat_text() == "accepted just before the action limit")
+        .expect("the accepted interrupt must be durable after the safety stop");
+    assert_eq!(durable.metadata.provenance, carried.metadata.provenance);
+    assert!(emitted.iter().any(|message| {
+        let text = message.as_concat_text();
+        text.contains("max-turn delegated child")
+            && text.contains("finished under native supervision")
+    }));
+    assert!(
+        delegated.latest_generation_collected(),
+        "the safety drain must collect the child's exact terminal generation"
+    );
+    assert!(!agent.has_soft_interrupts());
+    assert!(matches!(
+        agent.try_queue_soft_interrupt("after the stop".into(), None),
+        Err(InterruptRefused::TurnEnded)
+    ));
 }

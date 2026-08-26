@@ -167,7 +167,10 @@ export const CODE_BG_ROCHE = {
 } as const;
 
 /** Palette values, exported so tests can assert the contrast ratios. */
-export const codePalettes = { light: GENERATED_THEMES.parchment.light.syntax, dark: GENERATED_THEMES.parchment.dark.syntax } as const;
+export const codePalettes = {
+  light: GENERATED_THEMES.parchment.light.syntax,
+  dark: GENERATED_THEMES.parchment.dark.syntax,
+} as const;
 
 /** Alma Mater palettes + their grounds, exported for the contrast test. */
 export const codePalettesAlma = {

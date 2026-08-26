@@ -157,7 +157,11 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
                 className="h-9 flex-1"
                 disabled={busy}
               />
-              <Button variant="outline" onClick={() => void previewUrl()} disabled={busy || !url.trim()}>
+              <Button
+                variant="outline"
+                onClick={() => void previewUrl()}
+                disabled={busy || !url.trim()}
+              >
                 Look up
               </Button>
             </div>
@@ -242,13 +246,7 @@ function installLabel(preview: ImportPreview | null): string {
   return `Install ${preview.components.length} skills`;
 }
 
-function PreviewCard({
-  preview,
-  sourceLabel,
-}: {
-  preview: ImportPreview;
-  sourceLabel: string;
-}) {
+function PreviewCard({ preview, sourceLabel }: { preview: ImportPreview; sourceLabel: string }) {
   const entryPoint = preview.entryPoint;
   return (
     <div className="biorouter-modal-panel rounded-element px-4 py-3">

@@ -61,12 +61,11 @@
 //! # Atomicity
 //!
 //! Everything runs inside one [`crate::knowledge::git::Txn`] on the destination.
-//! On any failure the destination is left byte-identical: files this merge
-//! created are removed from the list it kept, and `abort_txn` restores the
-//! tracked files it modified. The two are both needed — a page written and not
-//! yet committed on the transaction branch is *untracked*, and a copied
-//! `raw/<id>/original.pdf` is *gitignored* (`raw/*/original.*`), so neither is
-//! reachable by a checkout however forceful.
+//! Before the main ref advances, a failure leaves the destination byte-identical:
+//! files this merge created are removed from the list it kept, and `abort_txn`
+//! restores the tracked files it modified. Once main advances, that commit is the
+//! authoritative outcome; a cleanup failure is reported as committed and none of
+//! its pages or gitignored raw files are removed.
 //!
 //! # What a merge does not carry
 //!
@@ -83,7 +82,7 @@
 
 use crate::knowledge::{
     caller::KbCaller,
-    git::{GitRepo, Txn},
+    git::{CommitTxnCheckpoint, GitRepo, KnowledgeWriteFailure, KnowledgeWriteFailurePhase, Txn},
     links::{self, identity_key, link_key},
     manifest,
     okf::{frontmatter, model::ConceptDoc, model::Page},
@@ -577,7 +576,7 @@ struct Renames {
 /// | **BioOKF → OKF** | allowed | the carried pages meet a stricter contract than the one they will be checked against; the destination loses constraints on those pages, never conformance |
 /// | **OKF → BioOKF** | refused | a plain-OKF page states no BioOKF node type, no per-edge provenance triplet, no `raw_source` anchor — the destination's contract, applied to pages that were never written to it |
 /// | legacy → anything, anything → legacy | refused | legacy is not "less strict OKF" but a *different* vocabulary (`title`/`kind` frontmatter, `[[wiki]]` links). Neither direction is a subset of the other, and DR-17/DR-22 keep the format migration that would make one off every automatic path |
-/// | legacy → legacy | allowed | one generation, and no format rules run on either side |
+/// | legacy → legacy | refused | the retired format is recovery-only and cannot be extended by a merge |
 ///
 /// The asymmetry is the whole content of the check: refusing both directions
 /// would forbid the one merge that is provably safe, and allowing both would be
@@ -594,8 +593,7 @@ struct Renames {
 /// A manifest that cannot be read at all resolves to legacy (`None`), the same
 /// reading `macros::lint::format_diagnostics` takes: a base whose generation we
 /// could not establish must not be *assumed* current, and treating it as legacy
-/// keeps a hand-built or damaged base mergeable only with another one of its
-/// kind.
+/// keeps a hand-built or damaged base out of every merge direction.
 fn assert_profiles_merge(dst_root: &Path, src_root: &Path, src_kb_id: &str) -> Result<()> {
     let profile_of = |root: &Path| manifest::load(root).ok().and_then(|m| m.profile());
     let dst = profile_of(dst_root);
@@ -633,10 +631,8 @@ fn assert_profiles_merge(dst_root: &Path, src_root: &Path, src_kb_id: &str) -> R
 /// bases on disk.
 fn profiles_compose(destination: Option<KbFormat>, source: Option<KbFormat>) -> bool {
     match (destination, source) {
-        // Legacy composes with legacy and with nothing else — in EITHER
-        // direction. See the table above.
-        (None, None) => true,
-        (None, Some(_)) | (Some(_), None) => false,
+        // The retired legacy format is never a merge destination or source.
+        (None, _) | (_, None) => false,
         // An OKF destination checks its pages against OKF's rules, which a
         // BioOKF page satisfies by construction.
         (Some(KbFormat::Okf), Some(_)) => true,
@@ -1342,6 +1338,18 @@ impl Created {
 /// squash commit: verifying *before* the commit is what lets a violation abort
 /// rather than be reported about a base that has already changed.
 pub fn apply(dst_root: &Path, src_root: &Path, plan: &MergePlan) -> Result<String> {
+    apply_with_commit_checkpoint(dst_root, src_root, plan, |_| Ok(()))
+}
+
+fn apply_with_commit_checkpoint<F>(
+    dst_root: &Path,
+    src_root: &Path,
+    plan: &MergePlan,
+    mut checkpoint: F,
+) -> Result<String>
+where
+    F: FnMut(CommitTxnCheckpoint) -> Result<()>,
+{
     anyhow::ensure!(
         plan.plan_violations.is_empty(),
         "refusing to merge: the plan would change the destination, which must stay \
@@ -1352,24 +1360,41 @@ pub fn apply(dst_root: &Path, src_root: &Path, plan: &MergePlan) -> Result<Strin
     let txn = repo.begin_txn(&format!("merge-{}", plan.source_kb_id))?;
     let mut created = Created::default();
 
-    match write_everything(dst_root, src_root, plan, &repo, &txn, &mut created) {
+    match write_everything(
+        dst_root,
+        src_root,
+        plan,
+        &repo,
+        &txn,
+        &mut created,
+        &mut checkpoint,
+    ) {
         Ok(sha) => Ok(sha),
         Err(e) => {
-            created.undo();
-            let _ = repo.abort_txn(&txn);
+            let destructive_rollback_is_safe = e
+                .downcast_ref::<KnowledgeWriteFailure>()
+                .is_none_or(|failure| failure.phase == KnowledgeWriteFailurePhase::RolledBack);
+            if destructive_rollback_is_safe {
+                created.undo();
+                let _ = repo.abort_txn(&txn);
+            }
             Err(e)
         }
     }
 }
 
-fn write_everything(
+fn write_everything<F>(
     dst_root: &Path,
     src_root: &Path,
     plan: &MergePlan,
     repo: &GitRepo,
     txn: &Txn,
     created: &mut Created,
-) -> Result<String> {
+    checkpoint: &mut F,
+) -> Result<String>
+where
+    F: FnMut(CommitTxnCheckpoint) -> Result<()>,
+{
     let root_metadata = std::fs::symlink_metadata(dst_root)
         .with_context(|| format!("inspect merge destination {}", dst_root.display()))?;
     anyhow::ensure!(
@@ -1438,7 +1463,10 @@ fn write_everything(
     // ONE commit on the transaction branch, staging everything above — so the
     // whole merge is a single tree that `commit_txn` can squash or `abort_txn`
     // can discard.
-    repo.commit_on_txn_in_progress(&format!("merge {} into this base", plan.source_kb_id))?;
+    repo.commit_on_txn_in_progress(
+        &txn.branch,
+        &format!("merge {} into this base", plan.source_kb_id),
+    )?;
 
     let violations = verify_snapshot(dst_root, &plan.snapshot)?;
     anyhow::ensure!(
@@ -1455,11 +1483,12 @@ fn write_everything(
         Some(&txn.branch),
     )?;
 
-    repo.commit_txn(
+    repo.commit_txn_with_checkpoint(
         txn,
         ChangeKind::Manual,
         &format!("merge {}", plan.source_kb_id),
         Some(&merge_delta(plan)),
+        checkpoint,
     )
 }
 

@@ -4,7 +4,7 @@ use biorouter::config::Config;
 use biorouter::conversation::message::{
     ActionRequiredData, Message, MessageContent, ToolRequest, ToolResponse,
 };
-use biorouter::utils::safe_truncate;
+use biorouter::utils::{safe_truncate, sanitize_untrusted_label};
 use console::{measure_text_width, style, Color, Term};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rmcp::model::{CallToolRequestParams, JsonObject, PromptArgument, ResourceContents};
@@ -642,30 +642,18 @@ fn external_browser_url(uri: &str) -> Option<String> {
     .then(|| url.to_string())
 }
 
+/// A terminal-safe artifact title.
+///
+/// The drop set itself lives in [`sanitize_untrusted_label`] — the workspace's
+/// single definition — because the preview panel needs the identical treatment
+/// for the titles a *website* chooses, and two copies of a filter like this
+/// drift until only one of them still covers the class that matters.
 fn sanitize_artifact_title(title: &str) -> String {
-    let mut sanitized = String::new();
-    for ch in title.chars().take(MAX_ARTIFACT_TITLE_CHARS) {
-        let is_directional_control = matches!(
-            ch,
-            '\u{061c}'
-                | '\u{200b}'..='\u{200f}'
-                | '\u{202a}'..='\u{202e}'
-                | '\u{2060}'..='\u{206f}'
-                | '\u{feff}'
-        );
-        if ch.is_control() || is_directional_control {
-            if ch.is_whitespace() && !sanitized.ends_with(' ') {
-                sanitized.push(' ');
-            }
-        } else {
-            sanitized.push(ch);
-        }
-    }
-    let sanitized = sanitized.trim();
+    let sanitized = sanitize_untrusted_label(title, MAX_ARTIFACT_TITLE_CHARS);
     if sanitized.is_empty() {
         "Artifact".to_string()
     } else {
-        sanitized.to_string()
+        sanitized
     }
 }
 

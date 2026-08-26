@@ -20,16 +20,70 @@ describe('useStopAcknowledgement', () => {
 
     expect(result.current.acknowledged).toBe(false);
 
-    act(() => result.current.trigger());
+    act(() => {
+      void result.current.trigger();
+    });
 
     expect(result.current.acknowledged).toBe(true);
     expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onStop).toHaveBeenCalledWith(false);
+  });
+
+  it('keeps the immediate acknowledgement while exposing asynchronous completion', async () => {
+    let finishStop: (value: boolean) => void = () => {};
+    const onStop = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishStop = resolve;
+        })
+    );
+    const { result } = renderHook(() => useStopAcknowledgement(onStop));
+
+    let completion!: Promise<boolean>;
+    act(() => {
+      completion = result.current.trigger();
+    });
+
+    expect(result.current.acknowledged).toBe(true);
+    expect(onStop).toHaveBeenCalledTimes(1);
+
+    act(() => finishStop(true));
+    await expect(completion).resolves.toBe(true);
+  });
+
+  it('reports a rejected stop as false without an unhandled rejection', async () => {
+    const { result } = renderHook(() =>
+      useStopAcknowledgement(async () => {
+        throw new Error('cancel unavailable');
+      })
+    );
+
+    let completion!: Promise<boolean>;
+    act(() => {
+      completion = result.current.trigger();
+    });
+
+    await expect(completion).resolves.toBe(false);
+    expect(result.current.acknowledged).toBe(true);
+  });
+
+  it('forwards whether the caller will send a continuation', async () => {
+    const onStop = vi.fn(async () => true);
+    const { result } = renderHook(() => useStopAcknowledgement(onStop));
+
+    await act(async () => {
+      await result.current.trigger(true);
+    });
+
+    expect(onStop).toHaveBeenCalledWith(true);
   });
 
   it('retires itself, so it cannot outlive the turn it confirmed', () => {
     const { result } = renderHook(() => useStopAcknowledgement(vi.fn()));
 
-    act(() => result.current.trigger());
+    act(() => {
+      void result.current.trigger();
+    });
     act(() => void vi.advanceTimersByTime(STOP_ACK_MS - 1));
     expect(result.current.acknowledged).toBe(true);
 
@@ -41,9 +95,13 @@ describe('useStopAcknowledgement', () => {
     const onStop = vi.fn();
     const { result } = renderHook(() => useStopAcknowledgement(onStop));
 
-    act(() => result.current.trigger());
+    act(() => {
+      void result.current.trigger();
+    });
     act(() => void vi.advanceTimersByTime(STOP_ACK_MS - 10));
-    act(() => result.current.trigger());
+    act(() => {
+      void result.current.trigger();
+    });
 
     // The first window would have expired here; the restart keeps it up.
     act(() => void vi.advanceTimersByTime(20));
@@ -57,17 +115,23 @@ describe('useStopAcknowledgement', () => {
   it('cancels its timer on unmount rather than setState-ing into a dead composer', () => {
     const { result, unmount } = renderHook(() => useStopAcknowledgement(vi.fn()));
 
-    act(() => result.current.trigger());
+    act(() => {
+      void result.current.trigger();
+    });
     unmount();
 
     expect(() => vi.advanceTimersByTime(STOP_ACK_MS * 2)).not.toThrow();
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('tolerates a missing onStop (a composer with no live turn)', () => {
+  it('tolerates a missing onStop (a composer with no live turn)', async () => {
     const { result } = renderHook(() => useStopAcknowledgement(undefined));
 
-    expect(() => act(() => result.current.trigger())).not.toThrow();
+    let completion!: Promise<boolean>;
+    act(() => {
+      completion = result.current.trigger();
+    });
+    await expect(completion).resolves.toBe(true);
     expect(result.current.acknowledged).toBe(true);
   });
 });

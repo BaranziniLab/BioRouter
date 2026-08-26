@@ -37,8 +37,16 @@ pub(crate) fn map_bus_event(
     event: SessionBusEvent,
     token_state: &mut biorouter::conversation::message::TokenState,
 ) -> Option<MessageEvent> {
+    map_bus_event_for_turn(event, token_state, None)
+}
+
+fn map_bus_event_for_turn(
+    event: SessionBusEvent,
+    token_state: &mut biorouter::conversation::message::TokenState,
+    terminal_turn_id: Option<&str>,
+) -> Option<MessageEvent> {
     match event {
-        SessionBusEvent::TurnStarted { .. } => None,
+        SessionBusEvent::TurnStarted { turn_id } => Some(MessageEvent::TurnStarted { turn_id }),
         SessionBusEvent::TurnFinished {
             reason,
             token_state: final_state,
@@ -49,6 +57,7 @@ pub(crate) fn map_bus_event(
                 *token_state = final_state;
             }
             Some(MessageEvent::Finish {
+                turn_id: terminal_turn_id.map(str::to_string),
                 reason,
                 token_state: token_state.clone(),
             })
@@ -63,6 +72,7 @@ pub(crate) fn map_bus_event(
             retryable,
             provider_kind,
         } => Some(MessageEvent::Error {
+            turn_id: terminal_turn_id.map(str::to_string),
             error: message,
             code,
             scope: TurnErrorScope::from_wire_value(&scope),
@@ -129,6 +139,7 @@ pub(crate) fn map_bus_event(
                 let (scope, retryable, provider_kind) =
                     crate::workspace::turn::classify_abort(&code);
                 Some(MessageEvent::Error {
+                    turn_id: terminal_turn_id.map(str::to_string),
                     error: message,
                     code: code.wire_code().to_string(),
                     scope,
@@ -140,10 +151,22 @@ pub(crate) fn map_bus_event(
     }
 }
 
-/// What a lagged consumer sends instead of silently skipping frames (§8.4).
-/// `pub(crate)` because BOTH consumers use it — this route and, after Task 8,
-/// `/reply` — for the same reason `map_bus_event` is shared: one resync
-/// behaviour, not two that have to keep agreeing.
+fn is_terminal_bus_event(event: &SessionBusEvent) -> bool {
+    matches!(
+        event,
+        SessionBusEvent::TurnFinished { .. }
+            | SessionBusEvent::TurnError { .. }
+            | SessionBusEvent::Agent(AgentEvent::TurnAborted { .. })
+    )
+}
+
+fn stable_active_turn_id(before: &Option<String>, after: &Option<String>) -> Option<String> {
+    (before == after).then(|| after.clone()).flatten()
+}
+
+/// The conversation snapshot a lagged consumer sends instead of silently
+/// skipping frames (§8.4). `pub(crate)` because `/reply` shares this storage
+/// repair; the observer adds its authoritative lifecycle snapshot alongside it.
 pub(crate) async fn bus_lag_resync_frame(
     state: &AppState,
     session_id: &str,
@@ -158,6 +181,22 @@ pub(crate) async fn bus_lag_resync_frame(
         conversation: fresh.conversation.unwrap_or_default(),
         token_state: token_state.clone(),
     })
+}
+
+async fn observer_lag_resync_frames(
+    state: &AppState,
+    session_id: &str,
+    token_state: &biorouter::conversation::message::TokenState,
+) -> Option<(MessageEvent, MessageEvent, Option<String>)> {
+    let turn_id_before_resync = state.active_turn_id(session_id);
+    let conversation = bus_lag_resync_frame(state, session_id, token_state).await?;
+    let active_turn_id = state.active_turn_id(session_id);
+    let event_turn_id = stable_active_turn_id(&turn_id_before_resync, &active_turn_id);
+    Some((
+        conversation,
+        MessageEvent::TurnState { active_turn_id },
+        event_turn_id,
+    ))
 }
 
 #[utoipa::path(
@@ -195,12 +234,25 @@ pub async fn observe_session_events(
 
     // Subscribe BEFORE the snapshot so no event falls in the gap between them.
     let mut rx = session_events::subscribe(&session_id);
+    // Read immediately after subscribing, before the first await. If the same
+    // turn is still active at the later snapshot, terminals already queued on
+    // this receiver can be attributed to it. If the identities differ, a turn
+    // boundary crossed the snapshot window and those queued terminals remain
+    // deliberately unclaimed rather than being mislabeled as the successor.
+    let turn_id_after_subscribe = state.active_turn_id(&session_id);
 
     let session = match state.session_manager().get_session(&session_id, true).await {
         Ok(s) => s,
         Err(_) => return axum::http::StatusCode::NOT_FOUND.into_response(),
     };
 
+    // The subscription above and this authoritative registry read close both
+    // sides of the join race. A turn that started before the subscription is
+    // named here; one that starts after it is queued on `rx`. A turn crossing
+    // the read may be named twice, which is deliberately harmless and safer
+    // than leaving a quiet observer permanently idle.
+    let active_turn_id = state.active_turn_id(&session_id);
+    let initial_event_turn_id = stable_active_turn_id(&turn_id_after_subscribe, &active_turn_id);
     let mut token_state = get_token_state(state.session_manager(), &session_id).await;
     let (tx, rx_out) = mpsc::channel::<String>(64);
 
@@ -213,6 +265,7 @@ pub async fn observe_session_events(
     let manager_session_id = session_id.clone();
     let state_for_task = state.clone();
     tokio::spawn(async move {
+        let mut event_turn_id = initial_event_turn_id;
         let send = |tx: &mpsc::Sender<String>, ev: &MessageEvent| {
             let frame = format!(
                 "data: {}\n\n",
@@ -229,6 +282,12 @@ pub async fn observe_session_events(
             token_state: token_state.clone(),
         };
         if !send(&tx, &snapshot).await {
+            return;
+        }
+        // Unlike a positive-only `TurnStarted`, this snapshot also carries an
+        // authoritative idle edge. An observer that missed Finish while its
+        // socket was down can therefore retire stale running state on reconnect.
+        if !send(&tx, &MessageEvent::TurnState { active_turn_id }).await {
             return;
         }
 
@@ -263,14 +322,26 @@ pub async fn observe_session_events(
                 }
                 received = rx.recv() => match received {
                     Ok(event) => {
-                        if let Some(mapped) = map_bus_event(event, &mut token_state) {
+                        if let SessionBusEvent::TurnStarted { turn_id } = &event {
+                            event_turn_id = Some(turn_id.clone());
+                        }
+                        let terminal = is_terminal_bus_event(&event);
+                        if let Some(mapped) = map_bus_event_for_turn(
+                            event,
+                            &mut token_state,
+                            event_turn_id.as_deref(),
+                        ) {
                             if !send(&tx, &mapped).await { return; }
+                        }
+                        if terminal {
+                            event_turn_id = None;
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         // §8.4: resync from storage instead of dropping frames
                         // silently. Shared with /reply (Task 8).
-                        if let Some(resync) = bus_lag_resync_frame(
+                        if let Some((resync, lifecycle, next_event_turn_id)) =
+                            observer_lag_resync_frames(
                             &state_for_task,
                             &manager_session_id,
                             &token_state,
@@ -278,6 +349,8 @@ pub async fn observe_session_events(
                         .await
                         {
                             if !send(&tx, &resync).await { return; }
+                            if !send(&tx, &lifecycle).await { return; }
+                            event_turn_id = next_event_turn_id;
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
@@ -306,13 +379,17 @@ mod tests {
     fn maps_lifecycle_and_messages_and_swallows_token_updates() {
         let mut token_state = Default::default();
 
-        assert!(map_bus_event(
+        let started = map_bus_event(
             SessionBusEvent::TurnStarted {
-                turn_id: "turn-1".into()
+                turn_id: "turn-1".into(),
             },
-            &mut token_state
+            &mut token_state,
         )
-        .is_none());
+        .expect("turn lifecycle maps");
+        assert_eq!(
+            serde_json::to_value(started).unwrap(),
+            serde_json::json!({ "type": "TurnStarted", "turn_id": "turn-1" })
+        );
 
         let mapped = map_bus_event(
             SessionBusEvent::Agent(AgentEvent::Message(Message::user().with_text("hello"))),
@@ -334,6 +411,92 @@ mod tests {
         assert!(serde_json::to_string(&fin)
             .unwrap()
             .contains("\"type\":\"Finish\""));
+    }
+
+    #[test]
+    fn observer_terminals_name_the_turn_the_bus_receiver_was_following() {
+        let mut token_state = Default::default();
+        let finish = map_bus_event_for_turn(
+            SessionBusEvent::TurnFinished {
+                reason: "done".into(),
+                token_state: None,
+            },
+            &mut token_state,
+            Some("turn-before-snapshot"),
+        )
+        .expect("terminal maps");
+
+        assert_eq!(
+            serde_json::to_value(finish).unwrap()["turn_id"],
+            "turn-before-snapshot"
+        );
+    }
+
+    #[test]
+    fn terminal_queued_before_a_successor_snapshot_remains_unclaimed() {
+        let before = Some("turn-before-snapshot".to_string());
+        let successor = Some("turn-successor".to_string());
+        let terminal_turn_id = stable_active_turn_id(&before, &successor);
+        let mut token_state = Default::default();
+        let finish = map_bus_event_for_turn(
+            SessionBusEvent::TurnFinished {
+                reason: "done".into(),
+                token_state: None,
+            },
+            &mut token_state,
+            terminal_turn_id.as_deref(),
+        )
+        .expect("terminal maps");
+
+        assert!(serde_json::to_value(finish)
+            .unwrap()
+            .get("turn_id")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn observer_lag_resync_repairs_conversation_and_authoritative_turn_state() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "lagged observer".to_string(),
+                biorouter::session::session_manager::SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let guard = state
+            .try_begin_turn_idempotent(
+                &session.id,
+                tokio_util::sync::CancellationToken::new(),
+                Some("lagged-turn".into()),
+            )
+            .expect("turn starts");
+        let _writer = guard
+            .stream()
+            .claim_writer()
+            .expect("turn owns a live writer");
+        let turn_id = guard.turn_id().to_string();
+
+        let token_state = Default::default();
+        let (conversation, lifecycle, event_turn_id) =
+            observer_lag_resync_frames(&state, &session.id, &token_state)
+                .await
+                .expect("session can be resynced");
+        assert!(matches!(
+            conversation,
+            MessageEvent::UpdateConversation { .. }
+        ));
+        assert!(matches!(
+            lifecycle,
+            MessageEvent::TurnState {
+                active_turn_id: Some(ref active)
+            } if active == &turn_id
+        ));
+        assert_eq!(event_turn_id, Some(turn_id));
+        drop(guard);
     }
 
     /// Reconciliation #22 / #59: `MessagesPersisted` reaches the wire through
@@ -479,6 +642,149 @@ mod tests {
         assert!(text.contains("\"type\":\"Finish\""));
     }
 
+    #[tokio::test]
+    async fn observer_snapshot_names_an_already_active_quiet_turn() {
+        use tower::ServiceExt;
+        let state = crate::state::AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "quiet child".to_string(),
+                biorouter::session::session_manager::SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let guard = state
+            .try_begin_turn_idempotent(
+                &session.id,
+                tokio_util::sync::CancellationToken::new(),
+                Some("delegated-turn".into()),
+            )
+            .expect("delegated turn starts");
+        let _writer = guard
+            .stream()
+            .claim_writer()
+            .expect("delegated turn owns an attachable stream writer");
+        let turn_id = guard.turn_id().to_string();
+
+        let response = routes(state.clone())
+            .oneshot(
+                axum::http::Request::get(format!("/sessions/{}/events", session.id))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        session_events::publish(
+            &session.id,
+            SessionBusEvent::TurnFinished {
+                reason: "done".into(),
+                token_state: None,
+            },
+        );
+
+        let bytes =
+            tokio::time::timeout(Duration::from_secs(5), collect_prefix(response.into_body()))
+                .await
+                .expect("observer lifecycle in time");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("\"type\":\"UpdateConversation\""));
+        assert!(text.contains(&format!(
+            "\"type\":\"TurnState\",\"active_turn_id\":\"{turn_id}\""
+        )));
+        assert!(text.contains("\"type\":\"Finish\""));
+        drop(guard);
+    }
+
+    #[tokio::test]
+    async fn reconnect_after_a_missed_finish_receives_authoritative_idle_state() {
+        use tower::ServiceExt;
+        let state = crate::state::AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "reconnecting child".to_string(),
+                biorouter::session::session_manager::SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let guard = state
+            .try_begin_turn_idempotent(
+                &session.id,
+                tokio_util::sync::CancellationToken::new(),
+                Some("delegated-turn".into()),
+            )
+            .expect("delegated turn starts");
+        let writer = guard
+            .stream()
+            .claim_writer()
+            .expect("delegated turn owns its stream writer");
+        let turn_id = guard.turn_id().to_string();
+        let app = routes(state.clone());
+
+        let first = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get(format!("/sessions/{}/events", session.id))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let active_marker = format!("\"active_turn_id\":\"{turn_id}\"");
+        let first_text = tokio::time::timeout(
+            Duration::from_secs(5),
+            collect_until(first.into_body(), &active_marker),
+        )
+        .await
+        .expect("initial observer state in time");
+        assert!(String::from_utf8_lossy(&first_text).contains("\"type\":\"TurnState\""));
+
+        // Wait until the observer task has noticed the dropped response. The
+        // terminal below must land wholly inside the disconnect gap.
+        for _ in 0..40 {
+            if state.live_observer_streams() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(state.live_observer_streams(), 0);
+        session_events::publish(
+            &session.id,
+            SessionBusEvent::TurnFinished {
+                reason: "finished while disconnected".into(),
+                token_state: None,
+            },
+        );
+        drop(writer);
+        assert!(state.is_turn_active(&session.id));
+        assert_eq!(state.active_turn_id(&session.id), None);
+
+        let reconnected = app
+            .oneshot(
+                axum::http::Request::get(format!("/sessions/{}/events", session.id))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let reconnected_text = tokio::time::timeout(
+            Duration::from_secs(5),
+            collect_until(reconnected.into_body(), "\"active_turn_id\":null"),
+        )
+        .await
+        .expect("reconnected observer idle state in time");
+        let reconnected_text = String::from_utf8_lossy(&reconnected_text);
+        assert!(reconnected_text.contains("\"type\":\"UpdateConversation\""));
+        assert!(reconnected_text.contains("\"type\":\"TurnState\""));
+        assert!(reconnected_text.contains("\"active_turn_id\":null"));
+        drop(guard);
+    }
+
     /// Read chunks until both expected markers have arrived, then stop.
     ///
     /// `axum::body::to_bytes` — which every other body-reading test in this
@@ -502,6 +808,19 @@ mod tests {
             collected.extend_from_slice(&chunk);
             let text = String::from_utf8_lossy(&collected);
             if text.contains("UpdateConversation") && text.contains("Finish") {
+                break;
+            }
+        }
+        collected
+    }
+
+    async fn collect_until(body: axum::body::Body, marker: &str) -> Vec<u8> {
+        use futures::StreamExt;
+        let mut stream = body.into_data_stream();
+        let mut collected = Vec::new();
+        while let Some(Ok(chunk)) = stream.next().await {
+            collected.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&collected).contains(marker) {
                 break;
             }
         }
@@ -662,6 +981,72 @@ mod tests {
                 .is_none(),
             "the observer taking the freed slot must be admitted, not refused"
         );
+    }
+
+    #[tokio::test]
+    async fn closing_a_child_observer_does_not_cancel_its_turn_or_parent_monitor() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let child = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "observed child".to_string(),
+                biorouter::session::session_manager::SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let guard = state
+            .try_begin_turn_idempotent(&child.id, cancel.clone(), Some("delegated-turn".into()))
+            .expect("child turn starts");
+        let turn_id = guard.turn_id().to_string();
+        let mut parent_monitor = session_events::subscribe(&child.id);
+        let body = open_observer(&routes(state.clone()), &child.id)
+            .await
+            .into_body();
+
+        session_events::publish(
+            &child.id,
+            SessionBusEvent::TurnStarted {
+                turn_id: turn_id.clone(),
+            },
+        );
+        assert!(matches!(
+            parent_monitor.recv().await.unwrap(),
+            SessionBusEvent::TurnStarted { .. }
+        ));
+
+        // Closing the child tab drops this read-only response body. It must not
+        // touch the daemon-owned turn or the parent's independent watch.
+        drop(body);
+        let mut detached = false;
+        for _ in 0..40 {
+            if state.live_observer_streams() == 0 {
+                detached = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(detached, "closed child observer did not release its stream");
+        assert!(state.is_turn_active(&child.id));
+        assert!(state.knows_turn(&child.id, &turn_id));
+        assert!(!cancel.is_cancelled());
+
+        session_events::publish(
+            &child.id,
+            SessionBusEvent::TurnFinished {
+                reason: "delegated result collected".into(),
+                token_state: None,
+            },
+        );
+        let terminal = tokio::time::timeout(Duration::from_secs(1), parent_monitor.recv())
+            .await
+            .expect("parent monitor stayed connected")
+            .unwrap();
+        assert!(matches!(terminal, SessionBusEvent::TurnFinished { .. }));
+        assert!(!cancel.is_cancelled());
+        drop(guard);
     }
 
     /// A watch on a session that does not exist is refused, not an empty stream

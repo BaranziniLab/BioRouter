@@ -99,7 +99,6 @@ describe('startup path never blocks the main thread', () => {
           offenders.map((o) => `  line ${o.n}: ${o.line}`).join('\n')
       ).toEqual([]);
     });
-
   }
 
   for (const rel of BULK_FS_MODULES) {
@@ -114,7 +113,8 @@ describe('startup path never blocks the main thread', () => {
         offenders,
         `${rel} blocks the Electron main thread with a recursive filesystem call (#88). ` +
           `A 120 MB copy freezes the app exactly as a synchronous spawn does; use the ` +
-          `fs.promises equivalent.\n` + offenders.map((o) => `  line ${o.n}: ${o.line}`).join('\n')
+          `fs.promises equivalent.\n` +
+          offenders.map((o) => `  line ${o.n}: ${o.line}`).join('\n')
       ).toEqual([]);
     });
   }

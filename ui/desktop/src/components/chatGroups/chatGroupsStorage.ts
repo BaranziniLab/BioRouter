@@ -1,4 +1,10 @@
-import { ChatGroupsState, ChatGroup, GroupLayout, firstLeaf, leafGroupIds } from './chatGroupsTypes';
+import {
+  ChatGroupsState,
+  ChatGroup,
+  GroupLayout,
+  firstLeaf,
+  leafGroupIds,
+} from './chatGroupsTypes';
 import { createInitialChatGroupsState } from './chatGroupsReducer';
 import { removeLeaf } from './chatGroupsLayout';
 
@@ -42,11 +48,7 @@ function stripTransient(group: ChatGroup): ChatGroup {
   return {
     ...group,
     tabs: group.tabs.map((tab) => {
-      const {
-        pendingInitialMessage: _m,
-        pendingInitialAttachments: _a,
-        ...persisted
-      } = tab;
+      const { pendingInitialMessage: _m, pendingInitialAttachments: _a, ...persisted } = tab;
       void _m;
       void _a;
       return persisted;

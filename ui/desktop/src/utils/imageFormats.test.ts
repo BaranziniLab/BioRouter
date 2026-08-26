@@ -100,7 +100,7 @@ describe('every consumer shares the one list', () => {
     expect(baseChat).not.toContain('png|jpe?g|gif|webp|svg');
   });
 
-  it("the tab icon asks the shared predicate rather than its own array", () => {
+  it('the tab icon asks the shared predicate rather than its own array', () => {
     const viewer = read('components/artifacts/ArtifactViewer.tsx');
     expect(viewer).toContain('isImageExtension(ext)');
     expect(viewer).not.toMatch(/\['png',\s*'jpg',\s*'jpeg',\s*'gif',\s*'webp',\s*'svg'\]/);

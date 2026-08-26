@@ -2300,10 +2300,20 @@ async fn handle_models_subcommand(command: ModelsCommand) -> Result<()> {
 
 async fn handle_knowledge_subcommand(command: KnowledgeCommand) -> Result<()> {
     use crate::commands::knowledge;
-    // Ensure the built-in Soul KB / Meditation workflow / update-soul skill
-    // exist so CLI-only users see and can use them. Best-effort; the Daily
-    // Meditation schedule is registered by the agent runtime where a scheduler
-    // is available.
+    // A CLI-only process never reaches the agent runtime's startup migration,
+    // so this boundary must finish the legacy purge before any knowledge
+    // command can observe the store. The remaining built-in assets stay
+    // best-effort; the Daily Meditation schedule is registered by the agent
+    // runtime where a scheduler is available.
+    //
+    // `list` is exempt, and deliberately: it is the command a user runs to find
+    // out what the store holds, and answering that question by irreversibly
+    // deleting part of it is indefensible. They see the legacy bases named and
+    // choose. `install_assets` still registers the built-in Soul, which it does
+    // without purging.
+    if !matches!(command, KnowledgeCommand::List { .. }) {
+        biorouter::knowledge::soul::ensure_soul_kb()?;
+    }
     biorouter::knowledge::soul::install_assets();
     match command {
         KnowledgeCommand::List { format } => knowledge::handle_list(&format).await,
@@ -2670,6 +2680,135 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn cli_knowledge_startup_purges_legacy_bases_and_preserves_current_profiles() {
+        fn make_legacy(
+            svc: &biorouter::knowledge::service::KnowledgeService,
+            id: &str,
+            name: &str,
+        ) {
+            svc.create_base(id, name, None).unwrap();
+            let root = biorouter::knowledge::paths::kb_root(svc.root(), id);
+            let mut manifest = biorouter::knowledge::manifest::load(&root).unwrap();
+            manifest.schema_version = biorouter::knowledge::types::AUTOMATIC_SCHEMA_CEILING;
+            biorouter::knowledge::manifest::save(&root, &manifest).unwrap();
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = env_lock::lock_env([
+            (
+                "BIOROUTER_PATH_ROOT",
+                Some(tmp.path().to_string_lossy().into_owned()),
+            ),
+            ("BIOROUTER_DISABLE_KEYRING", Some("1".to_string())),
+        ]);
+        let svc = biorouter::knowledge::service::KnowledgeService::new_default().unwrap();
+        make_legacy(&svc, "soul", "Soul");
+        make_legacy(&svc, "legacy-notes", "Legacy notes");
+        svc.create_base_in(
+            "current-okf",
+            "Current OKF",
+            None,
+            biorouter::knowledge::types::KbFormat::Okf,
+        )
+        .unwrap();
+        svc.create_base_in(
+            "current-biookf",
+            "Current BioOKF",
+            None,
+            biorouter::knowledge::types::KbFormat::Biookf,
+        )
+        .unwrap();
+
+        let okf_marker = svc.root().join("current-okf").join("preserved.txt");
+        let biookf_marker = svc.root().join("current-biookf").join("preserved.txt");
+        std::fs::write(&okf_marker, "okf survives").unwrap();
+        std::fs::write(&biookf_marker, "biookf survives").unwrap();
+        let legacy_soul_marker = svc.root().join("soul").join("legacy.txt");
+        std::fs::write(&legacy_soul_marker, "must be purged").unwrap();
+
+        // Driven through a mutating command, not `list`: the purge is what this
+        // test is about, and `list` no longer triggers it.
+        for i in 0..2 {
+            handle_knowledge_subcommand(KnowledgeCommand::Create {
+                id: format!("purge-driver-{i}"),
+                name: Some(format!("Purge driver {i}")),
+                color: None,
+            })
+            .await
+            .unwrap();
+        }
+
+        assert!(svc.get_base("legacy-notes").is_err());
+        assert!(!legacy_soul_marker.exists());
+        assert_eq!(
+            svc.get_base("soul").unwrap().profile(),
+            Some(biorouter::knowledge::types::KbFormat::Okf)
+        );
+        assert_eq!(
+            svc.get_base("current-okf").unwrap().profile(),
+            Some(biorouter::knowledge::types::KbFormat::Okf)
+        );
+        assert_eq!(
+            svc.get_base("current-biookf").unwrap().profile(),
+            Some(biorouter::knowledge::types::KbFormat::Biookf)
+        );
+        assert_eq!(std::fs::read_to_string(okf_marker).unwrap(), "okf survives");
+        assert_eq!(
+            std::fs::read_to_string(biookf_marker).unwrap(),
+            "biookf survives"
+        );
+    }
+
+    /// `knowledge list` enumerates the store; it must not edit it.
+    ///
+    /// The purge is irreversible, and `list` is precisely the command someone
+    /// runs to find out what they have before deciding. A listing that deletes
+    /// the thing it is reporting leaves the user no moment at which to choose.
+    #[tokio::test]
+    async fn cli_knowledge_list_reports_legacy_bases_without_purging_them() {
+        fn make_legacy(
+            svc: &biorouter::knowledge::service::KnowledgeService,
+            id: &str,
+            name: &str,
+        ) {
+            svc.create_base(id, name, None).unwrap();
+            let root = biorouter::knowledge::paths::kb_root(svc.root(), id);
+            let mut manifest = biorouter::knowledge::manifest::load(&root).unwrap();
+            manifest.schema_version = biorouter::knowledge::types::AUTOMATIC_SCHEMA_CEILING;
+            biorouter::knowledge::manifest::save(&root, &manifest).unwrap();
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = env_lock::lock_env([
+            (
+                "BIOROUTER_PATH_ROOT",
+                Some(tmp.path().to_string_lossy().into_owned()),
+            ),
+            ("BIOROUTER_DISABLE_KEYRING", Some("1".to_string())),
+        ]);
+        let svc = biorouter::knowledge::service::KnowledgeService::new_default().unwrap();
+        make_legacy(&svc, "legacy-notes", "Legacy notes");
+        let legacy_marker = svc.root().join("legacy-notes").join("legacy.txt");
+        std::fs::write(&legacy_marker, "must survive a listing").unwrap();
+
+        handle_knowledge_subcommand(KnowledgeCommand::List {
+            format: "json".to_string(),
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            svc.get_base("legacy-notes").is_ok(),
+            "`knowledge list` deleted a legacy base it was only asked to report"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&legacy_marker).unwrap(),
+            "must survive a listing"
+        );
+    }
 
     /// The parser is internally consistent (clap's own audit: duplicate
     /// aliases, conflicting shorts, bad `value_parser`s).

@@ -389,6 +389,48 @@ pub enum ExtensionConfig {
     },
 }
 
+fn redacted_stdio(
+    name: &str,
+    description: &str,
+    env_keys: &[String],
+    timeout: Option<u64>,
+    bundled: Option<bool>,
+    available_tools: &[String],
+) -> ExtensionConfig {
+    ExtensionConfig::Stdio {
+        name: name.to_string(),
+        description: description.to_string(),
+        cmd: String::new(),
+        args: Vec::new(),
+        envs: Envs::default(),
+        env_keys: env_keys.to_vec(),
+        timeout,
+        bundled,
+        available_tools: available_tools.to_vec(),
+    }
+}
+
+fn redacted_streamable_http(
+    name: &str,
+    description: &str,
+    env_keys: &[String],
+    timeout: Option<u64>,
+    bundled: Option<bool>,
+    available_tools: &[String],
+) -> ExtensionConfig {
+    ExtensionConfig::StreamableHttp {
+        name: name.to_string(),
+        description: description.to_string(),
+        uri: String::new(),
+        envs: Envs::default(),
+        env_keys: env_keys.to_vec(),
+        headers: HashMap::new(),
+        timeout,
+        bundled,
+        available_tools: available_tools.to_vec(),
+    }
+}
+
 impl Default for ExtensionConfig {
     fn default() -> Self {
         Self::Builtin {
@@ -403,6 +445,108 @@ impl Default for ExtensionConfig {
 }
 
 impl ExtensionConfig {
+    /// A display/import projection that cannot carry resolved connector auth.
+    /// Executable locators are omitted too: command arguments, endpoint URLs,
+    /// inline code, frontend schemas, and instructions can all embed credentials
+    /// even when the dedicated `envs` and `headers` fields are empty.
+    pub fn redacted_for_session_export(&self) -> Self {
+        match self {
+            Self::Sse {
+                name, description, ..
+            } => Self::Sse {
+                name: name.clone(),
+                description: description.clone(),
+                uri: None,
+            },
+            Self::Stdio {
+                name,
+                description,
+                env_keys,
+                timeout,
+                bundled,
+                available_tools,
+                ..
+            } => redacted_stdio(
+                name,
+                description,
+                env_keys,
+                *timeout,
+                *bundled,
+                available_tools,
+            ),
+            Self::Builtin {
+                name,
+                description,
+                display_name,
+                timeout,
+                bundled,
+                available_tools,
+            } => Self::Builtin {
+                name: name.clone(),
+                description: description.clone(),
+                display_name: display_name.clone(),
+                timeout: *timeout,
+                bundled: *bundled,
+                available_tools: available_tools.clone(),
+            },
+            Self::Platform {
+                name,
+                description,
+                bundled,
+                available_tools,
+            } => Self::Platform {
+                name: name.clone(),
+                description: description.clone(),
+                bundled: *bundled,
+                available_tools: available_tools.clone(),
+            },
+            Self::StreamableHttp {
+                name,
+                description,
+                env_keys,
+                timeout,
+                bundled,
+                available_tools,
+                ..
+            } => redacted_streamable_http(
+                name,
+                description,
+                env_keys,
+                *timeout,
+                *bundled,
+                available_tools,
+            ),
+            Self::Frontend {
+                name,
+                description,
+                bundled,
+                available_tools,
+                ..
+            } => Self::Frontend {
+                name: name.clone(),
+                description: description.clone(),
+                tools: Vec::new(),
+                instructions: None,
+                bundled: *bundled,
+                available_tools: available_tools.clone(),
+            },
+            Self::InlinePython {
+                name,
+                description,
+                timeout,
+                available_tools,
+                ..
+            } => Self::InlinePython {
+                name: name.clone(),
+                description: description.clone(),
+                code: String::new(),
+                timeout: *timeout,
+                dependencies: None,
+                available_tools: available_tools.clone(),
+            },
+        }
+    }
+
     pub fn is_bundled(&self) -> bool {
         match self {
             Self::Stdio { bundled, .. }

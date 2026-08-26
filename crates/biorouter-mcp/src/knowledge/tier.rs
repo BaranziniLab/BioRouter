@@ -497,6 +497,54 @@ pub fn add_owners_unlocked(root: &Path, kb_id: &str, owners: BTreeSet<String>) -
     save(root, &store)
 }
 
+/// Apply the monotone tier and owner ratchets in one atomic store replacement.
+///
+/// A classification is one security decision even though the downgrade-safe
+/// on-disk schema keeps its axes in sibling maps. Loading and saving once means
+/// lock-free readers cannot observe a tier without the owners contributed by
+/// the same write, or vice versa.
+pub fn stamp_unlocked(
+    root: &Path,
+    kb_id: &str,
+    caller_is_private: bool,
+    owners: BTreeSet<String>,
+) -> Result<()> {
+    let ratchets_live = ratchets_are_live();
+    let caller_is_private = caller_is_private && ratchets_live;
+    let mut store = load_for_write(root)?;
+    let mut changed = false;
+
+    match store.bases.get(kb_id) {
+        Some(current) if current != PUBLIC => {}
+        Some(_) if caller_is_private => {
+            store.bases.insert(kb_id.to_string(), PRIVATE.to_string());
+            store.provenance.remove(kb_id);
+            changed = true;
+        }
+        Some(_) => {}
+        None => {
+            store
+                .bases
+                .insert(kb_id.to_string(), tier_word(caller_is_private).to_string());
+            store.provenance.remove(kb_id);
+            changed = true;
+        }
+    }
+
+    if ratchets_live && !owners.is_empty() {
+        let recorded = store.affiliations.entry(kb_id.to_string()).or_default();
+        let before = recorded.len();
+        recorded.extend(owners);
+        changed |= recorded.len() != before;
+    }
+
+    if changed {
+        save(root, &store)
+    } else {
+        Ok(())
+    }
+}
+
 /// The words a knowledge-base cross-institutional mismatch is stated in.
 ///
 /// DR-26 makes the warning the product: "this may be a compliance risk" is a
@@ -689,6 +737,18 @@ pub fn has_entry_unlocked(root: &Path, kb_id: &str) -> bool {
     }
 }
 
+pub(super) fn has_metadata_unlocked(root: &Path, kb_id: &str) -> Result<bool> {
+    match load(root) {
+        StoreState::Missing => Ok(false),
+        StoreState::Parsed(store) => Ok(store.bases.contains_key(kb_id)
+            || store.provenance.contains_key(kb_id)
+            || store.affiliations.contains_key(kb_id)),
+        StoreState::Unreadable => anyhow::bail!(
+            "the knowledge-base tier store is unreadable, so deletion coherence cannot be verified"
+        ),
+    }
+}
+
 /// Carry a base's classification across a RENAME, on all three axes.
 ///
 /// ⚠ **Without this, renaming a knowledge base declassifies it.** Every map
@@ -787,9 +847,24 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().to_path_buf();
         for id in ids {
-            std::fs::create_dir_all(root.join(id).join("knowledge")).unwrap();
+            let kb_root = root.join(id);
+            std::fs::create_dir_all(kb_root.join("knowledge")).unwrap();
+            std::fs::write(kb_root.join("manifest.yaml"), current_okf_manifest(id)).unwrap();
+            std::fs::write(kb_root.join("schema.md"), "# Schema\n").unwrap();
+            std::fs::write(kb_root.join("index.md"), "# Index\n").unwrap();
+            std::fs::write(kb_root.join("log.md"), "# Log\n").unwrap();
         }
         (d, root)
+    }
+
+    fn current_okf_manifest(id: &str) -> String {
+        serde_yaml::to_string(&serde_json::json!({
+            "id": id,
+            "name": id,
+            "schema_version": crate::knowledge::types::CURRENT_SCHEMA_VERSION,
+            "format": "okf",
+        }))
+        .unwrap()
     }
 
     fn tiers_file_exists(root: &Path) -> bool {
@@ -844,8 +919,10 @@ mod tests {
             id,
             marker.map(|private| {
                 serde_json::json!({
-                    "schema": 1,
+                    "schema": 3,
                     "tier": if private { "private" } else { "public" },
+                    "owners": [],
+                    "format": "okf",
                 })
                 .to_string()
             }),
@@ -866,6 +943,12 @@ mod tests {
             zip.start_file(format!("{id}/knowledge/x.md"), opts)
                 .unwrap();
             zip.write_all(b"body").unwrap();
+            for required in ["schema.md", "index.md", "log.md"] {
+                zip.start_file(format!("{id}/{required}"), opts).unwrap();
+                zip.write_all(b"current OKF fixture").unwrap();
+            }
+            zip.start_file(format!("{id}/manifest.yaml"), opts).unwrap();
+            zip.write_all(current_okf_manifest(id).as_bytes()).unwrap();
             if let Some(m) = marker {
                 zip.start_file(format!("{id}/.brkb-provenance"), opts)
                     .unwrap();
@@ -1046,7 +1129,7 @@ mod tests {
     }
 
     #[test]
-    fn the_provenance_marker_can_only_raise_and_a_foreign_archive_is_unaffected() {
+    fn the_provenance_marker_can_only_raise_and_unverifiable_archives_are_refused() {
         // Decision (2)'s whole safety argument, as three rows. The marker is
         // attacker-supplied by construction — it rides inside the zip — and is safe
         // ONLY because it is read as a floor.
@@ -1064,19 +1147,19 @@ mod tests {
             &root,
             &import_brkb_as(&root, &archive("b", Some(false)), true)
         ));
-        // (c) NO marker (a foreign .brkb, or one written before this task) +
-        //     importer public -> public: unknown means the importer's tier, which
-        //     is today's behaviour and must not regress into "everything imported
-        //     is private", a state with no declassification path (AR-1).
-        assert!(!is_private(
-            &root,
-            &import_brkb_as(&root, &archive("c", None), false)
-        ));
-        // (d) a malformed marker is read as absent, not as private — same reason.
-        assert!(!is_private(
-            &root,
-            &import_brkb_as(&root, &archive_with_raw_marker("d", "yes"), false)
-        ));
+        // (c/d) A missing or malformed marker cannot prove either tier or owner
+        // set, so importing it as public/unowned would be a laundering path.
+        for bytes in [archive("c", None), archive_with_raw_marker("d", "yes")] {
+            let error = crate::knowledge::service::KnowledgeService::new(root.clone())
+                .import_brkb(&bytes, false, &CallerAffiliation::Unstated)
+                .unwrap_err();
+            assert!(
+                error
+                    .downcast_ref::<crate::knowledge::brkb::InvalidKnowledgeArchive>()
+                    .is_some(),
+                "{error:#}"
+            );
+        }
     }
 
     #[test]
@@ -1200,7 +1283,7 @@ mod tests {
         raise_unlocked(&root, "orig", true).unwrap(); // an entry, no directory
         assert!(!root.join("orig").exists());
 
-        let new_id = import_brkb_as(&root, &archive("orig", None), false);
+        let new_id = import_brkb_as(&root, &archive("orig", Some(false)), false);
         assert_ne!(new_id, "orig", "the import landed on a ghost entry's id");
         assert!(
             !is_private(&root, &new_id),

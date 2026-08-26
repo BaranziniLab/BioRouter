@@ -711,6 +711,11 @@ pub trait LeadWorkerProviderTrait {
 
     /// Get (lead_turns, failure_threshold, fallback_turns)
     fn get_settings(&self) -> (usize, usize, usize);
+
+    /// Stable identity of this composite configuration. Routing snapshots keep
+    /// this value while a newly selected lead/worker configuration gets a new
+    /// one, allowing session persistence to reject stale turn completions.
+    fn get_config_generation(&self) -> &str;
 }
 
 /// Base trait for AI providers (OpenAI, Anthropic, etc)
@@ -723,6 +728,16 @@ pub trait Provider: Send + Sync {
 
     /// Get the name of this provider instance
     fn get_name(&self) -> &str;
+
+    /// A secret-free recipe for reconstructing this exact resolved provider.
+    /// Built-ins with mutable routes or commands override this; registry-backed
+    /// providers retain their name and complete model configuration.
+    fn restore_binding(&self) -> crate::providers::provider_binding::ProviderRestoreBinding {
+        crate::providers::provider_binding::ProviderRestoreBinding::registry(
+            self.get_name().to_string(),
+            self.get_model_config(),
+        )
+    }
 
     /// The least-private component of what this **instance** actually resolved.
     ///
@@ -966,6 +981,20 @@ pub trait Provider: Send + Sync {
     /// Whether [`Self::stream_with_steering`] delivers instructions into the
     /// provider's current turn and acknowledges the provider transport.
     fn supports_live_steering(&self) -> bool {
+        false
+    }
+
+    /// Whether a queued mid-turn instruction can be delivered by abandoning the
+    /// current response stream and immediately reissuing the turn with that
+    /// instruction in the conversation.
+    ///
+    /// This is deliberately distinct from [`Self::supports_live_steering`]. A
+    /// live-steering provider keeps one request running and transports the steer
+    /// inside it; a restart-steering provider has no such transport and relies on
+    /// dropping the in-flight stream to cancel the request. The default is false
+    /// because not every streaming transport documents cancellation-on-drop as a
+    /// safe way to restart a turn after partial output has been emitted.
+    fn supports_restart_steering(&self) -> bool {
         false
     }
 
@@ -1397,6 +1426,11 @@ mod affiliation_view_tests {
     #[test]
     fn a_provider_that_states_neither_axis_renders_nothing() {
         assert_eq!(ProviderAffiliation::of(&SaysNothing), None);
+    }
+
+    #[test]
+    fn restart_steering_is_opt_in() {
+        assert!(!SaysNothing.supports_restart_steering());
     }
 
     /// ⚠ **The point of the whole task.** Two instances of one provider *type*

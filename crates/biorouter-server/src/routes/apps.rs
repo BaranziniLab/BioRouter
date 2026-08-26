@@ -3401,7 +3401,10 @@ async fn run_kb_read(
             Ok(json!({ "path": path, "body": body }))
         }
         "graph" => {
-            let g = svc.get_graph(kb_id).map_err(|e| e.to_string())?;
+            let g = svc
+                .get_graph_async(kb_id)
+                .await
+                .map_err(|e| e.to_string())?;
             serde_json::to_value(g).map_err(|e| e.to_string())
         }
         "history" => {
@@ -3580,6 +3583,10 @@ async fn handle_kb_frame(
                 );
                 return;
             }
+            if let Err(error) = knowledge.require_current_profile(&kb_id) {
+                emit_kb_error(ui_bridge, req_id, &error.to_string());
+                return;
+            }
             // Issue #56. `resolve_kb_grant` above reads the app manifest, which
             // the drafting model authored — an integrity control over WHICH
             // base, not a privacy control over WHICH CALLER. The ratchet has to
@@ -3599,11 +3606,10 @@ async fn handle_kb_frame(
             // FIRST and every other site raised the tier first, so a failure
             // between the two left a *public* base carrying an owner here and a
             // claimed base at public tier everywhere else.
-            if let Err(e) = knowledge.raise_tier_and_affiliation(
-                &kb_id,
-                caller.is_private(),
-                caller.affiliation(),
-            ) {
+            if let Err(e) = knowledge
+                .raise_tier_and_affiliation_async(&kb_id, caller.is_private(), caller.affiliation())
+                .await
+            {
                 emit_kb_error(ui_bridge, req_id, &e.to_string());
                 return;
             }
@@ -3622,6 +3628,18 @@ async fn handle_kb_frame(
             let kb = kb_id.clone();
             tokio::spawn(async move {
                 bridge.emit_frame(json!({ "type":"kb_progress", "reqId": req, "stage":"queued" }));
+                let lock_cancel = CancellationToken::new();
+                let _write_guard = match svc.lock_kb_cancellable(&kb, Some(&lock_cancel)).await {
+                    Ok(guard) => guard,
+                    Err(error) => {
+                        bridge.emit_frame(json!({
+                            "type":"kb_result",
+                            "reqId": req,
+                            "error": error.to_string(),
+                        }));
+                        return;
+                    }
+                };
                 bridge
                     .emit_frame(json!({ "type":"kb_progress", "reqId": req, "stage":"digesting" }));
                 match svc.add_raw_source(&kb, input, None).await {
@@ -5623,7 +5641,8 @@ async fn handle_action_required(
     };
 
     agent
-        .handle_confirmation(
+        .handle_confirmation_for_session(
+            session_id,
             id.clone(),
             PermissionConfirmation {
                 principal_type: PrincipalType::Tool,
@@ -8434,6 +8453,76 @@ mod tests {
                 }
             }
             panic!("no kb_result for {req}");
+        }
+
+        #[tokio::test]
+        async fn br_kb_ingest_refuses_a_retired_pre_okf_base() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let svc = std::sync::Arc::new(KnowledgeService::new(root.clone()));
+            svc.create_base("legacy", "Legacy", None).unwrap();
+            let kb = root.join("legacy");
+            let mut manifest = biorouter_mcp::knowledge::manifest::load(&kb).unwrap();
+            manifest.schema_version = biorouter_mcp::knowledge::types::AUTOMATIC_SCHEMA_CEILING;
+            biorouter_mcp::knowledge::manifest::save(&kb, &manifest).unwrap();
+
+            let cfg = cfg_with(vec![knowledge_src(&["legacy"], false)], Some("legacy"));
+            let bridge = biorouter_mcp::agent_drafter::control::UiBridge::new();
+            let (mut rx, _tok) = bridge.attach();
+            super::super::handle_kb_frame(
+                &bridge,
+                &svc,
+                Some(&cfg),
+                KbCaller::new(false, Default::default()),
+                "ingest",
+                &serde_json::json!({ "kb_id": "legacy", "text": "must not land" }),
+                "legacy-ingest",
+            )
+            .await;
+
+            let result = await_kb_result(&mut rx, "legacy-ingest").await;
+            assert!(
+                result["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("retired pre-OKF")),
+                "{result}"
+            );
+            assert!(biorouter_mcp::knowledge::raw::list_sources(&kb)
+                .unwrap()
+                .is_empty());
+        }
+
+        #[tokio::test]
+        async fn br_kb_ingest_joins_the_shared_kb_write_lock() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let svc = std::sync::Arc::new(KnowledgeService::new(tmp.path().to_path_buf()));
+            svc.create_base("kbx", "KBX", None).unwrap();
+            let cfg = cfg_with(vec![knowledge_src(&["kbx"], false)], Some("kbx"));
+            let bridge = biorouter_mcp::agent_drafter::control::UiBridge::new();
+            let (mut rx, _tok) = bridge.attach();
+            let existing_writer = svc.lock_kb("kbx").await.unwrap();
+
+            super::super::handle_kb_frame(
+                &bridge,
+                &svc,
+                Some(&cfg),
+                KbCaller::new(true, Default::default()),
+                "ingest",
+                &serde_json::json!({ "kb_id": "kbx", "text": "serialized source" }),
+                "locked-ingest",
+            )
+            .await;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            while let Ok(frame) = rx.try_recv() {
+                assert_ne!(
+                    frame["type"], "kb_result",
+                    "ingest completed while another writer retained the KB lock: {frame}"
+                );
+            }
+
+            drop(existing_writer);
+            let result = await_kb_result(&mut rx, "locked-ingest").await;
+            assert!(result.get("error").is_none(), "{result}");
         }
 
         /// CP3, and the reason a manifest grant is not a privacy control: the

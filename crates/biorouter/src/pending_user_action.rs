@@ -32,7 +32,7 @@
 //! park(session, owner, request)  ->  PendingUserAction   (publishes the card)
 //!        .wait(ttl, cancel)      ->  UserActionOutcome    (approve/deny/data/
 //!                                                          secrets/cancel/timeout)
-//! resolve(id, outcome)           <-  whatever route the surface posts to
+//! resolve_in_session(session, id, outcome) <- the session surface that showed it
 //! ```
 //!
 //! Publication deliberately reuses [`crate::action_required_manager`]'s
@@ -317,13 +317,54 @@ impl PendingUserActions {
         }
     }
 
-    /// Deliver a decision to the call parked under `id`.
-    pub fn resolve(&self, id: &str, outcome: UserActionOutcome) -> ResolveOutcome {
+    /// Deliver a decision from the exact session that owns the parked call.
+    ///
+    /// The scope comparison and sender take happen in one critical section. A
+    /// caller that knows an id but posts it from another session therefore sees
+    /// the same [`ResolveOutcome::Unknown`] as a stale id, and the real waiter
+    /// remains parked for its own surface.
+    pub fn resolve_in_session(
+        &self,
+        session_id: &str,
+        id: &str,
+        outcome: UserActionOutcome,
+    ) -> ResolveOutcome {
+        self.resolve_matching(id, outcome, |entry| {
+            entry.session_id.as_deref() == Some(session_id)
+        })
+    }
+
+    /// Resolve a credential card from the trusted, proof-of-user surface that
+    /// predates session-bearing credential submissions.
+    ///
+    /// This intentionally cannot resolve approvals or elicitations. Keep it
+    /// crate-private: an HTTP/model-facing caller must use
+    /// [`Self::resolve_in_session`] instead.
+    pub(crate) fn resolve_trusted_sessionless_secret(
+        &self,
+        id: &str,
+        outcome: UserActionOutcome,
+    ) -> ResolveOutcome {
+        self.resolve_matching(id, outcome, |entry| {
+            matches!(&entry.request, UserActionRequest::Secrets(_))
+        })
+    }
+
+    fn resolve_matching(
+        &self,
+        id: &str,
+        outcome: UserActionOutcome,
+        scope_matches: impl FnOnce(&Entry) -> bool,
+    ) -> ResolveOutcome {
         let mut entries = self.lock();
         let Some(entry) = entries.get_mut(id) else {
             debug!("No parked user action is waiting on {id}; dropping the decision");
             return ResolveOutcome::Unknown;
         };
+        if !scope_matches(entry) {
+            debug!("No parked user action is waiting on {id}; dropping the decision");
+            return ResolveOutcome::Unknown;
+        }
         if !entry.request.accepts(&outcome) {
             debug!(
                 "Refusing a {outcome:?} for {id}, which asked for {}",
@@ -341,6 +382,21 @@ impl PendingUserActions {
             // The waiter went away between the lookup and the send — the turn
             // ended. Nothing to do and nothing to blame.
             Err(_) => ResolveOutcome::Unknown,
+        }
+    }
+
+    /// Bind an unscoped card to the first session that drains it.
+    ///
+    /// The unscoped queue itself is single-consumer, and this claim happens
+    /// before the drained message is returned to that consumer. Once claimed,
+    /// every response must pass [`Self::resolve_in_session`].
+    pub(crate) fn claim_unscoped_for_session(&self, id: &str, session_id: &str) {
+        let mut entries = self.lock();
+        let Some(entry) = entries.get_mut(id) else {
+            return;
+        };
+        if entry.session_id.is_none() {
+            entry.session_id = Some(session_id.to_string());
         }
     }
 
@@ -574,7 +630,8 @@ mod tests {
         let parked = registry.park(Some("sess-1"), None, approval("developer__shell"));
         let id = parked.id().to_string();
         assert_eq!(
-            registry.resolve(
+            registry.resolve_in_session(
+                "sess-1",
                 &id,
                 UserActionOutcome::Approved {
                     permission: Permission::AllowOnce
@@ -590,6 +647,75 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_foreign_session_is_unknown_and_leaves_the_waiter_parked() {
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some("sess-owner"), None, approval("developer__shell"));
+        let id = parked.id().to_string();
+
+        assert_eq!(
+            registry.resolve_in_session(
+                "sess-foreign",
+                &id,
+                UserActionOutcome::Approved {
+                    permission: Permission::AllowOnce,
+                },
+            ),
+            ResolveOutcome::Unknown
+        );
+        assert!(
+            registry.is_pending(&id),
+            "the real waiter must remain parked"
+        );
+
+        assert_eq!(
+            registry.resolve_in_session(
+                "sess-owner",
+                &id,
+                UserActionOutcome::Denied {
+                    permission: Permission::DenyOnce,
+                },
+            ),
+            ResolveOutcome::Delivered
+        );
+        assert_eq!(
+            parked.wait(Duration::from_secs(5), None).await,
+            UserActionOutcome::Denied {
+                permission: Permission::DenyOnce,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn the_trusted_sessionless_resolver_refuses_non_secret_requests() {
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some("sess-owner"), None, approval("developer__shell"));
+        let id = parked.id().to_string();
+
+        assert_eq!(
+            registry.resolve_trusted_sessionless_secret(
+                &id,
+                UserActionOutcome::Approved {
+                    permission: Permission::AllowOnce,
+                },
+            ),
+            ResolveOutcome::Unknown
+        );
+        assert!(registry.is_pending(&id), "the approval must remain parked");
+
+        assert_eq!(
+            registry.resolve_in_session(
+                "sess-owner",
+                &id,
+                UserActionOutcome::Denied {
+                    permission: Permission::DenyOnce,
+                },
+            ),
+            ResolveOutcome::Delivered
+        );
+        let _ = parked.wait(Duration::from_secs(5), None).await;
+    }
+
     /// The #107 property that made the bug possible: two bridged calls are in
     /// flight at once (both CLIs issue parallel `tools/call`), and a decision
     /// for one must never release the other.
@@ -601,7 +727,8 @@ mod tests {
         let b_id = b.id().to_string();
         assert_ne!(a.id(), b.id());
 
-        registry.resolve(
+        registry.resolve_in_session(
+            "sess-1",
             &b_id,
             UserActionOutcome::Denied {
                 permission: Permission::DenyOnce,
@@ -685,7 +812,8 @@ mod tests {
         let parked = registry.park(Some("sess-1"), None, secrets());
         let id = parked.id().to_string();
         assert_eq!(
-            registry.resolve(
+            registry.resolve_in_session(
+                "sess-1",
                 &id,
                 UserActionOutcome::Provided {
                     data: serde_json::json!({ "SPOKEAGENT_PASSCODE": "hunter2" })
@@ -696,7 +824,8 @@ mod tests {
         assert!(registry.is_pending(&id), "the caller must stay parked");
 
         assert_eq!(
-            registry.resolve(
+            registry.resolve_in_session(
+                "sess-1",
                 &id,
                 UserActionOutcome::SecretsConfigured {
                     configured_keys: vec!["SPOKEAGENT_PASSCODE".to_string()]
@@ -733,7 +862,8 @@ mod tests {
         let registry = Arc::new(PendingUserActions::default());
         let parked = registry.park(Some("sess-1"), None, approval("developer__shell"));
         assert_eq!(
-            registry.resolve(
+            registry.resolve_in_session(
+                "sess-1",
                 parked.id(),
                 UserActionOutcome::Provided {
                     data: serde_json::json!({})
@@ -768,7 +898,7 @@ mod tests {
     #[tokio::test]
     async fn an_unscoped_park_is_deliverable_to_any_loop() {
         use crate::action_required_manager::ActionRequiredManager;
-        let registry = Arc::new(PendingUserActions::default());
+        let registry = Arc::clone(PendingUserActions::global());
         let parked = registry.park(None, None, approval("developer__shell"));
         let id = parked.id().to_string();
         // Any session's loop can drain it, which is what "unscoped" means.
@@ -788,13 +918,35 @@ mod tests {
             })),
             "an unscoped card must reach a loop that is not its own session's"
         );
+        assert_eq!(
+            registry.resolve_in_session(
+                "foreign-session",
+                &id,
+                UserActionOutcome::Approved {
+                    permission: Permission::AllowOnce,
+                },
+            ),
+            ResolveOutcome::Unknown
+        );
+        assert!(registry.is_pending(&id));
+        assert_eq!(
+            registry.resolve_in_session(
+                "some-other-session",
+                &id,
+                UserActionOutcome::Approved {
+                    permission: Permission::AllowOnce,
+                },
+            ),
+            ResolveOutcome::Delivered
+        );
+        let _ = parked.wait(Duration::from_secs(5), None).await;
     }
 
     #[tokio::test]
     async fn a_decision_for_an_unknown_id_is_dropped() {
         let registry = Arc::new(PendingUserActions::default());
         assert_eq!(
-            registry.resolve("no-such-request", UserActionOutcome::Cancelled),
+            registry.resolve_in_session("s", "no-such-request", UserActionOutcome::Cancelled),
             ResolveOutcome::Unknown
         );
     }
@@ -807,7 +959,8 @@ mod tests {
         let parked = registry.park(Some("s"), None, approval("t"));
         let id = parked.id().to_string();
         assert_eq!(
-            registry.resolve(
+            registry.resolve_in_session(
+                "s",
                 &id,
                 UserActionOutcome::Approved {
                     permission: Permission::AllowOnce
@@ -816,7 +969,8 @@ mod tests {
             ResolveOutcome::Delivered
         );
         assert_eq!(
-            registry.resolve(
+            registry.resolve_in_session(
+                "s",
                 &id,
                 UserActionOutcome::Approved {
                     permission: Permission::AlwaysAllow

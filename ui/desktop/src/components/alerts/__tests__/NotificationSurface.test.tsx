@@ -139,7 +139,9 @@ describe('NotificationContent (shared layout primitive)', () => {
         { status: 'info' as const, title: 'Extension removed' },
         { status: 'info' as const, title: 'primekgagent', message: 'Extension removed' },
       ]) {
-        const { container, unmount } = render(<NotificationSurface {...props} onClose={() => {}} />);
+        const { container, unmount } = render(
+          <NotificationSurface {...props} onClose={() => {}} />
+        );
         const dismiss = screen.getByRole('button', { name: /dismiss/i });
 
         // §4.2 compact close: 20px ghost, rounded-sm, right-2.5, 14px icon.
@@ -152,9 +154,9 @@ describe('NotificationContent (shared layout primitive)', () => {
         // The centring itself: container p-3 (12) + half the 28px chip = 26px, and a
         // 20px button centres there at top-4 (16 + 10 === 26). `top-4` is arithmetic,
         // not taste — if the surface padding ever changes, this must change with it.
-        expect(container.querySelector('[data-testid="notification-surface"]')!.className).toContain(
-          'p-3'
-        );
+        expect(
+          container.querySelector('[data-testid="notification-surface"]')!.className
+        ).toContain('p-3');
         expect(dismiss.className).toContain('top-4');
         // Not centred against the whole (possibly two-line) card.
         expect(dismiss.className).not.toContain('top-1/2');
@@ -165,7 +167,9 @@ describe('NotificationContent (shared layout primitive)', () => {
     });
 
     it('keeps 12px radius and a neutral surface — the tinted chip carries status, not a left bar', () => {
-      const { container } = render(<NotificationSurface status="error" title="Extension removed" />);
+      const { container } = render(
+        <NotificationSurface status="error" title="Extension removed" />
+      );
       const surface = container.querySelector('[data-testid="notification-surface"]')!;
 
       // Deliberate deviation from §4.3's --radius-lg: 12px matches every other

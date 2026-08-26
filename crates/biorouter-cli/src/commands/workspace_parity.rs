@@ -142,6 +142,8 @@ pub enum WorkspaceCapability {
     RouteReply,
     RouteInterrupt,
     RouteCancel,
+    RouteContinuationAbandon,
+    RouteContinuationRecover,
     RouteObserve,
     RouteRunning,
 }
@@ -160,6 +162,8 @@ pub const ALL_CAPABILITIES: &[WorkspaceCapability] = &[
     WorkspaceCapability::RouteReply,
     WorkspaceCapability::RouteInterrupt,
     WorkspaceCapability::RouteCancel,
+    WorkspaceCapability::RouteContinuationAbandon,
+    WorkspaceCapability::RouteContinuationRecover,
     WorkspaceCapability::RouteObserve,
     WorkspaceCapability::RouteRunning,
 ];
@@ -203,6 +207,14 @@ pub fn surface(capability: WorkspaceCapability) -> Surface {
         C::RouteCancel => Surface::Route {
             method: "POST",
             path: "/agent/cancel",
+        },
+        C::RouteContinuationAbandon => Surface::Route {
+            method: "POST",
+            path: "/agent/continuation/abandon",
+        },
+        C::RouteContinuationRecover => Surface::Route {
+            method: "POST",
+            path: "/agent/continuation/recover",
         },
         C::RouteObserve => Surface::Route {
             method: "GET",
@@ -279,6 +291,14 @@ pub fn cli_counterpart(capability: WorkspaceCapability) -> Counterpart {
         },
         C::RouteCancel => Counterpart::Cli {
             path: &["session", "cancel"],
+            args: &[],
+        },
+        C::RouteContinuationAbandon => Counterpart::Cli {
+            path: &["session", "cancel"],
+            args: &[],
+        },
+        C::RouteContinuationRecover => Counterpart::Cli {
+            path: &["session", "attach"],
             args: &[],
         },
         // Both flags, because `--of` alone is the wrong half of the claim: it

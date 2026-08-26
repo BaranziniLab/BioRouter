@@ -61,7 +61,8 @@ vi.mock('./KBSelector/KBSelectorTrigger', () => ({
 }));
 
 vi.mock('./KBSelector/KBManagerDialog', () => ({
-  KBManagerDialog: () => null,
+  KBManagerDialog: ({ open }: { open: boolean }) =>
+    open ? <div role="dialog" aria-label="Knowledge bases" /> : null,
 }));
 
 vi.mock('./IngestPanel/IngestPanel', () => ({
@@ -205,13 +206,14 @@ describe('KnowledgeView empty states', () => {
     expect(screen.getByRole('button', { name: 'Create knowledge base' })).toBeInTheDocument();
   });
 
-  it('asks a chat with bases but no primary to choose one', () => {
+  it('opens the manager when a chat has bases but no primary', async () => {
     state.primaryKb = null;
     state.bases = [{ id: 'omop' }];
     render(<KnowledgeView />);
     // The subject band names the same absence, so scope to the EmptyState's own
     // heading rather than to the words.
     expect(screen.getByRole('heading', { name: 'No primary knowledge base' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Choose a base' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Choose a base' }));
+    expect(screen.getByRole('dialog', { name: 'Knowledge bases' })).toBeInTheDocument();
   });
 });

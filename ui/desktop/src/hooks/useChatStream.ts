@@ -2,7 +2,12 @@ import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { ChatState } from '../types/chatState';
 import { Message, Session, TokenState } from '../api';
 import { NotificationEvent, UserAttachment } from '../types/message';
-import { useChatStreamController, type PendingToolCallView } from './chatStreamStore';
+import {
+  useChatStreamController,
+  type PendingContinuationView,
+  type PendingToolCallView,
+} from './chatStreamStore';
+import type { ContinuationRecoveryAction } from '../utils/continuationLease';
 import type { ChatTurnErrorData } from '../types/turnError';
 import type { PendingSteer } from '../utils/trailingActivity';
 
@@ -36,7 +41,12 @@ interface UseChatStreamReturn {
     userData: Record<string, unknown>
   ) => Promise<void>;
   setWorkflowUserParams: (values: Record<string, string>) => Promise<void>;
-  stopStreaming: () => void;
+  /** Resolves true once the server confirms the cancelled turn released its slot. */
+  stopStreaming: (continuationPending?: boolean) => Promise<boolean>;
+  /** Explicitly release a Stop-and-Send admission when its queued message is discarded. */
+  abandonContinuation: () => Promise<void>;
+  /** Resolve a recovered or foreign-owned Stop-and-Send gap explicitly. */
+  recoverPendingContinuation: (action: ContinuationRecoveryAction) => Promise<void>;
   /** BR-61: inject a message into the running turn without cancelling it. */
   steer: (text: string) => Promise<boolean>;
   sessionLoadError?: string;
@@ -48,6 +58,7 @@ interface UseChatStreamReturn {
   lastMessageAt?: number;
   /** BR-61: a soft interrupt issued but not yet echoed back by the agent. */
   pendingSteer?: PendingSteer;
+  pendingContinuation?: PendingContinuationView;
   /**
    * Whether the session's model + extensions have finished loading. The
    * transcript is up well before this — anything reading AGENT state must gate
@@ -111,12 +122,15 @@ export function useChatStream({
     submitSystemMessage: controller.submitSystemMessage,
     submitElicitationResponse: controller.submitElicitationResponse,
     stopStreaming: controller.stopStreaming,
+    abandonContinuation: controller.abandonContinuation,
+    recoverPendingContinuation: controller.recoverPendingContinuation,
     steer: controller.steer,
     setWorkflowUserParams: controller.setWorkflowUserParams,
     tokenState: snapshot.tokenState,
     turnStartedAt: snapshot.turnStartedAt,
     lastMessageAt: snapshot.lastMessageAt,
     pendingSteer: snapshot.pendingSteer,
+    pendingContinuation: snapshot.pendingContinuation,
     agentReady: snapshot.agentReady,
     notifications: notificationsMap,
     pendingToolCalls: snapshot.pendingToolCalls,

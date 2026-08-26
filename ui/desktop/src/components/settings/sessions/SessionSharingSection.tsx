@@ -131,8 +131,7 @@ export default function SessionSharingSection() {
       let errorMessage = 'Connection failed. ';
 
       if (error instanceof TypeError && error.message.includes('fetch')) {
-        errorMessage +=
-          'Could not reach the server. Check the URL and your network connection.';
+        errorMessage += 'Could not reach the server. Check the URL and your network connection.';
       } else if (error instanceof Error) {
         if (error.name === 'AbortError') {
           errorMessage += 'Connection timed out. The server may be slow or unreachable.';

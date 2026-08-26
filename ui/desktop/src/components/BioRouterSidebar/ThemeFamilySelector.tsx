@@ -22,8 +22,12 @@ interface ThemeFamilySelectorProps {
  * These literals are what make a new family's column appear.
  */
 const GRID_COLS: Record<number, string> = {
-  1: 'grid-cols-1', 2: 'grid-cols-2', 3: 'grid-cols-3',
-  4: 'grid-cols-4', 5: 'grid-cols-5', 6: 'grid-cols-6',
+  1: 'grid-cols-1',
+  2: 'grid-cols-2',
+  3: 'grid-cols-3',
+  4: 'grid-cols-4',
+  5: 'grid-cols-5',
+  6: 'grid-cols-6',
 };
 
 const FAMILIES: { id: ThemeFamily; label: string; swatch: string }[] = THEME_FAMILY_IDS.map(

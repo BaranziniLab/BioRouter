@@ -249,7 +249,7 @@ pub struct ConversationIngestArgs {
     pub focus: Option<String>,
     pub bounds: SubAgentBounds,
     pub event_sink: Option<tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
-    pub cancel: Option<std::sync::Arc<tokio::sync::Notify>>,
+    pub cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
 /// What an ingest of other sessions' conversations produced, plus how many were

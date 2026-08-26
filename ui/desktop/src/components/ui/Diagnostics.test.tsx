@@ -42,7 +42,9 @@ describe('DiagnosticsModal', () => {
     // Default: the daemon confirms whatever the caller seeded, so the existing
     // prop-driven assertions keep meaning what they did before the modal
     // started reading for itself.
-    getSessionMock.mockResolvedValue({ data: {} } as unknown as Awaited<ReturnType<typeof getSession>>);
+    getSessionMock.mockResolvedValue({ data: {} } as unknown as Awaited<
+      ReturnType<typeof getSession>
+    >);
   });
 
   it('generates and saves the archive through the native diagnostics IPC', async () => {

@@ -30,6 +30,7 @@
 //! equality above is still maintained by hand — just in one mapper instead of
 //! two loops.
 
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 use biorouter::agents::{AgentEvent, SessionConfig};
@@ -225,6 +226,11 @@ pub async fn start_turn(
     Ok(StartedTurn { turn_id, events })
 }
 
+const TURN_OUTCOME_NONE: u8 = 0;
+const TURN_OUTCOME_STOP: u8 = 1;
+const TURN_OUTCOME_CANCELLED: u8 = 2;
+const TURN_TERMINAL_PUBLISHED: u8 = 3;
+
 /// Run a turn and publish a terminal event on its behalf if it dies without one.
 ///
 /// `run_turn_body` publishes `TurnStarted` before any fallible work. Let a panic
@@ -240,11 +246,14 @@ pub async fn start_turn(
 /// Terminal events do not carry a turn id, so that interleaving is
 /// indistinguishable from the new turn failing.
 ///
-/// A turn that panics *after* publishing its own terminal still gets this one —
-/// two frames rather than none, matching `/reply` and the safer direction for a
-/// consumer that is blocked waiting.
-async fn supervise_turn<F>(session_id: String, _turn_guard: crate::state::TurnGuard, turn: F)
-where
+/// Once an exact child outcome exists, a later teardown panic must preserve it:
+/// the supervisor supplies only the missing clean finish frame in that case.
+async fn supervise_turn<F>(
+    session_id: String,
+    _turn_guard: crate::state::TurnGuard,
+    outcome: Arc<AtomicU8>,
+    turn: F,
+) where
     F: std::future::Future<Output = ()> + Send,
 {
     if std::panic::AssertUnwindSafe(turn)
@@ -253,14 +262,39 @@ where
         .is_err()
     {
         tracing::error!("turn: task terminated unexpectedly");
-        publish_turn_error(
-            &session_id,
-            "The model turn ended unexpectedly. Please retry.".to_string(),
-            "internal_error",
-            TurnErrorScope::Internal,
-            true,
-            None,
-        );
+        let recorded_outcome = outcome.load(Ordering::Acquire);
+        match recorded_outcome {
+            TURN_OUTCOME_STOP | TURN_OUTCOME_CANCELLED => {
+                session_events::publish(
+                    &session_id,
+                    SessionBusEvent::TurnFinished {
+                        reason: if recorded_outcome == TURN_OUTCOME_CANCELLED {
+                            "cancelled".into()
+                        } else {
+                            "stop".into()
+                        },
+                        token_state: None,
+                    },
+                );
+            }
+            TURN_TERMINAL_PUBLISHED => {}
+            _ => {
+                biorouter::agents::subagent_handle::record_child_turn_terminal(
+                    &session_id,
+                    biorouter::agents::SubagentResult::from_error(
+                        "Child turn terminated unexpectedly before it could publish a result",
+                    ),
+                );
+                publish_turn_error(
+                    &session_id,
+                    "The model turn ended unexpectedly. Please retry.".to_string(),
+                    "internal_error",
+                    TurnErrorScope::Internal,
+                    true,
+                    None,
+                );
+            }
+        }
     }
 }
 
@@ -307,12 +341,19 @@ pub async fn run_turn(
             guard_session_id = %turn_guard.session_id(),
             "turn: refusing to run with another session's guard"
         );
+        biorouter::agents::subagent_handle::record_child_turn_terminal(
+            &session_id,
+            biorouter::agents::SubagentResult::from_error(
+                "Child turn was refused because its runtime guard belonged to another session",
+            ),
+        );
         return;
     }
 
     let turn_id = turn_guard.turn_id().to_string();
-    let turn = run_turn_body(state, request, turn_id, cancel_token);
-    supervise_turn(session_id, turn_guard, turn).await;
+    let outcome = Arc::new(AtomicU8::new(TURN_OUTCOME_NONE));
+    let turn = run_turn_body(state, request, turn_id, cancel_token, Arc::clone(&outcome));
+    supervise_turn(session_id, turn_guard, outcome, turn).await;
 }
 
 /// Belt-and-braces sweep of a session's broadcast ring, which
@@ -401,6 +442,91 @@ struct TurnSetup {
     /// objects for one logical row that differ only in `metadata.provenance` is
     /// exactly the bug BR-71 §4.5 exists to prevent.
     user_message: Message,
+    /// Index of the first message attributable to this generation. Provenance
+    /// from an older child turn must not mark a later autonomous turn as human-
+    /// intervened.
+    turn_message_start: usize,
+}
+
+/// Drop a child whose delegated runtime profile could not be restored.
+///
+/// `restore_subagent_runtime_profile` installs the profile's grants one at a
+/// time, so a failure part-way leaves a half-built agent cached under the
+/// session id — reachable, and already holding whichever extensions landed
+/// before the error. The next turn would take that agent as-is and never run
+/// the check again. `POST /agent/resume` evicts on both of its refusal paths
+/// for the same reason.
+async fn evict_partially_restored_child(state: &Arc<AppState>, session_id: &str) {
+    let _ = state.agent_manager.remove_session(session_id).await;
+}
+
+/// Put a delegated child back in the exact shape the daemon authored for it,
+/// and refuse the turn if that is not possible.
+///
+/// A current child carries a profile for its prompt, structured response,
+/// subworkflows, and exact grant set. A live agent recognizes the profile as
+/// already installed and is left untouched; a cold one reconstructs it without
+/// parsing the human-readable transcript.
+///
+/// A child with no profile has no daemon-authored grant set, and its legacy
+/// `EnabledExtensionsState` snapshot is not a stand-in for one: that snapshot
+/// can name `workspace` with an empty `available_tools`, which means EVERY
+/// tool, and `load_extensions_from_session` would install it as an Explicit
+/// entry OVER the four-tool injection delegation actually granted. The child
+/// could then `workspace_open { new: { prompt } }` itself a fresh User session
+/// carrying the machine's whole default extension set — an escape from the
+/// delegated grant, out of a row the parent never authored. `POST /agent/resume`
+/// already refuses the same row for the same reason.
+///
+/// An ordinary chat has no profile either, so the gate is scoped to `SubAgent`
+/// rows. `false` means this turn's single terminal `TurnError` has been
+/// published and the caller must return.
+async fn restore_delegated_runtime_profile(
+    state: &Arc<AppState>,
+    session_id: &str,
+    agent: &Arc<biorouter::agents::Agent>,
+    session: &biorouter::session::Session,
+) -> bool {
+    let restored = match agent.restore_subagent_runtime_profile(session).await {
+        Ok(restored) => restored,
+        Err(e) => {
+            tracing::error!(
+                session_id,
+                "turn: failed to restore subagent runtime profile: {e}"
+            );
+            evict_partially_restored_child(state, session_id).await;
+            publish_turn_error(
+                session_id,
+                format!("Failed to restore subagent runtime profile: {e}"),
+                "subagent_runtime_restore_failed",
+                TurnErrorScope::Session,
+                false,
+                None,
+            );
+            return false;
+        }
+    };
+
+    if restored || session.session_type != biorouter::session::SessionType::SubAgent {
+        return true;
+    }
+
+    tracing::error!(
+        session_id,
+        "turn: subagent has no delegated runtime profile"
+    );
+    evict_partially_restored_child(state, session_id).await;
+    publish_turn_error(
+        session_id,
+        "Biorouter could not restore the delegated runtime profile for this subagent, so it \
+         cannot take a turn. Ask the parent conversation to delegate the work again."
+            .to_string(),
+        "subagent_runtime_profile_missing",
+        TurnErrorScope::Session,
+        false,
+        None,
+    );
+    false
 }
 
 /// The setup phase: resolve the session's agent, read the session, build its
@@ -444,7 +570,7 @@ async fn prepare_turn(
     // buys is only that we do not start BEFORE the load settles. A second
     // caller blocks on the holder's mutex rather than skipping, so concurrent
     // waiters both wait.
-    state.take_extension_loading_task(session_id).await;
+    let _ = state.take_extension_loading_task(session_id).await;
     state.remove_extension_loading_task(session_id).await;
 
     let agent = match state.get_agent(session_id.to_string()).await {
@@ -478,6 +604,26 @@ async fn prepare_turn(
         }
     };
 
+    if let Err(e) = agent.restore_persisted_provider_if_missing(&session).await {
+        tracing::error!(
+            session_id,
+            "turn: failed to restore persisted provider: {e}"
+        );
+        publish_turn_error(
+            session_id,
+            format!("Failed to restore session provider: {e}"),
+            "provider_restore_failed",
+            TurnErrorScope::Provider,
+            false,
+            None,
+        );
+        return None;
+    }
+
+    if !restore_delegated_runtime_profile(state, session_id, &agent, &session).await {
+        return None;
+    }
+
     // BR-71 §4.5: a human typing into a subagent's tab (its composer posts to
     // /reply like any other tab) is an intervention the parent must hear about.
     // It has to happen HERE, above the accumulator seed below, so the row the
@@ -508,6 +654,7 @@ async fn prepare_turn(
     // `track_tool_telemetry`'s lookup base differs by a message.
     let mut all_messages =
         conversation_so_far.unwrap_or_else(|| session.conversation.clone().unwrap_or_default());
+    let turn_message_start = all_messages.len();
     all_messages.push(user_message.clone());
 
     Some(TurnSetup {
@@ -515,6 +662,7 @@ async fn prepare_turn(
         session_config,
         all_messages,
         user_message,
+        turn_message_start,
     })
 }
 
@@ -540,15 +688,26 @@ fn spawn_session_rename(agent: &Arc<biorouter::agents::Agent>, session_id: &str)
 /// two points the pre-split code read it (before and after the metrics await).
 /// Collapsing them into one read would change what a turn cancelled inside
 /// `emit_completion_metrics` reports.
-async fn finish_turn(
-    state: &Arc<AppState>,
-    session_id: &str,
+struct TurnFinish<'a> {
+    session_id: &'a str,
     session_type: &'static str,
     terminal_error: bool,
-    cancel_token: &CancellationToken,
+    cancel_token: &'a CancellationToken,
     turn_started: std::time::Instant,
     fallback_message_count: usize,
-) {
+    outcome: &'a AtomicU8,
+}
+
+async fn finish_turn(state: &Arc<AppState>, finish: TurnFinish<'_>) {
+    let TurnFinish {
+        session_id,
+        session_type,
+        terminal_error,
+        cancel_token,
+        turn_started,
+        fallback_message_count,
+        outcome,
+    } = finish;
     let exit_type = if terminal_error {
         "error"
     } else if cancel_token.is_cancelled() {
@@ -584,7 +743,28 @@ async fn finish_turn(
                 token_state: Some(final_token_state),
             },
         );
+        outcome.store(TURN_TERMINAL_PUBLISHED, Ordering::Release);
     }
+}
+
+fn register_detached_turn_work(
+    enabled: bool,
+    session_id: &str,
+    cancel_token: &CancellationToken,
+) -> Option<biorouter_mcp::active_work::ActiveWorkGuard> {
+    use biorouter_mcp::active_work::{ActiveWorkGuard, ActiveWorkKind};
+    enabled.then(|| {
+        let token = cancel_token.clone();
+        let cancel: std::sync::Arc<dyn Fn() + Send + Sync> =
+            std::sync::Arc::new(move || token.cancel());
+        ActiveWorkGuard::register(
+            ActiveWorkKind::DetachedTurn,
+            "detached workspace turn",
+            Some(format!("session {session_id}")),
+            Some(session_id.to_string()),
+            Some(cancel),
+        )
+    })
 }
 
 async fn run_turn_body(
@@ -592,10 +772,11 @@ async fn run_turn_body(
     request: TurnRequest,
     turn_id: String,
     cancel_token: CancellationToken,
+    outcome: Arc<AtomicU8>,
 ) {
     let TurnRequest {
         session_id,
-        user_message,
+        mut user_message,
         extras,
     } = request;
     let turn_started = std::time::Instant::now();
@@ -605,20 +786,18 @@ async fn run_turn_body(
 
     let _bus_release = BusRelease(session_id.clone());
 
-    let _active_work = extras.register_active_work.then(|| {
-        use biorouter_mcp::active_work::{ActiveWorkGuard, ActiveWorkKind};
-        let token = cancel_token.clone();
-        let cancel: std::sync::Arc<dyn Fn() + Send + Sync> =
-            std::sync::Arc::new(move || token.cancel());
-        ActiveWorkGuard::register(
-            ActiveWorkKind::DetachedTurn,
-            "detached workspace turn",
-            Some(format!("session {session_id}")),
-            Some(session_id.clone()),
-            Some(cancel),
-        )
-    });
+    let _active_work =
+        register_detached_turn_work(extras.register_active_work, &session_id, &cancel_token);
 
+    let admitted_child_turn = biorouter::agents::subagent_handle::admit_child_turn(&session_id);
+    if admitted_child_turn {
+        user_message =
+            stamp_user_direct_if_subagent(user_message, biorouter::session::SessionType::SubAgent);
+    }
+    let setup_failure_messages =
+        Conversation::new_unvalidated(std::iter::once(user_message.clone()));
+
+    biorouter::agents::subagent_handle::open_parent_continuation_admission(&session_id);
     session_events::publish(&session_id, SessionBusEvent::TurnStarted { turn_id });
 
     // One terminal event per turn, always. Every exit path below publishes
@@ -638,6 +817,7 @@ async fn run_turn_body(
         session_config,
         mut all_messages,
         user_message,
+        turn_message_start,
     }) = prepare_turn(
         &state,
         &session_id,
@@ -647,6 +827,12 @@ async fn run_turn_body(
     )
     .await
     else {
+        record_setup_failure(
+            &session_id,
+            &cancel_token,
+            &setup_failure_messages,
+            &outcome,
+        );
         return;
     };
 
@@ -665,25 +851,109 @@ async fn run_turn_body(
                 false,
                 None,
             );
+            record_child_turn_outcome(
+                &session_id,
+                true,
+                cancel_token.is_cancelled(),
+                &all_messages,
+                turn_message_start,
+                &outcome,
+            );
             return;
         }
     };
 
-    let terminal_error =
-        drive_stream(&session_id, &mut stream, &cancel_token, &mut all_messages).await;
+    let terminal_error = drive_stream(
+        &session_id,
+        &mut stream,
+        &cancel_token,
+        &mut all_messages,
+        Some(agent.as_ref()),
+    )
+    .await;
+
+    record_child_turn_outcome(
+        &session_id,
+        terminal_error,
+        cancel_token.is_cancelled(),
+        &all_messages,
+        turn_message_start,
+        &outcome,
+    );
 
     spawn_session_rename(&agent, &session_id);
 
     finish_turn(
         &state,
-        &session_id,
-        extras.kind.session_type(),
-        terminal_error,
-        &cancel_token,
-        turn_started,
-        all_messages.len(),
+        TurnFinish {
+            session_id: &session_id,
+            session_type: extras.kind.session_type(),
+            terminal_error,
+            cancel_token: &cancel_token,
+            turn_started,
+            fallback_message_count: all_messages.len(),
+            outcome: &outcome,
+        },
     )
     .await;
+}
+
+fn record_setup_failure(
+    session_id: &str,
+    cancel_token: &CancellationToken,
+    setup_messages: &Conversation,
+    outcome: &AtomicU8,
+) {
+    record_child_turn_outcome(
+        session_id,
+        true,
+        cancel_token.is_cancelled(),
+        setup_messages,
+        0,
+        outcome,
+    );
+}
+
+fn record_child_turn_outcome(
+    session_id: &str,
+    terminal_error: bool,
+    cancelled: bool,
+    all_messages: &Conversation,
+    turn_message_start: usize,
+    outcome: &AtomicU8,
+) {
+    let turn_messages = Conversation::new_unvalidated(
+        all_messages
+            .messages()
+            .iter()
+            .skip(turn_message_start)
+            .cloned(),
+    );
+    let mut child_result = if terminal_error {
+        biorouter::agents::SubagentResult::from_aborted_turn(
+            &turn_messages,
+            "child_turn_error",
+            "Child turn ended with an error; inspect its conversation for the classified cause",
+        )
+    } else {
+        biorouter::agents::SubagentResult::from_conversation(&turn_messages, None, true)
+    };
+    if cancelled {
+        child_result.mark_cancelled();
+    }
+    child_result.human_intervened =
+        biorouter::agents::subagent_result::conversation_has_user_direct(&turn_messages);
+    biorouter::agents::subagent_handle::record_child_turn_terminal(session_id, child_result);
+    outcome.store(
+        if terminal_error {
+            TURN_TERMINAL_PUBLISHED
+        } else if cancelled {
+            TURN_OUTCOME_CANCELLED
+        } else {
+            TURN_OUTCOME_STOP
+        },
+        Ordering::Release,
+    );
 }
 
 /// Publish one `TurnError` frame for `session_id`.
@@ -727,11 +997,99 @@ fn publish_turn_error(
 ///
 /// Events are published in stream order, never reordered, filtered or
 /// coalesced; see [`run_turn`]'s stated non-goal 2 for why that is load-bearing.
+async fn settle_accepted_interrupts(
+    session_id: &str,
+    all_messages: &mut Conversation,
+    agent: &biorouter::agents::Agent,
+) -> anyhow::Result<()> {
+    biorouter::agents::subagent_handle::begin_parent_closing(session_id);
+    for message in agent
+        .settle_carried_over_soft_interrupts(session_id)
+        .await?
+    {
+        all_messages.push(message.clone());
+        session_events::publish(
+            session_id,
+            SessionBusEvent::Agent(AgentEvent::Message(message)),
+        );
+    }
+    Ok(())
+}
+
+async fn drain_delegated_work_after_forced_exit(
+    session_id: &str,
+    all_messages: &mut Conversation,
+    agent: &biorouter::agents::Agent,
+    cancel_token: &CancellationToken,
+) -> anyhow::Result<()> {
+    while let Some(message) = agent
+        .next_native_supervision_message_after_forced_exit(session_id, Some(cancel_token.clone()))
+        .await?
+    {
+        all_messages.push(message.clone());
+        session_events::publish(
+            session_id,
+            SessionBusEvent::Agent(AgentEvent::Message(message)),
+        );
+    }
+    Ok(())
+}
+
+async fn publish_stream_failure(
+    session_id: &str,
+    error: anyhow::Error,
+    all_messages: &mut Conversation,
+    agent: Option<&biorouter::agents::Agent>,
+    cancel_token: &CancellationToken,
+) {
+    if let Some(agent) = agent {
+        if let Err(settlement_error) =
+            settle_accepted_interrupts(session_id, all_messages, agent).await
+        {
+            tracing::error!("turn: failed to settle accepted interrupts: {settlement_error}");
+            publish_turn_error(
+                session_id,
+                settlement_error.to_string(),
+                "interrupt_settlement_failed",
+                TurnErrorScope::Session,
+                false,
+                None,
+            );
+            return;
+        }
+        if let Err(supervision_error) =
+            drain_delegated_work_after_forced_exit(session_id, all_messages, agent, cancel_token)
+                .await
+        {
+            tracing::error!("turn: failed to supervise delegated work: {supervision_error}");
+            publish_turn_error(
+                session_id,
+                supervision_error.to_string(),
+                "delegated_supervision_failed",
+                TurnErrorScope::Session,
+                false,
+                None,
+            );
+            return;
+        }
+    }
+    tracing::error!("turn: stream error: {error}");
+    publish_turn_error(
+        session_id,
+        error.to_string(),
+        "inference_error",
+        TurnErrorScope::Inference,
+        false,
+        None,
+    );
+}
+
 async fn drive_stream<S>(
     session_id: &str,
     stream: &mut S,
     cancel_token: &CancellationToken,
     all_messages: &mut Conversation,
+    agent: Option<&biorouter::agents::Agent>,
 ) -> bool
 where
     S: futures::Stream<Item = anyhow::Result<AgentEvent>> + Unpin,
@@ -754,6 +1112,22 @@ where
         let item = tokio::select! {
             _ = cancel_token.cancelled() => {
                 tracing::info!("turn: cancelled");
+                if let Some(agent) = agent {
+                    if let Err(error) =
+                        settle_accepted_interrupts(session_id, all_messages, agent).await
+                    {
+                        tracing::error!("turn: failed to settle accepted interrupts: {error}");
+                        publish_turn_error(
+                            session_id,
+                            error.to_string(),
+                            "interrupt_settlement_failed",
+                            TurnErrorScope::Session,
+                            false,
+                            None,
+                        );
+                        return true;
+                    }
+                }
                 break;
             }
             item = stream.next() => item,
@@ -815,15 +1189,7 @@ where
                 // here would give one code two unrelated meanings, separable
                 // only by `scope`, and would silently re-bucket every log and
                 // dashboard keyed on `code` the moment Task 8 lands.
-                tracing::error!("turn: stream error: {e}");
-                publish_turn_error(
-                    session_id,
-                    e.to_string(),
-                    "inference_error",
-                    TurnErrorScope::Inference,
-                    false,
-                    None,
-                );
+                publish_stream_failure(session_id, e, all_messages, agent, cancel_token).await;
                 return true;
             }
         }
@@ -946,7 +1312,9 @@ mod tests {
     }
     use biorouter::conversation::message::Message;
     use biorouter::session::session_manager::SessionType;
+    use biorouter::session::{EnabledExtensionsState, ExtensionState};
     use biorouter::session_events::{self, SessionBusEvent};
+    use serial_test::serial;
     use tokio_util::sync::CancellationToken;
 
     /// NOTE — two things about every test in this module:
@@ -978,6 +1346,482 @@ mod tests {
             .await
             .unwrap();
         (temp, s.id)
+    }
+
+    #[tokio::test]
+    async fn a_cold_subagent_turn_reports_a_typed_persisted_provider_restore_failure() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let workdir = tempfile::TempDir::new().unwrap();
+        let child = state
+            .session_manager()
+            .create_session(
+                workdir.path().to_path_buf(),
+                "br71 cold child provider restore".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let missing_provider = "br71-turn-provider-not-in-the-factory";
+        state
+            .session_manager()
+            .update(&child.id)
+            .provider_name(missing_provider)
+            .model_config(biorouter::model::ModelConfig::new("br71-turn-model").unwrap())
+            .apply()
+            .await
+            .unwrap();
+        let mut events = session_events::subscribe(&child.id);
+
+        let setup = prepare_turn(
+            &state,
+            &child.id,
+            Message::user().with_text("continue"),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(
+            setup.is_none(),
+            "a failed restore must stop before inference"
+        );
+        // Scan for this turn's terminal rather than taking whatever frame is at
+        // the head of the ring. `session_events` is a process-global bus keyed
+        // by session id, while `SessionManager` allocates ids as
+        // `YYYYMMDD_<max+1>` *per database* — so a sibling test on a temporary
+        // store restarts the ordinals and can publish onto this id. Taking the
+        // first frame made this test fail on a neighbour's event; the daily
+        // counter also resets at midnight, so it recurred by date.
+        let (message, scope, retryable) = loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+                .await
+                .expect("restore failure must publish a terminal")
+                .unwrap();
+            if let SessionBusEvent::TurnError {
+                message,
+                code,
+                scope,
+                retryable,
+                ..
+            } = event
+            {
+                if code != "provider_restore_failed" {
+                    continue;
+                }
+                break (message, scope, retryable);
+            }
+        };
+        assert_eq!(scope, TurnErrorScope::Provider.wire_value());
+        assert!(!retryable);
+        assert!(
+            message.contains(missing_provider),
+            "unexpected error: {message}"
+        );
+        assert!(!message.contains("Provider not set"));
+    }
+
+    #[tokio::test]
+    async fn a_direct_child_followup_claims_its_generation_before_setup_can_fail() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let workdir = tempfile::TempDir::new().unwrap();
+        let child = state
+            .session_manager()
+            .create_session(
+                workdir.path().to_path_buf(),
+                "br71 admitted child setup failure".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        state
+            .session_manager()
+            .update(&child.id)
+            .provider_name("br71-followup-provider-not-in-the-factory")
+            .model_config(biorouter::model::ModelConfig::new("br71-turn-model").unwrap())
+            .apply()
+            .await
+            .unwrap();
+
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            "br71-admitted-child-parent",
+            &child.id,
+            "delegated work",
+            CancellationToken::new(),
+        );
+        biorouter::agents::subagent_handle::begin_child_turn(&child.id);
+        handle.complete(biorouter::agents::SubagentResult::from_error(
+            "initial generation",
+        ));
+        let initial_generation = handle.child_turn_generation();
+        assert!(handle.mark_terminal_generation_collected_if_generation(initial_generation));
+
+        let cancel = CancellationToken::new();
+        let guard = state
+            .try_begin_turn_idempotent(&child.id, cancel.clone(), None)
+            .expect("the child is idle");
+        run_turn(
+            state,
+            TurnRequest::new(
+                child.id.clone(),
+                Message::user().with_text("direct follow-up"),
+            ),
+            guard,
+            cancel,
+        )
+        .await;
+
+        assert_eq!(handle.child_turn_generation(), initial_generation + 1);
+        let terminal = handle
+            .terminal_generation()
+            .expect("setup failure must settle the admitted generation");
+        assert_eq!(terminal.generation, initial_generation + 1);
+        assert!(terminal.result.human_intervened);
+        assert!(!handle.latest_generation_collected());
+    }
+
+    #[test]
+    fn a_cancelled_direct_followup_is_incomplete_and_keeps_human_intervention() {
+        use biorouter::agents::subagent_result::SubagentStatus;
+
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            "br71-cancelled-followup-parent",
+            "br71-cancelled-followup-child",
+            "delegated work",
+            CancellationToken::new(),
+        );
+        biorouter::agents::subagent_handle::begin_child_turn(&handle.child_session_id);
+        handle.complete(biorouter::agents::SubagentResult::from_error(
+            "initial generation",
+        ));
+        assert!(biorouter::agents::subagent_handle::admit_child_turn(
+            &handle.child_session_id
+        ));
+        let followup_generation = handle.child_turn_generation();
+        let messages = Conversation::new_unvalidated([
+            stamp_user_direct_if_subagent(
+                Message::user().with_text("stop here"),
+                SessionType::SubAgent,
+            ),
+            Message::assistant().with_text("partial useful work"),
+        ]);
+
+        let outcome = AtomicU8::new(TURN_OUTCOME_NONE);
+        record_child_turn_outcome(
+            &handle.child_session_id,
+            false,
+            true,
+            &messages,
+            0,
+            &outcome,
+        );
+
+        let terminal = handle
+            .terminal_generation()
+            .expect("cancellation must settle the direct follow-up");
+        assert_eq!(terminal.generation, followup_generation);
+        assert_eq!(terminal.result.status, SubagentStatus::Incomplete);
+        assert!(terminal.result.error.is_none());
+        assert!(terminal.result.summary.contains("partial useful work"));
+        assert!(terminal.result.human_intervened);
+    }
+
+    #[test]
+    fn human_intervention_is_scoped_to_the_exact_direct_followup_generation() {
+        use biorouter::conversation::message::{MessageProvenance, ProvenanceKind};
+
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            "br71-generation-provenance-parent",
+            "br71-generation-provenance-child",
+            "delegated work",
+            CancellationToken::new(),
+        );
+        biorouter::agents::subagent_handle::begin_child_turn(&handle.child_session_id);
+        handle.complete(biorouter::agents::SubagentResult::from_error(
+            "initial generation",
+        ));
+        assert!(biorouter::agents::subagent_handle::admit_child_turn(
+            &handle.child_session_id
+        ));
+        let messages = Conversation::new_unvalidated([
+            stamp_user_direct_if_subagent(
+                Message::user().with_text("old human turn"),
+                SessionType::SubAgent,
+            ),
+            Message::assistant().with_text("old answer"),
+            Message::user()
+                .with_text("current parent injection")
+                .with_provenance(MessageProvenance {
+                    kind: ProvenanceKind::AgentInjection,
+                    from_session_id: Some("br71-generation-provenance-parent".into()),
+                    from_session_name: Some("Parent".into()),
+                }),
+            Message::assistant().with_text("current answer"),
+        ]);
+
+        let outcome = AtomicU8::new(TURN_OUTCOME_NONE);
+        record_child_turn_outcome(
+            &handle.child_session_id,
+            false,
+            false,
+            &messages,
+            2,
+            &outcome,
+        );
+
+        let result = handle.terminal_generation().unwrap().result;
+        assert_eq!(result.summary, "current answer");
+        assert!(!result.human_intervened);
+    }
+
+    /// The shape a pre-runtime-profile child row carries, and the reason the
+    /// snapshot can never stand in for a profile: an empty `available_tools`
+    /// means EVERY tool of that extension (`extension_manager.rs`), so this one
+    /// value is a full grant of workspace control — `workspace_open { new: {
+    /// prompt } }` included, which mints a User session holding the machine's
+    /// default extension set.
+    ///
+    /// The fixture is deliberately `workspace` and not some innocuous
+    /// extension: with `todo` here, a "no `workspace__` tools" assertion passes
+    /// against code that restores the snapshot verbatim, and that is exactly
+    /// how the vulnerable behaviour was asserted as correct.
+    fn broad_workspace_snapshot() -> biorouter::agents::ExtensionConfig {
+        biorouter::agents::ExtensionConfig::Platform {
+            name: "workspace".into(),
+            description: "Legacy broad workspace snapshot".into(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        }
+    }
+
+    async fn seed_child_with_extension_data(
+        state: &std::sync::Arc<crate::state::AppState>,
+        name: &str,
+        session_type: SessionType,
+        seed: impl FnOnce(&mut biorouter::session::ExtensionData),
+    ) -> (tempfile::TempDir, String) {
+        let workdir = tempfile::TempDir::new().unwrap();
+        let mut session = state
+            .session_manager()
+            .create_session(workdir.path().to_path_buf(), name.into(), session_type)
+            .await
+            .unwrap();
+        seed(&mut session.extension_data);
+        state
+            .session_manager()
+            .update(&session.id)
+            .provider_name("ollama")
+            .model_config(biorouter::model::ModelConfig::new("br71-local-model").unwrap())
+            .extension_data(session.extension_data)
+            .apply()
+            .await
+            .unwrap();
+        (workdir, session.id)
+    }
+
+    /// Read the terminal `TurnError` a refused setup publishes, and assert its
+    /// scope and retryability.
+    ///
+    /// ⚠ It SCANS for `code` rather than taking the first frame, because the
+    /// bus is process-global and keyed by session id while `create_session`
+    /// hands out `YYYYMMDD_N` **per database** — so a neighbouring test built on
+    /// its own `SessionManager::new(temp)` publishes onto the same ring as a
+    /// real-store session with the same ordinal. Demanding the first frame made
+    /// this test fail on that traffic roughly one run in three.
+    async fn refusal(events: &mut session_events::Subscription, code: &str) -> String {
+        let deadline = std::time::Duration::from_secs(5);
+        loop {
+            let event = tokio::time::timeout(deadline, events.recv())
+                .await
+                .unwrap_or_else(|_| panic!("a refused setup must publish a {code} terminal"))
+                .unwrap();
+            if let SessionBusEvent::TurnError {
+                message,
+                code: published,
+                scope,
+                retryable,
+                ..
+            } = event
+            {
+                if published != code {
+                    continue;
+                }
+                assert_eq!(scope, TurnErrorScope::Session.wire_value());
+                assert!(!retryable, "a missing grant set is not retryable");
+                return message;
+            }
+        }
+    }
+
+    /// Every `TurnError` code already sitting in the ring. `prepare_turn` has
+    /// been awaited by the time this runs, so anything it published is here.
+    fn published_error_codes(events: &mut session_events::Subscription) -> Vec<String> {
+        let mut codes = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let SessionBusEvent::TurnError { code, .. } = event {
+                codes.push(code);
+            }
+        }
+        codes
+    }
+
+    async fn tool_names(
+        agent: &std::sync::Arc<biorouter::agents::Agent>,
+        session_id: &str,
+    ) -> Vec<String> {
+        agent
+            .list_tools(session_id, None)
+            .await
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
+    }
+
+    /// A legacy child — one whose row predates the daemon-authored runtime
+    /// profile — must be REFUSED, not hydrated from its saved extension list.
+    ///
+    /// The saved list is the escalation vector, not a fallback: nothing that
+    /// wrote it was a delegation decision, `load_extensions_from_session`
+    /// applies none of the clamps `restore_subagent_runtime_profile` applies,
+    /// and it deliberately replaces an auto-injected entry with an Explicit one
+    /// — so the four-tool `workspace` injection a subagent is granted becomes
+    /// the whole extension. `POST /agent/resume` already refuses this row.
+    #[tokio::test]
+    #[serial]
+    async fn a_cold_subagent_turn_without_a_runtime_profile_is_refused_not_hydrated() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let (_workdir, child_id) = seed_child_with_extension_data(
+            &state,
+            "br71 cold child no profile",
+            SessionType::SubAgent,
+            |extension_data| {
+                EnabledExtensionsState::new(vec![broad_workspace_snapshot()])
+                    .to_extension_data(extension_data)
+                    .unwrap();
+            },
+        )
+        .await;
+        // Held across the call so the tools can be read after the refusal has
+        // evicted the agent from the manager.
+        let agent = state.get_agent(child_id.clone()).await.unwrap();
+        let mut events = session_events::subscribe(&child_id);
+
+        let setup = prepare_turn(
+            &state,
+            &child_id,
+            Message::user().with_text("continue"),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(
+            setup.is_none(),
+            "a child with no delegated grant set must not reach inference"
+        );
+        let message = refusal(&mut events, "subagent_runtime_profile_missing").await;
+        assert!(
+            message.contains("delegate the work again"),
+            "the refusal must say what to do: {message}"
+        );
+
+        let tools = tool_names(&agent, &child_id).await;
+        assert!(
+            tools.iter().all(|name| !name.starts_with("workspace__")),
+            "the legacy snapshot granted workspace control to a subagent: {tools:?}"
+        );
+        assert!(
+            !state.agent_manager.has_session(&child_id).await,
+            "a refused child must not stay cached for the next turn to reuse"
+        );
+    }
+
+    /// The other half of the same gate: a profile that exists but cannot be
+    /// read is a refusal too, and it must not fall back to the snapshot either.
+    #[tokio::test]
+    #[serial]
+    async fn a_cold_subagent_turn_with_an_unreadable_runtime_profile_is_refused() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let (_workdir, child_id) = seed_child_with_extension_data(
+            &state,
+            "br71 cold child corrupt profile",
+            SessionType::SubAgent,
+            |extension_data| {
+                EnabledExtensionsState::new(vec![broad_workspace_snapshot()])
+                    .to_extension_data(extension_data)
+                    .unwrap();
+                extension_data.set_extension_state(
+                    "subagent_runtime_profile",
+                    "v999",
+                    serde_json::json!({"system_prompt": "do not install"}),
+                );
+            },
+        )
+        .await;
+        let agent = state.get_agent(child_id.clone()).await.unwrap();
+        let mut events = session_events::subscribe(&child_id);
+
+        let setup = prepare_turn(
+            &state,
+            &child_id,
+            Message::user().with_text("continue"),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(setup.is_none(), "an unreadable profile must stop the turn");
+        refusal(&mut events, "subagent_runtime_restore_failed").await;
+        let tools = tool_names(&agent, &child_id).await;
+        assert!(
+            tools.iter().all(|name| !name.starts_with("workspace__")),
+            "a failed restore fell back to the legacy snapshot: {tools:?}"
+        );
+        assert!(
+            !state.agent_manager.has_session(&child_id).await,
+            "a partially restored child must not stay cached"
+        );
+    }
+
+    /// The over-correction guard. The gate is scoped to `SubAgent` rows: an
+    /// ordinary chat has no runtime profile either, and refusing it would take
+    /// the whole application down rather than close a delegation hole.
+    #[tokio::test]
+    #[serial]
+    async fn a_user_session_with_a_legacy_extension_snapshot_still_takes_its_turn() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let (_workdir, session_id) = seed_child_with_extension_data(
+            &state,
+            "br71 user session legacy snapshot",
+            SessionType::User,
+            |extension_data| {
+                EnabledExtensionsState::new(vec![broad_workspace_snapshot()])
+                    .to_extension_data(extension_data)
+                    .unwrap();
+            },
+        )
+        .await;
+        let mut events = session_events::subscribe(&session_id);
+
+        let setup = prepare_turn(
+            &state,
+            &session_id,
+            Message::user().with_text("continue"),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(
+            setup.is_some(),
+            "the subagent gate must not refuse an ordinary chat"
+        );
+        let codes = published_error_codes(&mut events);
+        assert!(
+            !codes
+                .iter()
+                .any(|code| code.starts_with("subagent_runtime")),
+            "the subagent gate refused an ordinary chat: {codes:?}"
+        );
     }
 
     #[tokio::test]
@@ -1236,7 +2080,7 @@ mod tests {
         })]);
 
         let terminal_error =
-            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all).await;
+            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all, None).await;
         assert!(terminal_error, "an abort ends the turn on an error");
 
         let seen = drain(&mut rx).await;
@@ -1304,7 +2148,7 @@ mod tests {
         ]);
 
         let terminal_error =
-            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all).await;
+            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all, None).await;
         assert!(!terminal_error);
 
         let seen = drain(&mut rx).await;
@@ -1366,10 +2210,15 @@ mod tests {
             acquired: successor_acquired.clone(),
         };
 
-        let handle = tokio::spawn(supervise_turn(sid.clone(), guard, async move {
-            let _probe = probe;
-            panic!("br71: deliberate panic, this backtrace is expected");
-        }));
+        let handle = tokio::spawn(supervise_turn(
+            sid.clone(),
+            guard,
+            Arc::new(AtomicU8::new(TURN_OUTCOME_NONE)),
+            async move {
+                let _probe = probe;
+                panic!("br71: deliberate panic, this backtrace is expected");
+            },
+        ));
 
         let ev = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
             .await
@@ -1398,6 +2247,54 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn panic_after_exact_child_outcome_preserves_result_and_finishes_cleanly() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let sid = "br71-panic-after-child-outcome".to_string();
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            "br71-panic-after-child-outcome-parent",
+            sid.clone(),
+            "delegated work",
+            CancellationToken::new(),
+        );
+        biorouter::agents::subagent_handle::begin_child_turn(&sid);
+        let generation = handle.child_turn_generation();
+        let mut rx = session_events::subscribe(&sid);
+        let guard = state
+            .try_begin_turn_idempotent(&sid, CancellationToken::new(), None)
+            .expect("session is idle");
+        let outcome = Arc::new(AtomicU8::new(TURN_OUTCOME_NONE));
+        let turn_outcome = Arc::clone(&outcome);
+        let turn_sid = sid.clone();
+
+        supervise_turn(sid, guard, outcome, async move {
+            let messages = Conversation::new_unvalidated([
+                Message::user().with_text("finish the delegated work"),
+                Message::assistant().with_text("PROVEN_CHILD_RESULT"),
+            ]);
+            record_child_turn_outcome(&turn_sid, false, false, &messages, 0, &turn_outcome);
+            panic!("deliberate panic after exact child outcome");
+        })
+        .await;
+
+        let terminal = handle
+            .terminal_generation()
+            .expect("the exact child result was lost");
+        assert_eq!(terminal.generation, generation);
+        assert_eq!(terminal.result.summary, "PROVEN_CHILD_RESULT");
+        assert!(terminal.result.error.is_none());
+        let seen = drain(&mut rx).await;
+        assert_eq!(
+            seen.len(),
+            1,
+            "the supervisor published a false error: {seen:?}"
+        );
+        assert!(matches!(
+            &seen[0],
+            SessionBusEvent::TurnFinished { reason, .. } if reason == "stop"
+        ));
+    }
+
     /// A turn that ends normally must NOT also get the supervisor's terminal —
     /// otherwise every turn would publish two.
     #[tokio::test]
@@ -1410,15 +2307,20 @@ mod tests {
             .expect("session is idle");
         let publish_session_id = sid.clone();
 
-        supervise_turn(sid, guard, async move {
-            session_events::publish(
-                &publish_session_id,
-                SessionBusEvent::TurnFinished {
-                    reason: "stop".into(),
-                    token_state: None,
-                },
-            );
-        })
+        supervise_turn(
+            sid,
+            guard,
+            Arc::new(AtomicU8::new(TURN_OUTCOME_NONE)),
+            async move {
+                session_events::publish(
+                    &publish_session_id,
+                    SessionBusEvent::TurnFinished {
+                        reason: "stop".into(),
+                        token_state: None,
+                    },
+                );
+            },
+        )
         .await;
 
         let seen = drain(&mut rx).await;
@@ -1581,7 +2483,7 @@ mod tests {
 
         let terminal_error = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            drive_stream(sid, &mut stream, &cancel, &mut all),
+            drive_stream(sid, &mut stream, &cancel, &mut all, None),
         )
         .await
         .expect("a cancelled turn must escape a stalled agent stream");
@@ -1595,6 +2497,177 @@ mod tests {
             seen.is_empty(),
             "the loop publishes nothing of its own on cancel: {seen:?}"
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn cancellation_settles_an_accepted_interrupt_before_dropping_the_stream() {
+        use biorouter::agents::{Agent, AgentConfig, InterruptRefused, TurnId};
+        use biorouter::config::permission::PermissionManager;
+        use biorouter::config::BioRouterMode;
+        use biorouter::conversation::message::{MessageProvenance, ProvenanceKind};
+        use biorouter::session::SessionManager;
+
+        let data_dir = tempfile::TempDir::new().unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
+        let session = session_manager
+            .create_session(
+                work_dir.path().to_path_buf(),
+                "cancelled accepted interrupt".into(),
+                SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            Arc::clone(&session_manager),
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+        agent.open_for_turn(TurnId::new("turn-cancel-settlement"));
+        let provenance = MessageProvenance {
+            kind: ProvenanceKind::UserDirect,
+            from_session_id: Some("parent-session".into()),
+            from_session_name: Some("Parent".into()),
+        };
+        agent
+            .try_queue_soft_interrupt("please preserve this".into(), Some(provenance.clone()))
+            .expect("the running turn must accept the interrupt");
+
+        let mut rx = session_events::subscribe(&session.id);
+        let mut all = Conversation::new_unvalidated(Vec::new());
+        let mut stream = futures::stream::pending::<anyhow::Result<AgentEvent>>();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let terminal_error =
+            drive_stream(&session.id, &mut stream, &cancel, &mut all, Some(&agent)).await;
+
+        assert!(!terminal_error);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all.messages()[0].as_concat_text(), "please preserve this");
+        assert_eq!(
+            all.messages()[0].metadata.provenance,
+            Some(provenance.clone())
+        );
+        let seen = drain(&mut rx).await;
+        assert!(matches!(
+            seen.as_slice(),
+            [SessionBusEvent::Agent(AgentEvent::Message(message))]
+                if message.as_concat_text() == "please preserve this"
+                    && message.metadata.provenance == Some(provenance.clone())
+        ));
+
+        let stored = session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(stored.messages().len(), 1);
+        assert_eq!(stored.messages()[0].metadata.provenance, Some(provenance));
+        assert!(agent
+            .settle_carried_over_soft_interrupts(&session.id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(matches!(
+            agent.try_queue_soft_interrupt("too late".into(), None),
+            Err(InterruptRefused::TurnEnded)
+        ));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn a_stream_error_settles_an_accepted_interrupt_before_the_error_terminal() {
+        use biorouter::agents::{Agent, AgentConfig, InterruptRefused, TurnId};
+        use biorouter::config::permission::PermissionManager;
+        use biorouter::config::BioRouterMode;
+        use biorouter::conversation::message::{MessageProvenance, ProvenanceKind};
+        use biorouter::session::SessionManager;
+
+        let data_dir = tempfile::TempDir::new().unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
+        let session = session_manager
+            .create_session(
+                work_dir.path().to_path_buf(),
+                "errored accepted interrupt".into(),
+                SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            Arc::clone(&session_manager),
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+        let delegated = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            &session.id,
+            "stream-error-child",
+            "stream error child",
+            CancellationToken::new(),
+        );
+        biorouter::agents::subagent_handle::begin_child_turn("stream-error-child");
+        delegated.complete(biorouter::agents::SubagentResult::from_error(
+            "terminal under stream-error supervision",
+        ));
+        agent.open_for_turn(TurnId::new("turn-error-settlement"));
+        let provenance = MessageProvenance {
+            kind: ProvenanceKind::UserDirect,
+            from_session_id: Some("parent-session".into()),
+            from_session_name: Some("Parent".into()),
+        };
+        agent
+            .try_queue_soft_interrupt("preserve before error".into(), Some(provenance.clone()))
+            .expect("the running turn must accept the interrupt");
+
+        let mut rx = session_events::subscribe(&session.id);
+        let mut all = Conversation::new_unvalidated(Vec::new());
+        let mut stream = futures::stream::iter(vec![Err(anyhow::anyhow!("provider hung up"))]);
+        let terminal_error = drive_stream(
+            &session.id,
+            &mut stream,
+            &CancellationToken::new(),
+            &mut all,
+            Some(&agent),
+        )
+        .await;
+
+        assert!(terminal_error);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all.messages()[0].as_concat_text(), "preserve before error");
+        assert_eq!(all.messages()[0].metadata.provenance, Some(provenance));
+        assert!(all.messages()[1]
+            .as_concat_text()
+            .contains("terminal under stream-error supervision"));
+        let seen = drain(&mut rx).await;
+        assert!(
+            matches!(
+                seen.as_slice(),
+                [
+                    SessionBusEvent::Agent(AgentEvent::Message(interrupt)),
+                    SessionBusEvent::Agent(AgentEvent::Message(delegated_result)),
+                    SessionBusEvent::TurnError { code, .. }
+                ] if interrupt.as_concat_text() == "preserve before error"
+                    && delegated_result.as_concat_text().contains("terminal under stream-error supervision")
+                    && code == "inference_error"
+            ),
+            "unexpected bus events: {seen:#?}"
+        );
+        let stored = session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(stored.messages().len(), 2);
+        assert!(delegated.latest_generation_collected());
+        assert!(matches!(
+            agent.try_queue_soft_interrupt("too late".into(), None),
+            Err(InterruptRefused::TurnEnded)
+        ));
     }
 
     /// A mid-stream inference failure keeps `/reply`'s wire code.
@@ -1616,7 +2689,7 @@ mod tests {
         let mut stream = futures::stream::iter(vec![Err(anyhow::anyhow!("provider hung up"))]);
 
         let terminal_error =
-            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all).await;
+            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all, None).await;
         assert!(terminal_error, "a stream error ends the turn on an error");
 
         let seen = drain(&mut rx).await;

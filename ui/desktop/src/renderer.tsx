@@ -166,6 +166,11 @@ type HeadlessArtifactFileResponse =
       text?: string;
       mimeType?: string;
       dataUrl?: string;
+      dataBase64?: string;
+      format?: 'pdf' | 'docx' | 'xlsx' | 'pptx';
+      revision?: string;
+      extractedText?: string;
+      textTruncated?: boolean;
       size?: number;
       entries?: Array<{ name: string; path: string; isDirectory: boolean; size?: number }>;
       error?: string;
@@ -345,7 +350,21 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
           headlessConfig.headlessBaseUrl,
           `/fs/artifact?path=${encodeURIComponent(filePath)}`
         );
-        if (result && 'kind' in result) return result;
+        if (result && 'kind' in result) {
+          if (result.kind === 'document' && result.dataBase64 && result.format) {
+            const binary = window.atob(result.dataBase64);
+            const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+            const { dataBase64: _encoded, ...metadata } = result;
+            return { ...metadata, data: bytes.buffer };
+          }
+          if (result.kind === 'image' && result.dataBase64) {
+            const binary = window.atob(result.dataBase64);
+            const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+            const { dataBase64: _encoded, ...metadata } = result;
+            return { ...metadata, bytes: bytes.buffer };
+          }
+          return result;
+        }
         const stored = window.localStorage.getItem(`biorouter-browser-file:${filePath}`);
         if (stored !== null) {
           return {

@@ -115,12 +115,33 @@ async fn the_ingest_stream_reports_a_failed_digest_as_an_error_not_as_done() {
         !body.contains("event: error"),
         "a successful digest must not emit an error frame; stream was:\n{body}"
     );
-    let written = dir_ok.path().join("ok/knowledge/sources");
+    // Any curated page under `knowledge/<kind>/`, rather than one hardcoded
+    // directory. The pre-OKF layout was `knowledge/sources/`; current OKF writes
+    // `knowledge/source/` and BioOKF `knowledge/concept/`, so naming one of them
+    // makes this assertion fail whenever the default format moves — which is
+    // exactly what happened: the fixture migrated to the current paths and this
+    // check kept looking for the retired one, reporting a working digest as a
+    // digest that wrote nothing.
+    let knowledge_root = dir_ok.path().join("ok/knowledge");
+    let wrote_a_page = std::fs::read_dir(&knowledge_root)
+        .map(|kinds| {
+            kinds.filter_map(Result::ok).any(|kind| {
+                std::fs::read_dir(kind.path())
+                    .map(|mut pages| {
+                        pages.any(|page| {
+                            page.map(|page| page.path().extension().is_some_and(|ext| ext == "md"))
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
     assert!(
-        std::fs::read_dir(&written)
-            .map(|mut d| d.next().is_some())
-            .unwrap_or(false),
-        "phase 1 must actually leave a source page behind, else it proves nothing"
+        wrote_a_page,
+        "phase 1 must actually leave a curated page behind, else it proves nothing; \
+         {} held none",
+        knowledge_root.display()
     );
 
     // …and the done frame carries the macro's tail VERIFICATION, which is the

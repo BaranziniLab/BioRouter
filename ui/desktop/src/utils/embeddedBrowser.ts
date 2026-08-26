@@ -1,6 +1,16 @@
-import { BrowserWindow, WebContentsView, session, shell, type Session } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  WebContentsView,
+  session,
+  shell,
+  type Session,
+} from 'electron';
 import log from 'electron-log';
-import { normalizeExternalHttpUrl } from './externalUrl';
+import { isAllowedEmbeddedRequestUrl, isAuthenticationNavigation } from './embeddedBrowserPolicy';
+import { startEmbeddedBrowserProxy, stopEmbeddedBrowserProxy } from './embeddedBrowserProxy';
+import { validateExternalBrowserTarget } from './externalBrowserNavigation';
 import { isNavigableEmbeddedUrl } from './permissionPolicy';
 
 /**
@@ -16,7 +26,9 @@ import { isNavigableEmbeddedUrl } from './permissionPolicy';
  * would render logged-out and half-broken, and clickjacking protection would be
  * gone for nothing. A `WebContentsView` is a top-level browsing context, so
  * those headers do not apply and the page behaves exactly as it does in Chrome
- * — clicking, typing, scrolling, JS, cookies and logins all work.
+ * — clicking, typing, scrolling, JS and ordinary site cookies all work.
+ * Authentication navigations leave for the system browser because this
+ * isolated partition cannot safely or reliably share their callback state.
  *
  * **What it costs.** A native view paints above the DOM. It does not respect
  * stacking, scrolling, border radius or modals, so the renderer must tell us
@@ -38,6 +50,8 @@ export type EmbeddedBrowserBounds = { x: number; y: number; width: number; heigh
 export type EmbeddedBrowserState = {
   url: string;
   title: string;
+  /** Changes whenever the top-level document or SPA route commits. */
+  sourceRevision: string;
   canGoBack: boolean;
   canGoForward: boolean;
   isLoading: boolean;
@@ -49,10 +63,51 @@ type Entry = {
   window: BrowserWindow;
   visible: boolean;
   bounds: EmbeddedBrowserBounds;
+  revision: number;
+  requestAuthenticationConfirmation: (url: string) => void;
 };
 
 const views = new Map<string, Entry>();
+const MAX_PAGE_TITLE_CHARS = 512;
+const MAX_PAGE_URL_CHARS = 8 * 1024;
+const MAX_PAGE_ERROR_CHARS = 1024;
 let hardenedSession: Session | null = null;
+let embeddedNetworkReady: Promise<void> | null = null;
+let proxyTeardownRegistered = false;
+const registeredOwnerTeardown = new WeakSet<BrowserWindow>();
+
+function viewKey(window: BrowserWindow, viewId: string): string {
+  return `${window.webContents.id}:${viewId}`;
+}
+
+function entryFor(window: BrowserWindow, viewId: string): Entry | undefined {
+  return views.get(viewKey(window, viewId));
+}
+
+function prepareEmbeddedNetwork(embedded: Session): Promise<void> {
+  if (embeddedNetworkReady) return embeddedNetworkReady;
+  const operation = startEmbeddedBrowserProxy().then(async (port) => {
+    await embedded.setProxy({
+      proxyRules: `socks5://127.0.0.1:${port}`,
+      // Chromium bypasses proxies for loopback unless this subtracts the
+      // implicit bypass list. The proxy itself is the component that rejects
+      // loopback/private targets after resolving and pins the public IP socket.
+      proxyBypassRules: '<-loopback>',
+    });
+  });
+  embeddedNetworkReady = operation;
+  void operation.catch(() => {
+    if (embeddedNetworkReady === operation) embeddedNetworkReady = null;
+    void stopEmbeddedBrowserProxy();
+  });
+  if (!proxyTeardownRegistered) {
+    proxyTeardownRegistered = true;
+    app.once('before-quit', () => {
+      void stopEmbeddedBrowserProxy();
+    });
+  }
+  return operation;
+}
 
 /**
  * Locks down the embedded partition.
@@ -89,50 +144,111 @@ function embeddedSession(): Session {
   // WebUSB / Serial / HID.
   embedded.setDevicePermissionHandler(() => false);
   // `getDisplayMedia`. Returning an empty object denies without a prompt.
-  embedded.setDisplayMediaRequestHandler(() => {});
+  embedded.setDisplayMediaRequestHandler((_request, callback) => callback({}));
 
   // The embedded page must never reach the daemon. It listens on loopback under
   // a per-launch secret, and a site that could talk to it would own the agent's
-  // tools. `file:` is blocked for the same class of reason.
-  embedded.webRequest.onBeforeRequest({ urls: ['*://*/*', 'file://*/*'] }, (details, callback) => {
-    let hostname = '';
-    let protocol = '';
-    try {
-      const parsed = new URL(details.url);
-      hostname = parsed.hostname;
-      protocol = parsed.protocol;
-    } catch {
-      callback({ cancel: true });
-      return;
-    }
-    const isLoopback =
-      hostname === 'localhost' ||
-      hostname === '127.0.0.1' ||
-      hostname === '0.0.0.0' ||
-      hostname === '::1' ||
-      hostname === '[::1]';
-    callback({ cancel: protocol === 'file:' || isLoopback });
+  // tools. `file:` is blocked for the same class of reason. Hostname requests
+  // are routed through the pinned-IP proxy configured below; this hook covers
+  // schemes that could otherwise avoid that network boundary.
+  embedded.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, callback) => {
+    callback({ cancel: !isAllowedEmbeddedRequestUrl(details.url) });
   });
 
   // Downloads are the user's call, not the page's.
   embedded.on('will-download', (event, item) => {
     event.preventDefault();
-    log.info('[EmbeddedBrowser] blocked download:', item.getURL());
+    let origin = 'unknown origin';
+    try {
+      origin = new URL(item.getURL()).origin;
+    } catch {
+      // Keep signed URLs and query strings out of logs even when malformed.
+    }
+    log.info('[EmbeddedBrowser] blocked download from:', origin);
   });
 
   hardenedSession = embedded;
+  void prepareEmbeddedNetwork(embedded);
   return embedded;
 }
 
-function readState(view: WebContentsView, error: string | null = null): EmbeddedBrowserState {
-  const contents = view.webContents;
+async function confirmPublicExternalNavigation(
+  window: BrowserWindow,
+  candidate: string,
+  authentication: boolean,
+  isCurrent: () => boolean
+): Promise<boolean> {
+  try {
+    const validated = await validateExternalBrowserTarget(candidate);
+    if (!isCurrent() || window.isDestroyed()) return false;
+    const result = await dialog.showMessageBox(window, {
+      type: 'question',
+      buttons: ['Cancel', 'Open in browser'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      message: authentication
+        ? 'Open this sign-in page in your browser?'
+        : 'Open this website in your browser?',
+      detail: `Destination hostname: ${validated.hostname}\n\n${validated.href}`,
+    });
+    if (result.response !== 1 || !isCurrent()) return false;
+
+    // The system browser performs its own DNS lookup, so an IP cannot be pinned
+    // across this handoff. Revalidate, keep the confirmation tied to the exact
+    // hostname, and require another prompt for every different destination.
+    const revalidated = await validateExternalBrowserTarget(validated.href);
+    if (
+      revalidated.href !== validated.href ||
+      revalidated.hostname !== validated.hostname ||
+      !isCurrent()
+    ) {
+      return false;
+    }
+    await shell.openExternal(revalidated.href);
+    return true;
+  } catch {
+    log.warn('[EmbeddedBrowser] refused external navigation');
+    return false;
+  }
+}
+
+async function confirmExternalAuthenticationNavigation(
+  entry: Entry,
+  viewId: string,
+  candidate: string
+): Promise<void> {
+  await confirmPublicExternalNavigation(entry.window, candidate, true, () =>
+    Boolean(entryFor(entry.window, viewId) === entry && !entry.window.isDestroyed())
+  );
+}
+
+export async function openExternalBrowserNavigation(
+  window: BrowserWindow,
+  candidate: string
+): Promise<boolean> {
+  return confirmPublicExternalNavigation(
+    window,
+    candidate,
+    isAuthenticationNavigation(candidate),
+    () => !window.isDestroyed()
+  );
+}
+
+function sourceRevision(entry: Entry): string {
+  return `${entry.view.webContents.id}:${entry.revision}`;
+}
+
+function readState(entry: Entry, error: string | null = null): EmbeddedBrowserState {
+  const contents = entry.view.webContents;
   return {
-    url: contents.getURL(),
-    title: contents.getTitle(),
+    url: contents.getURL().slice(0, MAX_PAGE_URL_CHARS),
+    title: contents.getTitle().slice(0, MAX_PAGE_TITLE_CHARS),
+    sourceRevision: sourceRevision(entry),
     canGoBack: contents.navigationHistory.canGoBack(),
     canGoForward: contents.navigationHistory.canGoForward(),
     isLoading: contents.isLoading(),
-    error,
+    error: error?.slice(0, MAX_PAGE_ERROR_CHARS) ?? null,
   };
 }
 
@@ -143,11 +259,12 @@ export function createEmbeddedBrowser(
   onState: (state: EmbeddedBrowserState) => void
 ): EmbeddedBrowserState | null {
   if (!isNavigableEmbeddedUrl(initialUrl)) return null;
-  destroyEmbeddedBrowser(viewId);
+  destroyEmbeddedBrowser(window, viewId);
 
+  const embedded = embeddedSession();
   const view = new WebContentsView({
     webPreferences: {
-      session: embeddedSession(),
+      session: embedded,
       // No preload at all. The bridge this app exposes is attached per
       // `webPreferences`; a view constructed without one has nothing to reach.
       // That is the structural guarantee, and it is why the toolbar is driven
@@ -171,32 +288,69 @@ export function createEmbeddedBrowser(
   });
 
   const contents = view.webContents;
+  contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
+  const bounds = { x: 0, y: 0, width: 0, height: 0 };
+  let entry: Entry;
+  let queuedAuthenticationUrl: string | null = null;
+  let drainingAuthenticationQueue = false;
+  const requestAuthenticationConfirmation = (url: string) => {
+    queuedAuthenticationUrl = new URL(url).href;
+    if (drainingAuthenticationQueue) return;
+    drainingAuthenticationQueue = true;
+    void (async () => {
+      while (queuedAuthenticationUrl && entryFor(window, viewId) === entry) {
+        const candidate = queuedAuthenticationUrl;
+        queuedAuthenticationUrl = null;
+        await confirmExternalAuthenticationNavigation(entry, viewId, candidate);
+      }
+    })().finally(() => {
+      drainingAuthenticationQueue = false;
+    });
+  };
+  entry = {
+    view,
+    window,
+    visible: false,
+    bounds,
+    revision: 0,
+    requestAuthenticationConfirmation,
+  };
 
-  // Every `window.open` and `target=_blank` leaves the app. Validate the scheme
-  // *before* handing anything to the OS opener, never after.
-  contents.setWindowOpenHandler(({ url }) => {
-    try {
-      shell.openExternal(normalizeExternalHttpUrl(url));
-    } catch {
-      log.warn('[EmbeddedBrowser] refused to open external url');
-    }
+  const push = (error: string | null = null) => onState(readState(entry, error));
+
+  // Remote pages never get to create native dialogs. The toolbar's explicit
+  // Open action remains the user-gesture path for leaving the embedded view.
+  contents.setWindowOpenHandler(() => {
+    log.info('[EmbeddedBrowser] blocked page-created window');
+    push('This page tried to open another window. Use Open in browser if you want to continue.');
     return { action: 'deny' };
   });
 
-  const blockNonHttp = (event: Electron.Event, url: string) => {
-    if (isNavigableEmbeddedUrl(url)) return;
-    log.warn('[EmbeddedBrowser] blocked navigation to a non-http(s) url');
-    event.preventDefault();
+  const guardNavigation = (event: Electron.Event, url: string) => {
+    if (!isNavigableEmbeddedUrl(url)) {
+      log.warn('[EmbeddedBrowser] blocked navigation to a non-http(s) url');
+      event.preventDefault();
+      return;
+    }
+    if (isAuthenticationNavigation(url)) {
+      event.preventDefault();
+      push('Sign-in navigation was blocked. Use Open in browser to continue securely.');
+    }
   };
-  contents.on('will-navigate', blockNonHttp);
-  contents.on('will-redirect', blockNonHttp);
+  contents.on('will-navigate', guardNavigation);
+  contents.on('will-redirect', guardNavigation);
 
-  const push = (error: string | null = null) => onState(readState(view, error));
   contents.on('did-start-loading', () => push());
   contents.on('did-stop-loading', () => push());
-  contents.on('did-navigate', () => push());
+  contents.on('did-navigate', () => {
+    entry.revision += 1;
+    push();
+  });
   // Without this the URL bar goes stale on every single-page-app route change.
-  contents.on('did-navigate-in-page', () => push());
+  contents.on('did-navigate-in-page', () => {
+    entry.revision += 1;
+    push();
+  });
   contents.on('page-title-updated', () => push());
   contents.on('did-fail-load', (_event, errorCode, errorDescription, _url, isMainFrame) => {
     // Subframe failures are constant background noise, and -3 (ERR_ABORTED) is
@@ -210,17 +364,31 @@ export function createEmbeddedBrowser(
   // BrowserView was transparent; WebContentsView defaults to white, which flashes
   // against a dark panel before the first paint.
   view.setBackgroundColor('#00000000');
-  const bounds = { x: 0, y: 0, width: 0, height: 0 };
   view.setBounds(bounds);
   view.setVisible(false);
 
-  views.set(viewId, { view, window, visible: false, bounds });
-  void contents.loadURL(initialUrl);
-  return readState(view);
+  views.set(viewKey(window, viewId), entry);
+  void prepareEmbeddedNetwork(embedded).then(
+    () => {
+      if (entryFor(window, viewId) === entry && !contents.isDestroyed()) {
+        if (isAuthenticationNavigation(initialUrl)) {
+          entry.requestAuthenticationConfirmation(initialUrl);
+        } else {
+          void contents.loadURL(initialUrl);
+        }
+      }
+    },
+    () => push('The secure browser network could not be started.')
+  );
+  return readState(entry);
 }
 
-export function setEmbeddedBrowserBounds(viewId: string, bounds: EmbeddedBrowserBounds): void {
-  const entry = views.get(viewId);
+export function setEmbeddedBrowserBounds(
+  window: BrowserWindow,
+  viewId: string,
+  bounds: EmbeddedBrowserBounds
+): void {
+  const entry = entryFor(window, viewId);
   if (!entry) return;
   entry.bounds = bounds;
   entry.view.setBounds({
@@ -238,25 +406,38 @@ export function setEmbeddedBrowserBounds(viewId: string, bounds: EmbeddedBrowser
  * dropdown, a toast, the resize shield — because a native view has no shared
  * z-index with the DOM and would otherwise paint straight over them.
  */
-export function setEmbeddedBrowserVisible(viewId: string, visible: boolean): void {
-  const entry = views.get(viewId);
+export function setEmbeddedBrowserVisible(
+  window: BrowserWindow,
+  viewId: string,
+  visible: boolean
+): void {
+  const entry = entryFor(window, viewId);
   if (!entry) return;
   entry.visible = visible;
   entry.view.setVisible(visible);
 }
 
-export function navigateEmbeddedBrowser(viewId: string, url: string): boolean {
-  const entry = views.get(viewId);
+export function navigateEmbeddedBrowser(
+  window: BrowserWindow,
+  viewId: string,
+  url: string
+): boolean {
+  const entry = entryFor(window, viewId);
   if (!entry || !isNavigableEmbeddedUrl(url)) return false;
+  if (isAuthenticationNavigation(url)) {
+    entry.requestAuthenticationConfirmation(url);
+    return true;
+  }
   void entry.view.webContents.loadURL(url);
   return true;
 }
 
 export function controlEmbeddedBrowser(
+  window: BrowserWindow,
   viewId: string,
   action: 'back' | 'forward' | 'reload' | 'stop'
 ): boolean {
-  const entry = views.get(viewId);
+  const entry = entryFor(window, viewId);
   if (!entry) return false;
   const contents = entry.view.webContents;
   if (action === 'back' && contents.navigationHistory.canGoBack()) {
@@ -271,9 +452,12 @@ export function controlEmbeddedBrowser(
   return true;
 }
 
-export function embeddedBrowserState(viewId: string): EmbeddedBrowserState | null {
-  const entry = views.get(viewId);
-  return entry ? readState(entry.view) : null;
+export function embeddedBrowserState(
+  window: BrowserWindow,
+  viewId: string
+): EmbeddedBrowserState | null {
+  const entry = entryFor(window, viewId);
+  return entry ? readState(entry) : null;
 }
 
 /**
@@ -281,26 +465,46 @@ export function embeddedBrowserState(viewId: string): EmbeddedBrowserState | nul
  *
  * Runs in the page's own world via `executeJavaScript`, which is the only way
  * in: the view shares no origin with the renderer and has no preload. The
- * expression is a fixed literal — nothing from the caller is interpolated into
- * it — and the result is a string the caller must still treat as untrusted page
- * content.
+ * expression interpolates only a main-process-clamped integer limit, and the
+ * result remains untrusted page content.
  */
 export async function readEmbeddedBrowserText(
+  window: BrowserWindow,
   viewId: string,
   maxChars: number
-): Promise<{ url: string; title: string; text: string } | null> {
-  const entry = views.get(viewId);
+): Promise<{
+  url: string;
+  title: string;
+  sourceRevision: string;
+  text: string;
+  truncated: boolean;
+} | null> {
+  const entry = entryFor(window, viewId);
   if (!entry) return null;
   const contents = entry.view.webContents;
-  const text = (await contents.executeJavaScript(
-    '(() => (document.body && document.body.innerText) || "")()',
-    true
-  )) as string;
-  return {
-    url: contents.getURL(),
-    title: contents.getTitle(),
-    text: typeof text === 'string' ? text.slice(0, maxChars) : '',
-  };
+  const limit = Number.isFinite(maxChars) ? Math.min(40_000, Math.max(0, Math.floor(maxChars))) : 0;
+  // Never return the previous document while a navigation is visibly in
+  // progress. A caller can retry once the toolbar reports the committed state.
+  if (contents.isLoadingMainFrame()) return null;
+
+  // A navigation can commit while executeJavaScript is crossing the process
+  // boundary. Retry once so text, URL and revision always describe one document.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const revision = entry.revision;
+    const url = contents.getURL();
+    const snapshot = (await contents.executeJavaScript(
+      `(() => { const text = (document.body && document.body.innerText) || ""; const limit = ${limit}; return { text: text.slice(0, limit), truncated: text.length > limit }; })()`
+    )) as { text?: unknown; truncated?: unknown };
+    if (revision !== entry.revision || url !== contents.getURL()) continue;
+    return {
+      url: url.slice(0, MAX_PAGE_URL_CHARS),
+      title: contents.getTitle().slice(0, MAX_PAGE_TITLE_CHARS),
+      sourceRevision: sourceRevision(entry),
+      text: typeof snapshot?.text === 'string' ? snapshot.text : '',
+      truncated: snapshot?.truncated === true,
+    };
+  }
+  return null;
 }
 
 /**
@@ -312,17 +516,44 @@ export async function readEmbeddedBrowserText(
  * was hidden and then navigated. Callers must check for the empty case — the
  * failure mode is a zero-byte buffer, not a rejection.
  */
-export async function captureEmbeddedBrowser(viewId: string): Promise<Buffer | null> {
-  const entry = views.get(viewId);
+export async function captureEmbeddedBrowser(
+  window: BrowserWindow,
+  viewId: string
+): Promise<{ png: Buffer; width: number; height: number; sourceRevision: string } | null> {
+  const entry = entryFor(window, viewId);
   if (!entry) return null;
-  const image = await entry.view.webContents.capturePage();
-  return image.isEmpty() ? null : image.toPNG();
+  const contents = entry.view.webContents;
+  if (contents.isLoadingMainFrame()) return null;
+  const revision = sourceRevision(entry);
+  const url = contents.getURL();
+  const image = await contents.capturePage();
+  if (image.isEmpty()) return null;
+  if (revision !== sourceRevision(entry) || url !== contents.getURL()) return null;
+  const size = image.getSize();
+  return { png: image.toPNG(), width: size.width, height: size.height, sourceRevision: revision };
 }
 
-export function destroyEmbeddedBrowser(viewId: string): void {
-  const entry = views.get(viewId);
+export async function clearEmbeddedBrowserData(
+  window: BrowserWindow,
+  viewId: string,
+  allOrigins = false
+): Promise<boolean> {
+  const entry = entryFor(window, viewId);
+  if (!entry) return false;
+  if (allOrigins) {
+    await embeddedSession().clearStorageData();
+  } else {
+    const origin = new URL(entry.view.webContents.getURL()).origin;
+    await embeddedSession().clearStorageData({ origin });
+  }
+  return true;
+}
+
+export function destroyEmbeddedBrowser(window: BrowserWindow, viewId: string): void {
+  const key = viewKey(window, viewId);
+  const entry = views.get(key);
   if (!entry) return;
-  views.delete(viewId);
+  views.delete(key);
   try {
     entry.window.contentView.removeChildView(entry.view);
   } catch {
@@ -333,7 +564,25 @@ export function destroyEmbeddedBrowser(viewId: string): void {
 
 /** Tears down every view belonging to a window that is closing. */
 export function destroyEmbeddedBrowsersForWindow(window: BrowserWindow): void {
-  for (const [viewId, entry] of [...views.entries()]) {
-    if (entry.window === window) destroyEmbeddedBrowser(viewId);
+  for (const [key, entry] of [...views.entries()]) {
+    if (entry.window !== window) continue;
+    views.delete(key);
+    try {
+      window.contentView.removeChildView(entry.view);
+    } catch {
+      // The owner may already be tearing down.
+    }
+    entry.view.webContents.close();
   }
+}
+
+/** Reloads and renderer crashes do not run React cleanup; main owns this edge. */
+export function registerEmbeddedBrowserOwnerTeardown(window: BrowserWindow): void {
+  if (registeredOwnerTeardown.has(window)) return;
+  registeredOwnerTeardown.add(window);
+  window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) destroyEmbeddedBrowsersForWindow(window);
+  });
+  window.webContents.on('render-process-gone', () => destroyEmbeddedBrowsersForWindow(window));
+  window.webContents.on('destroyed', () => destroyEmbeddedBrowsersForWindow(window));
 }

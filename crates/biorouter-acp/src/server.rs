@@ -576,6 +576,7 @@ impl BioRouterAcpAgent {
         let cx = cx.clone();
         let agent = self.agent.clone();
         let session_id = session_id.clone();
+        let biorouter_session_id = session_id.to_string();
 
         let formatted_name = format_tool_name(&tool_name);
 
@@ -615,7 +616,8 @@ impl BioRouterAcpAgent {
                 match result {
                     Ok(response) => {
                         agent
-                            .handle_confirmation(
+                            .handle_confirmation_for_session(
+                                &biorouter_session_id,
                                 request_id,
                                 outcome_to_confirmation(&response.outcome),
                             )
@@ -625,7 +627,8 @@ impl BioRouterAcpAgent {
                     Err(e) => {
                         error!(error = ?e, "permission request failed");
                         agent
-                            .handle_confirmation(
+                            .handle_confirmation_for_session(
+                                &biorouter_session_id,
                                 request_id,
                                 PermissionConfirmation {
                                     principal_type: PrincipalType::Tool,

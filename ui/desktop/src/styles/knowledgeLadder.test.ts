@@ -55,15 +55,18 @@ const LADDER: { token: string; px: number; query: RegExp }[] = [
 ];
 
 describe('the Knowledge pane ladder', () => {
-  it.each(LADDER)('$token declares $px and its query obeys the same number', ({ token, px, query }) => {
-    expect(CSS).toContain(`${token}: ${px}px;`);
-    expect(CSS).toMatch(query);
-  });
+  it.each(LADDER)(
+    '$token declares $px and its query obeys the same number',
+    ({ token, px, query }) => {
+      expect(CSS).toContain(`${token}: ${px}px;`);
+      expect(CSS).toMatch(query);
+    }
+  );
 
   it('has no @container step the ladder above does not account for', () => {
-    const found = [...CSS.matchAll(/@container br-knowledge-pane \((?:min-width|max-height): (\d+)px\)/g)].map(
-      (m) => Number(m[1])
-    );
+    const found = [
+      ...CSS.matchAll(/@container br-knowledge-pane \((?:min-width|max-height): (\d+)px\)/g),
+    ].map((m) => Number(m[1]));
     expect([...new Set(found)].sort((a, b) => a - b)).toEqual(
       [...new Set(LADDER.map((s) => s.px))].sort((a, b) => a - b)
     );

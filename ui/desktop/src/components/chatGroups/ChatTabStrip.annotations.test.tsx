@@ -8,7 +8,7 @@
  * ship green.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { render } from '@testing-library/react';
+import { fireEvent, render, within } from '@testing-library/react';
 import { ChatTabStrip, ChatTabStripProps } from './ChatTabStrip';
 import { ChatTab } from './chatGroupsTypes';
 import type { TabAnnotation } from './workspaceCommandPlanner';
@@ -99,5 +99,70 @@ describe('ChatTabStrip — the subagent badge', () => {
     const { container } = renderStrip();
     expect(container.querySelector('[data-tab-id="tab-1"]')).toBeTruthy();
     expect(badgeIn(container, 'tab-1')).toBeNull();
+  });
+
+  it('keeps the active child Running marker through title resolution and hover', () => {
+    const initialProps: ChatTabStripProps = {
+      tabs: [tab({ title: 'New chat' })],
+      activeTabId: null,
+      runningSessionIds: ['s1'],
+      tabAnnotations: { s1: subagent },
+      onSelect: vi.fn(),
+      onClose: vi.fn(),
+      onReorder: vi.fn(),
+      reserveTitlebar: false,
+      isCompactSidebarOverlayOpen: false,
+    };
+    const view = render(<ChatTabStrip {...initialProps} />);
+
+    expect(view.getByTestId('chat-tab-running-tab-1')).toBeTruthy();
+
+    view.rerender(
+      <ChatTabStrip
+        {...initialProps}
+        tabs={[tab({ title: 'Resolved child' })]}
+        activeTabId="tab-1"
+      />
+    );
+    const activeTab = view.container.querySelector('[data-tab-id="tab-1"]') as HTMLElement;
+    fireEvent.mouseEnter(activeTab);
+
+    const running = within(activeTab).getByRole('img', { name: 'Running' });
+    expect(running).toBeTruthy();
+    expect(running.className).not.toContain('group-hover:hidden');
+    expect(view.getByTestId('chat-tab-close-tab-1').className).toContain('group-hover:opacity-100');
+    expect(badgeIn(view.container, 'tab-1')).not.toBeNull();
+  });
+
+  it('preserves the same Running marker when a provisional child binds its session', () => {
+    const provisional = tab({ sessionId: 'provisional-child', title: 'Starting child' });
+    const props: ChatTabStripProps = {
+      tabs: [provisional],
+      activeTabId: provisional.tabId,
+      runningSessionIds: [provisional.sessionId],
+      tabAnnotations: { [provisional.sessionId]: subagent },
+      onSelect: vi.fn(),
+      onClose: vi.fn(),
+      onReorder: vi.fn(),
+      reserveTitlebar: false,
+      isCompactSidebarOverlayOpen: false,
+    };
+    const view = render(<ChatTabStrip {...props} />);
+    const before = view.getByTestId('chat-tab-running-tab-1');
+
+    view.rerender(
+      <ChatTabStrip
+        {...props}
+        tabs={[tab({ sessionId: 'child-session', title: 'Resolved child' })]}
+        runningSessionIds={['child-session']}
+        tabAnnotations={{ 'child-session': subagent }}
+      />
+    );
+
+    const after = view.getByTestId('chat-tab-running-tab-1');
+    expect(after).toBe(before);
+    expect(after.className).toContain('br-tab__dot');
+    expect(within(view.container).getByRole('img', { name: 'Running' })).toBe(after);
+    expect(badgeIn(view.container, 'tab-1')).not.toBeNull();
   });
 });

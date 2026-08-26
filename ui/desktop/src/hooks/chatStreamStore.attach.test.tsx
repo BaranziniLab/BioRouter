@@ -133,6 +133,13 @@ function messageFrame(id: string, text: string): MessageEvent {
 
 const finishFrame = { type: 'Finish', reason: 'stop', token_state: tokenState } as MessageEvent;
 
+function persistedFrame(id: string): MessageEvent {
+  return {
+    type: 'MessagesPersisted',
+    messages: [{ id, userVisible: true }],
+  } as MessageEvent;
+}
+
 /** Serve these frames as the `{ stream }` a `/reply` POST resolves to. */
 function servingFrames(...frames: WireFrame[]) {
   vi.mocked(reply).mockResolvedValue({
@@ -356,6 +363,41 @@ describe('attaching to a turn this client did not start', () => {
     expect(transcriptText(controller.getSnapshot().messages)).toEqual(['done long ago']);
   });
 
+  it('does not mistake stored assistant text for proof that a rejoined turn succeeded', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: {
+        session: session(SID, [
+          userMessage('u1', 'delegate and wait'),
+          assistantMessage('a-final', 'the collected child result'),
+        ]),
+      },
+    } as never);
+    servingFrames(
+      live(0, {
+        type: 'Error',
+        error: 'The model turn ended unexpectedly. Please retry.',
+        code: 'internal_error',
+        scope: 'internal',
+        retryable: true,
+      } as MessageEvent)
+    );
+
+    const controller = registry.getController(SID);
+    await controller.loadSession();
+    await controller.attachToTurn(TURN);
+
+    expect(transcriptText(controller.getSnapshot().messages)).toEqual([
+      'delegate and wait',
+      'the collected child result',
+    ]);
+    expect(controller.getSnapshot().turnError).toMatchObject({
+      code: 'internal_error',
+      retryable: true,
+    });
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+  });
+
   it('rejoins a turn left running by a window that reloaded', async () => {
     // The reload case, end to end. The transcript comes back from the store
     // stopping at the user's message — a live turn has persisted nothing yet —
@@ -532,6 +574,36 @@ describe('a dropped socket is not a dead turn', () => {
     expect(second.body.from_seq).toBe(2);
   });
 
+  it('does not mistake a persisted assistant row for an authoritative terminal', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(SID) } } as never);
+    servingFrames(
+      live(0, messageFrame('a-final', 'the completed answer')),
+      live(1, persistedFrame('a-final')),
+      live(2, {
+        type: 'Error',
+        error: 'The model turn ended unexpectedly. Please retry.',
+        code: 'internal_error',
+        scope: 'internal',
+        retryable: true,
+      } as MessageEvent)
+    );
+
+    const controller = registry.getController(SID);
+    await controller.loadSession();
+    await controller.handleSubmit('do the thing');
+
+    expect(transcriptText(controller.getSnapshot().messages)).toEqual([
+      'do the thing',
+      'the completed answer',
+    ]);
+    expect(controller.getSnapshot().turnError).toMatchObject({
+      code: 'internal_error',
+      retryable: true,
+    });
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+  });
+
   it('still reports a failure once the turn really is unreachable', async () => {
     const registry = new ChatStreamRegistry();
     vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(SID) } } as never);
@@ -539,7 +611,11 @@ describe('a dropped socket is not a dead turn', () => {
       async () =>
         ({
           stream: (async function* () {
-            // Ends immediately, every time: the daemon is gone.
+            // A rendered and persisted fragment is still not proof of a
+            // completed turn. Every stream ends without an authoritative
+            // lifecycle terminal.
+            yield live(0, messageFrame('a-partial', 'partial output')) as MessageEvent;
+            yield live(1, persistedFrame('a-partial')) as MessageEvent;
           })(),
         }) as never
     );

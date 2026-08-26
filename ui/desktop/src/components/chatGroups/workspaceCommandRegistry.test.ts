@@ -9,7 +9,6 @@ import {
   type WorkspaceCommandResult,
 } from './workspaceCommandRegistry';
 
-
 // Every handler in this file is synchronous, which is what these cases are
 // about. `applyWorkspaceCommand` now returns a union because a *capture* cannot
 // be sync; narrowing here keeps each assertion testing what it always tested.

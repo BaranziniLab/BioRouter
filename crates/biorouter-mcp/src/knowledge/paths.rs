@@ -121,15 +121,43 @@ pub fn kb_internal_dir(root: &Path, id: &str) -> PathBuf {
     kb_root(root, id).join(".biorouter-knowledge")
 }
 
-/// The write lock's path **relative to a knowledge base's own root**.
+/// Where every knowledge base's write lock lives: **beside** the bases, never
+/// inside the one it locks. See [`kb_write_lock_path`] for why.
 ///
-/// Spelled once here because four unrelated places have to agree on it and
-/// three of them are not writes: `service::kb_lock_path` takes the lock,
-/// `service::GITIGNORE` keeps git from tracking it, `git::stage_all` keeps it
-/// out of a commit even if the ignore file is missing, and `brkb::walk` keeps
-/// it out of an archive. Every one of those is "the transient lock is not
-/// content", and a fourth spelling of the same string is how one of them
-/// silently stops holding.
+/// Dot-prefixed so it fails [`validate_kb_id`], which is what every root scanner
+/// filters on (`tier::ensure_migrated_unlocked`, `soul::purge_unregistered_legacy`)
+/// — a lock directory must not read as a knowledge base.
+pub const KB_LOCKS_DIR: &str = ".kb-locks";
+
+/// The cross-process write lock for one base.
+///
+/// ⚠ **It must not live under [`kb_root`], and the reason is Windows.** An open
+/// handle to any file inside a directory makes Windows refuse to rename or
+/// remove that directory (`ERROR_ACCESS_DENIED`, os error 5); Unix does not
+/// care, because an fd follows the inode. The lock used to sit at
+/// `<kb_root>/`[`KB_WRITE_LOCK_REL`], so every operation that holds the lock
+/// *and* moves the base — staging a delete, renaming a base — worked on Unix
+/// and failed on every Windows machine. Keeping the lock out of the tree it
+/// guards makes the two platforms agree without releasing the lock early: a
+/// release-then-move would hand a queued macro the base between the two steps,
+/// which is a race rather than a fix.
+///
+/// The id is a bare filename component here, so callers must
+/// [`validate_kb_id`] first — `service::lock_kb_path_cancellable` does.
+pub fn kb_write_lock_path(root: &Path, id: &str) -> PathBuf {
+    root.join(KB_LOCKS_DIR).join(format!("{id}.lock"))
+}
+
+/// The write lock's **historical** path, relative to a knowledge base's own
+/// root. Bases created before [`kb_write_lock_path`] moved the lock out still
+/// carry this file; it is inert, but it must stay out of commits and archives.
+///
+/// Spelled once here because three unrelated places have to agree on it and
+/// none of them is a write: `service::GITIGNORE` keeps git from tracking it,
+/// `git::stage_all` keeps it out of a commit even if the ignore file is
+/// missing, and `brkb::walk` keeps it out of an archive. Every one of those is
+/// "the transient lock is not content", and a fourth spelling of the same
+/// string is how one of them silently stops holding.
 pub const KB_WRITE_LOCK_REL: &str = ".biorouter-knowledge/write.lock";
 
 /// Is `rel`, a path relative to a knowledge base's root, the write lock?

@@ -128,7 +128,9 @@ describe('ChatGroupsShell — terminals are scoped per split pane', () => {
     vi.doMock('../InAppTerminalDock', () => ({
       default: (props: { open: boolean; workingDir?: string }) => {
         dockRenders.push({ open: props.open, cwd: props.workingDir });
-        return <div data-testid="dock" data-open={String(props.open)} data-cwd={props.workingDir} />;
+        return (
+          <div data-testid="dock" data-open={String(props.open)} data-cwd={props.workingDir} />
+        );
       },
     }));
     // Two groups side by side: gA (tab tA active) | gB (tab tB active). Each tab
@@ -149,8 +151,16 @@ describe('ChatGroupsShell — terminals are scoped per split pane', () => {
             ],
           },
           groups: {
-            gA: { id: 'gA', activeTabId: 'tA', tabs: [{ tabId: 'tA', sessionId: 's-a', title: 'A', userSetName: false }] },
-            gB: { id: 'gB', activeTabId: 'tB', tabs: [{ tabId: 'tB', sessionId: 's-b', title: 'B', userSetName: false }] },
+            gA: {
+              id: 'gA',
+              activeTabId: 'tA',
+              tabs: [{ tabId: 'tA', sessionId: 's-a', title: 'A', userSetName: false }],
+            },
+            gB: {
+              id: 'gB',
+              activeTabId: 'tB',
+              tabs: [{ tabId: 'tB', sessionId: 's-b', title: 'B', userSetName: false }],
+            },
           },
         },
       }),
@@ -167,7 +177,9 @@ describe('ChatGroupsShell — terminals are scoped per split pane', () => {
         ],
       }),
     }));
-    vi.doMock('../ui/sidebar', () => ({ useSidebar: () => ({ state: 'expanded', isMobile: false }) }));
+    vi.doMock('../ui/sidebar', () => ({
+      useSidebar: () => ({ state: 'expanded', isMobile: false }),
+    }));
 
     const { default: Shell } = await import('./ChatGroupsShell');
     render(<Shell onChatChange={() => {}} />);

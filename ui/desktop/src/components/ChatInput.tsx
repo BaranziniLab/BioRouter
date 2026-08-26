@@ -37,6 +37,7 @@ import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUt
 import { getNavigationShortcutText } from '../utils/keyboardShortcuts';
 import type { UserAttachment } from '../types/message';
 import { useStopAcknowledgement } from '../hooks/useStopAcknowledgement';
+import { isRunningState } from '../hooks/chatStreamStore';
 import { toastWarning } from '../toasts';
 import { cn } from '../utils';
 import {
@@ -52,7 +53,30 @@ interface QueuedMessage {
   id: string;
   content: string;
   attachments?: UserAttachment[];
+  /** Renderer-owned temp images to unlink if the queue discards this message.
+   * Kept separate from `attachments`: that array may also contain a user's
+   * original file path, which this component must never delete. */
+  ownedTempAttachmentPaths?: string[];
   timestamp: number;
+}
+
+const orphanedQueuedOffers = new Map<string, Map<string, QueuedMessage>>();
+const orphanedQueuedOfferListeners = new Map<string, Set<(messageId: string) => void>>();
+
+function queuedOfferOwner(sessionId: string | null): string {
+  return sessionId ?? '__new_session__';
+}
+
+function settleOrphanedQueuedOffer(owner: string, messageId: string): void {
+  const offers = orphanedQueuedOffers.get(owner);
+  offers?.delete(messageId);
+  if (offers?.size === 0) orphanedQueuedOffers.delete(owner);
+  for (const listener of orphanedQueuedOfferListeners.get(owner) ?? []) listener(messageId);
+}
+
+function deleteQueuedOwnedTempAttachments(messages: readonly QueuedMessage[]): void {
+  const ownedPaths = new Set(messages.flatMap((message) => message.ownedTempAttachmentPaths ?? []));
+  for (const path of ownedPaths) window.electron.deleteTempFile(path);
 }
 
 interface PastedImage {
@@ -249,7 +273,10 @@ interface ChatInputProps {
   handleSubmit: (e: React.FormEvent) => void | Promise<boolean | void>;
   chatState: ChatState;
   setChatState?: (state: ChatState) => void;
-  onStop?: () => void;
+  onStop?: (continuationPending?: boolean) => boolean | void | Promise<boolean | void>;
+  onAbandonContinuation?: () => void | Promise<void>;
+  /** Keep composed text editable but prevent submission until an ownership gate resolves. */
+  submissionBlocked?: boolean;
   /** BR-61 soft interrupt: inject text into the turn that is already running
    * (no cancel, no lost work). Resolves false when there was nothing to steer,
    * in which case the caller must send/queue the text normally. */
@@ -309,6 +336,8 @@ export default function ChatInput({
   chatState = ChatState.Idle,
   setChatState,
   onStop,
+  onAbandonContinuation,
+  submissionBlocked = false,
   onSteer,
   commandHistory = [],
   initialValue = '',
@@ -338,15 +367,35 @@ export default function ChatInput({
   // `has-[textarea:focus]`, which is one source of truth instead of two and
   // cannot fall out of sync with the DOM the way a mirrored flag can.)
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
+  const pastedImagesRef = useRef(pastedImages);
+  pastedImagesRef.current = pastedImages;
 
-  // Derived state - chatState != Idle means we're in some form of loading state
+  // Loading gates composer operations; live work drives the visual activity
+  // indicator. LoadingConversation is intentionally only in the former.
   const isLoading = chatState !== ChatState.Idle;
+  const isWorking = isRunningState(chatState);
   const wasLoadingRef = useRef(isLoading);
 
-  // Queue functionality - ephemeral, only exists in memory for this chat instance
-  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+  // Queue functionality - renderer-memory only, scoped to this chat. An offer
+  // crossing an unmount is handed to the next composer instance below.
+  const queueOwner = queuedOfferOwner(sessionId);
+  const recoveredQueuedOffersRef = useRef<QueuedMessage[] | null>(null);
+  if (recoveredQueuedOffersRef.current === null) {
+    recoveredQueuedOffersRef.current = [...(orphanedQueuedOffers.get(queueOwner)?.values() ?? [])];
+    orphanedQueuedOffers.delete(queueOwner);
+  }
+  const recoveredQueuedOffers = recoveredQueuedOffersRef.current ?? [];
+  const recoveredQueuedMessageIdsRef = useRef(
+    new Set(recoveredQueuedOffers.map((message) => message.id))
+  );
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>(recoveredQueuedOffers);
+  const queuedMessagesRef = useRef(queuedMessages);
+  queuedMessagesRef.current = queuedMessages;
+  const activeQueuedOffersRef = useRef(new Map<string, QueuedMessage>());
+  const queueDisposedRef = useRef(false);
   const queuePausedRef = useRef(false);
   const editingMessageIdRef = useRef<string | null>(null);
+  const continuationQueuedMessageIdRef = useRef<string | null>(null);
   const [lastInterruption, setLastInterruption] = useState<string | null>(null);
 
   const { alerts, addAlert, clearAlerts } = useAlerts();
@@ -578,12 +627,52 @@ export default function ChatInput({
   // submit firing out of a composer that is gone.
   const queueRetryTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   useEffect(() => {
-    const timers = queueRetryTimersRef.current;
+    const listener = (messageId: string) => {
+      recoveredQueuedMessageIdsRef.current.delete(messageId);
+      activeQueuedOffersRef.current.delete(messageId);
+      setQueuedMessages((prev) => prev.filter((message) => message.id !== messageId));
+    };
+    const listeners = orphanedQueuedOfferListeners.get(queueOwner) ?? new Set();
+    listeners.add(listener);
+    orphanedQueuedOfferListeners.set(queueOwner, listeners);
     return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) orphanedQueuedOfferListeners.delete(queueOwner);
+    };
+  }, [queueOwner]);
+
+  useEffect(() => {
+    const timers = queueRetryTimersRef.current;
+    const activeQueuedOffers = activeQueuedOffersRef.current;
+    const recoveredQueuedMessageIds = recoveredQueuedMessageIdsRef.current;
+    queueDisposedRef.current = false;
+    return () => {
+      queueDisposedRef.current = true;
       timers.forEach((timer) => clearTimeout(timer));
       timers.clear();
+
+      const recoverable = new Map(orphanedQueuedOffers.get(queueOwner));
+      for (const [id, message] of activeQueuedOffers) {
+        recoverable.set(id, message);
+      }
+      for (const message of queuedMessagesRef.current) {
+        if (recoveredQueuedMessageIds.has(message.id)) {
+          recoverable.set(message.id, message);
+        }
+      }
+      if (recoverable.size > 0) orphanedQueuedOffers.set(queueOwner, recoverable);
     };
-  }, []);
+  }, [queueOwner]);
+
+  useEffect(
+    () => () => {
+      if (continuationQueuedMessageIdRef.current) {
+        continuationQueuedMessageIdRef.current = null;
+        void onAbandonContinuation?.();
+      }
+    },
+    [onAbandonContinuation]
+  );
 
   /**
    * Send a message that came out of the queue, and KEEP IT if the submit
@@ -603,7 +692,9 @@ export default function ChatInput({
   const offerQueuedMessage = useCallback(
     (message: QueuedMessage) => {
       LocalMessageStorage.addMessage(message.content);
+      activeQueuedOffersRef.current.set(message.id, message);
       const offer = (attempt: number) => {
+        if (queueDisposedRef.current) return;
         const submitted = handleSubmit(
           new CustomEvent('submit', {
             detail: { value: message.content, attachments: message.attachments ?? [] },
@@ -612,7 +703,19 @@ export default function ChatInput({
         void Promise.resolve(submitted).then((accepted) => {
           // Only an explicit `false` is a refusal: a handler predating the
           // contract resolves `undefined` and must not be read as one.
-          if (accepted !== false) return;
+          if (accepted !== false) {
+            activeQueuedOffersRef.current.delete(message.id);
+            recoveredQueuedMessageIdsRef.current.delete(message.id);
+            settleOrphanedQueuedOffer(queueOwner, message.id);
+            if (continuationQueuedMessageIdRef.current === message.id) {
+              continuationQueuedMessageIdRef.current = null;
+            }
+            return;
+          }
+          // Cleanup already copied this in-flight offer to the renderer-level
+          // recovery map. A late refusal must leave it there and must not arm a
+          // timer or set state on a composer that no longer exists.
+          if (queueDisposedRef.current) return;
           if (attempt < QUEUE_DRAIN_ATTEMPTS) {
             // Next macrotask, which is all the in-flight submit's promise chain
             // needs to unwind and release its latch. Deliberately not a poll:
@@ -624,6 +727,7 @@ export default function ChatInput({
             queueRetryTimersRef.current.add(timer);
             return;
           }
+          activeQueuedOffersRef.current.delete(message.id);
           setQueuedMessages((prev) =>
             prev.some((queued) => queued.id === message.id) ? prev : [message, ...prev]
           );
@@ -635,7 +739,7 @@ export default function ChatInput({
       };
       offer(1);
     },
-    [handleSubmit]
+    [handleSubmit, queueOwner]
   );
 
   // Queue processing
@@ -771,10 +875,22 @@ export default function ChatInput({
       // the existing `visionMismatch` bar appear, which says the model cannot
       // read images and lets the user remove the chip or switch models.
       const id = `annotation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      setPastedImages((current) => {
-        if (current.length >= MAX_IMAGES_PER_MESSAGE) return current;
-        return [...current, { id, dataUrl: '', filePath: annotation.imagePath, isLoading: true }];
-      });
+      if (pastedImagesRef.current.length >= MAX_IMAGES_PER_MESSAGE) {
+        window.electron.deleteTempFile(annotation.imagePath);
+        toastWarning({
+          title: 'Region not attached',
+          msg: `A message can contain at most ${MAX_IMAGES_PER_MESSAGE} images.`,
+        });
+        return;
+      }
+      const staged = {
+        id,
+        dataUrl: '',
+        filePath: annotation.imagePath,
+        isLoading: true,
+      };
+      pastedImagesRef.current = [...pastedImagesRef.current, staged];
+      setPastedImages(pastedImagesRef.current);
       // The thumbnail is read back from the file the main process wrote; the
       // panel never had the bytes in the first place.
       void window.electron
@@ -787,21 +903,19 @@ export default function ChatInput({
                 : image
             )
           );
+          setDisplayValue((current) => {
+            const context = annotationContextText(annotation);
+            return current.trim() ? `${current.trimEnd()}\n\n${context}\n` : `${context}\n`;
+          });
         })
         .catch(() => {
-          setPastedImages((current) =>
-            current.map((image) =>
-              image.id === id
-                ? { ...image, isLoading: false, error: 'Could not read the region' }
-                : image
-            )
-          );
+          window.electron.deleteTempFile(annotation.imagePath);
+          setPastedImages((current) => current.filter((image) => image.id !== id));
+          toastWarning({
+            title: 'Region not attached',
+            msg: 'The selected region could not be read.',
+          });
         });
-
-      setDisplayValue((current) => {
-        const context = annotationContextText(annotation);
-        return current.trim() ? `${current.trimEnd()}\n\n${context}\n` : `${context}\n`;
-      });
       textAreaRef.current?.focus();
     });
   }, [sessionId]);
@@ -1519,6 +1633,16 @@ export default function ChatInput({
             .map((file) => ({ path: droppedImageAttachmentPath(file), kind: 'image' as const })),
         ]
       : [];
+    const ownedTempAttachmentPaths = currentModelSupportsVision
+      ? [
+          ...pastedImages
+            .filter((img) => img.filePath && !img.error && !img.isLoading)
+            .map((img) => img.filePath as string),
+          ...allDroppedFiles
+            .filter(canUploadDroppedImage)
+            .flatMap((file) => (file.stagedPath ? [file.stagedPath] : [])),
+        ]
+      : [];
     const droppedFilePaths = allDroppedFiles.filter(canSendDroppedFileAsPath).map(droppedFilePath);
 
     let contentToQueue = displayValue.trim();
@@ -1534,8 +1658,7 @@ export default function ChatInput({
 
     if (interruptionMatch && interruptionMatch.shouldInterrupt) {
       setLastInterruption(interruptionMatch.matchedText);
-      setChatState?.(ChatState.Idle);
-      stopAck.trigger();
+      void stopAck.trigger(true);
       queuePausedRef.current = true;
 
       // For interruptions, we need to queue the message to be sent after the stop completes
@@ -1544,6 +1667,7 @@ export default function ChatInput({
         id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
         content: contentToQueue,
         attachments: imageAttachments,
+        ownedTempAttachmentPaths,
         timestamp: Date.now(),
       };
 
@@ -1566,6 +1690,7 @@ export default function ChatInput({
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       content: contentToQueue,
       attachments: imageAttachments,
+      ownedTempAttachmentPaths,
       timestamp: Date.now(),
     };
     setQueuedMessages((prev) => {
@@ -1871,7 +1996,7 @@ export default function ChatInput({
         return;
       }
 
-      if (canSubmit) {
+      if (canSubmit && !submissionBlocked) {
         performSubmit();
       }
     }
@@ -1885,6 +2010,7 @@ export default function ChatInput({
     }
     const canSubmit =
       !isLoading &&
+      !submissionBlocked &&
       (displayValue.trim() ||
         (currentModelSupportsVision &&
           pastedImages.some((img) => img.filePath && !img.error && !img.isLoading)) ||
@@ -1946,14 +2072,32 @@ export default function ChatInput({
     isAnyImageLoading ||
     isAnyDroppedFileLoading ||
     chatState === ChatState.RestartingAgent ||
+    submissionBlocked ||
     visionMismatch;
 
   // Queue management functions - no storage persistence, only in-memory
   const handleRemoveQueuedMessage = (messageId: string) => {
+    if (continuationQueuedMessageIdRef.current === messageId) {
+      continuationQueuedMessageIdRef.current = null;
+      void onAbandonContinuation?.();
+    }
+    recoveredQueuedMessageIdsRef.current.delete(messageId);
+    activeQueuedOffersRef.current.delete(messageId);
+    orphanedQueuedOffers.get(queueOwner)?.delete(messageId);
+    const removed = queuedMessagesRef.current.find((message) => message.id === messageId);
+    if (removed) deleteQueuedOwnedTempAttachments([removed]);
     setQueuedMessages((prev) => prev.filter((msg) => msg.id !== messageId));
   };
 
   const handleClearQueue = () => {
+    if (continuationQueuedMessageIdRef.current) {
+      continuationQueuedMessageIdRef.current = null;
+      void onAbandonContinuation?.();
+    }
+    recoveredQueuedMessageIdsRef.current.clear();
+    activeQueuedOffersRef.current.clear();
+    orphanedQueuedOffers.delete(queueOwner);
+    deleteQueuedOwnedTempAttachments(queuedMessagesRef.current);
     setQueuedMessages([]);
     queuePausedRef.current = false;
     setLastInterruption(null);
@@ -1978,25 +2122,56 @@ export default function ChatInput({
     steerText(messageToSteer.content);
   };
 
+  const stopAndSendPendingRef = useRef(new Set<string>());
   const handleStopAndSend = (messageId: string) => {
     const messageToSend = queuedMessages.find((msg) => msg.id === messageId);
-    if (!messageToSend) return;
+    if (!messageToSend || stopAndSendPendingRef.current.has(messageId)) return;
 
-    // Stop current processing and temporarily pause queue to prevent double-send
-    stopAck.trigger();
+    // A paused queue can outlive the turn that created it. In that idle state
+    // there is no exact generation to cancel (and guessing one would violate
+    // the Stop barrier), so this action is simply an immediate, ordinary send.
+    if (!isLoading) {
+      stopAndSendPendingRef.current.add(messageId);
+      setQueuedMessages((prev) => prev.filter((msg) => msg.id !== messageId));
+      offerQueuedMessage(messageToSend);
+      stopAndSendPendingRef.current.delete(messageId);
+      return;
+    }
+
+    // Keep the row in the queue until the server confirms the previous turn's
+    // slot is free. The queue remains the visible owner of the user's words.
+    stopAndSendPendingRef.current.add(messageId);
     const wasPaused = queuePausedRef.current;
     queuePausedRef.current = true;
+    // Own the future lease before asking for it. Removal, Clear, and unmount
+    // can now revoke this exact queued replacement while the cancel barrier is
+    // still on the wire; the delayed acknowledgement below observes that
+    // revocation and abandons the lease instead of orphaning it Live.
+    continuationQueuedMessageIdRef.current = messageId;
 
-    // Remove the message from queue and send it immediately. A submit refused
-    // because the stop has not landed yet puts it back in the queue instead of
-    // discarding it.
-    setQueuedMessages((prev) => prev.filter((msg) => msg.id !== messageId));
-    offerQueuedMessage(messageToSend);
+    void stopAck.trigger(true).then((stopped) => {
+      stopAndSendPendingRef.current.delete(messageId);
+      if (!stopped) {
+        if (continuationQueuedMessageIdRef.current === messageId) {
+          continuationQueuedMessageIdRef.current = null;
+        }
+        queuePausedRef.current = wasPaused;
+        toastWarning({
+          title: 'Message still queued',
+          msg: 'Biorouter could not confirm that the current turn stopped. Your message is still in the queue.',
+        });
+        return;
+      }
 
-    // Restore previous pause state after a brief delay to prevent race condition
-    setTimeout(() => {
+      if (continuationQueuedMessageIdRef.current !== messageId) {
+        void onAbandonContinuation?.();
+        queuePausedRef.current = wasPaused;
+        return;
+      }
+      setQueuedMessages((prev) => prev.filter((msg) => msg.id !== messageId));
+      offerQueuedMessage(messageToSend);
       queuePausedRef.current = wasPaused;
-    }, 100);
+    });
   };
 
   const handleResumeQueue = () => {
@@ -2363,7 +2538,7 @@ export default function ChatInput({
         //
         // `undefined` rather than `'false'` when idle, so the attribute is
         // absent from the DOM and `[data-working]` is the whole test.
-        data-working={isLoading ? 'true' : undefined}
+        data-working={isWorking ? 'true' : undefined}
       >
         {/* Message Queue Display */}
         {queuedMessages.length > 0 && (
@@ -2569,7 +2744,7 @@ export default function ChatInput({
           {isLoading && !hasSubmittableContent ? (
             <Button
               type="button"
-              onClick={stopAck.trigger}
+              onClick={() => void stopAck.trigger(false)}
               // 32×32, matching Send exactly: the two swap in place as a turn
               // starts and ends, and a 28px Stop would twitch the card's
               // height and the text's centring on each swap.
@@ -2733,7 +2908,9 @@ export default function ChatInput({
                       // normal chip width hid all but two lines behind a
                       // `title` tooltip, which is not a place a person looks
                       // when they think their file attached fine.
-                      file.error ? 'border-border-danger max-w-[420px]' : 'border-border-subtle max-w-[200px]'
+                      file.error
+                        ? 'border-border-danger max-w-[420px]'
+                        : 'border-border-subtle max-w-[200px]'
                     }`}
                   >
                     <div className="flex-shrink-0 w-8 h-8 bg-background-default border border-border-subtle rounded-inner flex items-center justify-center text-supporting font-mono text-text-muted">

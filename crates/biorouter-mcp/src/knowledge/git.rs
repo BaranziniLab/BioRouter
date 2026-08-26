@@ -3,9 +3,11 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::Path;
 
-/// One spelling of the lock's relative path, shared with `service::kb_lock_path`
-/// (which takes it) and `brkb::walk` (which keeps it out of an archive for the
-/// same reason this keeps it out of a commit).
+/// One spelling of the lock's **historical** in-tree path, shared with
+/// `brkb::walk` (which keeps it out of an archive for the same reason this
+/// keeps it out of a commit). The live lock now sits beside the bases
+/// (`paths::kb_write_lock_path`), so this only ever matches the file a base
+/// created before that move still carries — which still must not be committed.
 use crate::knowledge::paths::KB_WRITE_LOCK_REL as WRITE_LOCK_PATH;
 
 /// The one directory that holds curated knowledge. `raw/`, `log.md`, `index.md`
@@ -61,6 +63,17 @@ impl GitRepo {
         Ok(Self {
             inner: git2::Repository::open(path)?,
         })
+    }
+
+    pub fn head_file_matches(&self, path: &Path, content: &[u8]) -> Result<bool> {
+        let tree = self.inner.head()?.peel_to_commit()?.tree()?;
+        let Ok(entry) = tree.get_path(path) else {
+            return Ok(false);
+        };
+        let Ok(blob) = self.inner.find_blob(entry.id()) else {
+            return Ok(false);
+        };
+        Ok(blob.content() == content)
     }
 
     pub fn commit_all(
@@ -167,11 +180,107 @@ fn parse_header(header: &str) -> (ChangeKind, String) {
 }
 
 pub struct Txn {
-    pub branch: String,
+    pub(crate) branch: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KnowledgeWriteFailurePhase {
+    RolledBack,
+    OutcomeUncertain,
+    Committed,
+}
+
+impl KnowledgeWriteFailurePhase {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::RolledBack => "rolled_back",
+            Self::OutcomeUncertain => "outcome_uncertain",
+            Self::Committed => "committed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommitTxnCheckpoint {
+    MainRefAdvanced,
+    WorkingTreeCheckedOut,
+    TransactionBranchDeleted,
+}
+
+/// A mutation failed after a transaction had started, with enough durable
+/// state for callers to decide whether retrying is safe.
+#[derive(Debug)]
+pub struct KnowledgeWriteFailure {
+    pub phase: KnowledgeWriteFailurePhase,
+    pub commit_sha: Option<String>,
+    operation: String,
+    cause: String,
+}
+
+impl KnowledgeWriteFailure {
+    pub fn rolled_back(operation: impl Into<String>, cause: anyhow::Error) -> Self {
+        Self {
+            phase: KnowledgeWriteFailurePhase::RolledBack,
+            commit_sha: None,
+            operation: operation.into(),
+            cause: format!("{cause:#}"),
+        }
+    }
+
+    pub fn outcome_uncertain(operation: impl Into<String>, cause: anyhow::Error) -> Self {
+        Self {
+            phase: KnowledgeWriteFailurePhase::OutcomeUncertain,
+            commit_sha: None,
+            operation: operation.into(),
+            cause: format!("{cause:#}"),
+        }
+    }
+
+    pub fn committed(
+        operation: impl Into<String>,
+        commit_sha: impl Into<String>,
+        cause: anyhow::Error,
+    ) -> Self {
+        Self {
+            phase: KnowledgeWriteFailurePhase::Committed,
+            commit_sha: Some(commit_sha.into()),
+            operation: operation.into(),
+            cause: format!("{cause:#}"),
+        }
+    }
+}
+
+impl std::fmt::Display for KnowledgeWriteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.phase {
+            KnowledgeWriteFailurePhase::RolledBack => write!(
+                f,
+                "{} failed and rolled back: {}. It is safe to retry",
+                self.operation, self.cause
+            ),
+            KnowledgeWriteFailurePhase::OutcomeUncertain => write!(
+                f,
+                "{} failed, and its commit or rollback could not be verified: {}. Inspect knowledge history before retrying",
+                self.operation, self.cause
+            ),
+            KnowledgeWriteFailurePhase::Committed => write!(
+                f,
+                "{} committed in commit {}, but post-commit cleanup failed: {}. The durable write must not be retried",
+                self.operation,
+                self.commit_sha.as_deref().unwrap_or("unknown"),
+                self.cause
+            ),
+        }
+    }
+}
+
+impl std::error::Error for KnowledgeWriteFailure {}
 
 impl GitRepo {
     pub fn begin_txn(&self, label: &str) -> Result<Txn> {
+        if !matches!(self.inner.head()?.shorthand(), Some("main" | "master")) {
+            anyhow::bail!("knowledge repository is not ready to begin a transaction");
+        }
         let id = uuid::Uuid::new_v4();
         let branch = format!("txn/{label}-{id}", label = slugify(label));
         let head = self.inner.head()?.peel_to_commit()?;
@@ -180,7 +289,8 @@ impl GitRepo {
         Ok(Txn { branch })
     }
 
-    pub fn commit_on_txn(&self, _txn: &Txn, message: &str) -> Result<String> {
+    pub fn commit_on_txn(&self, txn: &Txn, message: &str) -> Result<String> {
+        self.require_txn_head(&txn.branch)?;
         // Same as commit_all but caller already on the txn branch.
         let mut index = self.inner.index()?;
         stage_all(&mut index)?;
@@ -256,6 +366,21 @@ impl GitRepo {
         summary: &str,
         delta: Option<&str>,
     ) -> Result<String> {
+        self.commit_txn_with_checkpoint(txn, kind, summary, delta, |_| Ok(()))
+    }
+
+    pub(crate) fn commit_txn_with_checkpoint<F>(
+        &self,
+        txn: &Txn,
+        kind: ChangeKind,
+        summary: &str,
+        delta: Option<&str>,
+        mut checkpoint: F,
+    ) -> Result<String>
+    where
+        F: FnMut(CommitTxnCheckpoint) -> Result<()>,
+    {
+        self.require_txn_head(&txn.branch)?;
         // Squash-merge txn branch onto main as one commit.
         let main = self
             .inner
@@ -280,11 +405,28 @@ impl GitRepo {
             &txn_tree,
             &[&main_commit],
         )?;
+        let commit_sha = new_oid.to_string();
+        let committed_failure = |step: &str, error: anyhow::Error| -> anyhow::Error {
+            KnowledgeWriteFailure::committed(
+                "knowledge transaction",
+                &commit_sha,
+                error.context(step.to_string()),
+            )
+            .into()
+        };
+
+        checkpoint(CommitTxnCheckpoint::MainRefAdvanced)
+            .map_err(|error| committed_failure("after advancing the main ref", error))?;
 
         // Move HEAD back to main and check out the new tree.
-        self.inner.set_head(&format!("refs/heads/{main_name}"))?;
         self.inner
-            .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
+            .set_head(&format!("refs/heads/{main_name}"))
+            .map_err(|error| committed_failure("attaching HEAD to main", error.into()))?;
+        self.inner
+            .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .map_err(|error| committed_failure("checking out the committed tree", error.into()))?;
+        checkpoint(CommitTxnCheckpoint::WorkingTreeCheckedOut)
+            .map_err(|error| committed_failure("after checking out the committed tree", error))?;
         // ⚠ Immediately, and on this path too — see
         // `repair_graph_cache_after_checkout`. This is the SECOND force checkout
         // in this impl block and it clobbers the working copy of the tracked
@@ -297,13 +439,23 @@ impl GitRepo {
         // vanished from the graph one function above the repair.
         self.repair_graph_cache_after_checkout();
         // Delete txn branch.
-        self.inner
-            .find_branch(&txn.branch, git2::BranchType::Local)?
-            .delete()?;
-        Ok(new_oid.to_string())
+        let mut transaction_branch = self
+            .inner
+            .find_branch(&txn.branch, git2::BranchType::Local)
+            .map_err(|error| {
+                committed_failure("finding the completed transaction branch", error.into())
+            })?;
+        transaction_branch.delete().map_err(|error| {
+            committed_failure("deleting the completed transaction branch", error.into())
+        })?;
+        checkpoint(CommitTxnCheckpoint::TransactionBranchDeleted).map_err(|error| {
+            committed_failure("after deleting the completed transaction branch", error)
+        })?;
+        Ok(commit_sha)
     }
 
     pub fn abort_txn(&self, txn: &Txn) -> Result<()> {
+        self.require_txn_head(&txn.branch)?;
         let main = self
             .inner
             .find_branch("main", git2::BranchType::Local)
@@ -325,6 +477,73 @@ impl GitRepo {
             .find_branch(&txn.branch, git2::BranchType::Local)?
             .delete()?;
         Ok(())
+    }
+
+    /// Recover a transaction left checked out by a process crash. A live
+    /// transaction retains the KB file lock, so reaching this method after
+    /// acquiring that lock proves there is no live owner; no age heuristic or
+    /// timeout is needed.
+    pub fn recover_orphaned_txn(&self) -> Result<bool> {
+        let head = self.inner.head()?;
+        let checked_out = head
+            .name()
+            .and_then(|name| name.strip_prefix("refs/heads/txn/"))
+            .map(|suffix| format!("txn/{suffix}"));
+        drop(head);
+        let mut recovered = false;
+        if let Some(branch) = checked_out {
+            self.abort_txn(&Txn { branch })?;
+            recovered = true;
+        }
+
+        let orphaned = self
+            .inner
+            .branches(Some(git2::BranchType::Local))?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|(branch, _)| branch.name().ok().flatten().map(str::to_string))
+            .filter(|branch| branch.starts_with("txn/"))
+            .collect::<Vec<_>>();
+        for branch in orphaned {
+            self.inner
+                .find_branch(&branch, git2::BranchType::Local)?
+                .delete()?;
+            recovered = true;
+        }
+        Ok(recovered)
+    }
+
+    fn require_txn_head(&self, branch: &str) -> Result<()> {
+        if branch
+            .strip_prefix("txn/")
+            .is_none_or(|suffix| suffix.is_empty())
+        {
+            anyhow::bail!("knowledge transaction is not active");
+        }
+        let expected = format!("refs/heads/{branch}");
+        let head = self.inner.head()?;
+        if head.name() != Some(expected.as_str()) {
+            anyhow::bail!("knowledge transaction is not active");
+        }
+        self.inner
+            .find_branch(branch, git2::BranchType::Local)
+            .map_err(|_| anyhow::anyhow!("knowledge transaction is not active"))?;
+        Ok(())
+    }
+
+    pub fn abort_after_failure(
+        &self,
+        txn: &Txn,
+        operation: &str,
+        error: anyhow::Error,
+    ) -> anyhow::Error {
+        match self.abort_txn(txn) {
+            Ok(()) => KnowledgeWriteFailure::rolled_back(operation, error).into(),
+            Err(abort_error) => KnowledgeWriteFailure::outcome_uncertain(
+                operation,
+                anyhow::anyhow!("{error:#}; rollback also failed: {abort_error:#}"),
+            )
+            .into(),
+        }
     }
 
     /// Re-derive `graph-cache.json` from whatever pages the checkout just left
@@ -401,26 +620,23 @@ impl GitRepo {
     /// happened and is durable — the rollback on one path, the squash-merge
     /// commit on the other — so failing the call now would report a *derived
     /// file* as a failed transaction and invite a retry of work that is already
-    /// done. But a failed rebuild must not leave the stale file in place, or the
-    /// silent-loss bug survives its own fix — so on any failure the file is
-    /// removed, which is the one state DR-13 guarantees `get_graph` repairs by
-    /// re-deriving.
+    /// done. But a failed rebuild must not leave the stale file usable, or the
+    /// silent-loss bug survives its own fix. The repair therefore removes it;
+    /// if even removal fails, that second failure is retained in the warning
+    /// and the revision-bound reader still rejects the old envelope.
     fn repair_graph_cache_after_checkout(&self) {
         let Some(kb_root) = self.inner.workdir().map(Path::to_path_buf) else {
             // A bare repo has no pages to derive from. Not reachable for a
             // knowledge base, and not worth an error if it ever is.
             return;
         };
-        let rebuilt = crate::knowledge::graph::derive(&kb_root)
-            .and_then(|graph| crate::knowledge::graph::write_cache(&kb_root, &graph));
-        if let Err(e) = rebuilt {
+        if let Err(e) = crate::knowledge::graph::rebuild_cache(&kb_root) {
             let stale = crate::knowledge::graph::cache_path(&kb_root);
             tracing::warn!(
                 "knowledge: could not rebuild the graph cache at {} after a transaction \
-                 checkout, removing it so the next read re-derives: {e:#}",
+                 checkout; the next read will re-derive it: {e:#}",
                 stale.display()
             );
-            let _ = std::fs::remove_file(&stale);
         }
     }
 }
@@ -477,7 +693,8 @@ impl GitRepo {
 impl GitRepo {
     /// Commit on the currently-checked-out branch. Used by store::write_page
     /// when a txn is active and the caller has already switched HEAD.
-    pub fn commit_on_txn_in_progress(&self, message: &str) -> Result<String> {
+    pub fn commit_on_txn_in_progress(&self, branch: &str, message: &str) -> Result<String> {
+        self.require_txn_head(branch)?;
         let mut index = self.inner.index()?;
         stage_all(&mut index)?;
         index.write()?;
@@ -585,6 +802,80 @@ mod tests {
         );
     }
 
+    fn commit_failure_after(checkpoint: CommitTxnCheckpoint) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = GitRepo::init(dir.path()).unwrap();
+        std::fs::write(dir.path().join("seed.md"), "seed").unwrap();
+        repo.commit_all(ChangeKind::Manual, "seed", None).unwrap();
+
+        let txn = repo.begin_txn("phase-aware").unwrap();
+        std::fs::write(dir.path().join("durable.md"), "durable").unwrap();
+        repo.commit_on_txn(&txn, "transaction work").unwrap();
+        let error = repo
+            .commit_txn_with_checkpoint(
+                &txn,
+                ChangeKind::Manual,
+                "phase-aware commit",
+                None,
+                |reached| {
+                    if reached == checkpoint {
+                        anyhow::bail!("injected failure at {reached:?}");
+                    }
+                    Ok(())
+                },
+            )
+            .expect_err("the checkpoint must fail after advancing main");
+        let failure = error
+            .downcast_ref::<KnowledgeWriteFailure>()
+            .expect("post-ref failures remain phase-aware");
+        assert_eq!(failure.phase, KnowledgeWriteFailurePhase::Committed);
+        let committed_sha = failure
+            .commit_sha
+            .as_deref()
+            .expect("a committed failure identifies the durable commit");
+        let raw = git2::Repository::open(dir.path()).unwrap();
+        assert_eq!(
+            raw.find_branch("main", git2::BranchType::Local)
+                .unwrap()
+                .get()
+                .target()
+                .unwrap()
+                .to_string(),
+            committed_sha
+        );
+        assert_eq!(
+            repo.read_file_at(committed_sha, "durable.md")
+                .unwrap()
+                .as_deref(),
+            Some("durable")
+        );
+
+        repo.recover_orphaned_txn().unwrap();
+        assert_eq!(raw.head().unwrap().shorthand(), Some("main"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("durable.md")).unwrap(),
+            "durable"
+        );
+        assert!(raw
+            .find_branch(&txn.branch, git2::BranchType::Local)
+            .is_err());
+    }
+
+    #[test]
+    fn failure_after_main_ref_update_reports_committed_phase() {
+        commit_failure_after(CommitTxnCheckpoint::MainRefAdvanced);
+    }
+
+    #[test]
+    fn failure_after_checkout_reports_committed_phase() {
+        commit_failure_after(CommitTxnCheckpoint::WorkingTreeCheckedOut);
+    }
+
+    #[test]
+    fn failure_after_transaction_branch_deletion_reports_committed_phase() {
+        commit_failure_after(CommitTxnCheckpoint::TransactionBranchDeleted);
+    }
+
     #[test]
     fn txn_abort_leaves_main_untouched() {
         let dir = tempfile::tempdir().unwrap();
@@ -604,6 +895,27 @@ mod tests {
             !dir.path().join("doom.md").exists(),
             "working tree restored"
         );
+    }
+
+    #[test]
+    fn transaction_mutations_require_a_txn_branch_and_exact_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = GitRepo::init(dir.path()).unwrap();
+        std::fs::write(dir.path().join("seed.md"), "seed").unwrap();
+        repo.commit_all(ChangeKind::Manual, "seed", None).unwrap();
+        let txn = repo.begin_txn("guarded").unwrap();
+
+        repo.inner.set_head("refs/heads/main").unwrap();
+        assert!(repo.commit_on_txn(&txn, "wrong head").is_err());
+        assert!(repo.abort_txn(&txn).is_err());
+        assert!(repo
+            .commit_on_txn_in_progress("main", "caller branch")
+            .is_err());
+
+        repo.inner
+            .set_head(&format!("refs/heads/{}", txn.branch))
+            .unwrap();
+        repo.abort_txn(&txn).unwrap();
     }
 
     /// Aborting must not silently delete the newest pages **from the graph**.

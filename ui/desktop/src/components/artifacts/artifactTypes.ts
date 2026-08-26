@@ -56,6 +56,7 @@ export type ArtifactFilePreview =
       mimeType: string;
       text: string;
       size: number;
+      revision?: string;
       found: true;
       // For an HTML file, the security-prepared (asset-inlined) HTML the rendered
       // Preview toggle shows. `text` stays the raw source the Raw toggle shows.
@@ -69,6 +70,7 @@ export type ArtifactFilePreview =
       path: string;
       mimeType: string;
       size: number;
+      revision?: string;
       found: true;
       // **Exactly one of `dataUrl` and `bytes` is set**, decided by size in the
       // main process. A base64 data URL costs ~4/3 of the file as a JS string
@@ -88,6 +90,9 @@ export type ArtifactFilePreview =
       mimeType: string;
       data: ArrayBuffer;
       size: number;
+      revision?: string;
+      extractedText?: string;
+      textTruncated?: boolean;
       found: true;
     }
   | {

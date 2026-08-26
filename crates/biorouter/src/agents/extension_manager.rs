@@ -1586,7 +1586,16 @@ impl ExtensionManager {
     ) -> ExtensionResult<Vec<Tool>> {
         let snapshot = self.get_all_tools_cached().await?;
         let reach = self.extension_reach(admitted).await;
-        Ok(self.filter_tools(&snapshot.tools, None, Some(exclude), &snapshot.keys, &reach))
+        let mut tools =
+            self.filter_tools(&snapshot.tools, None, Some(exclude), &snapshot.keys, &reach);
+        // Spawning needs the parent agent's provider and task context. This
+        // method is the execute_code import catalogue, so an agent-loop-only
+        // tool must be removed here rather than by a second, downstream view of
+        // the catalogue.
+        tools.retain(|tool| {
+            tool.name.as_ref() != crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED
+        });
+        Ok(tools)
     }
 
     /// The PERMISSION EDITORS' view of the tool list: every installed

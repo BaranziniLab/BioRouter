@@ -19,6 +19,7 @@ use biorouter::workflow::local_workflows::get_workflow_library_dir;
 use biorouter::workflow::WORKFLOW_FILE_EXTENSIONS;
 use biorouter_mcp::agent_drafter::{default_root, store::ArtifactStore};
 use biorouter_mcp::knowledge::service::KnowledgeService;
+use biorouter_mcp::knowledge::types::KbFormat;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -120,7 +121,7 @@ fn reset_knowledge(service: &KnowledgeService, memory_root: &Path) -> Result<u64
     for base in bases {
         service.delete_base(&base.id)?;
     }
-    service.create_base(SOUL_KB_ID, SOUL_KB_NAME, Some(SOUL_COLOR))?;
+    service.create_base_in(SOUL_KB_ID, SOUL_KB_NAME, Some(SOUL_COLOR), KbFormat::Okf)?;
     if memory_root.exists() {
         fs::remove_dir_all(memory_root)?;
     }

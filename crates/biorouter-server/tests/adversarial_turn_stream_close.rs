@@ -29,6 +29,7 @@ fn msg(text: &str) -> MessageEvent {
 
 fn finish() -> MessageEvent {
     MessageEvent::Finish {
+        turn_id: None,
         reason: "stop".to_string(),
         token_state: TokenState::default(),
     }
@@ -71,6 +72,7 @@ async fn a_frame_after_the_terminal_must_not_become_the_terminal_frame() {
     let stream = TurnStream::new("post-terminal", "turn-1");
     stream.publish(&msg("half an answer"));
     stream.publish(&MessageEvent::Error {
+        turn_id: None,
         error: "The model turn ended unexpectedly. Please retry.".into(),
         code: "internal_error".into(),
         scope: TurnErrorScope::Internal,

@@ -197,7 +197,12 @@ describe('chatGroupsStorage — a persisted SPLIT round-trips and is reconciled'
       KEY(),
       JSON.stringify({
         ...state,
-        layout: { kind: 'branch', dir: 'diagonal', children: [{ kind: 'leaf', groupId: 'grp-1' }], sizes: [1] },
+        layout: {
+          kind: 'branch',
+          dir: 'diagonal',
+          children: [{ kind: 'leaf', groupId: 'grp-1' }],
+          sizes: [1],
+        },
       })
     );
     expect(loadChatGroups(getWindowId())).toBeNull();

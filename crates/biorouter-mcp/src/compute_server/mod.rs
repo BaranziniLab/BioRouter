@@ -25,6 +25,12 @@ fn invalid(msg: impl Into<String>) -> ErrorData {
     ErrorData::new(ErrorCode::INVALID_PARAMS, msg.into(), None)
 }
 
+#[cfg(unix)]
+const SHELL_PROGRAM: &str = "/bin/sh";
+
+#[cfg(not(unix))]
+const SHELL_PROGRAM: &str = "sh";
+
 #[derive(Debug, Deserialize, Serialize, rmcp::schemars::JsonSchema)]
 pub struct RunParams {
     /// A shell command to run inside the sandbox.
@@ -88,7 +94,7 @@ impl ComputeServer {
         let cmd = params.0.command;
         let out = self
             .sandbox
-            .exec(&["sh".to_string(), "-lc".to_string(), cmd], None)
+            .exec(&[SHELL_PROGRAM.to_string(), "-lc".to_string(), cmd], None)
             .await
             .map_err(|e| invalid(e.to_string()))?;
         let json = serde_json::to_string(&out).map_err(|e| invalid(e.to_string()))?;

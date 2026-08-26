@@ -86,6 +86,7 @@ export async function removeFromAgent(
 
   try {
     await agentRemoveExtension({
+      headers: await userActionHeaders(),
       body: { session_id: sessionId, name: extensionName },
       throwOnError: true,
     });

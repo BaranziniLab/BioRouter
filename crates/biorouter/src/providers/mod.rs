@@ -30,6 +30,7 @@ pub mod ollama;
 pub mod openai;
 pub mod openrouter;
 pub mod pricing;
+pub(crate) mod provider_binding;
 pub mod provider_registry;
 pub mod provider_test;
 pub(crate) mod retry;
@@ -52,10 +53,40 @@ pub mod xai;
 pub mod xiaomi_mimo;
 pub mod zai;
 
+pub(crate) use factory::create_from_persisted;
 pub use factory::{
     create, create_with_default_model, create_with_named_model, providers, refresh_custom_providers,
 };
 pub use retry::{retry_operation, RetryConfig};
+
+/// Session-safe construction state. Composites already publish their versioned
+/// two-provider recipe; specialized ordinary providers need their exact
+/// secret-free binding wrapped separately so a cold restore cannot drift with
+/// process configuration. Registry providers retain their established shape.
+pub(crate) fn persisted_model_config(
+    provider: &dyn base::Provider,
+) -> anyhow::Result<crate::model::ModelConfig> {
+    if provider.as_lead_worker().is_some() {
+        return Ok(provider.get_model_config());
+    }
+
+    persisted_model_config_from_binding(provider.get_name(), provider.restore_binding())
+}
+
+pub(crate) fn persisted_model_config_from_binding(
+    provider_name: &str,
+    binding: provider_binding::ProviderRestoreBinding,
+) -> anyhow::Result<crate::model::ModelConfig> {
+    anyhow::ensure!(
+        binding.provider_name() == provider_name,
+        "provider restore binding does not match provider '{}'",
+        provider_name
+    );
+    if !binding.requires_exact_restore() {
+        return Ok(binding.model().clone());
+    }
+    provider_binding::PersistedStandaloneProviderBinding::new(binding)?.to_model_config()
+}
 
 use std::sync::LazyLock;
 

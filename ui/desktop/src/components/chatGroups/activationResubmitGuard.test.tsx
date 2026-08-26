@@ -196,8 +196,8 @@ async function flush() {
 }
 
 function activeTabIds(): string[] {
-  return [...document.querySelectorAll('[data-testid^="activate-"]')].map(
-    (b) => b.getAttribute('data-testid')!.replace('activate-', '')
+  return [...document.querySelectorAll('[data-testid^="activate-"]')].map((b) =>
+    b.getAttribute('data-testid')!.replace('activate-', '')
   );
 }
 

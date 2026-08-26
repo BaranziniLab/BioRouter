@@ -7,11 +7,12 @@ name: Frontend
 # husky's hooks are never consulted. Every frontend gate ran only on whichever
 # machine last happened to run it by hand.
 #
-# Scope is deliberately narrow. This workflow runs the four cheap static gates
-# and the vitest suite on ubuntu-latest, and nothing else. It does not build,
-# package, sign, notarize, or stage any binary, and it never writes to `target/`
-# or `ui/desktop/src/bin/` — so the release pipeline's "one platform at a time"
-# and "reinstall node_modules after a Docker build" invariants are untouched.
+# Scope is deliberately narrow. The cheap static gates and vitest run on
+# ubuntu-latest; separate jobs regenerate the API contract and exercise the file
+# preview surface in Electron. It does not package, sign, notarize, or stage any
+# release binary, and it never writes to `ui/desktop/src/bin/` — so the release
+# pipeline's "one platform at a time" and "reinstall node_modules after a Docker
+# build" invariants are untouched.
 
 on:
   pull_request:
@@ -44,6 +45,54 @@ env:
   FORCE_COLOR: "1"
 
 jobs:
+  # ── Generated API contract ────────────────────────────────────────────────
+  # `scripts/check-openapi-schema.sh` is only a diff checker. The schema and
+  # TypeScript client must be regenerated first or a stale committed client is
+  # indistinguishable from a current one. Keep this as a PR job as well as the
+  # local `just check-openapi-schema` target so CI cannot go green on drift.
+  api-contract:
+    name: Generated API contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: openapi-contract
+
+      - name: Install Rust native build dependencies
+        working-directory: ${{ github.workspace }}
+        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Regenerate server OpenAPI schema
+        working-directory: ${{ github.workspace }}
+        run: cargo run -p biorouter-server --bin generate_schema --locked
+
+      - name: Regenerate TypeScript API client
+        run: npx @hey-api/openapi-ts
+
+      - name: Generated schema and client are committed
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/check-openapi-schema.sh
+
   # ── Static gates: typecheck, lint, theme codegen freshness, WCAG contrast ──
   # Measured at ~42s CPU (tsc) + ~32s CPU (eslint) + ~1s CPU (the two node
   # scripts). eslint is NOT type-aware here — eslint.config.js declares no
@@ -239,3 +288,43 @@ jobs:
           path: ui/desktop/vitest-junit.xml
           if-no-files-found: warn
           retention-days: 7
+
+  # ── File preview panel in a native Electron renderer ─────────────────────
+  # Vitest/jsdom cannot render PDFs, Office documents or compositor captures.
+  # This job deliberately remains separate from `unit` and downloads Electron
+  # only here. It covers image/PDF/DOCX/XLSX/PPTX rendering plus annotation
+  # crop geometry. Live websites are not claimed: those use the app main
+  # process's native WebContentsView and are covered by the packaged/dev-app
+  # release gate in docs/releases/preview-panel-release-gate.md.
+  preview-panel:
+    name: Preview panel (Electron)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+
+      # The workflow-level environment skips Electron everywhere else. This
+      # job is the one intentional exception because Playwright launches that
+      # exact runtime rather than a browser substitute.
+      - name: Install dependencies including Electron
+        run: env -u ELECTRON_SKIP_BINARY_DOWNLOAD npm ci
+
+      - name: Render files and capture an annotated region
+        env:
+          BIOROUTER_PREVIEW_OUTPUT_DIR: ${{ github.workspace }}/ui/desktop/preview-panel-evidence
+        run: npm run test:preview-panel
+
+      - name: Upload preview screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-panel-evidence-${{ runner.arch }}
+          path: ui/desktop/preview-panel-evidence
+          if-no-files-found: error
+          retention-days: 14

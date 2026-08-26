@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
                 println!("source_id: {}", result.source_id);
                 println!("commit: {}", result.commit_sha);
                 println!("steps: {}", result.steps);
-                let graph = svc.get_graph(&cli.kb_id)?;
+                let graph = svc.get_graph_async(&cli.kb_id).await?;
                 println!("graph nodes: {}", graph.nodes.len());
                 println!("graph edges: {}", graph.edges.len());
             }

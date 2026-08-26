@@ -813,7 +813,11 @@ export function ForceGraphCanvas({
           const direction = e.key.slice(5).toLowerCase() as Direction;
           // With nothing focused yet, an arrow enters at the biggest hub rather
           // than doing nothing — the same node Home picks.
-          land(focus ? nextNodeInDirection(focus, positioned, direction) : highestDegree(positioned, degreeOf));
+          land(
+            focus
+              ? nextNodeInDirection(focus, positioned, direction)
+              : highestDegree(positioned, degreeOf)
+          );
           return;
         }
         case 'Tab': {
@@ -848,7 +852,17 @@ export function ForceGraphCanvas({
         default:
       }
     },
-    [data.nodes, filtering, passing, model, keyboardFocusId, onNodeClick, theme.mode, size.width, size.height]
+    [
+      data.nodes,
+      filtering,
+      passing,
+      model,
+      keyboardFocusId,
+      onNodeClick,
+      theme.mode,
+      size.width,
+      size.height,
+    ]
   );
 
   const linkVisibility = (raw: unknown): boolean => {
@@ -884,9 +898,8 @@ export function ForceGraphCanvas({
         {announcement}
       </span>
       <span id={hintId} className="sr-only">
-        Arrow keys move between nodes. Tab steps through them by connection
-        count. Enter opens the focused node. Home returns to the most connected
-        node. Escape clears the focus.
+        Arrow keys move between nodes. Tab steps through them by connection count. Enter opens the
+        focused node. Home returns to the most connected node. Escape clears the focus.
       </span>
       {/*
         §5.11's four probes. Zero-sized, `aria-hidden`, and each carrying exactly

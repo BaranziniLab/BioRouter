@@ -1231,10 +1231,16 @@ impl CliSession {
                                             },
                                         });
                                     }
-                                    self.agent.handle_confirmation(id, PermissionConfirmation {
-                                        principal_type: PrincipalType::Tool,
-                                        permission,
-                                    }).await;
+                                    self.agent
+                                        .handle_confirmation_for_session(
+                                            &self.session_id,
+                                            id,
+                                            PermissionConfirmation {
+                                                principal_type: PrincipalType::Tool,
+                                                permission,
+                                            },
+                                        )
+                                        .await;
                                     continue;
                                 }
                                 let permission = prompt_tool_confirmation(&security_prompt)?;
@@ -1261,10 +1267,16 @@ impl CliSession {
                                     drop(stream);
                                     break;
                                 }
-                                self.agent.handle_confirmation(id, PermissionConfirmation {
-                                    principal_type: PrincipalType::Tool,
-                                    permission,
-                                }).await;
+                                self.agent
+                                    .handle_confirmation_for_session(
+                                        &self.session_id,
+                                        id,
+                                        PermissionConfirmation {
+                                            principal_type: PrincipalType::Tool,
+                                            permission,
+                                        },
+                                    )
+                                    .await;
                             } else if let Some((elicitation_id, elicitation_message, schema)) = find_elicitation_request(&message) {
                                 // #40/#31: an elicitation cannot be answered when nobody
                                 // is at the terminal — same predicate as tool
@@ -1305,7 +1317,7 @@ impl CliSession {
                                     }
                                     if let Err(e) =
                                         biorouter::action_required_manager::ActionRequiredManager::global()
-                                            .submit_cancellation(elicitation_id)
+                                            .submit_cancellation(&self.session_id, elicitation_id)
                                             .await
                                     {
                                         eprintln!(

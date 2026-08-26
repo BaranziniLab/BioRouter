@@ -13,6 +13,8 @@ activities:
   - Validate Auto Visualiser and JavaScript-executed artifact handoff
   - Build, lint, and execute an Apps SDK v2 reference app
   - Create and orchestrate subagents for meta-testing
+  - Validate live steering, detached supervision, close-tab survival, and provider restoration
+  - Exercise isolated OKF, BioOKF, and built-in Soul migration round trips
   - Generate and execute test workflows
   - Test error boundaries and security controls
   - Validate the Settings reset contract and its active-work safety gate
@@ -24,7 +26,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, apps, previews, subagents, workflows, reset, advanced"
+    description: "Which test phases to run: all, basic, extensions, apps, previews, subagents, knowledge, workflows, reset, advanced"
   
   - key: test_depth
     input_type: string
@@ -105,6 +107,18 @@ instructions: |
   - Sequential subagent chains
   - Recursive depth testing (subagent creating subagent)
   - Test summary mode (default behavior for concise results)
+  - Steer a running child and require the steered marker in its final answer
+  - Close only the child's tab, verify its turn survives, then reattach
+  - Watch long-running children without treating a watch timeout as failure
+  - Verify the child retains its exact provider/model and delegated tool profile
+
+  ### Phase 3B: Knowledge Round Trips
+  Validate the current knowledge formats without touching the user's real bases:
+  - Run deterministic OKF and BioOKF ingest → lint → query round trips
+  - Verify native Markdown citations identify current bundle pages
+  - Exercise empty-root creation and delete rollback tests
+  - Exercise startup purge of registered and unregistered legacy residue
+  - Verify the recreated built-in is named `soul` and has an OKF profile
   
   ### Phase 4: Advanced Self-Testing
   Push boundaries and test limits:
@@ -279,8 +293,50 @@ prompt: |
   ### Summary Mode Test
   Create subagents with summary mode (default) and verify concise output.
   Test with `summary: false` to get full conversation history.
+
+  ### Live Steering, Supervision, and Close-Tab Survival
+  1. Start a child whose task waits for a follow-up before it finishes. Require its first visible
+     output to contain `SELFTEST_CHILD_READY` and keep the turn running.
+  2. Call `workspace_list`; require that child to report `running: true` and record its exact
+     provider, model, and enabled extensions.
+  3. Call `workspace_send_prompt` with `mode: "steer"` and tell the running child to finish with
+     the exact marker `SELFTEST_STEERED_OK`. Do not start a replacement child.
+  4. Call `workspace_watch` with a short timeout first. If it reports the child still running,
+     record that as a successful nonterminal observation, then call it again; a watch timeout is
+     not a turn failure.
+  5. Require the child's final answer to contain `SELFTEST_STEERED_OK`, and verify its provider,
+     model, and delegated extensions are unchanged.
+  6. Start a second child that waits before returning `SELFTEST_TAB_SURVIVED`. Call
+     `workspace_close` with `scope: "tab"` while it is running, then call `workspace_watch`.
+     Require the turn to continue and finish. Reopen the same session with `workspace_open`; do
+     not spawn a replacement. Verify the transcript contains `SELFTEST_TAB_SURVIVED`.
+  7. During both live turns, record whether the selected child tab shows the existing breathing
+     activity dot and whether its composer shows the existing moving rim. If this workflow is
+     running headless, record those two visual assertions as NOT OBSERVABLE, never PASS.
   
   Log results to: {{ workspace_dir }}/phase3_subagents.md
+  {% endif %}
+
+  {% if test_phases == "all" or "knowledge" in test_phases %}
+  ## 🧠 PHASE 3B: Isolated OKF, BioOKF, and Soul Validation
+
+  Never delete, rename, import into, or mutate any knowledge base in the user's active profile.
+  Use the repository's temporary-directory regressions and keep generated artifacts under
+  {{ workspace_dir }}/knowledge-evidence/.
+
+  1. Run `cargo test -p biorouter-mcp --test knowledge_macros_e2e` and require the deterministic
+     OKF ingest → lint → query round trip to pass.
+  2. Run `cargo test -p biorouter --test knowledge_agent_roundtrip` and require the attached-agent
+     OKF/BioOKF curation round trips to pass without a live API key.
+  3. Run the focused native-citation, BRKB validation, create/import/delete rollback, and zero-base
+     creation regressions. A current `.brkb` must require a readable manifest and the required
+     OKF/BioOKF structure; traversal, oversized expansion, and legacy profiles must be refused.
+  4. Run `cargo test -p biorouter startup_purges_unregistered_legacy_residue_and_recreates_native_soul --lib`.
+     Require the recreated base id to be exactly `soul`, its profile to be OKF, and both registered
+     and unregistered legacy residue to be absent.
+  5. Record the exact commands, exit codes, current-format manifests, citation targets, and rollback
+     assertions in {{ workspace_dir }}/phase3b_knowledge.md. Never copy page content from a real
+     user knowledge base into the report.
   {% endif %}
 
   {% if test_phases == "all" or "reset" in test_phases %}
@@ -357,6 +413,7 @@ prompt: |
   • Extensions: [✓/✗]
   • Apps SDK v2: [✓/✗]
   • Subagents: [✓/✗]
+  • OKF/BioOKF/Soul: [✓/✗]
   • Settings reset safety: [✓/✗]
   
   ⚠️ Issues Found:

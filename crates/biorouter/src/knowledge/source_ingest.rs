@@ -91,7 +91,7 @@ pub struct SourceIngestArgs {
     pub focus: Option<String>,
     pub bounds: SubAgentBounds,
     pub event_sink: Option<tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
-    pub cancel: Option<std::sync::Arc<tokio::sync::Notify>>,
+    pub cancel: Option<tokio_util::sync::CancellationToken>,
     /// `provider/model`, carried into the report so the answer names the model
     /// the work ran on. An acceptance criterion of issue #108: provider choice
     /// and billing mode must be **visible**, not inferred.
@@ -383,30 +383,19 @@ fn expand(spec: &SourceSpec) -> (Vec<(String, SourceInput)>, Vec<ExpansionNote>)
     }
 }
 
-/// Ingest every named source into one knowledge base, one transaction each.
-///
-/// **One macro call per source, and that is the unit of atomicity.** A source
-/// that fails aborts its own transaction and leaves the others alone, which is
-/// what makes per-source status meaningful and a retry safe. The alternative —
-/// one transaction over the batch — would make one bad PDF discard four good
-/// digests.
-///
-/// A cancelled batch stops at the current source; the ones not reached are
-/// reported as such rather than silently dropped.
-pub async fn ingest_sources(
-    svc: &KnowledgeService,
-    args: SourceIngestArgs,
-) -> anyhow::Result<SourceIngestReport> {
-    if args.sources.is_empty() {
+type ExpandedSources = (Vec<(String, SourceInput)>, Vec<ExpansionNote>);
+
+fn expand_sources(sources: &[SourceSpec]) -> anyhow::Result<ExpandedSources> {
+    if sources.is_empty() {
         anyhow::bail!(
             "no sources given: pass `sources` (a list of file paths, folders or URLs), or one of \
              `path` / `url` / `text`"
         );
     }
 
-    let mut items: Vec<(String, SourceInput)> = Vec::new();
-    let mut notes: Vec<ExpansionNote> = Vec::new();
-    for spec in &args.sources {
+    let mut items = Vec::new();
+    let mut notes = Vec::new();
+    for spec in sources {
         let (found, spec_notes) = expand(spec);
         notes.extend(spec_notes);
         items.extend(found);
@@ -430,6 +419,102 @@ pub async fn ingest_sources(
         );
     }
 
+    Ok((items, notes))
+}
+
+fn cancelled_outcome(label: String) -> SourceOutcome {
+    SourceOutcome {
+        label,
+        ok: false,
+        source_id: None,
+        raw_commit_sha: None,
+        commit_sha: None,
+        failure_phase: Some(IngestFailurePhase::NotStarted),
+        steps: 0,
+        verification: None,
+        error: Some("cancelled before this source started".to_string()),
+    }
+}
+
+async fn ingest_source(
+    svc: &KnowledgeService,
+    args: &SourceIngestArgs,
+    label: String,
+    source: SourceInput,
+) -> SourceOutcome {
+    let outcome = ingest(
+        svc,
+        IngestArgs {
+            kb_id: args.kb_id.clone(),
+            // Issue #56: the ProviderTier -> bool crossing, the same one
+            // `conversation_ingest` makes, because `IngestArgs` lives in
+            // `biorouter-mcp`, which cannot name `ProviderTier`.
+            caller_is_private: args.caller_capability.is_private(),
+            caller_affiliation: crate::privacy::affiliation::caller_affiliation(
+                args.caller_affiliation,
+            ),
+            source,
+            completer: (args.completer)(),
+            focus: args.focus.clone(),
+            bounds: same_bounds(&args.bounds),
+            event_sink: args.event_sink.clone(),
+            cancel: args.cancel.clone(),
+        },
+    )
+    .await;
+
+    match outcome {
+        Ok(r) => SourceOutcome {
+            label,
+            ok: true,
+            source_id: Some(r.source_id),
+            raw_commit_sha: r.raw_commit_sha,
+            commit_sha: Some(r.commit_sha),
+            failure_phase: None,
+            steps: r.steps,
+            verification: Some(VerificationSummary {
+                ok: r.verification.ok,
+                errors: r.verification.errors,
+                warnings: r.verification.warnings,
+                scan_error: r.verification.scan_error,
+            }),
+            error: None,
+        },
+        Err(e) => {
+            let retained = e.downcast_ref::<IngestCurationFailure>();
+            SourceOutcome {
+                label,
+                ok: false,
+                source_id: retained.map(|failure| failure.source_id.clone()),
+                raw_commit_sha: retained.and_then(|failure| failure.raw_commit_sha.clone()),
+                commit_sha: retained.and_then(|failure| failure.curation_commit_sha.clone()),
+                failure_phase: retained.map(|failure| failure.phase),
+                steps: 0,
+                verification: None,
+                // The macro's own words. It already says whether the run wrote
+                // nothing, how many steps it took and which tool calls failed;
+                // a second wording here would be a second answer to drift from.
+                error: Some(format!("{e:#}")),
+            }
+        }
+    }
+}
+
+/// Ingest every named source into one knowledge base, one transaction each.
+///
+/// **One macro call per source, and that is the unit of atomicity.** A source
+/// that fails aborts its own transaction and leaves the others alone, which is
+/// what makes per-source status meaningful and a retry safe. The alternative —
+/// one transaction over the batch — would make one bad PDF discard four good
+/// digests.
+///
+/// A cancelled batch stops at the current source; the ones not reached are
+/// reported as such rather than silently dropped.
+pub async fn ingest_sources(
+    svc: &KnowledgeService,
+    args: SourceIngestArgs,
+) -> anyhow::Result<SourceIngestReport> {
+    let (items, notes) = expand_sources(&args.sources)?;
     let mut report = SourceIngestReport {
         kb_id: args.kb_id.clone(),
         model: args.model_label.clone(),
@@ -438,62 +523,16 @@ pub async fn ingest_sources(
     };
 
     for (label, source) in items {
-        let outcome = ingest(
-            svc,
-            IngestArgs {
-                kb_id: args.kb_id.clone(),
-                // Issue #56: the ProviderTier -> bool crossing, the same one
-                // `conversation_ingest` makes, because `IngestArgs` lives in
-                // `biorouter-mcp`, which cannot name `ProviderTier`.
-                caller_is_private: args.caller_capability.is_private(),
-                caller_affiliation: crate::privacy::affiliation::caller_affiliation(
-                    args.caller_affiliation,
-                ),
-                source,
-                completer: (args.completer)(),
-                focus: args.focus.clone(),
-                bounds: same_bounds(&args.bounds),
-                event_sink: args.event_sink.clone(),
-                cancel: args.cancel.clone(),
-            },
-        )
-        .await;
-
-        match outcome {
-            Ok(r) => report.outcomes.push(SourceOutcome {
-                label,
-                ok: true,
-                source_id: Some(r.source_id),
-                raw_commit_sha: r.raw_commit_sha,
-                commit_sha: Some(r.commit_sha),
-                failure_phase: None,
-                steps: r.steps,
-                verification: Some(VerificationSummary {
-                    ok: r.verification.ok,
-                    errors: r.verification.errors,
-                    warnings: r.verification.warnings,
-                    scan_error: r.verification.scan_error,
-                }),
-                error: None,
-            }),
-            Err(e) => {
-                let retained = e.downcast_ref::<IngestCurationFailure>();
-                report.outcomes.push(SourceOutcome {
-                    label,
-                    ok: false,
-                    source_id: retained.map(|failure| failure.source_id.clone()),
-                    raw_commit_sha: retained.and_then(|failure| failure.raw_commit_sha.clone()),
-                    commit_sha: retained.and_then(|failure| failure.curation_commit_sha.clone()),
-                    failure_phase: retained.map(|failure| failure.phase),
-                    steps: 0,
-                    verification: None,
-                    // The macro's own words. It already says whether the run wrote
-                    // nothing, how many steps it took and which tool calls failed;
-                    // a second wording here would be a second answer to drift from.
-                    error: Some(format!("{e:#}")),
-                });
-            }
-        }
+        let outcome = if args
+            .cancel
+            .as_ref()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+        {
+            cancelled_outcome(label)
+        } else {
+            ingest_source(svc, &args, label, source).await
+        };
+        report.outcomes.push(outcome);
     }
 
     Ok(report)
@@ -847,6 +886,40 @@ mod tests {
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_batch_does_not_stage_later_sources() {
+        let (_dir, svc) = fresh_svc();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        let completer: CompleterFactory = Box::new(|| {
+            panic!("a cancelled source must not construct a completer");
+        });
+        let mut args = args_for(
+            vec![
+                SourceSpec::Text {
+                    text: "alpha".into(),
+                    title: Some("alpha".into()),
+                },
+                SourceSpec::Text {
+                    text: "beta".into(),
+                    title: Some("beta".into()),
+                },
+            ],
+            completer,
+        );
+        args.cancel = Some(cancel);
+
+        let report = ingest_sources(&svc, args).await.unwrap();
+
+        assert!(raw_sources(&svc).is_empty());
+        assert_eq!(report.outcomes.len(), 2);
+        assert!(report.outcomes.iter().all(|outcome| {
+            !outcome.ok
+                && outcome.failure_phase == Some(IngestFailurePhase::NotStarted)
+                && outcome.error.as_deref() == Some("cancelled before this source started")
+        }));
     }
 
     /// The acceptance criterion, end to end: a batch of local documents produces

@@ -49,6 +49,7 @@ use super::coding_agent::{
     self, bridge, codex_stream, discovery, env as agent_env, mirror, transcript, CodingAgentKind,
 };
 use super::errors::ProviderError;
+use super::provider_binding::{AbsoluteCommandPath, ProviderRestoreBinding};
 use crate::agents::effort::ReasoningEffort;
 use crate::config::search_path::SearchPaths;
 use crate::conversation::message::{Message, MessageContent};
@@ -58,10 +59,6 @@ const KIND: CodingAgentKind = CodingAgentKind::Codex;
 
 pub const CODEX_DEFAULT_MODEL: &str = "gpt-5.5";
 pub const CODEX_DOC_URL: &str = "https://developers.openai.com/codex/cli";
-
-/// A turn's wall-clock ceiling. None of the deleted CLI providers had one, so a
-/// wedged child held its session open indefinitely.
-const TURN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// How long the turn will wait for the app server to say which account it bills.
 ///
@@ -167,10 +164,10 @@ fn link_codex_auth(source: &Path, target: &Path) -> std::io::Result<()> {
 /// `tests/context_windows.rs` compares the two.
 fn known_models() -> Vec<ModelInfo> {
     vec![
-        ModelInfo::new("gpt-5.5", 1_050_000),
-        ModelInfo::new("gpt-5.4", 1_050_000),
-        ModelInfo::new("gpt-5.4-mini", 400_000),
-        ModelInfo::new("gpt-5.3-codex", 400_000),
+        ModelInfo::new("gpt-5.5", 1_050_000).with_vision(),
+        ModelInfo::new("gpt-5.4", 1_050_000).with_vision(),
+        ModelInfo::new("gpt-5.4-mini", 400_000).with_vision(),
+        ModelInfo::new("gpt-5.3-codex", 400_000).with_vision(),
     ]
 }
 
@@ -233,6 +230,11 @@ impl CodexProvider {
                 KIND.command_config_key(),
             )
         })?;
+        Self::from_resolved(model, AbsoluteCommandPath::resolve(command)?)
+    }
+
+    pub(crate) fn from_resolved(model: ModelConfig, command: AbsoluteCommandPath) -> Result<Self> {
+        let command = AbsoluteCommandPath::new(command.into_path_buf())?.into_path_buf();
         Ok(Self {
             command,
             model,
@@ -323,7 +325,7 @@ impl CodexProvider {
             config["mcp_servers"] = json!({
                 "biorouter": {
                     "url": url,
-                    "tool_timeout_sec": bridge::CHILD_TOOL_CALL_TIMEOUT.as_secs(),
+                    "tool_timeout_sec": bridge::child_tool_call_timeout().as_secs(),
                     "startup_timeout_sec": 30,
                 }
             });
@@ -367,9 +369,25 @@ impl CodexProvider {
         effort: Option<ReasoningEffort>,
         model: &str,
     ) -> Value {
+        Self::turn_params_with_images(thread_id, prompt, &[], effort, model)
+    }
+
+    fn turn_params_with_images(
+        thread_id: &str,
+        prompt: &str,
+        images: &[transcript::ImageInput],
+        effort: Option<ReasoningEffort>,
+        model: &str,
+    ) -> Value {
+        let mut input = vec![json!({ "type": "text", "text": prompt })];
+        input.extend(
+            images
+                .iter()
+                .map(|image| json!({ "type": "image", "url": image.data_url() })),
+        );
         json!({
             "threadId": thread_id,
-            "input": [{ "type": "text", "text": prompt }],
+            "input": input,
             // Always sent, and on Codex's own per-model ladder rather than the
             // OpenAI-family low/high pair — see `coding_agent::effort`. The model
             // is needed because that ladder differs between models: `max` exists
@@ -585,10 +603,20 @@ impl CodexProvider {
         &self,
         model: &ModelConfig,
         system: &str,
-        prompt: &str,
+        prompt: &transcript::Prompt,
     ) -> Result<TurnOutcome, ProviderError> {
         let server = self.spawn_app_server().await?;
-        let result = self.turn_on(&server, model, system, prompt).await;
+        let result = coding_agent::await_turn(
+            self.turn_on(&server, model, system, prompt),
+            coding_agent::turn_timeout(),
+        )
+        .await
+        .map_err(|elapsed| {
+            ProviderError::ExecutionError(format!(
+                "the Codex handshake and turn did not finish within {}s and were stopped",
+                elapsed.duration().as_secs()
+            ))
+        })?;
         // Always reap. A leaked `codex app-server` is a live process holding the
         // user's credential.
         server.shutdown().await;
@@ -600,7 +628,7 @@ impl CodexProvider {
         server: &AppServer,
         model: &ModelConfig,
         system: &str,
-        prompt: &str,
+        prompt: &transcript::Prompt,
     ) -> Result<TurnOutcome, ProviderError> {
         server
             .request(
@@ -651,24 +679,27 @@ impl CodexProvider {
         // notifications, so the pump has to run alongside it rather than after it.
         let start = server.request(
             "turn/start",
-            Self::turn_params(
+            Self::turn_params_with_images(
                 &thread_id,
-                prompt,
+                &prompt.text,
+                &prompt.images,
                 model.reasoning_effort,
                 &model.model_name,
             ),
         );
         let pump = Self::pump(server);
 
-        let (started, outcome) =
-            tokio::time::timeout(TURN_TIMEOUT, async { tokio::join!(start, pump) })
-                .await
-                .map_err(|_| {
-                    ProviderError::ExecutionError(format!(
-                        "the Codex turn did not finish within {}s and was stopped",
-                        TURN_TIMEOUT.as_secs()
-                    ))
-                })?;
+        let (started, outcome) = coding_agent::await_turn(
+            async { tokio::join!(start, pump) },
+            coding_agent::turn_timeout(),
+        )
+        .await
+        .map_err(|elapsed| {
+            ProviderError::ExecutionError(format!(
+                "the Codex turn did not finish within {}s and was stopped",
+                elapsed.duration().as_secs()
+            ))
+        })?;
         started?;
         outcome
     }
@@ -684,7 +715,7 @@ impl CodexProvider {
         server: &AppServer,
         model: &ModelConfig,
         system: &str,
-        prompt: &str,
+        prompt: &transcript::Prompt,
         bridge_url: Option<&str>,
         tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
         steering: Option<ProviderSteerReceiver>,
@@ -729,9 +760,10 @@ impl CodexProvider {
             let started = server
                 .request(
                     "turn/start",
-                    Self::turn_params(
+                    Self::turn_params_with_images(
                         &thread_id,
-                        prompt,
+                        &prompt.text,
+                        &prompt.images,
                         model.reasoning_effort,
                         &model.model_name,
                     ),
@@ -752,15 +784,17 @@ impl CodexProvider {
         };
         let pump = Self::stream_pump(server, model, &thread_id, turn_id_rx, tx, steering);
 
-        let (started, pumped) =
-            tokio::time::timeout(TURN_TIMEOUT, async { tokio::join!(start, pump) })
-                .await
-                .map_err(|_| {
-                    ProviderError::ExecutionError(format!(
-                        "the Codex turn did not finish within {}s and was stopped",
-                        TURN_TIMEOUT.as_secs()
-                    ))
-                })?;
+        let (started, pumped) = coding_agent::await_turn(
+            async { tokio::join!(start, pump) },
+            coding_agent::turn_timeout(),
+        )
+        .await
+        .map_err(|elapsed| {
+            ProviderError::ExecutionError(format!(
+                "the Codex turn did not finish within {}s and was stopped",
+                elapsed.duration().as_secs()
+            ))
+        })?;
         started?;
         pumped
     }
@@ -1246,7 +1280,7 @@ impl CodexProvider {
         messages: &[Message],
         steering: Option<ProviderSteerReceiver>,
     ) -> Result<MessageStream, ProviderError> {
-        let prompt = transcript::flatten(messages).ok_or_else(|| {
+        let prompt = transcript::flatten_with_images(messages).ok_or_else(|| {
             ProviderError::RequestFailed("there is no user message for Codex to answer".to_string())
         })?;
 
@@ -1268,16 +1302,26 @@ impl CodexProvider {
                 }
             };
 
-            let outcome = Self::stream_turn(
-                &server,
-                &model_config,
-                &system,
-                &prompt,
-                bridge_url.as_deref(),
-                &tx,
-                steering,
+            let outcome = coding_agent::await_turn(
+                Self::stream_turn(
+                    &server,
+                    &model_config,
+                    &system,
+                    &prompt,
+                    bridge_url.as_deref(),
+                    &tx,
+                    steering,
+                ),
+                coding_agent::turn_timeout(),
             )
-            .await;
+            .await
+            .map_err(|elapsed| {
+                ProviderError::ExecutionError(format!(
+                    "the Codex handshake and turn did not finish within {}s and were stopped",
+                    elapsed.duration().as_secs()
+                ))
+            })
+            .and_then(std::convert::identity);
 
             if let Err(e) = outcome {
                 let _ = tx.send(Err(e));
@@ -1329,6 +1373,13 @@ impl Provider for CodexProvider {
         &self.name
     }
 
+    fn restore_binding(&self) -> ProviderRestoreBinding {
+        ProviderRestoreBinding::Codex {
+            model: super::provider_binding::model_without_restore_marker(self.model.clone()),
+            command: AbsoluteCommandPath::from_resolved(self.command.clone()),
+        }
+    }
+
     fn get_model_config(&self) -> ModelConfig {
         self.model.clone()
     }
@@ -1340,7 +1391,7 @@ impl Provider for CodexProvider {
         messages: &[Message],
         _tools: &[Tool],
     ) -> Result<(Message, ProviderUsage), ProviderError> {
-        let prompt = transcript::flatten(messages).ok_or_else(|| {
+        let prompt = transcript::flatten_with_images(messages).ok_or_else(|| {
             ProviderError::RequestFailed("there is no user message for Codex to answer".to_string())
         })?;
 
@@ -1438,6 +1489,19 @@ impl Provider for CodexProvider {
 mod tests {
     use super::*;
 
+    #[test]
+    fn restore_binding_pins_the_resolved_codex_command() {
+        let command = std::env::current_exe().unwrap();
+        let provider = CodexProvider::from_resolved(
+            ModelConfig::new_or_fail("gpt-5.5"),
+            AbsoluteCommandPath::new(command.clone()).unwrap(),
+        )
+        .unwrap();
+        let encoded = serde_json::to_value(provider.restore_binding()).unwrap();
+        assert_eq!(encoded["kind"], "codex");
+        assert_eq!(encoded["command"], serde_json::json!(command));
+    }
+
     /// Only a `chatgpt` account is the subscription. Everything else is metered,
     /// and a metered run is refused rather than billed quietly.
     ///
@@ -1509,13 +1573,14 @@ mod tests {
     async fn a_metered_codex_is_refused_before_the_prompt_is_sent() {
         let server = fake_app_server(r#"{"type":"apiKey"}"#).await;
         let provider = test_provider();
+        let prompt = transcript::Prompt::text_only("hello");
 
         let err = provider
             .turn_on(
                 &server,
                 &ModelConfig::new_or_fail("gpt-5.5"),
                 "SYSTEM",
-                "hello",
+                &prompt,
             )
             .await
             .expect_err("a turn on an api-key Codex must not run");
@@ -1560,13 +1625,14 @@ mod tests {
     async fn a_subscription_codex_still_runs_its_turn() {
         let server = fake_app_server(r#"{"type":"chatgpt","planType":"pro"}"#).await;
         let provider = test_provider();
+        let prompt = transcript::Prompt::text_only("hello");
 
         let outcome = provider
             .turn_on(
                 &server,
                 &ModelConfig::new_or_fail("gpt-5.5"),
                 "SYSTEM",
-                "hello",
+                &prompt,
             )
             .await
             .expect("a subscription turn must not be refused");
@@ -1832,7 +1898,7 @@ for line in sys.stdin:
         // rather than handed the partial result the tool had ready.
         assert_eq!(
             with["config"]["mcp_servers"]["biorouter"]["tool_timeout_sec"],
-            crate::providers::coding_agent::bridge::CHILD_TOOL_CALL_TIMEOUT.as_secs()
+            crate::providers::coding_agent::bridge::child_tool_call_timeout().as_secs()
         );
 
         let without = CodexProvider::thread_params("S", "/tmp", "gpt-5.5", None);
@@ -1861,6 +1927,20 @@ for line in sys.stdin:
         assert_eq!(p["threadId"], "th_1");
         assert_eq!(p["input"][0]["type"], "text");
         assert_eq!(p["input"][0]["text"], "why?");
+    }
+
+    #[test]
+    fn turn_params_send_images_as_structured_codex_inputs() {
+        let images = vec![transcript::ImageInput {
+            data: "cGl4ZWxz".to_string(),
+            mime_type: "image/png",
+        }];
+        let p =
+            CodexProvider::turn_params_with_images("th_1", "describe", &images, None, "gpt-5.5");
+
+        assert_eq!(p["input"][0], json!({ "type": "text", "text": "describe" }));
+        assert_eq!(p["input"][1]["type"], "image");
+        assert_eq!(p["input"][1]["url"], "data:image/png;base64,cGl4ZWxz");
     }
 
     /// `/effort` has to arrive on `turn/start`, or it is a silent no-op:
@@ -2161,6 +2241,12 @@ for line in sys.stdin:
         assert!(m.config_keys[0].required);
         assert!(!m.config_keys[0].secret);
         assert_eq!(m.config_keys[0].default.as_deref(), Some("codex"));
+        assert!(
+            m.known_models
+                .iter()
+                .all(|model| model.supports_vision == Some(true)),
+            "every model advertised by the Codex CLI provider accepts image inputs"
+        );
     }
 }
 

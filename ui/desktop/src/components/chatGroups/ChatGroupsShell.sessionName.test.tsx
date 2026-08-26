@@ -39,9 +39,7 @@ vi.mock('../../contexts/ChatGroupsContext', () => ({
         g1: {
           id: 'g1',
           activeTabId: 't1',
-          tabs: [
-            { tabId: 't1', sessionId: 'sess-1', title: 'New Session', userSetName: false },
-          ],
+          tabs: [{ tabId: 't1', sessionId: 'sess-1', title: 'New Session', userSetName: false }],
         },
       },
     },
@@ -65,7 +63,11 @@ describe('ChatGroupsShell — the tab adopts the loaded session name', () => {
     // The wiring itself is the thing that was missing.
     expect(onSessionUpdate).toBeTypeOf('function');
 
-    onSessionUpdate!({ id: 'sess-1', name: 'Multiple sclerosis knowledge graph', userSetName: false });
+    onSessionUpdate!({
+      id: 'sess-1',
+      name: 'Multiple sclerosis knowledge graph',
+      userSetName: false,
+    });
 
     expect(dispatch).toHaveBeenCalledWith({
       type: 'renameTab',

@@ -84,6 +84,24 @@ fn spawn_and_serve<S>(
     });
 }
 
+fn spawn_knowledge_and_serve(
+    server: KnowledgeServer,
+    transport: (tokio::io::DuplexStream, tokio::io::DuplexStream),
+) {
+    let teardown = server.clone();
+    tokio::spawn(async move {
+        match server.serve(transport).await {
+            Ok(running) => {
+                let _ = running.waiting().await;
+            }
+            Err(e) => tracing::error!(builtin = "knowledge", error = %e, "server error"),
+        }
+        if let Err(e) = teardown.abort_all_transactions().await {
+            tracing::error!(builtin = "knowledge", error = %e, "transaction teardown error");
+        }
+    });
+}
+
 macro_rules! builtin {
     ($name:ident, $server_ty:ty) => {{
         fn spawn(
@@ -163,8 +181,7 @@ pub static BUILTIN_EXTENSIONS: Lazy<HashMap<&'static str, BuiltinDef>> = Lazy::n
                         w: tokio::io::DuplexStream,
                         _working_dir: Option<std::path::PathBuf>,
                     ) {
-                        spawn_and_serve(
-                            "knowledge",
+                        spawn_knowledge_and_serve(
                             KnowledgeServer::new().expect("init knowledge server"),
                             (r, w),
                         );

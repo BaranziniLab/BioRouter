@@ -4,13 +4,17 @@ use crate::{
         subagent_task_config::TaskConfig,
         Agent, AgentConfig, AgentEvent, SessionConfig,
     },
-    conversation::{message::Message, Conversation},
+    conversation::{
+        message::{Message, MessageContent},
+        Conversation,
+    },
     prompt_template::render_global_file,
     session::SessionManager,
     workflow::Workflow,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use futures::StreamExt;
+use rmcp::model::Role;
 use serde::Serialize;
 use std::future::Future;
 use std::pin::Pin;
@@ -32,6 +36,115 @@ type TurnAbort = (String, String);
 
 type AgentMessagesFuture =
     Pin<Box<dyn Future<Output = Result<(Conversation, Option<String>, Option<TurnAbort>)>> + Send>>;
+
+fn delegated_initial_message(user_task: String, mut pending: Vec<Message>) -> Message {
+    if pending.is_empty() {
+        return Message::user().with_text(user_task);
+    }
+
+    let mut initial = pending.remove(0);
+    initial.role = Role::User;
+    let mut content = Message::user().with_text(user_task).content;
+    content.push(MessageContent::text(
+        "\n\nHuman steering received before this delegated run started:\n",
+    ));
+    content.append(&mut initial.content);
+    for mut additional in pending {
+        content.push(MessageContent::text(
+            "\n\nAdditional pre-start user steering:\n",
+        ));
+        content.append(&mut additional.content);
+    }
+    initial.content = content;
+    initial
+}
+
+/// What [`ensure_initial_user_direct_is_durable`] established about the accepted
+/// pre-start steering that rode into the delegated prompt.
+///
+/// The distinction that matters is between the two ends and the two middles: a
+/// caller may acknowledge the initialization queue only for a durability this
+/// call actually VERIFIED. `NotApplicable` and `Unverified` verified nothing, so
+/// settling on either would retire the recovery copy of a message that may exist
+/// in no transcript at all.
+enum InitialInputDurability {
+    /// The delegated message carries no `UserDirect` provenance, so no accepted
+    /// steering rode into it and there is nothing to make durable.
+    NotApplicable,
+    /// `Agent::reply` already persisted it; the message carries the row's id.
+    /// Nothing to publish — `reply` publishes its own copy as the stream's first
+    /// event.
+    AlreadyDurable(Message),
+    /// Written here, because `reply` returned without persisting it (a privacy
+    /// refusal or a command error yields its own stream and never reaches the
+    /// prologue's write). The caller owns publishing it.
+    Inserted(Message),
+    /// The idempotency probe could not READ the transcript, so durability is
+    /// unknown. Nothing was written — a blind write is how you get two rows —
+    /// and nothing may be settled.
+    Unverified(anyhow::Error),
+}
+
+impl InitialInputDurability {
+    /// Whether the initialization queue may be acknowledged.
+    ///
+    /// The invariant on [`crate::agents::subagent_handle::settle_initial_runtime_inputs`],
+    /// in one place both call sites read. It was previously applied on the error
+    /// branch only, which left the success branch settling on a durability it
+    /// had not established.
+    fn verified(&self) -> bool {
+        matches!(self, Self::AlreadyDurable(_) | Self::Inserted(_))
+    }
+}
+
+async fn ensure_initial_user_direct_is_durable(
+    session_manager: &SessionManager,
+    session_id: &str,
+    initial: Option<Message>,
+) -> Result<InitialInputDurability> {
+    let Some(mut message) = initial else {
+        return Ok(InitialInputDurability::NotApplicable);
+    };
+
+    // ⚠ The probe is NOT conditioned on the message carrying an id. It used to
+    // be, and an id-less accepted message therefore skipped it and always took
+    // the insert path — after `Agent::reply` had already stored the same
+    // combined prompt under a uid it minted itself. That is production-reachable
+    // (`biorouter session send` posts `"id": null`) and produced two rows for
+    // one steer, the second of them agent-invisible. `add_message` cannot catch
+    // it either: with no id it mints a fresh uuid, so its own replay detector
+    // never fires.
+    //
+    // Identity for an id-less message is therefore the content tuple, and it is
+    // the SAME predicate the queue admits by — see `is_same_accepted_input`.
+    let existing = match session_manager.get_session(session_id, true).await {
+        Ok(session) => session.conversation.and_then(|conversation| {
+            conversation
+                .messages()
+                .iter()
+                .find(|stored| {
+                    crate::agents::subagent_handle::is_same_accepted_input(&message, stored)
+                })
+                .cloned()
+        }),
+        // A transient read failure (the documented two-daemon SQLITE_BUSY case)
+        // must not take down a stream that is already live and whose prompt is
+        // very likely already durable. Report it instead of `?`-ing out of a
+        // started run; the caller keeps the recovery copy because nothing here
+        // was verified.
+        Err(read_error) => return Ok(InitialInputDurability::Unverified(read_error)),
+    };
+    if let Some(existing) = existing {
+        message.id = existing.id;
+        return Ok(InitialInputDurability::AlreadyDurable(message));
+    }
+
+    message = message.with_visibility(true, false);
+    session_manager
+        .add_message_adopting_uid(session_id, &mut message)
+        .await?;
+    Ok(InitialInputDurability::Inserted(message))
+}
 
 /// BR-71 §4.2 glass-box: a child turn's bracket on the session bus, closed on
 /// **every** exit.
@@ -206,10 +319,10 @@ fn strip_workspace_extension(
 /// six extensions still runs, and refusing the whole spawn over it would be the
 /// worse trade. The consequence is that "what was requested" and "what the
 /// child holds" are different lists on exactly the spawns that went wrong — so
-/// every claim made to the user about this child (its persisted
-/// `EnabledExtensionsState`, which `GET /sessions/{id}/extensions` serves to the
-/// tab header as authoritative, and the spawn record's "Granted extensions"
-/// prose) must be built from the return value, never from the input.
+/// every claim made to the user about this child (the runtime profile projection
+/// which `GET /sessions/{id}/extensions` serves to the tab header, and the spawn
+/// record's "Granted extensions" prose) must be built from the return value,
+/// never from the input.
 async fn load_granted_extensions(
     agent: &Agent,
     extensions: Vec<crate::agents::extension::ExtensionConfig>,
@@ -314,6 +427,13 @@ pub async fn run_complete_subagent_task(
             if run_token.is_cancelled() {
                 result.mark_cancelled();
             }
+            result.human_intervened = session_manager
+                .get_session(&session_id, true)
+                .await
+                .ok()
+                .and_then(|session| session.conversation)
+                .as_ref()
+                .is_some_and(super::subagent_result::conversation_has_user_direct);
             result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
             return result;
         }
@@ -575,52 +695,6 @@ fn get_agent_messages(
         // the record is written after several other preparation steps.
         let extension_names: Vec<String> = loaded.iter().map(|e| e.name().to_string()).collect();
 
-        // ⚠ **Persist the child's OWN grant set** (issue #79).
-        //
-        // `GET /sessions/{id}/extensions` reads `EnabledExtensionsState` and,
-        // finding none, falls back to `config::get_enabled_extensions()` — the
-        // whole globally-enabled set. Nothing wrote this field for a subagent,
-        // so the tab header was not listing what the child holds; it was
-        // listing every extension the USER has enabled anywhere. That is why it
-        // read as "shows all available extensions": it did.
-        //
-        // ⚠ **After the loop, deliberately.** Written before it, this row was
-        // the REQUESTED set, and `routes/session.rs` serves it as authoritative
-        // — so a child that failed to load an extension advertised it in its
-        // tab header anyway, which is the same class of lie as the fallback
-        // above and harder to spot. The cost of the move is a brief window
-        // during the load in which the header falls back to the global set,
-        // which is the pre-#79 behaviour and self-corrects the moment this
-        // write lands.
-        //
-        // `load_granted_extensions` takes `task_config.extensions` BY VALUE, so
-        // reaching back for the requested list here no longer compiles — the
-        // regression this fixes cannot be reintroduced by accident.
-        {
-            use crate::session::extension_data::ExtensionState;
-            use crate::session::EnabledExtensionsState;
-            match EnabledExtensionsState::new(loaded).to_value() {
-                Ok(value) => {
-                    if let Err(e) = session_manager
-                        .update_extension_state(
-                            &session_id,
-                            EnabledExtensionsState::EXTENSION_NAME,
-                            EnabledExtensionsState::VERSION,
-                            move |_| Ok(value),
-                        )
-                        .await
-                    {
-                        // Not fatal. A child running with the right tools but an
-                        // unwritten row is strictly better than a refused spawn,
-                        // and the header degrades to the old fallback rather
-                        // than breaking.
-                        debug!("Failed to persist subagent extension state: {e}");
-                    }
-                }
-                Err(e) => debug!("Failed to serialize subagent extension state: {e}"),
-            }
-        }
-
         let has_response_schema = workflow.response.is_some();
         agent
             .apply_workflow_components(
@@ -655,6 +729,26 @@ fn get_agent_messages(
         // Prep binding 3: `override_system_prompt` takes the template BY VALUE.
         let rendered_prompt = subagent_prompt.clone();
         agent.override_system_prompt(subagent_prompt).await;
+
+        // The visible spawn-context record below is intentionally model-hidden
+        // prose. Cold continuation must never parse that prose to reconstruct
+        // authority or behavior. The profile is also the child-tab projection:
+        // extension references and their exact tool clamp therefore commit in
+        // one value, with no credential-bearing ExtensionConfig beside it.
+        let runtime_tool_names: Vec<String> =
+            tools.iter().map(|tool| tool.name.to_string()).collect();
+        let runtime_profile = crate::agents::subagent_runtime_profile::SubagentRuntimeProfile::new(
+            rendered_prompt.clone(),
+            workflow.response.clone(),
+            workflow.sub_workflows.clone().unwrap_or_default(),
+            &loaded,
+            &runtime_tool_names,
+        )?;
+        runtime_profile
+            .persist(&session_manager, &session_id)
+            .await
+            .context("Failed to persist subagent runtime profile")?;
+        agent.mark_subagent_runtime_installed(&session_id).await;
 
         // BR-71 §4.4: record the child's spawn context as its first message,
         // before the reply stream starts. Grants for the record: extensions from
@@ -724,8 +818,26 @@ fn get_agent_messages(
             tracing::warn!("failed to persist subagent spawn context: {e}");
         }
 
-        let user_message = Message::user().with_text(user_task);
-        let mut conversation = Conversation::new_unvalidated(vec![user_message.clone()]);
+        // Handoff without an admission gap: queued child input remains accepted
+        // until the live agent interrupt queue is open. The reply loop reuses
+        // this exact prepared turn on its first poll rather than clearing it.
+        agent.prepare_soft_interrupt_turn();
+        let pending_user_inputs =
+            crate::agents::subagent_handle::mark_initial_runtime_ready(&session_id);
+        let user_message = delegated_initial_message(user_task, pending_user_inputs);
+        let initial_user_direct = user_message
+            .metadata
+            .provenance
+            .as_ref()
+            .is_some_and(|provenance| {
+                provenance.kind == crate::conversation::message::ProvenanceKind::UserDirect
+            })
+            .then(|| user_message.clone());
+        // `reply` consumes the message, but the id of the row it persists is only
+        // known once it returns, and the result transcript has to carry that id
+        // rather than the pre-persistence one. Keep the copy that rewrite needs.
+        let mut transcript_message = user_message.clone();
+        let mut conversation = Conversation::new_unvalidated(vec![transcript_message.clone()]);
 
         if let Some(activities) = workflow.activities {
             for activity in activities {
@@ -750,13 +862,118 @@ fn get_agent_messages(
         // for this exit (and picks `cancelled` over `error` when the run's token
         // was tripped, which a hand-written publish on this one path could not
         // do without duplicating the ladder).
-        let mut stream = crate::session_context::with_session_id(Some(session_id.clone()), async {
-            agent
-                .reply(user_message, session_config, cancellation_token)
-                .await
-        })
-        .await
-        .map_err(|e| anyhow!("Failed to get reply from agent: {}", e))?;
+        let mut stream =
+            match crate::session_context::with_session_id(Some(session_id.clone()), async {
+                agent
+                    .reply(user_message, session_config, cancellation_token)
+                    .await
+            })
+            .await
+            {
+                Ok(stream) => {
+                    // `?` here still means a failed WRITE, which is a genuine
+                    // store fault worth ending the run on. A failed READ no
+                    // longer reaches it — it arrives as `Unverified`.
+                    let durability = ensure_initial_user_direct_is_durable(
+                        &session_manager,
+                        &session_id,
+                        initial_user_direct,
+                    )
+                    .await?;
+                    match &durability {
+                        InitialInputDurability::AlreadyDurable(durable) => {
+                            transcript_message.id = durable.id.clone();
+                            conversation =
+                                Conversation::new_unvalidated(vec![transcript_message.clone()]);
+                        }
+                        InitialInputDurability::Inserted(durable) => {
+                            transcript_message.id = durable.id.clone();
+                            conversation =
+                                Conversation::new_unvalidated(vec![transcript_message.clone()]);
+                            crate::session_events::publish(
+                                &session_id,
+                                crate::session_events::SessionBusEvent::Agent(AgentEvent::Message(
+                                    durable.clone(),
+                                )),
+                            );
+                        }
+                        InitialInputDurability::NotApplicable => {}
+                        InitialInputDurability::Unverified(read_error) => {
+                            tracing::warn!(
+                                session_id,
+                                "could not verify that accepted pre-start steering is durable; \
+                                 leaving it recoverable at completion: {read_error}"
+                            );
+                        }
+                    }
+                    if durability.verified() {
+                        crate::agents::subagent_handle::settle_initial_runtime_inputs(&session_id);
+                    }
+                    stream
+                }
+                Err(error) => {
+                    let durable_initial = ensure_initial_user_direct_is_durable(
+                        &session_manager,
+                        &session_id,
+                        initial_user_direct,
+                    )
+                    .await;
+                    let mut settlement_errors = Vec::new();
+                    match &durable_initial {
+                        // Published even when it was already durable: `reply`
+                        // failed, so it never published its own copy.
+                        Ok(
+                            InitialInputDurability::AlreadyDurable(message)
+                            | InitialInputDurability::Inserted(message),
+                        ) => {
+                            crate::session_events::publish(
+                                &session_id,
+                                crate::session_events::SessionBusEvent::Agent(AgentEvent::Message(
+                                    message.clone(),
+                                )),
+                            );
+                        }
+                        Ok(InitialInputDurability::NotApplicable) => {}
+                        Ok(InitialInputDurability::Unverified(read_error)) => settlement_errors
+                            .push(format!(
+                                "accepted pre-start steering could not be confirmed durable: \
+                                 {read_error}"
+                            )),
+                        Err(settlement_error) => settlement_errors.push(format!(
+                            "accepted pre-start steering could not be persisted: {settlement_error}"
+                        )),
+                    }
+                    if durable_initial
+                        .as_ref()
+                        .is_ok_and(InitialInputDurability::verified)
+                    {
+                        crate::agents::subagent_handle::settle_initial_runtime_inputs(&session_id);
+                    }
+                    let carried = agent.settle_carried_over_soft_interrupts(&session_id).await;
+                    match carried {
+                        Ok(carried) => {
+                            for message in carried {
+                                crate::session_events::publish(
+                                    &session_id,
+                                    crate::session_events::SessionBusEvent::Agent(
+                                        AgentEvent::Message(message),
+                                    ),
+                                );
+                            }
+                        }
+                        Err(settlement_error) => settlement_errors.push(format!(
+                            "accepted live steering could not be persisted: {settlement_error}"
+                        )),
+                    }
+                    if !settlement_errors.is_empty() {
+                        return Err(anyhow!(
+                            "Failed to get reply from agent: {error}; {}",
+                            settlement_errors.join("; ")
+                        ));
+                    }
+                    return Err(anyhow!("Failed to get reply from agent: {error}"));
+                }
+            };
         while let Some(message_result) = stream.next().await {
             match message_result {
                 Ok(event) => {
@@ -816,6 +1033,21 @@ fn get_agent_messages(
                     break;
                 }
             }
+        }
+        // Normal reply-loop completion already settles this exact queue. This
+        // idempotent second settlement covers pre-stream immediate replies that
+        // never entered `reply_internal` after the delegated handoff accepted a
+        // steer. A 202 user message therefore becomes durable even when the
+        // child exits before provider work begins.
+        for message in agent
+            .settle_carried_over_soft_interrupts(&session_id)
+            .await?
+        {
+            crate::session_events::publish(
+                &session_id,
+                crate::session_events::SessionBusEvent::Agent(AgentEvent::Message(message.clone())),
+            );
+            conversation.push(message);
         }
         // The run reached the end of its stream, so it — not the guard — names
         // the reason. `bus_bracket` holds a clone of the run's token, taken
@@ -885,6 +1117,286 @@ mod tests {
     use crate::session::session_manager::SessionType;
     use crate::workspace_services::{WorkspaceServices, WorkspaceTurnLease};
 
+    #[tokio::test]
+    async fn accepted_initial_user_direct_message_is_durable_and_idempotent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "initial handoff".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let message = Message::user()
+            .with_id("initial-user-direct")
+            .with_text("change the delegated task")
+            .with_provenance(crate::conversation::message::MessageProvenance {
+                kind: ProvenanceKind::UserDirect,
+                from_session_id: None,
+                from_session_name: None,
+            });
+
+        let durability =
+            ensure_initial_user_direct_is_durable(&manager, &session.id, Some(message.clone()))
+                .await
+                .unwrap();
+        let InitialInputDurability::Inserted(stored) = &durability else {
+            panic!("the first call writes the accepted message");
+        };
+        assert!(durability.verified());
+        assert_eq!(stored.id.as_deref(), Some("initial-user-direct"));
+        assert!(stored.metadata.user_visible);
+        assert!(!stored.metadata.agent_visible);
+
+        let again = ensure_initial_user_direct_is_durable(&manager, &session.id, Some(message))
+            .await
+            .unwrap();
+        assert!(
+            matches!(again, InitialInputDurability::AlreadyDurable(_)),
+            "a second call must recognise the row rather than writing a second one"
+        );
+        assert!(again.verified());
+        let conversation = manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(
+            conversation
+                .messages()
+                .iter()
+                .filter(|message| message.id.as_deref() == Some("initial-user-direct"))
+                .count(),
+            1
+        );
+    }
+
+    /// A session store every query fails against: the sqlite file is present but
+    /// is not a database, so the lazy pool's first use errors instead of opening.
+    /// The closest a test can get to the transient store failure (SQLITE_BUSY
+    /// under two daemons) the read path has to survive.
+    fn unreadable_session_manager(temp: &tempfile::TempDir) -> SessionManager {
+        let sessions = temp
+            .path()
+            .join(crate::session::session_manager::SESSIONS_FOLDER);
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(
+            sessions.join(crate::session::session_manager::DB_NAME),
+            b"this is not a sqlite database",
+        )
+        .unwrap();
+        SessionManager::new(temp.path().to_path_buf())
+    }
+
+    fn user_direct(text: &str) -> Message {
+        Message::user().with_text(text).with_provenance(
+            crate::conversation::message::MessageProvenance {
+                kind: ProvenanceKind::UserDirect,
+                from_session_id: None,
+                from_session_name: None,
+            },
+        )
+    }
+
+    /// OD-1. The idempotency probe used to be skipped entirely when the accepted
+    /// message carried no id, so the insert always ran — on top of the row
+    /// `Agent::reply` had already written under a uid it minted itself. Two rows
+    /// for one steer, and `add_message`'s own replay detector cannot see it
+    /// because an id-less message gets a fresh uuid every time.
+    ///
+    /// Production-reachable: `biorouter session send` posts `"id": null`.
+    #[tokio::test]
+    async fn an_id_less_accepted_message_is_stored_exactly_once() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "id-less handoff".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+
+        // Exactly what `reply` does with the combined prompt on its ordinary
+        // path: persist it, minting a uid the caller could not have predicted.
+        let mut persisted_by_reply = user_direct("steer the delegated run");
+        assert!(persisted_by_reply.id.is_none());
+        manager
+            .add_message_adopting_uid(&session.id, &mut persisted_by_reply)
+            .await
+            .unwrap();
+        assert!(persisted_by_reply.id.is_some(), "reply minted a uid");
+
+        let durability = ensure_initial_user_direct_is_durable(
+            &manager,
+            &session.id,
+            Some(user_direct("steer the delegated run")),
+        )
+        .await
+        .unwrap();
+        let InitialInputDurability::AlreadyDurable(adopted) = &durability else {
+            panic!("the id-less message must be recognised in the transcript");
+        };
+        assert_eq!(
+            adopted.id, persisted_by_reply.id,
+            "the probe adopts the id of the row that already holds this turn"
+        );
+
+        let conversation = manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(
+            conversation
+                .messages()
+                .iter()
+                .filter(|message| message.as_concat_text() == "steer the delegated run")
+                .count(),
+            1,
+            "one accepted steer, one row"
+        );
+    }
+
+    /// OD-3. A transient read failure (the two-daemon SQLITE_BUSY case) must not
+    /// come back as `Err`: the call site's `?` sits inside the arm that already
+    /// holds a live reply stream, so an `Err` there drops that stream and fails
+    /// a delegated run whose prompt is very probably already durable.
+    #[tokio::test]
+    async fn a_failed_durability_read_is_reported_instead_of_ending_the_run() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = unreadable_session_manager(&temp);
+
+        let durability = ensure_initial_user_direct_is_durable(
+            &manager,
+            "no-such-session",
+            Some(user_direct("keep the stream alive")),
+        )
+        .await
+        .expect("a read failure is not an error out of the run");
+        assert!(matches!(durability, InitialInputDurability::Unverified(_)));
+        assert!(
+            !durability.verified(),
+            "nothing was verified, so nothing may be settled"
+        );
+    }
+
+    /// OD-2. The settle invariant, in the one place both call sites read it.
+    /// It used to be applied on the error branch only, so the success branch
+    /// acknowledged the initialization queue after a call that had established
+    /// nothing — retiring the recovery copy of a message that, on `reply`'s two
+    /// early returns (a privacy refusal, an `execute_command` error), exists in
+    /// no transcript at all.
+    #[test]
+    fn only_a_verified_durability_may_settle_the_initialization_queue() {
+        assert!(!InitialInputDurability::NotApplicable.verified());
+        assert!(!InitialInputDurability::Unverified(anyhow!("busy")).verified());
+        assert!(InitialInputDurability::AlreadyDurable(Message::user().with_text("a")).verified());
+        assert!(InitialInputDurability::Inserted(Message::user().with_text("a")).verified());
+    }
+
+    /// The privacy-refusal shape, which is the scenario this whole path exists
+    /// for and was untested: `reply` yields a refusal stream WITHOUT persisting
+    /// the prompt, so the accepted steering reaches an empty transcript. It must
+    /// still land, user-visible and agent-INVISIBLE — the refusal is precisely
+    /// the case where the text must not enter the model's context on a later
+    /// continuation — and the queue may then be settled.
+    #[tokio::test]
+    async fn accepted_steering_survives_a_reply_that_persisted_nothing() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "refused turn".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+
+        let durability = ensure_initial_user_direct_is_durable(
+            &manager,
+            &session.id,
+            Some(user_direct("the steer the refused turn never carried")),
+        )
+        .await
+        .unwrap();
+        let InitialInputDurability::Inserted(stored) = &durability else {
+            panic!("an empty transcript means the accepted steering must be written here");
+        };
+        assert!(stored.metadata.user_visible);
+        assert!(!stored.metadata.agent_visible);
+        assert!(durability.verified());
+
+        let conversation = manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        let stored = conversation
+            .messages()
+            .iter()
+            .find(|message| message.as_concat_text() == "the steer the refused turn never carried")
+            .expect("the accepted steering is durable");
+        assert_eq!(
+            stored.metadata.provenance.as_ref().map(|value| value.kind),
+            Some(ProvenanceKind::UserDirect),
+            "provenance is what makes the result report human intervention"
+        );
+        assert!(crate::agents::subagent_result::conversation_has_user_direct(&conversation));
+    }
+
+    /// Audit OD-6, normal path. Several pre-start steers collapse into ONE
+    /// delegated message — pinned here because the recovery path in
+    /// `subagent_tool` persists them SEPARATELY, and that divergence must be
+    /// visible rather than drifting silently.
+    #[test]
+    fn several_pre_start_steers_collapse_into_one_delegated_message() {
+        let first = user_direct("first steer").with_id("steer-1");
+        let second = user_direct("second steer").with_id("steer-2");
+
+        let combined =
+            delegated_initial_message("do the delegated work".into(), vec![first, second]);
+
+        assert_eq!(combined.role, Role::User);
+        assert_eq!(
+            combined.id.as_deref(),
+            Some("steer-1"),
+            "the combined message inherits the FIRST accepted steer's identity"
+        );
+        assert_eq!(
+            combined
+                .metadata
+                .provenance
+                .as_ref()
+                .map(|value| value.kind),
+            Some(ProvenanceKind::UserDirect),
+            "provenance must survive the collapse or the result stops reporting \
+             human intervention"
+        );
+        let text = combined.as_concat_text();
+        assert!(text.contains("do the delegated work"));
+        assert!(text.contains("first steer"));
+        assert!(text.contains("second steer"));
+        assert!(text.contains("Additional pre-start user steering"));
+    }
+
+    /// With nothing queued the delegated message is just the task, and carries
+    /// no provenance — which is what makes `initial_user_direct` `None` and, per
+    /// the test above, blocks the settle.
+    #[test]
+    fn a_delegated_message_with_no_steering_is_just_the_task() {
+        let plain = delegated_initial_message("do the delegated work".into(), vec![]);
+        assert_eq!(plain.as_concat_text(), "do the delegated work");
+        assert!(plain.metadata.provenance.is_none());
+    }
+
     #[test]
     fn workspace_extension_is_stripped_from_child_grants() {
         let configs = vec![
@@ -908,11 +1420,11 @@ mod tests {
 
     /// The child's recorded grant is **what loaded**, not what was asked for.
     ///
-    /// `GET /sessions/{id}/extensions` serves the persisted
-    /// `EnabledExtensionsState` as authoritative, so a set written from the
-    /// request makes the subagent tab header claim an extension the child does
-    /// not have — an over-claim, and the one direction that matters, because
-    /// the user reads that header to decide what the child can do.
+    /// `GET /sessions/{id}/extensions` serves the runtime profile projection as
+    /// authoritative, so a set written from the request makes the subagent tab
+    /// header claim an extension the child does not have — an over-claim, and
+    /// the one direction that matters, because the user reads that header to
+    /// decide what the child can do.
     ///
     /// The failing member is an unknown **platform** name: `add_extension`
     /// rejects it with `Unknown platform extension` before any process is
@@ -1653,9 +2165,15 @@ mod tests {
         use crate::session_events::{self, SessionBusEvent};
         let temp = tempfile::TempDir::new().unwrap();
         let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
-        // An id no store would mint, so this test shares neither a bus ring nor
-        // an `AgentManager` pin with any other test in the binary.
-        let child = "ghost-session-lease-held".to_string();
+        let child = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "lease-held child".into(),
+                crate::session::SessionType::SubAgent,
+            )
+            .await
+            .unwrap()
+            .id;
         let mut rx = session_events::subscribe(&child);
 
         let manager = crate::execution::manager::AgentManager::instance()
@@ -1681,8 +2199,8 @@ mod tests {
         assert_eq!(
             result.status,
             crate::agents::subagent_result::SubagentStatus::Error,
-            "fixture precondition: this session was never created, so the run must fail \
-             at the reply stream; got {result:?}"
+            "fixture precondition: the empty replay provider must fail after the run reaches \
+             its mid-run observation point; got {result:?}"
         );
         assert_eq!(
             spy.begun(),
@@ -1747,7 +2265,15 @@ mod tests {
         use crate::session_events::{self, SessionBusEvent};
         let temp = tempfile::TempDir::new().unwrap();
         let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
-        let child = "ghost-session-lease-cancelled".to_string();
+        let child = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "lease-cancelled child".into(),
+                crate::session::SessionType::SubAgent,
+            )
+            .await
+            .unwrap()
+            .id;
         let mut rx = session_events::subscribe(&child);
 
         let spy = LeaseSpy::new().cancelling_mid_run().install();

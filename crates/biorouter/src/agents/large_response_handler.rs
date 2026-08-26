@@ -92,6 +92,38 @@ impl LargeResponseLimits {
     }
 }
 
+async fn oversized_text_tokens(
+    text: Arc<String>,
+    chars: usize,
+    limits: LargeResponseLimits,
+) -> Option<usize> {
+    if chars <= limits.max_tokens {
+        return None;
+    }
+    let tokens = count_tokens(text).await;
+    (tokens > limits.max_tokens).then_some(tokens)
+}
+
+/// Whether one text item is guaranteed to pass this handler unchanged under
+/// the currently active limit and exact tokenizer.
+///
+/// Callers that attach a one-shot side effect to delivering a complete tool
+/// result use this before committing it. Reusing the handler's exact size
+/// decision prevents a preview-only response (including an offload write
+/// failure) from being mistaken for delivery of the full payload. Failure to
+/// obtain an exact count returns `false`; fallback estimates are suitable for
+/// bounding a response, not for releasing supervision.
+pub(crate) async fn text_will_remain_inline(text: &str) -> bool {
+    let limits = LargeResponseLimits::from_config();
+    match try_count_tokens(Arc::new(text.to_owned())).await {
+        Ok(tokens) => tokens <= limits.max_tokens,
+        Err(e) => {
+            warn!("BR-6: cannot prove tool response stays inline ({e}); deferring collection");
+            false
+        }
+    }
+}
+
 /// Measured size of the aggregate text payload of one tool result.
 #[derive(Clone, Copy, Debug)]
 struct Stats {
@@ -149,12 +181,10 @@ pub async fn process_tool_response(
     if chars <= limits.max_tokens {
         return Ok(result);
     }
-
     let joined = Arc::new(texts.join("\n"));
-    let tokens = count_tokens(Arc::clone(&joined)).await;
-    if tokens <= limits.max_tokens {
+    let Some(tokens) = oversized_text_tokens(Arc::clone(&joined), chars, limits).await else {
         return Ok(result);
-    }
+    };
 
     let lines = joined.lines().count();
     let handle = write_handle(&joined, ctx);
@@ -205,19 +235,25 @@ pub async fn process_tool_response(
 async fn count_tokens(text: Arc<String>) -> usize {
     let fallback = text.chars().count().div_ceil(FALLBACK_CHARS_PER_TOKEN);
 
-    // The tokenizer itself is a process-wide `OnceCell`, so the BPE
-    // construction cost is paid once, on the first oversized response.
-    let Ok(counter) = create_token_counter().await else {
-        warn!("BR-6: tokenizer unavailable; using a char-based token estimate");
-        return fallback;
-    };
-
-    match tokio::task::spawn_blocking(move || counter.count_tokens(&text)).await {
+    match try_count_tokens(text).await {
         Ok(tokens) => tokens,
         Err(e) => {
-            warn!("BR-6: token counting task failed ({e}); using a char-based token estimate");
+            warn!("BR-6: {e}; using a char-based token estimate");
             fallback
         }
+    }
+}
+
+async fn try_count_tokens(text: Arc<String>) -> Result<usize, String> {
+    // The tokenizer itself is a process-wide `OnceCell`, so the BPE
+    // construction cost is paid once, on the first oversized response.
+    let counter = create_token_counter()
+        .await
+        .map_err(|e| format!("tokenizer unavailable: {e}"))?;
+
+    match tokio::task::spawn_blocking(move || counter.count_tokens(&text)).await {
+        Ok(tokens) => Ok(tokens),
+        Err(e) => Err(format!("token counting task failed ({e})")),
     }
 }
 

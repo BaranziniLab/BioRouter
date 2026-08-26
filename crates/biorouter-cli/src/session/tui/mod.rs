@@ -592,10 +592,17 @@ async fn drive_response(
                                 while stream.next().await.is_some() {}
                                 break;
                             }
-                            session.agent.handle_confirmation(id, PermissionConfirmation {
-                                principal_type: PrincipalType::Tool,
-                                permission,
-                            }).await;
+                            session
+                                .agent
+                                .handle_confirmation_for_session(
+                                    session.session_id(),
+                                    id,
+                                    PermissionConfirmation {
+                                        principal_type: PrincipalType::Tool,
+                                        permission,
+                                    },
+                                )
+                                .await;
                             app.thinking = Some(super::thinking::get_random_thinking_message().to_string());
                         } else if super::find_elicitation_request(&message).is_some() {
                             commit_stream_to_session(app, &mut session.messages);

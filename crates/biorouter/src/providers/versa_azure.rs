@@ -10,6 +10,10 @@ use super::base::{
 };
 use super::errors::ProviderError;
 use super::formats::openai::{create_request, get_usage, response_to_message};
+use super::provider_binding::{
+    model_without_restore_marker, ProviderRestoreBinding, SecretFreeEndpoint,
+    VersaAzureCredentialSource,
+};
 use super::retry::ProviderRetry;
 use super::utils::{
     azure_chat_completions_path as build_chat_completions_path, get_model,
@@ -63,6 +67,7 @@ pub struct VersaAzureProvider {
     /// never the provider's name — the three `AZURE_OPENAI_*` keys are shared
     /// with the public `azure_openai` provider and are user-writable.
     resolved_endpoint: String,
+    credential_source: VersaAzureCredentialSource,
 }
 
 impl Serialize for VersaAzureProvider {
@@ -117,10 +122,52 @@ impl VersaAzureProvider {
             .get_param("AZURE_OPENAI_API_VERSION")
             .unwrap_or_else(|_| VERSA_AZURE_API_VERSION.to_string());
 
-        let api_key = config
+        let credential_source = if config
             .get_secret("VERSA_AZURE_API_KEY")
             .ok()
-            .filter(|key: &String| !key.is_empty());
+            .is_some_and(|key: String| !key.is_empty())
+        {
+            VersaAzureCredentialSource::ApiKey
+        } else {
+            VersaAzureCredentialSource::AzureCli
+        };
+
+        Self::from_resolved(
+            model,
+            SecretFreeEndpoint::new(endpoint)?,
+            deployment_name,
+            api_version,
+            credential_source,
+        )
+    }
+
+    pub(crate) fn from_resolved(
+        model: ModelConfig,
+        endpoint: SecretFreeEndpoint,
+        deployment_name: String,
+        api_version: String,
+        credential_source: VersaAzureCredentialSource,
+    ) -> Result<Self> {
+        let binding = ProviderRestoreBinding::VersaAzure {
+            model: model.clone(),
+            endpoint: endpoint.clone(),
+            deployment: deployment_name.clone(),
+            api_version: api_version.clone(),
+            credential_source,
+        };
+        binding.validate()?;
+
+        let config = crate::config::Config::global();
+        let api_key = match credential_source {
+            VersaAzureCredentialSource::ApiKey => {
+                let key = config
+                    .get_secret::<String>("VERSA_AZURE_API_KEY")
+                    .map_err(|_| anyhow::anyhow!("VERSA_AZURE_API_KEY is not configured"))?;
+                anyhow::ensure!(!key.trim().is_empty(), "VERSA_AZURE_API_KEY is empty");
+                Some(key)
+            }
+            VersaAzureCredentialSource::AzureCli => None,
+        };
         let auth = AzureAuth::new(api_key).map_err(|e| match e {
             AuthError::Credentials(msg) => anyhow::anyhow!("Credentials error: {}", msg),
             AuthError::TokenExchange(msg) => anyhow::anyhow!("Token exchange error: {}", msg),
@@ -128,7 +175,7 @@ impl VersaAzureProvider {
 
         let auth_provider = VersaAzureAuthProvider { auth };
         let api_client = ApiClient::new(
-            endpoint.clone(),
+            endpoint.as_str().to_string(),
             AuthMethod::Custom(Box::new(auth_provider)),
         )?;
 
@@ -138,7 +185,8 @@ impl VersaAzureProvider {
             api_version,
             model,
             name: Self::metadata().name,
-            resolved_endpoint: endpoint,
+            resolved_endpoint: endpoint.into_string(),
+            credential_source,
         })
     }
 
@@ -219,6 +267,17 @@ impl Provider for VersaAzureProvider {
         &self.name
     }
 
+    fn restore_binding(&self) -> ProviderRestoreBinding {
+        ProviderRestoreBinding::VersaAzure {
+            model: model_without_restore_marker(self.model.clone()),
+            endpoint: SecretFreeEndpoint::new(self.resolved_endpoint.clone())
+                .expect("resolved Versa Azure endpoint must remain valid"),
+            deployment: self.deployment_name.clone(),
+            api_version: self.api_version.clone(),
+            credential_source: self.credential_source,
+        }
+    }
+
     fn tier(&self) -> ProviderTier {
         crate::providers::ucsf_gateway_tier(&self.resolved_endpoint)
     }
@@ -278,6 +337,10 @@ impl Provider for VersaAzureProvider {
         true
     }
 
+    fn supports_restart_steering(&self) -> bool {
+        true
+    }
+
     async fn stream(
         &self,
         system: &str,
@@ -330,6 +393,7 @@ mod tests {
             model: ModelConfig::new_or_fail(VERSA_AZURE_DEPLOYMENT),
             name: "versa_azure".to_string(),
             resolved_endpoint: VERSA_AZURE_ENDPOINT.to_string(),
+            credential_source: VersaAzureCredentialSource::ApiKey,
         }
     }
 
@@ -392,6 +456,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn restore_binding_keeps_the_exact_route_and_auth_mode_without_the_api_key() {
+        let provider = test_provider();
+        let encoded = serde_json::to_value(provider.restore_binding()).unwrap();
+        assert_eq!(encoded["kind"], "versa_azure");
+        assert_eq!(encoded["endpoint"], VERSA_AZURE_ENDPOINT);
+        assert_eq!(encoded["deployment"], VERSA_AZURE_DEPLOYMENT);
+        assert_eq!(encoded["api_version"], VERSA_AZURE_API_VERSION);
+        assert_eq!(encoded["credential_source"], "api_key");
+        assert!(!encoded.to_string().contains("test-key"));
+    }
+
+    #[tokio::test]
+    async fn exact_credential_mode_never_switches_during_restore() {
+        use std::collections::HashMap;
+
+        let endpoint = || SecretFreeEndpoint::new(VERSA_AZURE_ENDPOINT.into()).unwrap();
+        let missing = crate::config::with_config_overrides(
+            HashMap::from([("VERSA_AZURE_API_KEY".into(), String::new())]),
+            async {
+                VersaAzureProvider::from_resolved(
+                    ModelConfig::new_or_fail(VERSA_AZURE_DEPLOYMENT),
+                    endpoint(),
+                    VERSA_AZURE_DEPLOYMENT.into(),
+                    VERSA_AZURE_API_VERSION.into(),
+                    VersaAzureCredentialSource::ApiKey,
+                )
+            },
+        )
+        .await;
+        assert!(
+            missing.is_err(),
+            "API-key mode must fail closed on an empty key"
+        );
+
+        let cli = crate::config::with_config_overrides(
+            HashMap::from([(
+                "VERSA_AZURE_API_KEY".into(),
+                "new-key-that-must-not-change-mode".into(),
+            )]),
+            async {
+                VersaAzureProvider::from_resolved(
+                    ModelConfig::new_or_fail(VERSA_AZURE_DEPLOYMENT),
+                    endpoint(),
+                    VERSA_AZURE_DEPLOYMENT.into(),
+                    VERSA_AZURE_API_VERSION.into(),
+                    VersaAzureCredentialSource::AzureCli,
+                )
+            },
+        )
+        .await
+        .unwrap();
+        let encoded = serde_json::to_string(&cli.restore_binding()).unwrap();
+        assert!(encoded.contains("azure_cli"));
+        assert!(!encoded.contains("new-key-that-must-not-change-mode"));
+    }
+
     /// The regression this file exists for: `stream()` must build a *streaming*
     /// payload. Flipping `for_streaming` to false in `build_stream_payload`
     /// sends a non-streaming body down a streaming-decoding path, which fails
@@ -422,13 +543,18 @@ mod tests {
     /// removed the provider would quietly fall back to blocking generation and
     /// the latency win this change exists for would vanish with a green suite.
     #[test]
-    fn provider_streams_and_posts_to_the_deployment_path() {
+    fn provider_streams_posts_and_advertises_restart_steering() {
         let provider = test_provider();
 
         assert!(
             provider.supports_streaming(),
             "versa_azure must advertise streaming; without it the agent takes the \
              blocking complete() path and tool cards only appear at end of generation"
+        );
+        assert!(!provider.supports_live_steering());
+        assert!(
+            provider.supports_restart_steering(),
+            "Versa Azure cannot inject into a running HTTP response, so a queued steer must restart it"
         );
         assert_eq!(
             provider.chat_completions_path(),

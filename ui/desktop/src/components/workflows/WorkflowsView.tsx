@@ -51,6 +51,7 @@ import { BUILTIN_RECREATED_TITLE, isBuiltinWorkflow } from '../../utils/builtins
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { EmptyState } from '../ui/empty-state';
 import { useConfig } from '../ConfigContext';
+import { userActionHeaders } from '../../utils/userAction';
 
 const WorkflowIcon = ENTITY_ICONS.workflow;
 
@@ -127,6 +128,7 @@ export default function WorkflowsView() {
           working_dir: getInitialWorkingDir(),
           workflow,
         },
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
       const session = newAgent.data;

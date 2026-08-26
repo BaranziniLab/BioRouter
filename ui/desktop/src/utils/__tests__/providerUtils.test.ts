@@ -1,7 +1,38 @@
-import { describe, it, expect } from 'vitest';
-import { substituteParameters } from '../providerUtils';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+
+const apiMocks = vi.hoisted(() => ({
+  updateAgentProvider: vi.fn(async () => ({ data: {} })),
+  updateFromSession: vi.fn(async () => ({ data: {} })),
+}));
+
+vi.mock('../../api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api')>()),
+  ...apiMocks,
+}));
+
+import { initializeSystem, substituteParameters } from '../providerUtils';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  Object.assign(window, {
+    electron: {
+      getUserActionKey: vi.fn(async () => 'provider-user-proof'),
+    },
+  });
+});
 
 describe('providerUtils', () => {
+  it('proves both session/provider mutations came from the renderer', async () => {
+    await initializeSystem('session-1', 'openai', 'model-1');
+
+    expect(apiMocks.updateAgentProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: { 'X-User-Action': 'provider-user-proof' } })
+    );
+    expect(apiMocks.updateFromSession).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: { 'X-User-Action': 'provider-user-proof' } })
+    );
+  });
+
   describe('substituteParameters', () => {
     it('should substitute simple parameters', () => {
       const text = 'Hello {{name}}, welcome to {{app}}!';

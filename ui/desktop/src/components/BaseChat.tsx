@@ -75,6 +75,7 @@ import InAppTerminalDock from './InAppTerminalDock';
 import { ChatTurnError, hasVisibleTurnErrorMessage } from './conversation/ChatTurnError';
 import type { ArtifactRenderError } from './artifacts/ArtifactViewer';
 import type { ArtifactSource } from './artifacts/artifactTypes';
+import type { LiveBrowserShare } from './artifacts/WebPagePreview';
 import {
   artifactSourceFromResourceLink,
   artifactSourceFromResource,
@@ -1095,12 +1096,17 @@ function BaseChatContent({
     openArtifact: handleOpenArtifact,
     reset: resetArtifactPanel,
   } = artifactPanel;
+  const [liveBrowserShare, setLiveBrowserShare] = useState<LiveBrowserShare | null>(null);
+  const [filePreviewRevision, setFilePreviewRevision] = useState<string | null>(null);
   // Publishes this panel to the agent. Chat-only: reading a saved transcript's
   // panel would be reading a different conversation's screen.
   useArtifactPanelAccess({
     sessionId,
     artifact: presentedArtifact,
     isOpen: Boolean(presentedArtifact && artifactPanelEnabled),
+    liveBrowserShare,
+    panelRootRef: splitPaneRef,
+    fileSourceRevision: filePreviewRevision,
   });
   const { state: sidebarState } = useSidebar();
   const [isSidebarCompact, setIsSidebarCompact] = useState(() => {
@@ -1180,6 +1186,8 @@ function BaseChatContent({
     submitSystemMessage,
     submitElicitationResponse,
     stopStreaming,
+    abandonContinuation,
+    recoverPendingContinuation,
     steer,
     sessionLoadError,
     turnError,
@@ -1188,6 +1196,7 @@ function BaseChatContent({
     turnStartedAt,
     lastMessageAt,
     pendingSteer,
+    pendingContinuation,
     agentReady,
     notifications: toolCallNotifications,
     pendingToolCalls,
@@ -1344,6 +1353,8 @@ function BaseChatContent({
       return;
     }
     let cancelled = false;
+    setSessionSupportsVision(false);
+    setSessionSupportedInputMimeTypes(null);
     (async () => {
       try {
         const metadata = await getProviderMetadata(sessionProvider, getProviders);
@@ -1850,12 +1861,64 @@ function BaseChatContent({
         'biorouter-composer-view-transition'
       )}
     >
+      {pendingContinuation && (
+        <div
+          role="status"
+          className="mx-3 mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/70 px-3 py-2 text-sm"
+        >
+          <span>
+            {pendingContinuation.ownership === 'owned'
+              ? 'A previous Stop & send is ready. Re-enter the message you want to send; Biorouter will not guess or resend lost composer text.'
+              : pendingContinuation.ownership === 'settling'
+                ? 'A previous Stop & send is still settling. Recover it explicitly or abandon the stopped-turn continuation.'
+                : 'Another window owns a pending Stop & send. Take it over here or abandon the stopped-turn continuation before sending.'}
+          </span>
+          <div className="flex shrink-0 gap-2">
+            {pendingContinuation.ownership !== 'owned' && (
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => {
+                  void recoverPendingContinuation('take_over').catch((error) => {
+                    toastError({
+                      title: 'Could not recover Stop & send',
+                      msg: errorMessage(error),
+                    });
+                  });
+                }}
+              >
+                Take over
+              </Button>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                void recoverPendingContinuation('abandon').catch((error) => {
+                  toastError({
+                    title: 'Could not abandon Stop & send',
+                    msg: errorMessage(error),
+                  });
+                });
+              }}
+            >
+              Abandon
+            </Button>
+          </div>
+        </div>
+      )}
       <ChatInput
         sessionId={sessionId}
         handleSubmit={handleFormSubmit}
         chatState={chatState}
         setChatState={setChatState}
         onStop={stopStreaming}
+        onAbandonContinuation={abandonContinuation}
+        submissionBlocked={
+          pendingContinuation?.ownership === 'foreign' ||
+          pendingContinuation?.ownership === 'settling'
+        }
         onSteer={steer}
         commandHistory={commandHistory}
         initialValue={initialPrompt}
@@ -1878,7 +1941,7 @@ function BaseChatContent({
         workflowAccepted={!hasNotAcceptedWorkflow}
         initialPrompt={initialPrompt}
         toolCount={toolCount || 0}
-        supportsVisionOverride={sessionSupportsVision ?? undefined}
+        supportsVisionOverride={session ? (sessionSupportsVision ?? false) : undefined}
         supportedInputMimeTypesOverride={sessionSupportedInputMimeTypes}
         // #39 — capture a pre-session directory choice so the first message
         // creates the session in it. Before the customChatInputProps spread,
@@ -2262,6 +2325,8 @@ function BaseChatContent({
               // all: a read-only transcript passes nothing here, so
               // ArtifactViewer never installs the postMessage listener.
               onRenderError={handleArtifactRenderError}
+              onLiveBrowserShareChange={setLiveBrowserShare}
+              onFilePreviewRevisionChange={setFilePreviewRevision}
               // Chat-only, for the same reason as onRenderError above: it is
               // what enables the annotate control, and a saved transcript has
               // no running conversation to attach a region to.

@@ -13,7 +13,7 @@ import { MAX_GROUPS } from '../components/chatGroups/chatGroupsLayout';
 
 const mocks = vi.hoisted(() => ({
   observeSession: vi.fn(),
-  stopObserving: vi.fn(),
+  releaseOwnership: vi.fn(),
   info: vi.fn(),
   warning: vi.fn(),
   error: vi.fn(),
@@ -37,7 +37,7 @@ const mocks = vi.hoisted(() => ({
 
 // The provider imports `useRunningChats` from this module, the executor calls
 // `defaultChatStreamRegistry.getController(...).observeSession()`, and closing a
-// tab calls `peekController(...)?.stopObserving()`. Mocking the module replaces
+// tab calls `peekController(...)?.releaseOwnership()`. Mocking the module replaces
 // all three, so the mock must supply all three.
 vi.mock('../hooks/chatStreamStore', () => ({
   useRunningChats: () => mocks.runningChats,
@@ -46,7 +46,7 @@ vi.mock('../hooks/chatStreamStore', () => ({
     // `peek`, not `get`: the detach path must never CREATE a controller for a
     // session this window has no tab for — that is the leak `getController` is
     // guarded against on the attach side too.
-    peekController: () => ({ stopObserving: mocks.stopObserving }),
+    peekController: () => ({ releaseOwnership: mocks.releaseOwnership }),
   },
 }));
 vi.mock('../utils/sessionNameSync', () => ({ subscribeSessionNameChanges: () => () => undefined }));
@@ -244,7 +244,8 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
     // (b) a refused open_tab. Six panes is the ceiling, and only a real drag can
     // build them — each move splits one tab off the first pane into a new one.
     act(() => {
-      for (let i = 0; i < MAX_GROUPS; i++) applyWorkspaceCommand(openTab(`s-${i}`)) as WorkspaceCommandResult;
+      for (let i = 0; i < MAX_GROUPS; i++)
+        applyWorkspaceCommand(openTab(`s-${i}`)) as WorkspaceCommandResult;
     });
     await waitFor(() => expect(screen.getByTestId('sessions').textContent).toContain('s-5'));
     for (let i = 1; i < MAX_GROUPS; i++) {
@@ -311,7 +312,11 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
     await waitFor(() => expect(screen.getByTestId('badges').textContent).toContain('s-pending'));
 
     act(() => {
-      applyWorkspaceCommand({ type: 'workspace', cmd: 'close_tab', session_id: 's-badged' }) as WorkspaceCommandResult;
+      applyWorkspaceCommand({
+        type: 'workspace',
+        cmd: 'close_tab',
+        session_id: 's-badged',
+      }) as WorkspaceCommandResult;
     });
     await waitFor(() => expect(screen.getByTestId('badges').textContent).not.toContain('s-badged'));
     // Unrelated commits keep happening; the pending annotation is still there.
@@ -328,7 +333,7 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
     // The other end of the attach above. `observeSession` owns a reconnect loop
     // that runs until something detaches it, and `getController` retains its
     // controller for the life of the renderer — so with nothing calling
-    // `stopObserving`, closing a daemon-opened tab leaves an SSE subscription
+    // `releaseOwnership`, closing a daemon-opened tab leaves an SSE subscription
     // reconnecting forever for a chat that is nowhere on screen, one per tab the
     // daemon ever opened.
     mount();
@@ -337,21 +342,29 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
     });
     await waitFor(() => expect(screen.getByTestId('sessions').textContent).toContain('s-observed'));
     expect(mocks.observeSession).toHaveBeenCalled();
-    expect(mocks.stopObserving).not.toHaveBeenCalled();
+    expect(mocks.releaseOwnership).not.toHaveBeenCalled();
 
     act(() => {
-      applyWorkspaceCommand({ type: 'workspace', cmd: 'close_tab', session_id: 's-observed' }) as WorkspaceCommandResult;
+      applyWorkspaceCommand({
+        type: 'workspace',
+        cmd: 'close_tab',
+        session_id: 's-observed',
+      }) as WorkspaceCommandResult;
     });
     await waitFor(() =>
       expect(screen.getByTestId('sessions').textContent).not.toContain('s-observed')
     );
-    expect(mocks.stopObserving).toHaveBeenCalledTimes(1);
+    expect(mocks.releaseOwnership).toHaveBeenCalledTimes(1);
   });
 
   it('relays open_window to the main process instead of opening a tab', async () => {
     mount();
     act(() => {
-      applyWorkspaceCommand({ type: 'workspace', cmd: 'open_window', session_id: 's-win' }) as WorkspaceCommandResult;
+      applyWorkspaceCommand({
+        type: 'workspace',
+        cmd: 'open_window',
+        session_id: 's-win',
+      }) as WorkspaceCommandResult;
     });
     await waitFor(() => expect(mocks.createChatWindow).toHaveBeenCalled());
     // The session id goes in the resume-session position (4th arg).

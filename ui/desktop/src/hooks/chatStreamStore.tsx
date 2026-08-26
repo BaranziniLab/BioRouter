@@ -38,6 +38,12 @@ import { errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
 import { reasoningEffortForRequest } from '../store/reasoningEffort';
 import { userActionHeaders } from '../utils/userAction';
+import {
+  abandonContinuationLease as abandonContinuationLeaseRequest,
+  getContinuationOwnerId,
+  recoverContinuationGroup,
+  type ContinuationRecoveryAction,
+} from '../utils/continuationLease';
 import type { ChatTurnErrorData, TurnErrorScope } from '../types/turnError';
 import type { PendingSteer } from '../utils/trailingActivity';
 
@@ -91,7 +97,8 @@ function buildAttachRequest(
   sessionId: string,
   turnId: string,
   fromSeq: number,
-  messages: Message[]
+  messages: Message[],
+  continuationLease?: string
 ): ChatRequest {
   const trailingUser = [...messages].reverse().find((m) => m.role === 'user');
   const placeholder: Message = {
@@ -105,7 +112,8 @@ function buildAttachRequest(
     turn_id: turnId,
     user_message: trailingUser ?? placeholder,
     from_seq: fromSeq,
-  };
+    ...(continuationLease ? { continuation_lease: continuationLease } : {}),
+  } as ChatRequest;
 }
 
 /**
@@ -136,6 +144,105 @@ type StreamFrameEnvelope = {
   replay?: boolean | null;
 };
 
+type TurnStartedEvent = {
+  type: 'TurnStarted';
+  turn_id: string;
+};
+
+type TurnStateEvent = {
+  type: 'TurnState';
+  active_turn_id: string | null;
+};
+
+function turnStartedEvent(event: MessageEvent): TurnStartedEvent | null {
+  const candidate = event as unknown as Partial<TurnStartedEvent>;
+  return candidate.type === 'TurnStarted' && typeof candidate.turn_id === 'string'
+    ? (candidate as TurnStartedEvent)
+    : null;
+}
+
+function turnStateEvent(event: MessageEvent): TurnStateEvent | null {
+  const candidate = event as unknown as Partial<TurnStateEvent>;
+  return candidate.type === 'TurnState' &&
+    (typeof candidate.active_turn_id === 'string' || candidate.active_turn_id === null)
+    ? (candidate as TurnStateEvent)
+    : null;
+}
+
+type ResumeInitializationEnvelope = {
+  initializing?: boolean | null;
+  pending_continuation?: {
+    ownership?: 'owned' | 'foreign' | 'settling' | null;
+    superseded_turn_id?: string | null;
+    continuation_lease?: string | null;
+  } | null;
+};
+
+export interface PendingContinuationView {
+  ownership: 'owned' | 'foreign' | 'settling';
+  supersededTurnId: string;
+}
+
+type CancelTurnMismatch = {
+  mismatch: true;
+  expected_turn_id: string;
+  active_turn_id: string;
+};
+
+type StreamDrainOptions = {
+  onFirstEvent?: () => void;
+  queuedInitializingChildMessage?: Message;
+  hadTransportError?: () => boolean;
+};
+
+function isInitializingResume(value: unknown): boolean {
+  return (value as ResumeInitializationEnvelope | null | undefined)?.initializing === true;
+}
+
+function resumePendingContinuation(value: unknown): {
+  view: PendingContinuationView;
+  continuationLease: string | null;
+} | null {
+  const pending = (value as ResumeInitializationEnvelope | null | undefined)?.pending_continuation;
+  if (
+    !pending ||
+    (pending.ownership !== 'owned' &&
+      pending.ownership !== 'foreign' &&
+      pending.ownership !== 'settling') ||
+    typeof pending.superseded_turn_id !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    view: {
+      ownership: pending.ownership,
+      supersededTurnId: pending.superseded_turn_id,
+    },
+    continuationLease:
+      pending.ownership === 'owned' && typeof pending.continuation_lease === 'string'
+        ? pending.continuation_lease
+        : null,
+  };
+}
+
+function resumeRequestBody(sessionId: string, loadModelAndExtensions: boolean) {
+  return {
+    session_id: sessionId,
+    load_model_and_extensions: loadModelAndExtensions,
+    continuation_owner_id: getContinuationOwnerId(),
+  };
+}
+
+function cancelTurnMismatch(error: unknown): CancelTurnMismatch | null {
+  if (!error || typeof error !== 'object') return null;
+  const candidate = error as Partial<CancelTurnMismatch>;
+  return candidate.mismatch === true &&
+    typeof candidate.expected_turn_id === 'string' &&
+    typeof candidate.active_turn_id === 'string'
+    ? (candidate as CancelTurnMismatch)
+    : null;
+}
+
 /** The per-turn sequence number of a frame, when the producer stamps one. */
 export function frameSeq(event: MessageEvent): number | undefined {
   const seq = (event as MessageEvent & StreamFrameEnvelope).seq;
@@ -151,6 +258,10 @@ export function frameTurnId(event: MessageEvent): string | undefined {
 /** Was this frame served from the replay backlog rather than the live tail? */
 export function isReplayFrame(event: MessageEvent): boolean {
   return (event as MessageEvent & StreamFrameEnvelope).replay === true;
+}
+
+function isTerminalEvent(event: MessageEvent): boolean {
+  return event.type === 'Error' || event.type === 'Finish';
 }
 
 /**
@@ -346,6 +457,8 @@ export interface ChatStreamSnapshot {
    * never outlive the thing it describes.
    */
   pendingSteer?: PendingSteer;
+  /** A durable Stop-and-Send gap discovered from the daemon on resume. */
+  pendingContinuation?: PendingContinuationView;
   /**
    * Whether this session's agent — model provider + extensions — has finished
    * loading on the backend. The transcript paints before this flips (see
@@ -439,6 +552,8 @@ export function isRunningState(chatState: ChatState): boolean {
  */
 export const NOTIFY_FALLBACK_MS = 32;
 
+const OBSERVER_INITIALIZATION_REFRESH_INTERVAL_MS = 1000;
+
 class ChatStreamController {
   private snapshot: ChatStreamSnapshot = {
     messages: [],
@@ -471,10 +586,11 @@ class ChatStreamController {
    * asserts that inequality from the server side. #67: submitting a turn clears
    * it too, since `retryTurn` reaches no `messagesRef` assignment at all.
    *
-   * FOLLOW-UP: #59 publishes those ids on `MessagesPersisted`, which this store
-   * does not yet consume. Folding them into a per-session id set would let a
-   * watched turn KEEP this true instead of dropping the guard for the rest of
-   * the session, and is what makes `expectedMessageIds` mandatory server-side.
+   * FOLLOW-UP: #59 publishes those ids on `MessagesPersisted`, but durability is
+   * not turn completion: providers persist intermediate assistant/tool rows too.
+   * Folding the ids into this completeness claim would let a watched turn KEEP
+   * it true instead of dropping the guard for the rest of the session, and is
+   * what makes `expectedMessageIds` mandatory server-side.
    */
   private viewNamesEveryStoredRow = false;
   /**
@@ -500,9 +616,9 @@ class ChatStreamController {
    *
    * Do NOT "fix" it by setting `viewNamesEveryStoredRow` here: it would be a
    * lie, because an observer tab genuinely does not know it holds every stored
-   * row. The thing that would let it is consuming #59's `MessagesPersisted`
-   * frame, which is the FOLLOW-UP recorded on `viewNamesEveryStoredRow` and is
-   * deliberately not done yet.
+   * row. The thing that would let it is promoting #59's `MessagesPersisted`
+   * accounting into this completeness claim, which is the FOLLOW-UP recorded
+   * on `viewNamesEveryStoredRow` and is deliberately not done yet.
    */
   private observing = false;
   /**
@@ -512,8 +628,47 @@ class ChatStreamController {
    * is no longer its own.
    */
   private observerGeneration = 0;
+  /**
+   * Turn identity within the current observer connection. Unlike
+   * `observerGeneration` (the ownership loop), this advances on reconnects and
+   * terminal frames so a late `/agent/resume` response cannot name an older turn.
+   */
+  private observedTurnGeneration = 0;
+  private observedTurnResolvedGeneration = -1;
+  private observedTurnLookup: { generation: number; promise: Promise<void> } | null = null;
+  /** Recently retired observer turn ids; replayed frames may never revive them. */
+  private retiredObservedTurnIds = new Set<string>();
   private abortController: AbortController | null = null;
   private activeStreamId = 0;
+  /** The server-side cancellation barrier. While present, no successor may submit. */
+  private stopInFlight: Promise<boolean> | null = null;
+  /** Whether the request currently on the wire already acquired a continuation lease. */
+  private stopInFlightContinuationPending = false;
+  /**
+   * A Stop whose server barrier has not succeeded yet. Unlike `stopInFlight`,
+   * this survives a failed HTTP attempt so a terminal SSE frame cannot reopen
+   * submission without proof that the exact stopped turn released its slot.
+   */
+  private stopPending = false;
+  private stopExpectedTurnId: string | null = null;
+  /** Stop-and-Send intent, retained when the exact-generation cancel is retried. */
+  private stopContinuationPending = false;
+  /** Exact-generation Stop-and-Send admission owned by this renderer. */
+  private continuationLease: string | null = null;
+  /** Successor idempotency key once the lease has been offered to `/reply`. */
+  private continuationLeaseTurnId: string | null = null;
+  /** Tokens awaiting an authoritative abandonment acknowledgement. */
+  private pendingLeaseAbandons = new Set<string>();
+  private leaseAbandonmentInFlight = new Map<string, Promise<boolean>>();
+  private continuationRecoveryInFlight: Promise<void> | null = null;
+  /** A closed tab must abandon a lease that arrives after its close raced the cancel response. */
+  private ownershipReleased = false;
+  /**
+   * The last exact generation whose cancellation barrier settled. A Stop-and-Send
+   * arriving just after an ordinary Stop can still mark that retained generation
+   * before it submits the replacement.
+   */
+  private lastSettledStopTurnId: string | null = null;
   /**
    * The turn this controller is currently rendering — the id it POSTed, or the
    * id it attached to. Held so a re-attach can re-POST the SAME turn (rather
@@ -555,6 +710,24 @@ class ChatStreamController {
    */
   private agentLoadPromise: Promise<void> | null = null;
   private lastSubmittedTitle: string | null = null;
+  /**
+   * A `/reply` id whose response was lost after acceptance became ambiguous.
+   * Retry must attach with this same key until a terminal frame proves the turn's
+   * outcome; minting another key could run and bill the same prompt twice.
+   */
+  private ambiguousRetryTurnId: string | null = null;
+  /** Manual Retry is itself single-flight, including the attach POST window. */
+  private retryInFlight: Promise<void> | null = null;
+  /** A delegated child may have a durable row before its exact runtime exists. */
+  private childInitializing = false;
+  private ownershipGeneration = 0;
+  private observerInitializationRefresh: {
+    observerGeneration: number;
+    operation: Promise<void>;
+  } | null = null;
+  private observerInitializationNextRefreshAt = 0;
+  /** Optimistic input accepted into an initializing child's delegated first turn. */
+  private pendingInitializingChildMessage: Message | null = null;
 
   constructor(
     readonly sessionId: string,
@@ -743,7 +916,81 @@ class ChatStreamController {
    * `/reply` stream this controller drives, and is why an observer feed (no
    * `seq` at all) simply never reaches the gate.
    */
+  private rememberRetiredObservedTurn(turnId: string | null): void {
+    if (!turnId) return;
+    this.retiredObservedTurnIds.add(turnId);
+    if (this.retiredObservedTurnIds.size > 32) {
+      const oldest = this.retiredObservedTurnIds.values().next().value;
+      if (oldest) this.retiredObservedTurnIds.delete(oldest);
+    }
+  }
+
+  private adoptObservedFrameTurn(event: MessageEvent): void {
+    if (!this.observing || isReplayFrame(event)) return;
+    // A terminal identifies the turn it retires; it may never advance the
+    // active pointer before that identity is checked by the terminal handler.
+    if (isTerminalEvent(event)) return;
+    const turnId = frameTurnId(event);
+    if (!turnId || this.retiredObservedTurnIds.has(turnId)) return;
+
+    // A non-replay frame on the CURRENT observer socket is ordered after every
+    // frame already consumed from that socket. It may therefore advance the
+    // pointer to a successor. Replayed frames and retired ids above may not.
+    this.activeTurnId = turnId;
+    this.observedTurnResolvedGeneration = this.observedTurnGeneration;
+  }
+
+  private refreshObservedActiveTurn(): Promise<void> | null {
+    if (!this.observing) return null;
+    const generation = this.observedTurnGeneration;
+    if (this.observedTurnResolvedGeneration === generation) return null;
+    if (this.observedTurnLookup?.generation === generation) {
+      return this.observedTurnLookup.promise;
+    }
+    const issuedAgainst = this.activeTurnId;
+
+    const operation = (async () => {
+      try {
+        const response = await resumeAgent({
+          body: resumeRequestBody(this.sessionId, false),
+          headers: await userActionHeaders(),
+          throwOnError: true,
+        });
+        if (!this.observing || this.observedTurnGeneration !== generation) return;
+        this.notePendingContinuation(response.data);
+        this.noteChildInitialization(isInitializingResume(response.data));
+        // A frame or user takeover that changed the pointer while the request
+        // was in flight is newer local evidence; never overwrite it.
+        if (this.activeTurnId !== issuedAgainst) return;
+
+        this.observedTurnResolvedGeneration = generation;
+        const activeTurnId = response.data?.active_turn?.turn_id ?? null;
+        this.activeTurnId =
+          activeTurnId && !this.retiredObservedTurnIds.has(activeTurnId) ? activeTurnId : null;
+        this.markObservedTurnRunning();
+      } catch {
+        // Keep this generation unresolved so a later activity frame can retry.
+      }
+    })();
+    this.observedTurnLookup = { generation, promise: operation };
+    void operation.finally(() => {
+      if (this.observedTurnLookup?.promise === operation) this.observedTurnLookup = null;
+    });
+    return operation;
+  }
+
+  private noteObservedTurnActivity(event: MessageEvent): void {
+    if (!this.observing) return;
+    if (this.childInitializing && event.type === 'Ping') {
+      this.startObserverInitializationRefresh();
+    }
+    if (event.type === 'Message' || event.type === 'ToolCallPending') {
+      void this.refreshObservedActiveTurn();
+    }
+  }
+
   private applySequenceGate(event: MessageEvent): boolean {
+    this.adoptObservedFrameTurn(event);
     const seq = frameSeq(event);
     if (seq === undefined) return true;
 
@@ -1046,6 +1293,98 @@ class ChatStreamController {
     );
   };
 
+  private noteChildInitialization(initializing: boolean, reloadWhenReady = true): void {
+    if (initializing) {
+      this.childInitializing = true;
+      this.updateSnapshot((prev) => {
+        const chatState = isRunningState(prev.chatState) ? prev.chatState : ChatState.Thinking;
+        const turnStartedAt = prev.turnStartedAt ?? Date.now();
+        if (
+          !prev.agentReady &&
+          prev.chatState === chatState &&
+          prev.turnStartedAt === turnStartedAt
+        ) {
+          return prev;
+        }
+        return { ...prev, agentReady: false, chatState, turnStartedAt };
+      });
+      this.startObserverInitializationRefresh();
+      return;
+    }
+
+    if (!this.childInitializing) return;
+    this.childInitializing = false;
+    this.observerInitializationNextRefreshAt = 0;
+    if (!reloadWhenReady) return;
+    // The earlier load deliberately stopped at the initialization guard. The
+    // child now has its exact delegated runtime, so a fresh load is required
+    // before consumers such as the tool-count query may call it ready.
+    this.agentLoadPromise = null;
+    void this.ensureAgentLoaded();
+  }
+
+  private startObserverInitializationRefresh(): void {
+    if (!this.observing || !this.childInitializing) return;
+    const observerGeneration = this.observerGeneration;
+    if (this.observerInitializationRefresh?.observerGeneration === observerGeneration) return;
+    const now = Date.now();
+    if (now < this.observerInitializationNextRefreshAt) return;
+    this.observerInitializationNextRefreshAt = now + OBSERVER_INITIALIZATION_REFRESH_INTERVAL_MS;
+
+    let operation!: Promise<void>;
+    operation = (async () => {
+      try {
+        const response = await resumeAgent({
+          body: resumeRequestBody(this.sessionId, false),
+          headers: await userActionHeaders(),
+          throwOnError: true,
+        });
+        if (
+          !this.observing ||
+          !this.childInitializing ||
+          this.observerGeneration !== observerGeneration
+        ) {
+          return;
+        }
+
+        const data = response.data;
+        this.notePendingContinuation(data);
+        const initializing = isInitializingResume(data);
+        this.noteChildInitialization(initializing);
+        this.noteActiveTurn(data?.active_turn);
+      } catch {
+        // The next daemon heartbeat retries while initialization remains live.
+      }
+    })().finally(() => {
+      if (this.observerInitializationRefresh?.operation === operation) {
+        this.observerInitializationRefresh = null;
+      }
+    });
+    this.observerInitializationRefresh = { observerGeneration, operation };
+  }
+
+  private notePendingContinuation(value: unknown): void {
+    const pending = resumePendingContinuation(value);
+    if (!pending) {
+      if (!this.continuationLease) {
+        this.updateSnapshot((prev) =>
+          prev.pendingContinuation ? { ...prev, pendingContinuation: undefined } : prev
+        );
+      }
+      return;
+    }
+
+    // A cancel response that landed after this resume was issued is newer local
+    // evidence. Never let that stale response replace a lease this window just
+    // acquired with a foreign-ownership gate.
+    if (this.continuationLease && !pending.continuationLease) return;
+    if (pending.continuationLease) {
+      this.continuationLease = pending.continuationLease;
+      this.continuationLeaseTurnId = null;
+    }
+    this.updateSnapshot((prev) => ({ ...prev, pendingContinuation: pending.view }));
+  }
+
   /**
    * Load the agent — model provider + extensions — for this session, once.
    *
@@ -1065,15 +1404,17 @@ class ChatStreamController {
     if (this.agentLoadPromise) return this.agentLoadPromise;
 
     this.agentLoadPromise = (async () => {
+      let initializing = false;
       try {
         const response = await resumeAgent({
-          body: {
-            session_id: this.sessionId,
-            load_model_and_extensions: true,
-          },
+          body: resumeRequestBody(this.sessionId, true),
+          headers: await userActionHeaders(),
           throwOnError: true,
         });
         const resumeData = response.data;
+        this.notePendingContinuation(resumeData);
+        initializing = isInitializingResume(resumeData);
+        this.noteChildInitialization(initializing, false);
         const initializationError = resumeData?.initialization_error;
 
         // Reached on the paths `loadSession` short-circuits — a controller
@@ -1101,10 +1442,11 @@ class ChatStreamController {
         // fire-and-forget on the assumption the agent was already up; now it is
         // part of readiness, so a submit that waits for the agent also waits for
         // its model to be bound instead of racing it.
-        if (resumeData?.session) {
+        if (resumeData?.session && !initializing) {
           try {
             await updateFromSession({
               body: { session_id: resumeData.session.id },
+              headers: await userActionHeaders(),
               throwOnError: true,
             });
           } catch (err) {
@@ -1119,7 +1461,11 @@ class ChatStreamController {
           turnError: prev.turnError ?? clientTurnError(error, 'agent_load_failed', 'session'),
         }));
       } finally {
-        this.updateSnapshot((prev) => ({ ...prev, agentReady: true }));
+        if (initializing) {
+          this.agentLoadPromise = null;
+        } else {
+          this.updateSnapshot((prev) => ({ ...prev, agentReady: true }));
+        }
       }
     })();
 
@@ -1132,14 +1478,31 @@ class ChatStreamController {
    * ever having gone through `loadSession`'s cold path.
    */
   whenAgentReady(): Promise<void> {
-    if (this.snapshot.agentReady) return Promise.resolve();
+    // Initializing children accept user input into the delegated first turn;
+    // waiting for readiness here would prevent the very `/reply` that queues it.
+    if (this.snapshot.agentReady || this.childInitializing) return Promise.resolve();
     return this.ensureAgentLoaded();
+  }
+
+  private reobserveReleasedSubagent(
+    session: Session | undefined,
+    ownershipGeneration: number
+  ): void {
+    if (
+      this.ownershipReleased &&
+      this.ownershipGeneration === ownershipGeneration &&
+      session?.session_type === 'sub_agent'
+    ) {
+      void this.observeSession();
+    }
   }
 
   async loadSession(onSessionLoaded?: () => void): Promise<void> {
     if (!this.sessionId) return;
+    const ownershipGeneration = this.ownershipGeneration;
 
     if (this.snapshot.session) {
+      this.reobserveReleasedSubagent(this.snapshot.session, ownershipGeneration);
       // Session already painted, but the agent may still be missing entirely on
       // the controller-reuse path. Idempotent — and it is the resume inside it
       // that reports any live turn, so nothing here needs to guess at one.
@@ -1168,6 +1531,7 @@ class ChatStreamController {
         },
         chatState: this.isRunning() ? prev.chatState : ChatState.Idle,
       }));
+      this.reobserveReleasedSubagent(cached.session, ownershipGeneration);
       // The cache is a process-lifetime LRU with no TTL, so this path could
       // previously reach a submit having NEVER loaded the agent for this
       // session — the transcript looked live while the backend had no
@@ -1196,13 +1560,13 @@ class ChatStreamController {
           // contributing a few hundred bytes to what the user reads. The user
           // came here to read the conversation; give them the conversation.
           const response = await resumeAgent({
-            body: {
-              session_id: this.sessionId,
-              load_model_and_extensions: false,
-            },
+            body: resumeRequestBody(this.sessionId, false),
+            headers: await userActionHeaders(),
             throwOnError: true,
           });
           const resumeData = response.data;
+          this.notePendingContinuation(resumeData);
+          this.noteChildInitialization(isInitializingResume(resumeData));
           const loadedSession = resumeData?.session;
 
           this.messagesRef = loadedSession?.conversation || [];
@@ -1229,10 +1593,17 @@ class ChatStreamController {
             // the top of this load) pinned until some frame happens to move it.
             // On a quiet observed session that is a tab stuck on the loading
             // state forever.
-            chatState: this.hasLiveTurn() ? prev.chatState : ChatState.Idle,
+            chatState:
+              this.hasLiveTurn() || this.childInitializing
+                ? isRunningState(prev.chatState)
+                  ? prev.chatState
+                  : ChatState.Thinking
+                : ChatState.Idle,
             sessionLoadError: undefined,
             turnError: undefined,
           }));
+
+          this.reobserveReleasedSubagent(loadedSession, ownershipGeneration);
 
           // PHASE 2 — model + extensions, off the paint path. Deliberately not
           // awaited: `loadSession` resolves as soon as the transcript is up.
@@ -1299,7 +1670,7 @@ class ChatStreamController {
     // outliving the turn is the same bug in two shapes: a stale handle sends a
     // reopened tab attaching to a turn that is over, and a stale high-water mark
     // makes the NEXT turn's `seq: 0` look like a duplicate and swallows it.
-    this.retireActiveTurn();
+    if (!this.stopPending) this.retireActiveTurn();
 
     const timeSinceLastInteraction = Date.now() - this.lastInteractionTime;
     if (!error && timeSinceLastInteraction > 60000) {
@@ -1371,18 +1742,63 @@ class ChatStreamController {
 
     this.updateSnapshot((prev) => ({
       ...prev,
-      chatState: ChatState.Idle,
+      // A terminal frame can beat the cancel HTTP response by a few
+      // microtasks. Keep the composer gated until that response confirms the
+      // server-side turn slot has actually been released.
+      chatState: this.stopPending ? prev.chatState : ChatState.Idle,
       turnStartedAt: undefined,
       lastMessageAt: undefined,
       // The turn it was aimed at is over; whether or not we saw the echo, there
       // is nothing left to steer.
       pendingSteer: undefined,
     }));
-    // #22 — turn boundary: the Idle transition must land NOW, not a frame
-    // later, so awaiting callers and finish listeners observe a settled store.
+    // #22 — a genuine turn boundary lands synchronously. During Stop, the
+    // cancel response owns the final Idle transition because it is the stronger
+    // server-side admission barrier.
     this.flushNotify();
     for (const listener of this.finishListeners) listener();
   };
+
+  private async adoptQueuedInitializingChild(message: Message, streamId: number): Promise<boolean> {
+    try {
+      const response = await resumeAgent({
+        body: resumeRequestBody(this.sessionId, false),
+        headers: await userActionHeaders(),
+        throwOnError: true,
+      });
+      if (this.activeStreamId !== streamId) return true;
+      const data = response.data;
+      this.notePendingContinuation(data);
+      if (data?.session?.session_type !== 'sub_agent') return false;
+
+      const initializing = isInitializingResume(data);
+      this.noteChildInitialization(initializing);
+      this.pendingInitializingChildMessage = message;
+      const activeTurnId = data?.active_turn?.turn_id ?? null;
+
+      if (!initializing && !activeTurnId) {
+        const conversation = data?.session?.conversation ?? [];
+        this.pendingInitializingChildMessage = null;
+        this.updateMessages(conversation);
+        this.abortController = null;
+        this.retireActiveTurn();
+        await this.finishCurrentStream();
+        return true;
+      }
+
+      this.abortController = null;
+      this.activeTurnId = activeTurnId;
+      this.reattachesThisTurn = 0;
+      // The 202 admitted this input into the child's delegated first turn. Its
+      // synthetic request id is not a renderer-owned turn and must never be
+      // re-attached; the observer is the durable display connection instead.
+      void this.observeSession();
+      return true;
+    } catch (error) {
+      console.warn('Could not verify initializing child admission:', error);
+      return false;
+    }
+  }
 
   private async streamFromResponse(
     stream: AsyncIterable<MessageEvent>,
@@ -1394,19 +1810,38 @@ class ChatStreamController {
      * the branch below. Everything else about the pipeline is identical, which
      * is the point of BR-71 reusing it.
      */
-    source: 'driver' | 'observer' = 'driver'
+    source: 'driver' | 'observer' = 'driver',
+    options: StreamDrainOptions = {}
   ): Promise<void> {
     let currentMessages = initialMessages;
+    let eventCount = 0;
 
     try {
       for await (const event of stream) {
         if (this.activeStreamId !== streamId) return;
+        if (eventCount === 0) options.onFirstEvent?.();
+        eventCount += 1;
 
         // Contract §1 — drop what this client has already rendered. This is the
         // ONLY thing standing between a re-attach and a duplicated paragraph:
         // the server replays a turn from its start, and a client that was
         // watching for the first half of it must apply only the second.
         if (!this.applySequenceGate(event)) continue;
+        this.noteObservedTurnActivity(event);
+
+        const turnState = turnStateEvent(event);
+        if (turnState) {
+          this.applyObservedTurnState(turnState.active_turn_id);
+          continue;
+        }
+
+        const started = turnStartedEvent(event);
+        if (started) {
+          // A live start ordered after the connection snapshot advances the
+          // same authoritative lifecycle state without model-output inference.
+          this.applyObservedTurnState(started.turn_id);
+          continue;
+        }
 
         // Contract §R2 — replay lands as one commit, the live tail frame by
         // frame. The transition is the first frame that is not marked `replay`,
@@ -1440,6 +1875,9 @@ class ChatStreamController {
             break;
           }
           case 'Message': {
+            if (event.message.id === this.pendingInitializingChildMessage?.id) {
+              this.pendingInitializingChildMessage = null;
+            }
             // Drop the part of a replay the session store already gave us.
             const msg = this.dedupeReplayedMessage(
               event.message,
@@ -1454,10 +1892,20 @@ class ChatStreamController {
             break;
           }
           case 'Error':
+            if (!this.observedTerminalTargetsCurrentTurn(event)) break;
             // The turn is over — release before the terminal transition so the
             // whole turn-boundary battery (finish listeners, notification, name
             // poll) observes a settled, fully-painted store.
             this.endReplayHold();
+            if (this.observing) {
+              this.noteChildInitialization(false, false);
+              this.rememberRetiredObservedTurn(frameTurnId(event) ?? this.activeTurnId);
+              this.observedTurnGeneration += 1;
+              this.observedTurnResolvedGeneration = -1;
+            }
+            // A server-authored terminal frame is an authoritative outcome, not
+            // an ambiguous transport loss. A later Retry may start fresh work.
+            this.ambiguousRetryTurnId = null;
             await this.finishCurrentStream({
               message: event.error,
               technicalDetails: event.error,
@@ -1468,16 +1916,36 @@ class ChatStreamController {
             });
             return;
           case 'Finish':
+            if (!this.observedTerminalTargetsCurrentTurn(event)) break;
             this.endReplayHold();
+            if (this.observing) {
+              this.noteChildInitialization(false, false);
+              this.rememberRetiredObservedTurn(frameTurnId(event) ?? this.activeTurnId);
+              this.observedTurnGeneration += 1;
+              this.observedTurnResolvedGeneration = -1;
+            }
+            this.ambiguousRetryTurnId = null;
             this.updateTokenState(event.token_state);
             await this.finishCurrentStream();
             return;
+          case 'MessagesPersisted':
+            break;
           case 'ModelChange':
           case 'Ping':
             break;
           case 'UpdateConversation':
             currentMessages = event.conversation;
-            this.updateMessages(event.conversation);
+            if (
+              this.pendingInitializingChildMessage &&
+              !currentMessages.some(
+                (message) => message.id === this.pendingInitializingChildMessage?.id
+              )
+            ) {
+              currentMessages = [...currentMessages, this.pendingInitializingChildMessage];
+            } else if (this.pendingInitializingChildMessage) {
+              this.pendingInitializingChildMessage = null;
+            }
+            this.updateMessages(currentMessages);
             this.updateTokenState(event.token_state);
             break;
           case 'Notification':
@@ -1498,20 +1966,25 @@ class ChatStreamController {
       // second later, for a session this window does not drive and the user
       // cannot act on.
       //
-      // Residual, deliberately not papered over: the observer does not learn
-      // that a turn ENDED while it was disconnected, so if the `Finish` falls
-      // inside the reconnect gap the activity indicator stays as the last frame
-      // left it until the next one arrives. The transcript itself is repaired
-      // by the fresh `UpdateConversation` snapshot on reconnect. Settling to
-      // Idle here instead would be the opposite lie — claiming a turn is over
-      // when all we know is that we stopped listening — and would fire the
-      // whole turn-boundary battery (notification, name poll, finish
-      // listeners) once per dropped connection.
+      // Do not infer a turn boundary from transport loss. The next connection's
+      // authoritative TurnState snapshot settles stale activity if the terminal
+      // edge landed inside this reconnect gap.
       if (
         source === 'driver' &&
         this.activeStreamId === streamId &&
         !this.abortController?.signal.aborted
       ) {
+        if (
+          eventCount === 0 &&
+          options.queuedInitializingChildMessage &&
+          !options.hadTransportError?.() &&
+          (await this.adoptQueuedInitializingChild(
+            options.queuedInitializingChildMessage,
+            streamId
+          ))
+        ) {
+          return;
+        }
         // …but under the live-turn stream contract "this socket ended" is no
         // longer the same event as "the turn died": the server keeps the turn
         // running with zero observers and holds its backlog (§3, §5). So try to
@@ -1520,6 +1993,7 @@ class ChatStreamController {
         // re-attaching loses nothing where the error card loses the rest of the
         // turn. Only if the turn really is gone does the card below stand.
         if (await this.reattachAfterDrop(streamId)) return;
+        this.ambiguousRetryTurnId = this.activeTurnId;
         await this.finishCurrentStream({
           message: 'The connection closed before Biorouter received a completion status.',
           code: 'stream_interrupted',
@@ -1530,6 +2004,7 @@ class ChatStreamController {
     } catch (error) {
       if (this.activeStreamId !== streamId) return;
       if (error instanceof Error && error.name === 'AbortError') return;
+      this.ambiguousRetryTurnId = this.activeTurnId;
       await this.finishCurrentStream(clientTurnError(error, 'stream_error', 'transport'));
     } finally {
       // No exit from this loop — clean end, terminal frame, abort, transport
@@ -1586,16 +2061,30 @@ class ChatStreamController {
     this.abortController = new AbortController();
     const nextStreamId = streamId + 1;
     this.activeStreamId = nextStreamId;
+    const continuationLease =
+      this.continuationLeaseTurnId === turnId ? this.continuationLease : null;
 
     try {
       const { stream } = await reply({
         headers,
-        body: buildAttachRequest(this.sessionId, turnId, this.lastAppliedSeq + 1, this.messagesRef),
+        body: buildAttachRequest(
+          this.sessionId,
+          turnId,
+          this.lastAppliedSeq + 1,
+          this.messagesRef,
+          continuationLease ?? undefined
+        ),
         throwOnError: true,
         signal: this.abortController.signal,
         sseMaxRetryAttempts: 1,
       });
-      await this.streamFromResponse(stream, this.messagesRef, nextStreamId);
+      await this.streamFromResponse(
+        stream as AsyncIterable<MessageEvent>,
+        this.messagesRef,
+        nextStreamId,
+        'driver',
+        { onFirstEvent: () => this.releaseContinuationLeaseLocally(continuationLease) }
+      );
       return true;
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return true;
@@ -1639,6 +2128,7 @@ class ChatStreamController {
    */
   async observeSession(): Promise<void> {
     if (this.observing) return; // idempotent — tab re-mounts must not stack loops
+    this.ownershipReleased = false;
     // Never take the socket away from a turn the USER is driving. This is
     // reached on daemon input — `ChatGroupsContext` attaches on every qualifying
     // workspace frame, `annotate_tab` for a tab that already exists included —
@@ -1653,10 +2143,20 @@ class ChatStreamController {
     // loops against one controller.
     const generation = ++this.observerGeneration;
     this.observing = true;
+    this.observerInitializationNextRefreshAt = 0;
+    // `/agent/resume` may have named the child turn just before the workspace
+    // frame attached this observer. The observer already owns the better live
+    // feed, so it must not re-POST `/reply`; it does still need to expose the
+    // same running state that a driver attach would expose to the composer,
+    // tab strip, and running-chat registry.
+    this.markObservedTurnRunning();
+    this.startObserverInitializationRefresh();
     let retryMs = 1000;
     try {
       while (this.observing && this.observerGeneration === generation) {
         const streamId = ++this.activeStreamId;
+        this.observedTurnGeneration += 1;
+        this.observedTurnResolvedGeneration = -1;
         this.abortController?.abort();
         // Held in a local as well as on the field. The `headers` await below is
         // the first suspension point in this iteration, and a submit landing in
@@ -1772,6 +2272,124 @@ class ChatStreamController {
     this.abortController?.abort();
   }
 
+  private abandonLeaseToken = (token: string): Promise<boolean> => {
+    const existing = this.leaseAbandonmentInFlight.get(token);
+    if (existing) return existing;
+
+    this.pendingLeaseAbandons.add(token);
+    const operation = (async () => {
+      try {
+        await abandonContinuationLeaseRequest(this.sessionId, token);
+        this.pendingLeaseAbandons.delete(token);
+        if (this.continuationLease === token) {
+          this.continuationLease = null;
+          this.continuationLeaseTurnId = null;
+          this.updateSnapshot((prev) =>
+            prev.pendingContinuation ? { ...prev, pendingContinuation: undefined } : prev
+          );
+        }
+        return true;
+      } catch (error) {
+        // The token remains both locally addressable and in the retry set until
+        // the daemon acknowledges it. A dropped abandon response must not turn
+        // the server's Live lease into an unrecoverable orphan.
+        console.warn('Failed to abandon continuation lease:', error);
+        return false;
+      }
+    })();
+    this.leaseAbandonmentInFlight.set(token, operation);
+    void operation.finally(() => {
+      if (this.leaseAbandonmentInFlight.get(token) === operation) {
+        this.leaseAbandonmentInFlight.delete(token);
+      }
+    });
+    return operation;
+  };
+
+  private abandonLeaseWithRetry = async (token: string): Promise<void> => {
+    if (await this.abandonLeaseToken(token)) return;
+    // One immediate idempotent retry covers the important lost-response case
+    // without creating a timer that outlives a closed renderer. If the daemon
+    // is genuinely unreachable, the token remains in pendingLeaseAbandons and
+    // the next lifecycle attempt retries it again.
+    await Promise.resolve();
+    await this.abandonLeaseToken(token);
+  };
+
+  abandonContinuation = async (): Promise<void> => {
+    const tokens = new Set(this.pendingLeaseAbandons);
+    if (this.continuationLease) tokens.add(this.continuationLease);
+    await Promise.all([...tokens].map((token) => this.abandonLeaseWithRetry(token)));
+  };
+
+  private abandonContinuationIfOwned = async (token: string | null): Promise<void> => {
+    if (!token || this.continuationLease !== token) return;
+    await this.abandonContinuation();
+  };
+
+  private releaseContinuationLeaseLocally(token: string | null): void {
+    if (!token || this.continuationLease !== token) return;
+    this.continuationLease = null;
+    this.continuationLeaseTurnId = null;
+    this.pendingLeaseAbandons.delete(token);
+    this.updateSnapshot((prev) =>
+      prev.pendingContinuation ? { ...prev, pendingContinuation: undefined } : prev
+    );
+  }
+
+  recoverPendingContinuation = (action: ContinuationRecoveryAction): Promise<void> => {
+    if (this.continuationRecoveryInFlight) return this.continuationRecoveryInFlight;
+    const pending = this.snapshot.pendingContinuation;
+    if (!pending) return Promise.resolve();
+    const operation = (async () => {
+      const response = await recoverContinuationGroup(
+        this.sessionId,
+        pending.supersededTurnId,
+        action
+      );
+      if (action === 'abandon') {
+        this.continuationLease = null;
+        this.continuationLeaseTurnId = null;
+        this.updateSnapshot((prev) => ({ ...prev, pendingContinuation: undefined }));
+        return;
+      }
+      if (!response.continuation_lease) {
+        throw new Error('Continuation takeover did not return a lease');
+      }
+      this.continuationLease = response.continuation_lease;
+      this.continuationLeaseTurnId = null;
+      this.updateSnapshot((prev) => ({
+        ...prev,
+        pendingContinuation: {
+          ownership: 'owned',
+          supersededTurnId: response.superseded_turn_id,
+        },
+      }));
+    })();
+    this.continuationRecoveryInFlight = operation;
+    const clearRecovery = () => {
+      if (this.continuationRecoveryInFlight === operation) {
+        this.continuationRecoveryInFlight = null;
+      }
+    };
+    void operation.then(clearRecovery, clearRecovery);
+    return operation;
+  };
+
+  /** Release renderer ownership without cancelling a daemon turn already running. */
+  releaseOwnership = (): void => {
+    this.ownershipGeneration += 1;
+    this.ownershipReleased = true;
+    this.stopObserving();
+    // Closing a tab releases its renderer socket regardless of who opened the
+    // turn. `/reply` is daemon-owned after admission, so aborting this reader is
+    // a detach, not cancellation; the child/turn keeps running for its parent.
+    this.activeStreamId += 1;
+    this.abortController?.abort();
+    this.abortController = null;
+    void this.abandonContinuation();
+  };
+
   /**
    * Join a turn this controller did not start, and render it from its
    * beginning (contract §2, §R1).
@@ -1804,6 +2422,7 @@ class ChatStreamController {
    */
   attachToTurn = async (turnId: string): Promise<boolean> => {
     if (!this.sessionId || !turnId) return false;
+    this.ownershipReleased = false;
     // Never displace a turn this controller is already driving — including the
     // case where that turn IS this one, whose stream is live and whose frames
     // would then arrive twice over two sockets.
@@ -1849,6 +2468,9 @@ class ChatStreamController {
     // the window instead bumps `activeStreamId` past this one, and the guard
     // below stands the attach down.
     const socket = new AbortController();
+    const continuationLease =
+      this.continuationLeaseTurnId === turnId ? this.continuationLease : null;
+    let streamTransportError = false;
 
     try {
       const { stream } = await reply({
@@ -1860,10 +2482,19 @@ class ChatStreamController {
         // which made every mid-turn reload of a private chat a 403 that the SSE
         // client turns into an empty stream. See `userActionHeaders`.
         headers: await userActionHeaders(),
-        body: buildAttachRequest(this.sessionId, turnId, fromSeq, this.messagesRef),
+        body: buildAttachRequest(
+          this.sessionId,
+          turnId,
+          fromSeq,
+          this.messagesRef,
+          continuationLease ?? undefined
+        ),
         throwOnError: true,
         signal: socket.signal,
         sseMaxRetryAttempts: 1,
+        onSseError: () => {
+          streamTransportError = true;
+        },
       });
       if (this.activeStreamId !== streamId) {
         // Something real took the controller over while the POST was in flight
@@ -1881,7 +2512,16 @@ class ChatStreamController {
         turnStartedAt: prev.turnStartedAt ?? Date.now(),
         turnError: undefined,
       }));
-      await this.streamFromResponse(stream, this.messagesRef, streamId);
+      await this.streamFromResponse(
+        stream as AsyncIterable<MessageEvent>,
+        this.messagesRef,
+        streamId,
+        'driver',
+        {
+          onFirstEvent: () => this.releaseContinuationLeaseLocally(continuationLease),
+          hadTransportError: () => streamTransportError,
+        }
+      );
       return true;
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return false;
@@ -1956,7 +2596,75 @@ class ChatStreamController {
    */
   private noteActiveTurn(activeTurn: ActiveTurnRef | null | undefined): void {
     if (!activeTurn?.turn_id) return;
+    if (this.retiredObservedTurnIds.has(activeTurn.turn_id)) return;
+    if (this.activeTurnId && this.activeTurnId !== activeTurn.turn_id) return;
+    // Observer tabs do not attach to `/reply`, but explicit Stop still needs the
+    // daemon's exact generation. Retain the pointer even when resumeActiveTurn
+    // correctly refuses to replace the observer feed.
+    this.activeTurnId = activeTurn.turn_id;
+    if (this.observing) {
+      this.observedTurnResolvedGeneration = this.observedTurnGeneration;
+      this.markObservedTurnRunning();
+    }
     void this.resumeActiveTurn(activeTurn.turn_id);
+  }
+
+  private markObservedTurnRunning(): void {
+    if (!this.observing || !this.activeTurnId) return;
+    this.updateSnapshot((prev) => {
+      const chatState = isRunningState(prev.chatState) ? prev.chatState : ChatState.Streaming;
+      const turnStartedAt = prev.turnStartedAt ?? Date.now();
+      if (
+        prev.chatState === chatState &&
+        prev.turnStartedAt === turnStartedAt &&
+        prev.turnError === undefined
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        chatState,
+        turnStartedAt,
+        turnError: undefined,
+      };
+    });
+  }
+
+  private observedTerminalTargetsCurrentTurn(event: MessageEvent): boolean {
+    if (!this.observing) return true;
+    // The observer snapshot is newer than anything already queued on its bus
+    // receiver. An unclaimed or older terminal cannot retire the exact
+    // successor the authoritative snapshot named.
+    if (this.activeTurnId) return frameTurnId(event) === this.activeTurnId;
+    return this.observedTurnResolvedGeneration !== this.observedTurnGeneration;
+  }
+
+  private applyObservedTurnState(activeTurnId: string | null): void {
+    if (!this.observing) return;
+    this.observedTurnResolvedGeneration = this.observedTurnGeneration;
+    const nextTurnId =
+      activeTurnId && !this.retiredObservedTurnIds.has(activeTurnId) ? activeTurnId : null;
+    if (nextTurnId) {
+      this.noteChildInitialization(false);
+      this.activeTurnId = nextTurnId;
+      this.updateSnapshot((prev) =>
+        prev.chatState === ChatState.Thinking ? { ...prev, chatState: ChatState.Streaming } : prev
+      );
+      this.markObservedTurnRunning();
+      return;
+    }
+
+    this.rememberRetiredObservedTurn(this.activeTurnId);
+    this.retireActiveTurn();
+    this.ambiguousRetryTurnId = null;
+    this.updateSnapshot((prev) => ({
+      ...prev,
+      chatState: this.stopPending ? prev.chatState : ChatState.Idle,
+      turnStartedAt: undefined,
+      lastMessageAt: undefined,
+      pendingSteer: undefined,
+      pendingToolCalls: [],
+    }));
   }
 
   private submitPreparedMessage = async (
@@ -1964,6 +2672,7 @@ class ChatStreamController {
     currentMessages: Message[],
     updateMessageList: boolean
   ): Promise<void> => {
+    this.ownershipReleased = false;
     // BR-71 — a user-driven turn converts an observer tab into a driver.
     // Detach FIRST and properly: the observer holds this controller's
     // `abortController` and a live socket, and the turn about to start replaces
@@ -1972,6 +2681,10 @@ class ChatStreamController {
     // reply. `stopObserving()` is a no-op on a controller that was already
     // driving, which is every ordinary submit.
     this.stopObserving();
+    // This is a genuinely new provider turn. It consumes any continuation lease
+    // from the preceding Stop and supersedes an older ambiguous-retry pointer.
+    this.lastSettledStopTurnId = null;
+    this.ambiguousRetryTurnId = null;
 
     // #67 — launching a turn invalidates the completeness claim, whatever that
     // turn goes on to do. `updateMessages` drops it on every path that appends a
@@ -2010,6 +2723,14 @@ class ChatStreamController {
     // BR-62b: one idempotency key per turn, sent in the body so an SSE
     // reconnect re-POST carries the same key and the server dedupes it.
     const turnId = newTurnId();
+    const continuationLease = this.continuationLease;
+    if (continuationLease) this.continuationLeaseTurnId = turnId;
+    const queuedInitializingChildMessage =
+      !continuationLease &&
+      this.childInitializing &&
+      this.snapshot.session?.session_type === 'sub_agent'
+        ? newMessage
+        : undefined;
     // The live-turn stream contract promotes that key into an ATTACH handle:
     // re-POSTing it rejoins this turn instead of starting a new one, which is
     // how THIS controller recovers a dropped socket (`reattachAfterDrop`).
@@ -2038,9 +2759,11 @@ class ChatStreamController {
       // overwhelmingly common case.
       await this.whenAgentReady();
       if (this.abortController?.signal.aborted || this.activeStreamId !== streamId) {
+        await this.abandonContinuationIfOwned(continuationLease);
         return;
       }
 
+      let streamTransportError = false;
       const { stream } = await reply({
         // Issue #56 Task 58 / #47: `/reply` runs an agent turn, with tools, in
         // whatever session the body names, and `session_id` is a request
@@ -2058,16 +2781,39 @@ class ChatStreamController {
           // BR-63: the composer's per-turn reasoning effort. Omitted on the
           // default ('normal'), so a session-level `/effort` still applies.
           reasoning_effort: reasoningEffortForRequest(),
-        },
+          ...(continuationLease ? { continuation_lease: continuationLease } : {}),
+        } as ChatRequest,
         throwOnError: true,
         signal: this.abortController.signal,
         sseMaxRetryAttempts: 1,
+        onSseError: () => {
+          streamTransportError = true;
+        },
       });
 
-      await this.streamFromResponse(stream, currentMessages, streamId);
+      await this.streamFromResponse(
+        stream as AsyncIterable<MessageEvent>,
+        currentMessages,
+        streamId,
+        'driver',
+        {
+          onFirstEvent: () => this.releaseContinuationLeaseLocally(continuationLease),
+          queuedInitializingChildMessage,
+          hadTransportError: () => streamTransportError,
+        }
+      );
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
+        await this.abandonContinuationIfOwned(continuationLease);
         return;
+      }
+      // A connection failure can happen after the daemon accepted the POST but
+      // before this renderer received the response. Preserve the exact key so
+      // Retry attaches/replays instead of purchasing a duplicate turn.
+      if (isConnectionError(error)) {
+        this.ambiguousRetryTurnId = turnId;
+      } else {
+        await this.abandonContinuationIfOwned(continuationLease);
       }
       await this.finishCurrentStream(clientTurnError(error, 'submit_error', 'inference'));
     } finally {
@@ -2081,6 +2827,10 @@ class ChatStreamController {
     return (
       !!this.snapshot.session &&
       this.snapshot.chatState !== ChatState.LoadingConversation &&
+      !this.stopInFlight &&
+      !this.stopPending &&
+      this.snapshot.pendingContinuation?.ownership !== 'foreign' &&
+      this.snapshot.pendingContinuation?.ownership !== 'settling' &&
       // BR-71: an OBSERVER's subscription is not a turn in flight. Reading it
       // as one silently drops every message typed into a daemon-opened tab —
       // the takeover §4.3 promises ("until the tab detaches or the user takes
@@ -2208,11 +2958,12 @@ class ChatStreamController {
    *    user turn (nothing was ever sent on this controller, e.g. a pure mount
    *    load failure) the reload alone is the retry.
    */
-  retryTurn = async (): Promise<void> => {
+  private retryTurnOnce = async (): Promise<void> => {
     // BR-71: same reading as `canSubmitMessage` — an observer's feed is not a
     // turn this controller is running, and Retry in an observed tab is a
     // takeover like any other submit.
     if (this.hasLiveTurn()) return;
+    const previousError = this.snapshot.turnError;
     this.updateSnapshot((prev) => ({ ...prev, turnError: undefined }));
 
     await this.loadSession();
@@ -2222,7 +2973,41 @@ class ChatStreamController {
     if (!last || last.role !== 'user') return;
 
     this.lastInteractionTime = Date.now();
+    const ambiguousTurnId = this.ambiguousRetryTurnId;
+    if (ambiguousTurnId) {
+      const ambiguousLease =
+        this.continuationLeaseTurnId === ambiguousTurnId ? this.continuationLease : null;
+      const attached = await this.attachToTurn(ambiguousTurnId);
+      if (!attached && this.ambiguousRetryTurnId === ambiguousTurnId) {
+        this.ambiguousRetryTurnId = null;
+        await this.abandonContinuationIfOwned(ambiguousLease);
+        this.updateSnapshot((prev) => ({
+          ...prev,
+          turnError:
+            previousError ??
+            ({
+              message: 'Biorouter could not reconnect to the previous turn.',
+              technicalDetails: 'The exact turn could not be re-attached.',
+              code: 'retry_attach_failed',
+              scope: 'transport',
+              retryable: true,
+            } satisfies ChatTurnErrorData),
+        }));
+      }
+      return;
+    }
     await this.submitPreparedMessage(last, [...this.messagesRef], false);
+  };
+
+  retryTurn = (): Promise<void> => {
+    if (this.retryInFlight) return this.retryInFlight;
+    const operation = this.retryTurnOnce();
+    let tracked!: Promise<void>;
+    tracked = operation.finally(() => {
+      if (this.retryInFlight === tracked) this.retryInFlight = null;
+    });
+    this.retryInFlight = tracked;
+    return tracked;
   };
 
   submitElicitationResponse = async (
@@ -2308,8 +3093,16 @@ class ChatStreamController {
       pendingSteer: issued,
     }));
     try {
+      const interruptRequest = {
+        session_id: this.sessionId,
+        text: trimmed,
+        // The server uses this only while a delegated child is still queued;
+        // there it makes a lost-response retry idempotent. Once the live agent
+        // loop exists, the ordinary soft-interrupt path ignores the key.
+        turn_id: newTurnId(),
+      };
       await interrupt({
-        body: { session_id: this.sessionId, text: trimmed },
+        body: interruptRequest,
         headers: await userActionHeaders(),
         throwOnError: true,
       });
@@ -2328,15 +3121,115 @@ class ChatStreamController {
     }
   };
 
-  stopStreaming = (): void => {
+  private requestExactTurnSettlement = async (
+    turnId: string,
+    continuationPending: boolean
+  ): Promise<boolean> => {
+    try {
+      const body = {
+        session_id: this.sessionId,
+        expected_turn_id: turnId,
+        wait_for_idle: true,
+        continuation_pending: continuationPending,
+        ...(continuationPending ? { continuation_owner_id: getContinuationOwnerId() } : {}),
+      };
+      const result = await cancelTurn({
+        body,
+        headers: await userActionHeaders(),
+        throwOnError: true,
+      });
+      const data = result.data;
+      if (data?.settled === true) {
+        if (!continuationPending) return true;
+        const lease = data.continuation_lease;
+        if (!lease) {
+          console.warn('Stop-and-Send response did not include a continuation lease');
+          return false;
+        }
+        if (this.continuationLease && this.continuationLease !== lease) {
+          await this.abandonContinuation();
+        }
+        if (this.ownershipReleased) {
+          await this.abandonLeaseWithRetry(lease);
+        } else {
+          this.continuationLease = lease;
+          this.continuationLeaseTurnId = null;
+          this.updateSnapshot((prev) => ({
+            ...prev,
+            pendingContinuation: {
+              ownership: 'owned',
+              supersededTurnId: turnId,
+            },
+          }));
+        }
+        return true;
+      }
+      console.warn('Cancel response did not confirm that the stopped turn settled');
+    } catch (error) {
+      const mismatch = cancelTurnMismatch(error);
+      if (mismatch && mismatch.expected_turn_id === turnId) {
+        this.rememberRetiredObservedTurn(turnId);
+        this.activeStreamId += 1;
+        this.abortController?.abort();
+        this.abortController = null;
+        this.endReplayHold();
+        this.activeTurnId = this.retiredObservedTurnIds.has(mismatch.active_turn_id)
+          ? null
+          : mismatch.active_turn_id;
+        this.reattachesThisTurn = 0;
+        this.stopPending = false;
+        this.stopExpectedTurnId = null;
+        this.stopContinuationPending = false;
+        this.lastSettledStopTurnId = null;
+        this.updateSnapshot((prev) => ({
+          ...prev,
+          chatState: this.activeTurnId ? ChatState.Streaming : ChatState.Idle,
+          turnStartedAt: this.activeTurnId ? (prev.turnStartedAt ?? Date.now()) : undefined,
+          lastMessageAt: this.activeTurnId ? prev.lastMessageAt : undefined,
+        }));
+        console.warn(
+          `Stop targeted retired turn ${turnId}; the active turn is ${mismatch.active_turn_id}`
+        );
+        return false;
+      }
+      console.warn('Failed to cancel running turn on stop:', error);
+    }
+    return false;
+  };
+
+  private trackStopOperation(
+    operation: Promise<boolean>,
+    continuationPending: boolean
+  ): Promise<boolean> {
+    let tracked!: Promise<boolean>;
+    tracked = operation.finally(() => {
+      if (this.stopInFlight === tracked) {
+        this.stopInFlight = null;
+        this.stopInFlightContinuationPending = false;
+      }
+    });
+    this.stopInFlight = tracked;
+    this.stopInFlightContinuationPending = continuationPending;
+    return tracked;
+  }
+
+  private settleStoppedTurn = async (
+    stoppedTurnId: string,
+    requestContinuationPending: boolean
+  ): Promise<boolean> => {
+    if (!(await this.requestExactTurnSettlement(stoppedTurnId, requestContinuationPending))) {
+      return false;
+    }
+
     this.activeStreamId += 1;
     this.abortController?.abort();
-    // Stop ENDS the turn (the `cancelTurn` below is what makes that true on the
-    // server, not merely on this socket), so nothing may attach to it
-    // afterwards. Clearing here and not only in `finishCurrentStream` matters
-    // because this path does not go through it.
     this.endReplayHold();
     this.retireActiveTurn();
+    this.ambiguousRetryTurnId = null;
+    this.lastSettledStopTurnId = stoppedTurnId;
+    this.stopPending = false;
+    this.stopExpectedTurnId = null;
+    this.stopContinuationPending = false;
     this.updateSnapshot((prev) => ({
       ...prev,
       chatState: ChatState.Idle,
@@ -2344,29 +3237,104 @@ class ChatStreamController {
       lastMessageAt: undefined,
       pendingSteer: undefined,
     }));
-    // #22 — turn boundary: Stop feedback must be synchronous.
     this.flushNotify();
-    this.lastInteractionTime = Date.now();
+    return true;
+  };
 
-    // BR-62b: aborting the SSE socket only tears down *this* client's view of
-    // the turn. The server's reply task keeps running on its own `Arc<Agent>`,
-    // burning tokens into a socket nobody reads — and if the turn is parked on
-    // a tool-permission prompt, closing the socket does not release it. Trip
-    // the running turn's cancellation token by session id so it actually stops.
-    // `/agent/cancel` is deliberately idempotent: a cancel with no turn in
-    // flight is a 200 `cancelled:false`, not an error, so this is safe to fire
-    // even when the turn already finished between the click and the POST.
-    userActionHeaders()
-      .then((headers) =>
-        cancelTurn({
-          body: { session_id: this.sessionId },
-          headers,
-          throwOnError: true,
-        })
-      )
-      .catch((error) => {
-        console.warn('Failed to cancel running turn on stop:', error);
-      });
+  private stopAfterObservedLookup = (continuationPending: boolean): Promise<boolean> | null => {
+    if (!this.observing || this.activeTurnId) return null;
+    const firstLookup = this.observedTurnLookup?.promise ?? this.refreshObservedActiveTurn();
+    if (!firstLookup) return null;
+    return this.trackStopOperation(
+      (async () => {
+        await firstLookup;
+        if (!this.activeTurnId) {
+          // A failed lookup deliberately leaves the observer generation
+          // unresolved. Retry it once for this explicit Stop instead of
+          // turning a transient resume failure into a silent no-op.
+          if (this.observedTurnLookup?.promise === firstLookup) {
+            this.observedTurnLookup = null;
+          }
+          const retry = this.refreshObservedActiveTurn();
+          if (retry) await retry;
+        }
+        const stoppedTurnId = this.activeTurnId;
+        if (!stoppedTurnId) return false;
+
+        this.stopPending = true;
+        this.stopExpectedTurnId = stoppedTurnId;
+        this.stopContinuationPending = continuationPending;
+        this.lastInteractionTime = Date.now();
+        return this.settleStoppedTurn(stoppedTurnId, continuationPending);
+      })(),
+      continuationPending
+    );
+  };
+
+  stopStreaming = (continuationPending = false): Promise<boolean> => {
+    this.ownershipReleased = false;
+    if (this.stopInFlight) {
+      const inFlight = this.stopInFlight;
+      if (!continuationPending || this.stopInFlightContinuationPending) return inFlight;
+
+      // The ordinary Stop request already on the wire cannot be retroactively
+      // upgraded. Wait for its exact-generation barrier, then mark that retained
+      // retired generation before Stop-and-Send is allowed to submit.
+      this.stopContinuationPending = true;
+      return this.trackStopOperation(
+        (async () => {
+          if (!(await inFlight)) return false;
+          const stoppedTurnId = this.stopExpectedTurnId ?? this.lastSettledStopTurnId;
+          if (!stoppedTurnId) return false;
+          return this.requestExactTurnSettlement(stoppedTurnId, true);
+        })(),
+        true
+      );
+    }
+
+    const observedLookupStop = this.stopAfterObservedLookup(continuationPending);
+    if (observedLookupStop) return observedLookupStop;
+
+    if (!this.stopPending && !this.activeTurnId) {
+      // An ordinary Stop may have settled in the microtask immediately before
+      // Stop-and-Send. The daemon retains that exact generation specifically so
+      // this second admission can acquire the continuation lease without
+      // cancelling (or guessing at) a successor.
+      if (continuationPending && this.lastSettledStopTurnId) {
+        return this.trackStopOperation(
+          this.requestExactTurnSettlement(this.lastSettledStopTurnId, true),
+          true
+        );
+      }
+      return Promise.resolve(false);
+    }
+
+    if (!this.stopPending) {
+      this.stopPending = true;
+      this.stopExpectedTurnId = this.activeTurnId;
+      this.stopContinuationPending = continuationPending;
+    } else if (continuationPending) {
+      this.stopContinuationPending = true;
+    }
+    const stoppedTurnId = this.stopExpectedTurnId;
+    if (!stoppedTurnId) {
+      // A session-only cancel can hit a successor that started while this
+      // renderer was still loading. Without a turn generation to name, fail
+      // closed and leave the load/turn state untouched.
+      this.stopPending = false;
+      this.stopContinuationPending = false;
+      return Promise.resolve(false);
+    }
+    this.lastInteractionTime = Date.now();
+    const requestContinuationPending = this.stopContinuationPending;
+
+    // BR-62b: aborting the SSE socket only tears down this renderer. The exact
+    // cancel trips the daemon turn and `wait_for_idle` is the successor's
+    // admission barrier; a stale generation is refused rather than cancelling
+    // whatever started after it.
+    const operation = this.settleStoppedTurn(stoppedTurnId, requestContinuationPending);
+
+    return this.trackStopOperation(operation, requestContinuationPending);
   };
 
   onMessageUpdate = async (

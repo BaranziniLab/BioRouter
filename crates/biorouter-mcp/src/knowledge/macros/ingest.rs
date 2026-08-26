@@ -5,7 +5,7 @@ use crate::knowledge::{
     biookf,
     convert::SourceInput,
     git::{GitRepo, Txn},
-    manifest, paths,
+    paths,
     service::{KnowledgeService, RawSourceRefreshFailure},
     subagent::{
         events::{DoneReason, SubAgentEvent},
@@ -42,10 +42,9 @@ pub struct IngestArgs {
     /// `SubAgentEvent` is sent here as soon as it is produced (not just at
     /// the end of the run). Set to `None` if streaming is not needed.
     pub event_sink: Option<tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
-    /// Optional cancellation signal. When `notify_one()` is called on the
-    /// shared `Notify`, the sub-agent loop returns `DoneReason::Cancelled`
-    /// at the start of its next iteration.
-    pub cancel: Option<std::sync::Arc<tokio::sync::Notify>>,
+    /// Optional level-triggered cancellation shared with the request or turn
+    /// that owns this macro run.
+    pub cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -216,8 +215,11 @@ pub struct Verification {
 /// *left behind*, and a scan of the transaction branch would describe a tree the
 /// user never sees. It is the same `scan` the `lint` macro and the `kb_lint`
 /// tool call, so there is no second implementation to drift.
-fn verify(kb_root: &std::path::Path) -> Verification {
-    match super::lint::scan(kb_root) {
+fn verify(
+    kb_root: &std::path::Path,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Verification {
+    match super::lint::scan_with_cancellation(kb_root, cancel) {
         Ok(report) => {
             let d = report.diagnostics;
             Verification {
@@ -240,85 +242,22 @@ fn verify(kb_root: &std::path::Path) -> Verification {
 }
 
 pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestResult> {
-    let _lock = svc.lock_kb(&args.kb_id).await?;
-    // Issue #56. The ratchet for EVERY sub-agent macro, because `KbToolDispatch`
-    // (subagent/kb_tools.rs) is bound to this one `kb_id` and reaches `store::*`
-    // directly — there is no lower seam, and no MCP gate can see it. Before the
-    // sub-agent, not after: a run that fails halfway has already written pages.
-    //
-    // Task 10C (CP2): the barrier sits on the line ABOVE the ratchet, so a
-    // public model never reaches the sub-agent's read tools at all — and never
-    // reaches a raise that would stamp an entry-less directory explicitly
-    // public. `conversation_ingest` builds these same `IngestArgs`, so it is
-    // gated here too.
-    crate::knowledge::tier::assert_reachable(
-        svc.root(),
-        &args.kb_id,
-        args.caller_is_private,
-        &args.caller_affiliation,
-    )?;
-    // Issue #56, both axes in one call under one lock — see
-    // `KnowledgeService::raise_tier_and_affiliation` for why they cannot be
-    // two.
-    svc.raise_tier_and_affiliation(
-        &args.kb_id,
-        args.caller_is_private,
-        &args.caller_affiliation,
-    )?;
-    let kb_root = paths::kb_root(svc.root(), &args.kb_id);
-
-    // Migrate a stale `schema.md` (the sub-agent's system prompt) and refresh a
-    // stale graph cache, neither fatally. See `macros::refresh_base`.
-    super::refresh_base(svc, &args.kb_id);
-
-    // Materialize the raw source outside the sub-agent txn so it is durable
-    // even if the sub-agent fails.
-    let raw = match svc.add_raw_source(&args.kb_id, args.source, None).await {
-        Ok(raw) => raw,
-        Err(error) => {
-            let retained = error
-                .downcast_ref::<RawSourceRefreshFailure>()
-                .map(|failure| failure.written.clone());
-            if let Some(written) = retained {
-                return Err(retained_raw_failure(
-                    &written.source_id,
-                    written.commit_sha.as_deref(),
-                    IngestFailurePhase::NotStarted,
-                    None,
-                    error.context("add_raw_source"),
-                ));
-            }
-            return Err(error.context("add_raw_source"));
-        }
-    };
-
-    // Open a transaction branch for the wiki-integration work.
-    let repo = GitRepo::open(&kb_root).map_err(|e| {
-        retained_raw_failure(
+    let cancel = args.cancel.clone();
+    let _lock = svc
+        .lock_kb_cancellable(&args.kb_id, cancel.as_ref())
+        .await?;
+    let (kb_root, format) = prepare_ingest_base(svc, &args, cancel.as_ref()).await?;
+    let raw = stage_raw_source(svc, &args.kb_id, args.source, cancel.as_ref()).await?;
+    if super::ensure_not_cancelled(cancel.as_ref(), "the ingest transaction").is_err() {
+        return Err(retained_raw_failure(
             &raw.source_id,
             raw.commit_sha.as_deref(),
             IngestFailurePhase::NotStarted,
             None,
-            e,
-        )
-    })?;
-    let txn = repo
-        .begin_txn(&format!("ingest-{}", raw.source_id))
-        .map_err(|e| {
-            retained_raw_failure(
-                &raw.source_id,
-                raw.commit_sha.as_deref(),
-                IngestFailurePhase::NotStarted,
-                None,
-                e,
-            )
-        })?;
-
-    // `Manifest::profile`, never `Manifest::format` — the field reads `Okf` on
-    // every base written before Stage 3, so a legacy base would be taught OKF's
-    // page contract and handed BioOKF's typed writer (DR-6's trap, reached from
-    // the reader). `None` is legacy and gets the permissive path.
-    let format = manifest::load(&kb_root).ok().and_then(|m| m.profile());
+            anyhow::anyhow!("ingest cancelled before curation started"),
+        ));
+    }
+    let (repo, txn) = begin_ingest_transaction(&kb_root, &raw)?;
 
     // ⚠ Everything from here to the sub-agent runs INSIDE the transaction, so a
     // failure must abort it. `begin_txn` moves HEAD onto the txn branch, and an
@@ -327,7 +266,7 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
     // arms below already guard. The `schema.md` read predates this stage and had
     // exactly that bug; the two DR-24 steps join it rather than each growing
     // their own `match`.
-    let setup = ingest_setup(svc, &kb_root, &repo, &txn, format, &raw.source_id);
+    let setup = ingest_setup(svc, &kb_root, &repo, &txn, Some(format), &raw.source_id);
     let (source_node, baseline_knowledge, schema) = match setup {
         Ok(setup) => setup,
         Err(e) => {
@@ -340,7 +279,7 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
             ));
         }
     };
-    let system = system_prompt(&schema, ingest_procedure(format));
+    let system = system_prompt(&schema, ingest_procedure(Some(format)));
 
     let dispatch = KbToolDispatch {
         svc: svc.clone(),
@@ -350,13 +289,13 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
     };
     let agent = SubAgent {
         completer: args.completer,
-        tools: tool_specs(format),
+        tools: tool_specs(Some(format)),
         system_prompt: system,
         bounds: args.bounds,
     };
     let user = opening_message(&raw.source_id, args.focus.as_deref(), source_node.as_ref());
 
-    let cancel_ref = args.cancel.as_deref();
+    let cancel_ref = cancel.as_ref();
     let agent_result = agent
         .run(
             &user,
@@ -373,7 +312,98 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
         raw_commit_sha: raw.commit_sha.as_deref(),
         baseline_knowledge,
     };
-    settle_ingest(svc, &repo, &txn, run, agent_result)
+    settle_ingest(svc, &repo, &txn, run, agent_result, cancel.as_ref())
+}
+
+async fn prepare_ingest_base(
+    svc: &KnowledgeService,
+    args: &IngestArgs,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<(std::path::PathBuf, KbFormat)> {
+    super::ensure_not_cancelled(cancel, "ingest preflight")?;
+    // Issue #56. This barrier must precede the ratchet because the sub-agent's
+    // KB tools reach the store directly and cannot enforce it at a lower seam.
+    crate::knowledge::tier::assert_reachable(
+        svc.root(),
+        &args.kb_id,
+        args.caller_is_private,
+        &args.caller_affiliation,
+    )?;
+    let format = svc.require_current_profile(&args.kb_id)?;
+    super::ensure_not_cancelled(cancel, "the ingest privacy ratchet")?;
+    // Both privacy axes move together under the ingest lock.
+    svc.raise_tier_and_affiliation_cancelled_by(
+        &args.kb_id,
+        args.caller_is_private,
+        &args.caller_affiliation,
+        cancel,
+    )
+    .await?;
+    let kb_root = paths::kb_root(svc.root(), &args.kb_id);
+
+    // Refresh before staging so a failed refresh cannot leave a newly durable
+    // raw source behind without the retained-source error contract.
+    super::ensure_not_cancelled(cancel, "the ingest refresh")?;
+    super::refresh_base(svc, &args.kb_id).await?;
+    super::ensure_not_cancelled(cancel, "raw source staging")?;
+    Ok((kb_root, format))
+}
+
+async fn stage_raw_source(
+    svc: &KnowledgeService,
+    kb_id: &str,
+    source: SourceInput,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<crate::knowledge::raw::RawWrite> {
+    // Raw material is intentionally durable before the curation transaction.
+    match svc
+        .add_raw_source_cancelled_by(kb_id, source, None, cancel)
+        .await
+    {
+        Ok(raw) => Ok(raw),
+        Err(error) => {
+            let retained = error
+                .downcast_ref::<RawSourceRefreshFailure>()
+                .map(|failure| failure.written.clone());
+            if let Some(written) = retained {
+                return Err(retained_raw_failure(
+                    &written.source_id,
+                    written.commit_sha.as_deref(),
+                    IngestFailurePhase::NotStarted,
+                    None,
+                    error.context("add_raw_source"),
+                ));
+            }
+            Err(error.context("add_raw_source"))
+        }
+    }
+}
+
+fn begin_ingest_transaction(
+    kb_root: &std::path::Path,
+    raw: &crate::knowledge::raw::RawWrite,
+) -> Result<(GitRepo, Txn)> {
+    let repo = GitRepo::open(kb_root).map_err(|error| {
+        retained_raw_failure(
+            &raw.source_id,
+            raw.commit_sha.as_deref(),
+            IngestFailurePhase::NotStarted,
+            None,
+            error,
+        )
+    })?;
+    let txn = repo
+        .begin_txn(&format!("ingest-{}", raw.source_id))
+        .map_err(|error| {
+            retained_raw_failure(
+                &raw.source_id,
+                raw.commit_sha.as_deref(),
+                IngestFailurePhase::NotStarted,
+                None,
+                error,
+            )
+        })?;
+    Ok((repo, txn))
 }
 
 /// What the settle arm needs to know about the run it is closing, so
@@ -398,6 +428,7 @@ fn settle_ingest(
     txn: &Txn,
     run: IngestRun<'_>,
     agent_result: Result<SubAgentResult>,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<IngestResult> {
     match agent_result {
         Ok(r)
@@ -406,6 +437,15 @@ fn settle_ingest(
                 DoneReason::CompleteSentinel | DoneReason::NoMoreToolCalls
             ) =>
         {
+            if let Err(error) = super::ensure_not_cancelled(cancel, "the ingest commit") {
+                return Err(aborted_curation_failure(
+                    repo,
+                    txn,
+                    run.source_id,
+                    run.raw_commit_sha,
+                    error,
+                ));
+            }
             // A clean exit is not the same as a digest. `INGEST_PROCEDURE`
             // requires the run to write `knowledge/sources/<source-id>.md`, so a
             // transaction that left `knowledge/` exactly as it found it produced
@@ -480,7 +520,7 @@ fn settle_ingest(
                 // than gating it (DR-7). A base with warnings is a normal base
                 // mid-curation, and an ingest that failed on one is an ingest
                 // nobody runs twice.
-                verification: verify(run.kb_root),
+                verification: verify(run.kb_root, cancel),
             })
         }
         Ok(r) => Err(aborted_curation_failure(
@@ -1036,10 +1076,9 @@ mod tests {
         std::fs::write(&page, valid_page("source", "stub", "Stub.")).unwrap();
         repo.commit_on_txn(&txn, "write curated page").unwrap();
 
-        // `write_cache` writes this temporary path first. A directory at that
-        // exact path makes the post-commit refresh fail without preventing the
-        // curation commit itself.
-        std::fs::create_dir(kb.join(".biorouter-knowledge/graph-cache.json.tmp")).unwrap();
+        // `commit_txn` repairs after its checkout and `settle_ingest` refreshes
+        // once more, so fail both writes to reach the post-commit result arm.
+        crate::knowledge::graph::fail_cache_writes(&kb, 2);
 
         let err = settle_ingest(
             &svc,
@@ -1058,6 +1097,7 @@ mod tests {
                 final_text: "done".into(),
                 events: vec![],
             }),
+            None,
         )
         .expect_err("the failed post-commit refresh must be reported");
 
@@ -1083,6 +1123,26 @@ mod tests {
             "{message}"
         );
         assert!(!message.contains("Curation rolled back"), "{message}");
+        assert!(
+            !crate::knowledge::graph::cache_path(&kb).exists(),
+            "an older cache survived the failed post-commit rebuild"
+        );
+
+        let history_len = svc.list_history("k", 10).unwrap().len();
+        let retry = svc
+            .add_raw_source(
+                "k",
+                SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(retry.source_id, raw.source_id);
+        assert!(retry.commit_sha.is_none());
+        assert_eq!(svc.list_history("k", 10).unwrap().len(), history_len);
     }
 
     /// Rollback is a fallible operation. If it cannot be verified, the error
@@ -1158,7 +1218,9 @@ mod tests {
     async fn a_raw_post_commit_cache_failure_reports_the_durable_source() {
         let (_dir, svc) = fresh_svc();
         let kb = paths::kb_root(svc.root(), "k");
-        std::fs::create_dir(kb.join(".biorouter-knowledge/graph-cache.json.tmp")).unwrap();
+        // The macro's best-effort preflight refresh consumes the first injected
+        // failure. The second reaches the post-commit refresh in add_raw_source.
+        crate::knowledge::graph::fail_cache_writes(&kb, 2);
 
         let err = ingest(
             &svc,
@@ -1206,6 +1268,10 @@ mod tests {
         assert!(message.contains(&failure.source_id), "{message}");
         assert!(message.contains(raw_commit), "{message}");
         assert!(message.contains("Curation did not start"), "{message}");
+        assert!(
+            !crate::knowledge::graph::cache_path(&kb).exists(),
+            "an older cache survived the failed raw post-commit rebuild"
+        );
     }
 
     // -------------------------------------------------------------------------

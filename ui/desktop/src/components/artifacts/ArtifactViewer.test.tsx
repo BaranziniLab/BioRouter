@@ -1,12 +1,28 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { AppTooltipLayer } from '../ui/AppTooltipLayer';
-import ArtifactViewer from './ArtifactViewer';
+import ArtifactViewer, { safeTiffDimensions } from './ArtifactViewer';
 import type { ArtifactSource } from './artifactTypes';
 import { artifactSourceFromResource, titleFromResourceUri } from './artifactUtils';
+import {
+  onArtifactAnnotation,
+  resetAnnotationChannelForTests,
+} from '../../utils/annotationChannel';
+
+const { decodeTiff, decodeTiffImage, tiffToRgba } = vi.hoisted(() => ({
+  decodeTiff: vi.fn(),
+  decodeTiffImage: vi.fn(),
+  tiffToRgba: vi.fn(),
+}));
+
+vi.mock('utif2', () => ({
+  decode: decodeTiff,
+  decodeImage: decodeTiffImage,
+  toRGBA8: tiffToRgba,
+}));
 
 function installElectronMock() {
   Object.defineProperty(window, 'electron', {
@@ -33,6 +49,7 @@ function installElectronMock() {
         create: vi.fn(async (_viewId: string, url: string) => ({
           url,
           title: '',
+          sourceRevision: '101:1',
           canGoBack: false,
           canGoForward: false,
           isLoading: true,
@@ -42,9 +59,26 @@ function installElectronMock() {
         setVisible: vi.fn(async () => undefined),
         navigate: vi.fn(async () => true),
         control: vi.fn(async () => true),
+        readText: vi.fn(async () => ({
+          url: 'https://example.test/',
+          title: 'Example page',
+          sourceRevision: '101:1',
+          text: '',
+          truncated: false,
+        })),
+        capture: vi.fn(async () => ({
+          path: '/tmp/browser-capture.png',
+          width: 800,
+          height: 600,
+          sourceRevision: '101:1',
+        })),
+        clearData: vi.fn(async () => true),
         destroy: vi.fn(async () => undefined),
         onState: vi.fn().mockReturnValue(() => undefined),
       },
+      captureRegion: vi.fn(async () => ({ path: '/tmp/region.png', width: 100, height: 100 })),
+      getTempImage: vi.fn(async () => 'data:image/png;base64,iVBORw0KGgo='),
+      deleteTempFile: vi.fn(),
       broadcastThemeChange: vi.fn(),
       on: vi.fn().mockReturnValue(() => undefined),
     },
@@ -82,6 +116,26 @@ describe('artifact title helpers', () => {
         'Artifact'
       )?.title
     ).toBe('Network Graph');
+  });
+});
+
+describe('TIFF preview limits', () => {
+  it('accepts dimensions within the decoded pixel and RGBA byte limits', () => {
+    expect(safeTiffDimensions({ width: 4_000, height: 3_000 })).toEqual({
+      width: 4_000,
+      height: 3_000,
+      rgbaBytes: 48_000_000,
+    });
+  });
+
+  it.each([
+    { width: 8_193, height: 1 },
+    { width: 8_000, height: 5_000 },
+    { width: Number.NaN, height: 100 },
+  ])('rejects unsafe decoded dimensions $width x $height', (dimensions) => {
+    expect(() => safeTiffDimensions(dimensions)).toThrow(
+      'TIFF dimensions exceed the safe preview limit.'
+    );
   });
 });
 
@@ -152,6 +206,391 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(screen.queryByRole('iframe')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled();
     expect(screen.getByLabelText('Address')).toHaveValue('https://www.ucsf.edu/');
+  });
+
+  it('shares a live page with the agent only through a visible revocable control', async () => {
+    installElectronMock();
+    const onShare = vi.fn();
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'externalUrl', title: 'Report', url: 'https://example.test/' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+          onLiveBrowserShareChange={onShare}
+        />
+      </ThemeProvider>
+    );
+    await userEvent.click(await screen.findByTestId('artifact-open-here'));
+    const share = await screen.findByRole('button', { name: 'Share with agent' });
+    expect(onShare).not.toHaveBeenCalledWith(
+      expect.objectContaining({ viewId: expect.stringContaining('embedded-browser') })
+    );
+    await userEvent.click(share);
+    expect(onShare).toHaveBeenCalledWith(
+      expect.objectContaining({ viewId: expect.stringContaining('embedded-browser') })
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Stop sharing with agent' }));
+    expect(onShare).toHaveBeenLastCalledWith(null);
+  });
+
+  it('publishes current navigation metadata while a live page remains shared', async () => {
+    installElectronMock();
+    let publishState:
+      | ((payload: {
+          viewId: string;
+          state: {
+            url: string;
+            title: string;
+            sourceRevision: string;
+            canGoBack: boolean;
+            canGoForward: boolean;
+            isLoading: boolean;
+            error: string | null;
+          };
+        }) => void)
+      | undefined;
+    vi.mocked(window.electron.embeddedBrowser.onState).mockImplementation((callback) => {
+      publishState = callback;
+      return () => undefined;
+    });
+    const onShare = vi.fn();
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'externalUrl', title: 'Example Domain', url: 'https://example.com/' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+          onLiveBrowserShareChange={onShare}
+        />
+      </ThemeProvider>
+    );
+
+    await userEvent.click(await screen.findByTestId('artifact-open-here'));
+    await userEvent.click(await screen.findByRole('button', { name: 'Share with agent' }));
+    const sharedViewId = onShare.mock.calls.find(([value]) => value?.viewId)?.[0].viewId;
+    expect(sharedViewId).toEqual(expect.stringContaining('embedded-browser'));
+
+    act(() => {
+      publishState?.({
+        viewId: sharedViewId,
+        state: {
+          url: 'https://www.iana.org/help/example-domains',
+          title: 'Example Domains',
+          sourceRevision: '101:2',
+          canGoBack: true,
+          canGoForward: false,
+          isLoading: false,
+          error: null,
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(onShare).toHaveBeenLastCalledWith({
+        viewId: sharedViewId,
+        state: expect.objectContaining({
+          url: 'https://www.iana.org/help/example-domains',
+          title: 'Example Domains',
+          sourceRevision: '101:2',
+        }),
+      })
+    );
+  });
+
+  it('annotates a compositor snapshot instead of the native view hole', async () => {
+    installElectronMock();
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'externalUrl', title: 'Report', url: 'https://example.test/' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+          sessionId="session-1"
+        />
+      </ThemeProvider>
+    );
+    await userEvent.click(await screen.findByTestId('artifact-open-here'));
+    await waitFor(() => expect(window.electron.embeddedBrowser.create).toHaveBeenCalled());
+    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    expect(
+      await screen.findByAltText('Snapshot of the live page for region selection')
+    ).toBeInTheDocument();
+    expect(window.electron.embeddedBrowser.capture).toHaveBeenCalled();
+    expect(window.electron.embeddedBrowser.setVisible).toHaveBeenCalledWith(
+      expect.any(String),
+      false
+    );
+  });
+
+  it('binds a live annotation to the captured page revision and current URL', async () => {
+    installElectronMock();
+    resetAnnotationChannelForTests();
+    vi.mocked(window.electron.embeddedBrowser.readText).mockResolvedValue({
+      url: 'https://www.iana.org/help/example-domains',
+      title: 'Example Domains',
+      sourceRevision: '101:1',
+      text: '',
+      truncated: false,
+    });
+    const received = vi.fn();
+    const stopListening = onArtifactAnnotation('session-1', received);
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'externalUrl', title: 'Original', url: 'https://example.test/' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+          sessionId="session-1"
+        />
+      </ThemeProvider>
+    );
+
+    await userEvent.click(await screen.findByTestId('artifact-open-here'));
+    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    await screen.findByAltText('Snapshot of the live page for region selection');
+    const overlay = screen.getByTestId('annotation-overlay');
+    Object.defineProperty(overlay, 'setPointerCapture', { value: vi.fn() });
+    fireEvent.pointerDown(overlay, { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
+    fireEvent.pointerMove(overlay, { clientX: 220, clientY: 150, pointerId: 1 });
+    fireEvent.pointerUp(overlay, { pointerId: 1 });
+
+    await waitFor(() => expect(received).toHaveBeenCalledTimes(1));
+    expect(received).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceTitle: 'Example Domains',
+        sourceLocator: 'https://www.iana.org/help/example-domains',
+        sourceRevision: '101:1',
+        sourceTrust: 'untrusted_external',
+      })
+    );
+    expect(window.electron.deleteTempFile).toHaveBeenCalledWith('/tmp/browser-capture.png');
+    stopListening();
+    resetAnnotationChannelForTests();
+  });
+
+  it('deletes a live annotation capture that no longer matches the current page', async () => {
+    installElectronMock();
+    vi.mocked(window.electron.embeddedBrowser.readText).mockResolvedValue({
+      url: 'https://example.test/changed',
+      title: 'Changed page',
+      sourceRevision: '101:2',
+      text: '',
+      truncated: false,
+    });
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'externalUrl', title: 'Original', url: 'https://example.test/' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+          sessionId="session-1"
+        />
+      </ThemeProvider>
+    );
+
+    await userEvent.click(await screen.findByTestId('artifact-open-here'));
+    await userEvent.click(screen.getByTestId('artifact-annotate'));
+
+    await waitFor(() =>
+      expect(window.electron.deleteTempFile).toHaveBeenCalledWith('/tmp/browser-capture.png')
+    );
+    expect(
+      screen.queryByAltText('Snapshot of the live page for region selection')
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('annotation-overlay')).not.toBeInTheDocument();
+  });
+
+  it('captures a dragged region from a plain image preview', async () => {
+    installElectronMock();
+    vi.mocked(window.electron.readArtifactFile).mockResolvedValueOnce({
+      kind: 'image',
+      title: 'figure.png',
+      path: '/tmp/figure.png',
+      mimeType: 'image/png',
+      size: 68,
+      found: true,
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+    });
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'figure.png', path: '/tmp/figure.png' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+          sessionId="session-1"
+        />
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    const overlay = screen.getByTestId('annotation-overlay');
+    Object.defineProperty(overlay, 'setPointerCapture', { value: vi.fn() });
+    fireEvent.pointerDown(overlay, { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
+    fireEvent.pointerMove(overlay, { clientX: 220, clientY: 150, pointerId: 1 });
+    fireEvent.pointerUp(overlay, { pointerId: 1 });
+
+    await waitFor(() =>
+      expect(window.electron.captureRegion).toHaveBeenCalledWith(
+        expect.objectContaining({ width: 200, height: 120, label: 'annotation' })
+      )
+    );
+  });
+
+  it('reports the clamped crop when the preview resized after selection began', async () => {
+    installElectronMock();
+    resetAnnotationChannelForTests();
+    vi.mocked(window.electron.readArtifactFile).mockResolvedValueOnce({
+      kind: 'image',
+      title: 'figure.png',
+      path: '/tmp/figure.png',
+      mimeType: 'image/png',
+      size: 68,
+      revision: '68:1',
+      found: true,
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+    });
+    const received = vi.fn();
+    const stopListening = onArtifactAnnotation('session-1', received);
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'figure.png', path: '/tmp/figure.png' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+          sessionId="session-1"
+        />
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    const body = document.getElementById('artifact-preview-content');
+    expect(body).not.toBeNull();
+    vi.spyOn(body as HTMLElement, 'getBoundingClientRect').mockReturnValue({
+      x: 10,
+      y: 20,
+      left: 10,
+      top: 20,
+      right: 110,
+      bottom: 100,
+      width: 100,
+      height: 80,
+      toJSON: () => ({}),
+    });
+    const overlay = screen.getByTestId('annotation-overlay');
+    Object.defineProperty(overlay, 'setPointerCapture', { value: vi.fn() });
+    fireEvent.pointerDown(overlay, { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
+    fireEvent.pointerMove(overlay, { clientX: 220, clientY: 150, pointerId: 1 });
+    fireEvent.pointerUp(overlay, { pointerId: 1 });
+
+    await waitFor(() => expect(received).toHaveBeenCalledTimes(1));
+    expect(window.electron.captureRegion).toHaveBeenCalledWith(
+      expect.objectContaining({ x: 30, y: 50, width: 80, height: 50 })
+    );
+    expect(received).toHaveBeenCalledWith(
+      expect.objectContaining({
+        width: 80,
+        height: 50,
+        region: { x: 20, y: 30, width: 80, height: 50, surfaceWidth: 100, surfaceHeight: 80 },
+      })
+    );
+
+    stopListening();
+    resetAnnotationChannelForTests();
+  });
+
+  it('rejects oversized TIFF metadata before allocating decoded pixels or a canvas', async () => {
+    installElectronMock();
+    decodeTiff.mockReset();
+    decodeTiffImage.mockReset();
+    tiffToRgba.mockReset();
+    decodeTiff.mockReturnValue([{ width: 100_000, height: 100_000 }]);
+    vi.mocked(window.electron.readArtifactFile).mockResolvedValueOnce({
+      kind: 'image',
+      title: 'scan.tiff',
+      path: '/tmp/scan.tiff',
+      mimeType: 'image/tiff',
+      size: 8,
+      found: true,
+      bytes: new Uint8Array([73, 73, 42, 0, 0, 0, 0, 0]).buffer,
+    });
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'scan.tiff', path: '/tmp/scan.tiff' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    expect(
+      await screen.findByText('This image could not be decoded. It may be truncated or corrupt.')
+    ).toBeInTheDocument();
+    expect(decodeTiffImage).not.toHaveBeenCalled();
+    expect(tiffToRgba).not.toHaveBeenCalled();
+    expect(document.querySelector('canvas')).toBeNull();
+  });
+
+  it('deletes an annotation capture when the preview source changes in flight', async () => {
+    installElectronMock();
+    resetAnnotationChannelForTests();
+    vi.mocked(window.electron.readArtifactFile).mockResolvedValue({
+      kind: 'image',
+      title: 'figure.png',
+      path: '/tmp/figure.png',
+      mimeType: 'image/png',
+      size: 68,
+      revision: '68:1',
+      found: true,
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+    });
+    let resolveCapture!: (value: { path: string; width: number; height: number }) => void;
+    vi.mocked(window.electron.captureRegion).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveCapture = resolve;
+      })
+    );
+    const received = vi.fn();
+    const stopListening = onArtifactAnnotation('session-1', received);
+    const renderViewer = (artifact: ArtifactSource) => (
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={artifact}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+          sessionId="session-1"
+        />
+      </ThemeProvider>
+    );
+    const { rerender } = render(
+      renderViewer({ kind: 'file', title: 'figure.png', path: '/tmp/figure.png' })
+    );
+
+    expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    const overlay = screen.getByTestId('annotation-overlay');
+    Object.defineProperty(overlay, 'setPointerCapture', { value: vi.fn() });
+    fireEvent.pointerDown(overlay, { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
+    fireEvent.pointerMove(overlay, { clientX: 220, clientY: 150, pointerId: 1 });
+    fireEvent.pointerUp(overlay, { pointerId: 1 });
+    await waitFor(() => expect(window.electron.captureRegion).toHaveBeenCalled());
+
+    rerender(renderViewer({ kind: 'file', title: 'other.png', path: '/tmp/other.png' }));
+    await waitFor(() => expect(screen.getByText('other.png')).toBeInTheDocument());
+    resolveCapture({ path: '/tmp/stale-region.png', width: 200, height: 120 });
+
+    await waitFor(() =>
+      expect(window.electron.deleteTempFile).toHaveBeenCalledWith('/tmp/stale-region.png')
+    );
+    expect(received).not.toHaveBeenCalled();
+    stopListening();
+    resetAnnotationChannelForTests();
   });
 
   it('renders HTML artifacts in a side viewer frame with title-only header', async () => {

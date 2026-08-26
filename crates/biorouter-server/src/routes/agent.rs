@@ -7,7 +7,7 @@ use crate::state::AppState;
 use axum::response::IntoResponse;
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
 };
@@ -64,6 +64,114 @@ const PERMISSION_SETTINGS_LOAD_TIMEOUT: std::time::Duration = std::time::Duratio
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateFromSessionRequest {
     session_id: String,
+}
+
+const SUBAGENT_USER_ACTION_REQUIRED: &str =
+    "Changing or resuming a subagent from its tab requires proof that the request came from the person at the keyboard.";
+
+fn refuse_subagent_unless_user(
+    session: &Session,
+    headers: &HeaderMap,
+) -> Result<(), ErrorResponse> {
+    if session.session_type == SessionType::SubAgent && !is_user_action(headers) {
+        return Err(ErrorResponse {
+            message: SUBAGENT_USER_ACTION_REQUIRED.to_string(),
+            status: StatusCode::FORBIDDEN,
+        });
+    }
+    Ok(())
+}
+
+#[async_trait::async_trait]
+trait AgentSessionReader {
+    async fn read_session(
+        &self,
+        session_id: &str,
+        include_messages: bool,
+    ) -> anyhow::Result<Session>;
+}
+
+#[async_trait::async_trait]
+impl AgentSessionReader for SessionManager {
+    async fn read_session(
+        &self,
+        session_id: &str,
+        include_messages: bool,
+    ) -> anyhow::Result<Session> {
+        self.get_session(session_id, include_messages).await
+    }
+}
+
+fn resume_session_read_error(session_id: &str, error: anyhow::Error) -> ErrorResponse {
+    error!("Failed to resume session {}: {}", session_id, error);
+    ErrorResponse {
+        message: format!("Failed to resume session: {}", error),
+        status: StatusCode::NOT_FOUND,
+    }
+}
+
+async fn read_resume_session(
+    reader: &impl AgentSessionReader,
+    session_id: &str,
+    headers: &HeaderMap,
+) -> Result<Session, ErrorResponse> {
+    let metadata = reader
+        .read_session(session_id, false)
+        .await
+        .map_err(|error| resume_session_read_error(session_id, error))?;
+    refuse_subagent_unless_user(&metadata, headers)?;
+    reader
+        .read_session(session_id, true)
+        .await
+        .map_err(|error| resume_session_read_error(session_id, error))
+}
+
+async fn read_update_session(
+    reader: &impl AgentSessionReader,
+    session_id: &str,
+    headers: &HeaderMap,
+) -> Result<Session, ErrorResponse> {
+    let session = reader
+        .read_session(session_id, false)
+        .await
+        .map_err(|error| ErrorResponse {
+            message: format!("Failed to get session: {}", error),
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+        })?;
+    refuse_subagent_unless_user(&session, headers)?;
+    Ok(session)
+}
+
+/// Authorize an HTTP control-plane operation before it can touch an agent or a
+/// queued child handle. The daemon bearer proves only that the caller reached
+/// this process; it does not prove that a person chose to mutate a subagent.
+async fn authorize_agent_control(
+    state: &AppState,
+    session_id: &str,
+    headers: &HeaderMap,
+) -> Result<Session, ErrorResponse> {
+    crate::routes::session_reach::session_reach(state.session_manager(), session_id, headers)
+        .await?;
+    read_update_session(state.session_manager(), session_id, headers).await
+}
+
+async fn live_subagent_for_control(
+    state: &AppState,
+    session: &Session,
+) -> Result<Arc<biorouter::agents::Agent>, ErrorResponse> {
+    if biorouter::agents::subagent_handle::is_child_initializing(&session.id) {
+        return Err(ErrorResponse {
+            message: "Subagent runtime is not ready".into(),
+            status: StatusCode::FAILED_DEPENDENCY,
+        });
+    }
+    state
+        .peek_agent(&session.id)
+        .await
+        .ok_or_else(|| ErrorResponse {
+            message: "Subagent runtime is not ready".into(),
+            status: StatusCode::FAILED_DEPENDENCY,
+        })
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -197,6 +305,82 @@ pub struct StartAgentRequest {
     extension_overrides: Option<Vec<ExtensionConfig>>,
 }
 
+fn configured_new_session_provider() -> Result<Option<(String, ModelConfig)>, ErrorResponse> {
+    let config = Config::global();
+    match (
+        config.get_biorouter_provider(),
+        config.get_biorouter_model(),
+    ) {
+        (Ok(provider), Ok(model)) => {
+            let model_config = ModelConfig::new(&model).map_err(|error| ErrorResponse {
+                message: format!("The selected model cannot be used for a new chat: {error}"),
+                status: StatusCode::BAD_REQUEST,
+            })?;
+            Ok(Some((provider, model_config)))
+        }
+        (Err(_), Err(_)) => Ok(None),
+        (provider, model) => Err(ErrorResponse {
+            message: format!(
+                "The default provider selection is incomplete: provider={}, model={}",
+                if provider.is_ok() { "set" } else { "missing" },
+                if model.is_ok() { "set" } else { "missing" },
+            ),
+            status: StatusCode::BAD_REQUEST,
+        }),
+    }
+}
+
+async fn bind_new_session_provider(
+    state: &AppState,
+    session: &Session,
+    headers: &HeaderMap,
+) -> Result<(), ErrorResponse> {
+    let Some((provider_name, model_config)) = configured_new_session_provider()? else {
+        return Ok(());
+    };
+    let provider = create(&provider_name, model_config)
+        .await
+        .map_err(|error| ErrorResponse {
+            message: format!("Failed to configure the selected provider for the new chat: {error}"),
+            status: StatusCode::BAD_REQUEST,
+        })?;
+    if biorouter::privacy::privacy_tiers_enabled()
+        && raise_needs_user_action(ProviderTier::Public, provider.tier())
+        && !is_user_action(headers)
+    {
+        return Err(ErrorResponse {
+            message: PrivacyRefusal::TierRaiseNeedsUser {
+                requested: provider_name,
+            }
+            .to_string(),
+            status: StatusCode::CONFLICT,
+        });
+    }
+    let agent = state
+        .get_agent(session.id.clone())
+        .await
+        .map_err(|error| ErrorResponse {
+            message: format!("Failed to prepare the new chat agent: {error}"),
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+        })?;
+    agent
+        .update_provider(provider, &session.id)
+        .await
+        .map_err(|error| ErrorResponse {
+            message: format!("Failed to bind the selected provider to the new chat: {error}"),
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+        })
+}
+
+async fn discard_failed_new_session(state: &AppState, session_id: &str) {
+    if let Err(error) = state.agent_manager.remove_session(session_id).await {
+        tracing::debug!(session_id, %error, "New chat had no cached agent to discard");
+    }
+    if let Err(error) = state.session_manager().delete_session(session_id).await {
+        tracing::warn!(session_id, %error, "Failed to discard a new chat after provider binding failed");
+    }
+}
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct StopAgentRequest {
     session_id: String,
@@ -288,6 +472,10 @@ pub struct UpdateWorkingDirRequest {
 pub struct ResumeAgentRequest {
     session_id: String,
     load_model_and_extensions: bool,
+    /// Stable per-window label used only to rehydrate that same window's
+    /// pending Stop-and-Send lease. It is not an authentication credential.
+    #[serde(default)]
+    continuation_owner_id: Option<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -365,6 +553,10 @@ pub struct CallToolResponse {
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct ResumeAgentResponse {
     pub session: Session,
+    /// True only while a delegated child is queued before its exact runtime
+    /// profile has been installed. Clients must wait instead of fetching tools
+    /// or submitting a turn through a generic placeholder agent.
+    pub initializing: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extension_results: Option<Vec<ExtensionLoadResult>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -380,6 +572,29 @@ pub struct ResumeAgentResponse {
     /// removes the class. Absent means the session is idle.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_turn: Option<ActiveTurnRef>,
+    /// A Stop-and-Send admission whose exact retired generation still awaits a
+    /// successor. The opaque token is present only when this resume request's
+    /// stable owner id matches the recorded owner; foreign windows receive only
+    /// enough metadata to offer explicit takeover or group abandonment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_continuation: Option<PendingContinuationRef>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingContinuationOwnership {
+    Owned,
+    Foreign,
+    Settling,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct PendingContinuationRef {
+    pub ownership: PendingContinuationOwnership,
+    pub superseded_turn_id: String,
+    /// Returned only to the same stable owner after the lease is fully live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_lease: Option<String>,
 }
 
 /// A pointer to a live turn, handed to a client that needs to attach to it.
@@ -411,12 +626,14 @@ pub struct RestartAgentResponse {
         (status = 200, description = "Agent started successfully", body = Session),
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 409, description = "The selected private provider requires user-action proof", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 #[allow(clippy::too_many_lines)]
 async fn start_agent(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<StartAgentRequest>,
 ) -> Result<Json<Session>, ErrorResponse> {
     let StartAgentRequest {
@@ -475,6 +692,11 @@ async fn start_agent(
                 status: StatusCode::BAD_REQUEST,
             }
         })?;
+
+    if let Err(error) = bind_new_session_provider(&state, &session, &headers).await {
+        discard_failed_new_session(&state, &session.id).await;
+        return Err(error);
+    }
 
     if let Some(workflow) = original_workflow.as_ref() {
         apply_workflow_knowledge_selection(&state.knowledge_service, &session.id, workflow)?;
@@ -565,6 +787,144 @@ async fn start_agent(
     Ok(Json(session))
 }
 
+fn validate_continuation_owner_id(owner_id: Option<&str>) -> Result<(), ErrorResponse> {
+    let invalid = owner_id.is_some_and(|owner_id| {
+        owner_id.is_empty()
+            || owner_id.len() > 128
+            || !owner_id.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.')
+            })
+    });
+    if invalid {
+        return Err(ErrorResponse {
+            message: "Invalid continuation owner id".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
+    Ok(())
+}
+
+async fn restore_resumed_subagent_profile(
+    state: &AppState,
+    session_id: &str,
+    agent: &Arc<biorouter::agents::Agent>,
+    session: &Session,
+) -> (
+    Option<Vec<ExtensionLoadResult>>,
+    Option<AgentInitializationError>,
+) {
+    match agent.restore_subagent_runtime_profile(session).await {
+        Ok(true) => (Some(Vec::new()), None),
+        Ok(false) => {
+            let _ = state.agent_manager.remove_session(session_id).await;
+            (
+                None,
+                Some(AgentInitializationError {
+                    code: "subagent_runtime_profile_missing".into(),
+                    message:
+                        "Biorouter could not restore the delegated runtime profile for this subagent."
+                            .into(),
+                    retryable: false,
+                }),
+            )
+        }
+        Err(error) => {
+            let _ = state.agent_manager.remove_session(session_id).await;
+            tracing::error!(
+                "Failed to restore delegated runtime profile for session {}: {}",
+                session_id,
+                error
+            );
+            (
+                None,
+                Some(AgentInitializationError {
+                    code: "subagent_runtime_profile_restore_failed".into(),
+                    message: error.to_string(),
+                    retryable: false,
+                }),
+            )
+        }
+    }
+}
+
+async fn load_resumed_agent_extensions(
+    state: &AppState,
+    payload: &ResumeAgentRequest,
+    session: &Session,
+    child_initializing: bool,
+) -> (
+    Option<Vec<ExtensionLoadResult>>,
+    Option<AgentInitializationError>,
+) {
+    if child_initializing || !payload.load_model_and_extensions {
+        return (None, None);
+    }
+
+    let agent = match state.get_agent_for_route(payload.session_id.clone()).await {
+        Ok(agent) => agent,
+        Err(status) => {
+            tracing::error!(
+                "Failed to prepare agent for session {}: {}",
+                payload.session_id,
+                status
+            );
+            return (
+                None,
+                Some(AgentInitializationError {
+                    code: "agent_unavailable".into(),
+                    message: "Biorouter could not prepare the model agent for this session.".into(),
+                    retryable: status.is_server_error(),
+                }),
+            );
+        }
+    };
+
+    if let Err(error) = agent.restore_persisted_provider_if_missing(session).await {
+        if session.session_type == SessionType::SubAgent {
+            let _ = state
+                .agent_manager
+                .remove_session(&payload.session_id)
+                .await;
+        }
+        tracing::error!(
+            "Failed to restore provider for session {}: {}",
+            payload.session_id,
+            error
+        );
+        return (
+            None,
+            Some(AgentInitializationError {
+                code: "provider_restore_failed".into(),
+                message: error.to_string(),
+                retryable: false,
+            }),
+        );
+    }
+
+    if session.session_type == SessionType::SubAgent {
+        return restore_resumed_subagent_profile(state, &payload.session_id, &agent, session).await;
+    }
+
+    let results =
+        if let Some(results) = state.take_extension_loading_task(&payload.session_id).await {
+            tracing::debug!(
+                "Using background extension loading results for session {}",
+                payload.session_id
+            );
+            state
+                .remove_extension_loading_task(&payload.session_id)
+                .await;
+            results
+        } else {
+            tracing::debug!(
+                "No background task found, loading extensions for session {}",
+                payload.session_id
+            );
+            agent.load_extensions_from_session(session).await
+        };
+    (Some(results), None)
+}
+
 #[utoipa::path(
     post,
     path = "/agent/resume",
@@ -573,91 +933,68 @@ async fn start_agent(
         (status = 200, description = "Agent started successfully", body = ResumeAgentResponse),
         (status = 400, description = "Bad request - invalid working directory"),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "The session is out of reach, or the target is a subagent and the request lacks user-action proof"),
+        (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     )
 )]
 async fn resume_agent(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<ResumeAgentRequest>,
 ) -> Result<Json<ResumeAgentResponse>, ErrorResponse> {
-    let session = state
-        .session_manager()
-        .get_session(&payload.session_id, true)
-        .await
-        .map_err(|err| {
-            error!("Failed to resume session {}: {}", payload.session_id, err);
-            ErrorResponse {
-                message: format!("Failed to resume session: {}", err),
-                status: StatusCode::NOT_FOUND,
-            }
-        })?;
+    validate_continuation_owner_id(payload.continuation_owner_id.as_deref())?;
+    crate::routes::session_reach::session_reach(
+        state.session_manager(),
+        &payload.session_id,
+        &headers,
+    )
+    .await?;
 
-    let mut initialization_error = None;
-    let extension_results = if payload.load_model_and_extensions {
-        match state.get_agent_for_route(payload.session_id.clone()).await {
-            Ok(agent) => match agent.restore_provider_from_session(&session).await {
-                Ok(()) => {
-                    let extension_results = if let Some(results) =
-                        state.take_extension_loading_task(&payload.session_id).await
-                    {
-                        tracing::debug!(
-                            "Using background extension loading results for session {}",
-                            payload.session_id
-                        );
-                        state
-                            .remove_extension_loading_task(&payload.session_id)
-                            .await;
-                        results
-                    } else {
-                        tracing::debug!(
-                            "No background task found, loading extensions for session {}",
-                            payload.session_id
-                        );
-                        agent.load_extensions_from_session(&session).await
-                    };
-                    Some(extension_results)
-                }
-                Err(error) => {
-                    tracing::error!(
-                        "Failed to restore provider for session {}: {}",
-                        payload.session_id,
-                        error
-                    );
-                    initialization_error = Some(AgentInitializationError {
-                        code: "provider_restore_failed".into(),
-                        message: error.to_string(),
-                        retryable: false,
-                    });
-                    None
-                }
-            },
-            Err(status) => {
-                tracing::error!(
-                    "Failed to prepare agent for session {}: {}",
-                    payload.session_id,
-                    status
-                );
-                initialization_error = Some(AgentInitializationError {
-                    code: "agent_unavailable".into(),
-                    message: "Biorouter could not prepare the model agent for this session.".into(),
-                    retryable: status.is_server_error(),
-                });
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let session =
+        read_resume_session(state.session_manager(), &payload.session_id, &headers).await?;
+
+    // A queued background child has a durable session row but not yet its
+    // delegated runtime profile. Constructing a generic cached Agent here would
+    // expose the wrong tools/provider and let a reply race for its initial turn.
+    // Return the session metadata normally; the delegated runner registers the
+    // exact live Agent once its permit and atomic profile are ready.
+    let child_initializing = session.session_type == SessionType::SubAgent
+        && biorouter::agents::subagent_handle::is_child_initializing(&payload.session_id);
+    let (extension_results, initialization_error) =
+        load_resumed_agent_extensions(&state, &payload, &session, child_initializing).await;
 
     let active_turn = state
         .active_turn_id(&payload.session_id)
         .map(|turn_id| ActiveTurnRef { turn_id });
+    let pending_continuation = state
+        .pending_continuation_for_owner(
+            &payload.session_id,
+            payload.continuation_owner_id.as_deref(),
+        )
+        .map(|pending| PendingContinuationRef {
+            ownership: match pending.ownership {
+                crate::state::PendingContinuationOwnership::Owned => {
+                    PendingContinuationOwnership::Owned
+                }
+                crate::state::PendingContinuationOwnership::Foreign => {
+                    PendingContinuationOwnership::Foreign
+                }
+                crate::state::PendingContinuationOwnership::Settling => {
+                    PendingContinuationOwnership::Settling
+                }
+            },
+            superseded_turn_id: pending.superseded_turn_id,
+            continuation_lease: pending.continuation_lease,
+        });
 
     Ok(Json(ResumeAgentResponse {
         session,
+        initializing: child_initializing,
         extension_results,
         initialization_error,
         active_turn,
+        pending_continuation,
     }))
 }
 
@@ -668,27 +1005,36 @@ async fn resume_agent(
     responses(
         (status = 200, description = "Update agent from session data successfully"),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "The session is out of reach, or the target is a subagent and the request lacks user-action proof"),
         (status = 424, description = "Agent not initialized"),
+        (status = 500, description = "Internal server error"),
     ),
 )]
 async fn update_from_session(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<UpdateFromSessionRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
+    crate::routes::session_reach::session_reach(
+        state.session_manager(),
+        &payload.session_id,
+        &headers,
+    )
+    .await?;
+
+    let session =
+        read_update_session(state.session_manager(), &payload.session_id, &headers).await?;
+
+    if session.session_type == SessionType::SubAgent {
+        return Ok(StatusCode::OK);
+    }
+
     let agent = state
         .get_agent_for_route(payload.session_id.clone())
         .await
         .map_err(|status| ErrorResponse {
             message: format!("Failed to get agent: {}", status),
             status,
-        })?;
-    let session = state
-        .session_manager()
-        .get_session(&payload.session_id, false)
-        .await
-        .map_err(|err| ErrorResponse {
-            message: format!("Failed to get session: {}", err),
-            status: StatusCode::INTERNAL_SERVER_ERROR,
         })?;
     let context: HashMap<&str, Value> = HashMap::new();
     let desktop_prompt =
@@ -750,9 +1096,21 @@ async fn get_tools(
     } else {
         &session_id
     };
-    let agent = state
-        .get_agent_for_route(agent_session_id.to_string())
-        .await?;
+    let child_initializing = !session_id.is_empty()
+        && biorouter::agents::subagent_handle::is_child_initializing(&session_id);
+    let agent = if child_initializing {
+        // A queued child has a durable row before its delegated runtime is
+        // installed. Creating here would cache an ordinary placeholder and let
+        // it win the later child-tab resume race.
+        state
+            .peek_agent(&session_id)
+            .await
+            .ok_or(StatusCode::FAILED_DEPENDENCY)?
+    } else {
+        state
+            .get_agent_for_route(agent_session_id.to_string())
+            .await?
+    };
 
     if session_id.is_empty() {
         let Some(extension_name) = extension_name.as_deref() else {
@@ -859,6 +1217,7 @@ async fn get_tools(
                        body = String),
         (status = 400, description = "Bad request - missing or invalid parameters"),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "The session is out of reach, or the target is a subagent and the request lacks user-action proof"),
         (status = 409, description = "Refused by a privacy boundary (issue #56). Gate A: \
                                       a public model cannot be bound to a private chat \
                                       (body = PrivacyBarrierBody). DR-16: the bind raises this \
@@ -875,10 +1234,19 @@ async fn update_agent_provider(
     headers: axum::http::HeaderMap,
     Json(payload): Json<UpdateProviderRequest>,
 ) -> Result<String, axum::response::Response> {
-    let agent = state
-        .get_agent_for_route(payload.session_id.clone())
+    let session = authorize_agent_control(&state, &payload.session_id, &headers)
         .await
-        .map_err(|e| (e, "No agent for session id".to_owned()).into_response())?;
+        .map_err(IntoResponse::into_response)?;
+    let agent = if session.session_type == SessionType::SubAgent {
+        live_subagent_for_control(&state, &session)
+            .await
+            .map_err(IntoResponse::into_response)?
+    } else {
+        state
+            .get_agent_for_route(payload.session_id.clone())
+            .await
+            .map_err(|e| (e, "No agent for session id".to_owned()).into_response())?
+    };
 
     let config = Config::global();
     let model = match payload.model.or_else(|| config.get_biorouter_model().ok()) {
@@ -1003,10 +1371,9 @@ async fn update_agent_provider(
                                       normal case.",
                        body = String),
         (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
-                                      the named chat is private (or absent, and an unproven caller \
-                                      is told the same thing for both) and the request carried no \
-                                      proof it came from the user"),
+        (status = 403, description = "Refused by a privacy or subagent-control boundary: the named \
+                                      chat is private/absent, or is a subagent, and the request \
+                                      carried no proof it came from the user"),
         (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): a \
                                       private extension cannot be attached to a chat running on \
                                       a public model"),
@@ -1025,21 +1392,22 @@ async fn agent_add_extension(
     // unproven caller materialise an agent for a chat it may not address, and
     // the refusals downstream (424 "not initialized", the tier 409) would tell
     // it what it had found. `session_id` is a request parameter, not a
-    // credential; see `routes::session_reach`.
+    // credential; see `routes::session_reach`. A public subagent adds an
+    // independent ownership check: the daemon bearer is not proof that the
+    // person at the keyboard chose to alter that child.
     //
     // ⚠ This is NOT a relaxation of the outright refusal below. That one is
     // about the EXTENSION's tier against the chat's model and stays
     // unconditional — attaching a private extension to a public chat is not a
     // raise the user can authorize either. This one is about whether the caller
-    // may address the named chat at all, and it is a no-op for every public
-    // chat, which is precisely the case that refusal governs.
-    crate::routes::session_reach::session_reach(
-        state.session_manager(),
-        &request.session_id,
-        &headers,
-    )
-    .await?;
-
+    // may address the named chat at all.
+    let session = authorize_agent_control(&state, &request.session_id, &headers).await?;
+    if session.session_type == SessionType::SubAgent {
+        return Err(ErrorResponse {
+            status: StatusCode::CONFLICT,
+            message: "A subagent's delegated extension grants are fixed for its lifetime. Steer the running child with a prompt, or start a new child with different tools.".into(),
+        });
+    }
     let agent = state.get_agent(request.session_id.clone()).await?;
 
     // Issue #56 DR-16. `/agent/add_extension` hands `request.config` straight to
@@ -1499,14 +1867,24 @@ async fn agent_cross_affiliation_grant(
     responses(
         (status = 200, description = "Extension removed", body = String),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "The session is out of reach, or the target is a subagent and the request lacks user-action proof"),
+        (status = 409, description = "Subagent extension grants are immutable for the lifetime of the delegated child"),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
     )
 )]
 async fn agent_remove_extension(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(request): Json<RemoveExtensionRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
+    let session = authorize_agent_control(&state, &request.session_id, &headers).await?;
+    if session.session_type == SessionType::SubAgent {
+        return Err(ErrorResponse {
+            status: StatusCode::CONFLICT,
+            message: "A subagent's delegated extension grants are fixed for its lifetime. Steer the running child with a prompt, or start a new child with different tools.".into(),
+        });
+    }
     let agent = state.get_agent(request.session_id.clone()).await?;
     agent.remove_extension(&request.name).await?;
 
@@ -1531,23 +1909,30 @@ async fn agent_remove_extension(
     responses(
         (status = 200, description = "Agent stopped successfully", body = String),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "The session is out of reach, or the target is a subagent and the request lacks user-action proof"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     )
 )]
 async fn stop_agent(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<StopAgentRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
     let session_id = payload.session_id;
+    let session = authorize_agent_control(&state, &session_id, &headers).await?;
+    let stop_guard = state.begin_agent_stop(&session_id);
+    let is_subagent = session.session_type == SessionType::SubAgent;
+    if is_subagent {
+        state.abandon_pending_continuations_for_session(&session_id);
+    }
+    let queued_child_cancelled =
+        is_subagent && biorouter::agents::subagent_handle::cancel_initializing_child(&session_id);
 
-    // BR-62: stop the *turn*, not just the agent entry. Evicting the session from
-    // the LRU below drops the manager's handle, but an in-flight `/reply` task
-    // holds its own `Arc<Agent>` and kept running, so "stop" left a turn burning
-    // tokens and streaming into a socket nobody was reading. Trip the running
-    // turn's cancellation token first; the reply task then unwinds and releases
-    // the turn lock. No-op when nothing is running.
-    if let Some(turn_id) = state.cancel_turn(&session_id) {
+    // The guard installed the admission barrier and cancelled the exact turn
+    // under the same registry lock. Keep it across eviction so no successor can
+    // claim the newly retired slot while this stop request is still in flight.
+    if let Some(turn_id) = stop_guard.cancelled_turn_id() {
         tracing::info!(
             "Stop for session {} cancelled in-flight turn {}",
             session_id,
@@ -1555,14 +1940,16 @@ async fn stop_agent(
         );
     }
 
-    state
-        .agent_manager
-        .remove_session(&session_id)
-        .await
-        .map_err(|e| ErrorResponse {
-            message: format!("Failed to stop agent for session {}: {}", session_id, e),
-            status: StatusCode::NOT_FOUND,
-        })?;
+    if let Err(e) = state.agent_manager.remove_session(&session_id).await {
+        // A semaphore-queued child intentionally has no generic/live Agent yet;
+        // cancelling its background handle is the complete stop operation.
+        if !queued_child_cancelled {
+            return Err(ErrorResponse {
+                message: format!("Failed to stop agent for session {}: {}", session_id, e),
+                status: StatusCode::NOT_FOUND,
+            });
+        }
+    }
 
     Ok(StatusCode::OK)
 }
@@ -1632,29 +2019,43 @@ async fn restart_agent_internal(
     responses(
         (status = 200, description = "Agent restarted successfully", body = RestartAgentResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "The session is out of reach, or the target is a subagent and the request lacks user-action proof"),
         (status = 404, description = "Session not found"),
+        (status = 424, description = "The delegated child is still initializing"),
         (status = 500, description = "Internal server error")
     )
 )]
 async fn restart_agent(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<RestartAgentRequest>,
 ) -> Result<Json<RestartAgentResponse>, ErrorResponse> {
     let session_id = payload.session_id.clone();
+    let session = authorize_agent_control(&state, &session_id, &headers).await?;
 
-    let session = state
-        .session_manager()
-        .get_session(&session_id, false)
-        .await
-        .map_err(|err| {
-            error!("Failed to get session during restart: {}", err);
-            ErrorResponse {
-                message: format!("Failed to get session: {}", err),
-                status: StatusCode::NOT_FOUND,
-            }
-        })?;
-
-    let extension_results = restart_agent_internal(&state, &session_id, &session).await?;
+    let extension_results = if session.session_type == SessionType::SubAgent {
+        let agent = live_subagent_for_control(&state, &session).await?;
+        // A live child owns provider-local state and a narrower daemon-authored
+        // grant profile. Ordinary restart hydration would replace the former and
+        // load the session's general extension snapshot over the latter.
+        agent
+            .restore_persisted_provider_if_missing(&session)
+            .await
+            .map_err(|error| ErrorResponse {
+                message: error.to_string(),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            })?;
+        agent
+            .restore_subagent_runtime_profile(&session)
+            .await
+            .map_err(|error| ErrorResponse {
+                message: error.to_string(),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            })?;
+        Vec::new()
+    } else {
+        restart_agent_internal(&state, &session_id, &session).await?
+    };
 
     Ok(Json(RestartAgentResponse { extension_results }))
 }
@@ -2113,6 +2514,1214 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/agent/remove_extension", post(agent_remove_extension))
         .route("/agent/stop", post(stop_agent))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod new_session_provider_binding_tests {
+    use super::*;
+    use crate::routes::session::diverge_tests::{
+        install_test_user_action_key, TEST_USER_ACTION_KEY,
+    };
+    use biorouter::config::with_config_overrides;
+    use serial_test::serial;
+
+    fn provider_overrides(
+        provider: &str,
+        model: &str,
+        command_key: Option<&str>,
+    ) -> HashMap<String, String> {
+        let mut overrides = HashMap::from([
+            ("BIOROUTER_PROVIDER".to_string(), provider.to_string()),
+            ("BIOROUTER_MODEL".to_string(), model.to_string()),
+        ]);
+        if let Some(command_key) = command_key {
+            overrides.insert(
+                command_key.to_string(),
+                std::env::current_exe()
+                    .expect("the test executable has an absolute path")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        overrides
+    }
+
+    async fn assert_first_turn_provider(provider: &str, model: &str, command_key: &str) {
+        let state = AppState::new().await.unwrap();
+        let working_dir = format!("/tmp/biorouter-new-chat-{provider}");
+        let started = with_config_overrides(
+            provider_overrides(provider, model, Some(command_key)),
+            start_agent(
+                State(Arc::clone(&state)),
+                HeaderMap::new(),
+                Json(StartAgentRequest {
+                    working_dir,
+                    workflow: None,
+                    workflow_id: None,
+                    workflow_deeplink: None,
+                    extension_overrides: Some(Vec::new()),
+                }),
+            ),
+        )
+        .await
+        .expect("a valid selected provider should start the new chat")
+        .0;
+
+        assert_eq!(started.provider_name.as_deref(), Some(provider));
+        assert_eq!(
+            started
+                .model_config
+                .as_ref()
+                .map(|config| config.model_name.as_str()),
+            Some(model)
+        );
+
+        let agent = state
+            .get_agent_for_route(started.id.clone())
+            .await
+            .expect("the first turn should resolve the newly created agent");
+        assert_eq!(
+            agent
+                .provider()
+                .await
+                .expect("the first turn must not fail with `Provider not set`")
+                .get_name(),
+            provider
+        );
+
+        let _ = state.agent_manager.remove_session(&started.id).await;
+        state
+            .session_manager()
+            .delete_session(&started.id)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_new_codex_chat_binds_the_selected_provider_before_its_first_turn() {
+        assert_first_turn_provider("codex", "gpt-5.5", "CODEX_COMMAND").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_new_claude_code_chat_binds_the_selected_provider_before_its_first_turn() {
+        assert_first_turn_provider("claude_code", "claude-sonnet-4-6", "CLAUDE_CODE_COMMAND").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_failed_default_provider_bind_leaves_no_visible_broken_chat() {
+        let state = AppState::new().await.unwrap();
+        let working_dir = "/tmp/biorouter-new-chat-invalid-provider";
+        let result = with_config_overrides(
+            provider_overrides("provider-does-not-exist", "test-model", None),
+            start_agent(
+                State(Arc::clone(&state)),
+                HeaderMap::new(),
+                Json(StartAgentRequest {
+                    working_dir: working_dir.to_string(),
+                    workflow: None,
+                    workflow_id: None,
+                    workflow_deeplink: None,
+                    extension_overrides: Some(Vec::new()),
+                }),
+            ),
+        )
+        .await;
+
+        let error = result.expect_err("an unknown selected provider was accepted");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("selected provider"));
+        let sessions = state
+            .session_manager()
+            .list_sessions_by_types_including_empty(&[SessionType::User])
+            .await
+            .unwrap();
+        assert!(
+            sessions
+                .iter()
+                .all(|session| session.working_dir.as_path() != std::path::Path::new(working_dir)),
+            "the failed start left a provider-less chat row visible"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_new_private_provider_chat_requires_user_action_before_first_bind() {
+        install_test_user_action_key();
+        assert!(biorouter::privacy::privacy_tiers_enabled());
+        let state = AppState::new().await.unwrap();
+        let working_dir = "/tmp/biorouter-new-chat-private-provider";
+        let mut overrides = provider_overrides(
+            "versa_azure",
+            biorouter::providers::versa_azure::VERSA_AZURE_DEPLOYMENT,
+            None,
+        );
+        overrides.insert("VERSA_AZURE_API_KEY".into(), "test-api-key".into());
+        overrides.insert(
+            "AZURE_OPENAI_ENDPOINT".into(),
+            biorouter::providers::versa_azure::VERSA_AZURE_ENDPOINT.into(),
+        );
+        overrides.insert(
+            "AZURE_OPENAI_DEPLOYMENT_NAME".into(),
+            biorouter::providers::versa_azure::VERSA_AZURE_DEPLOYMENT.into(),
+        );
+        overrides.insert(
+            "AZURE_OPENAI_API_VERSION".into(),
+            biorouter::providers::versa_azure::VERSA_AZURE_API_VERSION.into(),
+        );
+        let request = || StartAgentRequest {
+            working_dir: working_dir.to_string(),
+            workflow: None,
+            workflow_id: None,
+            workflow_deeplink: None,
+            extension_overrides: Some(Vec::new()),
+        };
+
+        let refused = with_config_overrides(
+            overrides.clone(),
+            start_agent(State(Arc::clone(&state)), HeaderMap::new(), Json(request())),
+        )
+        .await
+        .expect_err("a private first bind without user-action proof was accepted");
+        assert_eq!(refused.status, StatusCode::CONFLICT);
+        assert!(
+            state
+                .session_manager()
+                .list_sessions_by_types_including_empty(&[SessionType::User])
+                .await
+                .unwrap()
+                .iter()
+                .all(|session| session.working_dir.as_path() != std::path::Path::new(working_dir)),
+            "the refused private bind left a broken chat visible"
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-User-Action",
+            TEST_USER_ACTION_KEY
+                .parse()
+                .expect("a header-safe test key"),
+        );
+        let started = with_config_overrides(
+            overrides,
+            start_agent(State(Arc::clone(&state)), headers, Json(request())),
+        )
+        .await
+        .expect("valid user-action proof should authorize the private first bind")
+        .0;
+        assert_eq!(started.provider_name.as_deref(), Some("versa_azure"));
+
+        let _ = state.agent_manager.remove_session(&started.id).await;
+        state
+            .session_manager()
+            .delete_session(&started.id)
+            .await
+            .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod resume_update_security_tests {
+    use super::*;
+    use crate::routes::session::diverge_tests::{
+        install_test_user_action_key, TEST_USER_ACTION_KEY,
+    };
+    use axum::body::Body;
+    use axum::http::Request;
+    use biorouter::agents::Agent;
+    use biorouter::agents::SessionConfig;
+    use biorouter::config::with_config_overrides;
+    use biorouter::conversation::message::Message;
+    use biorouter::model::ModelConfig;
+    use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+    use biorouter::providers::errors::ProviderError;
+    use biorouter::workflow::Response as WorkflowResponse;
+    use futures::StreamExt;
+    use rmcp::model::Tool;
+    use serial_test::serial;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use tower::ServiceExt;
+
+    #[test]
+    fn foreign_pending_continuation_never_serializes_an_opaque_lease() {
+        let pending = PendingContinuationRef {
+            ownership: PendingContinuationOwnership::Foreign,
+            superseded_turn_id: "turn-stopped".to_string(),
+            continuation_lease: None,
+        };
+
+        let value = serde_json::to_value(pending).unwrap();
+        assert_eq!(value["ownership"], "foreign");
+        assert_eq!(value["superseded_turn_id"], "turn-stopped");
+        assert!(value.get("continuation_lease").is_none());
+    }
+
+    #[test]
+    fn openapi_describes_the_agent_route_failures_clients_must_handle() {
+        let schema: serde_json::Value =
+            serde_json::from_str(&crate::openapi::generate_schema()).unwrap();
+        for (path, statuses) in [
+            ("/agent/start", &["409"][..]),
+            ("/agent/resume", &["403", "404"][..]),
+            ("/agent/update_from_session", &["403", "500"][..]),
+            ("/agent/restart", &["424"][..]),
+        ] {
+            let responses = &schema["paths"][path]["post"]["responses"];
+            for status in statuses {
+                assert!(
+                    responses.get(*status).is_some(),
+                    "POST {path} is missing its {status} OpenAPI response"
+                );
+            }
+        }
+    }
+
+    struct RecordingSessionReader {
+        session: Session,
+        reads: Mutex<Vec<bool>>,
+    }
+
+    impl RecordingSessionReader {
+        fn subagent() -> Self {
+            Self {
+                session: Session {
+                    session_type: SessionType::SubAgent,
+                    ..Session::default()
+                },
+                reads: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn reads(&self) -> Vec<bool> {
+            self.reads.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AgentSessionReader for RecordingSessionReader {
+        async fn read_session(
+            &self,
+            _session_id: &str,
+            include_messages: bool,
+        ) -> anyhow::Result<Session> {
+            self.reads.lock().unwrap().push(include_messages);
+            Ok(self.session.clone())
+        }
+    }
+
+    struct SeededSession {
+        state: Arc<AppState>,
+        id: String,
+    }
+
+    struct LiveChildProvider;
+
+    struct PromptRecordingProvider {
+        prompts: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for LiveChildProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new(
+                "live-child-provider",
+                "Live child provider",
+                "",
+                "live-child-model",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "live-child-provider-not-in-the-registry"
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("live-child-model")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new("live-child-model".into(), Usage::default()),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for PromptRecordingProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new(
+                "prompt-recording-provider",
+                "Prompt recording provider",
+                "",
+                "prompt-recording-model",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "prompt-recording-provider-not-in-the-registry"
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("prompt-recording-model")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.prompts.lock().unwrap().push(system.to_string());
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new("prompt-recording-model".into(), Usage::default()),
+            ))
+        }
+    }
+
+    impl SeededSession {
+        fn id(&self) -> &str {
+            &self.id
+        }
+    }
+
+    impl Drop for SeededSession {
+        fn drop(&mut self) {
+            let state = Arc::clone(&self.state);
+            let id = std::mem::take(&mut self.id);
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async move {
+                    let _ = state.agent_manager.remove_session(&id).await;
+                    if let Err(error) = state.session_manager().delete_session(&id).await {
+                        eprintln!("route security test could not delete session {id}: {error}");
+                    }
+                })
+            });
+        }
+    }
+
+    async fn seed(state: &Arc<AppState>, kind: SessionType, private: bool) -> SeededSession {
+        let session = state
+            .session_manager()
+            .create_session(
+                PathBuf::from("/tmp/biorouter-agent-route-security"),
+                "Agent route security test fixture".into(),
+                kind,
+            )
+            .await
+            .unwrap();
+        // Session ids are `YYYYMMDD_N` minted as MAX(N)+1 over the rows that
+        // still exist, so `SeededSession::drop` deleting a row hands that id
+        // straight back to the next test. `AgentManager` is a process-global
+        // singleton that outlives all of them, so without this a fixture can
+        // inherit an agent an earlier test registered — and the assertions here
+        // are precisely `peek_agent(..).is_none()`, which would then fail for a
+        // reason that has nothing to do with the route under test.
+        let _ = state.agent_manager.remove_session(&session.id).await;
+        if private {
+            state
+                .session_manager()
+                .update(&session.id)
+                .provider_name("versa_azure")
+                .model_config(ModelConfig::new("gpt-4o").unwrap())
+                .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+                .apply()
+                .await
+                .unwrap();
+        }
+        SeededSession {
+            state: Arc::clone(state),
+            id: session.id,
+        }
+    }
+
+    async fn post_agent_route(
+        state: Arc<AppState>,
+        path: &str,
+        session_id: &str,
+        user_action: Option<&str>,
+    ) -> StatusCode {
+        let body = match path {
+            "/agent/resume" => serde_json::json!({
+                "session_id": session_id,
+                "load_model_and_extensions": true,
+            }),
+            "/agent/update_from_session" => serde_json::json!({
+                "session_id": session_id,
+            }),
+            "/agent/update_provider" => serde_json::json!({
+                "session_id": session_id,
+                "provider": "provider-must-not-be-created-before-authorization",
+                "model": "test-model",
+            }),
+            "/agent/add_extension" => serde_json::json!({
+                "session_id": session_id,
+                "config": {
+                    "type": "builtin",
+                    "name": "authorization-test-extension",
+                    "description": "must not be loaded before authorization",
+                },
+            }),
+            "/agent/remove_extension" => serde_json::json!({
+                "session_id": session_id,
+                "name": "authorization-test-extension",
+            }),
+            "/agent/stop" | "/agent/restart" => serde_json::json!({
+                "session_id": session_id,
+            }),
+            _ => panic!("unexpected route in test: {path}"),
+        };
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json");
+        if let Some(key) = user_action {
+            request = request.header("X-User-Action", key);
+        }
+        routes(state)
+            .oneshot(
+                request
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    async fn get_agent_tools(state: Arc<AppState>, session_id: &str) -> StatusCode {
+        routes(state)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/agent/tools?session_id={session_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    async fn resume_response(
+        state: Arc<AppState>,
+        session_id: &str,
+        load_model_and_extensions: bool,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = routes(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/agent/resume")
+                    .header("content-type", "application/json")
+                    .header("X-User-Action", TEST_USER_ACTION_KEY)
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "session_id": session_id,
+                            "load_model_and_extensions": load_model_and_extensions,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[test]
+    fn both_handlers_run_reach_before_they_read_an_authorized_session_or_agent() {
+        let source = include_str!("agent.rs");
+        for (handler_name, authorized_read) in [
+            ("resume_agent", "read_resume_session("),
+            ("update_from_session", "read_update_session("),
+        ] {
+            let body = crate::routes::body_of(source, &format!("async fn {handler_name}"));
+            let reach = body
+                .find("session_reach(")
+                .unwrap_or_else(|| panic!("{handler_name} does not enforce session reach"));
+            let session_read = body
+                .find(authorized_read)
+                .unwrap_or_else(|| panic!("{handler_name} no longer reads its session"));
+            assert!(
+                reach < session_read,
+                "{handler_name} reads the named session before the reach gate"
+            );
+            if let Some(agent_read) = body.find(".get_agent_for_route(") {
+                assert!(
+                    reach < agent_read,
+                    "{handler_name} creates or reads an agent before the reach gate"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn child_control_handlers_authorize_before_lookup_or_mutation() {
+        let source = include_str!("agent.rs");
+        for (handler_name, first_effect) in [
+            ("update_agent_provider", "live_subagent_for_control("),
+            (
+                "agent_add_extension",
+                "session.session_type == SessionType::SubAgent",
+            ),
+            (
+                "agent_remove_extension",
+                "session.session_type == SessionType::SubAgent",
+            ),
+            ("stop_agent", "cancel_initializing_child("),
+            ("restart_agent(", "live_subagent_for_control("),
+        ] {
+            let body = crate::routes::body_of(source, &format!("async fn {handler_name}"));
+            let authorization = body.find("authorize_agent_control(").unwrap_or_else(|| {
+                panic!("{handler_name} no longer enforces the child-control boundary")
+            });
+            let effect = body
+                .find(first_effect)
+                .unwrap_or_else(|| panic!("{handler_name} no longer has its expected effect"));
+            assert!(
+                authorization < effect,
+                "{handler_name} touches child state before authorization"
+            );
+        }
+    }
+
+    #[test]
+    fn resume_store_sequence_authorizes_metadata_before_loading_messages() {
+        let source = include_str!("agent.rs");
+        let body = crate::routes::body_of(source, "async fn read_resume_session");
+        let metadata = body
+            .find("read_session(session_id, false)")
+            .expect("resume no longer starts with a metadata-only session read");
+        let proof = body
+            .find("refuse_subagent_unless_user(&metadata, headers)")
+            .expect("resume no longer authorizes the metadata row");
+        let transcript = body
+            .find("read_session(session_id, true)")
+            .expect("resume no longer loads the authorized transcript");
+        assert!(metadata < proof && proof < transcript);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn forbidden_subagent_store_reads_stop_at_metadata() {
+        for route in ["resume", "update"] {
+            let reader = RecordingSessionReader::subagent();
+            let result = match route {
+                "resume" => read_resume_session(&reader, "child", &HeaderMap::new())
+                    .await
+                    .map(|_| ()),
+                "update" => read_update_session(&reader, "child", &HeaderMap::new())
+                    .await
+                    .map(|_| ()),
+                _ => unreachable!(),
+            };
+            let error = result.expect_err("an unproven subagent request was accepted");
+            assert_eq!(error.status, StatusCode::FORBIDDEN);
+            assert_eq!(
+                reader.reads(),
+                vec![false],
+                "{route} performed a full transcript read before refusing the request"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn proven_subagent_resume_loads_metadata_then_transcript() {
+        install_test_user_action_key();
+        let reader = RecordingSessionReader::subagent();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-User-Action",
+            TEST_USER_ACTION_KEY
+                .parse()
+                .expect("valid test header value"),
+        );
+
+        read_resume_session(&reader, "child", &headers)
+            .await
+            .expect("proven subagent resume was refused");
+        assert_eq!(reader.reads(), vec![false, true]);
+    }
+
+    #[test]
+    fn resume_only_restores_a_provider_when_the_live_agent_is_missing_one() {
+        let source = include_str!("agent.rs");
+        let resume = crate::routes::body_of(source, "async fn resume_agent");
+        assert!(
+            resume.contains("load_resumed_agent_extensions"),
+            "resume no longer delegates provider and extension restoration to its guarded helper"
+        );
+        let body = crate::routes::body_of(source, "async fn load_resumed_agent_extensions");
+        assert!(
+            body.contains("restore_persisted_provider_if_missing(session)"),
+            "resume can no longer rebuild a cold agent from its persisted provider"
+        );
+        assert!(
+            !body.contains("restore_provider_from_session(session)"),
+            "resume unconditionally rebinds a live Codex or Claude child and discards its provider-local session"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn unproven_public_subagent_access_is_forbidden_without_creating_an_agent() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let child = seed(&state, SessionType::SubAgent, false).await;
+
+        for path in ["/agent/resume", "/agent/update_from_session"] {
+            assert_eq!(
+                post_agent_route(Arc::clone(&state), path, child.id(), None).await,
+                StatusCode::FORBIDDEN,
+                "{path} accepted a daemon-only request as though a user typed in the child tab"
+            );
+            assert!(
+                state.peek_agent(child.id()).await.is_none(),
+                "{path} mutated the agent registry before refusing the request"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn bearer_only_cannot_control_public_or_private_subagents() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+
+        for private in [false, true] {
+            let child = seed(&state, SessionType::SubAgent, private).await;
+            for path in [
+                "/agent/update_provider",
+                "/agent/add_extension",
+                "/agent/remove_extension",
+                "/agent/stop",
+                "/agent/restart",
+            ] {
+                assert_eq!(
+                    post_agent_route(Arc::clone(&state), path, child.id(), None).await,
+                    StatusCode::FORBIDDEN,
+                    "{path} accepted bearer-only control of a {} child",
+                    if private { "private" } else { "public" }
+                );
+                assert!(
+                    state.peek_agent(child.id()).await.is_none(),
+                    "{path} materialized or mutated an agent before subagent authorization"
+                );
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn proven_user_cannot_drift_child_grants_and_can_stop_public_or_private_subagents() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+
+        for private in [false, true] {
+            let child = seed(&state, SessionType::SubAgent, private).await;
+            let live = Arc::new(Agent::new());
+            state
+                .agent_manager
+                .register_agent(child.id().to_string(), Arc::clone(&live))
+                .await;
+
+            assert_eq!(
+                post_agent_route(
+                    Arc::clone(&state),
+                    "/agent/remove_extension",
+                    child.id(),
+                    Some(TEST_USER_ACTION_KEY),
+                )
+                .await,
+                StatusCode::CONFLICT
+            );
+            assert!(Arc::ptr_eq(
+                &state
+                    .peek_agent(child.id())
+                    .await
+                    .expect("remove unexpectedly evicted the child"),
+                &live
+            ));
+
+            assert_eq!(
+                post_agent_route(
+                    Arc::clone(&state),
+                    "/agent/stop",
+                    child.id(),
+                    Some(TEST_USER_ACTION_KEY),
+                )
+                .await,
+                StatusCode::OK
+            );
+            assert!(state.peek_agent(child.id()).await.is_none());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn queued_child_control_never_materializes_a_generic_agent() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let child = seed(&state, SessionType::SubAgent, false).await;
+        let cancellation = CancellationToken::new();
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register_initializing(
+            "route-security-parent",
+            child.id().to_string(),
+            "queued child route security",
+            cancellation.clone(),
+        );
+
+        let (resume_status, resumed) = resume_response(Arc::clone(&state), child.id(), true).await;
+        assert_eq!(resume_status, StatusCode::OK);
+        assert_eq!(resumed["initializing"], true);
+        assert!(state.peek_agent(child.id()).await.is_none());
+
+        assert_eq!(
+            post_agent_route(Arc::clone(&state), "/agent/stop", child.id(), None).await,
+            StatusCode::FORBIDDEN
+        );
+        assert!(
+            !cancellation.is_cancelled(),
+            "bearer-only stop cancelled the queued child before user authorization"
+        );
+
+        assert_eq!(
+            get_agent_tools(Arc::clone(&state), child.id()).await,
+            StatusCode::FAILED_DEPENDENCY
+        );
+        assert!(state.peek_agent(child.id()).await.is_none());
+
+        for (path, expected) in [
+            ("/agent/update_provider", StatusCode::FAILED_DEPENDENCY),
+            ("/agent/add_extension", StatusCode::CONFLICT),
+            ("/agent/remove_extension", StatusCode::CONFLICT),
+            ("/agent/restart", StatusCode::FAILED_DEPENDENCY),
+        ] {
+            assert_eq!(
+                post_agent_route(
+                    Arc::clone(&state),
+                    path,
+                    child.id(),
+                    Some(TEST_USER_ACTION_KEY),
+                )
+                .await,
+                expected,
+                "{path} did not recognize the authorized-but-not-ready child"
+            );
+            assert!(
+                state.peek_agent(child.id()).await.is_none(),
+                "{path} cached a generic agent for the queued child"
+            );
+        }
+
+        assert_eq!(
+            post_agent_route(
+                Arc::clone(&state),
+                "/agent/stop",
+                child.id(),
+                Some(TEST_USER_ACTION_KEY),
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert!(cancellation.is_cancelled());
+        assert!(state.peek_agent(child.id()).await.is_none());
+        handle.complete(biorouter::agents::SubagentResult::from_error(
+            "queued route-security fixture cleaned up",
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn ordinary_resume_reports_initializing_false() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let ordinary = seed(&state, SessionType::User, false).await;
+
+        let (status, resumed) = resume_response(Arc::clone(&state), ordinary.id(), false).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(resumed["initializing"], false);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn proven_resume_does_not_construct_a_generic_agent_for_a_queued_child() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let child = seed(&state, SessionType::SubAgent, false).await;
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register_initializing(
+            "queued-resume-parent",
+            child.id(),
+            "delegated work",
+            tokio_util::sync::CancellationToken::new(),
+        );
+
+        assert_eq!(
+            post_agent_route(
+                Arc::clone(&state),
+                "/agent/resume",
+                child.id(),
+                Some(TEST_USER_ACTION_KEY),
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert!(
+            state.peek_agent(child.id()).await.is_none(),
+            "resume installed a generic agent before the delegated runtime was ready"
+        );
+        handle.complete(
+            biorouter::agents::subagent_result::SubagentResult::from_error("test cleanup"),
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn private_user_sessions_are_out_of_reach_before_either_handler_mutates() {
+        install_test_user_action_key();
+        assert!(
+            biorouter::privacy::privacy_tiers_enabled(),
+            "this test requires the normal privacy-tier gate"
+        );
+        let state = AppState::new().await.unwrap();
+        let private = seed(&state, SessionType::User, true).await;
+
+        for path in ["/agent/resume", "/agent/update_from_session"] {
+            assert_eq!(
+                post_agent_route(Arc::clone(&state), path, private.id(), None).await,
+                StatusCode::FORBIDDEN,
+                "{path} reached a private user session with no user proof or private caller"
+            );
+            assert!(
+                state.peek_agent(private.id()).await.is_none(),
+                "{path} created an agent before refusing private-session reach"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn proven_live_subagent_update_preserves_its_override_and_workflow_tools() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let child = seed(&state, SessionType::SubAgent, false).await;
+        let mut workflow = Workflow::builder()
+            .title("must not apply")
+            .description("a discriminating update fixture")
+            .instructions("THIS DESKTOP WORKFLOW PROMPT MUST NOT REACH THE CHILD")
+            .build()
+            .unwrap();
+        workflow.response = Some(WorkflowResponse {
+            json_schema: Some(serde_json::json!({
+                "type": "object",
+                "properties": { "unexpected": { "type": "boolean" } }
+            })),
+        });
+        state
+            .session_manager()
+            .update(child.id())
+            .workflow(Some(workflow))
+            .apply()
+            .await
+            .unwrap();
+
+        let agent = Arc::new(Agent::new());
+        agent
+            .override_system_prompt("CHILD-SPECIFIC-SUBAGENT-SYSTEM-PROMPT".into())
+            .await;
+        state
+            .agent_manager
+            .register_agent(child.id().to_string(), Arc::clone(&agent))
+            .await;
+        assert!(
+            !agent.list_tools(child.id(), None).await.iter().any(|tool| {
+                tool.name == biorouter::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
+            }),
+            "the fixture unexpectedly began with workflow tools"
+        );
+
+        assert_eq!(
+            post_agent_route(
+                Arc::clone(&state),
+                "/agent/update_from_session",
+                child.id(),
+                Some(TEST_USER_ACTION_KEY),
+            )
+            .await,
+            StatusCode::OK
+        );
+        let still_live = state
+            .peek_agent(child.id())
+            .await
+            .expect("the live child was removed by a prompt refresh");
+        assert!(Arc::ptr_eq(&still_live, &agent));
+        assert!(
+            !agent
+                .list_tools(child.id(), None)
+                .await
+                .iter()
+                .any(|tool| {
+                    tool.name == biorouter::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
+                }),
+            "the update applied the desktop workflow to a live subagent; the same path also appends the desktop prompt behind its subagent override"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn cold_subagent_resume_restores_only_its_delegated_runtime_profile() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let child = seed(&state, SessionType::SubAgent, false).await;
+        let command = std::env::current_exe()
+            .expect("the test executable has an absolute path")
+            .to_string_lossy()
+            .into_owned();
+
+        with_config_overrides(
+            HashMap::from([("CODEX_COMMAND".to_string(), command)]),
+            async {
+                let live = state.get_agent(child.id().to_string()).await.unwrap();
+                live.update_provider(
+                    create("codex", ModelConfig::new_or_fail("gpt-5.5"))
+                        .await
+                        .unwrap(),
+                    child.id(),
+                )
+                .await
+                .unwrap();
+
+                let mut extension_data = biorouter::session::ExtensionData::new();
+                EnabledExtensionsState::new(vec![ExtensionConfig::Platform {
+                    name: "workspace".into(),
+                    description: "Legacy broad workspace snapshot".into(),
+                    bundled: Some(true),
+                    available_tools: Vec::new(),
+                }])
+                .to_extension_data(&mut extension_data)
+                .unwrap();
+                extension_data.set_extension_state(
+                    "subagent_runtime_profile",
+                    "v2",
+                    serde_json::json!({
+                        "format_version": 2,
+                        "system_prompt": "COLD_ROUTE_PROFILE_PROMPT",
+                        "response": {
+                            "json_schema": {
+                                "type": "object",
+                                "properties": { "answer": { "type": "string" } },
+                                "required": ["answer"]
+                            }
+                        },
+                        "sub_workflows": [],
+                        "extension_grants": [{
+                            "name": "todo",
+                            "kind": "platform",
+                            "tools": ["todo_write"]
+                        }]
+                    }),
+                );
+                state
+                    .session_manager()
+                    .update(child.id())
+                    .extension_data(extension_data)
+                    .apply()
+                    .await
+                    .unwrap();
+                state
+                    .agent_manager
+                    .remove_session(child.id())
+                    .await
+                    .unwrap();
+
+                let child_row = state
+                    .session_manager()
+                    .get_session(child.id(), false)
+                    .await
+                    .unwrap();
+                let (extension_results, initialization_error) = load_resumed_agent_extensions(
+                    &state,
+                    &ResumeAgentRequest {
+                        session_id: child.id().to_string(),
+                        load_model_and_extensions: true,
+                        continuation_owner_id: None,
+                    },
+                    &child_row,
+                    false,
+                )
+                .await;
+                assert!(initialization_error.is_none());
+                assert!(extension_results.is_some_and(|results| results.is_empty()));
+
+                let cold = state
+                    .peek_agent(child.id())
+                    .await
+                    .expect("resume did not cache the restored child");
+                let tool_names: Vec<String> = cold
+                    .list_tools(child.id(), None)
+                    .await
+                    .into_iter()
+                    .map(|tool| tool.name.to_string())
+                    .collect();
+                assert!(tool_names.iter().any(|name| name == "todo__todo_write"));
+                assert!(tool_names.iter().any(|name| {
+                    name == biorouter::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
+                }));
+                assert!(
+                    tool_names
+                        .iter()
+                        .all(|name| !name.starts_with("workspace__")),
+                    "ordinary extension hydration widened the cold child's grants: {tool_names:?}"
+                );
+
+                let prompts = Arc::new(Mutex::new(Vec::new()));
+                cold.update_provider(
+                    Arc::new(PromptRecordingProvider {
+                        prompts: Arc::clone(&prompts),
+                    }),
+                    child.id(),
+                )
+                .await
+                .unwrap();
+                let mut reply = cold
+                    .reply(
+                        Message::user().with_text("verify the restored prompt"),
+                        SessionConfig {
+                            id: child.id().to_string(),
+                            schedule_id: None,
+                            max_turns: Some(1),
+                            max_tool_calls: Some(1),
+                            budget: None,
+                            retry_config: None,
+                            reasoning_effort: None,
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                while reply.next().await.is_some() {}
+                assert!(
+                    prompts
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|prompt| prompt.contains("COLD_ROUTE_PROFILE_PROMPT")),
+                    "the restored child did not receive its delegated system prompt"
+                );
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn live_subagent_restart_preserves_provider_and_runtime_profile() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let child = seed(&state, SessionType::SubAgent, false).await;
+        let agent = state.get_agent(child.id().to_string()).await.unwrap();
+        let provider: Arc<dyn Provider> = Arc::new(LiveChildProvider);
+        let expected_provider = Arc::clone(&provider);
+        agent.update_provider(provider, child.id()).await.unwrap();
+        let mut extension_data = biorouter::session::ExtensionData::new();
+        extension_data.set_extension_state(
+            "subagent_runtime_profile",
+            "v2",
+            serde_json::json!({
+                "format_version": 2,
+                "system_prompt": "LIVE CHILD RUNTIME PROMPT",
+                "response": {
+                    "json_schema": {
+                        "type": "object",
+                        "properties": { "child_result": { "type": "string" } },
+                        "required": ["child_result"]
+                    }
+                },
+                "sub_workflows": [],
+                "extension_grants": []
+            }),
+        );
+        state
+            .session_manager()
+            .update(child.id())
+            .extension_data(extension_data)
+            .apply()
+            .await
+            .unwrap();
+        let child_row = state
+            .session_manager()
+            .get_session(child.id(), false)
+            .await
+            .unwrap();
+        assert!(
+            agent
+                .restore_subagent_runtime_profile(&child_row)
+                .await
+                .unwrap(),
+            "the child runtime profile fixture did not install"
+        );
+        assert!(
+            agent.list_tools(child.id(), None).await.iter().any(|tool| {
+                tool.name == biorouter::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
+            }),
+            "the child runtime fixture is missing its structured final-output tool"
+        );
+
+        assert_eq!(
+            post_agent_route(
+                Arc::clone(&state),
+                "/agent/restart",
+                child.id(),
+                Some(TEST_USER_ACTION_KEY),
+            )
+            .await,
+            StatusCode::OK
+        );
+
+        let still_live = state
+            .peek_agent(child.id())
+            .await
+            .expect("restart removed the live child");
+        assert!(Arc::ptr_eq(&still_live, &agent));
+        let actual_provider = still_live.provider().await.unwrap();
+        assert!(
+            Arc::ptr_eq(&actual_provider, &expected_provider),
+            "restart replaced the live child's provider-local session"
+        );
+        assert!(
+            still_live
+                .list_tools(child.id(), None)
+                .await
+                .iter()
+                .any(|tool| {
+                    tool.name == biorouter::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
+                }),
+            "restart replaced the child runtime profile with ordinary session tools"
+        );
+    }
 }
 
 #[cfg(test)]

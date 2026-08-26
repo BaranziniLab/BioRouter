@@ -287,9 +287,11 @@ const REGISTRY: &[Guard] = &[
             // read as refs-only and stand out.
             Site {
                 file: "crates/biorouter-server/src/routes/agent.rs",
-                counts: c(2, 2, 0),
+                counts: c(4, 4, 0),
                 kind: SiteKind::Guard,
-                what: "`POST /agent/update_working_dir` and `POST /agent/add_extension`",
+                what: "`POST /agent/resume`, `POST /agent/update_from_session`, and `POST \
+                       /agent/update_working_dir`, plus the shared `authorize_agent_control` \
+                       gate used by provider, extension, stop, and restart mutations",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/mod.rs",
@@ -300,10 +302,11 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/reply.rs",
-                counts: c(1, 1, 0),
+                counts: c(2, 2, 0),
                 kind: SiteKind::Guard,
                 what: "`POST /reply`, which runs an agent turn with tools inside the named \
-                       session and strictly dominates the rest of the list",
+                       session, plus the explicit continuation takeover and group-abandon \
+                       recovery mutation",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
@@ -347,9 +350,10 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: SESSION_REACH,
-                counts: c(1, 0, 0),
+                counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`gate_knowledge_active`, the middleware form of the same gate",
+                what: "`gate_knowledge_active`, whose GET query and POST body branches each \
+                       invoke the same reach gate",
             },
         ],
     },

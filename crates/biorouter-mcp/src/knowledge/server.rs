@@ -6,6 +6,7 @@ use crate::knowledge::{
     types::{ChangeKind, Manifest},
 };
 use anyhow::Result;
+use dashmap::DashMap;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo},
@@ -14,9 +15,12 @@ use rmcp::{
     tool, tool_router, ErrorData, RoleServer, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, collections::HashSet};
+use std::{cmp::Ordering, collections::HashSet, sync::Arc};
+use tokio::sync::Mutex;
 
 const SESSION_ID_META_KEY: &str = "biorouter-session-id";
+const TRANSACTION_UNAVAILABLE: &str =
+    "knowledge transaction is not available for this session and knowledge base";
 
 /// Both axes of the caller's identity — the tier bit and the affiliation — read
 /// from ONE request meta at one instant (issue #56 DR-26).
@@ -167,6 +171,37 @@ pub struct KnowledgeServer {
     tool_router: ToolRouter<Self>,
     service: KnowledgeService,
     instructions: String,
+    transactions: KnowledgeTransactionCoordinator,
+}
+
+#[derive(Clone, Default)]
+struct KnowledgeTransactionCoordinator {
+    active: Arc<DashMap<String, ActiveKnowledgeTransactionSlot>>,
+}
+
+type ActiveKnowledgeTransactionSlot = Arc<Mutex<Option<ActiveKnowledgeTransaction>>>;
+
+struct ActiveKnowledgeTransaction {
+    handle: String,
+    session_id: String,
+    txn: crate::knowledge::git::Txn,
+    _write_guard: crate::knowledge::service::KnowledgeWriteGuard,
+}
+
+impl KnowledgeTransactionCoordinator {
+    fn slot(&self, kb_id: &str) -> ActiveKnowledgeTransactionSlot {
+        self.active
+            .entry(kb_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(None)))
+            .clone()
+    }
+
+    fn slots(&self) -> Vec<(String, ActiveKnowledgeTransactionSlot)> {
+        self.active
+            .iter()
+            .map(|entry| (entry.key().clone(), Arc::clone(entry.value())))
+            .collect()
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -287,18 +322,24 @@ pub struct ReadPageParams {
     pub path: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct WritePageParams {
     pub kb_id: String,
     pub path: String,
     pub content: String,
     pub commit_message: String,
+    /// Opaque handle returned by `kb_begin_txn`. Omit for a standalone commit.
+    #[serde(default)]
+    pub txn: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddRawSourceParams {
     pub kb_id: String,
     pub source: RawSourceInput,
+    /// Opaque handle returned by `kb_begin_txn`. Omit for a standalone commit.
+    #[serde(default)]
+    pub txn: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -386,6 +427,9 @@ pub struct AppendLogParams {
     pub summary: String,
     #[serde(default)]
     pub delta: Option<String>,
+    /// Opaque handle returned by `kb_begin_txn`. Omit for a standalone commit.
+    #[serde(default)]
+    pub txn: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -437,6 +481,7 @@ impl KnowledgeServer {
             tool_router: Self::tool_router(),
             service: KnowledgeService::new_default()?,
             instructions: include_str!("instructions.md").to_string(),
+            transactions: KnowledgeTransactionCoordinator::default(),
         })
     }
 
@@ -446,6 +491,136 @@ impl KnowledgeServer {
 
     fn session_id(context: Option<&RequestContext<RoleServer>>) -> Option<&str> {
         context.and_then(Self::session_id_from_context)
+    }
+
+    fn transaction_session_id(context: &RequestContext<RoleServer>) -> Result<String, ErrorData> {
+        Self::session_id_from_context(context)
+            .filter(|session_id| !session_id.is_empty())
+            .map(ToOwned::to_owned)
+            .ok_or_else(transaction_unavailable)
+    }
+
+    async fn abort_transaction_slot(
+        &self,
+        kb_id: &str,
+        slot: ActiveKnowledgeTransactionSlot,
+        required_session_id: Option<&str>,
+    ) -> (bool, Option<anyhow::Error>) {
+        let mut stored = slot.lock().await;
+        if stored.as_ref().is_none_or(|active| {
+            required_session_id.is_some_and(|session_id| active.session_id != session_id)
+        }) {
+            return (false, None);
+        }
+        let Some(active) = stored.take() else {
+            return (false, None);
+        };
+        let kb_root = crate::knowledge::paths::kb_root(self.service.root(), kb_id);
+        let result = crate::knowledge::git::GitRepo::open(&kb_root)
+            .and_then(|repo| repo.abort_txn(&active.txn));
+        (true, result.err())
+    }
+
+    async fn abort_transaction_slots(
+        &self,
+        slots: Vec<(String, ActiveKnowledgeTransactionSlot)>,
+        required_session_id: Option<&str>,
+    ) -> Result<usize> {
+        let mut released = 0;
+        let mut errors = Vec::new();
+        for (kb_id, slot) in slots {
+            let (was_released, error) = self
+                .abort_transaction_slot(&kb_id, slot, required_session_id)
+                .await;
+            released += usize::from(was_released);
+            if let Some(error) = error {
+                errors.push(format!("{kb_id}: {error:#}"));
+            }
+        }
+        if errors.is_empty() {
+            Ok(released)
+        } else {
+            anyhow::bail!(
+                "released {released} abandoned knowledge transaction lock(s), but repository cleanup failed: {}",
+                errors.join("; ")
+            );
+        }
+    }
+
+    /// End every transaction owned by a session that is being torn down.
+    pub async fn abort_transactions_for_session(&self, session_id: &str) -> Result<usize> {
+        anyhow::ensure!(!session_id.is_empty(), "knowledge session id is empty");
+        self.abort_transaction_slots(self.transactions.slots(), Some(session_id))
+            .await
+    }
+
+    /// Supervisor-only recovery for an owner that cannot issue `kb_abort_txn`.
+    pub async fn force_abort_transaction(&self, kb_id: &str) -> Result<bool> {
+        let Some(slot) = self
+            .transactions
+            .active
+            .get(kb_id)
+            .map(|entry| Arc::clone(entry.value()))
+        else {
+            return Ok(false);
+        };
+        self.abort_transaction_slots(vec![(kb_id.to_string(), slot)], None)
+            .await
+            .map(|released| released != 0)
+    }
+
+    /// Release every transaction owned by this MCP connection during teardown.
+    pub async fn abort_all_transactions(&self) -> Result<usize> {
+        self.abort_transaction_slots(self.transactions.slots(), None)
+            .await
+    }
+
+    fn active_transaction_branch<'a>(
+        active: &'a Option<ActiveKnowledgeTransaction>,
+        handle: &str,
+        session_id: &str,
+    ) -> Result<&'a str, ErrorData> {
+        active
+            .as_ref()
+            .filter(|txn| txn.handle == handle && txn.session_id == session_id)
+            .map(|txn| txn.txn.branch.as_str())
+            .ok_or_else(transaction_unavailable)
+    }
+
+    async fn assert_transaction_admission(
+        &self,
+        tool: &str,
+        kb_id: &str,
+        args: Option<&rmcp::model::JsonObject>,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        let supports_handle = matches!(
+            tool,
+            "kb_write_page" | "kb_add_raw_source" | "kb_append_log"
+        );
+        if !supports_handle && !matches!(tool, "kb_restore_state" | "kb_merge") {
+            return Ok(());
+        }
+        let slot = self.transactions.slot(kb_id);
+        let active = slot.lock().await;
+        let handle = if supports_handle {
+            args.and_then(|args| args.get("txn"))
+                .and_then(|txn| txn.as_str())
+        } else {
+            None
+        };
+        match handle {
+            Some(handle) => {
+                Self::active_transaction_branch(
+                    &active,
+                    handle,
+                    &Self::transaction_session_id(context)?,
+                )?;
+                Ok(())
+            }
+            None if active.is_some() => Err(transaction_unavailable()),
+            None => Ok(()),
+        }
     }
 
     /// Issue #56. The capability the daemon admitted this call on, PUBLIC unless
@@ -851,33 +1026,29 @@ impl KnowledgeServer {
                        instead of at the end of a whole ingest. In an **OKF** base it checks OKF \
                        v0.2 conformance only: a parseable frontmatter block, a non-empty `type`, \
                        footnotes that resolve to a `sources[]` entry, and sources that name a \
-                       resource.\n\
-                       \n\
-                       A base created before this format shipped is checked for nothing and \
-                       reports an empty list; that is the correct answer for it, not a failure."
+                       resource. Retired pre-OKF bases are refused; restart Biorouter to finish \
+                       the legacy purge before validating or writing."
     )]
     pub async fn kb_validate_page(
         &self,
         p: Parameters<ValidatePageParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        // `Manifest::profile`, never `Manifest::format` — the field reads `Okf`
-        // on every base written before Stage 3, so checking it alone would run
-        // OKF conformance over a legacy base and report a decision (DR-26) as
-        // one error per page.
-        let manifest = self.service.get_base(&p.kb_id).map_err(into_err)?;
-        let profile = manifest.profile();
+        let profile = self
+            .service
+            .require_current_profile(&p.kb_id)
+            .map_err(into_err)?;
         // Only BioOKF has cross-document rules, so only BioOKF pays to read the
         // bundle. In OKF mode the page is checked entirely against itself.
         let pages = match profile {
-            Some(crate::knowledge::types::KbFormat::Biookf) => {
+            crate::knowledge::types::KbFormat::Biookf => {
                 let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
                 crate::knowledge::validate::load_bundle(&kb_root).map_err(into_err)?
             }
             _ => Vec::new(),
         };
         let diagnostics = crate::knowledge::validate::validate_page(
-            profile,
+            Some(profile),
             p.path.as_deref(),
             &p.content,
             &pages,
@@ -885,9 +1056,7 @@ impl KnowledgeServer {
         ok_json(&serde_json::json!({
             "kb_id": p.kb_id,
             "path": p.path,
-            // The profile as the caller should read it: `null` for a base below
-            // the OKF generation, which is why nothing was checked.
-            "format": profile.map(|f| f.as_str()),
+            "format": profile.as_str(),
             // DR-7 keeps this a *producer's* verdict and nothing else: a page
             // that is not `ok` is still read, still rendered and still linked.
             // It is a statement about writing it, made by the one actor DR-7
@@ -922,8 +1091,8 @@ impl KnowledgeServer {
                        were. Fix a batch and run it again.\n\
                        \n\
                        Fixing is yours to do with kb_write_page; this tool never edits anything. \
-                       A base created before this format shipped is checked for housekeeping only \
-                       — that is the correct answer for it, not a failure."
+                       Retired pre-OKF bases are refused; restart Biorouter to finish the legacy \
+                       purge before linting."
     )]
     pub async fn kb_lint(
         &self,
@@ -949,16 +1118,36 @@ impl KnowledgeServer {
         // The autofix path stays where a caller can be held to it: `biorouter kb
         // lint --fix` and `POST /knowledge/bases/{id}/lint`, both of which name a
         // provider and therefore have a tier to ratchet with.
-        let report = crate::knowledge::macros::lint::scan(&kb_root).map_err(into_err)?;
-        // `Manifest::profile`, never `Manifest::format` — the field reads `Okf`
-        // on every base written before Stage 3, so reporting it would tell the
-        // caller a legacy base is OKF and leave the empty `okf.*` list looking
-        // like a bug rather than DR-26's decision.
-        let profile = self.service.get_base(&kb_id).ok().and_then(|m| m.profile());
+        let caller = CallerIdentity::from_context(Some(&context));
+        let cancel = context.ct;
+        let lock = self
+            .service
+            .lock_existing_kb_cancellable(&kb_id, Some(&cancel))
+            .await
+            .map_err(into_err)?;
+        // CP1 ran before this potentially long lock wait. A private writer can
+        // finish while lint is queued, so authorize the snapshot scan will read.
+        self.assert_kb_reachable(&kb_id, &caller)?;
+        let profile = self
+            .service
+            .require_current_profile(&kb_id)
+            .map_err(into_err)?;
+        let scan_root = kb_root.clone();
+        let scan_cancel = cancel.clone();
+        let (_lock, report) = tokio::task::spawn_blocking(move || {
+            let report = crate::knowledge::macros::lint::scan_with_cancellation(
+                &scan_root,
+                Some(&scan_cancel),
+            )?;
+            Ok::<_, anyhow::Error>((lock, report))
+        })
+        .await
+        .map_err(|error| into_err(anyhow::anyhow!("knowledge lint scan task failed: {error}")))?
+        .map_err(into_err)?;
         let diagnostics = &report.diagnostics;
         ok_json(&serde_json::json!({
             "kb_id": kb_id,
-            "format": profile.map(|f| f.as_str()),
+            "format": profile.as_str(),
             // DR-7: a producer's verdict about writing, not a statement that
             // anything will stop being read. Nothing here rejects a page.
             "ok": diagnostics.errors() == 0,
@@ -987,6 +1176,7 @@ impl KnowledgeServer {
     pub async fn kb_write_page(
         &self,
         p: Parameters<WritePageParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         // Issue #26: reject contract violations as INVALID_PARAMS (the error
@@ -1003,14 +1193,40 @@ impl KnowledgeServer {
                 None,
             ));
         }
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let slot = self.transactions.slot(&p.kb_id);
+        let active = slot.lock().await;
+        let txn_branch = match p.txn.as_deref() {
+            Some(handle) => Some(
+                Self::active_transaction_branch(
+                    &active,
+                    handle,
+                    &Self::transaction_session_id(&context)?,
+                )?
+                .to_string(),
+            ),
+            None if active.is_some() => return Err(transaction_unavailable()),
+            None => None,
+        };
+        let _write_guard = if txn_branch.is_none() {
+            Some(
+                self.service
+                    .lock_existing_kb_cancellable(&p.kb_id, Some(&context.ct))
+                    .await
+                    .map_err(into_err)?,
+            )
+        } else {
+            None
+        };
+        self.service
+            .require_current_profile(&p.kb_id)
+            .map_err(into_err)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let sha = crate::knowledge::store::write_page(
             &kb_root,
             &p.path,
             &p.content,
             &p.commit_message,
-            None,
+            txn_branch.as_deref(),
         )
         .map_err(into_err)?;
         // Keep the derived graph cache in sync after a page write. Without
@@ -1019,9 +1235,21 @@ impl KnowledgeServer {
         // create time, and the "Refresh graph" button only re-reads that
         // cache. add_raw_source already rebuilds for the GUI ingest path; do
         // the same here so chat-curated KBs visualize their pages/links.
-        self.service
-            .rebuild_graph_cache(&p.kb_id)
-            .map_err(into_err)?;
+        if let Err(error) = self.service.rebuild_graph_cache(&p.kb_id) {
+            let failure: anyhow::Error = match sha.as_deref() {
+                Some(commit_sha) => crate::knowledge::git::KnowledgeWriteFailure::committed(
+                    format!("page write to {}", p.path),
+                    commit_sha,
+                    error,
+                )
+                .into(),
+                None => anyhow::anyhow!(
+                    "page {} already matched durable content, but its graph cache could not be refreshed: {error:#}. The cache will be re-derived on its next read",
+                    p.path
+                ),
+            };
+            return Err(into_err(failure));
+        }
         ok_json(&serde_json::json!({ "commit_sha": sha }))
     }
 
@@ -1032,12 +1260,44 @@ impl KnowledgeServer {
     pub async fn kb_add_raw_source(
         &self,
         p: Parameters<AddRawSourceParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let slot = self.transactions.slot(&p.kb_id);
+        let active = slot.lock().await;
+        let txn_branch = match p.txn.as_deref() {
+            Some(handle) => Some(
+                Self::active_transaction_branch(
+                    &active,
+                    handle,
+                    &Self::transaction_session_id(&context)?,
+                )?
+                .to_string(),
+            ),
+            None if active.is_some() => return Err(transaction_unavailable()),
+            None => None,
+        };
+        let _write_guard = if txn_branch.is_none() {
+            Some(
+                self.service
+                    .lock_existing_kb_cancellable(&p.kb_id, Some(&context.ct))
+                    .await
+                    .map_err(into_err)?,
+            )
+        } else {
+            None
+        };
+        self.service
+            .require_current_profile(&p.kb_id)
+            .map_err(into_err)?;
         let res = self
             .service
-            .add_raw_source(&p.kb_id, p.source.into(), None)
+            .add_raw_source_cancelled_by(
+                &p.kb_id,
+                p.source.into(),
+                txn_branch.as_deref(),
+                Some(&context.ct),
+            )
             .await
             .map_err(into_err)?;
         ok_json(&serde_json::json!({
@@ -1058,7 +1318,11 @@ impl KnowledgeServer {
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         let kb_id = self.kb_id_or_primary(p.kb_id, Some(&context))?;
-        let g = self.service.get_graph(&kb_id).map_err(into_err)?;
+        let g = self
+            .service
+            .get_graph_async(&kb_id)
+            .await
+            .map_err(into_err)?;
         ok_json(&g)
     }
 
@@ -1087,11 +1351,18 @@ impl KnowledgeServer {
     pub async fn kb_restore_state(
         &self,
         p: Parameters<RestoreParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
+        let slot = self.transactions.slot(&p.kb_id);
+        let active = slot.lock().await;
+        if active.is_some() {
+            return Err(transaction_unavailable());
+        }
         let sha = self
             .service
-            .restore_state(&p.kb_id, &p.commit_sha)
+            .restore_state_async(&p.kb_id, &p.commit_sha, Some(&context.ct))
+            .await
             .map_err(into_err)?;
         ok_json(&serde_json::json!({ "ok": true, "new_commit_sha": sha }))
     }
@@ -1100,53 +1371,82 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_begin_txn",
-        description = "Open a transactional working branch on a knowledge base. Returns the txn handle (branch name) for use with subsequent mutating primitives."
+        description = "Open a knowledge transaction for this session. Returns an opaque txn handle for subsequent write, add-source, append-log, commit, or abort calls."
     )]
     pub async fn kb_begin_txn(
         &self,
         p: Parameters<BeginTxnParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let session_id = Self::transaction_session_id(&context)?;
+        let slot = self.transactions.slot(&p.kb_id);
+        let mut active = slot.lock().await;
+        if active.is_some() {
+            return Err(transaction_unavailable());
+        }
+        let write_guard = self
+            .service
+            .lock_existing_kb_cancellable(&p.kb_id, Some(&context.ct))
+            .await
+            .map_err(into_err)?;
+        self.service
+            .require_current_profile(&p.kb_id)
+            .map_err(into_err)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let repo = crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
         let txn = repo.begin_txn(&p.label).map_err(into_err)?;
-        ok_json(&serde_json::json!({ "txn": txn.branch }))
+        let handle = uuid::Uuid::new_v4().to_string();
+        *active = Some(ActiveKnowledgeTransaction {
+            handle: handle.clone(),
+            session_id,
+            txn,
+            _write_guard: write_guard,
+        });
+        ok_json(&serde_json::json!({ "txn": handle }))
     }
 
     #[tool(
         name = "kb_commit_txn",
-        description = "Squash-merge a transaction branch onto the main history with the given kind/summary/delta."
+        description = "Commit this session's opaque transaction handle as one history entry. A handle is consumed by the first commit or abort attempt."
     )]
     pub async fn kb_commit_txn(
         &self,
         p: Parameters<CommitTxnParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let session_id = Self::transaction_session_id(&context)?;
+        let slot = self.transactions.slot(&p.kb_id);
+        let mut active = slot.lock().await;
+        Self::active_transaction_branch(&active, &p.txn, &session_id)?;
+        let active = active.take().ok_or_else(transaction_unavailable)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let repo = crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
-        let txn = crate::knowledge::git::Txn { branch: p.txn };
         let sha = repo
-            .commit_txn(&txn, p.kind, &p.summary, p.delta.as_deref())
+            .commit_txn(&active.txn, p.kind, &p.summary, p.delta.as_deref())
             .map_err(into_err)?;
         ok_json(&serde_json::json!({ "commit_sha": sha }))
     }
 
     #[tool(
         name = "kb_abort_txn",
-        description = "Discard a transaction branch and restore the working tree to main."
+        description = "Abort this session's opaque transaction handle and restore the working tree. A handle is consumed by the first commit or abort attempt."
     )]
     pub async fn kb_abort_txn(
         &self,
         p: Parameters<AbortTxnParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let session_id = Self::transaction_session_id(&context)?;
+        let slot = self.transactions.slot(&p.kb_id);
+        let mut active = slot.lock().await;
+        Self::active_transaction_branch(&active, &p.txn, &session_id)?;
+        let active = active.take().ok_or_else(transaction_unavailable)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let repo = crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
-        let txn = crate::knowledge::git::Txn { branch: p.txn };
-        repo.abort_txn(&txn).map_err(into_err)?;
+        repo.abort_txn(&active.txn).map_err(into_err)?;
         ok_json(&serde_json::json!({ "ok": true }))
     }
 
@@ -1235,13 +1535,45 @@ impl KnowledgeServer {
     pub async fn kb_append_log(
         &self,
         p: Parameters<AppendLogParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let slot = self.transactions.slot(&p.kb_id);
+        let active = slot.lock().await;
+        let txn_branch = match p.txn.as_deref() {
+            Some(handle) => Some(
+                Self::active_transaction_branch(
+                    &active,
+                    handle,
+                    &Self::transaction_session_id(&context)?,
+                )?
+                .to_string(),
+            ),
+            None if active.is_some() => return Err(transaction_unavailable()),
+            None => None,
+        };
+        let _write_guard = if txn_branch.is_none() {
+            Some(
+                self.service
+                    .lock_existing_kb_cancellable(&p.kb_id, Some(&context.ct))
+                    .await
+                    .map_err(into_err)?,
+            )
+        } else {
+            None
+        };
+        self.service
+            .require_current_profile(&p.kb_id)
+            .map_err(into_err)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
-        let sha =
-            crate::knowledge::log::append(&kb_root, p.kind, &p.summary, p.delta.as_deref(), None)
-                .map_err(into_err)?;
+        let sha = crate::knowledge::log::append(
+            &kb_root,
+            p.kind,
+            &p.summary,
+            p.delta.as_deref(),
+            txn_branch.as_deref(),
+        )
+        .map_err(into_err)?;
         ok_json(&serde_json::json!({ "ok": true, "commit_sha": sha }))
     }
 
@@ -1395,7 +1727,11 @@ impl KnowledgeServer {
         p: Parameters<ExportArchiveParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let _lock = self
+            .service
+            .lock_existing_kb_cancellable(&p.kb_id, None)
+            .await
+            .map_err(into_err)?;
         let bytes = self.service.export_brkb(&p.kb_id).map_err(into_err)?;
         // Issue #56, decision (2b). A MODEL's export of a PRIVATE base is not
         // written where the model asked; it goes to `<knowledge-root>/.exports/`.
@@ -1473,8 +1809,8 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let bytes = std::fs::read(&p.src_path)
-            .map_err(|e| into_err(anyhow::anyhow!("read .brkb '{}': {e}", p.src_path)))?;
+        let bytes = crate::knowledge::brkb::read_archive_path(std::path::Path::new(&p.src_path))
+            .map_err(into_err)?;
         // Issue #56. The second of exactly TWO tools that take a
         // `RequestContext`: the new base's id is chosen by `brkb::import`'s
         // collision loop, so it is not knowable before the call. The importer's
@@ -1542,6 +1878,17 @@ impl KnowledgeServer {
         // `kb_id` by the time this runs; asking again there is free and asking
         // for `source_kb_id` is the half CP1 structurally cannot do.
         let caller = CallerIdentity::from_context(Some(context));
+        let transaction_slot = (!dry_run).then(|| self.transactions.slot(&p.kb_id));
+        let transaction_state = match transaction_slot.as_ref() {
+            Some(slot) => Some(slot.lock().await),
+            None => None,
+        };
+        if transaction_state
+            .as_ref()
+            .is_some_and(|active| active.is_some())
+        {
+            return Err(transaction_unavailable());
+        }
         let report = self
             .service
             .merge_bases(
@@ -1587,11 +1934,10 @@ impl ServerHandler for KnowledgeServer {
         })
     }
 
-    /// Issue #56, design §9.3 B4 as ruled. ONE seam for all twenty-one `kb_*`
-    /// tools, including the EIGHT that take no `RequestContext` and therefore
-    /// cannot learn the caller's capability inside their own body — among them
-    /// `kb_write_page`, `kb_add_raw_source` and `kb_append_log`, i.e. every
-    /// content-bearing write there is.
+    /// Issue #56, design §9.3 B4 as ruled. ONE seam for every `kb_*` tool,
+    /// including handlers that do not otherwise need caller metadata. The
+    /// transaction-aware writes now take a `RequestContext` for session binding,
+    /// but the privacy decision remains here so new write paths cannot bypass it.
     ///
     /// This is `#[tool_handler]`'s generated body plus the gate: the last two
     /// statements are exactly what the macro emitted.
@@ -1616,28 +1962,14 @@ impl ServerHandler for KnowledgeServer {
             // an ABSENT id to the session's primary, because `gated_kb_id`
             // resolves it exactly as the tool will.
             self.assert_kb_reachable(&kb_id, &caller)?;
+            self.assert_transaction_admission(&name, &kb_id, request.arguments.as_ref(), &context)
+                .await?;
             if KB_RATCHETING_TOOLS.contains(&name.as_str()) {
                 // BEFORE the write: a raise that only lands on success leaves
                 // content in a base whose tier never moved if the write panics
                 // or the process dies mid-commit. The failure direction of an
                 // over-raise is a badge the user can see; the failure direction
                 // of an under-raise is silent.
-                //
-                // ⚠ Residual of raising first: a write naming a kb_id that has
-                // no base registers that id at the caller's tier even though the
-                // call then fails, and nothing ever removes it (`forget_tier`
-                // fires on delete, and this base was never created). It is NOT a
-                // new denial-of-service on the id, which is the shape it looks
-                // like: `lock_kb` and `store::write_page` both `create_dir_all`
-                // their way to the target, so the same failed call already
-                // leaves `<root>/<kb_id>/.internal/` behind and `create_base`
-                // bails on "already exists" whatever the tier store says — that
-                // is pre-existing behaviour, independent of #56. And a directory
-                // with no entry already READS private (decision 3), so for a
-                // private caller the entry only makes explicit what `is_private`
-                // was inferring anyway. What it costs is a public caller's
-                // stamp landing on that litter, which discloses nothing because
-                // the failed write left no content.
                 //
                 // Issue #56 DR-26 / Task 50 Step 1. BOTH axes, in one call under
                 // one lock: a write that raised the tier and not the affiliation
@@ -1647,7 +1979,8 @@ impl ServerHandler for KnowledgeServer {
                 // `every_tool_that_ratchets_the_tier_also_records_the_callers_institution`
                 // drives every ratcheting tool through this seam and pins it.
                 self.service
-                    .raise_tier_and_affiliation(&kb_id, caller.private, &caller.affiliation)
+                    .raise_tier_and_affiliation_async(&kb_id, caller.private, &caller.affiliation)
+                    .await
                     .map_err(into_err)?;
             }
             // Issue #56, review round 5. PIN what was checked. Without this the
@@ -1682,7 +2015,31 @@ fn ok_json<T: Serialize>(v: &T) -> Result<CallToolResult, ErrorData> {
 }
 
 fn into_err(e: anyhow::Error) -> ErrorData {
+    if let Some(failure) = e.downcast_ref::<crate::knowledge::git::KnowledgeWriteFailure>() {
+        return ErrorData::internal_error(
+            format!("{e:#}"),
+            Some(serde_json::json!({
+                "phase": failure.phase.as_str(),
+                "commit_sha": failure.commit_sha.as_deref(),
+            })),
+        );
+    }
+    if e.downcast_ref::<crate::knowledge::service::LegacyKnowledgeBaseUnsupported>()
+        .is_some()
+        || e.downcast_ref::<crate::knowledge::service::LegacyKnowledgeArchiveUnsupported>()
+            .is_some()
+        || e.downcast_ref::<crate::knowledge::service::LegacyKnowledgeRestoreUnsupported>()
+            .is_some()
+        || e.downcast_ref::<crate::knowledge::brkb::InvalidKnowledgeArchive>()
+            .is_some()
+    {
+        return ErrorData::invalid_request(e.to_string(), None);
+    }
     ErrorData::internal_error(format!("{e:#}"), None)
+}
+
+fn transaction_unavailable() -> ErrorData {
+    ErrorData::invalid_request(TRANSACTION_UNAVAILABLE, None)
 }
 
 /// "That is not one of your knowledge bases", built from the ids the caller may
@@ -1714,6 +2071,7 @@ fn not_a_member(kb_id: &str, visible: &[String], session_id: Option<&str>) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::knowledge::git::GitRepo;
     // Every page these tests write goes through the one fixture builder, so
     // that when the page format tightens the change lands there and not in
     // twenty tests that are about tiers and paths (DR-19).
@@ -1737,6 +2095,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn committed_write_failures_include_the_durable_phase_and_sha_on_the_wire() {
+        let error = into_err(
+            crate::knowledge::git::KnowledgeWriteFailure::committed(
+                "knowledge transaction",
+                "abc123",
+                anyhow::anyhow!("injected cleanup failure"),
+            )
+            .into(),
+        );
+        let data = error.data.as_ref().expect("phase-aware error data");
+        assert_eq!(data["phase"], "committed");
+        assert_eq!(data["commit_sha"], "abc123");
+        assert!(error.message.contains("must not be retried"), "{error:?}");
+    }
+
     /// A private caller with no stated affiliation — what the unit tests below
     /// mean by "the unfiltered view".
     ///
@@ -1756,6 +2130,7 @@ mod tests {
             tool_router: KnowledgeServer::tool_router(),
             service,
             instructions: String::new(),
+            transactions: KnowledgeTransactionCoordinator::default(),
         }
     }
 
@@ -2036,17 +2411,20 @@ mod tests {
         let server = server_with_root(tmp.path().to_path_buf());
         server.service.create_base("kb", "KB", None)?;
 
-        let err = server
-            .kb_write_page(rmcp::handler::server::wrapper::Parameters(
-                WritePageParams {
-                    kb_id: "kb".to_string(),
-                    path: "raw/x/source.md".to_string(),
-                    content: "body".to_string(),
-                    commit_message: "try to edit a raw source".to_string(),
-                },
-            ))
-            .await
-            .expect_err("raw/ writes must be rejected");
+        let err = call_tool_as_session(
+            &server,
+            "kb_write_page",
+            serde_json::json!({
+                "kb_id": "kb",
+                "path": "raw/x/source.md",
+                "content": "body",
+                "commit_message": "try to edit a raw source",
+            }),
+            Some("session-a"),
+            Private,
+        )
+        .await
+        .expect_err("raw/ writes must be rejected");
 
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(
@@ -2066,6 +2444,292 @@ mod tests {
             desc.contains("knowledge/") && desc.contains("read-only"),
             "kb_write_page description must state the path contract, got: {desc}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn committed_page_refresh_failure_removes_old_cache_and_retry_does_not_recommit(
+    ) -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let server = server_with_root(tmp.path().to_path_buf());
+        server.service.create_base("kb", "KB", None)?;
+        let kb = crate::knowledge::paths::kb_root(server.service.root(), "kb");
+        crate::knowledge::store::write_page(
+            &kb,
+            "knowledge/concept/a.md",
+            &valid_page("concept", "a", "A"),
+            "add A",
+            None,
+        )?;
+        server.service.rebuild_graph_cache("kb")?;
+        crate::knowledge::graph::fail_cache_writes(&kb, 1);
+        let params = serde_json::json!({
+            "kb_id": "kb",
+            "path": "knowledge/concept/b.md",
+            "content": valid_page("concept", "b", "B"),
+            "commit_message": "add B",
+        });
+
+        let error = call_tool_as_session(
+            &server,
+            "kb_write_page",
+            params.clone(),
+            Some("session-a"),
+            Private,
+        )
+        .await
+        .expect_err("the injected post-commit refresh must be reported");
+        assert!(error.message.contains("committed in commit"), "{error:?}");
+        assert_eq!(
+            error.data.as_ref().and_then(|data| data["phase"].as_str()),
+            Some("committed")
+        );
+        assert!(
+            error
+                .data
+                .as_ref()
+                .and_then(|data| data["commit_sha"].as_str())
+                .is_some(),
+            "{error:?}"
+        );
+        assert!(kb.join("knowledge/concept/b.md").exists());
+        assert!(
+            !crate::knowledge::graph::cache_path(&kb).exists(),
+            "an older cache survived the failed rebuild"
+        );
+        let history_len = GitRepo::open(&kb)?.log(10)?.len();
+
+        call_tool_as_session(&server, "kb_write_page", params, Some("session-a"), Private)
+            .await
+            .expect("an identical retry reuses the durable page");
+        assert_eq!(GitRepo::open(&kb)?.log(10)?.len(), history_len);
+        assert!(server
+            .service
+            .get_graph("kb")?
+            .nodes
+            .iter()
+            .any(|node| node.path == "knowledge/concept/b.md"));
+        Ok(())
+    }
+
+    async fn begin_transaction_handle(
+        server: &KnowledgeServer,
+        kb_id: &str,
+        session_id: &str,
+    ) -> String {
+        let begin = call_tool_as_session(
+            server,
+            "kb_begin_txn",
+            serde_json::json!({ "kb_id": kb_id, "label": "curate" }),
+            Some(session_id),
+            Private,
+        )
+        .await;
+        json_of(&begin)["txn"]
+            .as_str()
+            .expect("begin returns an opaque handle")
+            .to_string()
+    }
+
+    fn transaction_write_args(kb_id: &str, txn: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "kb_id": kb_id,
+            "path": "knowledge/note/a.md",
+            "content": valid_page("Note", "A", "body"),
+            "commit_message": "write A",
+            "txn": txn,
+        })
+    }
+
+    #[tokio::test]
+    async fn transaction_handles_are_session_bound_opaque_and_non_oracular() {
+        let (server, _tmp, _root) = migrated_server_with_bases(&["kb", "other"]);
+        let handle = begin_transaction_handle(&server, "kb", "session-a").await;
+        uuid::Uuid::parse_str(&handle).expect("the handle is an opaque UUID");
+        assert!(!handle.starts_with("txn/"));
+
+        let wrong_handle = call_tool_as_session(
+            &server,
+            "kb_write_page",
+            transaction_write_args("kb", Some("txn/caller-constructed")),
+            Some("session-a"),
+            Private,
+        )
+        .await
+        .expect_err("caller-constructed branches are not handles");
+        let wrong_session = call_tool_as_session(
+            &server,
+            "kb_write_page",
+            transaction_write_args("kb", Some(&handle)),
+            Some("session-b"),
+            Private,
+        )
+        .await
+        .expect_err("a handle belongs to exactly one session");
+        let wrong_kb = call_tool_as_session(
+            &server,
+            "kb_write_page",
+            transaction_write_args("other", Some(&handle)),
+            Some("session-a"),
+            Private,
+        )
+        .await
+        .expect_err("a handle belongs to exactly one knowledge base");
+        let missing_handle = call_tool_as_session(
+            &server,
+            "kb_write_page",
+            transaction_write_args("kb", None),
+            Some("session-a"),
+            Private,
+        )
+        .await
+        .expect_err("standalone writes cannot enter an active transaction");
+        for error in [&wrong_session, &wrong_kb, &missing_handle] {
+            assert_eq!(error.code, wrong_handle.code);
+            assert_eq!(error.message, wrong_handle.message);
+        }
+        call_tool_as_session(
+            &server,
+            "kb_abort_txn",
+            serde_json::json!({ "kb_id": "kb", "txn": handle }),
+            Some("session-a"),
+            Private,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn transaction_open_refuses_a_legacy_profile_without_retaining_the_lock() {
+        let (server, _tmp, root) = migrated_server_with_bases(&["kb"]);
+        let kb_root = root.join("kb");
+        let mut manifest = crate::knowledge::manifest::load(&kb_root).unwrap();
+        manifest.schema_version = crate::knowledge::types::AUTOMATIC_SCHEMA_CEILING;
+        crate::knowledge::manifest::save(&kb_root, &manifest).unwrap();
+
+        for session_id in ["session-a", "session-b"] {
+            let error = call_tool_as_session(
+                &server,
+                "kb_begin_txn",
+                serde_json::json!({ "kb_id": "kb", "label": "legacy" }),
+                Some(session_id),
+                Private,
+            )
+            .await
+            .expect_err("retired knowledge must not retain a transaction lock");
+            assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+            assert!(error.message.contains("retired pre-OKF"), "{error:?}");
+            assert!(!server.service.kb_queue_is_occupied("kb"));
+        }
+    }
+
+    #[tokio::test]
+    async fn owner_teardown_releases_the_kb_lock_without_a_timeout() -> anyhow::Result<()> {
+        let (server, _tmp, _root) = migrated_server_with_bases(&["kb"]);
+        begin_transaction_handle(&server, "kb", "session-a").await;
+        assert!(server.service.kb_queue_is_occupied("kb"));
+
+        let waiting_service = server.service.clone();
+        let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
+        let waiter = tokio::spawn(async move {
+            let _guard = waiting_service.lock_kb("kb").await?;
+            let _ = acquired_tx.send(());
+            Ok::<_, anyhow::Error>(())
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "a live owner still holds the KB lock"
+        );
+        assert_eq!(
+            server.abort_transactions_for_session("session-b").await?,
+            0,
+            "tearing down another session must not affect the owner"
+        );
+        assert!(!waiter.is_finished());
+
+        assert_eq!(server.abort_transactions_for_session("session-a").await?, 1);
+        tokio::time::timeout(std::time::Duration::from_secs(1), acquired_rx)
+            .await
+            .expect("the abandoned transaction lock must be released")
+            .expect("the lock waiter remains alive");
+        waiter.await??;
+
+        begin_transaction_handle(&server, "kb", "session-b").await;
+        assert!(server.force_abort_transaction("kb").await?);
+        assert!(!server.force_abort_transaction("kb").await?);
+        assert!(!server.service.kb_queue_is_occupied("kb"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn one_handle_drives_all_transactional_writes_and_is_consumed() -> anyhow::Result<()> {
+        let (server, _tmp, root) = migrated_server_with_bases(&["kb"]);
+        let handle = begin_transaction_handle(&server, "kb", "session-a").await;
+        call_tool_as_session(
+            &server,
+            "kb_write_page",
+            transaction_write_args("kb", Some(&handle)),
+            Some("session-a"),
+            Private,
+        )
+        .await?;
+        call_tool_as_session(
+            &server,
+            "kb_add_raw_source",
+            serde_json::json!({
+                "kb_id": "kb",
+                "source": { "kind": "text", "text": "source body", "title": "source" },
+                "txn": handle.clone(),
+            }),
+            Some("session-a"),
+            Private,
+        )
+        .await?;
+        call_tool_as_session(
+            &server,
+            "kb_append_log",
+            serde_json::json!({
+                "kb_id": "kb",
+                "kind": "manual",
+                "summary": "curated",
+                "txn": handle.clone(),
+            }),
+            Some("session-a"),
+            Private,
+        )
+        .await?;
+        call_tool_as_session(
+            &server,
+            "kb_commit_txn",
+            serde_json::json!({
+                "kb_id": "kb",
+                "txn": handle.clone(),
+                "summary": "curated transaction",
+                "kind": "manual",
+            }),
+            Some("session-a"),
+            Private,
+        )
+        .await?;
+
+        assert!(root.join("kb/knowledge/note/a.md").exists());
+        assert_eq!(GitRepo::open(&root.join("kb"))?.log(20)?.len(), 2);
+        let replay = call_tool_as_session(
+            &server,
+            "kb_commit_txn",
+            serde_json::json!({
+                "kb_id": "kb",
+                "txn": handle,
+                "summary": "replay",
+                "kind": "manual",
+            }),
+            Some("session-a"),
+            Private,
+        )
+        .await
+        .expect_err("a terminal call consumes the handle");
+        assert_eq!(replay.message, TRANSACTION_UNAVAILABLE);
         Ok(())
     }
 
@@ -2350,6 +3014,27 @@ mod tests {
         caller: Caller,
         affiliation: &CallerAffiliation,
     ) -> Result<CallToolResult, ErrorData> {
+        call_tool_as_full_with_cancellation(
+            srv,
+            name,
+            args,
+            session_id,
+            caller,
+            affiliation,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+    }
+
+    async fn call_tool_as_full_with_cancellation(
+        srv: &KnowledgeServer,
+        name: &str,
+        args: serde_json::Value,
+        session_id: Option<&str>,
+        caller: Caller,
+        affiliation: &CallerAffiliation,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<CallToolResult, ErrorData> {
         use tokio::io::AsyncReadExt as _;
 
         let (mut client, server_side) = tokio::io::duplex(64 * 1024);
@@ -2381,7 +3066,7 @@ mod tests {
             );
         }
         let context = RequestContext {
-            ct: Default::default(),
+            ct: cancel,
             id: rmcp::model::NumberOrString::Number(1),
             meta,
             extensions: Default::default(),
@@ -2413,6 +3098,22 @@ mod tests {
         }
         let bytes = svc.export_brkb("shipped").unwrap();
         let path = tmp.path().join("shipped.brkb");
+        std::fs::write(&path, &bytes).unwrap();
+        (tmp, path.to_string_lossy().to_string())
+    }
+
+    fn legacy_brkb_fixture() -> (tempfile::TempDir, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_root = tmp.path().join("src-root");
+        std::fs::create_dir_all(&src_root).unwrap();
+        let svc = KnowledgeService::new(src_root.clone());
+        svc.create_base("shipped", "Shipped", None).unwrap();
+        let kb = src_root.join("shipped");
+        let mut manifest = crate::knowledge::manifest::load(&kb).unwrap();
+        manifest.schema_version = crate::knowledge::types::AUTOMATIC_SCHEMA_CEILING;
+        crate::knowledge::manifest::save(&kb, &manifest).unwrap();
+        let bytes = svc.export_brkb("shipped").unwrap();
+        let path = tmp.path().join("legacy.brkb");
         std::fs::write(&path, &bytes).unwrap();
         (tmp, path.to_string_lossy().to_string())
     }
@@ -2758,6 +3459,50 @@ mod tests {
                 probe.name, probe.ratchets
             );
         }
+    }
+
+    #[tokio::test]
+    async fn missing_base_mutations_leave_no_directory_lock_or_classification_residue() {
+        for probe in KB_TOOL_PROBES.iter().filter(|probe| probe.ratchets) {
+            let (srv, _tmp, root) = migrated_server_with_bases(&[]);
+            let result = call_tool_as(&srv, probe.name, probe.args_for("retryable"), Private).await;
+            assert!(
+                result.is_err(),
+                "{} unexpectedly accepted a missing base",
+                probe.name
+            );
+            assert!(
+                !root.join("retryable").exists(),
+                "{} created a partial base or write lock",
+                probe.name
+            );
+            assert!(
+                !crate::knowledge::tier::has_metadata_unlocked(&root, "retryable").unwrap(),
+                "{} classified an id that does not exist",
+                probe.name
+            );
+            assert!(srv.service.list_bases().unwrap().is_empty());
+            srv.service
+                .create_base("retryable", "Retryable", None)
+                .unwrap_or_else(|error| {
+                    panic!("{} left the id uncreatable: {error:#}", probe.name)
+                });
+        }
+
+        let (srv, _tmp, root) = migrated_server_with_bases(&[]);
+        let result = call_tool_as(
+            &srv,
+            "kb_begin_txn",
+            serde_json::json!({ "kb_id": "retryable", "label": "missing" }),
+            Private,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(!root.join("retryable").exists());
+        assert!(!crate::knowledge::tier::has_metadata_unlocked(&root, "retryable").unwrap());
+        srv.service
+            .create_base("retryable", "Retryable", None)
+            .unwrap();
     }
 
     /// The end-to-end shape of DR-26 for knowledge bases, through CP1: a base
@@ -3169,33 +3914,34 @@ mod tests {
         assert_eq!(before, after);
     }
 
-    /// DR-26. A base below the OKF generation is checked against nothing and
-    /// says so — `format: null` — rather than reporting one error per page for a
-    /// format this build has promised never to migrate it to.
+    /// A retired pre-OKF base must never be treated as an empty OKF validation.
+    /// Startup purges these bases; this boundary catches an out-of-band stale
+    /// store before an agent can extend it with more legacy pages.
     #[tokio::test]
-    async fn validate_reports_nothing_for_a_legacy_base_and_says_why() {
+    async fn validate_refuses_a_legacy_base() {
         let (srv, _tmp, root) = migrated_server_with_bases(&["old"]);
         let kb = root.join("old");
         let mut m = crate::knowledge::manifest::load(&kb).unwrap();
         m.schema_version = 1;
         crate::knowledge::manifest::save(&kb, &m).unwrap();
 
-        let out = json_of(
-            &call_tool_as(
-                &srv,
-                "kb_validate_page",
-                serde_json::json!({
-                    "kb_id": "old",
-                    "path": "knowledge/a.md",
-                    "content": "---\ntitle: A\nkind: entity\n---\n\nbody\n",
-                }),
-                Public,
-            )
-            .await,
+        let out = call_tool_as(
+            &srv,
+            "kb_validate_page",
+            serde_json::json!({
+                "kb_id": "old",
+                "path": "knowledge/a.md",
+                "content": "---\ntitle: A\nkind: entity\n---\n\nbody\n",
+            }),
+            Public,
+        )
+        .await;
+        assert!(out.is_err(), "{}", rendered(&out));
+        assert!(
+            rendered(&out).contains("retired pre-OKF"),
+            "{}",
+            rendered(&out)
         );
-        assert_eq!(out["format"], serde_json::Value::Null, "{out}");
-        assert_eq!(out["ok"], true);
-        assert_eq!(out["diagnostics"]["total"], 0);
     }
 
     /// `kb_lint` exists as a tool at all, and answers about the base rather than
@@ -3264,6 +4010,160 @@ mod tests {
             before,
             crate::knowledge::store::list_pages(&root.join("lit"), None).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn kb_lint_reauthorizes_after_waiting_for_the_kb_lock() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["lit"]);
+        let private_writer = KnowledgeService::new(root.clone());
+        let writer_lock = private_writer.lock_kb("lit").await.unwrap();
+
+        let lint_server = srv.clone();
+        let lint = tokio::spawn(async move {
+            call_tool_as(
+                &lint_server,
+                "kb_lint",
+                serde_json::json!({"kb_id": "lit"}),
+                Public,
+            )
+            .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while !srv.service.kb_queue_is_occupied("lit") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("lint did not reach the cross-process KB lock wait");
+
+        private_writer
+            .raise_tier_and_affiliation("lit", true, &CallerAffiliation::Unstated)
+            .unwrap();
+        crate::knowledge::store::write_page(
+            &root.join("lit"),
+            "knowledge/observation/private.md",
+            "---\ntype: Observation\nidentifier: Private note\n---\n\nprivate\n",
+            "private writer",
+            None,
+        )
+        .unwrap();
+        drop(writer_lock);
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), lint)
+            .await
+            .expect("lint did not resume after the writer released the KB lock")
+            .unwrap();
+        assert!(
+            is_privacy_refusal(&result),
+            "public lint read a base that became private while queued: {}",
+            rendered(&result)
+        );
+    }
+
+    #[tokio::test]
+    async fn kb_lint_waits_until_a_partial_transaction_is_gone() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&[]);
+        call_tool_as(
+            &srv,
+            "kb_create_base",
+            serde_json::json!({ "id": "lit", "name": "Lit", "format": "biookf" }),
+            Public,
+        )
+        .await
+        .unwrap();
+
+        let lock = srv.service.lock_kb("lit").await.unwrap();
+        let kb_root = root.join("lit");
+        let repo = GitRepo::open(&kb_root).unwrap();
+        let txn = repo.begin_txn("partial-lint-fixture").unwrap();
+        crate::knowledge::store::write_page(
+            &kb_root,
+            "knowledge/molecule/transient.md",
+            "---\ntype: Molecules\nidentifier: Transient\n---\n\n# Transient\n",
+            "partial transaction page",
+            Some(&txn.branch),
+        )
+        .unwrap();
+
+        let lint_server = srv.clone();
+        let mut lint = tokio::spawn(async move {
+            call_tool_as(
+                &lint_server,
+                "kb_lint",
+                serde_json::json!({"kb_id": "lit"}),
+                Public,
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut lint)
+                .await
+                .is_err(),
+            "kb_lint bypassed the KB transaction queue"
+        );
+
+        repo.abort_txn(&txn).unwrap();
+        drop(lock);
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), lint)
+            .await
+            .expect("lint should resume after the transaction lock is released")
+            .unwrap();
+        let out = json_of(&result);
+        let rules = out["diagnostics"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|diagnostic| diagnostic["rule"].as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            !rules.contains(&crate::knowledge::biookf::lint::RULE_TYPE_INVALID),
+            "lint observed the aborted transaction's transient page: {out}"
+        );
+        assert!(
+            !kb_root.join("knowledge/molecule/transient.md").exists(),
+            "the transaction fixture did not abort cleanly"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_kb_lint_while_it_waits_for_the_transaction_queue_returns() {
+        let (srv, _tmp, _root) = migrated_server_with_bases(&["lit"]);
+        let lock = srv.service.lock_kb("lit").await.unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let call_cancel = cancel.clone();
+        let lint_server = srv.clone();
+        let mut lint = tokio::spawn(async move {
+            call_tool_as_full_with_cancellation(
+                &lint_server,
+                "kb_lint",
+                serde_json::json!({"kb_id": "lit"}),
+                None,
+                Public,
+                &CallerAffiliation::Unstated,
+                call_cancel,
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut lint)
+                .await
+                .is_err(),
+            "kb_lint completed without waiting for the held KB lock"
+        );
+        cancel.cancel();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), lint)
+            .await
+            .expect("cancellation should interrupt the KB lock wait")
+            .unwrap();
+        let error = result.expect_err("a cancelled lint must not return a report");
+        assert!(error.message.contains("cancelled"), "{error:?}");
+
+        drop(lock);
     }
 
     /// A KB-less `kb_lint` lints the session's primary, like every other
@@ -3383,6 +4283,56 @@ mod tests {
             &root,
             &imported_kb_id(&out)
         ));
+    }
+
+    #[tokio::test]
+    async fn kb_import_reports_a_legacy_archive_as_invalid_input() {
+        let (srv, _tmp, _root) = migrated_server_with_bases(&["default"]);
+        let (_fixture, path) = legacy_brkb_fixture();
+        let out = call_tool_as(
+            &srv,
+            "kb_import",
+            serde_json::json!({ "src_path": path }),
+            Public,
+        )
+        .await;
+        let error = out.expect_err("the retired archive must be refused");
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(error.message.contains("legacy pre-OKF"), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn kb_import_bounds_the_selected_file_before_reading_it() {
+        let (srv, _tmp, _root) = migrated_server_with_bases(&["default"]);
+        let missing = call_tool_as(
+            &srv,
+            "kb_import",
+            serde_json::json!({ "src_path": "/path/that/does/not/exist.brkb" }),
+            Public,
+        )
+        .await
+        .expect_err("an invalid selected path must be a caller-correctable error");
+        assert_eq!(missing.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(
+            missing.message.contains("cannot open archive"),
+            "{missing:?}"
+        );
+
+        let archive = tempfile::NamedTempFile::new().unwrap();
+        archive
+            .as_file()
+            .set_len(crate::knowledge::brkb::MAX_ARCHIVE_FILE_BYTES + 1)
+            .unwrap();
+        let error = call_tool_as(
+            &srv,
+            "kb_import",
+            serde_json::json!({ "src_path": archive.path() }),
+            Public,
+        )
+        .await
+        .expect_err("a sparse over-limit archive must be refused before read-to-end");
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(error.message.contains("128 MiB"), "{error:?}");
     }
 
     #[tokio::test]

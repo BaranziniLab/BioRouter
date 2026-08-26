@@ -224,11 +224,41 @@ pub struct BridgeGrant {
 /// | Claude Code | `timeout` (**milliseconds**) in the `--mcp-config` server entry. Its own help calls it a "hard wall-clock limit per call; progress notifications do not extend it". |
 /// | Codex | `mcp_servers.<name>.tool_timeout_sec` (**seconds**) in the `thread/start` config override. |
 ///
-/// Deliberately above the providers' 30-minute turn ceiling, so the bridge is
-/// never the first layer to abandon a valid tool call. Parking tools return
-/// inside [`child_tool_call_budget`], and delegation returns a background handle
-/// immediately for the parent to supervise through the workspace collectors.
-pub const CHILD_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(31 * 60);
+/// This is a transport safeguard, not a delegated-turn lifetime. Delegation
+/// returns a background handle immediately, and every bridged parking tool must
+/// return within [`child_tool_call_budget`], so this deadline cannot end a child
+/// the parent is supervising. Coding-agent turns themselves are unbounded by
+/// default; see [`super::turn_timeout`].
+///
+/// Operators can raise this with
+/// `BIOROUTER_CODING_AGENT_TOOL_TIMEOUT_SECS`. Values below the parking budget
+/// plus a 30-second response margin are clamped upward: a configuration typo
+/// must not revive the vendor CLIs' short hidden deadline for `workspace_watch`.
+pub const DEFAULT_CHILD_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(31 * 60);
+pub const MAX_CHILD_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+pub const CHILD_TOOL_CALL_TIMEOUT_CONFIG_KEY: &str = "BIOROUTER_CODING_AGENT_TOOL_TIMEOUT_SECS";
+
+fn child_tool_call_timeout_from_seconds(configured: Option<u64>) -> Duration {
+    let configured = configured
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_CHILD_TOOL_CALL_TIMEOUT);
+    configured.clamp(
+        child_tool_call_budget() + Duration::from_secs(30),
+        MAX_CHILD_TOOL_CALL_TIMEOUT,
+    )
+}
+
+pub fn child_tool_call_timeout() -> Duration {
+    let configured = crate::config::Config::global()
+        .get_param::<u64>(CHILD_TOOL_CALL_TIMEOUT_CONFIG_KEY)
+        .ok();
+    child_tool_call_timeout_from_seconds(configured)
+}
+
+pub fn child_tool_call_timeout_millis() -> u64 {
+    u64::try_from(child_tool_call_timeout().as_millis()).unwrap_or(u64::MAX)
+}
 
 /// How long a bridged parking call may spend before it must answer.
 ///
@@ -251,6 +281,28 @@ pub fn child_tool_call_budget() -> Duration {
 fn approval_ttl() -> Duration {
     child_tool_call_budget().saturating_sub(Duration::from_secs(30))
 }
+
+const APPROVAL_UNAVAILABLE_WITHOUT_SESSION_CODE: &str = "approval_unavailable_without_session";
+
+#[derive(Debug)]
+struct ApprovalUnavailableWithoutSession {
+    tool_name: String,
+}
+
+impl std::fmt::Display for ApprovalUnavailableWithoutSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{APPROVAL_UNAVAILABLE_WITHOUT_SESSION_CODE}: `{}` requires your approval, but this \
+             workflow has no chat session that can securely display and resolve an approval card. \
+             Start the operation from a Biorouter chat and approve it there. The tool was not \
+             run; do not retry it in this reply.",
+            self.tool_name
+        )
+    }
+}
+
+impl std::error::Error for ApprovalUnavailableWithoutSession {}
 
 tokio::task_local! {
     /// How long the bridged tool call running on this task may take (#110).
@@ -527,6 +579,22 @@ impl BridgeGrant {
         let Ok(call) = pending.tool_call.as_ref() else {
             return Err(format!("`{name}` needs approval but is not a usable call."));
         };
+
+        // An approval is an authorization capability, so it must have an exact
+        // session to display it and accept the answer. Unscoped publication is
+        // safe for generic elicitations whose origin genuinely cannot be known,
+        // but not for a tool approval: a Knowledge-view workflow has no agent
+        // loop to surface the card, and allowing any unrelated session to claim
+        // it would cross the permission boundary. Refuse before minting an id or
+        // publishing anything, rather than parking until the approval TTL.
+        let Some(session_scope) = (!self.session.id.is_empty()).then_some(self.session.id.as_str())
+        else {
+            return Err(ApprovalUnavailableWithoutSession {
+                tool_name: name.to_string(),
+            }
+            .to_string());
+        };
+
         let arguments = call.arguments.clone().unwrap_or_default();
         let request = UserActionRequest::ToolApproval(ToolApprovalRequest {
             tool_name: call.name.to_string(),
@@ -543,16 +611,8 @@ impl BridgeGrant {
 
         // Owned by the grant's nonce so the lease can release it, scoped to the
         // session so only that session's loop may surface it (#40).
-        //
-        // ⚠ An EMPTY session id is `None`, not `Some("")`. A workflow with no
-        // chat behind it — a scheduled knowledge macro, a `Session::default()` —
-        // carries one, and `Some("")` would key a queue on the empty string that
-        // every such run in the process would share, which is #40's
-        // cross-session leak with a different key. `None` is the unscoped
-        // fallback the manager already has for exactly this case.
-        let session_scope = (!self.session.id.is_empty()).then_some(self.session.id.as_str());
         let parked = PendingUserActions::global().park(
-            session_scope,
+            Some(session_scope),
             (!self.nonce.is_empty()).then_some(self.nonce.as_str()),
             request,
         );
@@ -2021,6 +2081,80 @@ mod tests {
         .expect("an approval card must be published for the session")
     }
 
+    /// A Knowledge-view workflow has no agent loop to render an approval card.
+    /// It must fail at the approval boundary rather than publishing an unscoped
+    /// capability that another session could claim or waiting out the TTL.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unscoped_approval_fails_closed_without_publishing_or_running() {
+        const PROBE_TOOL: &str = "approval_probe__write";
+
+        let dispatcher = Arc::new(RecordingBridgeDispatch::default());
+        let hooks = no_hooks();
+        let mut inspections = inspections_with(&hooks, false);
+        inspections.add_inspector(Box::new(
+            crate::security::sensitive_ops::SensitiveOpsInspector,
+        ));
+        let grant = BridgeGrant::new(
+            Session::default(),
+            BioRouterMode::Auto,
+            Arc::clone(&dispatcher) as Arc<dyn BridgeToolDispatch>,
+            Arc::new(inspections),
+            test_capability(),
+            vec![Tool::new(
+                PROBE_TOOL,
+                "test approval probe",
+                serde_json::Map::new(),
+            )],
+            Conversation::new_unvalidated(vec![]),
+            None,
+            hooks,
+            None,
+            Arc::new(ToolRiskRegistry::new()),
+        );
+
+        let refusal = tokio::time::timeout(
+            Duration::from_secs(1),
+            grant.call(CallToolRequestParams {
+                name: PROBE_TOOL.to_string().into(),
+                arguments: Some(
+                    serde_json::json!({
+                        "path": "/etc/biorouter-approval-probe",
+                        "content": "must never be written",
+                    })
+                    .as_object()
+                    .expect("an object")
+                    .clone(),
+                ),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await
+        .expect("an unroutable approval must fail immediately, not at its TTL")
+        .expect_err("an unscoped workflow must not run an approval-gated call");
+
+        assert!(
+            refusal.starts_with(APPROVAL_UNAVAILABLE_WITHOUT_SESSION_CODE),
+            "the refusal must carry a stable typed code: {refusal}"
+        );
+        assert!(
+            refusal.contains("Start the operation from a Biorouter chat")
+                && refusal.contains("The tool was not run"),
+            "the refusal must tell the user how to obtain approval safely: {refusal}"
+        );
+        assert!(
+            dispatcher.calls.lock().expect("the calls lock").is_empty(),
+            "an unroutable approval must never reach the dispatcher"
+        );
+
+        assert!(
+            !crate::action_required_manager::ActionRequiredManager::global()
+                .has_unscoped_tool_confirmation(PROBE_TOOL),
+            "an unscoped workflow must not publish a tool-confirmation card"
+        );
+    }
+
     /// The whole of #107: a bridged call that needs approval raises a real card,
     /// parks, and RUNS once the user allows it.
     ///
@@ -2042,7 +2176,8 @@ mod tests {
 
         let id = approval_card_id(&session_id).await;
         assert_eq!(
-            PendingUserActions::global().resolve(
+            PendingUserActions::global().resolve_in_session(
+                &session_id,
                 &id,
                 UserActionOutcome::Approved {
                     permission: crate::permission::Permission::AllowOnce,
@@ -2134,7 +2269,8 @@ mod tests {
         });
 
         let id = approval_card_id(&session_id).await;
-        PendingUserActions::global().resolve(
+        PendingUserActions::global().resolve_in_session(
+            &session_id,
             &id,
             UserActionOutcome::Denied {
                 permission: crate::permission::Permission::DenyOnce,
@@ -2262,6 +2398,28 @@ mod tests {
         assert!(
             approval_ttl() >= Duration::from_secs(30),
             "a window this short is not a decision, it is a race"
+        );
+    }
+
+    #[test]
+    fn tool_transport_timeout_cannot_undercut_a_watching_call() {
+        let minimum = child_tool_call_budget() + Duration::from_secs(30);
+        assert_eq!(
+            child_tool_call_timeout_from_seconds(Some(1)),
+            minimum,
+            "an explicit typo must not make workspace_watch fail in the transport"
+        );
+        assert_eq!(
+            child_tool_call_timeout_from_seconds(None),
+            DEFAULT_CHILD_TOOL_CALL_TIMEOUT
+        );
+        assert_eq!(
+            child_tool_call_timeout_from_seconds(Some(3600)),
+            Duration::from_secs(3600)
+        );
+        assert_eq!(
+            child_tool_call_timeout_from_seconds(Some(u64::MAX)),
+            MAX_CHILD_TOOL_CALL_TIMEOUT
         );
     }
 

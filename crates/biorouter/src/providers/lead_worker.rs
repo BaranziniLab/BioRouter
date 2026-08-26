@@ -1,14 +1,18 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::ops::Deref;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use super::base::{
     LeadWorkerProviderTrait, MessageStream, Provider, ProviderMetadata, ProviderSteerReceiver,
     ProviderUsage,
 };
 use super::errors::ProviderError;
+use super::provider_binding::{
+    model_without_restore_marker as strip_restore_marker, ProviderRestoreBinding,
+    RESTORE_CONFIG_KEY,
+};
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
 use crate::privacy::affiliation::ModelAffiliation;
@@ -16,24 +20,136 @@ use crate::privacy::ProviderTier;
 use rmcp::model::Tool;
 use rmcp::model::{Content, RawContent};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LeadWorkerRoutingState {
+    #[serde(default)]
+    pub(crate) turn_count: usize,
+    #[serde(default)]
+    pub(crate) failure_count: usize,
+    #[serde(default)]
+    pub(crate) in_fallback_mode: bool,
+    #[serde(default)]
+    pub(crate) fallback_remaining: usize,
+}
+
+/// A tagged restore recipe. The version is part of the variant name so an older
+/// binary rejects a shape it cannot reproduce instead of silently using the lead
+/// for both halves.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum PersistedProviderConfig {
+    LeadWorkerV2 {
+        lead: ProviderRestoreBinding,
+        worker: ProviderRestoreBinding,
+        lead_turns: usize,
+        failure_threshold: usize,
+        fallback_turns: usize,
+        config_generation: String,
+        #[serde(default)]
+        routing_state: LeadWorkerRoutingState,
+    },
+}
+
+impl PersistedProviderConfig {
+    pub(crate) fn from_model_config(model: &ModelConfig) -> Result<Option<Self>> {
+        let Some(value) = model
+            .request_params
+            .as_ref()
+            .and_then(|params| params.get(RESTORE_CONFIG_KEY))
+        else {
+            return Ok(None);
+        };
+
+        serde_json::from_value(value.clone())
+            .context("invalid persisted provider configuration")
+            .and_then(|persisted: Self| {
+                let Self::LeadWorkerV2 { lead, worker, .. } = &persisted;
+                lead.validate()?;
+                worker.validate()?;
+                Ok(persisted)
+            })
+            .map(Some)
+    }
+
+    fn with_routing_state(mut self, state: LeadWorkerRoutingState) -> Self {
+        let Self::LeadWorkerV2 { routing_state, .. } = &mut self;
+        *routing_state = state;
+        self
+    }
+
+    fn with_temperature(mut self, temperature: f32) -> Self {
+        let Self::LeadWorkerV2 { lead, worker, .. } = &mut self;
+        lead.model_mut().temperature = Some(temperature);
+        worker.model_mut().temperature = Some(temperature);
+        self
+    }
+
+    fn for_new_session(mut self) -> Self {
+        let Self::LeadWorkerV2 {
+            config_generation, ..
+        } = &mut self;
+        *config_generation = uuid::Uuid::new_v4().to_string();
+        self
+    }
+
+    fn to_model_config(&self) -> ModelConfig {
+        let Self::LeadWorkerV2 { lead, .. } = self;
+        let mut model = lead.model().clone();
+        model
+            .request_params
+            .get_or_insert_with(Default::default)
+            .insert(
+                RESTORE_CONFIG_KEY.to_string(),
+                serde_json::to_value(self)
+                    .expect("lead/worker restore configuration must serialize"),
+            );
+        model
+    }
+}
+
+pub(crate) fn model_config_without_restore_marker(model: ModelConfig) -> ModelConfig {
+    strip_restore_marker(model)
+}
+
+pub(crate) fn model_config_with_composite_temperature(
+    mut model: ModelConfig,
+    temperature: f32,
+) -> Result<ModelConfig> {
+    let persisted = PersistedProviderConfig::from_model_config(&model)?;
+    model.temperature = Some(temperature);
+    Ok(match persisted {
+        Some(persisted) => persisted.with_temperature(temperature).to_model_config(),
+        None => model,
+    })
+}
+
+/// Copy a composite's current routing snapshot into a distinct session binding.
+///
+/// The provider factory reconstructs both component providers from this recipe,
+/// so the new session gets its own provider-local state as well as its own
+/// lead/worker counters. A fresh generation keeps each session's conditional
+/// snapshot writes scoped to the binding that its row actually describes.
+pub(crate) fn model_config_for_session_fork(model: &ModelConfig) -> Result<Option<ModelConfig>> {
+    Ok(PersistedProviderConfig::from_model_config(model)?
+        .map(|persisted| persisted.for_new_session().to_model_config()))
+}
+
 /// A provider that switches between a lead model and a worker model based on turn count
 /// and can fallback to lead model on consecutive failures
 ///
-/// `Clone` shares state rather than copying it: every field is either an `Arc`
-/// or a `Copy` scalar, so a clone observes and updates the *same* turn counter
-/// and fallback flags. That is what lets the streaming path keep the rotation
-/// accounting — see `stream`.
+/// `Clone` shares the routing-state lock, so every clone observes and updates
+/// the same counters and fallback flags. The restore recipe is immutable and
+/// contains only provider/model settings plus those non-secret counters.
 #[derive(Clone)]
 pub struct LeadWorkerProvider {
     lead_provider: Arc<dyn Provider>,
     worker_provider: Arc<dyn Provider>,
+    persisted_provider_config: PersistedProviderConfig,
     lead_turns: usize,
-    turn_count: Arc<Mutex<usize>>,
-    failure_count: Arc<Mutex<usize>>,
     max_failures_before_fallback: usize,
     fallback_turns: usize,
-    in_fallback_mode: Arc<Mutex<bool>>,
-    fallback_remaining: Arc<Mutex<usize>>,
+    routing_state: Arc<Mutex<LeadWorkerRoutingState>>,
 }
 
 impl LeadWorkerProvider {
@@ -48,17 +164,13 @@ impl LeadWorkerProvider {
         worker_provider: Arc<dyn Provider>,
         lead_turns: Option<usize>,
     ) -> Self {
-        Self {
+        Self::new_with_settings(
             lead_provider,
             worker_provider,
-            lead_turns: lead_turns.unwrap_or(3),
-            turn_count: Arc::new(Mutex::new(0)),
-            failure_count: Arc::new(Mutex::new(0)),
-            max_failures_before_fallback: 2, // Fallback after 2 consecutive failures
-            fallback_turns: 2,               // Use lead model for 2 turns when in fallback mode
-            in_fallback_mode: Arc::new(Mutex::new(false)),
-            fallback_remaining: Arc::new(Mutex::new(0)),
-        }
+            lead_turns.unwrap_or(3),
+            2,
+            2,
+        )
     }
 
     /// Create a new LeadWorkerProvider with custom settings
@@ -76,53 +188,77 @@ impl LeadWorkerProvider {
         failure_threshold: usize,
         fallback_turns: usize,
     ) -> Self {
-        Self {
+        Self::new_with_settings_and_state(
             lead_provider,
             worker_provider,
             lead_turns,
-            turn_count: Arc::new(Mutex::new(0)),
-            failure_count: Arc::new(Mutex::new(0)),
+            failure_threshold,
+            fallback_turns,
+            uuid::Uuid::new_v4().to_string(),
+            LeadWorkerRoutingState::default(),
+        )
+    }
+
+    pub(crate) fn new_with_settings_and_state(
+        lead_provider: Arc<dyn Provider>,
+        worker_provider: Arc<dyn Provider>,
+        lead_turns: usize,
+        failure_threshold: usize,
+        fallback_turns: usize,
+        config_generation: String,
+        routing_state: LeadWorkerRoutingState,
+    ) -> Self {
+        let persisted_provider_config = PersistedProviderConfig::LeadWorkerV2 {
+            lead: lead_provider.restore_binding(),
+            worker: worker_provider.restore_binding(),
+            lead_turns,
+            failure_threshold,
+            fallback_turns,
+            config_generation,
+            routing_state,
+        };
+
+        Self {
+            lead_provider,
+            worker_provider,
+            persisted_provider_config,
+            lead_turns,
             max_failures_before_fallback: failure_threshold,
             fallback_turns,
-            in_fallback_mode: Arc::new(Mutex::new(false)),
-            fallback_remaining: Arc::new(Mutex::new(0)),
+            routing_state: Arc::new(Mutex::new(routing_state)),
         }
     }
 
     /// Reset the turn counter and failure tracking (useful for new conversations)
     pub async fn reset_turn_count(&self) {
-        let mut count = self.turn_count.lock().await;
-        *count = 0;
-        let mut failures = self.failure_count.lock().await;
-        *failures = 0;
-        let mut fallback = self.in_fallback_mode.lock().await;
-        *fallback = false;
-        let mut remaining = self.fallback_remaining.lock().await;
-        *remaining = 0;
+        *self.routing_state.lock().unwrap() = LeadWorkerRoutingState::default();
     }
 
     /// Get the current turn count
     pub async fn get_turn_count(&self) -> usize {
-        *self.turn_count.lock().await
+        self.routing_state.lock().unwrap().turn_count
     }
 
     /// Get the current failure count
     pub async fn get_failure_count(&self) -> usize {
-        *self.failure_count.lock().await
+        self.routing_state.lock().unwrap().failure_count
     }
 
     /// Check if currently in fallback mode
     pub async fn is_in_fallback_mode(&self) -> bool {
-        *self.in_fallback_mode.lock().await
+        self.routing_state.lock().unwrap().in_fallback_mode
+    }
+
+    fn routing_state(&self) -> LeadWorkerRoutingState {
+        *self.routing_state.lock().unwrap()
     }
 
     /// Get the currently active provider based on turn count and fallback state
-    async fn get_active_provider(&self) -> Arc<dyn Provider> {
-        let count = *self.turn_count.lock().await;
-        let in_fallback = *self.in_fallback_mode.lock().await;
+    fn get_active_provider(&self) -> Arc<dyn Provider> {
+        let state = self.routing_state();
 
         // Use lead provider if we're in initial turns OR in fallback mode
-        if count < self.lead_turns || in_fallback {
+        if state.turn_count < self.lead_turns || state.in_fallback_mode {
             Arc::clone(&self.lead_provider)
         } else {
             Arc::clone(&self.worker_provider)
@@ -138,31 +274,25 @@ impl LeadWorkerProvider {
             Ok((message, _usage)) => {
                 // Check for task-level failures in the response
                 let has_task_failure = self.detect_task_failures(message).await;
+                let mut state = self.routing_state.lock().unwrap();
 
                 if has_task_failure {
                     // Task failure detected - increment failure count
-                    let mut failures = self.failure_count.lock().await;
-                    *failures += 1;
-
-                    let failure_count = *failures;
-                    let turn_count = *self.turn_count.lock().await;
+                    state.failure_count += 1;
 
                     tracing::warn!(
                         "Task failure detected in response (failure count: {})",
-                        failure_count
+                        state.failure_count
                     );
 
                     // Check if we should trigger fallback
-                    if turn_count >= self.lead_turns
-                        && !*self.in_fallback_mode.lock().await
-                        && failure_count >= self.max_failures_before_fallback
+                    if state.turn_count >= self.lead_turns
+                        && !state.in_fallback_mode
+                        && state.failure_count >= self.max_failures_before_fallback
                     {
-                        let mut in_fallback = self.in_fallback_mode.lock().await;
-                        let mut fallback_remaining = self.fallback_remaining.lock().await;
-
-                        *in_fallback = true;
-                        *fallback_remaining = self.fallback_turns;
-                        *failures = 0; // Reset failure count when entering fallback
+                        state.in_fallback_mode = self.fallback_turns > 0;
+                        state.fallback_remaining = self.fallback_turns;
+                        state.failure_count = 0;
 
                         tracing::warn!(
                             "🔄 SWITCHING TO LEAD MODEL: Entering fallback mode after {} consecutive task failures - using lead model for {} turns",
@@ -172,24 +302,19 @@ impl LeadWorkerProvider {
                     }
                 } else {
                     // Success - reset failure count and handle fallback mode
-                    let mut failures = self.failure_count.lock().await;
-                    *failures = 0;
+                    state.failure_count = 0;
 
-                    let mut in_fallback = self.in_fallback_mode.lock().await;
-                    let mut fallback_remaining = self.fallback_remaining.lock().await;
-
-                    if *in_fallback {
-                        *fallback_remaining -= 1;
-                        if *fallback_remaining == 0 {
-                            *in_fallback = false;
+                    if state.in_fallback_mode {
+                        state.fallback_remaining = state.fallback_remaining.saturating_sub(1);
+                        if state.fallback_remaining == 0 {
+                            state.in_fallback_mode = false;
                             tracing::info!("✅ SWITCHING BACK TO WORKER MODEL: Exiting fallback mode - worker model resumed");
                         }
                     }
                 }
 
                 // Increment turn count on any completion (success or task failure)
-                let mut count = self.turn_count.lock().await;
-                *count += 1;
+                state.turn_count += 1;
             }
             Err(_) => {
                 // Technical failure - just log and let it bubble up
@@ -303,7 +428,7 @@ impl LeadWorkerProvider {
         tools: &[Tool],
         steering: Option<ProviderSteerReceiver>,
     ) -> Result<MessageStream, ProviderError> {
-        let provider = self.get_active_provider().await;
+        let provider = self.get_active_provider();
         super::base::set_current_model(&provider.get_model_config().model_name);
 
         let inner = match steering {
@@ -384,6 +509,13 @@ impl LeadWorkerProviderTrait for LeadWorkerProvider {
             self.max_failures_before_fallback,
             self.fallback_turns,
         )
+    }
+
+    fn get_config_generation(&self) -> &str {
+        let PersistedProviderConfig::LeadWorkerV2 {
+            config_generation, ..
+        } = &self.persisted_provider_config;
+        config_generation
     }
 }
 
@@ -500,6 +632,15 @@ impl Provider for LeadWorkerProvider {
         self.lead_provider.supports_live_steering() || self.worker_provider.supports_live_steering()
     }
 
+    /// Restart steering is a property of the provider selected for this exact
+    /// turn. Unlike live steering, there is no receiver for
+    /// `stream_from_active` to route or reject: the agent itself drops the outer
+    /// stream. Ask the same routing snapshot that `stream_from_active` asks so a
+    /// mixed pair restarts only when its active half explicitly supports it.
+    fn supports_restart_steering(&self) -> bool {
+        self.get_active_provider().supports_restart_steering()
+    }
+
     /// Stream from the active provider **and keep the rotation accounting**.
     ///
     /// ⚠ The accounting is the whole difficulty here, and omitting it silently
@@ -536,9 +677,10 @@ impl Provider for LeadWorkerProvider {
     }
 
     fn get_model_config(&self) -> ModelConfig {
-        // Return the lead provider's model config as the default
-        // In practice, this might need to be more sophisticated
-        self.lead_provider.get_model_config()
+        self.persisted_provider_config
+            .clone()
+            .with_routing_state(self.routing_state())
+            .to_model_config()
     }
 
     async fn complete_with_model(
@@ -549,23 +691,21 @@ impl Provider for LeadWorkerProvider {
         tools: &[Tool],
     ) -> Result<(Message, ProviderUsage), ProviderError> {
         // Get the active provider
-        let provider = self.get_active_provider().await;
+        let provider = self.get_active_provider();
 
         // Log which provider is being used
-        let turn_count = *self.turn_count.lock().await;
-        let in_fallback = *self.in_fallback_mode.lock().await;
-        let fallback_remaining = *self.fallback_remaining.lock().await;
+        let state = self.routing_state();
 
-        let provider_type = if turn_count < self.lead_turns {
+        let provider_type = if state.turn_count < self.lead_turns {
             "lead (initial)"
-        } else if in_fallback {
+        } else if state.in_fallback_mode {
             "lead (fallback)"
         } else {
             "worker"
         };
 
         // Get the active model name and update the global store
-        let active_model_name = if turn_count < self.lead_turns || in_fallback {
+        let active_model_name = if state.turn_count < self.lead_turns || state.in_fallback_mode {
             self.lead_provider.get_model_config().model_name.clone()
         } else {
             self.worker_provider.get_model_config().model_name.clone()
@@ -574,19 +714,19 @@ impl Provider for LeadWorkerProvider {
         // Update the global current model store
         super::base::set_current_model(&active_model_name);
 
-        if in_fallback {
+        if state.in_fallback_mode {
             tracing::info!(
                 "🔄 Using {} provider for turn {} (FALLBACK MODE: {} turns remaining) - Model: {}",
                 provider_type,
-                turn_count + 1,
-                fallback_remaining,
+                state.turn_count + 1,
+                state.fallback_remaining,
                 active_model_name
             );
         } else {
             tracing::info!(
                 "Using {} provider for turn {} (lead_turns: {}) - Model: {}",
                 provider_type,
-                turn_count + 1,
+                state.turn_count + 1,
                 self.lead_turns,
                 active_model_name
             );
@@ -947,12 +1087,12 @@ mod tests {
 
         // Simulate being in fallback mode
         {
-            let mut in_fallback = provider.in_fallback_mode.lock().await;
-            *in_fallback = true;
-            let mut fallback_remaining = provider.fallback_remaining.lock().await;
-            *fallback_remaining = 2;
-            let mut turn_count = provider.turn_count.lock().await;
-            *turn_count = 4; // Past initial lead turns
+            *provider.routing_state.lock().unwrap() = LeadWorkerRoutingState {
+                turn_count: 4,
+                failure_count: 0,
+                in_fallback_mode: true,
+                fallback_remaining: 2,
+            };
         }
 
         // Should use lead provider in fallback mode
@@ -1023,6 +1163,7 @@ mod tests {
     struct StreamingCapability {
         streams: bool,
         steers: bool,
+        restarts: bool,
         model: ModelConfig,
     }
 
@@ -1054,6 +1195,9 @@ mod tests {
         }
         fn supports_live_steering(&self) -> bool {
             self.steers
+        }
+        fn supports_restart_steering(&self) -> bool {
+            self.restarts
         }
         async fn stream(
             &self,
@@ -1091,6 +1235,7 @@ mod tests {
         Arc::new(StreamingCapability {
             streams,
             steers: streams,
+            restarts: false,
             model: ModelConfig::new("m").unwrap(),
         })
     }
@@ -1099,6 +1244,16 @@ mod tests {
         Arc::new(StreamingCapability {
             streams: true,
             steers,
+            restarts: false,
+            model: ModelConfig::new("m").unwrap(),
+        })
+    }
+
+    fn restart_capability(restarts: bool) -> Arc<dyn Provider> {
+        Arc::new(StreamingCapability {
+            streams: true,
+            steers: false,
+            restarts,
             model: ModelConfig::new("m").unwrap(),
         })
     }
@@ -1208,6 +1363,44 @@ mod tests {
         );
         futures::pin_mut!(stream);
         while futures::StreamExt::next(&mut stream).await.is_some() {}
+    }
+
+    #[tokio::test]
+    async fn restart_steering_tracks_the_active_half_without_changing_rotation() {
+        let pair = LeadWorkerProvider::new(
+            restart_capability(true),
+            streaming_capability(true),
+            Some(1),
+        );
+        assert!(pair.supports_live_steering());
+        assert!(
+            pair.supports_restart_steering(),
+            "the restart-capable lead is active"
+        );
+
+        let lead = pair.stream("SYS", &[], &[]).await.expect("lead stream");
+        futures::pin_mut!(lead);
+        while futures::StreamExt::next(&mut lead).await.is_some() {}
+
+        assert_eq!(pair.get_turn_count().await, 1);
+        assert!(pair.supports_live_steering());
+        assert!(
+            !pair.supports_restart_steering(),
+            "the live-only worker must not inherit restart steering"
+        );
+
+        let inverse = LeadWorkerProvider::new(
+            streaming_capability(true),
+            restart_capability(true),
+            Some(1),
+        );
+        assert!(inverse.supports_live_steering());
+        assert!(!inverse.supports_restart_steering());
+        let lead = inverse.stream("SYS", &[], &[]).await.expect("lead stream");
+        futures::pin_mut!(lead);
+        while futures::StreamExt::next(&mut lead).await.is_some() {}
+        assert!(inverse.supports_live_steering());
+        assert!(inverse.supports_restart_steering());
     }
 
     /// **The turn must still rotate on the streaming path.**

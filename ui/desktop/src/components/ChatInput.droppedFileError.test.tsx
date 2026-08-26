@@ -73,7 +73,6 @@ beforeEach(() => {
   });
 });
 
-
 const erroredFile: DroppedFile = {
   id: 'dropped-nopath-1',
   path: '',

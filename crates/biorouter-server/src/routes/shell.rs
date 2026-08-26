@@ -83,7 +83,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -95,8 +95,11 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use base64::Engine as _;
 use biorouter::config::paths::Paths;
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use tokio::process::Command;
 
 use crate::state::AppState;
@@ -310,7 +313,9 @@ impl Refusal {
             Refusal::Unusable => "path is empty or could not be resolved",
             Refusal::Malformed => "path escapes the filesystem root",
             Refusal::Outside => "path is outside the directories this server is allowed to touch",
-            Refusal::Denied => "path names a credential store this server will not touch",
+            Refusal::Denied => {
+                "path names a credential store, or a link this server will not follow"
+            }
         }
     }
 }
@@ -677,6 +682,937 @@ async fn fs_read(Query(query): Query<PathQuery>) -> Response {
         Ok(response) => Json(response).into_response(),
         Err(refusal) => refusal.into_response(),
     }
+}
+
+const MAX_ARTIFACT_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Preview ceilings, held equal to the Electron previewer's
+/// (`ui/desktop/src/utils/artifactPreviewLimits.ts`).
+///
+/// The two surfaces read the same files for the same panel, so a document the
+/// desktop app refuses to open must not become previewable by pointing a
+/// browser at the same daemon. The archive pair below sat at twice the
+/// Electron numbers, which is exactly that: a limit the user can pick by
+/// choosing an interface.
+const MAX_OFFICE_ENTRIES: usize = 4_096;
+const MAX_OFFICE_ENTRY_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_OFFICE_EXPANDED_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_PRESENTATION_SLIDES: usize = 500;
+const MAX_WORKBOOK_WORKSHEETS: usize = 50;
+const MAX_WORKSHEET_COLUMNS: u64 = 2_000;
+const MAX_WORKSHEET_ROWS: u64 = 200_000;
+const MAX_WORKBOOK_USED_CELLS: u64 = 500_000;
+const MAX_WORKBOOK_POPULATED_CELLS: usize = 200_000;
+const MAX_OFFICE_TEXT_CHARS: usize = 100_000;
+const MAX_WORKBOOK_TEXT_ROWS: usize = 10_000;
+
+/// How much text to gather before the extractor stops opening parts.
+///
+/// Clipping only at the end would let a document with a thousand `headerN.xml`
+/// parts accumulate all of them first. Four bytes is the longest UTF-8
+/// encoding of one character, so stopping here still guarantees
+/// [`MAX_OFFICE_TEXT_CHARS`] characters are on hand and the truncation flag
+/// stays accurate.
+const MAX_OFFICE_TEXT_BYTES: usize = MAX_OFFICE_TEXT_CHARS * 4;
+
+/// Decoded-pixel ceilings for an image preview.
+///
+/// The byte ceiling above is not one of these. Every raster format states its
+/// dimensions in a header a few dozen bytes long, so a well-formed file far
+/// under 16 MiB can ask the renderer to allocate a gigapixel surface — the
+/// decompression-bomb shape. The pixel cap is the binding one: 8192 × 8192 is
+/// 67 108 864, more than twice [`MAX_IMAGE_PIXELS`], so a dimension cap alone
+/// would let the worst case through.
+const MAX_IMAGE_DIMENSION: u64 = 8_192;
+const MAX_IMAGE_PIXELS: u64 = 32_000_000;
+
+fn artifact_mime(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "html" | "htm" => "text/html",
+        "md" | "txt" | "rs" | "ts" | "tsx" | "js" | "json" | "yaml" | "yml" | "csv" | "sql" => {
+            "text/plain"
+        }
+        "apng" => "image/apng",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "cur" => "image/vnd.microsoft.icon",
+        "gif" => "image/gif",
+        "ico" => "image/x-icon",
+        "jfif" | "jpeg" | "jpg" | "pjpeg" => "image/jpeg",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "tif" | "tiff" => "image/tiff",
+        "pdf" => "application/pdf",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => "application/octet-stream",
+    }
+}
+
+fn artifact_format(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(OsStr::to_str)?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "pdf" => Some("pdf"),
+        "docx" => Some("docx"),
+        "xlsx" => Some("xlsx"),
+        "pptx" => Some("pptx"),
+        _ => None,
+    }
+}
+
+fn is_slide_part(name: &str) -> bool {
+    name.starts_with("ppt/slides/slide") && name.ends_with(".xml")
+}
+
+fn is_worksheet_part(name: &str) -> bool {
+    name.starts_with("xl/worksheets/sheet") && name.ends_with(".xml")
+}
+
+/// The columns × rows a worksheet declares as its used range.
+///
+/// `None` when it declares none, which SpreadsheetML permits: `<dimension>` is
+/// an optional element, so a workbook that simply omits it skips this check
+/// entirely. That is why the aggregate populated-cell total in
+/// [`validate_office_archive`] is not redundant with this — it is the only
+/// bound left on a workbook that declares nothing.
+fn spreadsheet_used_range(xml: &str) -> Option<(u64, u64)> {
+    let start = xml.find("<dimension")?;
+    let after_start = xml.get(start..)?;
+    let tag = after_start
+        .split_once('>')
+        .map_or(after_start, |(tag, _)| tag);
+    let (_, after_reference_start) = tag.split_once("ref=\"")?;
+    let (reference, _) = after_reference_start.split_once('"')?;
+    let last = reference.rsplit(':').next().unwrap_or_default();
+    let row_start = last.find(|character: char| character.is_ascii_digit())?;
+    let column_reference = last.get(..row_start)?;
+    let row_reference = last.get(row_start..)?;
+    let columns = column_reference
+        .bytes()
+        .filter(u8::is_ascii_alphabetic)
+        .fold(0_u64, |value, character| {
+            value
+                .saturating_mul(26)
+                .saturating_add(u64::from(character.to_ascii_uppercase() - b'A' + 1))
+        });
+    let rows = row_reference.parse::<u64>().unwrap_or(u64::MAX);
+    Some((columns, rows))
+}
+
+fn populated_cell_count(xml: &str) -> usize {
+    xml.match_indices("<c")
+        .filter(|(index, _)| {
+            xml.as_bytes()
+                .get(index + 2)
+                .is_some_and(|next| next.is_ascii_whitespace() || *next == b'>')
+        })
+        .count()
+}
+
+fn validate_office_archive(bytes: &[u8], format: &str) -> Result<(), Refusal> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| Refusal::Unusable)?;
+    if archive.len() > MAX_OFFICE_ENTRIES {
+        return Err(Refusal::Unusable);
+    }
+
+    let required_part = match format {
+        "docx" => "word/document.xml",
+        "xlsx" => "xl/workbook.xml",
+        "pptx" => "ppt/presentation.xml",
+        _ => return Ok(()),
+    };
+    let mut has_required_part = false;
+    let mut slide_count = 0_usize;
+    let mut worksheet_count = 0_usize;
+    let mut expanded_bytes = 0_u64;
+    // A per-worksheet ceiling bounds one sheet, and a workbook is N of them:
+    // fifty sheets that each sit just under the line pass every per-sheet test
+    // and still hand the renderer ten million cells. The running totals are
+    // what make the limits a property of the workbook.
+    let mut used_cells = 0_u64;
+    let mut populated_cells = 0_usize;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|_| Refusal::Unusable)?;
+        let size = entry.size();
+        let compressed = entry.compressed_size().max(1);
+        if size > MAX_OFFICE_ENTRY_BYTES || size / compressed > 200 {
+            return Err(Refusal::Unusable);
+        }
+        expanded_bytes = expanded_bytes.checked_add(size).ok_or(Refusal::Unusable)?;
+        if expanded_bytes > MAX_OFFICE_EXPANDED_BYTES {
+            return Err(Refusal::Unusable);
+        }
+
+        let name = entry.name().to_string();
+        has_required_part |= name == required_part;
+        if format == "pptx" && is_slide_part(&name) {
+            slide_count += 1;
+            if slide_count > MAX_PRESENTATION_SLIDES {
+                return Err(Refusal::Unusable);
+            }
+        }
+        if format == "xlsx" && is_worksheet_part(&name) {
+            worksheet_count += 1;
+            if worksheet_count > MAX_WORKBOOK_WORKSHEETS {
+                return Err(Refusal::Unusable);
+            }
+            let xml = read_office_part(&mut entry)?;
+            if let Some((columns, rows)) = spreadsheet_used_range(&xml) {
+                let sheet_cells = columns.saturating_mul(rows);
+                used_cells = used_cells.saturating_add(sheet_cells);
+                if columns > MAX_WORKSHEET_COLUMNS
+                    || rows > MAX_WORKSHEET_ROWS
+                    || sheet_cells > MAX_WORKBOOK_USED_CELLS
+                    || used_cells > MAX_WORKBOOK_USED_CELLS
+                {
+                    return Err(Refusal::Unusable);
+                }
+            }
+            let sheet_populated = populated_cell_count(&xml);
+            populated_cells = populated_cells.saturating_add(sheet_populated);
+            if sheet_populated > MAX_WORKBOOK_POPULATED_CELLS
+                || populated_cells > MAX_WORKBOOK_POPULATED_CELLS
+            {
+                return Err(Refusal::Unusable);
+            }
+        }
+    }
+    has_required_part.then_some(()).ok_or(Refusal::Unusable)
+}
+
+/// Read one archive entry as text, bounded by what actually arrives.
+///
+/// `entry.size()` is a number the person who built the archive chose, so it
+/// bounds nothing and cannot size the buffer either — the same invariant
+/// [`read_archive`] already states for skill and extension bundles. Reading one
+/// byte past the ceiling is what distinguishes "exactly fills it" from
+/// "overruns it".
+fn read_office_part(entry: &mut impl Read) -> Result<String, Refusal> {
+    let mut xml = String::new();
+    entry
+        .take(MAX_OFFICE_ENTRY_BYTES + 1)
+        .read_to_string(&mut xml)
+        .map_err(|_| Refusal::Unusable)?;
+    if xml.len() as u64 > MAX_OFFICE_ENTRY_BYTES {
+        return Err(Refusal::Unusable);
+    }
+    Ok(xml)
+}
+
+// ---------------------------------------------------------------------------
+// Office text extraction.
+// ---------------------------------------------------------------------------
+
+/// The readable text of an Office document, and whether it was clipped.
+struct OfficeText {
+    text: String,
+    truncated: bool,
+}
+
+type OfficeArchive<'a> = zip::ZipArchive<Cursor<&'a [u8]>>;
+
+/// Flatten a validated Office document into the text the panel is showing.
+///
+/// The desktop previewer has always done this (`extractOfficeText` in
+/// `ui/desktop/src/main.ts`) and the renderer's response type has always
+/// declared the two fields, but this surface never produced them — so
+/// `workspace_read_panel` returned nothing at all for a DOCX opened through
+/// browser access. The caps below are that function's, to the number, because
+/// the two surfaces feed the same tool.
+///
+/// `None` when the archive cannot be read; the document still previews, it just
+/// carries no text, which is what the field being optional means.
+fn extract_office_text(bytes: &[u8], format: &str) -> Option<OfficeText> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).ok()?;
+    let text = match format {
+        "docx" => document_text(&mut archive),
+        "pptx" => presentation_text(&mut archive),
+        "xlsx" => workbook_text(&mut archive),
+        _ => return None,
+    };
+    let clip_at = text
+        .char_indices()
+        .nth(MAX_OFFICE_TEXT_CHARS)
+        .map(|(index, _)| index);
+    Some(match clip_at {
+        Some(index) => OfficeText {
+            text: text.get(..index).unwrap_or_default().to_string(),
+            truncated: true,
+        },
+        None => OfficeText {
+            text,
+            truncated: false,
+        },
+    })
+}
+
+/// Every part of the archive this extractor wants, in archive order.
+fn office_part_names(archive: &OfficeArchive, wanted: impl Fn(&str) -> bool) -> Vec<String> {
+    archive
+        .file_names()
+        .filter(|name| wanted(name))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The trailing number in a part name, so `slide10.xml` sorts after
+/// `slide9.xml` rather than before it.
+fn office_part_order(name: &str) -> u64 {
+    name.trim_end_matches(".xml")
+        .rsplit(|character: char| !character.is_ascii_digit())
+        .next()
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or(0)
+}
+
+fn office_part_text(archive: &mut OfficeArchive, name: &str) -> Option<String> {
+    let mut entry = archive.by_name(name).ok()?;
+    read_office_part(&mut entry).ok()
+}
+
+fn document_text(archive: &mut OfficeArchive) -> String {
+    let names = office_part_names(archive, |name| {
+        name.strip_prefix("word/").is_some_and(|part| {
+            matches!(part, "document.xml" | "footnotes.xml" | "endnotes.xml")
+                || ((part.starts_with("header") || part.starts_with("footer"))
+                    && part.ends_with(".xml"))
+        })
+    });
+    let mut parts = Vec::new();
+    let mut gathered = 0_usize;
+    for name in &names {
+        if gathered > MAX_OFFICE_TEXT_BYTES {
+            break;
+        }
+        let Some(xml) = office_part_text(archive, name) else {
+            continue;
+        };
+        let text = decode_office_xml_text(&xml);
+        if !text.is_empty() {
+            gathered += text.len();
+            parts.push(text);
+        }
+    }
+    parts.join("\n\n")
+}
+
+fn presentation_text(archive: &mut OfficeArchive) -> String {
+    let mut names = office_part_names(archive, is_slide_part);
+    names.sort_by_key(|name| office_part_order(name));
+    let mut slides = Vec::new();
+    let mut gathered = 0_usize;
+    for (index, name) in names.iter().enumerate() {
+        if gathered > MAX_OFFICE_TEXT_BYTES {
+            break;
+        }
+        let xml = office_part_text(archive, name).unwrap_or_default();
+        let slide = format!("[Slide {}]\n{}", index + 1, decode_office_xml_text(&xml));
+        gathered += slide.len();
+        slides.push(slide);
+    }
+    slides.join("\n\n")
+}
+
+fn workbook_text(archive: &mut OfficeArchive) -> String {
+    // A cell of type `s` holds an index into this table rather than its own
+    // text, so without it a workbook flattens to a column of integers.
+    let shared: Vec<String> = office_part_text(archive, "xl/sharedStrings.xml")
+        .map(|xml| {
+            xml_elements(&xml, "si")
+                .into_iter()
+                .map(|(_, inner)| decode_office_xml_text(inner))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut names = office_part_names(archive, is_worksheet_part);
+    names.sort_by_key(|name| office_part_order(name));
+    let mut rows = Vec::new();
+    for (index, name) in names.iter().enumerate() {
+        rows.push(format!("[Sheet {}]", index + 1));
+        let Some(xml) = office_part_text(archive, name) else {
+            continue;
+        };
+        for (attributes, inner) in xml_elements(&xml, "c") {
+            if rows.len() >= MAX_WORKBOOK_TEXT_ROWS {
+                break;
+            }
+            let reference = xml_attribute(attributes, "r").unwrap_or("?");
+            let raw = xml_elements(inner, "v").first().map(|(_, value)| *value);
+            let inline = xml_elements(inner, "is").first().map(|(_, value)| *value);
+            let value = match (xml_attribute(attributes, "t"), raw) {
+                (Some("s"), Some(index)) => index
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|index| shared.get(index))
+                    .cloned()
+                    .unwrap_or_default(),
+                _ => decode_office_xml_text(inline.or(raw).unwrap_or_default()),
+            };
+            if !value.is_empty() {
+                rows.push(format!("{reference}: {value}"));
+            }
+        }
+    }
+    rows.join("\n")
+}
+
+/// The `(attributes, inner)` of every `<name …>…</name>` element, in document
+/// order.
+///
+/// Deliberately not an XML parser. The parts this reads are machine-generated
+/// and flat, the elements it asks for do not nest inside themselves, and the
+/// alternative is a full XML stack in the daemon for the sake of a preview.
+fn xml_elements<'a>(xml: &'a str, name: &str) -> Vec<(&'a str, &'a str)> {
+    let open = format!("<{name}");
+    let close = format!("</{name}>");
+    let mut elements = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find(&open) {
+        let Some(after_name) = rest.get(start + open.len()..) else {
+            break;
+        };
+        // `<c` must not match `<cols`.
+        if !after_name.starts_with([' ', '\t', '\r', '\n', '>', '/']) {
+            rest = after_name;
+            continue;
+        }
+        let Some((attributes, body)) = after_name.split_once('>') else {
+            break;
+        };
+        if let Some(attributes) = attributes.strip_suffix('/') {
+            elements.push((attributes, ""));
+            rest = body;
+            continue;
+        }
+        let Some((inner, tail)) = body.split_once(close.as_str()) else {
+            break;
+        };
+        elements.push((attributes, inner));
+        rest = tail;
+    }
+    elements
+}
+
+/// One attribute's value, matched only at an attribute boundary so `t="s"` is
+/// not found inside `xt="s"`.
+fn xml_attribute<'a>(attributes: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("{name}=\"");
+    let mut rest = attributes;
+    loop {
+        let start = rest.find(&needle)?;
+        let at_boundary = rest
+            .get(..start)
+            .and_then(|before| before.chars().next_back())
+            .is_none_or(char::is_whitespace);
+        let after = rest.get(start + needle.len()..)?;
+        if at_boundary {
+            return after.split_once('"').map(|(value, _)| value);
+        }
+        rest = after;
+    }
+}
+
+/// Flatten one Office XML part into the text a reader would see.
+fn decode_office_xml_text(xml: &str) -> String {
+    let mut flattened = String::with_capacity(xml.len() / 4);
+    let mut rest = xml;
+    while let Some(open) = rest.find('<') {
+        flattened.push_str(rest.get(..open).unwrap_or_default());
+        let Some(after) = rest.get(open + 1..) else {
+            break;
+        };
+        let Some((tag, tail)) = after.split_once('>') else {
+            break;
+        };
+        flattened.push_str(office_tag_separator(tag));
+        rest = tail;
+    }
+    flattened.push_str(rest);
+    collapse_office_whitespace(&unescape_xml(&flattened))
+}
+
+/// What a structural tag contributes once the markup is gone.
+///
+/// Word writes a tab and a line break as elements rather than as characters,
+/// and the end of a paragraph or a row is the only thing separating one line
+/// of the flattened text from the next.
+fn office_tag_separator(tag: &str) -> &'static str {
+    let closing = tag.starts_with('/');
+    let name = tag
+        .trim_start_matches('/')
+        .split([' ', '\t', '\r', '\n', '/'])
+        .next()
+        .unwrap_or_default();
+    match (closing, name) {
+        (false, "w:tab") => "\t",
+        (false, "w:br") => "\n",
+        (true, "w:p" | "a:p" | "row") => "\n",
+        _ => "",
+    }
+}
+
+fn unescape_xml(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        // Last, so an escaped `&amp;lt;` survives as the literal `&lt;`.
+        .replace("&amp;", "&")
+}
+
+/// Drop trailing blanks from each line and never leave more than one empty line
+/// between blocks, so a document whose markup carried the layout does not
+/// arrive as a column of whitespace.
+fn collapse_office_whitespace(text: &str) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    let mut blank_run = 0_usize;
+    for line in text.split('\n') {
+        let line = line.trim_end_matches([' ', '\t']);
+        if line.is_empty() {
+            blank_run += 1;
+            if blank_run > 1 {
+                continue;
+            }
+        } else {
+            blank_run = 0;
+        }
+        lines.push(line);
+    }
+    lines.join("\n").trim().to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Image bounds.
+// ---------------------------------------------------------------------------
+
+/// Refuse an image whose header asks the renderer for more pixels than it will
+/// decode, before those bytes are encoded into a response.
+fn assert_previewable_image(bytes: &[u8], mime_type: &str) -> Result<(), Refusal> {
+    let Some((width, height)) = image_dimensions(bytes, mime_type) else {
+        return Ok(());
+    };
+    if width == 0
+        || height == 0
+        || width > MAX_IMAGE_DIMENSION
+        || height > MAX_IMAGE_DIMENSION
+        || width.saturating_mul(height) > MAX_IMAGE_PIXELS
+    {
+        return Err(Refusal::Unusable);
+    }
+    Ok(())
+}
+
+/// The pixel dimensions an image's header declares.
+///
+/// `None` is a deliberate pass rather than a refusal, and it covers two cases.
+/// TIFF, ICO and the Windows cursor formats keep their dimensions behind a
+/// directory the renderer walks and bounds for itself (`safeTiffDimensions` in
+/// `ArtifactViewer.tsx`), so a second half-parse here would add a way to refuse
+/// a legitimate file without adding a bound. And a file whose header is
+/// truncated or malformed decodes to nothing in the renderer anyway — refusing
+/// every unparseable header would break previews for files that are not a
+/// threat.
+fn image_dimensions(bytes: &[u8], mime_type: &str) -> Option<(u64, u64)> {
+    match mime_type {
+        "image/png" | "image/apng" => {
+            (bytes.get(12..16)? == b"IHDR").then_some(())?;
+            Some((read_be_u32(bytes, 16)?, read_be_u32(bytes, 20)?))
+        }
+        "image/gif" => Some((read_le_u16(bytes, 6)?, read_le_u16(bytes, 8)?)),
+        // The dimensions are signed: a bottom-up bitmap states a negative
+        // height, which is a direction rather than a smaller allocation.
+        "image/bmp" => Some((
+            read_le_i32_magnitude(bytes, 18)?,
+            read_le_i32_magnitude(bytes, 22)?,
+        )),
+        "image/jpeg" => jpeg_dimensions(bytes),
+        "image/webp" => webp_dimensions(bytes),
+        "image/avif" => avif_dimensions(bytes),
+        "image/svg+xml" => svg_dimensions(bytes),
+        _ => None,
+    }
+}
+
+fn read_be_u32(bytes: &[u8], offset: usize) -> Option<u64> {
+    let field = <[u8; 4]>::try_from(bytes.get(offset..offset + 4)?).ok()?;
+    Some(u64::from(u32::from_be_bytes(field)))
+}
+
+fn read_le_u16(bytes: &[u8], offset: usize) -> Option<u64> {
+    let field = <[u8; 2]>::try_from(bytes.get(offset..offset + 2)?).ok()?;
+    Some(u64::from(u16::from_le_bytes(field)))
+}
+
+fn read_le_u24(bytes: &[u8], offset: usize) -> Option<u64> {
+    let field = bytes.get(offset..offset + 3)?;
+    Some(
+        field
+            .iter()
+            .rev()
+            .fold(0_u64, |value, byte| (value << 8) | u64::from(*byte)),
+    )
+}
+
+fn read_le_i32_magnitude(bytes: &[u8], offset: usize) -> Option<u64> {
+    let field = <[u8; 4]>::try_from(bytes.get(offset..offset + 4)?).ok()?;
+    Some(u64::from(i32::from_le_bytes(field).unsigned_abs()))
+}
+
+/// Walk the JPEG marker chain to the start-of-frame that carries the size.
+fn jpeg_dimensions(bytes: &[u8]) -> Option<(u64, u64)> {
+    if bytes.get(..2)? != [0xff, 0xd8] {
+        return None;
+    }
+    let mut offset = 2_usize;
+    while offset + 8 < bytes.len() {
+        if bytes.get(offset).copied()? != 0xff {
+            offset += 1;
+            continue;
+        }
+        let marker = bytes.get(offset + 1).copied()?;
+        // Standalone markers carry no length field to skip over.
+        if marker == 0xd8 || marker == 0xd9 {
+            offset += 2;
+            continue;
+        }
+        let length = usize::try_from(read_be_u16(bytes, offset + 2)?).ok()?;
+        if length < 2 || offset + 2 + length > bytes.len() {
+            return None;
+        }
+        let is_start_of_frame =
+            matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf);
+        if is_start_of_frame {
+            return Some((
+                read_be_u16(bytes, offset + 7)?,
+                read_be_u16(bytes, offset + 5)?,
+            ));
+        }
+        offset += 2 + length;
+    }
+    None
+}
+
+fn read_be_u16(bytes: &[u8], offset: usize) -> Option<u64> {
+    let field = <[u8; 2]>::try_from(bytes.get(offset..offset + 2)?).ok()?;
+    Some(u64::from(u16::from_be_bytes(field)))
+}
+
+fn webp_dimensions(bytes: &[u8]) -> Option<(u64, u64)> {
+    if bytes.get(..4)? != b"RIFF" || bytes.get(8..12)? != b"WEBP" {
+        return None;
+    }
+    match bytes.get(12..16)? {
+        // The extended container states the canvas size minus one.
+        b"VP8X" => Some((read_le_u24(bytes, 24)? + 1, read_le_u24(bytes, 27)? + 1)),
+        b"VP8 " => Some((
+            read_le_u16(bytes, 26)? & 0x3fff,
+            read_le_u16(bytes, 28)? & 0x3fff,
+        )),
+        b"VP8L" if bytes.get(20).copied()? == 0x2f => {
+            let field = <[u8; 4]>::try_from(bytes.get(21..25)?).ok()?;
+            let bits = u64::from(u32::from_le_bytes(field));
+            Some(((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1))
+        }
+        _ => None,
+    }
+}
+
+/// AVIF states its size in an `ispe` box somewhere in the metadata tree. Scan
+/// for it rather than walking the box hierarchy: the tree's shape varies with
+/// the encoder, and the box's own length field is what validates a hit.
+fn avif_dimensions(bytes: &[u8]) -> Option<(u64, u64)> {
+    for offset in 4..bytes.len().saturating_sub(15) {
+        if bytes.get(offset..offset + 4)? != b"ispe" {
+            continue;
+        }
+        let box_start = offset - 4;
+        let box_size = read_be_u32(bytes, box_start)?;
+        if box_size < 20 || u64::try_from(box_start).ok()? + box_size > bytes.len() as u64 {
+            continue;
+        }
+        return Some((
+            read_be_u32(bytes, offset + 8)?,
+            read_be_u32(bytes, offset + 12)?,
+        ));
+    }
+    None
+}
+
+/// The size an SVG asks to be painted at.
+///
+/// Vector markup is a decompression bomb too — `width="100000"` is nine bytes
+/// and a ten-gigapixel surface — so it is bounded on the same numbers as the
+/// raster formats, exactly as the desktop previewer bounds it.
+fn svg_dimensions(bytes: &[u8]) -> Option<(u64, u64)> {
+    let head = bytes.get(..bytes.len().min(64 * 1024))?;
+    let source = String::from_utf8_lossy(head);
+    let start = source.find("<svg")?;
+    let after = source.get(start..)?;
+    // The opening tag only: a `width` after the first `>` belongs to a child.
+    let tag = after.split_once('>').map_or(after, |(tag, _)| tag);
+    if let (Some(width), Some(height)) = (svg_length(tag, "width"), svg_length(tag, "height")) {
+        return Some((width, height));
+    }
+    // Without both, `viewBox="minX minY width height"` is what the image
+    // scales to.
+    let view_box = xml_attribute(tag, "viewBox")?;
+    let mut extent = view_box
+        .split([' ', ',', '\t', '\n', '\r'])
+        .filter(|part| !part.is_empty())
+        .skip(2);
+    Some((
+        leading_number(extent.next()?)?,
+        leading_number(extent.next()?)?,
+    ))
+}
+
+fn svg_length(tag: &str, name: &str) -> Option<u64> {
+    leading_number(xml_attribute(tag, name)?)
+}
+
+/// The number a CSS length starts with — `100%` and `210mm` are both lengths,
+/// and the unit does not change the order of magnitude being asked for.
+fn leading_number(value: &str) -> Option<u64> {
+    let value = value.trim_start();
+    let end = value
+        .find(|character: char| !character.is_ascii_digit() && character != '.')
+        .unwrap_or(value.len());
+    value
+        .get(..end)?
+        .parse::<f64>()
+        .ok()
+        .and_then(|number| (number.is_finite() && number >= 0.0).then(|| number.ceil() as u64))
+}
+
+// ---------------------------------------------------------------------------
+// Artifact identity.
+// ---------------------------------------------------------------------------
+
+/// The key [`artifact_revision`] is computed under.
+///
+/// A revision travels outward: `workspace_read_panel` hands it to the model as
+/// proof that the text it is about to read is the text on screen. An *unkeyed*
+/// digest of a local file would be a reusable oracle — anyone holding one can
+/// confirm a guess at the file's contents by hashing the guess. Generating the
+/// key per process, never writing it down and never returning it makes a
+/// revision comparable only against another revision from the same daemon,
+/// which is all a staleness check ever needed.
+static REVISION_KEY: LazyLock<[u8; 32]> = LazyLock::new(rand::random);
+
+/// Identity of the exact bytes this surface previewed.
+///
+/// `size:mtime` alone is not one, and the consumer's staleness check
+/// (`useArtifactPanelAccess.ts`) reduces entirely to this string being
+/// collision-free: a same-size edit inside one modification-time tick — and a
+/// whole second is one tick on plenty of filesystems — reproduces it exactly,
+/// so the agent could be handed bytes that were never displayed, stamped with
+/// the displayed revision.
+fn artifact_revision(size: u64, mtime_millis: u128, content: &[u8]) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(REVISION_KEY.as_slice())
+        .expect("HMAC-SHA256 accepts a key of any length");
+    mac.update(content);
+    format!(
+        "{size}:{mtime_millis}:{}",
+        hex::encode(mac.finalize().into_bytes())
+    )
+}
+
+/// Identity of a file this surface declined to read.
+///
+/// The oversize branch never opens the bytes, so there is no content to
+/// identify — but omitting the field makes an absence the consumer has to
+/// special-case, so the identity of the *file* stands in for the identity of
+/// its contents. Keyed like every other revision, so nothing unkeyed about the
+/// user's filesystem leaves the process.
+fn unread_artifact_revision(metadata: &std::fs::Metadata, mtime_millis: u128) -> String {
+    #[cfg(unix)]
+    let identity = {
+        use std::os::unix::fs::MetadataExt;
+        format!("{}:{}", metadata.dev(), metadata.ino())
+    };
+    #[cfg(not(unix))]
+    let identity = metadata.len().to_string();
+    artifact_revision(metadata.len(), mtime_millis, identity.as_bytes())
+}
+
+/// Open a validated path without following a link, and prove the descriptor is
+/// the file that was validated.
+///
+/// [`PathGuard::resolve`] canonicalizes, but what it returns is a *string*, and
+/// [`File::open`] resolves that string again from scratch. Everything in
+/// between — the root test, [`is_denied`], the project's `.biorouterignore` —
+/// therefore describes whatever the name pointed at *then*. `std::env::temp_dir`
+/// is one of the roots and is world-writable on Unix, so "then" and "now" are a
+/// window anyone with a shell on this machine can drive: leave
+/// `/tmp/a/report.pdf` a real file until the checks pass, flip it to a link at
+/// `~/.config/biorouter/secrets.yaml`, and the bytes that come back are not the
+/// bytes that were checked. Retryable until it wins.
+///
+/// Two things close it. `O_NOFOLLOW` makes an open through a link fail rather
+/// than succeed quietly, and comparing the opened descriptor's identity against
+/// the name's turns any other substitution — a rename, a fresh regular file —
+/// into a mismatch instead of a read.
+///
+/// Not closed, and not closeable by name: a **hard** link to a credential store
+/// is a regular file at a permitted path, so it passes both checks and the deny
+/// lists alike. It also needs local write access to one of the roots and, on
+/// Linux, `fs.protected_hardlinks=0`.
+fn open_validated_file(path: &Path) -> Result<(File, std::fs::Metadata), Refusal> {
+    let named = std::fs::symlink_metadata(path).map_err(|_| Refusal::Unusable)?;
+    if named.file_type().is_symlink() {
+        return Err(Refusal::Denied);
+    }
+    if !named.file_type().is_file() {
+        return Err(Refusal::Unusable);
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(path).map_err(|_| Refusal::Unusable)?;
+    let opened = file.metadata().map_err(|_| Refusal::Unusable)?;
+    if !opened.is_file() || !is_same_file(&named, &opened) {
+        return Err(Refusal::Denied);
+    }
+    Ok((file, opened))
+}
+
+/// Do two stat results name one file? On Unix that is `(device, inode)`. There
+/// is no such pair off Unix, where there is also no `O_NOFOLLOW` to pair it
+/// with; the file-type check is what stands there.
+#[cfg(unix)]
+fn is_same_file(named: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    named.dev() == opened.dev() && named.ino() == opened.ino()
+}
+
+#[cfg(not(unix))]
+fn is_same_file(_named: &std::fs::Metadata, _opened: &std::fs::Metadata) -> bool {
+    true
+}
+
+async fn fs_artifact(Query(query): Query<PathQuery>) -> Response {
+    let requested = query.path.unwrap_or_default();
+    match read_artifact_within(&PathGuard::current(), &requested) {
+        Ok(value) => Json(value).into_response(),
+        Err(refusal) => refusal.into_response(),
+    }
+}
+
+fn read_artifact_within(guard: &PathGuard, requested: &str) -> Result<serde_json::Value, Refusal> {
+    let path = guard.resolve(requested)?;
+    let (mut file, metadata) = open_validated_file(&path)?;
+    // Both deny lists run again now that the descriptor is proven to be this
+    // path. `resolve` ran them against a *name*, and a name is the one thing
+    // the substitution above changes — a check that never reaches the file it
+    // is protecting is advice, not a boundary.
+    if is_denied(&path) {
+        return Err(Refusal::Denied);
+    }
+    let project_root = path
+        .parent()
+        .and_then(|parent| {
+            parent
+                .ancestors()
+                .find(|ancestor| ancestor.join(".biorouterignore").is_file())
+        })
+        .unwrap_or(&guard.cwd);
+    let secret_guard = biorouter_mcp::secret_guard::SecretGuard::cached_for_dir(project_root);
+    if secret_guard.is_denied(&path) {
+        return Err(Refusal::Denied);
+    }
+    let title = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or(requested)
+        .to_string();
+    let mime_type = artifact_mime(&path);
+    let mtime_millis = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_millis());
+    if metadata.len() > MAX_ARTIFACT_BYTES {
+        return Ok(serde_json::json!({
+            "kind": "binary", "title": title, "path": requested,
+            "mimeType": mime_type, "size": metadata.len(),
+            "revision": unread_artifact_revision(&metadata, mtime_millis), "found": true
+        }));
+    }
+
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.by_ref()
+        .take(MAX_ARTIFACT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| Refusal::Unusable)?;
+    if bytes.len() as u64 > MAX_ARTIFACT_BYTES {
+        return Err(Refusal::Unusable);
+    }
+    let revision = artifact_revision(metadata.len(), mtime_millis, &bytes);
+    if let Some(format) = artifact_format(&path) {
+        // The renderer extracts PDF text itself (`readPdfText`); for the Office
+        // formats it has always expected the producer to do it.
+        let extracted = if format == "pdf" {
+            None
+        } else {
+            validate_office_archive(&bytes, format)?;
+            extract_office_text(&bytes, format)
+        };
+        let mut document = serde_json::json!({
+            "kind": "document", "format": format, "title": title, "path": requested,
+            "mimeType": mime_type, "dataBase64": base64::engine::general_purpose::STANDARD.encode(bytes),
+            "size": metadata.len(), "revision": revision, "found": true
+        });
+        if let Some(extracted) = extracted {
+            document["extractedText"] = extracted.text.into();
+            document["textTruncated"] = extracted.truncated.into();
+        }
+        return Ok(document);
+    }
+    if mime_type.starts_with("image/") {
+        assert_previewable_image(&bytes, mime_type)?;
+        if mime_type == "image/tiff" {
+            return Ok(serde_json::json!({
+                "kind": "image", "title": title, "path": requested, "mimeType": mime_type,
+                "dataBase64": base64::engine::general_purpose::STANDARD.encode(bytes),
+                "size": metadata.len(), "revision": revision, "found": true
+            }));
+        }
+        return Ok(serde_json::json!({
+            "kind": "image", "title": title, "path": requested, "mimeType": mime_type,
+            "dataUrl": format!("data:{mime_type};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)),
+            "size": metadata.len(), "revision": revision, "found": true
+        }));
+    }
+    if mime_type.starts_with("text/") {
+        let text = String::from_utf8(bytes).map_err(|_| Refusal::Unusable)?;
+        return Ok(serde_json::json!({
+            "kind": if mime_type == "text/html" { "html" } else { "text" },
+            "title": title, "path": requested, "mimeType": mime_type, "text": text,
+            "size": metadata.len(), "revision": revision, "found": true
+        }));
+    }
+    Ok(serde_json::json!({
+        "kind": "binary", "title": title, "path": requested,
+        "mimeType": mime_type, "size": metadata.len(),
+        "revision": revision, "found": true
+    }))
 }
 
 /// The whole of `fs_read` except for the HTTP shell, so the boundary can be
@@ -1289,7 +2225,7 @@ fn resolve_program(name: &str, search_path: &OsStr) -> PathBuf {
 // Router.
 // ---------------------------------------------------------------------------
 
-/// The sixteen `/headless/*` routes.
+/// The seventeen `/headless/*` routes.
 ///
 /// No handler reads [`AppState`]: this surface is about the machine the daemon
 /// runs on, not about its sessions. The parameter is kept so the module is
@@ -1310,6 +2246,7 @@ pub fn routes(_state: Arc<AppState>) -> Router {
         .route("/headless/fs/list-files", get(fs_list_files))
         .route("/headless/fs/list-dirs", get(fs_list_dirs))
         .route("/headless/fs/read", get(fs_read))
+        .route("/headless/fs/artifact", get(fs_artifact))
         .route("/headless/fs/write", post(fs_write))
         .route("/headless/fs/ensure-dir", post(fs_ensure_dir))
         .route("/headless/fs/delete-file", post(fs_delete_file))
@@ -1323,6 +2260,7 @@ pub fn routes(_state: Arc<AppState>) -> Router {
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::Write;
     use tempfile::TempDir;
 
     /// A guard whose only root is `root`, with `root/home` standing in for the
@@ -1336,6 +2274,17 @@ mod tests {
             home: Some(canonical_prefix(&home)),
             cwd: canonical_prefix(&home),
         }
+    }
+
+    fn office_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, data) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
     }
 
     /// A legitimate read inside the allowlist works.
@@ -1356,6 +2305,427 @@ mod tests {
             .expect("a file inside a root must resolve");
         assert!(response.found);
         assert_eq!(response.file, "hello");
+    }
+
+    #[test]
+    fn artifact_route_returns_preview_bytes_and_honors_biorouterignore() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let home = tmp.path().join("home");
+        let visible = home.join("visible.png");
+        fs::write(&visible, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]).unwrap();
+
+        let value = read_artifact_within(&guard, visible.to_str().unwrap()).unwrap();
+        assert_eq!(value["kind"], "image");
+        assert_eq!(value["mimeType"], "image/png");
+        assert!(value["dataUrl"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+
+        let tiff = home.join("visible.tiff");
+        fs::write(&tiff, b"II*\0fixture").unwrap();
+        let value = read_artifact_within(&guard, tiff.to_str().unwrap()).unwrap();
+        assert_eq!(value["mimeType"], "image/tiff");
+        assert!(value["dataBase64"].is_string());
+        assert!(value.get("dataUrl").is_none());
+
+        fs::write(home.join(".biorouterignore"), "private.png\n").unwrap();
+        let private = home.join("private.png");
+        fs::write(&private, b"not public").unwrap();
+        assert_eq!(
+            read_artifact_within(&guard, private.to_str().unwrap()),
+            Err(Refusal::Denied)
+        );
+    }
+
+    #[test]
+    fn artifact_route_honors_the_requested_projects_ignore_file() {
+        let tmp = TempDir::new().unwrap();
+        let mut guard = guard_over(tmp.path());
+        guard.cwd = canonical_prefix(&tmp.path().join("daemon"));
+        fs::create_dir_all(&guard.cwd).unwrap();
+
+        let project = tmp.path().join("project");
+        fs::create_dir_all(project.join("reports")).unwrap();
+        fs::write(project.join(".biorouterignore"), "reports/private.pdf\n").unwrap();
+        let private = project.join("reports/private.pdf");
+        fs::write(&private, b"private report").unwrap();
+
+        assert_eq!(
+            read_artifact_within(&guard, private.to_str().unwrap()),
+            Err(Refusal::Denied)
+        );
+    }
+
+    #[test]
+    fn office_preview_rejects_implausible_workbook_ranges() {
+        let bytes = office_zip(&[
+            ("xl/workbook.xml", b"<workbook/>"),
+            (
+                "xl/worksheets/sheet1.xml",
+                b"<worksheet><dimension ref=\"A1:XFD1048576\"/></worksheet>",
+            ),
+        ]);
+        assert_eq!(
+            validate_office_archive(&bytes, "xlsx"),
+            Err(Refusal::Unusable)
+        );
+    }
+
+    /// The range reader indexes by byte, so a multi-byte character anywhere in
+    /// the part must not land it mid-codepoint.
+    #[test]
+    fn office_preview_range_guard_accepts_non_ascii_worksheet_xml() {
+        assert_eq!(
+            spreadsheet_used_range(
+                "<worksheet><note>étude</note><dimension ref=\"λA1:C5\"/></worksheet>"
+            ),
+            Some((3, 5))
+        );
+    }
+
+    #[test]
+    fn office_preview_accepts_a_bounded_presentation_shape() {
+        let bytes = office_zip(&[
+            ("ppt/presentation.xml", b"<p:presentation/>"),
+            ("ppt/slides/slide1.xml", b"<p:sld/>"),
+        ]);
+        assert_eq!(validate_office_archive(&bytes, "pptx"), Ok(()));
+    }
+
+    /// Stored rather than deflated, so a fixture built from repetitive markup
+    /// is not refused by the compression-ratio guard for a reason that has
+    /// nothing to do with the ceiling under test.
+    fn bulky_office_zip(entries: &[(String, String)]) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, data) in entries {
+            writer.start_file(name.as_str(), options).unwrap();
+            writer.write_all(data.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn workbook_of(sheets: Vec<String>) -> Vec<u8> {
+        let mut entries = vec![("xl/workbook.xml".to_string(), "<workbook/>".to_string())];
+        for (index, sheet) in sheets.into_iter().enumerate() {
+            entries.push((format!("xl/worksheets/sheet{}.xml", index + 1), sheet));
+        }
+        bulky_office_zip(&entries)
+    }
+
+    /// A 128-byte PNG header stating whatever dimensions the caller wants.
+    /// Nothing decodes it — the point is that nothing has to.
+    fn png_declaring(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        bytes.extend_from_slice(&13_u32.to_be_bytes());
+        bytes.extend_from_slice(b"IHDR");
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
+        bytes
+    }
+
+    /// A link where the guard validated a regular file is the state a won race
+    /// leaves behind, and the reason it is worth winning: `/tmp` is one of the
+    /// roots, so any local user can keep flipping the name until an open lands
+    /// between the check and the read.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_swapped_in_after_validation_is_refused_rather_than_followed() {
+        let tmp = TempDir::new().unwrap();
+        let secret = tmp.path().join("secrets.yaml");
+        fs::write(&secret, "OPENAI_API_KEY: real").unwrap();
+        let requested = tmp.path().join("report.pdf");
+        fs::write(&requested, b"%PDF-1.7 benign").unwrap();
+
+        let (_, metadata) =
+            open_validated_file(&requested).expect("the validated regular file must open");
+        assert_eq!(metadata.len(), 15);
+
+        fs::remove_file(&requested).unwrap();
+        std::os::unix::fs::symlink(&secret, &requested).unwrap();
+
+        // The instrument first: a plain open of the same path — which is what
+        // this route did — hands back the credential store.
+        assert_eq!(
+            fs::read_to_string(&requested).unwrap(),
+            "OPENAI_API_KEY: real"
+        );
+        assert_eq!(open_validated_file(&requested).err(), Some(Refusal::Denied));
+    }
+
+    /// The identity check behind the refusal above: a second *name* for one
+    /// inode is the same file, and a different inode is not, however alike the
+    /// two names look.
+    #[cfg(unix)]
+    #[test]
+    fn a_descriptor_is_only_accepted_when_it_is_the_file_that_was_validated() {
+        let tmp = TempDir::new().unwrap();
+        let one = tmp.path().join("one.txt");
+        let two = tmp.path().join("two.txt");
+        let also_one = tmp.path().join("also-one.txt");
+        fs::write(&one, "one").unwrap();
+        fs::write(&two, "two").unwrap();
+        fs::hard_link(&one, &also_one).unwrap();
+
+        let one = fs::symlink_metadata(&one).unwrap();
+        assert!(is_same_file(
+            &one,
+            &fs::symlink_metadata(&also_one).unwrap()
+        ));
+        assert!(!is_same_file(&one, &fs::symlink_metadata(&two).unwrap()));
+    }
+
+    /// A link the guard cannot canonicalize — its target does not exist — is
+    /// what `canonical_prefix` hands the opener verbatim, so the whole route
+    /// has to refuse it rather than reach through it.
+    #[cfg(unix)]
+    #[test]
+    fn artifact_read_refuses_a_link_at_the_final_component() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let home = tmp.path().join("home");
+        let link = home.join("report.txt");
+        std::os::unix::fs::symlink(home.join("not-yet.txt"), &link).unwrap();
+
+        assert_eq!(
+            read_artifact_within(&guard, link.to_str().unwrap()),
+            Err(Refusal::Denied)
+        );
+    }
+
+    #[test]
+    fn artifact_read_refuses_a_credential_store_inside_a_root() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let secrets = tmp.path().join("home").join("secrets.yaml");
+        fs::write(&secrets, "OPENAI_API_KEY: real").unwrap();
+
+        assert_eq!(
+            read_artifact_within(&guard, secrets.to_str().unwrap()),
+            Err(Refusal::Denied)
+        );
+    }
+
+    /// The case a dimension-only cap misses: both sides are inside
+    /// [`MAX_IMAGE_DIMENSION`] and the file is a few dozen bytes, yet the
+    /// renderer is being asked for twice [`MAX_IMAGE_PIXELS`].
+    #[test]
+    fn an_image_under_every_other_ceiling_is_refused_on_total_pixels() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let home = tmp.path().join("home");
+
+        let bomb = home.join("bomb.png");
+        fs::write(&bomb, png_declaring(8_000, 8_000)).unwrap();
+        assert_eq!(
+            read_artifact_within(&guard, bomb.to_str().unwrap()),
+            Err(Refusal::Unusable)
+        );
+
+        let wide = home.join("wide.png");
+        fs::write(&wide, png_declaring(9_000, 10)).unwrap();
+        assert_eq!(
+            read_artifact_within(&guard, wide.to_str().unwrap()),
+            Err(Refusal::Unusable)
+        );
+
+        // Exactly at the pixel ceiling, so the refusals above are a ceiling
+        // rather than a blanket.
+        let allowed = home.join("large.png");
+        fs::write(&allowed, png_declaring(8_000, 4_000)).unwrap();
+        let value = read_artifact_within(&guard, allowed.to_str().unwrap()).unwrap();
+        assert_eq!(value["kind"], "image");
+    }
+
+    /// `size:mtime` is reproducible by anyone who can write the file: a
+    /// same-size edit inside one modification-time tick collides with the
+    /// revision the panel is displaying, and the consumer's staleness check is
+    /// nothing but a comparison of these strings.
+    #[test]
+    fn two_files_sharing_a_size_and_an_mtime_still_get_different_revisions() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let home = tmp.path().join("home");
+        let one = home.join("one.txt");
+        let two = home.join("two.txt");
+        fs::write(&one, "aaaaa").unwrap();
+        fs::write(&two, "bbbbb").unwrap();
+        let stamp = std::fs::FileTimes::new()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000));
+        for path in [&one, &two] {
+            File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(stamp)
+                .unwrap();
+        }
+
+        let first = read_artifact_within(&guard, one.to_str().unwrap()).unwrap();
+        let second = read_artifact_within(&guard, two.to_str().unwrap()).unwrap();
+        let first = first["revision"].as_str().unwrap().to_string();
+        let second = second["revision"].as_str().unwrap().to_string();
+        let (first_stamp, first_digest) = first.rsplit_once(':').unwrap();
+        let (second_stamp, second_digest) = second.rsplit_once(':').unwrap();
+
+        // Assert the collision really was set up. Without this the test would
+        // pass against a revision that is still nothing but size and mtime.
+        assert_eq!(first_stamp, "5:1700000000000");
+        assert_eq!(first_stamp, second_stamp);
+        assert_ne!(first_digest, second_digest);
+    }
+
+    /// A revision leaves the daemon, so it must not double as a hash anyone
+    /// can test a guess at the file's contents against.
+    #[test]
+    fn a_revision_never_carries_an_unkeyed_digest_of_the_content() {
+        use sha2::Digest as _;
+        let content = b"the user's local file";
+        let revision = artifact_revision(content.len() as u64, 0, content);
+        assert!(!revision.contains(&hex::encode(Sha256::digest(content))));
+    }
+
+    /// The binary branches used to omit `revision` entirely, and the consumer
+    /// fails closed on its absence.
+    #[test]
+    fn every_artifact_kind_carries_a_revision() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let opaque = tmp.path().join("home").join("archive.bin");
+        fs::write(&opaque, b"\0\x01\x02").unwrap();
+
+        let value = read_artifact_within(&guard, opaque.to_str().unwrap()).unwrap();
+        assert_eq!(value["kind"], "binary");
+        assert!(value["revision"].as_str().unwrap().starts_with("3:"));
+    }
+
+    /// The renderer's response type has always declared these two fields and
+    /// this surface never produced them, so `workspace_read_panel` returned
+    /// nothing at all for a document opened through browser access.
+    #[test]
+    fn office_preview_extracts_document_text() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let path = tmp.path().join("home").join("report.docx");
+        fs::write(
+            &path,
+            office_zip(&[(
+                "word/document.xml",
+                b"<w:document><w:body><w:p><w:r><w:t>Hello</w:t></w:r></w:p>\
+                  <w:p><w:r><w:t>World &amp; welcome</w:t></w:r></w:p></w:body></w:document>",
+            )]),
+        )
+        .unwrap();
+
+        let value = read_artifact_within(&guard, path.to_str().unwrap()).unwrap();
+        assert_eq!(value["format"], "docx");
+        assert_eq!(value["extractedText"], "Hello\nWorld & welcome");
+        assert_eq!(value["textTruncated"], false);
+    }
+
+    #[test]
+    fn office_preview_clips_extracted_text_at_the_cap() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let body = "abcdefghij".repeat(MAX_OFFICE_TEXT_CHARS / 10 + 500);
+        let path = tmp.path().join("home").join("long.docx");
+        fs::write(
+            &path,
+            office_zip(&[(
+                "word/document.xml",
+                format!("<w:document><w:body><w:p><w:t>{body}</w:t></w:p></w:body></w:document>")
+                    .as_bytes(),
+            )]),
+        )
+        .unwrap();
+
+        let value = read_artifact_within(&guard, path.to_str().unwrap()).unwrap();
+        assert_eq!(value["textTruncated"], true);
+        assert_eq!(
+            value["extractedText"].as_str().unwrap().chars().count(),
+            MAX_OFFICE_TEXT_CHARS
+        );
+    }
+
+    /// A cell of type `s` holds an index, not text; without the shared-string
+    /// table a workbook flattens to a column of integers.
+    #[test]
+    fn workbook_text_resolves_shared_strings() {
+        let bytes = office_zip(&[
+            ("xl/workbook.xml", b"<workbook/>"),
+            (
+                "xl/sharedStrings.xml",
+                b"<sst><si><t>Alpha</t></si><si><t>Beta</t></si></sst>",
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                b"<worksheet><sheetData><row><c r=\"A1\" t=\"s\"><v>1</v></c>\
+                  <c r=\"B1\"><v>42</v></c></row></sheetData></worksheet>",
+            ),
+        ]);
+
+        let extracted = extract_office_text(&bytes, "xlsx").unwrap();
+        assert_eq!(extracted.text, "[Sheet 1]\nA1: Beta\nB1: 42");
+        assert!(!extracted.truncated);
+    }
+
+    /// Per-sheet ceilings bound one sheet. A workbook is N of them, and N
+    /// sheets that each sit under every per-sheet line is the shape that used
+    /// to pass.
+    #[test]
+    fn office_preview_refuses_a_used_range_that_only_exceeds_the_limit_in_aggregate() {
+        // 26 × 8000 = 208 000 cells per sheet: inside every per-sheet ceiling.
+        let sheet = || "<worksheet><dimension ref=\"A1:Z8000\"/></worksheet>".to_string();
+
+        let two = workbook_of(vec![sheet(), sheet()]);
+        assert_eq!(validate_office_archive(&two, "xlsx"), Ok(()));
+
+        let three = workbook_of(vec![sheet(), sheet(), sheet()]);
+        assert_eq!(
+            validate_office_archive(&three, "xlsx"),
+            Err(Refusal::Unusable)
+        );
+    }
+
+    #[test]
+    fn office_preview_refuses_populated_cells_that_only_exceed_the_limit_in_aggregate() {
+        let per_sheet = MAX_WORKBOOK_POPULATED_CELLS / 2 + 1_000;
+        let sheet = || {
+            format!(
+                "<worksheet><sheetData>{}</sheetData></worksheet>",
+                "<c r=\"A1\"/>".repeat(per_sheet)
+            )
+        };
+        assert_eq!(
+            populated_cell_count(&sheet()),
+            per_sheet,
+            "the fixture must actually carry the cells it claims"
+        );
+
+        let bytes = workbook_of(vec![sheet(), sheet()]);
+        assert_eq!(
+            validate_office_archive(&bytes, "xlsx"),
+            Err(Refusal::Unusable)
+        );
+    }
+
+    #[test]
+    fn office_preview_caps_the_number_of_worksheets() {
+        let sheet = || "<worksheet/>".to_string();
+
+        let allowed = workbook_of(vec![sheet(); MAX_WORKBOOK_WORKSHEETS]);
+        assert_eq!(validate_office_archive(&allowed, "xlsx"), Ok(()));
+
+        let refused = workbook_of(vec![sheet(); MAX_WORKBOOK_WORKSHEETS + 1]);
+        assert_eq!(
+            validate_office_archive(&refused, "xlsx"),
+            Err(Refusal::Unusable)
+        );
     }
 
     /// An absolute path outside every root is refused with `403`.
@@ -1661,7 +3031,7 @@ mod tests {
 
     /// Every route the retired binary served is still served, at the same path.
     #[test]
-    fn all_sixteen_routes_are_registered() {
+    fn all_seventeen_routes_are_registered() {
         let source = include_str!("shell.rs");
         for path in [
             "/headless/health",
@@ -1675,6 +3045,7 @@ mod tests {
             "/headless/fs/list-files",
             "/headless/fs/list-dirs",
             "/headless/fs/read",
+            "/headless/fs/artifact",
             "/headless/fs/write",
             "/headless/fs/ensure-dir",
             "/headless/fs/delete-file",

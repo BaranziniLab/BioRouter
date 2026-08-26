@@ -1,9 +1,8 @@
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
 use tracing::warn;
 use uuid::Uuid;
@@ -11,6 +10,9 @@ use uuid::Uuid;
 use crate::conversation::message::{Message, MessageContent};
 
 struct PendingRequest {
+    /// The session allowed to answer. An unattributed request starts as `None`
+    /// and is bound to the first session that drains its unscoped card.
+    session_id: Option<String>,
     /// `Some(data)` = the user answered; `None` = the user (or an
     /// unattended run) cancelled the elicitation. Carried as an `Option` so
     /// a cancellation unparks the waiting tool call with a **model-visible**
@@ -55,7 +57,7 @@ impl ScopeState {
 }
 
 pub struct ActionRequiredManager {
-    pending: Arc<RwLock<HashMap<String, Arc<Mutex<PendingRequest>>>>>,
+    pending: Arc<Mutex<HashMap<String, PendingRequest>>>,
     /// Request queues keyed by the originating session id. The manager is
     /// process-global, but delivery must not be: under the daemon, several
     /// sessions run their batch loops concurrently, and with a single shared
@@ -78,7 +80,7 @@ pub struct ActionRequiredManager {
 impl ActionRequiredManager {
     fn new() -> Self {
         Self {
-            pending: Arc::new(RwLock::new(HashMap::new())),
+            pending: Arc::new(Mutex::new(HashMap::new())),
             scoped: std::sync::Mutex::new(HashMap::new()),
             unscoped: ScopeState::default(),
         }
@@ -139,13 +141,14 @@ impl ActionRequiredManager {
         let id = Uuid::new_v4().to_string();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let pending_request = PendingRequest {
+            session_id: session_id.map(str::to_string),
             response_tx: Some(tx),
         };
 
         self.pending
-            .write()
-            .await
-            .insert(id.clone(), Arc::new(Mutex::new(pending_request)));
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id.clone(), pending_request);
 
         let action_required_message = Message::assistant().with_content(
             MessageContent::action_required_elicitation(id.clone(), message, schema),
@@ -165,7 +168,10 @@ impl ActionRequiredManager {
             }
         };
 
-        self.pending.write().await.remove(&id);
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
 
         result
     }
@@ -195,12 +201,59 @@ impl ActionRequiredManager {
     /// intact for their own loops.
     pub fn drain_requests(&self, session_id: &str) -> Vec<Message> {
         let mut messages = self.scope(session_id).drain();
-        messages.extend(self.unscoped.drain());
+        let unscoped = self.unscoped.drain();
+        if !unscoped.is_empty() {
+            let ids: Vec<String> = unscoped.iter().filter_map(action_required_id).collect();
+            {
+                let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+                for id in &ids {
+                    if let Some(request) = pending.get_mut(id) {
+                        if request.session_id.is_none() {
+                            request.session_id = Some(session_id.to_string());
+                        }
+                    }
+                }
+            }
+            for id in ids {
+                crate::pending_user_action::PendingUserActions::global()
+                    .claim_unscoped_for_session(&id, session_id);
+            }
+        }
+        messages.extend(unscoped);
         messages
     }
 
-    pub async fn submit_response(&self, request_id: String, user_data: Value) -> Result<()> {
-        self.deliver(request_id, Some(user_data)).await
+    #[cfg(test)]
+    pub(crate) fn has_unscoped_tool_confirmation(&self, expected_tool_name: &str) -> bool {
+        self.unscoped
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|message| {
+                message.content.iter().any(|content| {
+                    matches!(
+                        content,
+                        MessageContent::ActionRequired(action)
+                            if matches!(
+                                &action.data,
+                                crate::conversation::message::ActionRequiredData::ToolConfirmation {
+                                    tool_name,
+                                    ..
+                                } if tool_name.as_str() == expected_tool_name
+                            )
+                    )
+                })
+            })
+    }
+
+    pub async fn submit_response(
+        &self,
+        session_id: &str,
+        request_id: String,
+        user_data: Value,
+    ) -> Result<()> {
+        self.deliver(session_id, request_id, Some(user_data)).await
     }
 
     /// Cancel a pending elicitation: the parked [`Self::request_and_wait`]
@@ -208,14 +261,25 @@ impl ActionRequiredManager {
     /// `ElicitationAction::Cancel` — a model-visible outcome, unlike letting
     /// the request sit until its timeout. Used by unattended runs
     /// (non-interactive / no TTY) that can never collect the input (#40).
-    pub async fn submit_cancellation(&self, request_id: String) -> Result<()> {
-        self.deliver(request_id, None).await
+    pub async fn submit_cancellation(&self, session_id: &str, request_id: String) -> Result<()> {
+        self.deliver(session_id, request_id, None).await
     }
 
-    async fn deliver(&self, request_id: String, outcome: Option<Value>) -> Result<()> {
-        let pending_arc = {
-            let pending = self.pending.read().await;
-            pending.get(&request_id).cloned()
+    async fn deliver(
+        &self,
+        session_id: &str,
+        request_id: String,
+        outcome: Option<Value>,
+    ) -> Result<()> {
+        let sender = {
+            let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            pending.get_mut(&request_id).and_then(|request| {
+                if request.session_id.as_deref() == Some(session_id) {
+                    request.response_tx.take()
+                } else {
+                    None
+                }
+            })
         };
         // #107: an elicitation parked through `pending_user_action` is not in
         // this map — its rendezvous lives in that registry so a bridged call,
@@ -223,7 +287,7 @@ impl ActionRequiredManager {
         // routes and the CLI answer both kinds through this one function, so
         // the fallthrough is what stops the newer mechanism needing a second
         // route that a client would have to know to choose between.
-        let Some(pending_arc) = pending_arc else {
+        let Some(tx) = sender else {
             use crate::pending_user_action::{
                 PendingUserActions, ResolveOutcome, UserActionOutcome,
             };
@@ -231,27 +295,40 @@ impl ActionRequiredManager {
                 Some(data) => UserActionOutcome::Provided { data },
                 None => UserActionOutcome::Cancelled,
             };
-            return match PendingUserActions::global().resolve(&request_id, relayed) {
+            return match PendingUserActions::global().resolve_in_session(
+                session_id,
+                &request_id,
+                relayed,
+            ) {
                 ResolveOutcome::Delivered => Ok(()),
                 ResolveOutcome::Rejected => Err(anyhow::anyhow!(
                     "Request {} does not accept that answer",
                     request_id
                 )),
-                ResolveOutcome::Unknown => {
-                    Err(anyhow::anyhow!("Request not found: {}", request_id))
-                }
+                ResolveOutcome::Unknown => Err(anyhow::anyhow!("Request not found")),
             };
         };
 
-        let mut pending = pending_arc.lock().await;
-        if let Some(tx) = pending.response_tx.take() {
-            if tx.send(outcome).is_err() {
-                warn!("Failed to send response through oneshot channel");
-            }
+        if tx.send(outcome).is_err() {
+            warn!("Failed to send response through oneshot channel");
         }
 
         Ok(())
     }
+}
+
+fn action_required_id(message: &Message) -> Option<String> {
+    use crate::conversation::message::ActionRequiredData;
+
+    message.content.iter().find_map(|content| match content {
+        MessageContent::ActionRequired(action) => match &action.data {
+            ActionRequiredData::ToolConfirmation { id, .. }
+            | ActionRequiredData::Elicitation { id, .. }
+            | ActionRequiredData::SecretRequest { id, .. } => Some(id.clone()),
+            ActionRequiredData::ElicitationResponse { .. } => None,
+        },
+        _ => None,
+    })
 }
 
 #[cfg(test)]
@@ -308,7 +385,7 @@ mod tests {
         };
         let id = next_request_id(&manager, "sess-1").await;
         manager
-            .submit_response(id, serde_json::json!({"name": "ada"}))
+            .submit_response("sess-1", id, serde_json::json!({"name": "ada"}))
             .await
             .unwrap();
         let outcome = waiter.await.unwrap().unwrap();
@@ -335,7 +412,7 @@ mod tests {
             })
         };
         let id = next_request_id(&manager, "sess-1").await;
-        manager.submit_cancellation(id).await.unwrap();
+        manager.submit_cancellation("sess-1", id).await.unwrap();
         let outcome = waiter.await.unwrap().unwrap();
         assert_eq!(outcome, None, "cancellation must be Ok(None), not an error");
     }
@@ -370,7 +447,7 @@ mod tests {
         let id = timeout(Duration::from_secs(2), next_request_id(&manager, "sess-1"))
             .await
             .expect("the queued request must be drainable after the wake");
-        manager.submit_cancellation(id).await.unwrap();
+        manager.submit_cancellation("sess-1", id).await.unwrap();
         let outcome = timeout(Duration::from_secs(2), waiter)
             .await
             .expect("cancel must unpark the waiter promptly, not at its timeout")
@@ -423,7 +500,7 @@ mod tests {
 
         // B's request is still intact for B, and the cancel path works.
         let id = next_request_id(&manager, "sess-b").await;
-        manager.submit_cancellation(id).await.unwrap();
+        manager.submit_cancellation("sess-b", id).await.unwrap();
         let outcome = timeout(Duration::from_secs(2), waiter)
             .await
             .expect("cancel must unpark the waiter")
@@ -456,15 +533,63 @@ mod tests {
             .await
             .expect("an unscoped request must wake any session's loop");
         let id = next_request_id(&manager, "any-sess").await;
-        manager.submit_cancellation(id).await.unwrap();
+        manager.submit_cancellation("any-sess", id).await.unwrap();
     }
 
     #[tokio::test]
     async fn delivering_to_an_unknown_id_errors() {
         let manager = ActionRequiredManager::new();
         assert!(manager
-            .submit_cancellation("no-such-request".to_string())
+            .submit_cancellation("sess-1", "no-such-request".to_string())
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn foreign_response_is_indistinguishable_and_leaves_the_waiter_parked() {
+        let manager = std::sync::Arc::new(ActionRequiredManager::new());
+        let waiter = {
+            let manager = Arc::clone(&manager);
+            tokio::spawn(async move {
+                manager
+                    .request_and_wait(
+                        "Need owner's input".to_string(),
+                        serde_json::json!({}),
+                        Duration::from_secs(5),
+                        Some("sess-owner"),
+                    )
+                    .await
+            })
+        };
+        let id = next_request_id(&manager, "sess-owner").await;
+
+        let foreign = manager
+            .submit_response(
+                "sess-foreign",
+                id.clone(),
+                serde_json::json!({"wrong": true}),
+            )
+            .await
+            .expect_err("a foreign session must not resolve the request")
+            .to_string();
+        let unknown = manager
+            .submit_response(
+                "sess-foreign",
+                "no-such-request".to_string(),
+                serde_json::json!({"wrong": true}),
+            )
+            .await
+            .expect_err("an unknown id must stay unknown")
+            .to_string();
+        assert_eq!(foreign, unknown, "scope mismatches must not reveal the id");
+
+        manager
+            .submit_response("sess-owner", id, serde_json::json!({"right": true}))
+            .await
+            .expect("the owning session still resolves the parked waiter");
+        assert_eq!(
+            waiter.await.unwrap().unwrap(),
+            Some(serde_json::json!({"right": true}))
+        );
     }
 }

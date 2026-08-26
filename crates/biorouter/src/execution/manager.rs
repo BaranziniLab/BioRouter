@@ -44,6 +44,22 @@ impl AgentManager {
     ) -> Result<Self> {
         let scheduler = Scheduler::new(schedule_file_path, session_manager.clone()).await?;
 
+        // Runs to completion before this constructor returns, so on the success
+        // path no client ever observes a pre-OKF base or a store without its
+        // built-in OKF Soul. It deliberately does NOT gate construction: a
+        // daemon that refuses to build `AppState` has no HTTP listener, no GUI
+        // and no way for the user to reach the store and repair whatever the
+        // message names — strictly worse than a degraded Knowledge surface, and
+        // the reconciliation is retried on every startup and every
+        // `biorouter knowledge` command anyway.
+        match tokio::task::spawn_blocking(crate::knowledge::soul::ensure_soul_kb).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::error!("failed to reconcile the Soul knowledge base: {error:#}");
+            }
+            Err(error) => tracing::error!("Soul knowledge reconciliation task failed: {error}"),
+        }
+
         let capacity = NonZeroUsize::new(max_sessions.unwrap_or(DEFAULT_MAX_SESSION))
             .unwrap_or_else(|| NonZeroUsize::new(100).unwrap());
 
@@ -55,16 +71,11 @@ impl AgentManager {
             default_provider: Arc::new(RwLock::new(None)),
         };
 
-        // BR-55: don't block the listener bind / first frame on first-run
-        // install. Seeding the built-in skills (blocking file copies) and
-        // installing the Soul KB + Meditation workflow + 3 AM schedule (git
-        // init on first run) is idempotent, best-effort, and needed by nothing
-        // on the hot startup path — not `/status`, not the first turn, not tool
-        // dispatch (the skills extension re-seeds itself in `SkillsClient::new`
-        // on first use). Running it inline gated the server's `TcpListener`
-        // bind — and thus the GUI's `loadURL` / the CLI's first prompt — behind
-        // that I/O. Spawn it so startup returns immediately; set
-        // BIOROUTER_BLOCKING_STARTUP=1 to force the old synchronous behavior.
+        // BR-55 keeps skill/workflow/schedule seeding off the listener's hot
+        // path. Knowledge reconciliation is the deliberate exception above: it
+        // runs before this point so that clients never observe the pre-OKF bases
+        // startup is purging, or an empty store before its built-in OKF Soul
+        // exists.
         let scheduler = Arc::clone(&manager.scheduler);
         if std::env::var_os("BIOROUTER_BLOCKING_STARTUP").is_some() {
             Self::run_first_run_init(scheduler).await;

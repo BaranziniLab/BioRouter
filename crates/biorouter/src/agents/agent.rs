@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use futures::stream::BoxStream;
+use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{stream, Stream, StreamExt, TryStreamExt};
 use uuid::Uuid;
 
@@ -802,6 +802,12 @@ const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__workspace_watch",
 ];
 
+const CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS: &[&str] = &[
+    "workspace__workspace_watch",
+    "workspace__workspace_read_conversation",
+    "workspace__workspace_close",
+];
+
 const CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS: &[&str] = &[
     "knowledge__kb_list_bases",
     "knowledge__kb_list_pages",
@@ -824,6 +830,16 @@ fn coding_agent_bridge_allows_tool(
         || (trusted_knowledge && CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS.contains(&tool_name))
 }
 
+fn coding_agent_bridge_can_delegate(tools: &[Tool], trusted_workspace: bool) -> bool {
+    trusted_workspace
+        && tools
+            .iter()
+            .any(|tool| is_spawn_tool_call(tool.name.as_ref()))
+        && CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS
+            .iter()
+            .all(|required| tools.iter().any(|tool| tool.name.as_ref() == *required))
+}
+
 fn prepare_coding_agent_bridge_tool(tool: &Tool) -> Tool {
     let mut bridged = tool.clone();
     if is_spawn_tool_call(tool.name.as_ref()) {
@@ -843,21 +859,131 @@ fn prepare_coding_agent_bridge_tool(tool: &Tool) -> Tool {
 }
 
 fn delegated_work_supervision_prompt(parent_session_id: &str) -> Option<String> {
+    let services = crate::workspace_services::get();
     let running: Vec<_> = crate::agents::subagent_handle::list_for_session(parent_session_id)
         .into_iter()
-        .filter(|handle| handle.is_running())
+        .filter(|handle| {
+            handle.is_running()
+                || handle.continuation_pending()
+                || !handle.latest_generation_collected()
+                || services.as_ref().is_some_and(|services| {
+                    services.is_turn_active(handle.child_session_id.as_str())
+                })
+        })
         .map(|handle| handle.child_session_id.clone())
         .collect();
     if running.is_empty() {
         return None;
     }
     Some(format!(
-        "Your delegated subagent sessions are still running: {}. Continue supervising them now. \
+        "Your delegated subagent sessions still require supervision or result collection: {}. \
+         Continue supervising them now. \
          Call workspace_watch for these session ids, inspect progress with \
          workspace_read_conversation, and use workspace_close if a child must stop. Do not give \
          a final answer until every listed child has finished and you have collected its result.",
         running.join(", ")
     ))
+}
+
+struct NativeSupervisionClaim {
+    handle: Arc<crate::agents::subagent_handle::BackgroundSubagent>,
+    generation: u64,
+    result: crate::agents::subagent_result::SubagentResult,
+}
+
+enum NativeSupervisionWake {
+    Ready(NativeSupervisionClaim),
+    Complete,
+    Cancelled,
+}
+
+async fn next_native_supervision_claim(
+    parent_session_id: &str,
+    cancel_token: &Option<CancellationToken>,
+) -> NativeSupervisionWake {
+    loop {
+        let mut observed = Vec::new();
+        for handle in crate::agents::subagent_handle::list_for_session(parent_session_id) {
+            let version = handle.state_version();
+            if handle.latest_generation_collected() && !handle.continuation_pending() {
+                continue;
+            }
+            let generation = handle.child_turn_generation();
+            if !handle.continuation_pending() {
+                if let Some(terminal) = handle.terminal_generation() {
+                    if terminal.generation == generation {
+                        return NativeSupervisionWake::Ready(NativeSupervisionClaim {
+                            handle,
+                            generation,
+                            result: terminal.result,
+                        });
+                    }
+                }
+            }
+            observed.push((handle, version));
+        }
+
+        if observed.is_empty() {
+            return NativeSupervisionWake::Complete;
+        }
+
+        let changes = FuturesUnordered::new();
+        for (handle, version) in observed {
+            changes.push(async move {
+                handle.wait_for_state_change(version).await;
+            });
+        }
+        tokio::pin!(changes);
+        tokio::select! {
+            biased;
+            _ = async {
+                match cancel_token.as_ref() {
+                    Some(token) => token.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => return NativeSupervisionWake::Cancelled,
+            _ = changes.next() => {}
+        }
+    }
+}
+
+fn native_supervision_message(claim: &NativeSupervisionClaim) -> Result<Message> {
+    let serialized = serde_json::to_string_pretty(&claim.result)?;
+    let framed = crate::conversation::message::frame_workspace_injection(
+        Some(&claim.handle.title),
+        &serialized,
+    );
+    Ok(Message::assistant()
+        .with_text(format!(
+            "Delegated subagent {} ({}, generation {}) reached a terminal result:\n{}",
+            claim.handle.title, claim.handle.child_session_id, claim.generation, framed,
+        ))
+        .with_provenance(crate::conversation::message::MessageProvenance {
+            kind: ProvenanceKind::AgentInjection,
+            from_session_id: Some(claim.handle.child_session_id.clone()),
+            from_session_name: Some(claim.handle.title.clone()),
+        }))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum StructuredFinalOutputAction {
+    Emit(String),
+    ContinueSupervising(String),
+}
+
+async fn take_structured_final_output_action(
+    final_output_tool: &Mutex<Option<FinalOutputTool>>,
+    parent_session_id: &str,
+) -> Option<StructuredFinalOutputAction> {
+    let final_output = {
+        let mut tool = final_output_tool.lock().await;
+        tool.as_mut()?.final_output.take()?
+    };
+
+    Some(match delegated_work_supervision_prompt(parent_session_id) {
+        Some(prompt) => StructuredFinalOutputAction::ContinueSupervising(prompt),
+        None => StructuredFinalOutputAction::Emit(final_output),
+    })
 }
 
 struct ChatBridgeDispatch {
@@ -1490,6 +1616,22 @@ async fn persist_steering_message(
     Ok((steer, published))
 }
 
+async fn persist_carried_over_interrupts(
+    session_manager: &SessionManager,
+    session_id: &str,
+    pending: Vec<QueuedInterrupt>,
+) -> Result<Vec<Message>> {
+    let mut messages = Vec::with_capacity(pending.len());
+    for queued in pending {
+        let mut message = soft_interrupt_message(queued);
+        session_manager
+            .add_message_adopting_uid(session_id, &mut message)
+            .await?;
+        messages.push(message);
+    }
+    Ok(messages)
+}
+
 /// The ids of this signed turn's tool requests that have an executable
 /// counterpart and a response slot, in the provider-authored order the signed
 /// assistant block fixes.
@@ -2091,6 +2233,9 @@ pub(super) struct SoftInterrupts {
     turn: Option<TurnId>,
     /// Cleared by `close_and_drain` once the loop has committed to exiting.
     accepting: bool,
+    /// True only for the explicit delegated handoff before the reply stream's
+    /// first poll claims this queue.
+    prepared: bool,
     queued: Vec<QueuedInterrupt>,
 }
 
@@ -2099,6 +2244,7 @@ impl SoftInterrupts {
         Self {
             turn: None,
             accepting: false,
+            prepared: false,
             queued: Vec::new(),
         }
     }
@@ -2114,7 +2260,7 @@ pub enum InterruptRefused {
 enum LiveSteerOutcome {
     Delivered(Vec<Message>),
     Disabled,
-    Cancelled,
+    Cancelled(Vec<Message>),
 }
 
 impl std::fmt::Display for InterruptRefused {
@@ -2152,9 +2298,9 @@ enum ToolAudience {
 /// reply loop performs, without running a reply loop.
 #[derive(Debug)]
 pub enum Drained {
-    /// Items were taken; the turn stays open and must loop again to consume them.
+    /// Items were taken before the turn closed.
     Some(Vec<QueuedInterrupt>),
-    /// Nothing queued; the queue is now closed and the loop may exit.
+    /// Nothing was queued when the turn closed.
     Empty,
 }
 
@@ -2282,6 +2428,11 @@ pub struct Agent {
 
     pub extension_manager: Arc<ExtensionManager>,
     pub(super) sub_workflows: Mutex<HashMap<String, SubWorkflow>>,
+    /// Session ids whose daemon-authored child runtime is already installed on
+    /// this live agent. Cold restoration consults this before touching prompt,
+    /// structured-output, subworkflow, or extension state, preserving provider-
+    /// local Codex/Claude sessions during ordinary steering.
+    pub(super) subagent_runtime_sessions: Mutex<HashSet<String>>,
     /// Whether the generic `subagent` tool is offered at all.
     ///
     /// Default `true` (every existing caller). An Agent-Drafter app that declares
@@ -2523,7 +2674,7 @@ async fn next_provider_wake<T, S>(
     stream: &mut S,
     session_id: &str,
     interrupt_notify: &Notify,
-    live_steering: bool,
+    wake_for_steer: bool,
 ) -> ProviderWake<T>
 where
     S: Stream<Item = T> + Unpin,
@@ -2540,7 +2691,7 @@ where
             ProviderWake::ElicitationReady
         }
         _ = async {
-            if live_steering {
+            if wake_for_steer {
                 interrupt_notify.notified().await;
             } else {
                 std::future::pending::<()>().await;
@@ -2646,6 +2797,7 @@ pub(super) fn fire_compaction_hook_on(
 #[cfg(test)]
 pub(crate) mod seams {
     use crate::providers::base::Provider;
+    use crate::session::SessionManager;
     use tokio::sync::oneshot;
 
     /// One armed rendezvous: the caller session id and tool name it is waiting
@@ -2697,16 +2849,16 @@ pub(crate) mod seams {
         }
     }
 
-    // ─── Issue #56, Gate A: the two rendezvous on the provider-bind path ────
+    // ─── Provider-persistence rendezvous ────────────────────────────────────
     //
-    // `arm_*` returns a [`Rendezvous`] that fires when the bind path reaches
+    // `arm_*` returns a [`Rendezvous`] that fires when its persistence path reaches
     // it, carrying the sender that releases it — so a test can run a whole
     // ratchet *inside* the window instead of hoping a `tokio::spawn` lands
     // there. Two channels and not a `Barrier`: a 2-party `Barrier::wait`
     // releases both sides at the rendezvous, which is the one thing this must
     // not do.
     //
-    // ⚠ THE TWO SEAMS SIT IN DIFFERENT FUNCTIONS, ON PURPOSE.
+    // ⚠ THE SEAMS SIT IN DIFFERENT FUNCTIONS, ON PURPOSE.
     // `before_bind_write` is inside `SessionStorage::bind_provider_if_allowed`
     // (`session_manager.rs`), between any read that function performs and the
     // statement that writes — hence `pub(crate)`, and hence the name: it is
@@ -2745,11 +2897,12 @@ pub(crate) mod seams {
     // sender. An arm nobody consumes is inert — its token exists nowhere but
     // inside the one future it was minted for.
 
-    /// Which of the two bind rendezvous a token authorizes.
+    /// Which provider-persistence rendezvous a token authorizes.
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum Seam {
         BeforeBindWrite,
         AfterBindBeforeSwap,
+        BeforeCompositeStateWrite,
     }
 
     /// What one `arm_*` call hands out: permission for one future to be caught
@@ -2772,8 +2925,7 @@ pub(crate) mod seams {
         static ARMED_TASK: ArmToken;
     }
 
-    /// One armed rendezvous, handed back by `arm_before_bind_write` /
-    /// `arm_after_bind_before_swap`.
+    /// One armed provider-persistence rendezvous.
     pub(crate) struct Rendezvous {
         token: ArmToken,
         arrived: oneshot::Receiver<oneshot::Sender<()>>,
@@ -2815,8 +2967,8 @@ pub(crate) mod seams {
 
     /// Mark `fut` as the ONE call that may consume `token`'s arm.
     ///
-    /// Every other `update_provider` in the process walks through both seams
-    /// with one uncontended `try_with` and no await.
+    /// Every other provider-persistence call in the process walks through its
+    /// seam with one uncontended `try_with` and no await.
     pub(crate) fn armed<F: std::future::Future>(
         token: ArmToken,
         fut: F,
@@ -2871,6 +3023,10 @@ pub(crate) mod seams {
         arm(Seam::AfterBindBeforeSwap)
     }
 
+    pub(crate) fn arm_before_composite_state_write() -> Rendezvous {
+        arm(Seam::BeforeCompositeStateWrite)
+    }
+
     /// Called from `session_manager.rs`, hence `pub(crate)`.
     pub(crate) async fn before_bind_write() {
         park(Seam::BeforeBindWrite).await
@@ -2880,50 +3036,87 @@ pub(crate) mod seams {
         park(Seam::AfterBindBeforeSwap).await
     }
 
-    // ─── Issue #56, Gate B: the provider a repairing rebind constructs ───────
+    /// Called from `session_manager.rs`, immediately before the composite CAS.
+    pub(crate) async fn before_composite_state_write() {
+        park(Seam::BeforeCompositeStateWrite).await
+    }
+
+    // ─── Provider construction for row restore/rebind tests ───────────
     //
-    // Gate B's repair arm exists to build the provider the session ROW names,
-    // which in production means `providers::create` — a factory that reads the
-    // user's config file and their OS keyring, and whose products talk to real
-    // hosts. A unit test cannot go through it in either direction:
+    // Row restoration and Gate B repair both build the provider the session ROW
+    // names, which in production means `providers::create` — a factory that
+    // reads the user's config file and their OS keyring, and whose products talk
+    // to real hosts. A unit test cannot go through it in either direction:
     // `create("versa_azure", ..)` needs institutional credentials this machine
     // may not have (and asking for them can raise a Keychain prompt), while
     // `create("ollama", ..)` succeeds *offline* and then points the turn at
     // whatever happens to be listening on localhost:11434.
     //
     // So the construction step — and only that step — is overridable in test
-    // builds. Keyed by `(session id, provider name)`, not by name alone: these
-    // tests are `#[tokio::test]`s in one binary on parallel threads, and a
-    // name-only key would let one test's rebind answer another's.
-    type RebindOverride = (String, String, std::sync::Arc<dyn Provider>);
+    // builds. The storage identity is part of the key because isolated test
+    // databases each allocate the same first session id (`YYYYMMDD_1`). Keeping
+    // only `(session id, provider name)` lets an override from one database answer
+    // another's rebind, even when the tests run serially.
+    type RebindOverride = (
+        std::sync::Weak<crate::session::session_manager::SessionStorage>,
+        String,
+        String,
+        std::sync::Arc<dyn Provider>,
+    );
     static REBIND_OVERRIDES: std::sync::Mutex<Vec<RebindOverride>> =
         std::sync::Mutex::new(Vec::new());
 
-    /// Register the provider `Agent::rebind_from_row` must hand back when the
-    /// row for `session_id` names `provider_name`.
+    /// Register the provider row restoration/rebind must hand back when the row
+    /// for `session_id` names `provider_name`.
     pub(crate) fn override_rebind_provider(
+        session_manager: &SessionManager,
         session_id: &str,
         provider_name: &str,
         provider: std::sync::Arc<dyn Provider>,
     ) {
-        REBIND_OVERRIDES
+        let storage = std::sync::Arc::downgrade(session_manager.storage());
+        let mut overrides = REBIND_OVERRIDES
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((session_id.to_string(), provider_name.to_string(), provider));
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        overrides.retain(
+            |(registered_storage, registered_session, registered_provider, _)| {
+                registered_storage.strong_count() > 0
+                    && !(std::sync::Weak::ptr_eq(registered_storage, &storage)
+                        && registered_session == session_id
+                        && registered_provider == provider_name)
+            },
+        );
+        overrides.push((
+            storage,
+            session_id.to_string(),
+            provider_name.to_string(),
+            provider,
+        ));
     }
 
     /// The registered override, if any. Not consumed: a session's rebind can
     /// legitimately happen on more than one turn.
     pub(super) fn rebind_override(
+        session_manager: &SessionManager,
         session_id: &str,
         provider_name: &str,
     ) -> Option<std::sync::Arc<dyn Provider>> {
-        REBIND_OVERRIDES
+        let storage = std::sync::Arc::downgrade(session_manager.storage());
+        let mut overrides = REBIND_OVERRIDES
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        overrides.retain(|(registered_storage, _, _, _)| registered_storage.strong_count() > 0);
+        overrides
             .iter()
-            .find(|(s, p, _)| s == session_id && p == provider_name)
-            .map(|(_, _, provider)| std::sync::Arc::clone(provider))
+            .rev()
+            .find(
+                |(registered_storage, registered_session, registered_provider, _)| {
+                    std::sync::Weak::ptr_eq(registered_storage, &storage)
+                        && registered_session == session_id
+                        && registered_provider == provider_name
+                },
+            )
+            .map(|(_, _, _, provider)| std::sync::Arc::clone(provider))
     }
 }
 
@@ -2971,6 +3164,7 @@ impl Agent {
             config,
             extension_manager: Arc::new(ExtensionManager::new(provider.clone(), session_manager)),
             sub_workflows: Mutex::new(HashMap::new()),
+            subagent_runtime_sessions: Mutex::new(HashSet::new()),
             subagent_tool_enabled: AtomicBool::new(true),
             final_output_tool: Arc::new(Mutex::new(None)),
             frontend_tools: Mutex::new(HashMap::new()),
@@ -3041,9 +3235,9 @@ impl Agent {
     /// dropped and logged rather than silently injected — that is the #69 bug's
     /// own shape.
     ///
-    /// `pub` because the *route-level* tests have to be able to put an agent into
-    /// the accepting state without running a whole reply loop; the only production
-    /// caller is the reply loop itself.
+    /// `pub` because route-level tests put an agent into the accepting state
+    /// without running a whole reply loop. Production opens through the reply
+    /// loop or the delegated handoff helper below.
     pub fn open_for_turn(&self, turn: TurnId) {
         let mut q = self.lock_interrupts();
         if !q.queued.is_empty() {
@@ -3055,6 +3249,42 @@ impl Agent {
         }
         q.turn = Some(turn);
         q.accepting = true;
+        q.prepared = false;
+    }
+
+    /// Open the interrupt queue immediately before a delegated initial prompt
+    /// crosses from the initialization queue into the agent loop. The loop
+    /// claims this exact turn on its first poll, so there is no admission gap
+    /// between the two queues.
+    pub(crate) fn prepare_soft_interrupt_turn(&self) -> TurnId {
+        let turn = TurnId::mint();
+        let mut q = self.lock_interrupts();
+        if !q.queued.is_empty() {
+            warn!(
+                count = q.queued.len(),
+                "dropping interrupts left by a previous turn; they were never accepted"
+            );
+            q.queued.clear();
+        }
+        q.turn = Some(turn.clone());
+        q.accepting = true;
+        q.prepared = true;
+        turn
+    }
+
+    fn open_or_reuse_prepared_turn(&self) -> TurnId {
+        {
+            let mut q = self.lock_interrupts();
+            if q.accepting && q.prepared {
+                if let Some(turn) = q.turn.clone() {
+                    q.prepared = false;
+                    return turn;
+                }
+            }
+        }
+        let turn = TurnId::mint();
+        self.open_for_turn(turn.clone());
+        turn
     }
 
     /// Re-open the queue after the loop decided *not* to exit at a point where it
@@ -3159,13 +3389,13 @@ impl Agent {
                     // may have observed the first item before cancellation, but
                     // storing the user's message is correct in either case and
                     // avoids an unsafe blind retry after an unknown ack state.
-                    for queued in pending[index..].iter().cloned() {
-                        let mut message = soft_interrupt_message(queued);
-                        session_manager
-                            .add_message_adopting_uid(session_id, &mut message)
-                            .await?;
-                    }
-                    return Ok(LiveSteerOutcome::Cancelled);
+                    let carried_over = persist_carried_over_interrupts(
+                        session_manager,
+                        session_id,
+                        pending[index..].to_vec(),
+                    )
+                    .await?;
+                    return Ok(LiveSteerOutcome::Cancelled(carried_over));
                 },
                 acknowledgement = acknowledged => acknowledgement,
             };
@@ -3191,15 +3421,106 @@ impl Agent {
         Ok(LiveSteerOutcome::Delivered(delivered))
     }
 
+    fn close_and_take_for_turn(&self, expected_turn: &TurnId) -> Vec<QueuedInterrupt> {
+        let mut q = self.lock_interrupts();
+        if q.turn.as_ref() != Some(expected_turn) {
+            return Vec::new();
+        }
+        q.accepting = false;
+        q.prepared = false;
+        q.turn = None;
+        std::mem::take(&mut q.queued)
+    }
+
+    fn close_and_take_current_turn(&self) -> Vec<QueuedInterrupt> {
+        let mut q = self.lock_interrupts();
+        q.accepting = false;
+        q.prepared = false;
+        q.turn = None;
+        std::mem::take(&mut q.queued)
+    }
+
+    async fn settle_soft_interrupts_for_turn(
+        &self,
+        expected_turn: &TurnId,
+        session_id: &str,
+    ) -> Result<Vec<Message>> {
+        persist_carried_over_interrupts(
+            &self.config.session_manager,
+            session_id,
+            self.close_and_take_for_turn(expected_turn),
+        )
+        .await
+    }
+
+    /// Close the active interrupt window and make every already-accepted item
+    /// durable. The detached turn runner calls this before dropping a cancelled
+    /// reply stream, whose lazy tail can no longer perform the settlement.
+    /// Repeated calls are harmless: the first call clears the turn and queue in
+    /// the same critical section, so later calls return no messages.
+    pub async fn settle_carried_over_soft_interrupts(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<Message>> {
+        persist_carried_over_interrupts(
+            &self.config.session_manager,
+            session_id,
+            self.close_and_take_current_turn(),
+        )
+        .await
+    }
+
+    pub async fn next_native_supervision_message_after_forced_exit(
+        &self,
+        session_id: &str,
+        cancel_token: Option<CancellationToken>,
+    ) -> Result<Option<Message>> {
+        loop {
+            match next_native_supervision_claim(session_id, &cancel_token).await {
+                NativeSupervisionWake::Ready(claim) => {
+                    let mut message = native_supervision_message(&claim)?;
+                    if !claim
+                        .handle
+                        .mark_terminal_generation_collected_if_generation(claim.generation)
+                    {
+                        warn!(
+                            child_session_id = %claim.handle.child_session_id,
+                            generation = claim.generation,
+                            "delegated result changed before native supervision could collect it"
+                        );
+                        continue;
+                    }
+                    let persisted = self
+                        .config
+                        .session_manager
+                        .add_message_adopting_uid(session_id, &mut message)
+                        .await;
+                    if persisted.is_err() {
+                        claim
+                            .handle
+                            .rollback_terminal_generation_collection(claim.generation);
+                    }
+                    persisted?;
+                    return Ok(Some(message));
+                }
+                NativeSupervisionWake::Complete | NativeSupervisionWake::Cancelled => {
+                    return Ok(None)
+                }
+            }
+        }
+    }
+
     /// Take everything and, only if there was nothing, close in the same critical
-    /// section (#69). That is what makes the exit atomic: after `Drained::Empty`
-    /// no further interrupt can be accepted, so nothing can arrive between the
-    /// check and the exit.
+    /// section (#69). A non-empty result intentionally keeps the turn accepting:
+    /// the normal completion path requeues those items and continues so the model
+    /// can apply them. Safety and cancellation exits use the unconditional exact-
+    /// turn close above and carry the items into the durable transcript instead.
     pub fn close_and_drain(&self) -> Drained {
         let mut q = self.lock_interrupts();
         let taken = std::mem::take(&mut q.queued);
         if taken.is_empty() {
             q.accepting = false;
+            q.prepared = false;
             Drained::Empty
         } else {
             Drained::Some(taken)
@@ -5019,12 +5340,17 @@ impl Agent {
         };
 
         #[cfg(test)]
-        let provider = match seams::rebind_override(&row.id, &provider_name) {
+        let provider = match seams::rebind_override(
+            self.config.session_manager.as_ref(),
+            &row.id,
+            &provider_name,
+        ) {
             Some(provider) => provider,
-            None => crate::providers::create(&provider_name, model_config).await?,
+            None => crate::providers::create_from_persisted(&provider_name, model_config).await?,
         };
         #[cfg(not(test))]
-        let provider = crate::providers::create(&provider_name, model_config).await?;
+        let provider =
+            crate::providers::create_from_persisted(&provider_name, model_config).await?;
 
         if !crate::privacy::bind_allowed(provider.tier(), row.privacy_tier) {
             return Ok(false);
@@ -5078,8 +5404,19 @@ impl Agent {
             return Ok(None);
         }
 
-        let model_config = effort.apply_to_model(provider.get_model_config());
-        match crate::providers::create(provider.get_name(), model_config).await {
+        let mut binding = provider.restore_binding();
+        let model_config = effort.apply_to_model(binding.model().clone());
+        *binding.model_mut() = model_config;
+        let rebuilt = match crate::providers::persisted_model_config_from_binding(
+            provider.get_name(),
+            binding,
+        ) {
+            Ok(model_config) => {
+                crate::providers::create_from_persisted(provider.get_name(), model_config).await
+            }
+            Err(error) => Err(error),
+        };
+        match rebuilt {
             Ok(rebuilt) => Ok(Some(rebuilt)),
             Err(e) => {
                 warn!(
@@ -5092,6 +5429,34 @@ impl Agent {
                 Ok(None)
             }
         }
+    }
+
+    async fn persist_composite_provider_state(
+        &self,
+        session_id: &str,
+        provider: &Arc<dyn Provider>,
+        expected_generation: &str,
+    ) -> Result<bool> {
+        let Some(composite) = provider.as_lead_worker() else {
+            return Ok(true);
+        };
+        if composite.get_config_generation() != expected_generation {
+            return Ok(false);
+        }
+
+        let model_config_json = serde_json::to_string(&provider.get_model_config())
+            .context("Failed to serialize composite provider routing state")?;
+        self.config
+            .session_manager
+            .storage()
+            .update_composite_model_config_if_generation_matches(
+                session_id,
+                provider.get_name(),
+                expected_generation,
+                &model_config_json,
+            )
+            .await
+            .context("Failed to persist composite provider routing state")
     }
 
     /// Check if a tool is a frontend tool
@@ -5163,6 +5528,7 @@ impl Agent {
     /// belong to one iteration of the reply loop.
     async fn issue_tool_bridge(
         &self,
+        iteration_provider: &Arc<dyn Provider>,
         session: &Session,
         conversation: &Conversation,
         tools: &[Tool],
@@ -5175,18 +5541,16 @@ impl Agent {
         // child was the ordinary case, not the corner one. `tier()` and
         // `affiliation()` already had to be instance methods for exactly this, and
         // `uses_tool_bridge` is the third override beside them.
-        let uses_bridge = {
-            let guard = self.provider.lock().await;
-            guard.as_ref().map(|p| p.uses_tool_bridge())?
-        };
-        if !uses_bridge {
+        if !iteration_provider.uses_tool_bridge() {
             return None;
         }
 
         // Sampled once, here, and carried in the grant. A bridged call is a call,
         // and `CallCapability` exists so a call's privacy capability is fixed
         // before it runs rather than re-read while it runs.
-        let capability = crate::privacy::CallCapability::sample(&self.provider).await;
+        let pinned_provider: SharedProvider =
+            Arc::new(Mutex::new(Some(Arc::clone(iteration_provider))));
+        let capability = crate::privacy::CallCapability::sample(&pinned_provider).await;
 
         let workspace_target = resolve_bundled_extension(Self::SPAWN_EXTENSION);
         let trusted_workspace = if let Some(target) = workspace_target.as_ref() {
@@ -5205,12 +5569,8 @@ impl Agent {
             false
         };
 
-        let delegation_available = trusted_workspace
-            && tools
-                .iter()
-                .any(|tool| is_spawn_tool_call(tool.name.as_ref()));
+        let delegation_available = coding_agent_bridge_can_delegate(tools, trusted_workspace);
         let subagent = if delegation_available {
-            let provider = self.provider().await.ok()?;
             let mut extensions = self.get_extension_configs().await;
             extensions.retain(|extension| {
                 trusted_knowledge
@@ -5221,7 +5581,7 @@ impl Agent {
             Some(BridgedSubagentContext {
                 agent_config: self.config.clone(),
                 task_config: TaskConfig::new(
-                    provider,
+                    Arc::clone(iteration_provider),
                     &session.id,
                     &session.working_dir,
                     extensions,
@@ -5361,7 +5721,9 @@ impl Agent {
                 .arguments
                 .map(Value::Object)
                 .unwrap_or(Value::Object(serde_json::Map::new()));
-            let result = self.handle_ingest_conversation(arguments, session).await;
+            let result = self
+                .handle_ingest_conversation(arguments, session, cancellation_token.clone())
+                .await;
             let wrapped_result = result.map(|content| CallToolResult {
                 content,
                 structured_content: None,
@@ -5380,7 +5742,9 @@ impl Agent {
                 .arguments
                 .map(Value::Object)
                 .unwrap_or(Value::Object(serde_json::Map::new()));
-            let result = self.handle_ingest_source(arguments, session).await;
+            let result = self
+                .handle_ingest_source(arguments, session, cancellation_token.clone())
+                .await;
             let wrapped_result = result.map(|content| CallToolResult {
                 content,
                 structured_content: None,
@@ -5738,6 +6102,16 @@ impl Agent {
     /// on the other — and tool calls overlap by construction, so the window was
     /// reachable rather than theoretical.
     async fn write_enabled_extensions(&self, session_id: &str) -> Result<()> {
+        let session = self
+            .config
+            .session_manager
+            .get_session(session_id, false)
+            .await?;
+        if session.session_type == SessionType::SubAgent {
+            return Err(anyhow!(
+                "subagent extension grants are immutable runtime-profile authority"
+            ));
+        }
         let extensions_state =
             EnabledExtensionsState::new(self.persistable_extension_configs().await);
         let value = extensions_state
@@ -6234,6 +6608,29 @@ impl Agent {
         request_id: String,
         confirmation: PermissionConfirmation,
     ) -> ConfirmationOutcome {
+        self.handle_confirmation_in_session(None, request_id, confirmation)
+            .await
+    }
+
+    /// Handle a confirmation posted from the exact session whose surface
+    /// rendered it. This is the only entry that may resolve a bridged call's
+    /// process-global pending action.
+    pub async fn handle_confirmation_for_session(
+        &self,
+        session_id: &str,
+        request_id: String,
+        confirmation: PermissionConfirmation,
+    ) -> ConfirmationOutcome {
+        self.handle_confirmation_in_session(Some(session_id), request_id, confirmation)
+            .await
+    }
+
+    async fn handle_confirmation_in_session(
+        &self,
+        session_id: Option<&str>,
+        request_id: String,
+        confirmation: PermissionConfirmation,
+    ) -> ConfirmationOutcome {
         let sender = self
             .pending_confirmations
             .lock()
@@ -6282,7 +6679,18 @@ impl Agent {
                         permission: confirmation.permission,
                     },
                 };
-                match PendingUserActions::global().resolve(&request_id, relayed) {
+                let Some(session_id) = session_id else {
+                    debug!(
+                        "Ignoring confirmation for request {}: no exact session was supplied",
+                        request_id
+                    );
+                    return ConfirmationOutcome::Unknown;
+                };
+                match PendingUserActions::global().resolve_in_session(
+                    session_id,
+                    &request_id,
+                    relayed,
+                ) {
                     ResolveOutcome::Delivered => ConfirmationOutcome::Delivered,
                     ResolveOutcome::Rejected | ResolveOutcome::Unknown => {
                         debug!(
@@ -6304,6 +6712,7 @@ impl Agent {
         session_config: SessionConfig,
         cancel_token: Option<CancellationToken>,
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
+        crate::agents::subagent_handle::admit_child_turn(&session_config.id);
         let session_manager = self.config.session_manager.clone();
         // #59: everything this function persists BEFORE the reply stream is
         // constructed — the user's own message, a slash command's resolution,
@@ -6329,7 +6738,7 @@ impl Agent {
             });
         if let Some((id, user_data)) = elicitation_response {
             if let Err(e) = ActionRequiredManager::global()
-                .submit_response(id.clone(), user_data)
+                .submit_response(&session_config.id, id.clone(), user_data)
                 .await
             {
                 // No live request is waiting on this id. The usual cause
@@ -6702,9 +7111,6 @@ impl Agent {
         // [`RewriteBasis`]).
         let (session, mut rewrite_basis) =
             RewriteBasis::read_with_session(&session_manager, &session_config.id).await?;
-        if session.session_type == SessionType::SubAgent {
-            crate::agents::subagent_handle::begin_child_turn(&session_config.id);
-        }
         let stored_conversation = rewrite_basis.known().clone();
         let conversation = crate::conversation::without_bedrock_reasoning(rewrite_basis.known());
 
@@ -7201,6 +7607,9 @@ impl Agent {
                 Some(provider) => Arc::clone(provider),
                 None => self.provider().await?,
             };
+            let mut composite_generation = reply_provider
+                .as_lead_worker()
+                .map(|provider| provider.get_config_generation().to_string());
             let mut signed_replay_context: Option<Conversation> = None;
 
             // #69: this run of the loop is now the turn that soft interrupts are
@@ -7208,8 +7617,16 @@ impl Agent {
             // where the stream was built — means acceptance begins and ends with a
             // real consumer, and anything a previous turn left behind is dropped
             // with a warning instead of ambushing this one.
-            let this_turn = TurnId::mint();
-            self.open_for_turn(this_turn.clone());
+            let this_turn = self.open_or_reuse_prepared_turn();
+            crate::agents::subagent_handle::open_parent_continuation_admission(
+                &session_config.id,
+            );
+            let mut native_supervision_required = false;
+            let mut deferred_turn_abort: Option<(TurnAbortCode, String)> = None;
+            // A dropped stream is reissued to apply a direct user steer. It is
+            // still the same logical action, including when that action already
+            // occupies the final `max_turns` slot.
+            let mut restart_steer_reissue = false;
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -7225,22 +7642,47 @@ impl Agent {
                     break;
                 }
 
-                if let Some(final_output_tool) = self.final_output_tool.lock().await.as_ref() {
-                    if final_output_tool.final_output.is_some() {
-                        let final_event = AgentEvent::Message(
-                            assistant_text(final_output_tool.final_output.clone().unwrap())
-                        );
-                        yield final_event;
-                        break;
+                if let Some(action) = take_structured_final_output_action(
+                    &self.final_output_tool,
+                    &session_config.id,
+                )
+                .await
+                {
+                    match action {
+                        StructuredFinalOutputAction::Emit(final_output) => {
+                            yield AgentEvent::Message(assistant_text(final_output));
+                            break;
+                        }
+                        StructuredFinalOutputAction::ContinueSupervising(prompt) => {
+                            info!("parent remains active to supervise delegated work");
+                            let (supervision, published) = persist_steering_message(
+                                &session_manager,
+                                &session_config.id,
+                                prompt,
+                            )
+                            .await?;
+                            if let Some(published) = published {
+                                yield published;
+                            }
+                            if signed_replay_context.take().is_some() {
+                                conversation =
+                                    crate::conversation::without_bedrock_reasoning(&conversation);
+                            }
+                            conversation.push(supervision);
+                        }
                     }
                 }
 
-                turns_taken += 1;
+                if !std::mem::take(&mut restart_steer_reissue) {
+                    turns_taken += 1;
+                }
                 // Surface turn progress so an observer (CLI/GUI/logs) can tell how
                 // much of the per-turn action budget has been used, and so a
                 // budget-exhaustion stop is distinguishable from a normal completion.
                 tracing::debug!("agent action {}/{} this turn", turns_taken, max_turns);
                 if turns_taken > max_turns {
+                    crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+                    native_supervision_required = true;
                     emit_loop_safety(
                         LoopSafetyKind::TurnLimitStop,
                         &session_config.id,
@@ -7258,6 +7700,8 @@ impl Agent {
                     break;
                 }
                 if tool_calls_taken > max_tool_calls {
+                    crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+                    native_supervision_required = true;
                     emit_loop_safety(
                         LoopSafetyKind::ToolCallLimitStop,
                         &session_config.id,
@@ -7278,6 +7722,8 @@ impl Agent {
                 // kept going. End the turn rather than let a confirmed loop run to
                 // the `max_turns` cap.
                 if stall_deadline.is_some_and(|deadline| turns_taken > deadline) {
+                    crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+                    native_supervision_required = true;
                     let reason = stall_watch
                         .last_reason()
                         .unwrap_or("repeating the same actions without progress")
@@ -7301,6 +7747,8 @@ impl Agent {
                 // it kept working past its grace window. End the reply rather than
                 // let it spend the budget over again.
                 if budget_deadline.is_some_and(|deadline| turns_taken > deadline) {
+                    crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+                    native_supervision_required = true;
                     let snapshot = budget.snapshot_at(reply_started.elapsed());
                     warn!(
                         elapsed_seconds = snapshot.elapsed_seconds,
@@ -7535,6 +7983,7 @@ impl Agent {
                 // inside the awaited call and therefore inside this scope.
                 let bridge_lease = self
                     .issue_tool_bridge(
+                        &iteration_provider,
                         &session,
                         &conversation_with_moim,
                         &tools,
@@ -7542,6 +7991,8 @@ impl Agent {
                     )
                     .await;
                 let bridge_url = bridge_lease.as_ref().map(|l| l.url().to_string());
+                let restart_steering = iteration_provider.supports_streaming()
+                    && iteration_provider.supports_restart_steering();
                 let (mut live_steer_sender, live_steer_receiver) =
                     if iteration_provider.supports_streaming()
                         && iteration_provider.supports_live_steering()
@@ -7575,6 +8026,11 @@ impl Agent {
                 // hint pushed into `messages_to_add`; the turn continues instead of
                 // ending on the error.
                 let mut did_recover_provider_error_this_iteration = false;
+                // Some streamed APIs cannot transport a steer inside an existing
+                // request but can cancel that request on stream drop. In that case
+                // the emitted prefix is persisted below and the queued UserDirect
+                // message is consumed at the next ordinary loop boundary.
+                let mut did_restart_for_steer_this_iteration = false;
                 // finish_reason of this turn's response (from the provider usage),
                 // used below to auto-continue a length-truncated turn.
                 let mut last_finish_reason: Option<String> = None;
@@ -7625,7 +8081,7 @@ impl Agent {
                         &mut stream,
                         &session_config.id,
                         &self.soft_interrupt_notify,
-                        live_steer_sender.is_some(),
+                        live_steer_sender.is_some() || restart_steering,
                     )
                     .await
                     {
@@ -7638,6 +8094,16 @@ impl Agent {
                         }
                         ProviderWake::SteerReady => {
                             let Some(sender) = live_steer_sender.as_ref() else {
+                                if restart_steering && self.has_soft_interrupts() {
+                                    info!(
+                                        provider = reply_provider.get_name(),
+                                        "queued steer is restarting the provider stream"
+                                    );
+                                    drop(stream);
+                                    did_restart_for_steer_this_iteration = true;
+                                    restart_steer_reissue = true;
+                                    break;
+                                }
                                 continue;
                             };
                             match self
@@ -7662,8 +8128,26 @@ impl Agent {
                                         yield AgentEvent::Message(message);
                                     }
                                 }
-                                LiveSteerOutcome::Disabled => live_steer_sender = None,
-                                LiveSteerOutcome::Cancelled => break,
+                                LiveSteerOutcome::Disabled => {
+                                    live_steer_sender = None;
+                                    if restart_steering && self.has_soft_interrupts() {
+                                        info!(
+                                            provider = reply_provider.get_name(),
+                                            "live steer was unavailable; restarting the provider stream"
+                                        );
+                                        drop(stream);
+                                        did_restart_for_steer_this_iteration = true;
+                                        restart_steer_reissue = true;
+                                        break;
+                                    }
+                                }
+                                LiveSteerOutcome::Cancelled(messages) => {
+                                    for message in messages {
+                                        conversation.push(message.clone());
+                                        yield AgentEvent::Message(message);
+                                    }
+                                    break;
+                                }
                             }
                             continue;
                         }
@@ -8440,6 +8924,23 @@ impl Agent {
                     }
                 }
 
+                // A lead/worker provider advances its worker/fallback routing only
+                // after the provider stream settles. Persist that exact snapshot
+                // before any later yield can let the consumer drop this stream and
+                // the AgentManager evict the live provider instance.
+                if let Some(generation) = composite_generation.as_deref() {
+                    if !self
+                        .persist_composite_provider_state(
+                            &session_config.id,
+                            &reply_provider,
+                            generation,
+                        )
+                        .await?
+                    {
+                        composite_generation = None;
+                    }
+                }
+
                 // Record the turn exactly once, whether the stream finished, was
                 // cancelled, or errored out. The provider still processed (and
                 // billed) whatever it reported.
@@ -8469,6 +8970,11 @@ impl Agent {
                 if pending_turn_abort.is_some() {
                     // The typed failure is emitted after this iteration's messages
                     // and usage have been persisted below.
+                } else if did_restart_for_steer_this_iteration {
+                    // The stream was deliberately dropped at a safe boundary. Do
+                    // not treat the missing finish reason as a natural stop: first
+                    // persist its emitted prefix below, then the next loop step
+                    // drains and persists the queued steer before reissuing.
                 } else if last_finish_reason.as_deref() == Some("length") {
                         // The provider cut the response off at the output-length
                         // limit (not a natural stop) and the model called no tool,
@@ -8531,8 +9037,8 @@ impl Agent {
                             .final_output_tool
                             .lock()
                             .await
-                            .as_ref()
-                            .map(|tool| tool.final_output.clone());
+                            .as_mut()
+                            .map(|tool| tool.final_output.take());
                         if let Some(final_output) = final_output_state {
                         match final_output {
                             None => {
@@ -8647,7 +9153,9 @@ impl Agent {
                 }
 
                 if let Some((code, message)) = pending_turn_abort.take() {
-                    yield AgentEvent::TurnAborted { code, message };
+                    crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+                    native_supervision_required = true;
+                    deferred_turn_abort = Some((code, message));
                     break;
                 }
 
@@ -8896,24 +9404,33 @@ impl Agent {
                 tokio::task::yield_now().await;
             }
 
-            // #69: the loop is over on every path that reaches here — including
-            // the aborts that break out above `close_and_drain` (cancel, budget,
-            // stall, max_turns). Close the queue so a steer aimed at this turn is
-            // refused rather than accepted into a session with nothing running.
-            // A steer that got in first is reported (it is about to be dropped by
-            // the next `open_for_turn`); it cannot be answered, because there is
-            // no loop left to answer it. An early-cancelled consumer can drop this
-            // stream before this line, in which case the next turn's
-            // `open_for_turn` is what clears the queue.
-            if let Drained::Some(stranded) = self.close_and_drain() {
-                warn!(
-                    count = stranded.len(),
-                    turn = %this_turn,
-                    "turn ended before its queued soft interrupts could be injected"
-                );
-                // Closed for good: re-taking the (now empty) queue flips
-                // `accepting` off, which the non-empty branch above left on.
-                let _ = self.close_and_drain();
+            crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+
+            // Close and take in one critical section. Anything accepted before
+            // this close is carried into the durable transcript and emitted to
+            // observers even when a safety stop won before the next provider
+            // boundary. Anything arriving after the close is refused.
+            for message in self
+                .settle_soft_interrupts_for_turn(&this_turn, &session_config.id)
+                .await?
+            {
+                yield AgentEvent::Message(message);
+            }
+
+            if native_supervision_required {
+                while let Some(message) = self
+                    .next_native_supervision_message_after_forced_exit(
+                        &session_config.id,
+                        cancel_token.clone(),
+                    )
+                    .await?
+                {
+                    yield AgentEvent::Message(message);
+                }
+            }
+
+            if let Some((code, message)) = deferred_turn_abort {
+                yield AgentEvent::TurnAborted { code, message };
             }
 
             // BR-12: the turn is complete — the agent loop drained and control is
@@ -8956,13 +9473,29 @@ impl Agent {
                 return;
             }
         };
+        let composite_generation = provider
+            .as_lead_worker()
+            .map(|provider| provider.get_config_generation().to_string());
         if let Err(e) = self
             .config
             .session_manager
-            .maybe_update_name(session_id, provider)
+            .maybe_update_name(session_id, Arc::clone(&provider))
             .await
         {
             warn!("Failed to generate session description: {}", e);
+        }
+        if let Some(generation) = composite_generation {
+            match self
+                .persist_composite_provider_state(session_id, &provider, &generation)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => debug!(
+                    session_id,
+                    "session provider changed while naming; retained the newer selection"
+                ),
+                Err(e) => warn!("Failed to persist provider state after session rename: {e}"),
+            }
         }
     }
 
@@ -8977,7 +9510,7 @@ impl Agent {
         session_id: &str,
     ) -> Result<()> {
         let provider_name = provider.get_name().to_string();
-        let model_config = provider.get_model_config();
+        let model_config = crate::providers::persisted_model_config(provider.as_ref())?;
         let tier = provider.tier();
         let model_config_json = serde_json::to_string(&model_config)
             .context("Failed to serialize the provider's model config")?;
@@ -9296,7 +9829,19 @@ impl Agent {
             }
         };
 
-        let provider = crate::providers::create(&provider_name, model_config)
+        #[cfg(test)]
+        let provider = match seams::rebind_override(
+            self.config.session_manager.as_ref(),
+            &session.id,
+            &provider_name,
+        ) {
+            Some(provider) => provider,
+            None => crate::providers::create_from_persisted(&provider_name, model_config)
+                .await
+                .map_err(|e| anyhow!("Could not create provider: {}", e))?,
+        };
+        #[cfg(not(test))]
+        let provider = crate::providers::create_from_persisted(&provider_name, model_config)
             .await
             .map_err(|e| anyhow!("Could not create provider: {}", e))?;
 
@@ -9331,6 +9876,26 @@ impl Agent {
         // to stop. The fix is the repair card reaching this site and not only
         // `reply`, which needs a UI surface that does not exist yet.
         self.update_provider(provider, &session.id).await
+    }
+
+    /// Restore the provider recorded by `session` only when this agent has no
+    /// live provider binding.
+    ///
+    /// Turn setup uses this after resolving an agent from the manager. A running
+    /// subagent is pinned there with its original provider instance, while an
+    /// idle subagent is reconstructed as a bare agent after the pin is released.
+    /// Rebinding the former would discard provider-local state (including live
+    /// Codex and Claude agent sessions); leaving the latter bare fails its next
+    /// direct turn with `Provider not set`.
+    ///
+    /// A session that has never recorded a provider is deliberately left alone.
+    /// The resume/start surfaces own global-default selection; a direct turn must
+    /// not silently turn an uninitialized row into today's global provider.
+    pub async fn restore_persisted_provider_if_missing(&self, session: &Session) -> Result<()> {
+        if self.bound_provider_unchecked().await.is_some() || session.provider_name.is_none() {
+            return Ok(());
+        }
+        self.restore_provider_from_session(session).await
     }
 
     /// Override the system prompt with a custom template
@@ -9814,7 +10379,7 @@ mod tests {
         let id = queued_elicitation_id(&drained)
             .expect("the request message carries the elicitation id");
         ActionRequiredManager::global()
-            .submit_cancellation(id)
+            .submit_cancellation(SESSION, id)
             .await
             .unwrap();
 
@@ -9886,7 +10451,7 @@ mod tests {
         let id = queued_elicitation_id(&drained_by_b)
             .expect("session B's request must still be deliverable to B");
         ActionRequiredManager::global()
-            .submit_cancellation(id)
+            .submit_cancellation(SESSION_B, id)
             .await
             .unwrap();
         let outcome = tokio::time::timeout(Duration::from_secs(2), waiter)
@@ -9907,7 +10472,7 @@ mod tests {
     /// #107: a bridged call's prompt lives in the process-global registry, not
     /// in this agent's map — it was raised on an axum task with no `Agent` in
     /// scope. The desktop posts both kinds of decision to the same route, so
-    /// `handle_confirmation` has to reach both. Without the fallthrough the
+    /// the session-scoped handler has to reach both. Without the fallthrough the
     /// route answers `unknown` and the child stays parked to its TTL.
     #[tokio::test]
     async fn a_confirmation_reaches_a_bridged_prompt_this_agent_never_registered() {
@@ -9942,7 +10507,11 @@ mod tests {
 
         assert_eq!(
             agent
-                .handle_confirmation(id.clone(), confirmation(Permission::AllowOnce))
+                .handle_confirmation_for_session(
+                    "bridged-sess",
+                    id.clone(),
+                    confirmation(Permission::AllowOnce),
+                )
                 .await,
             ConfirmationOutcome::Delivered
         );
@@ -9976,7 +10545,11 @@ mod tests {
             }),
         );
         agent
-            .handle_confirmation(parked.id().to_string(), confirmation(Permission::Cancel))
+            .handle_confirmation_for_session(
+                "bridged-sess",
+                parked.id().to_string(),
+                confirmation(Permission::Cancel),
+            )
             .await;
         assert_eq!(
             parked.wait(std::time::Duration::from_secs(5), None).await,
@@ -10446,6 +11019,8 @@ mod tests {
 
     #[tokio::test]
     async fn live_interrupt_is_persisted_only_after_provider_acknowledges_it() {
+        use crate::conversation::message::{MessageProvenance, ProvenanceKind};
+
         let temp = tempfile::TempDir::new().unwrap();
         let sm = std::sync::Arc::new(crate::session::SessionManager::new(
             temp.path().to_path_buf(),
@@ -10466,7 +11041,14 @@ mod tests {
         ));
         agent.open_for_turn(TurnId::new("turn-live-steer"));
         agent
-            .try_queue_soft_interrupt("change course now".into(), None)
+            .try_queue_soft_interrupt(
+                "change course now".into(),
+                Some(MessageProvenance {
+                    kind: ProvenanceKind::UserDirect,
+                    from_session_id: Some("parent-session".into()),
+                    from_session_name: Some("Parent".into()),
+                }),
+            )
             .unwrap();
         let (sender, mut receiver) = provider_steer_channel();
         let provider = tokio::spawn(async move {
@@ -10487,12 +11069,21 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert!(!agent.has_soft_interrupts());
         let stored = sm.get_session(&session.id, true).await.unwrap();
-        assert!(stored
-            .conversation
-            .unwrap()
+        let stored_conversation = stored.conversation.unwrap();
+        let stored_message = stored_conversation
             .messages()
             .iter()
-            .any(|message| message.as_concat_text() == "change course now"));
+            .find(|message| message.as_concat_text() == "change course now")
+            .expect("the acknowledged steer must be durable");
+        assert_eq!(
+            stored_message.metadata.provenance,
+            Some(MessageProvenance {
+                kind: ProvenanceKind::UserDirect,
+                from_session_id: Some("parent-session".into()),
+                from_session_name: Some("Parent".into()),
+            }),
+            "the durable copy must retain exact user-direct provenance"
+        );
     }
 
     #[tokio::test]
@@ -10505,6 +11096,256 @@ mod tests {
             next_provider_wake(&None, &mut output, "steer-priority-session", &notify, true).await;
 
         assert!(matches!(wake, ProviderWake::SteerReady));
+    }
+
+    struct StreamDropSignal(Arc<AtomicBool>);
+
+    impl Drop for StreamDropSignal {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    struct RestartSteeringProvider {
+        calls: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
+        first_stream_dropped: Arc<AtomicBool>,
+        second_request_started_after_drop: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for RestartSteeringProvider {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::empty()
+        }
+
+        fn get_name(&self) -> &str {
+            "restart-steering-test"
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("restart-steering-model")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> std::result::Result<(Message, crate::providers::base::ProviderUsage), ProviderError>
+        {
+            Err(ProviderError::NotImplemented(
+                "restart steering test is streaming-only".into(),
+            ))
+        }
+
+        fn supports_streaming(&self) -> bool {
+            true
+        }
+
+        fn supports_restart_steering(&self) -> bool {
+            true
+        }
+
+        async fn stream(
+            &self,
+            _system: &str,
+            messages: &[Message],
+            _tools: &[Tool],
+        ) -> std::result::Result<crate::providers::base::MessageStream, ProviderError> {
+            let call = {
+                let mut calls = self.calls.lock().expect("restart call log poisoned");
+                calls.push(messages.to_vec());
+                calls.len()
+            };
+            if call == 1 {
+                let signal = StreamDropSignal(Arc::clone(&self.first_stream_dropped));
+                let mut emitted = false;
+                return Ok(Box::pin(futures::stream::poll_fn(move |_cx| {
+                    let _keep_signal_alive = &signal;
+                    if emitted {
+                        std::task::Poll::Pending
+                    } else {
+                        emitted = true;
+                        std::task::Poll::Ready(Some(Ok((
+                            Some(
+                                Message::assistant()
+                                    .with_id("restart-partial")
+                                    .with_text("partial before steer"),
+                            ),
+                            None,
+                            None,
+                        ))))
+                    }
+                })));
+            }
+
+            self.second_request_started_after_drop.store(
+                self.first_stream_dropped.load(Ordering::SeqCst),
+                Ordering::SeqCst,
+            );
+            Ok(crate::providers::base::stream_from_single_message(
+                Message::assistant().with_text("finished after steer"),
+                crate::providers::base::ProviderUsage::new(
+                    "restart-steering-model".into(),
+                    crate::providers::base::Usage::default(),
+                ),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn restart_steering_drops_stream_and_reissues_with_user_direct_context_once() {
+        use crate::conversation::message::{MessageProvenance, ProvenanceKind};
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let permission_manager = Arc::new(crate::config::permission::PermissionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let agent = Arc::new(Agent::with_config(AgentConfig::new(
+            Arc::clone(&session_manager),
+            permission_manager,
+            None,
+            crate::config::BioRouterMode::Auto,
+        )));
+        let session = loop {
+            let candidate = session_manager
+                .create_session(
+                    temp.path().to_path_buf(),
+                    "restart-steering".into(),
+                    SessionType::SubAgent,
+                )
+                .await
+                .unwrap();
+            if crate::agents::subagent_handle::list_for_session(&candidate.id).is_empty() {
+                break candidate;
+            }
+        };
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let first_stream_dropped = Arc::new(AtomicBool::new(false));
+        let second_request_started_after_drop = Arc::new(AtomicBool::new(false));
+        agent
+            .update_provider(
+                Arc::new(RestartSteeringProvider {
+                    calls: Arc::clone(&calls),
+                    first_stream_dropped: Arc::clone(&first_stream_dropped),
+                    second_request_started_after_drop: Arc::clone(
+                        &second_request_started_after_drop,
+                    ),
+                }),
+                &session.id,
+            )
+            .await
+            .unwrap();
+
+        let provenance = MessageProvenance {
+            kind: ProvenanceKind::UserDirect,
+            from_session_id: Some("parent-session".into()),
+            from_session_name: Some("Parent".into()),
+        };
+        let reply = agent
+            .reply(
+                Message::user().with_text("start the streamed turn"),
+                SessionConfig {
+                    id: session.id.clone(),
+                    schedule_id: None,
+                    max_turns: Some(1),
+                    max_tool_calls: None,
+                    budget: None,
+                    retry_config: None,
+                    reasoning_effort: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::pin!(reply);
+        let mut queued = false;
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while let Some(event) = reply.next().await {
+                let event = event.expect("reply event");
+                if let AgentEvent::Message(message) = event {
+                    if message.as_concat_text() == "partial before steer" && !queued {
+                        agent
+                            .try_queue_soft_interrupt(
+                                "change course immediately".into(),
+                                Some(provenance.clone()),
+                            )
+                            .expect("running subagent accepts direct steer");
+                        queued = true;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("the pending first request must be dropped rather than awaited");
+
+        assert!(queued, "the first stream must emit its partial prefix");
+        assert!(first_stream_dropped.load(Ordering::SeqCst));
+        assert!(second_request_started_after_drop.load(Ordering::SeqCst));
+        {
+            let calls = calls.lock().expect("restart call log poisoned");
+            assert_eq!(calls.len(), 2, "the same provider is reissued exactly once");
+            assert!(
+                calls[0]
+                    .iter()
+                    .all(|message| message.as_concat_text() != "change course immediately"),
+                "the steer is queued only after the first request starts"
+            );
+            let second = &calls[1];
+            let partial_index = second
+                .iter()
+                .position(|message| message.as_concat_text() == "partial before steer")
+                .expect("persisted partial output reaches the replacement request");
+            let steer_index = second
+                .iter()
+                .position(|message| message.as_concat_text() == "change course immediately")
+                .expect("queued steer reaches the replacement request");
+            assert_eq!(
+                second
+                    .iter()
+                    .filter(|message| message.as_concat_text() == "partial before steer")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                second
+                    .iter()
+                    .filter(|message| message.as_concat_text() == "change course immediately")
+                    .count(),
+                1
+            );
+            assert!(partial_index < steer_index);
+            assert_eq!(
+                second[steer_index].metadata.provenance,
+                Some(provenance.clone())
+            );
+        }
+
+        let stored = session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .expect("reply messages are durable");
+        assert_eq!(
+            stored
+                .messages()
+                .iter()
+                .filter(|message| message.as_concat_text() == "partial before steer")
+                .count(),
+            1
+        );
+        let persisted_steers: Vec<_> = stored
+            .messages()
+            .iter()
+            .filter(|message| message.as_concat_text() == "change course immediately")
+            .collect();
+        assert_eq!(persisted_steers.len(), 1);
+        assert_eq!(persisted_steers[0].metadata.provenance, Some(provenance));
     }
 
     #[tokio::test]
@@ -10587,7 +11428,10 @@ mod tests {
             .deliver_live_interrupts(&sender, &sm, &session.id, &Some(cancel))
             .await
             .unwrap();
-        assert!(matches!(outcome, LiveSteerOutcome::Cancelled));
+        let LiveSteerOutcome::Cancelled(messages) = outcome else {
+            panic!("cancelled live steering must be carried over")
+        };
+        assert_eq!(messages.len(), 2);
         assert!(!agent.has_soft_interrupts());
         let stored = sm.get_session(&session.id, true).await.unwrap();
         let texts: Vec<_> = stored
@@ -10718,6 +11562,75 @@ mod tests {
             }
             Drained::Empty => panic!("the queued steer must be drained by its own turn"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn delegated_handoff_reuses_the_prepared_interrupt_turn_without_dropping_input() {
+        let agent = test_agent().await;
+        let prepared = agent.prepare_soft_interrupt_turn();
+        let accepted = agent
+            .try_queue_soft_interrupt("arrived during handoff".into(), None)
+            .expect("the prepared handoff must accept");
+        assert_eq!(accepted, prepared);
+
+        let claimed = agent.open_or_reuse_prepared_turn();
+        assert_eq!(claimed, prepared);
+        match agent.close_and_drain() {
+            Drained::Some(items) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].text, "arrived during handoff");
+            }
+            Drained::Empty => panic!("claiming the prepared turn must not clear its steer"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_unprepared_stale_queue_is_not_reused_by_a_new_reply_loop() {
+        let agent = test_agent().await;
+        let stale = TurnId::new("stale-turn");
+        agent.open_for_turn(stale.clone());
+        agent
+            .try_queue_soft_interrupt("must not ambush the successor".into(), None)
+            .unwrap();
+
+        let successor = agent.open_or_reuse_prepared_turn();
+        assert_ne!(successor, stale);
+        assert!(
+            matches!(agent.close_and_drain(), Drained::Empty),
+            "ordinary stale interrupts must retain the existing drop-on-new-turn contract"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn exact_turn_close_is_atomic_and_idempotent() {
+        let agent = test_agent().await;
+        let turn = TurnId::new("turn-atomic-close");
+        agent.open_for_turn(turn.clone());
+        agent
+            .try_queue_soft_interrupt("accepted before close".into(), None)
+            .expect("the active turn accepts before closing");
+
+        let taken = agent.close_and_take_for_turn(&turn);
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].text, "accepted before close");
+        assert!(matches!(
+            agent.try_queue_soft_interrupt("after close".into(), None),
+            Err(InterruptRefused::TurnEnded)
+        ));
+        assert!(
+            agent.close_and_take_for_turn(&turn).is_empty(),
+            "a second settlement cannot duplicate the accepted item"
+        );
+
+        agent.open_for_turn(TurnId::new("successor-turn"));
+        assert!(
+            agent.close_and_take_for_turn(&turn).is_empty(),
+            "a stale exact-turn close cannot consume a successor turn"
+        );
+        assert!(matches!(
+            agent.try_queue_soft_interrupt("successor input".into(), None),
+            Ok(turn) if turn.as_str() == "successor-turn"
+        ));
     }
 
     /// An `Agent` over a throwaway session store with exactly ONE loaded
@@ -10861,6 +11774,111 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn coding_agent_bridge_withholds_spawn_when_any_collector_is_missing() {
+        coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        agent
+            .update_provider(
+                Arc::new(BridgedChildProvider { name: "codex" }),
+                &session_id,
+            )
+            .await
+            .expect("bind a coding-agent-shaped provider");
+        let full_surface = agent.list_tools(&session_id, None).await;
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, true)
+            .await
+            .expect("read the bridge parent");
+        let conversation = session
+            .conversation
+            .clone()
+            .unwrap_or_else(Conversation::empty);
+        let iteration_provider = agent.provider().await.expect("the pinned provider");
+
+        for missing_collector in CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS {
+            assert!(
+                full_surface
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == *missing_collector),
+                "the full prepared surface must contain {missing_collector}"
+            );
+            let restricted_surface: Vec<_> = full_surface
+                .iter()
+                .filter(|tool| tool.name.as_ref() != *missing_collector)
+                .cloned()
+                .collect();
+            assert!(
+                restricted_surface
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == "workspace__subagent"),
+                "the ordinary prepared surface must still contain spawn when only {missing_collector} is restricted"
+            );
+
+            let lease = agent
+                .issue_tool_bridge(
+                    &iteration_provider,
+                    &session,
+                    &conversation,
+                    &restricted_surface,
+                    None,
+                )
+                .await
+                .expect("a coding-agent provider still needs a bridge");
+            let nonce = lease
+                .url()
+                .rsplit('/')
+                .next()
+                .expect("the bridge URL ends in its nonce");
+            let grant = coding_agent_bridge::lookup(nonce).expect("the bridge grant is live");
+            assert!(
+                !grant
+                    .tools()
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == "workspace__subagent"),
+                "the bridge advertised an uncollectable subagent without {missing_collector}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn coding_agent_bridge_eligibility_uses_the_pinned_iteration_provider() {
+        coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let pinned_non_bridge: Arc<dyn Provider> =
+            Arc::new(BridgedChildProvider { name: "anthropic" });
+        agent
+            .update_provider(
+                Arc::new(BridgedChildProvider { name: "codex" }),
+                &session_id,
+            )
+            .await
+            .expect("bind a different live provider");
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, true)
+            .await
+            .expect("read the bridge parent");
+        let conversation = session
+            .conversation
+            .clone()
+            .unwrap_or_else(Conversation::empty);
+        let tools = agent.list_tools(&session_id, None).await;
+
+        assert!(
+            agent
+                .issue_tool_bridge(&pinned_non_bridge, &session, &conversation, &tools, None,)
+                .await
+                .is_none(),
+            "a later provider swap must not make a non-bridged iteration eligible"
+        );
+    }
+
     #[test]
     fn coding_agent_bridge_requires_active_parent_supervision() {
         let spawn = bridge_test_tool("workspace__subagent");
@@ -10871,7 +11889,415 @@ mod tests {
         assert!(description.contains("steer or stop it"));
     }
 
+    fn armed_structured_final_output(output: &str) -> Arc<Mutex<Option<FinalOutputTool>>> {
+        let mut tool = FinalOutputTool::new(Response {
+            json_schema: Some(serde_json::json!({ "type": "object" })),
+        });
+        tool.final_output = Some(output.to_string());
+        Arc::new(Mutex::new(Some(tool)))
+    }
+
+    struct ReplacementTurnServices {
+        child_session_id: String,
+        active: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::workspace_services::WorkspaceServices for ReplacementTurnServices {
+        fn gui_attached(&self) -> bool {
+            false
+        }
+
+        fn layout_snapshot(&self) -> Option<serde_json::Value> {
+            None
+        }
+
+        fn is_turn_active(&self, session_id: &str) -> bool {
+            session_id == self.child_session_id.as_str()
+                && self.active.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn cancel_turn(&self, _session_id: &str) -> Option<String> {
+            None
+        }
+
+        fn begin_turn(
+            &self,
+            _session_id: &str,
+            _cancel: CancellationToken,
+        ) -> std::result::Result<Box<dyn crate::workspace_services::WorkspaceTurnLease>, String>
+        {
+            Err("the test service starts no turns".into())
+        }
+
+        async fn stop_agent(&self, _session_id: &str) -> std::result::Result<(), String> {
+            Ok(())
+        }
+
+        async fn start_detached_turn(
+            &self,
+            _session_id: &str,
+            _message: Message,
+        ) -> std::result::Result<String, String> {
+            Err("the test service starts no turns".into())
+        }
+
+        async fn start_session(
+            &self,
+            _working_dir: std::path::PathBuf,
+            _extensions: Option<Vec<String>>,
+            _knowledge_bases: Vec<String>,
+            _primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> std::result::Result<String, String> {
+            Err("the test service starts no sessions".into())
+        }
+
+        fn set_knowledge_bases(
+            &self,
+            _session_id: &str,
+            _kbs: &[String],
+            _primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> std::result::Result<crate::workspace_services::KbSelectionView, String> {
+            Err("the test service sets no knowledge bases".into())
+        }
+
+        fn knowledge_selection(
+            &self,
+            _session_id: &str,
+        ) -> crate::workspace_services::KbSelectionView {
+            crate::workspace_services::KbSelectionView::default()
+        }
+
+        async fn gui_command(
+            &self,
+            _frame: serde_json::Value,
+            _wait_result: bool,
+        ) -> std::result::Result<serde_json::Value, String> {
+            Err("no GUI attached".into())
+        }
+    }
+
+    struct ClearWorkspaceServicesOverride;
+
+    impl Drop for ClearWorkspaceServicesOverride {
+        fn drop(&mut self) {
+            crate::workspace_services::clear_test_override();
+        }
+    }
+
     #[test]
+    #[serial_test::serial(workspace_services)]
+    fn a_replacement_turn_on_a_finished_child_still_blocks_parent_exit() {
+        let _clear_override = ClearWorkspaceServicesOverride;
+        let parent = format!("replacement-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("replacement-child-{}", uuid::Uuid::new_v4());
+        let handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "test child",
+            CancellationToken::new(),
+        );
+        handle.complete(crate::agents::subagent_result::SubagentResult::from_error(
+            "original turn complete",
+        ));
+        assert!(!handle.is_running(), "the original handle must be finished");
+        let mark = crate::agents::subagent_handle::mark_continuation_pending(&child);
+        assert!(!mark.is_empty());
+        let prompt = delegated_work_supervision_prompt(&parent)
+            .expect("the admitted continuation gap must keep the parent supervising");
+        assert!(prompt.contains(&child));
+
+        let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        crate::workspace_services::set_for_tests(Some(Arc::new(ReplacementTurnServices {
+            child_session_id: child.clone(),
+            active: Arc::clone(&active),
+        })));
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        assert!(!handle.continuation_pending());
+
+        let prompt = delegated_work_supervision_prompt(&parent)
+            .expect("the active replacement turn must keep the parent supervising");
+        assert!(prompt.contains(&child));
+
+        active.store(false, std::sync::atomic::Ordering::SeqCst);
+        let prompt = delegated_work_supervision_prompt(&parent)
+            .expect("an idle replacement result remains uncollected");
+        assert!(prompt.contains(&child));
+        assert!(handle.mark_collected_if_generation(handle.child_turn_generation()));
+        assert!(
+            delegated_work_supervision_prompt(&parent).is_none(),
+            "collecting the latest idle generation releases the parent"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn structured_final_output_cannot_bypass_pending_or_active_child_supervision() {
+        let _clear_override = ClearWorkspaceServicesOverride;
+        let parent = format!("structured-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("structured-child-{}", uuid::Uuid::new_v4());
+        let handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "test child",
+            CancellationToken::new(),
+        );
+        handle.complete(crate::agents::subagent_result::SubagentResult::from_error(
+            "original turn complete",
+        ));
+        let mark = crate::agents::subagent_handle::mark_continuation_pending(&child);
+        mark.commit();
+
+        let final_output = armed_structured_final_output(r#"{"result":"too early"}"#);
+        let action = take_structured_final_output_action(&final_output, &parent)
+            .await
+            .expect("structured output must be intercepted");
+        let StructuredFinalOutputAction::ContinueSupervising(prompt) = action else {
+            panic!("continuation-pending work must block structured final output");
+        };
+        assert!(prompt.contains(&child));
+        assert!(prompt.contains("workspace_watch"));
+        assert!(prompt.contains("workspace_read_conversation"));
+        assert!(prompt.contains("workspace_close"));
+        assert!(handle.continuation_pending());
+        assert!(
+            final_output
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|tool| tool.final_output.is_none()),
+            "the stale pre-supervision output must not be emitted later"
+        );
+
+        let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        crate::workspace_services::set_for_tests(Some(Arc::new(ReplacementTurnServices {
+            child_session_id: child.clone(),
+            active: Arc::clone(&active),
+        })));
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        assert!(!handle.continuation_pending());
+
+        final_output
+            .lock()
+            .await
+            .as_mut()
+            .expect("structured output tool remains installed")
+            .final_output = Some(r#"{"result":"still too early"}"#.to_string());
+        assert!(matches!(
+            take_structured_final_output_action(&final_output, &parent).await,
+            Some(StructuredFinalOutputAction::ContinueSupervising(_))
+        ));
+
+        active.store(false, std::sync::atomic::Ordering::SeqCst);
+        final_output
+            .lock()
+            .await
+            .as_mut()
+            .expect("structured output tool remains installed")
+            .final_output = Some(r#"{"result":"finished but unread"}"#.to_string());
+        assert!(matches!(
+            take_structured_final_output_action(&final_output, &parent).await,
+            Some(StructuredFinalOutputAction::ContinueSupervising(_))
+        ));
+
+        assert!(handle.mark_collected_if_generation(handle.child_turn_generation()));
+        final_output
+            .lock()
+            .await
+            .as_mut()
+            .expect("structured output tool remains installed")
+            .final_output = Some(r#"{"result":"collected"}"#.to_string());
+        assert_eq!(
+            take_structured_final_output_action(&final_output, &parent).await,
+            Some(StructuredFinalOutputAction::Emit(
+                r#"{"result":"collected"}"#.to_string()
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn structured_final_output_without_delegated_work_emits_once() {
+        let parent = format!("structured-idle-parent-{}", uuid::Uuid::new_v4());
+        let final_output = armed_structured_final_output(r#"{"result":"done"}"#);
+
+        assert_eq!(
+            take_structured_final_output_action(&final_output, &parent).await,
+            Some(StructuredFinalOutputAction::Emit(
+                r#"{"result":"done"}"#.to_string()
+            ))
+        );
+        assert_eq!(
+            take_structured_final_output_action(&final_output, &parent).await,
+            None,
+            "consuming the structured output prevents duplicate final emission"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_supervision_waits_on_events_for_the_exact_terminal_generation() {
+        let parent = format!("native-supervision-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("native-supervision-child-{}", uuid::Uuid::new_v4());
+        let handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "event-driven child",
+            CancellationToken::new(),
+        );
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        let expected_generation = handle.child_turn_generation();
+        crate::agents::subagent_handle::begin_parent_closing(&parent);
+
+        let child_for_completion = child.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            crate::agents::subagent_handle::record_child_turn_terminal(
+                &child_for_completion,
+                crate::agents::subagent_result::SubagentResult::from_error("event-driven terminal"),
+            );
+        });
+
+        let wake = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            next_native_supervision_claim(&parent, &None),
+        )
+        .await
+        .expect("test safety deadline");
+        let NativeSupervisionWake::Ready(claim) = wake else {
+            panic!("the terminal event must produce a collection claim")
+        };
+        assert_eq!(claim.generation, expected_generation);
+        assert!(claim.result.summary.contains("event-driven terminal"));
+        assert!(handle.mark_terminal_generation_collected_if_generation(claim.generation));
+        assert!(matches!(
+            next_native_supervision_claim(&parent, &None).await,
+            NativeSupervisionWake::Complete
+        ));
+        crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
+    }
+
+    #[tokio::test]
+    async fn native_supervision_ignores_the_superseded_result_and_collects_the_replacement() {
+        let parent = format!("native-replacement-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("native-replacement-child-{}", uuid::Uuid::new_v4());
+        let handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "replacement child",
+            CancellationToken::new(),
+        );
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        crate::agents::subagent_handle::record_child_turn_terminal(
+            &child,
+            crate::agents::subagent_result::SubagentResult::from_error("superseded result"),
+        );
+        let original_generation = handle.child_turn_generation();
+        let continuation = crate::agents::subagent_handle::mark_continuation_pending(&child);
+        continuation.commit();
+        crate::agents::subagent_handle::begin_parent_closing(&parent);
+
+        let child_for_replacement = child.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            crate::agents::subagent_handle::begin_child_turn(&child_for_replacement);
+            tokio::task::yield_now().await;
+            crate::agents::subagent_handle::record_child_turn_terminal(
+                &child_for_replacement,
+                crate::agents::subagent_result::SubagentResult::from_error("replacement result"),
+            );
+        });
+
+        let wake = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            next_native_supervision_claim(&parent, &None),
+        )
+        .await
+        .expect("test safety deadline");
+        let NativeSupervisionWake::Ready(claim) = wake else {
+            panic!("the replacement terminal must produce a collection claim")
+        };
+        assert!(claim.generation > original_generation);
+        assert!(claim.result.summary.contains("replacement result"));
+        assert!(!claim.result.summary.contains("superseded result"));
+        assert!(handle.mark_terminal_generation_collected_if_generation(claim.generation));
+        assert!(matches!(
+            next_native_supervision_claim(&parent, &None).await,
+            NativeSupervisionWake::Complete
+        ));
+        crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
+    }
+
+    #[tokio::test]
+    async fn direct_child_followup_reopens_supervision_for_one_generation_only() {
+        let parent = format!("native-direct-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("native-direct-child-{}", uuid::Uuid::new_v4());
+        let handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "directly steered child",
+            CancellationToken::new(),
+        );
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        handle.complete(crate::agents::subagent_result::SubagentResult::from_error(
+            "idle draft",
+        ));
+        let initial_generation = handle.child_turn_generation();
+        assert!(handle.mark_terminal_generation_collected_if_generation(initial_generation));
+
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        let steered_generation = handle.child_turn_generation();
+        crate::agents::subagent_handle::record_child_turn_terminal(
+            &child,
+            crate::agents::subagent_result::SubagentResult::from_error("STEERED_CLAUDE"),
+        );
+        assert!(steered_generation > initial_generation);
+        assert!(delegated_work_supervision_prompt(&parent).is_some());
+
+        crate::agents::subagent_handle::begin_parent_closing(&parent);
+        let NativeSupervisionWake::Ready(claim) =
+            next_native_supervision_claim(&parent, &None).await
+        else {
+            panic!("the direct follow-up terminal must reopen supervision once")
+        };
+        assert_eq!(claim.generation, steered_generation);
+        assert!(claim.result.summary.contains("STEERED_CLAUDE"));
+        assert!(handle.mark_terminal_generation_collected_if_generation(claim.generation));
+
+        assert!(delegated_work_supervision_prompt(&parent).is_none());
+        assert!(matches!(
+            next_native_supervision_claim(&parent, &None).await,
+            NativeSupervisionWake::Complete
+        ));
+        crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
+    }
+
+    #[tokio::test]
+    async fn explicit_cancellation_is_the_only_native_supervision_escape() {
+        let parent = format!("native-cancel-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("native-cancel-child-{}", uuid::Uuid::new_v4());
+        let _handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "never finishing child",
+            CancellationToken::new(),
+        );
+        crate::agents::subagent_handle::begin_child_turn(&child);
+        crate::agents::subagent_handle::begin_parent_closing(&parent);
+        let cancel = CancellationToken::new();
+        let trip = cancel.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            trip.cancel();
+        });
+
+        assert!(matches!(
+            next_native_supervision_claim(&parent, &Some(cancel)).await,
+            NativeSupervisionWake::Cancelled
+        ));
+        crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
+    }
+
+    #[test]
+    #[serial_test::parallel(workspace_services)]
     fn every_parent_exit_gate_tracks_running_background_children() {
         let parent = format!("supervision-parent-{}", uuid::Uuid::new_v4());
         let child = format!("supervision-child-{}", uuid::Uuid::new_v4());
@@ -10891,7 +12317,56 @@ mod tests {
         handle.complete(crate::agents::subagent_result::SubagentResult::from_error(
             "test complete",
         ));
+        let prompt = delegated_work_supervision_prompt(&parent)
+            .expect("a completed but uncollected child must still block the parent's exit");
+        assert!(prompt.contains(&child));
+        assert!(handle.mark_collected_if_generation(handle.child_turn_generation()));
         assert!(delegated_work_supervision_prompt(&parent).is_none());
+    }
+
+    #[tokio::test]
+    async fn expired_watch_lease_does_not_collect_a_late_result_or_release_structured_final() {
+        let parent = format!("expired-watch-parent-{}", uuid::Uuid::new_v4());
+        let child = format!("expired-watch-child-{}", uuid::Uuid::new_v4());
+        let handle = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            &child,
+            "late child",
+            CancellationToken::new(),
+        );
+
+        assert!(
+            handle.wait(std::time::Duration::ZERO).await.is_none(),
+            "the first watch lease expires before child completion"
+        );
+        handle.complete(crate::agents::subagent_result::SubagentResult::from_error(
+            "completed after the watch lease",
+        ));
+        assert!(!handle.latest_generation_collected());
+
+        let final_output = armed_structured_final_output(r#"{"result":"too early"}"#);
+        let action = take_structured_final_output_action(&final_output, &parent)
+            .await
+            .expect("structured output must be intercepted");
+        assert!(matches!(
+            action,
+            StructuredFinalOutputAction::ContinueSupervising(_)
+        ));
+
+        let completed_generation = handle.child_turn_generation();
+        assert!(handle.mark_collected_if_generation(completed_generation));
+        final_output
+            .lock()
+            .await
+            .as_mut()
+            .expect("structured output tool remains installed")
+            .final_output = Some(r#"{"result":"after collection"}"#.to_string());
+        assert_eq!(
+            take_structured_final_output_action(&final_output, &parent).await,
+            Some(StructuredFinalOutputAction::Emit(
+                r#"{"result":"after collection"}"#.to_string()
+            ))
+        );
     }
 
     #[tokio::test]
@@ -10922,13 +12397,11 @@ mod tests {
             .into_iter()
             .zip([first_session_id, second_session_id])
         {
+            let iteration_provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+                name: provider_name,
+            });
             agent
-                .update_provider(
-                    Arc::new(BridgedChildProvider {
-                        name: provider_name,
-                    }),
-                    &session_id,
-                )
+                .update_provider(Arc::clone(&iteration_provider), &session_id)
                 .await
                 .expect("bind the coding-agent-shaped provider");
 
@@ -10949,8 +12422,15 @@ mod tests {
                 .conversation
                 .clone()
                 .unwrap_or_else(Conversation::empty);
+            agent
+                .update_provider(
+                    Arc::new(BridgedChildProvider { name: "anthropic" }),
+                    &session_id,
+                )
+                .await
+                .expect("simulate a provider swap after the iteration was pinned");
             let lease = agent
-                .issue_tool_bridge(&session, &conversation, &tools, None)
+                .issue_tool_bridge(&iteration_provider, &session, &conversation, &tools, None)
                 .await
                 .expect("coding-agent providers need a live grant");
             let nonce = lease
@@ -11030,6 +12510,11 @@ mod tests {
                 .await
                 .expect("the coding-agent bridge must monitor its child");
             assert_eq!(watched.is_error, Some(false));
+            let watched_text = watched
+                .content
+                .iter()
+                .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+                .collect::<String>();
             let handle = crate::agents::subagent_handle::list_for_session(&session_id)
                 .into_iter()
                 .find(|handle| handle.child_session_id == child_session_id)
@@ -11056,8 +12541,10 @@ mod tests {
                 .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
                 .collect::<String>();
             assert!(
-                collected_text.contains(&format!("{provider_name} bridged child completed")),
-                "the finished result must cross workspace_watch: {collected_text}"
+                watched_text.contains(&format!("{provider_name} bridged child completed"))
+                    || collected_text
+                        .contains(&format!("{provider_name} bridged child completed")),
+                "the finished result must cross workspace_watch: first={watched_text}; second={collected_text}"
             );
             let read = grant
                 .call(CallToolRequestParams {
@@ -12735,6 +14222,9 @@ mod gate_a_bind_tests {
     use crate::privacy::{bind_allowed, ProviderTier, SessionClassification};
     use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
     use crate::providers::errors::ProviderError;
+    use crate::providers::lead_worker::{
+        LeadWorkerProvider, LeadWorkerRoutingState, PersistedProviderConfig,
+    };
     use crate::session::session_manager::{Session, SessionType};
     use crate::session::SessionManager;
     use async_trait::async_trait;
@@ -12858,6 +14348,532 @@ mod gate_a_bind_tests {
             .expect("a bound session carries a model config")
             .model_name
             .clone()
+    }
+
+    #[tokio::test]
+    async fn rebind_overrides_are_isolated_between_stores_with_the_same_session_id() {
+        let first_dir = TempDir::new().unwrap();
+        let second_dir = TempDir::new().unwrap();
+        let first_manager = SessionManager::new(first_dir.path().to_path_buf());
+        let second_manager = SessionManager::new(second_dir.path().to_path_buf());
+        let first: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "versa_azure",
+            model: "first",
+            tier: ProviderTier::Public,
+        });
+        let second = private_provider();
+
+        seams::override_rebind_provider(
+            &first_manager,
+            "same-session",
+            "versa_azure",
+            Arc::clone(&first),
+        );
+        seams::override_rebind_provider(
+            &second_manager,
+            "same-session",
+            "versa_azure",
+            Arc::clone(&second),
+        );
+
+        let restored =
+            seams::rebind_override(&second_manager, "same-session", "versa_azure").unwrap();
+        assert!(Arc::ptr_eq(&restored, &second));
+    }
+
+    #[tokio::test]
+    async fn persisted_provider_restore_preserves_a_live_provider_instance() {
+        let live: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "br71-live-provider-not-in-the-factory",
+            model: "br71-live-model",
+            tier: ProviderTier::Public,
+        });
+        let expected = Arc::clone(&live);
+        let (_dir, agent, session) = agent_on(live).await;
+        let row = reread(&manager(&agent), &session.id).await;
+
+        agent
+            .restore_persisted_provider_if_missing(&row)
+            .await
+            .unwrap();
+
+        let actual = agent
+            .bound_provider_unchecked()
+            .await
+            .expect("the live binding remains present");
+        assert!(
+            Arc::ptr_eq(&expected, &actual),
+            "turn preparation must not replace a live Codex/Claude-style provider instance"
+        );
+    }
+
+    #[tokio::test]
+    async fn standalone_child_session_round_trips_specialized_restore_binding() {
+        #[cfg(feature = "aws-providers")]
+        use crate::providers::provider_binding::PersistedRetryConfig;
+        use crate::providers::provider_binding::{
+            AbsoluteCommandPath, SecretFreeEndpoint, VersaAzureCredentialSource,
+            STANDALONE_RESTORE_CONFIG_KEY,
+        };
+        use std::collections::HashMap;
+
+        let dir = TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Arc::new(Agent::with_config(AgentConfig::new(
+            Arc::clone(&session_manager),
+            Arc::clone(&permission_manager),
+            None,
+            BioRouterMode::Auto,
+        )));
+        let command = AbsoluteCommandPath::new(std::env::current_exe().unwrap()).unwrap();
+        let azure_secret = "standalone-azure-secret-must-not-persist";
+        let bedrock_access = "standalone-bedrock-access-must-not-persist";
+        let bedrock_secret = "standalone-bedrock-secret-must-not-persist";
+
+        crate::config::with_config_overrides(
+            HashMap::from([
+                ("VERSA_AZURE_API_KEY".into(), azure_secret.into()),
+                ("VERSA_BEDROCK_ACCESS_KEY_ID".into(), bedrock_access.into()),
+                (
+                    "VERSA_BEDROCK_SECRET_ACCESS_KEY".into(),
+                    bedrock_secret.into(),
+                ),
+            ]),
+            async {
+                let providers: Vec<Arc<dyn Provider>> = vec![
+                    Arc::new(
+                        crate::providers::codex::CodexProvider::from_resolved(
+                            ModelConfig::new_or_fail("gpt-5.5"),
+                            command.clone(),
+                        )
+                        .unwrap(),
+                    ),
+                    Arc::new(
+                        crate::providers::claude_code::ClaudeCodeProvider::from_resolved(
+                            ModelConfig::new_or_fail("claude-sonnet-4-6"),
+                            command,
+                        )
+                        .unwrap(),
+                    ),
+                    Arc::new(
+                        crate::providers::versa_azure::VersaAzureProvider::from_resolved(
+                            ModelConfig::new_or_fail("standalone-azure-deployment"),
+                            SecretFreeEndpoint::new(
+                                "https://standalone-azure.invalid/exact".into(),
+                            )
+                            .unwrap(),
+                            "standalone-azure-deployment".into(),
+                            "2025-04-01-preview".into(),
+                            VersaAzureCredentialSource::ApiKey,
+                        )
+                        .unwrap(),
+                    ),
+                ];
+                #[cfg(feature = "aws-providers")]
+                let providers = {
+                    let mut providers = providers;
+                    providers.push(Arc::new(
+                        crate::providers::versa_bedrock::VersaBedrockProvider::from_resolved(
+                            ModelConfig::new_or_fail("anthropic.claude-sonnet-4-6"),
+                            SecretFreeEndpoint::new(
+                                "https://standalone-bedrock.invalid/exact".into(),
+                            )
+                            .unwrap(),
+                            "us-west-2".into(),
+                            PersistedRetryConfig {
+                                max_retries: 7,
+                                initial_interval_ms: 1_234,
+                                backoff_multiplier: 2.5,
+                                max_interval_ms: 54_321,
+                            },
+                            Some(777),
+                        )
+                        .await
+                        .unwrap(),
+                    ));
+                    providers
+                };
+
+                for provider in providers {
+                    let session = session_manager
+                        .create_session(
+                            PathBuf::from("."),
+                            format!("{} standalone child", provider.get_name()),
+                            SessionType::SubAgent,
+                        )
+                        .await
+                        .unwrap();
+                    let expected_binding =
+                        serde_json::to_value(provider.restore_binding()).unwrap();
+                    agent.update_provider(provider, &session.id).await.unwrap();
+                    let row = reread(&session_manager, &session.id).await;
+                    let stored = serde_json::to_string(&row).unwrap();
+                    assert!(
+                        row.model_config
+                            .as_ref()
+                            .and_then(|model| model.request_params.as_ref())
+                            .is_some_and(|params| {
+                                params.contains_key(STANDALONE_RESTORE_CONFIG_KEY)
+                            }),
+                        "{} child row has no exact restore binding",
+                        row.provider_name.as_deref().unwrap_or("unknown")
+                    );
+                    for secret in [azure_secret, bedrock_access, bedrock_secret] {
+                        assert!(
+                            !stored.contains(secret),
+                            "child row persisted credential material"
+                        );
+                    }
+
+                    let cold = Agent::with_config(AgentConfig::new(
+                        Arc::clone(&session_manager),
+                        Arc::clone(&permission_manager),
+                        None,
+                        BioRouterMode::Auto,
+                    ));
+                    cold.restore_provider_from_session(&row).await.unwrap();
+                    let restored = cold.bound_provider_unchecked().await.unwrap();
+                    assert_eq!(
+                        serde_json::to_value(restored.restore_binding()).unwrap(),
+                        expected_binding,
+                        "{} child did not restore its exact provider binding",
+                        restored.get_name()
+                    );
+                }
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn reasoning_effort_override_preserves_specialized_provider_bindings() {
+        #[cfg(feature = "aws-providers")]
+        use crate::providers::provider_binding::PersistedRetryConfig;
+        use crate::providers::provider_binding::{
+            AbsoluteCommandPath, SecretFreeEndpoint, VersaAzureCredentialSource,
+        };
+        use std::collections::HashMap;
+
+        fn route(binding: &crate::providers::provider_binding::ProviderRestoreBinding) -> Value {
+            let mut value = serde_json::to_value(binding).unwrap();
+            value.as_object_mut().unwrap().remove("model");
+            value
+        }
+
+        let command = AbsoluteCommandPath::new(std::env::current_exe().unwrap()).unwrap();
+        crate::config::with_config_overrides(
+            HashMap::from([
+                ("VERSA_AZURE_API_KEY".into(), "effort-azure-key".into()),
+                (
+                    "VERSA_BEDROCK_ACCESS_KEY_ID".into(),
+                    "effort-bedrock-access".into(),
+                ),
+                (
+                    "VERSA_BEDROCK_SECRET_ACCESS_KEY".into(),
+                    "effort-bedrock-secret".into(),
+                ),
+            ]),
+            async move {
+                let providers: Vec<Arc<dyn Provider>> = vec![
+                    Arc::new(
+                        crate::providers::codex::CodexProvider::from_resolved(
+                            ModelConfig::new_or_fail("gpt-5.5"),
+                            command.clone(),
+                        )
+                        .unwrap(),
+                    ),
+                    Arc::new(
+                        crate::providers::claude_code::ClaudeCodeProvider::from_resolved(
+                            ModelConfig::new_or_fail("claude-sonnet-4-6"),
+                            command,
+                        )
+                        .unwrap(),
+                    ),
+                    Arc::new(
+                        crate::providers::versa_azure::VersaAzureProvider::from_resolved(
+                            ModelConfig::new_or_fail("effort-azure"),
+                            SecretFreeEndpoint::new("https://effort-azure.invalid/exact".into())
+                                .unwrap(),
+                            "effort-azure".into(),
+                            "2025-04-01-preview".into(),
+                            VersaAzureCredentialSource::ApiKey,
+                        )
+                        .unwrap(),
+                    ),
+                ];
+                #[cfg(feature = "aws-providers")]
+                let providers = {
+                    let mut providers = providers;
+                    providers.push(Arc::new(
+                        crate::providers::versa_bedrock::VersaBedrockProvider::from_resolved(
+                            ModelConfig::new_or_fail("anthropic.claude-sonnet-4-6"),
+                            SecretFreeEndpoint::new("https://effort-bedrock.invalid/exact".into())
+                                .unwrap(),
+                            "us-west-2".into(),
+                            PersistedRetryConfig {
+                                max_retries: 7,
+                                initial_interval_ms: 1_234,
+                                backoff_multiplier: 2.5,
+                                max_interval_ms: 54_321,
+                            },
+                            Some(777),
+                        )
+                        .await
+                        .unwrap(),
+                    ));
+                    providers
+                };
+
+                for provider in providers {
+                    let expected_route = route(&provider.restore_binding());
+                    let expected_model = provider.get_model_config().model_name;
+                    let (_dir, agent, _session) = agent_on(provider).await;
+                    let rebuilt = agent
+                        .provider_with_effort(crate::agents::effort::ReasoningEffort::Deep)
+                        .await
+                        .unwrap()
+                        .expect("specialized provider must accept the effort override");
+                    let actual = rebuilt.restore_binding();
+                    assert_eq!(
+                        route(&actual),
+                        expected_route,
+                        "{} effort override changed its route",
+                        actual.provider_name()
+                    );
+                    assert_eq!(actual.model().model_name, expected_model);
+                    assert_eq!(
+                        actual.model().reasoning_effort,
+                        Some(crate::agents::effort::ReasoningEffort::Deep)
+                    );
+                }
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_settled_composite_snapshot_is_persisted_without_replacing_its_live_instance() {
+        let lead: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "versa_azure",
+            model: "gpt-5.2",
+            tier: ProviderTier::Private,
+        });
+        let worker: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "codex",
+            model: "gpt-5.6-codex",
+            tier: ProviderTier::Public,
+        });
+        let composite: Arc<dyn Provider> =
+            Arc::new(LeadWorkerProvider::new_with_settings(lead, worker, 1, 2, 2));
+        let expected = Arc::clone(&composite);
+        let (_dir, agent, session) = agent_on(Arc::clone(&composite)).await;
+
+        composite.complete("system", &[], &[]).await.unwrap();
+        let generation = composite
+            .as_lead_worker()
+            .unwrap()
+            .get_config_generation()
+            .to_string();
+        assert!(
+            agent
+                .persist_composite_provider_state(&session.id, &composite, &generation)
+                .await
+                .unwrap(),
+            "the unchanged provider generation accepts its routing snapshot"
+        );
+
+        let row = reread(&manager(&agent), &session.id).await;
+        let persisted = PersistedProviderConfig::from_model_config(
+            row.model_config
+                .as_ref()
+                .expect("the provider snapshot is durable on the session row"),
+        )
+        .unwrap()
+        .expect("the row retains the composite restore marker");
+        let PersistedProviderConfig::LeadWorkerV2 { routing_state, .. } = persisted;
+        assert_eq!(
+            routing_state,
+            LeadWorkerRoutingState {
+                turn_count: 1,
+                failure_count: 0,
+                in_fallback_mode: false,
+                fallback_remaining: 0,
+            }
+        );
+
+        let actual = agent
+            .bound_provider_unchecked()
+            .await
+            .expect("the live provider remains bound");
+        assert!(Arc::ptr_eq(&expected, &actual));
+    }
+
+    #[tokio::test]
+    async fn a_new_same_name_composite_bind_wins_while_the_old_snapshot_is_parked() {
+        let lead: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "versa_azure",
+            model: "gpt-5.2",
+            tier: ProviderTier::Private,
+        });
+        let worker: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "codex",
+            model: "gpt-5.6-codex",
+            tier: ProviderTier::Public,
+        });
+        let composite: Arc<dyn Provider> =
+            Arc::new(LeadWorkerProvider::new_with_settings(lead, worker, 1, 2, 2));
+        let generation = composite
+            .as_lead_worker()
+            .unwrap()
+            .get_config_generation()
+            .to_string();
+        let (dir, agent, session) = agent_on(Arc::clone(&composite)).await;
+        let session_manager = manager(&agent);
+        composite.complete("system", &[], &[]).await.unwrap();
+
+        let rendezvous = seams::arm_before_composite_state_write();
+        let token = rendezvous.token();
+        let stale_agent = Arc::clone(&agent);
+        let stale_composite = Arc::clone(&composite);
+        let stale_session_id = session.id.clone();
+        let stale_generation = generation.clone();
+        let stale_write = tokio::spawn(seams::armed(token, async move {
+            stale_agent
+                .persist_composite_provider_state(
+                    &stale_session_id,
+                    &stale_composite,
+                    &stale_generation,
+                )
+                .await
+        }));
+        let release_stale_write = rendezvous.arrived().await;
+
+        let replacement_lead: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "versa_azure",
+            model: "gpt-5.4",
+            tier: ProviderTier::Private,
+        });
+        let replacement_worker: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "claude_code",
+            model: "claude-sonnet-4-6",
+            tier: ProviderTier::Public,
+        });
+        let replacement: Arc<dyn Provider> = Arc::new(LeadWorkerProvider::new_with_settings(
+            replacement_lead,
+            replacement_worker,
+            2,
+            3,
+            1,
+        ));
+        let replacement_generation = replacement
+            .as_lead_worker()
+            .unwrap()
+            .get_config_generation()
+            .to_string();
+        assert_ne!(generation, replacement_generation);
+        let expected_live = Arc::clone(&replacement);
+        agent
+            .update_provider(replacement, &session.id)
+            .await
+            .unwrap();
+        release_stale_write.send(()).unwrap();
+        assert!(
+            !stale_write.await.unwrap().unwrap(),
+            "the stale composite generation must lose its conditional write"
+        );
+
+        let row = reread(&session_manager, &session.id).await;
+        assert_eq!(row.provider_name.as_deref(), Some("versa_azure"));
+        assert_eq!(model_name_of(&row), "gpt-5.4");
+        let persisted =
+            PersistedProviderConfig::from_model_config(row.model_config.as_ref().unwrap())
+                .unwrap()
+                .expect("the newer composite restore marker remains durable");
+        let PersistedProviderConfig::LeadWorkerV2 {
+            worker,
+            config_generation,
+            ..
+        } = persisted;
+        let crate::providers::provider_binding::ProviderRestoreBinding::Registry {
+            provider_name,
+            ..
+        } = worker
+        else {
+            panic!("the worker remains a registry-backed Claude provider")
+        };
+        assert_eq!(provider_name, "claude_code");
+        assert_eq!(config_generation, replacement_generation);
+        assert!(Arc::ptr_eq(
+            &expected_live,
+            &agent.bound_provider_unchecked().await.unwrap()
+        ));
+
+        let cold_lead: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "versa_azure",
+            model: "gpt-5.4",
+            tier: ProviderTier::Private,
+        });
+        let cold_worker: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: "claude_code",
+            model: "claude-sonnet-4-6",
+            tier: ProviderTier::Public,
+        });
+        let cold_provider: Arc<dyn Provider> =
+            Arc::new(LeadWorkerProvider::new_with_settings_and_state(
+                cold_lead,
+                cold_worker,
+                2,
+                3,
+                1,
+                replacement_generation.clone(),
+                LeadWorkerRoutingState::default(),
+            ));
+        let expected_cold = Arc::clone(&cold_provider);
+        seams::override_rebind_provider(
+            session_manager.as_ref(),
+            &session.id,
+            "versa_azure",
+            cold_provider,
+        );
+        let cold = Agent::with_config(AgentConfig::new(
+            Arc::clone(&session_manager),
+            Arc::new(PermissionManager::new(dir.path().to_path_buf())),
+            None,
+            BioRouterMode::Auto,
+        ));
+        cold.restore_persisted_provider_if_missing(&row)
+            .await
+            .unwrap();
+        let restored = cold.bound_provider_unchecked().await.unwrap();
+        assert!(Arc::ptr_eq(&expected_cold, &restored));
+        assert_eq!(
+            restored.as_lead_worker().unwrap().get_config_generation(),
+            replacement_generation
+        );
+    }
+
+    #[tokio::test]
+    async fn persisted_provider_restore_attempts_the_row_after_a_binding_is_lost() {
+        let missing_name = "br71-missing-provider-not-in-the-factory";
+        let live: Arc<dyn Provider> = Arc::new(TieredProvider {
+            name: missing_name,
+            model: "br71-missing-model",
+            tier: ProviderTier::Public,
+        });
+        let (_dir, agent, session) = agent_on(live).await;
+        let row = reread(&manager(&agent), &session.id).await;
+        *agent.provider.lock().await = None;
+
+        let err = agent
+            .restore_persisted_provider_if_missing(&row)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains(missing_name),
+            "the error must come from restoring the persisted provider, got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -13423,7 +15439,12 @@ mod gate_b_turn_tests {
         let row_provider = private_provider();
         point_row_at(&sm, &s.id, &row_provider).await;
         ratchet_to_private(&sm, &s.id).await;
-        seams::override_rebind_provider(&s.id, "versa_azure", Arc::clone(&row_provider));
+        seams::override_rebind_provider(
+            sm.as_ref(),
+            &s.id,
+            "versa_azure",
+            Arc::clone(&row_provider),
+        );
 
         let events = drain(
             agent
@@ -13451,7 +15472,7 @@ mod gate_b_turn_tests {
         let row_provider = public_provider();
         point_row_at(&sm, &s.id, &row_provider).await;
         ratchet_to_private(&sm, &s.id).await;
-        seams::override_rebind_provider(&s.id, "anthropic", Arc::clone(&row_provider));
+        seams::override_rebind_provider(sm.as_ref(), &s.id, "anthropic", Arc::clone(&row_provider));
 
         let events = drain(
             agent
@@ -13485,7 +15506,7 @@ mod gate_b_turn_tests {
         let row_provider = public_provider();
         point_row_at(&sm, &s.id, &row_provider).await;
         ratchet_to_private(&sm, &s.id).await;
-        seams::override_rebind_provider(&s.id, "anthropic", row_provider);
+        seams::override_rebind_provider(sm.as_ref(), &s.id, "anthropic", row_provider);
 
         let answer =
             Message::user().with_content(MessageContent::action_required_elicitation_response(

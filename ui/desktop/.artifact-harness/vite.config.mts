@@ -8,6 +8,17 @@ import path from 'node:path';
 export default defineConfig({
   root: path.resolve(__dirname),
   publicDir: false,
+  optimizeDeps: {
+    // These renderers are imported on demand by DocumentPreview. Pre-bundle
+    // them before the harness becomes ready so a cold Vite cache cannot reload
+    // the page between fixture clicks and erase the panel's test state.
+    include: [
+      'pdfjs-dist/legacy/build/pdf.mjs',
+      'pdfjs-dist/legacy/build/pdf.worker.min.mjs',
+      'xlsx-preview',
+      '@aiden0z/pptx-renderer',
+    ],
+  },
   plugins: [
     tailwindcss(),
     {

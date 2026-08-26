@@ -360,7 +360,7 @@ function KnowledgeViewInner() {
                   icon={Target}
                   title="No primary knowledge base"
                   description="Choose which base this chat reads and writes."
-                  actions={<Button onClick={() => setPickerOpen(true)}>Choose a base</Button>}
+                  actions={<Button onClick={() => openManager(false)}>Choose a base</Button>}
                 />
               ) : (
                 /* ⚠ **CONTAINER queries, not media queries** (R-08). The section

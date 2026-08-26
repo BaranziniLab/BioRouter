@@ -2,16 +2,16 @@
 //! an answer, optionally filing it as a new knowledge page.
 
 use crate::knowledge::{
-    git::{GitRepo, Txn},
+    git::{GitRepo, KnowledgeWriteFailure, Txn},
     paths,
     service::KnowledgeService,
     subagent::{
         events::{DoneReason, SubAgentEvent},
         kb_tools::{read_only_tool_specs, tool_specs, KbToolAccess, KbToolDispatch},
-        loop_::{Completer, SubAgent, SubAgentBounds},
+        loop_::{Completer, SubAgent, SubAgentBounds, SubAgentResult},
         procedures::{query_procedure, system_prompt},
     },
-    types::ChangeKind,
+    types::{ChangeKind, KbFormat},
 };
 use anyhow::{Context, Result};
 
@@ -42,10 +42,9 @@ pub struct QueryArgs {
     /// `SubAgentEvent` is sent here as soon as it is produced (not just at
     /// the end of the run). Set to `None` if streaming is not needed.
     pub event_sink: Option<tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
-    /// Optional cancellation signal. When `notify_one()` is called on the
-    /// shared `Notify`, the sub-agent loop returns `DoneReason::Cancelled`
-    /// at the start of its next iteration.
-    pub cancel: Option<std::sync::Arc<tokio::sync::Notify>>,
+    /// Optional level-triggered cancellation shared with the request or turn
+    /// that owns this macro run.
+    pub cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -81,38 +80,87 @@ fn commit_txn_if_a_page_was_filed(
     let filed = match repo.txn_wrote_knowledge_pages(&txn) {
         Ok(filed) => filed,
         Err(e) => {
-            let _ = repo.abort_txn(&txn);
-            return Err(e.context("checking whether the query filed a page"));
+            return Err(repo.abort_after_failure(
+                &txn,
+                "query filing",
+                e.context("checking whether the query filed a page"),
+            ));
         }
     };
     if !filed {
-        let _ = repo.abort_txn(&txn);
+        repo.abort_txn(&txn).map_err(|abort_error| {
+            KnowledgeWriteFailure::outcome_uncertain(
+                "query filing",
+                anyhow::anyhow!(
+                    "the query filed no page, but discarding its transaction failed: {abort_error:#}"
+                ),
+            )
+        })?;
         return Ok(None);
     }
-    let sha = repo.commit_txn(
-        &txn,
-        ChangeKind::Query,
-        "query filed",
-        Some(&format!("+1 note · {steps_used} steps")),
-    )?;
-    svc.rebuild_graph_cache(kb_id)?;
+    let sha = repo
+        .commit_txn(
+            &txn,
+            ChangeKind::Query,
+            "query filed",
+            Some(&format!("+1 note · {steps_used} steps")),
+        )
+        .map_err(|error| {
+            KnowledgeWriteFailure::outcome_uncertain(
+                "query filing",
+                error.context("committing the filed query page"),
+            )
+        })?;
+    if let Err(error) = svc.rebuild_graph_cache(kb_id) {
+        return Err(KnowledgeWriteFailure::committed(
+            "query filing",
+            sha.clone(),
+            error.context("rebuilding the graph cache after the query committed"),
+        )
+        .into());
+    }
     Ok(Some(sha))
 }
 
-fn abort_query_txn_if_open(kb_root: &std::path::Path, txn_branch: Option<&str>) -> Result<()> {
+fn fail_query_txn_if_open(
+    kb_root: &std::path::Path,
+    txn_branch: Option<&str>,
+    error: anyhow::Error,
+) -> anyhow::Error {
     let Some(branch) = txn_branch else {
-        return Ok(());
+        return error;
     };
-    let repo = GitRepo::open(kb_root)?;
+    let repo = match GitRepo::open(kb_root) {
+        Ok(repo) => repo,
+        Err(open_error) => {
+            return KnowledgeWriteFailure::outcome_uncertain(
+                "query filing",
+                anyhow::anyhow!(
+                    "{error:#}; opening the repository to roll back also failed: {open_error:#}"
+                ),
+            )
+            .into();
+        }
+    };
     let txn = Txn {
         branch: branch.to_string(),
     };
-    let _ = repo.abort_txn(&txn);
-    Ok(())
+    repo.abort_after_failure(&txn, "query filing", error)
 }
 
-pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResult> {
-    let _lock = svc.lock_kb(&args.kb_id).await?;
+struct PreparedQuery {
+    kb_root: std::path::PathBuf,
+    txn_branch: Option<String>,
+    format: KbFormat,
+    system_prompt: String,
+}
+
+async fn prepare_query(
+    svc: &KnowledgeService,
+    args: &QueryArgs,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<PreparedQuery> {
+    super::ensure_not_cancelled(cancel, "query preflight")?;
     // Issue #56. Before the sub-agent, not after. Task 10C (CP2) puts the
     // barrier on the line above: a `query` reads the whole base into a model's
     // context, which is the disclosure this issue is about even when
@@ -123,49 +171,142 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
         args.caller_is_private,
         &args.caller_affiliation,
     )?;
+    let format = svc.require_current_profile(&args.kb_id)?;
     if args.file_as_page {
         // Issue #56, both axes in one call under one lock — see
         // `KnowledgeService::raise_tier_and_affiliation` for why they cannot be
         // two. A read-only query sends base content to the model but writes none
         // of that model's output back, so it must not permanently reclassify the
         // base merely because the model looked at it.
-        svc.raise_tier_and_affiliation(
+        super::ensure_not_cancelled(cancel, "the query privacy ratchet")?;
+        svc.raise_tier_and_affiliation_cancelled_by(
             &args.kb_id,
             args.caller_is_private,
             &args.caller_affiliation,
-        )?;
+            cancel,
+        )
+        .await?;
     }
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
     // Migrate a stale `schema.md` (the sub-agent's system prompt) and refresh a
     // stale graph cache, neither fatally. See `macros::refresh_base`.
-    super::refresh_base(svc, &args.kb_id);
+    super::ensure_not_cancelled(cancel, "the query refresh")?;
+    super::refresh_base(svc, &args.kb_id).await?;
+    super::ensure_not_cancelled(cancel, "query execution")?;
 
     // Open a txn only when we will commit a new note page.
-    let txn_branch: Option<String> = if args.file_as_page {
+    let txn_branch = if args.file_as_page {
+        super::ensure_not_cancelled(cancel, "the query transaction")?;
         let repo = GitRepo::open(&kb_root)?;
         Some(repo.begin_txn("query")?.branch)
     } else {
         None
     };
+    let system_prompt =
+        load_query_prompt(&kb_root, txn_branch.as_deref(), args.file_as_page, format)?;
+    Ok(PreparedQuery {
+        kb_root,
+        txn_branch,
+        format,
+        system_prompt,
+    })
+}
 
-    // Build the system prompt: schema.md + the profile's query procedure +
-    // optional read-only reminder. `Manifest::profile` and never
-    // `Manifest::format`, which reads `Okf` on every base written before Stage 3
-    // (DR-6's trap, reached from the reader): a legacy base would then be taught
-    // OKF's page contract and handed BioOKF's tools.
-    let format = crate::knowledge::manifest::load(&kb_root)
-        .ok()
-        .and_then(|m| m.profile());
-    let schema_path = crate::knowledge::store::resolve_readable_path(&kb_root, "schema.md")?;
-    let schema = std::fs::read_to_string(schema_path).context("read schema.md")?;
-    let mut system = system_prompt(&schema, query_procedure(format));
-    if !args.file_as_page {
+fn load_query_prompt(
+    kb_root: &std::path::Path,
+    txn_branch: Option<&str>,
+    file_as_page: bool,
+    format: KbFormat,
+) -> Result<String> {
+    let schema_path = match crate::knowledge::store::resolve_readable_path(kb_root, "schema.md") {
+        Ok(path) => path,
+        Err(error) => {
+            return Err(fail_query_txn_if_open(
+                kb_root,
+                txn_branch,
+                error.context("resolving schema.md for query"),
+            ));
+        }
+    };
+    let schema = match std::fs::read_to_string(schema_path).context("read schema.md") {
+        Ok(schema) => schema,
+        Err(error) => return Err(fail_query_txn_if_open(kb_root, txn_branch, error)),
+    };
+    let mut system = system_prompt(&schema, query_procedure(Some(format)));
+    if !file_as_page {
         system.push_str(
             "\n\nIMPORTANT: file_as_page is FALSE for this call. \
              Do NOT write any pages. Read-only.",
         );
     }
+    Ok(system)
+}
+
+fn settle_query(
+    svc: &KnowledgeService,
+    kb_id: &str,
+    kb_root: &std::path::Path,
+    txn_branch: Option<String>,
+    agent_result: Result<SubAgentResult>,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<QueryResult> {
+    match agent_result {
+        Ok(result)
+            if matches!(
+                result.reason,
+                DoneReason::CompleteSentinel | DoneReason::NoMoreToolCalls
+            ) =>
+        {
+            if let Err(error) = super::ensure_not_cancelled(cancel, "the query commit") {
+                return Err(fail_query_txn_if_open(
+                    kb_root,
+                    txn_branch.as_deref(),
+                    error,
+                ));
+            }
+            // Commit the txn if we were filing the answer as a page — and only
+            // if a page was actually filed. See the helper for why that
+            // distinction matters.
+            let commit_sha =
+                commit_txn_if_a_page_was_filed(svc, kb_id, kb_root, txn_branch, result.steps_used)?;
+            Ok(QueryResult {
+                answer: result.final_text,
+                cited_pages: extract_cited_pages(&result.events),
+                commit_sha,
+            })
+        }
+        Ok(result) => {
+            // Bad DoneReason: abort the txn branch if one was opened.
+            Err(fail_query_txn_if_open(
+                kb_root,
+                txn_branch.as_deref(),
+                anyhow::anyhow!(
+                    "query sub-agent aborted: reason={:?}, final={}",
+                    result.reason,
+                    result.final_text
+                ),
+            ))
+        }
+        Err(error) => Err(fail_query_txn_if_open(
+            kb_root,
+            txn_branch.as_deref(),
+            error,
+        )),
+    }
+}
+
+pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResult> {
+    let cancel = args.cancel.clone();
+    let _lock = svc
+        .lock_kb_cancellable(&args.kb_id, cancel.as_ref())
+        .await?;
+    let PreparedQuery {
+        kb_root,
+        txn_branch,
+        format,
+        system_prompt,
+    } = prepare_query(svc, &args, cancel.as_ref()).await?;
 
     let dispatch = KbToolDispatch {
         svc: svc.clone(),
@@ -180,15 +321,15 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
     let agent = SubAgent {
         completer: args.completer,
         tools: if args.file_as_page {
-            tool_specs(format)
+            tool_specs(Some(format))
         } else {
-            read_only_tool_specs(format)
+            read_only_tool_specs(Some(format))
         },
-        system_prompt: system,
+        system_prompt,
         bounds: args.bounds,
     };
 
-    let cancel_ref = args.cancel.as_deref();
+    let cancel_ref = cancel.as_ref();
     let agent_result = agent
         .run(
             &args.question,
@@ -197,54 +338,28 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
             args.event_sink.as_ref(),
         )
         .await;
-
-    match agent_result {
-        Ok(r)
-            if matches!(
-                r.reason,
-                DoneReason::CompleteSentinel | DoneReason::NoMoreToolCalls
-            ) =>
-        {
-            // Commit the txn if we were filing the answer as a page — and only
-            // if a page was actually filed. See the helper for why that
-            // distinction matters.
-            let commit_sha = commit_txn_if_a_page_was_filed(
-                svc,
-                &args.kb_id,
-                &kb_root,
-                txn_branch,
-                r.steps_used,
-            )?;
-
-            Ok(QueryResult {
-                answer: r.final_text,
-                cited_pages: extract_wiki_links(&r.events),
-                commit_sha,
-            })
-        }
-        Ok(r) => {
-            // Bad DoneReason: abort the txn branch if one was opened.
-            abort_query_txn_if_open(&kb_root, txn_branch.as_deref())?;
-            anyhow::bail!(
-                "query sub-agent aborted: reason={:?}, final={}",
-                r.reason,
-                r.final_text
-            )
-        }
-        Err(e) => {
-            abort_query_txn_if_open(&kb_root, txn_branch.as_deref())?;
-            Err(e)
-        }
-    }
+    settle_query(
+        svc,
+        &args.kb_id,
+        &kb_root,
+        txn_branch,
+        agent_result,
+        cancel.as_ref(),
+    )
 }
 
-/// Extract `[[Page Name]]` wiki-link references from all Step events in order,
-/// deduplicating while preserving first-occurrence order.
-fn extract_wiki_links(events: &[SubAgentEvent]) -> Vec<String> {
+/// Extract native OKF/BioOKF Markdown page links and legacy wiki links in
+/// written order, deduplicating while preserving first occurrence.
+fn extract_cited_pages(events: &[SubAgentEvent]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for e in events {
-        if let SubAgentEvent::Step { assistant_text, .. } = e {
-            for cited in extract_wiki_links_from_text(assistant_text) {
+        let text = match e {
+            SubAgentEvent::Step { assistant_text, .. } => Some(assistant_text.as_str()),
+            SubAgentEvent::Done { final_text, .. } => Some(final_text.as_str()),
+            _ => None,
+        };
+        if let Some(text) = text {
+            for cited in extract_citations_from_text(text) {
                 if !out.contains(&cited) {
                     out.push(cited);
                 }
@@ -269,10 +384,29 @@ fn extract_wiki_links(events: &[SubAgentEvent]) -> Vec<String> {
 /// a citation is prose, and there is no bundle in hand here. `pub(crate)` so the
 /// equivalence test in `knowledge::links` can drive this consumer beside the
 /// other two.
+#[cfg(test)]
 pub(crate) fn extract_wiki_links_from_text(text: &str) -> Vec<String> {
-    crate::knowledge::links::wiki_links(text)
+    extract_citations_from_text(text)
+}
+
+fn extract_citations_from_text(text: &str) -> Vec<String> {
+    crate::knowledge::okf::extract_links(text)
         .into_iter()
-        .map(|link| link.target)
+        .filter_map(|link| match link.form {
+            crate::knowledge::okf::LinkForm::LegacyWiki => Some(link.target),
+            crate::knowledge::okf::LinkForm::OkfMarkdown if link.is_bundle_link() => {
+                let target = link.target.trim_start_matches("./").trim_start_matches('/');
+                if target.starts_with("knowledge/")
+                    && target.ends_with(".md")
+                    && !target.split('/').any(|component| component == "..")
+                {
+                    Some(target.to_string())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
         .collect()
 }
 
@@ -455,6 +589,16 @@ mod tests {
     // -------------------------------------------------------------------------
     // Test 1: read-only query returns answer with citations, no commit
     // -------------------------------------------------------------------------
+
+    #[test]
+    fn native_markdown_page_links_are_reported_as_citations() {
+        assert_eq!(
+            extract_citations_from_text(
+                "See [HRV](/knowledge/concept/hrv.md) and [paper](https://example.org/paper)."
+            ),
+            vec!["knowledge/concept/hrv.md"]
+        );
+    }
 
     #[tokio::test]
     async fn query_read_only_returns_answer_with_citations() {
@@ -705,6 +849,89 @@ mod tests {
                 .unwrap_or(true),
             "no note page may exist when none was filed"
         );
+    }
+
+    #[test]
+    fn query_post_commit_refresh_failure_is_committed_and_retry_does_not_duplicate() {
+        let (_dir, svc) = fresh_svc();
+        let kb = svc.root().join("k");
+        crate::knowledge::store::write_page(
+            &kb,
+            "knowledge/concept/a.md",
+            &valid_page("concept", "a", "A"),
+            "add A",
+            None,
+        )
+        .unwrap();
+        svc.rebuild_graph_cache("k").unwrap();
+        let repo = GitRepo::open(&kb).unwrap();
+        let txn = repo.begin_txn("query-refresh-failure").unwrap();
+        crate::knowledge::store::write_page(
+            &kb,
+            "knowledge/note/filed.md",
+            &valid_page("note", "filed", "Filed answer"),
+            "file query",
+            Some(&txn.branch),
+        )
+        .unwrap();
+        crate::knowledge::graph::fail_cache_writes(&kb, 2);
+
+        let error = commit_txn_if_a_page_was_filed(&svc, "k", &kb, Some(txn.branch), 1)
+            .expect_err("the injected post-commit refresh must be reported");
+        let failure = error
+            .downcast_ref::<KnowledgeWriteFailure>()
+            .expect("the durable phase remains machine-readable");
+        assert_eq!(
+            failure.phase,
+            crate::knowledge::git::KnowledgeWriteFailurePhase::Committed
+        );
+        assert!(failure.commit_sha.is_some());
+        assert!(!crate::knowledge::graph::cache_path(&kb).exists());
+        let history_len = GitRepo::open(&kb).unwrap().log(10).unwrap().len();
+
+        let retry = GitRepo::open(&kb).unwrap();
+        let retry_txn = retry.begin_txn("query-retry").unwrap();
+        assert!(crate::knowledge::store::write_page(
+            &kb,
+            "knowledge/note/filed.md",
+            &valid_page("note", "filed", "Filed answer"),
+            "retry query",
+            Some(&retry_txn.branch),
+        )
+        .unwrap()
+        .is_none());
+        assert!(
+            commit_txn_if_a_page_was_filed(&svc, "k", &kb, Some(retry_txn.branch), 1,)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            GitRepo::open(&kb).unwrap().log(10).unwrap().len(),
+            history_len
+        );
+    }
+
+    #[test]
+    fn query_abort_failure_reports_outcome_uncertain_and_keeps_both_errors() {
+        let (_dir, svc) = fresh_svc();
+        let kb = svc.root().join("k");
+        let repo = GitRepo::open(&kb).unwrap();
+        let txn = repo.begin_txn("already-aborted").unwrap();
+        repo.abort_txn(&txn).unwrap();
+
+        let error = fail_query_txn_if_open(
+            &kb,
+            Some(&txn.branch),
+            anyhow::anyhow!("provider failed first"),
+        );
+        let failure = error.downcast_ref::<KnowledgeWriteFailure>().unwrap();
+        assert_eq!(
+            failure.phase,
+            crate::knowledge::git::KnowledgeWriteFailurePhase::OutcomeUncertain
+        );
+        let message = error.to_string();
+        assert!(message.contains("provider failed first"), "{message}");
+        assert!(message.contains("rollback also failed"), "{message}");
     }
 
     // -------------------------------------------------------------------------

@@ -81,6 +81,7 @@ export function isAllowedRendererPermission(
  * phishing primitive, not a convenience.
  */
 export function isNavigableEmbeddedUrl(candidate: string): boolean {
+  if (candidate.length > 8 * 1024) return false;
   try {
     const url = new URL(candidate);
     return (

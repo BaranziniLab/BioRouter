@@ -591,7 +591,8 @@ pub async fn begin_delegated_approval(
 /// needs no new plumbing for the agent-decided path.
 async fn deliver(origin_agent: &Agent, origin: &AskId, permission: Permission) {
     let _ = origin_agent
-        .handle_confirmation(
+        .handle_confirmation_for_session(
+            &origin.session_id,
             origin.request_id.clone(),
             PermissionConfirmation {
                 principal_type: PrincipalType::Tool,
