@@ -52,6 +52,10 @@ interface QueuedMessage {
   id: string;
   content: string;
   attachments?: UserAttachment[];
+  /** Renderer-owned temp images to unlink if the queue discards this message.
+   * Kept separate from `attachments`: that array may also contain a user's
+   * original file path, which this component must never delete. */
+  ownedTempAttachmentPaths?: string[];
   timestamp: number;
 }
 
@@ -67,6 +71,11 @@ function settleOrphanedQueuedOffer(owner: string, messageId: string): void {
   offers?.delete(messageId);
   if (offers?.size === 0) orphanedQueuedOffers.delete(owner);
   for (const listener of orphanedQueuedOfferListeners.get(owner) ?? []) listener(messageId);
+}
+
+function deleteQueuedOwnedTempAttachments(messages: readonly QueuedMessage[]): void {
+  const ownedPaths = new Set(messages.flatMap((message) => message.ownedTempAttachmentPaths ?? []));
+  for (const path of ownedPaths) window.electron.deleteTempFile(path);
 }
 
 interface PastedImage {
@@ -357,6 +366,8 @@ export default function ChatInput({
   // `has-[textarea:focus]`, which is one source of truth instead of two and
   // cannot fall out of sync with the DOM the way a mirrored flag can.)
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
+  const pastedImagesRef = useRef(pastedImages);
+  pastedImagesRef.current = pastedImages;
 
   // Derived state - chatState != Idle means we're in some form of loading state
   const isLoading = chatState !== ChatState.Idle;
@@ -861,10 +872,22 @@ export default function ChatInput({
       // the existing `visionMismatch` bar appear, which says the model cannot
       // read images and lets the user remove the chip or switch models.
       const id = `annotation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      setPastedImages((current) => {
-        if (current.length >= MAX_IMAGES_PER_MESSAGE) return current;
-        return [...current, { id, dataUrl: '', filePath: annotation.imagePath, isLoading: true }];
-      });
+      if (pastedImagesRef.current.length >= MAX_IMAGES_PER_MESSAGE) {
+        window.electron.deleteTempFile(annotation.imagePath);
+        toastWarning({
+          title: 'Region not attached',
+          msg: `A message can contain at most ${MAX_IMAGES_PER_MESSAGE} images.`,
+        });
+        return;
+      }
+      const staged = {
+        id,
+        dataUrl: '',
+        filePath: annotation.imagePath,
+        isLoading: true,
+      };
+      pastedImagesRef.current = [...pastedImagesRef.current, staged];
+      setPastedImages(pastedImagesRef.current);
       // The thumbnail is read back from the file the main process wrote; the
       // panel never had the bytes in the first place.
       void window.electron
@@ -877,21 +900,19 @@ export default function ChatInput({
                 : image
             )
           );
+          setDisplayValue((current) => {
+            const context = annotationContextText(annotation);
+            return current.trim() ? `${current.trimEnd()}\n\n${context}\n` : `${context}\n`;
+          });
         })
         .catch(() => {
-          setPastedImages((current) =>
-            current.map((image) =>
-              image.id === id
-                ? { ...image, isLoading: false, error: 'Could not read the region' }
-                : image
-            )
-          );
+          window.electron.deleteTempFile(annotation.imagePath);
+          setPastedImages((current) => current.filter((image) => image.id !== id));
+          toastWarning({
+            title: 'Region not attached',
+            msg: 'The selected region could not be read.',
+          });
         });
-
-      setDisplayValue((current) => {
-        const context = annotationContextText(annotation);
-        return current.trim() ? `${current.trimEnd()}\n\n${context}\n` : `${context}\n`;
-      });
       textAreaRef.current?.focus();
     });
   }, [sessionId]);
@@ -1609,6 +1630,16 @@ export default function ChatInput({
             .map((file) => ({ path: droppedImageAttachmentPath(file), kind: 'image' as const })),
         ]
       : [];
+    const ownedTempAttachmentPaths = currentModelSupportsVision
+      ? [
+          ...pastedImages
+            .filter((img) => img.filePath && !img.error && !img.isLoading)
+            .map((img) => img.filePath as string),
+          ...allDroppedFiles
+            .filter(canUploadDroppedImage)
+            .flatMap((file) => (file.stagedPath ? [file.stagedPath] : [])),
+        ]
+      : [];
     const droppedFilePaths = allDroppedFiles.filter(canSendDroppedFileAsPath).map(droppedFilePath);
 
     let contentToQueue = displayValue.trim();
@@ -1633,6 +1664,7 @@ export default function ChatInput({
         id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
         content: contentToQueue,
         attachments: imageAttachments,
+        ownedTempAttachmentPaths,
         timestamp: Date.now(),
       };
 
@@ -1655,6 +1687,7 @@ export default function ChatInput({
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       content: contentToQueue,
       attachments: imageAttachments,
+      ownedTempAttachmentPaths,
       timestamp: Date.now(),
     };
     setQueuedMessages((prev) => {
@@ -2048,6 +2081,8 @@ export default function ChatInput({
     recoveredQueuedMessageIdsRef.current.delete(messageId);
     activeQueuedOffersRef.current.delete(messageId);
     orphanedQueuedOffers.get(queueOwner)?.delete(messageId);
+    const removed = queuedMessagesRef.current.find((message) => message.id === messageId);
+    if (removed) deleteQueuedOwnedTempAttachments([removed]);
     setQueuedMessages((prev) => prev.filter((msg) => msg.id !== messageId));
   };
 
@@ -2059,6 +2094,7 @@ export default function ChatInput({
     recoveredQueuedMessageIdsRef.current.clear();
     activeQueuedOffersRef.current.clear();
     orphanedQueuedOffers.delete(queueOwner);
+    deleteQueuedOwnedTempAttachments(queuedMessagesRef.current);
     setQueuedMessages([]);
     queuePausedRef.current = false;
     setLastInterruption(null);

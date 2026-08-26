@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { ChatTabStrip, ChatTabStripProps } from './ChatTabStrip';
 import { ChatTab } from './chatGroupsTypes';
 
@@ -109,17 +110,25 @@ describe('ChatTabStrip — the running pulse replaces the close control', () => 
     expect(container.querySelector('.br-tab__dot')).toBeNull();
   });
 
-  it('the dot hides on hover and the x returns in its place', () => {
-    const { getByTestId } = renderStrip({ runningSessionIds: ['s1'] });
+  it('an inactive dot hides on hover and the x returns beside it', () => {
+    const { getByTestId } = renderStrip({
+      tabs: [tab(), tab({ tabId: 'tab-2', sessionId: 's2', title: 'Second' })],
+      activeTabId: 'tab-2',
+      runningSessionIds: ['s1'],
+    });
     const dot = getByTestId('chat-tab-running-tab-1');
     const close = getByTestId('chat-tab-close-tab-1');
 
     // The swap is class-driven (group-hover), which jsdom does not evaluate —
     // so assert the MECHANISM: the dot is hidden on hover, the x is shown on
-    // hover, and they occupy the same slot.
+    // hover. Opacity rather than display keeps the Close button in the keyboard
+    // order even before a pointer has visited the tab.
     expect(dot.className).toContain('group-hover:hidden');
-    expect(close.className).toContain('hidden');
-    expect(close.className).toContain('group-hover:block');
+    expect(close.className).toContain('opacity-0');
+    expect(close.className).toContain('group-hover:opacity-100');
+    expect(close.className).toContain('focus-visible:opacity-100');
+    expect(close.className).not.toContain('hidden');
+    expect(close.className).not.toContain('invisible');
     expect(dot.parentElement).toBe(close.parentElement);
   });
 
@@ -151,6 +160,29 @@ describe('ChatTabStrip — interaction', () => {
     const { getByTestId, props } = renderStrip();
     fireEvent.click(getByTestId('chat-tab-close-tab-1'));
     expect(props.onClose).toHaveBeenCalledWith('tab-1');
+    expect(props.onSelect).not.toHaveBeenCalled();
+  });
+
+  it('keyboard users can close selected and unselected running tabs without hover', async () => {
+    const user = userEvent.setup();
+    const { getByTestId, props } = renderStrip({
+      tabs: [tab(), tab({ tabId: 'tab-2', sessionId: 's2', title: 'Second' })],
+      activeTabId: 'tab-1',
+      runningSessionIds: ['s1', 's2'],
+    });
+    const selectedClose = getByTestId('chat-tab-close-tab-1');
+    const unselectedClose = getByTestId('chat-tab-close-tab-2');
+
+    for (const close of [selectedClose, unselectedClose]) {
+      expect(close.className).toContain('focus-visible:opacity-100');
+      expect(close.className).not.toMatch(/(?:^|\s)(?:hidden|invisible)(?:\s|$)/);
+      close.focus();
+      expect(document.activeElement).toBe(close);
+      await user.keyboard('{Enter}');
+    }
+
+    expect(props.onClose).toHaveBeenNthCalledWith(1, 'tab-1');
+    expect(props.onClose).toHaveBeenNthCalledWith(2, 'tab-2');
     expect(props.onSelect).not.toHaveBeenCalled();
   });
 });

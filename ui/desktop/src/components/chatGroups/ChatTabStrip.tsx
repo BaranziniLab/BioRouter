@@ -511,11 +511,14 @@ export function ChatTabStrip({
               </ContextMenu>
 
               {isRunning ? (
-                // The pulse sits where the close control would be, and the control
-                // returns on hover. One glyph, one meaning.
+                // Inactive tabs swap the pulse for Close on hover. The active
+                // tab keeps its pulse and reserves Close beside it: selecting a
+                // running chat leaves the pointer over that tab, and hiding the
+                // pulse there would make its running state disappear exactly
+                // when the user opens it.
                 <>
                   <span
-                    className="br-tab__dot group-hover:hidden"
+                    className={cn('br-tab__dot', !isActive && 'group-hover:hidden')}
                     data-testid={`chat-tab-running-${tab.tabId}`}
                     aria-label="Running"
                     role="img"
@@ -524,7 +527,9 @@ export function ChatTabStrip({
                     type="button"
                     aria-label={`Close ${tab.title}`}
                     data-testid={`chat-tab-close-${tab.tabId}`}
-                    className="hidden flex-none rounded-sm p-0.5 text-text-muted hover:bg-background-medium hover:text-text-default group-hover:block"
+                    className={cn(
+                      'flex-none rounded-sm p-0.5 text-text-muted opacity-0 hover:bg-background-medium hover:text-text-default focus-visible:opacity-100 group-hover:opacity-100'
+                    )}
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
                       event.stopPropagation();
