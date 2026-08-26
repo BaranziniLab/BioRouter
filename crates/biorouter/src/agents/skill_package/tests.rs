@@ -623,12 +623,15 @@ fn installing_hyperframes_produces_one_expandable_bundle_the_catalog_can_see() {
     }];
     let view = crate::agents::skill_catalog::SkillCatalog::scan(roots, 1)
         .view(&crate::agents::session_skills::SessionSkillOverride::default());
-    assert_eq!(
-        view.bundles.len(),
-        1,
-        "one bundle, not five top-level skills"
-    );
-    let bundle = &view.bundles[0];
+    // ⚠ `KNOWLEDGE_BUNDLE` is injected into every scan by
+    // `add_missing_shipped_skills`, so filter to what this test installed.
+    let bundles: Vec<_> = view
+        .bundles
+        .iter()
+        .filter(|b| b.name != crate::agents::skills_extension::KNOWLEDGE_BUNDLE)
+        .collect();
+    assert_eq!(bundles.len(), 1, "one bundle, not five top-level skills");
+    let bundle = bundles[0];
     assert_eq!(bundle.name, "hyperframes");
     assert_eq!(bundle.skills.len(), 5);
     let package = bundle.package.as_ref().expect("the record was written");
@@ -891,4 +894,53 @@ fn the_groups_map_is_empty_rather_than_absent_when_nothing_declares_one() {
     .unwrap();
     assert_eq!(plan.groups, BTreeMap::new());
     assert!(plan.components.iter().all(|c| c.group.is_none()));
+}
+
+/// ⚠ **A seeded skill or bundle cannot be deleted from ANY surface.**
+///
+/// `biorouter skill remove` and the Skills pane's Trash both land on
+/// `install::remove`, and before this guard both *succeeded* on a shipped
+/// skill: the folder went, the tick and the toast confirmed it, and the next
+/// startup rewrote it. That is regression 1 of #77 — a control that reports
+/// success and reverts is worse than no control — and it survived the fix on
+/// the desktop side because the fix was a UI gate, not a refusal.
+///
+/// Driven through `refuse_shipped` rather than `remove` so both halves can be
+/// stated without setting `BIOROUTER_PATH_ROOT`, whose process-global reach
+/// would make this test depend on what ran before it.
+#[test]
+fn removing_a_shipped_skill_or_bundle_is_refused() {
+    use crate::agents::skills_extension::KNOWLEDGE_BUNDLE;
+
+    let seeded = Path::new("/config/biorouter/skills");
+    let elsewhere = Path::new("/home/someone/.claude/skills");
+
+    for name in [
+        "about-biorouter",
+        "develop-biorouter",
+        "knowledge-lint",
+        "update-soul",
+        KNOWLEDGE_BUNDLE,
+    ] {
+        let refusal = install::refuse_shipped(seeded, seeded, name)
+            .unwrap_or_else(|| panic!("{name} can still be deleted, and the seeder undoes it"));
+        // The refusal has to name what it refused and what to do instead, or it
+        // reads as a bug rather than as a rule.
+        assert!(refusal.contains(name), "{refusal}");
+        assert!(refusal.contains("disable"), "{refusal}");
+
+        // ⚠ The same name under someone else's skills root is THEIRS. The
+        // seeder never writes there, so refusing it would be this guard
+        // reaching past its own reason to exist.
+        assert!(
+            install::refuse_shipped(seeded, elsewhere, name).is_none(),
+            "{name} is refused under a root Biorouter does not seed"
+        );
+    }
+
+    // A user package is removable, so the assertions above are about shipped
+    // entries and not about `remove` having stopped working.
+    assert!(install::refuse_shipped(seeded, seeded, "hyperframes").is_none());
+    // The trap: a name that merely resembles a shipped one.
+    assert!(install::refuse_shipped(seeded, seeded, "about-biorouter-notes").is_none());
 }

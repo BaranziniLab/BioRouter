@@ -801,8 +801,19 @@ fn enable_with(skills: &[InstalledSkill], path: &Path, query: &str) -> Result<()
 /// deleting it — so it leaves the catalog's view in one step rather than
 /// emptying out underneath a scan in flight.
 pub async fn handle_remove(slug: String) -> Result<()> {
-    let removed = biorouter::agents::skill_package::remove(&slug, &skills_root())
-        .map_err(|e| anyhow!("{e:#}. Run `biorouter skill list`."))?;
+    let removed = biorouter::agents::skill_package::remove(&slug, &skills_root()).map_err(|e| {
+        // ⚠ Only add the separator when the message does not already end a
+        // sentence. Some of these are one clause ("no package named `x` is
+        // installed") and some are several sentences of advice; appending
+        // unconditionally gave the latter a visible `..`.
+        let message = format!("{e:#}");
+        let separator = if message.trim_end().ends_with(['.', '!', '?']) {
+            ""
+        } else {
+            "."
+        };
+        anyhow!("{message}{separator} Run `biorouter skill list`.")
+    })?;
     println!(
         "  {} removed {}",
         style("✓").green(),

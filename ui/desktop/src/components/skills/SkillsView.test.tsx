@@ -84,6 +84,7 @@ function bundle(
     source: { kind: 'biorouter', extension: null, label: 'Biorouter' },
     skills: members,
     package: null,
+    builtin: false,
     state,
     ...overrides,
   };
@@ -224,5 +225,50 @@ describe('SkillsView', () => {
     mocks.refreshSkillCatalog.mockRejectedValue(new Error('daemon is down'));
     render(<SkillsView />);
     expect(await screen.findByText(/Could not read the skill catalog/)).toBeInTheDocument();
+  });
+});
+
+/**
+ * ⚠ **A seeded BUNDLE must offer no Delete, and its own field is the only
+ * thing that can say so.** `SkillItem` gates its Trash on `CatalogSkill.builtin`
+ * — the daemon's answer, not a list in the renderer — but a bundle row is a
+ * different control over a different directory, and it had no such gate. So a
+ * shipped bundle rendered a working Trash: `removeSkillPackage` succeeded, the
+ * toast confirmed it, and the next startup rewrote the folder. That is exactly
+ * regression 1 of #77, one level up from where it was fixed.
+ *
+ * `CatalogBundle.builtin` is `is_shipped_entry_name` on the Rust side, so this
+ * cannot drift from the seeder.
+ */
+describe('SkillsView built-in bundles', () => {
+  it('offers no Delete on a bundle the daemon says it shipped', async () => {
+    serve({
+      skills: [skill('member', { bundle: 'shipped-bundle', builtin: true })],
+      bundles: [bundle('shipped-bundle', ['member'], { builtin: true })],
+    });
+    render(<SkillsView />);
+
+    const row = (await screen.findByText('shipped-bundle')).closest('.biorouter-list-row')!;
+    expect(
+      within(row as HTMLElement).queryByLabelText(/Delete skill package/)
+    ).not.toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText('Built-in')).toBeInTheDocument();
+  });
+
+  /**
+   * The control is present for an installed package, so the assertion above is
+   * about built-in-ness and not about bundle rows in general.
+   */
+  it('still offers Delete on an installed package', async () => {
+    serve({
+      skills: [skill('media-use', { bundle: 'hyperframes' })],
+      bundles: [bundle('hyperframes', ['media-use'])],
+    });
+    render(<SkillsView />);
+
+    const row = (await screen.findByText('hyperframes')).closest('.biorouter-list-row')!;
+    expect(
+      within(row as HTMLElement).getByLabelText(/Delete skill package/)
+    ).toBeInTheDocument();
   });
 });

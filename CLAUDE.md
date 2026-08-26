@@ -899,9 +899,32 @@ read `useSkillCatalog`.
   Precedence: skill `add` > skill `remove` > **bundle** `add` > bundle `remove`
   > machine-wide. The bundle arms are load-bearing — without them a per-chat
   bundle toggle writes a name no skill matches.
-- ⚠ `CatalogSkill.builtin` answers "did Biorouter put this here?". The
+- ⚠ `CatalogSkill.builtin` answers "did Biorouter put this here?", and
+  `CatalogBundle.builtin` answers it for a bundle **row**, which is a different
+  control over a different directory — a seeded bundle without it renders a
+  Trash that succeeds, toasts, and is undone by the next startup. The
   hand-synced `skillUtils.BUILTIN_SKILL_NAMES` copy is gone; `contexts.test.ts`
-  now asserts it has not come back.
+  now asserts it has not come back. The single refusal that makes "no seeded
+  skill can be deleted" true on **every** surface — GUI Trash and
+  `biorouter skill remove` alike — is `refuse_shipped` in
+  `skill_package/install.rs`, scoped to Biorouter's own skills root.
+- **A Context row may name a bundle, not a skill.** The four knowledge-format
+  skills plus `update-soul` are seeded into `<skills root>/knowledge-bases/` and
+  offered as *one* switch, "Knowledge". Three consequences, each of which was a
+  bug in the shape it prevents: `compose_state` and `enabled_skill_entries` test
+  a skill's **bundle** against the hidden-Context set as well as its own name
+  (`skills_extension::context_ids` is the list, and it holds `KNOWLEDGE_BUNDLE`,
+  not five skill names); the renderer's filters take the bundle too
+  (`isContextSkill(name, bundle)`, `isContextBundle(name)`, and the shared
+  `pickerBundles(view)` that the composer, the `@`-mention list and the workflow
+  picker all read); and every surface that enumerates *directory entries* rather
+  than skills — `count_user_skills`, the CLI status line — must ask
+  `is_shipped_entry_name`, because `is_builtin_skill_name` does not know the
+  bundle directory and reads it as one skill the user installed.
+  ⚠ `ensure_soul_skill` and `ensure_builtin_skills` both delete the flat
+  directories a pre-bundle install left behind. That is not tidiness: discovery
+  keys by frontmatter `name`, so a flat copy and a bundled copy are two
+  candidates for one map key and `read_dir` order decides.
 
 **One import pipeline** — `crates/biorouter/src/agents/skill_package/`, reached
 from Add Skill (URL or `.zip`), the marketplace, the `importSkillPackage` MCP

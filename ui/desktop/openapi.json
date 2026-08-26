@@ -6338,9 +6338,14 @@
           "sourceRoot",
           "source",
           "skills",
+          "builtin",
           "state"
         ],
         "properties": {
+          "builtin": {
+            "type": "boolean",
+            "description": "Shipped with Biorouter, so the interface offers no Delete for it.\n\n⚠ **The bundle needs its own answer.** `CatalogSkill.builtin` gates the\nDelete on a *skill* row, and a bundle row is a different control on a\ndifferent directory: without this, a seeded bundle rendered a working\nTrash — the delete succeeding, the toast confirming, and the next\nstartup rewriting the folder. That is regression 1 of #77, one level up."
+          },
           "directory": {
             "type": "string"
           },

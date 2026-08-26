@@ -365,6 +365,16 @@ export type CarriedPage = {
  * A directory of skills installed and removed as one unit.
  */
 export type CatalogBundle = {
+    /**
+     * Shipped with Biorouter, so the interface offers no Delete for it.
+     *
+     * ⚠ **The bundle needs its own answer.** `CatalogSkill.builtin` gates the
+     * Delete on a *skill* row, and a bundle row is a different control on a
+     * different directory: without this, a seeded bundle rendered a working
+     * Trash — the delete succeeding, the toast confirming, and the next
+     * startup rewriting the folder. That is regression 1 of #77, one level up.
+     */
+    builtin: boolean;
     directory: string;
     /**
      * The package's own display name when a manifest supplied one, else the

@@ -233,6 +233,10 @@ pub fn remove(id: &str, root: &Path) -> Result<PackageSummary> {
         bail!("no package named `{sanitized}` is installed");
     }
 
+    if let Some(refusal) = refuse_shipped(&Paths::config_dir().join("skills"), root, &sanitized) {
+        bail!(refusal);
+    }
+
     let summary = std::fs::read_to_string(directory.join(PACKAGE_RECORD_FILE))
         .ok()
         .and_then(|raw| serde_json::from_str::<PackageSummary>(&raw).ok())
@@ -257,6 +261,34 @@ pub fn remove(id: &str, root: &Path) -> Result<PackageSummary> {
 
     skill_catalog::refresh();
     Ok(summary)
+}
+
+/// Why removing `id` from `root` is refused, or `None` to go ahead.
+///
+/// ⚠ **The one choke point, so the refusal lands on every surface.** Both
+/// `biorouter skill remove` and deleting from the Skills pane arrive at
+/// [`remove`]. Without this, removing a seeded skill or the knowledge bundle
+/// *succeeded*: the directory went, the CLI printed a tick, the toast confirmed
+/// it, and the next startup silently rewrote the folder — a control that reports
+/// success and reverts, which is regression 1 of #77.
+///
+/// ⚠ **Scoped to Biorouter's own skills root**, which is the only root the
+/// seeder writes. A package a user happens to have named `develop-biorouter`
+/// under `~/.claude/skills` is theirs to delete, and refusing that would be this
+/// guard reaching past its own reason to exist.
+///
+/// Takes the seeded root as an argument rather than reading `Paths` itself, so
+/// a test can state both halves without setting `BIOROUTER_PATH_ROOT` — a
+/// process-global whose use here would make the test order-dependent.
+pub(super) fn refuse_shipped(seeded_root: &Path, root: &Path, sanitized: &str) -> Option<String> {
+    if root != seeded_root || !crate::agents::skills_extension::is_shipped_entry_name(sanitized) {
+        return None;
+    }
+    Some(format!(
+        "`{sanitized}` ships with Biorouter and is restored on every start, so removing it would \
+         not last. Turn it off instead: Settings -> Chat -> Contexts, or \
+         `biorouter skill disable {sanitized}`."
+    ))
 }
 
 fn nonce() -> String {

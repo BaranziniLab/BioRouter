@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { applyOptimistically, CATALOG_CHANGED_EVENT } from './useSkillCatalog';
+import {
+  applyOptimistically,
+  CATALOG_CHANGED_EVENT,
+  pickerBundles,
+  standaloneSkills,
+} from './useSkillCatalog';
 import type { CatalogBundle, CatalogSkill, CatalogView } from '../../api';
 
 const state = (effective: boolean, machineEnabled = true) => ({
@@ -30,6 +35,7 @@ const bundle = (name: string, members: string[]): CatalogBundle => ({
   source: { kind: 'biorouter', extension: null, label: 'Biorouter' },
   skills: members,
   package: null,
+  builtin: false,
   state: state(true),
 });
 
@@ -78,5 +84,62 @@ describe('applyOptimistically', () => {
 describe('CATALOG_CHANGED_EVENT', () => {
   it('is the name worktree 4 publishes', () => {
     expect(CATALOG_CHANGED_EVENT).toBe('catalog:changed');
+  });
+});
+
+/**
+ * ⚠ **A Context that is a BUNDLE has to be filtered as a bundle.** Every
+ * Context filter used to test a skill's own `name`, and a bundle row carries
+ * none of its members' names — so promoting the knowledge skills to a bundle
+ * put a row back into the composer picker, the `@`-mention list and the
+ * workflow resource picker at once, with `activeCount` up by one to match.
+ *
+ * The composer one is the dangerous one: its rows feed "Enable all", which
+ * writes `skills-config.json`, and `handle_load_skill` refuses anything listed
+ * there — while the system prompt asks for `about-biorouter` on every turn.
+ * That is the failure `contexts.ts` was written to make impossible.
+ */
+describe('Context bundles are not picker rows', () => {
+  const contextView: CatalogView = {
+    generation: 1,
+    roots: [],
+    skills: [
+      skill('solo', null),
+      skill('media-use', 'hyperframes'),
+      skill('knowledge-lint', 'knowledge-bases'),
+      skill('update-soul', 'knowledge-bases'),
+    ],
+    bundles: [
+      bundle('hyperframes', ['media-use']),
+      bundle('knowledge-bases', ['knowledge-lint', 'update-soul']),
+    ],
+  };
+
+  it('drops the Context bundle and keeps an installed package', () => {
+    expect(pickerBundles(contextView).map((b) => b.name)).toEqual(['hyperframes']);
+  });
+
+  /**
+   * The members were already excluded by the `!skill.bundle` clause, so this
+   * would pass with the Context filter deleted. It is here to pin that the two
+   * clauses agree: nothing about the knowledge bundle reaches a skill row.
+   */
+  it('drops the Context bundle members from the standalone list', () => {
+    expect(standaloneSkills(contextView).map((s) => s.name)).toEqual(['solo']);
+  });
+
+  /**
+   * ⚠ The regression this exists for: a member seeded flat rather than into the
+   * bundle — an install that predates the bundle, or a fallback that forgot the
+   * placement — arrives with `bundle: null` and would be a standalone row.
+   * `isContextSkill` covers it by name as well, so it stays out either way.
+   */
+  it('drops a member that arrives without its bundle', () => {
+    const stray: CatalogView = {
+      ...contextView,
+      skills: [skill('solo', null), skill('knowledge-bases', null)],
+      bundles: [],
+    };
+    expect(standaloneSkills(stray).map((s) => s.name)).toEqual(['solo']);
   });
 });

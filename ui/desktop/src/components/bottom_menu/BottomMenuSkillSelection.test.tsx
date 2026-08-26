@@ -66,6 +66,7 @@ function bundle(
     source: { kind: 'biorouter', extension: null, label: 'Biorouter' },
     skills: members,
     package: null,
+    builtin: false,
     state: {
       machineEnabled: true,
       session: 'default',
@@ -396,6 +397,54 @@ describe('BottomMenuSkillSelection', () => {
     // whose write just failed.
     expect(mocks.loadSkillOverrides).toHaveBeenCalled();
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+  });
+
+  /**
+   * ⚠ **The chip counts ROWS, and a Context bundle is a row.**
+   * `activeCount` filters nothing itself — every Context exclusion happens in
+   * `useSkillCatalog`, and until the knowledge skills became a bundle every one
+   * of those tested a skill's own `name`. A bundle carries none of its members'
+   * names, so promoting them put one row back in the picker and +1 on the chip,
+   * for a thing the user manages in Settings.
+   *
+   * The count must therefore be `1` here, not `2`: `example-skill` alone.
+   */
+  it('leaves a Context bundle out of the picker and out of the chip count', async () => {
+    serve(
+      view({
+        skills: [
+          skill('example-skill'),
+          skill('knowledge-lint', { bundle: 'knowledge-bases', builtin: true }),
+          skill('update-soul', { bundle: 'knowledge-bases', builtin: true }),
+        ],
+        bundles: [
+          bundle('knowledge-bases', ['knowledge-lint', 'update-soul'], { builtin: true }),
+        ],
+      })
+    );
+    render(<BottomMenuSkillSelection sessionId={null} />);
+
+    expect(await screen.findByLabelText('Manage skills (1 enabled)')).toBeInTheDocument();
+    const rows = await openMenu();
+    expect(rows).toHaveLength(1);
+    expect(screen.queryByText('knowledge-bases')).not.toBeInTheDocument();
+    expect(screen.queryByText('knowledge-lint')).not.toBeInTheDocument();
+  });
+
+  /**
+   * An installed bundle is still a row and still counted, so the assertion
+   * above is about Contexts and not about bundles generally.
+   */
+  it('still counts an installed bundle as one row', async () => {
+    serve(
+      view({
+        skills: [skill('example-skill'), skill('media-use', { bundle: 'hyperframes' })],
+        bundles: [bundle('hyperframes', ['media-use'])],
+      })
+    );
+    render(<BottomMenuSkillSelection sessionId={null} />);
+
+    expect(await screen.findByLabelText('Manage skills (2 enabled)')).toBeInTheDocument();
   });
 
   it('reports a catalog it could not read instead of claiming there are no skills', async () => {

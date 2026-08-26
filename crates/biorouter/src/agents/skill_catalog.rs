@@ -263,6 +263,14 @@ pub struct CatalogBundle {
     pub skills: Vec<String>,
     /// The importer's record, when this bundle was installed as a package.
     pub package: Option<PackageSummary>,
+    /// Shipped with Biorouter, so the interface offers no Delete for it.
+    ///
+    /// ⚠ **The bundle needs its own answer.** `CatalogSkill.builtin` gates the
+    /// Delete on a *skill* row, and a bundle row is a different control on a
+    /// different directory: without this, a seeded bundle rendered a working
+    /// Trash — the delete succeeding, the toast confirming, and the next
+    /// startup rewriting the folder. That is regression 1 of #77, one level up.
+    pub builtin: bool,
     pub state: SkillState,
 }
 
@@ -466,6 +474,7 @@ impl SkillCatalog {
                     source: self.source_of(&record.source_root),
                     skills: record.members.clone(),
                     package: record.package.clone(),
+                    builtin: skills_extension::is_shipped_entry_name(name),
                     state,
                 }
             })
@@ -514,7 +523,11 @@ pub(crate) fn compose_state(
 ) -> SkillState {
     let machine_enabled = !machine_disabled.contains(name)
         && !bundle.is_some_and(|bundle| machine_disabled.contains(bundle));
-    let hidden_context = hidden_contexts.contains(name);
+    // ⚠ Two keys, exactly as above. A Context row may name a whole bundle
+    // (`skills_extension::context_ids`), and a member carries its own `name:` —
+    // so a one-key test would leave the switch moving and the members visible.
+    let hidden_context = hidden_contexts.contains(name)
+        || bundle.is_some_and(|bundle| hidden_contexts.contains(bundle));
 
     let (session, via_bundle) = match over.resolve(name, bundle) {
         OverrideMatch::Added { via_bundle } => (SessionState::Added, via_bundle),
@@ -647,6 +660,21 @@ mod tests {
         SkillSource::new(SkillSourceKind::Biorouter, None)
     }
 
+    /// The bundles a temporary root actually contains.
+    ///
+    /// ⚠ **`add_missing_shipped_skills` injects the shipped skills into every
+    /// scan**, and since they became a bundle that injection contributes a
+    /// `KNOWLEDGE_BUNDLE` row over a directory the temp root does not have. It
+    /// is the right behaviour — the in-memory fallback must place a skill where
+    /// the seeder would have — but it means `view.bundles[0]` no longer names
+    /// what a test wrote. Index by name, not by position.
+    fn authored_bundles(view: &CatalogView) -> Vec<&CatalogBundle> {
+        view.bundles
+            .iter()
+            .filter(|bundle| bundle.name != skills_extension::KNOWLEDGE_BUNDLE)
+            .collect()
+    }
+
     #[test]
     fn a_bundle_is_derived_from_discovery_not_from_a_second_walk() {
         let temp = TempDir::new().unwrap();
@@ -663,9 +691,10 @@ mod tests {
         let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
         let view = catalog.view(&SessionSkillOverride::default());
 
-        assert_eq!(view.bundles.len(), 1);
-        assert_eq!(view.bundles[0].name, "pack");
-        assert_eq!(view.bundles[0].skills, vec!["alpha", "beta"]);
+        let bundles = authored_bundles(&view);
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].name, "pack");
+        assert_eq!(bundles[0].skills, vec!["alpha", "beta"]);
         assert!(view.skills.iter().any(|s| s.name == "solo"));
         assert!(!view.skills.iter().any(|s| s.name == "broken"));
     }
@@ -757,7 +786,7 @@ mod tests {
 
         let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
         let view = catalog.view(&SessionSkillOverride::default());
-        let bundle = &view.bundles[0];
+        let bundle = authored_bundles(&view)[0];
         assert_eq!(bundle.name, "hyperframes");
         assert_eq!(bundle.display_name, "HyperFrames");
         let package = bundle.package.as_ref().expect("package record read");
@@ -779,8 +808,8 @@ mod tests {
 
         let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
         let view = catalog.view(&SessionSkillOverride::default());
-        assert_eq!(view.bundles[0].display_name, "pack");
-        assert!(view.bundles[0].package.is_none());
+        assert_eq!(authored_bundles(&view)[0].display_name, "pack");
+        assert!(authored_bundles(&view)[0].package.is_none());
     }
 
     #[test]

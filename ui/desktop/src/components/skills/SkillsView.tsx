@@ -5,6 +5,7 @@ import { Switch } from '../ui/switch';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { Plus, Upload, Globe, Trash2, ChevronRight } from '../icons/app-icons';
 import SkillItem from './SkillItem';
+import BuiltInBadge from '../ui/BuiltInBadge';
 import AddSkillModal from './AddSkillModal';
 import CustomSkillModal from './CustomSkillModal';
 import BrowseSkillsModal from '../baam/BrowseSkillsModal';
@@ -396,6 +397,13 @@ function BundleRow({
 }: BundleRowProps) {
   const members = skills.filter((skill) => skill.bundle === bundle.name);
   const entryPoint = bundle.package?.entryPoint ?? null;
+  // ⚠ From the daemon, not from a list here. Rust owns the seeder, so Rust owns
+  // the answer — the same rule `SkillItem` follows for a skill row. A bundle
+  // needs its own answer because this is a different control on a different
+  // directory: `CatalogSkill.builtin` gates the Trash on a member and reaches
+  // nothing here, which left a seeded bundle offering a Delete that succeeded,
+  // toasted, and was silently rewritten on the next start.
+  const builtin = bundle.builtin;
   return (
     <div className="biorouter-list-row px-3 py-3 group">
       <div className="flex items-start gap-2">
@@ -437,7 +445,8 @@ function BundleRow({
           )}
         </button>
         <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
-          {onDelete && (
+          {builtin && <BuiltInBadge />}
+          {onDelete && !builtin && (
             <div
               className="flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
               onClick={(e) => e.stopPropagation()}

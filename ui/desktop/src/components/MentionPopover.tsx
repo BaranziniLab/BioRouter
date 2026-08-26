@@ -16,7 +16,7 @@ import { getInitialWorkingDir } from '../utils/workingDir';
 import { IMAGE_EXTENSIONS } from '../utils/imageFormats';
 import { labelledRefTag, refTag, type RefKind } from '../utils/resourceRefs';
 import { useConfig } from './ConfigContext';
-import { fetchSkillCatalog, standaloneSkills } from './skills/useSkillCatalog';
+import { fetchSkillCatalog, pickerBundles, standaloneSkills } from './skills/useSkillCatalog';
 import bundledExtensionsData from './settings/extensions/bundled-extensions.json';
 
 type DisplayItemType = CommandType | 'Directory' | 'File' | 'KnowledgeBase' | 'Skill' | 'Extension';
@@ -600,7 +600,7 @@ const MentionPopover = forwardRef<
             relativePath: base.id,
           });
         }
-        for (const bundle of skillsResult.bundles) {
+        for (const bundle of pickerBundles(skillsResult)) {
           commandItems.push({
             name: `skill:${bundle.name}`,
             extra: `${bundle.skills.length} skill${bundle.skills.length === 1 ? '' : 's'} in bundle`,
