@@ -21,6 +21,8 @@ pub mod affiliation;
 pub mod alt_provider;
 pub mod capability;
 pub mod config_keys;
+// The (caller, target) state behind `visibility::requires_first_crossing_approval`.
+pub mod crossing;
 pub mod declassify;
 pub mod disclosure;
 #[cfg(test)]

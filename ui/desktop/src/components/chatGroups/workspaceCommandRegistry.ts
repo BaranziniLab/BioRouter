@@ -19,6 +19,7 @@ export type WorkspaceCommand = {
     | 'open_window'
     | 'notify'
     | 'annotate_tab'
+    | 'observe'
     | 'read_panel'
     | 'capture_panel';
   session_id?: string;

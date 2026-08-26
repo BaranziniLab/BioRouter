@@ -163,13 +163,14 @@ Two consequences for routing, until that lands:
 
 One write is covered, and it is worth knowing which: `workspace_set_tools { provider, model }` calls
 the same `Agent::update_provider` the model picker does, so **Gate A** applies to it and steering
-another chat onto a public model cannot launder a private one. Design §7's *other* write rules —
-the lineage conditions on `workspace_send_prompt` and on the rest of `workspace_set_tools` — are
-unwired along with the read side.
+another chat onto a public model cannot launder a private one. Design §7's write row is `may_write`, and it
+is `VIS` — the same predicate as READ. The **lineage conditions** that used to sit on
+`workspace_send_prompt` and on the rest of `workspace_set_tools` are **retired**: an agent may
+inject into any conversation it can see, and only the privacy tier refuses.
 
 The same guidance is mirrored in the extension's own `INSTRUCTIONS` block
 (`crates/biorouter/src/agents/workspace_extension.rs`), which a unit test holds to
-≤2,500 characters and to naming only tools `get_tools()` actually registers.
+≤2,800 characters and to naming only tools `get_tools()` actually registers.
 
 ## Overlap matrix
 

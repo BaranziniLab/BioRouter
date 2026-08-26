@@ -233,8 +233,10 @@ const REGISTRY: &[Guard] = &[
     Guard {
         ident: "may_write",
         defined_in: VISIBILITY,
-        decides: "WRITE ⇔ VIS ∧ lineage ∈ {self, child}: whether a caller may steer a session, \
-                  not merely see it",
+        decides: "WRITE ⇔ VIS: whether a caller may steer a session, which is now every \
+                  session it may read. The lineage clause it used to carry — steer what you \
+                  spawned, read everything else — is retired: an agent may inject into any \
+                  conversation, and the tier is the only boundary",
         status: Status::Wired,
         sites: &[Site {
             file: "crates/biorouter/src/agents/workspace_extension.rs",
@@ -244,31 +246,39 @@ const REGISTRY: &[Guard] = &[
         }],
     },
     Guard {
-        ident: "lineage_of",
-        defined_in: VISIBILITY,
-        decides: "classifies a target as self / child / other from its stored \
-                  `parent_session_id`, one hop and never transitive",
-        status: Status::Wired,
-        sites: &[Site {
-            file: "crates/biorouter/src/agents/workspace_extension.rs",
-            counts: c(1, 0, 0),
-            kind: SiteKind::Guard,
-            what: "the shared writable adapter classifies the named target before `may_write`",
-        }],
-    },
-    Guard {
         ident: "requires_first_crossing_approval",
         defined_in: VISIBILITY,
         decides: "whether a write is a downgrade crossing (private caller → public target) and \
                   so must disclose its payload the first time",
-        status: Status::Unwired(
-            "OPERATOR DECISION OUTSTANDING. The documented disclosure (the first \
-             `workspace_send_prompt` / `workspace_set_tools` from a given caller into a given \
-             public target raises an approval showing the exact payload) never fires. There \
-             is no caller and no (caller, target) first-crossing state anywhere in the tree. \
-             The predicate is pure and correct; the state it needs was never built.",
-        ),
-        sites: &[],
+        // ⚠ This row read `Status::Unwired("OPERATOR DECISION OUTSTANDING")` for a long
+        // time, and what settled the decision was widening the write rule. While WRITE
+        // carried its lineage clause, the only public targets a private caller could write
+        // into were ones it had spawned itself; now it can write into any public
+        // conversation on the machine, so the moment private-origin text leaves for a
+        // public model is one the user has to be able to see. The state the predicate
+        // always needed is `privacy/crossing.rs`.
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter/src/privacy/crossing.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`needs_disclosure`, which crosses the pure predicate with the \
+                       (caller, target) ledger the disclosure is keyed on. The inspector \
+                       that raises the approval — `WorkspaceCrossingInspector` — asks \
+                       through here rather than asking the predicate itself, so there is \
+                       one place that knows what 'first' means",
+            },
+            Site {
+                file: "crates/biorouter/src/agents/workspace_extension.rs",
+                counts: c(2, 0, 0),
+                kind: SiteKind::Guard,
+                what: "the RECORD half, in `handle_send_prompt` and `handle_set_tools`: the \
+                       pair is marked as crossed only once the write has landed, so a \
+                       denied approval — or a tier refusal underneath it — cannot buy \
+                       silence for the retry",
+            },
+        ],
     },
     // ------------------------------------------------------- the HTTP reach
     // gate. `session_id` is a request parameter, not a credential.

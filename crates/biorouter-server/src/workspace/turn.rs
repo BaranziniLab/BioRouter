@@ -2778,4 +2778,168 @@ mod tests {
             (TurnErrorScope::Inference, true, None)
         );
     }
+
+    /// **`workspace_send_prompt mode:"turn"` reflects in an open tab live.**
+    ///
+    /// The injected prompt is persisted by `Agent::reply` like any other user
+    /// message, and `Agent::reply` deliberately does NOT yield a `Message` frame
+    /// for a user prompt — #66's rule, on the premise that "the client authored
+    /// it and already holds it". That premise is false for an injection: the
+    /// target's tab authored nothing, so with no frame carrying the body the
+    /// message appears only after a reload. `Agent::reply` therefore publishes
+    /// an agent-injected row straight onto the session bus, at the point it
+    /// becomes durable.
+    ///
+    /// Driven through the real `run_turn` against a provider that RESTORES but
+    /// cannot infer (`ollama`, naming a model that is not there). Getting past
+    /// provider restore is what matters: a name the factory does not know fails
+    /// in setup, before `Agent::reply` runs at all, so the prompt is never
+    /// persisted and the test would pass for the wrong reason. Failing at
+    /// inference instead is the point — the publish must already have happened,
+    /// because that is where the row became durable.
+    #[tokio::test]
+    async fn an_injected_turns_prompt_reaches_the_targets_open_tab_live() {
+        use biorouter::conversation::message::{MessageProvenance, ProvenanceKind};
+
+        const INJECTED: &str = "br71-injected-turn-live-marker";
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let workdir = tempfile::TempDir::new().unwrap();
+        let target = state
+            .session_manager()
+            .create_session(
+                workdir.path().to_path_buf(),
+                "br71 injected turn live".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        state
+            .session_manager()
+            .update(&target.id)
+            .provider_name("ollama")
+            .model_config(biorouter::model::ModelConfig::new("br71-turn-model").unwrap())
+            .apply()
+            .await
+            .unwrap();
+
+        // An observer, subscribed BEFORE the turn — the bus is a broadcast with
+        // no replay, so a subscription opened afterwards proves nothing.
+        let mut observer = biorouter::session_events::subscribe(&target.id);
+
+        let cancel = CancellationToken::new();
+        let guard = state
+            .try_begin_turn_idempotent(&target.id, cancel.clone(), None)
+            .expect("the target is idle");
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            run_turn(
+                state,
+                TurnRequest::new(
+                    target.id.clone(),
+                    Message::user()
+                        .with_text(INJECTED)
+                        .with_provenance(MessageProvenance {
+                            kind: ProvenanceKind::AgentInjection,
+                            from_session_id: Some("br71-injecting-caller".into()),
+                            from_session_name: Some("the other chat".into()),
+                        }),
+                ),
+                guard,
+                cancel,
+            ),
+        )
+        .await;
+
+        let mut saw_body = false;
+        while let Ok(event) = observer.try_recv() {
+            if let SessionBusEvent::Agent(biorouter::agents::AgentEvent::Message(m)) = event {
+                if !message_text_contains(&m, INJECTED) {
+                    continue;
+                }
+                // The DURABLE row, not a pre-write copy: `add_message_adopting_uid`
+                // stamps the minted uid, and a frame with `id: None` is one the
+                // renderer cannot reconcile against the stored twin that arrives
+                // with the next snapshot.
+                assert!(
+                    m.id.is_some(),
+                    "the injected prompt was published before it was durable"
+                );
+                saw_body = true;
+            }
+        }
+        assert!(
+            saw_body,
+            "no Message frame carried the injected prompt, so an open tab would \
+             show it only after a reload"
+        );
+    }
+
+    /// The control for the test above, and the thing that keeps it from being
+    /// vacuous: an ORDINARY user prompt still gets no `Message` frame. #66's
+    /// ordering rule depends on that — the client's own prompt is named by
+    /// `MessagesPersisted` and never yielded — so a publish that fired for every
+    /// user message would be a regression wearing the same green tick.
+    #[tokio::test]
+    async fn an_ordinary_user_prompt_is_still_never_published_as_a_message() {
+        const TYPED: &str = "br71-ordinary-prompt-marker";
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let workdir = tempfile::TempDir::new().unwrap();
+        let target = state
+            .session_manager()
+            .create_session(
+                workdir.path().to_path_buf(),
+                "br71 ordinary prompt".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        state
+            .session_manager()
+            .update(&target.id)
+            .provider_name("ollama")
+            .model_config(biorouter::model::ModelConfig::new("br71-turn-model").unwrap())
+            .apply()
+            .await
+            .unwrap();
+
+        let mut observer = biorouter::session_events::subscribe(&target.id);
+
+        let cancel = CancellationToken::new();
+        let guard = state
+            .try_begin_turn_idempotent(&target.id, cancel.clone(), None)
+            .expect("the target is idle");
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            run_turn(
+                state,
+                TurnRequest::new(target.id.clone(), Message::user().with_text(TYPED)),
+                guard,
+                cancel,
+            ),
+        )
+        .await;
+
+        while let Ok(event) = observer.try_recv() {
+            if let SessionBusEvent::Agent(biorouter::agents::AgentEvent::Message(m)) = event {
+                assert!(
+                    !message_text_contains(&m, TYPED),
+                    "an ordinary typed prompt was published as a Message frame; \
+                     #66's ordering rule assumes it never is"
+                );
+            }
+        }
+    }
+
+    fn message_text_contains(
+        message: &biorouter::conversation::message::Message,
+        needle: &str,
+    ) -> bool {
+        message
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .any(|t| t.contains(needle))
+    }
 }

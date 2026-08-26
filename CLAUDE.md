@@ -251,12 +251,23 @@ what did not" section first**; the rest of that document is the design, not the 
 - **The master switch** lives in its own record beside `config.yaml`, **not in it** and **not in an
   env var** — the agent has `developer__shell`, so a switch it can edit is not a switch. Loaded once
   per process; a load error resolves to ON.
+- **Lineage is NOT a boundary; the tier is the only one.** `may_write` ⇔ `may_read` ⇔ `VIS`, so an
+  agent may inject a prompt into any conversation it can see — a child, a sibling, an unrelated
+  chat. R6's old "steer what you spawned, read everything else" rule is retired and
+  `Lineage`/`lineage_of` are deleted. Two *other* one-hop rules survive and are constantly
+  confused with it: `McpMeta::workspace_child_scope_only` (which confines an auto-injected
+  supervision grant's read/close/watch to direct children) and the flat refusal of every
+  `workspace_*` tool to a `SessionType::SubAgent`. A private→public write raises a
+  **first-crossing approval showing the payload**, once per (caller, target) pair, in every
+  permission mode — `agents/workspace_inspector.rs` asks, `privacy/crossing.rs` remembers,
+  `handle_send_prompt`/`handle_set_tools` record only once the write lands.
 - **Known gaps, do not assume otherwise.** The general filesystem read-deny (§9.5, DR-14) is
   DEFERRED — a public chat with a shell still reads ordinary files, which is why the
-  non-private-model disclosure ships. And §7's cross-session matrix
-  (`privacy/visibility.rs::may_read`) is **written but wired to nothing**: `workspace_read_conversation`
-  checks only `session_type == Hidden`, so it still reads a private transcript that `chatrecall`
-  would refuse.
+  non-private-model disclosure ships. ⚠ This bullet also claimed §7's cross-session matrix was
+  "written but wired to nothing" and that `workspace_read_conversation` checked only
+  `session_type == Hidden`; **both were already false** — the read gate is
+  `visibility::refuse_unless_readable` and the write gate composes it with `may_write`. Grep the
+  symbol rather than trusting a summary, including this one.
 - **Tests:** `cargo test -p biorouter --lib privacy::` and
   `cargo test -p biorouter-mcp --lib knowledge::tier`, plus five integration binaries that are
   **spread across three crates** — `-p biorouter`: `--test privacy_toggle`,

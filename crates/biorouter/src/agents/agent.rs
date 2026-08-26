@@ -3654,6 +3654,19 @@ impl Agent {
             crate::agents::workspace_inspector::WorkspaceMutationInspector,
         ));
 
+        // Issue #56, the first-crossing disclosure: private-capability chat
+        // writing into a PUBLIC conversation shows the payload once per
+        // (caller, target) pair. Inert for every tool but
+        // `workspace_send_prompt` and `workspace_set_tools`, and inert entirely
+        // for a public-capability caller — which is why it can take the same
+        // provider handle the permission inspector below does without adding a
+        // mutex read to an ordinary turn.
+        tool_inspection_manager.add_inspector(Box::new(
+            crate::agents::workspace_inspector::WorkspaceCrossingInspector::new(Arc::clone(
+                &provider,
+            )),
+        ));
+
         // Add permission inspector (medium-high priority). BR-18: it reads the
         // shared risk registry the agent refreshes each turn from the model's
         // tool list, so `SmartApprove` auto-approves read-only-annotated tools
@@ -6359,14 +6372,38 @@ impl Agent {
             name: Self::SPAWN_EXTENSION.to_string(),
             description: "Delegate work to subagents".to_string(),
             bundled: Some(true),
-            // Delegation plus its child-scoped supervision surface. The bridge
-            // does not expose workspace_send_prompt, and WorkspaceClient still
-            // enforces lineage on every read/close/watch call. Enforced on BOTH
-            // the advertisement path (`filter`/`is_tool_available` in
-            // `fetch_all_tools`) and dispatch.
+            // Delegation, its child-scoped supervision surface, and the two
+            // tools that make cross-chat injection usable: `workspace_list` to
+            // learn which conversations exist and which are running, and
+            // `workspace_send_prompt` to write into one.
+            //
+            // ⚠ **`workspace_list` is in here on purpose, and it is the entry
+            // that needs justifying.** Without it `workspace_send_prompt` is
+            // reachable but unusable for anything except a child, because a
+            // session id is the one argument it cannot invent — an agent knows
+            // its children's ids from the spawn results and knows no others. A
+            // grant that advertises a tool the holder can never supply an
+            // argument for is worse than not granting it: the model tries.
+            // What keeps it safe is that `appears_in_list` OMITS private rows
+            // rather than redacting them, so the discovery surface is exactly
+            // the set this capability may already read.
+            //
+            // The other four are unchanged, and the two child-scoped ones stay
+            // child-scoped: `refuse_unless_direct_subagent_child` gates
+            // read_conversation / close / watch off
+            // `McpMeta::workspace_child_scope_only`, which
+            // `ExtensionManager::dispatch_tool_call` sets for exactly this
+            // auto-injected entry. `handle_list` and `handle_send_prompt` do
+            // not read that flag — they are gated by the tier alone — which is
+            // what makes adding them here a real widening rather than a no-op.
+            //
+            // Enforced on BOTH the advertisement path (`filter`/
+            // `is_tool_available` in `fetch_all_tools`) and dispatch.
             available_tools: vec![
                 SUBAGENT_TOOL_NAME.to_string(),
+                "workspace_list".to_string(),
                 "workspace_read_conversation".to_string(),
+                "workspace_send_prompt".to_string(),
                 "workspace_close".to_string(),
                 "workspace_watch".to_string(),
             ],
@@ -7087,6 +7124,33 @@ impl Agent {
                 .await?;
             prestream_persisted.push(injected);
         }
+        // A turn started by ANOTHER conversation
+        // (`workspace_send_prompt mode:"turn"`) has no client that authored its
+        // prompt, so the premise of the `named_but_never_yielded` comment below
+        // does not hold for it: nobody holds this text, and without a frame
+        // carrying the body an open tab shows the injection only after a
+        // reload. Published straight onto the session bus, AFTER the row is
+        // durable and with the row's own minted uid.
+        //
+        // ⚠ Published rather than *yielded*, deliberately. A yield would put a
+        // `Message` frame in front of the `MessagesPersisted` id below and break
+        // #66's ordering rule for every turn in the product, to fix a case that
+        // is not about this turn's own stream at all — the reader who needs this
+        // is an observer of the TARGET tab, and the bus is that reader's
+        // channel. `publish` is a pure lookup and a no-op with no observer.
+        for persisted in &prestream_persisted {
+            if persisted.metadata.provenance.as_ref().is_some_and(|p| {
+                p.kind == crate::conversation::message::ProvenanceKind::AgentInjection
+            }) {
+                crate::session_events::publish(
+                    &session_config.id,
+                    crate::session_events::SessionBusEvent::Agent(AgentEvent::Message(
+                        persisted.clone(),
+                    )),
+                );
+            }
+        }
+
         // #59: published as the stream's first event, before anything else can
         // be appended to the session, so the client's view of the stored set
         // starts complete.
@@ -12646,9 +12710,25 @@ mod tests {
                 "auto-injection must grant child supervision with {tool}: {names:?}"
             );
         }
+        // Cross-chat injection, and the discovery half without which its one
+        // required argument is unobtainable. Both were on the excluded list
+        // below until the write rule stopped reading lineage; a delegating
+        // agent that cannot name another conversation cannot inject into one.
         for tool in [
             "workspace__workspace_list",
             "workspace__workspace_send_prompt",
+        ] {
+            assert!(
+                names.iter().any(|name| name == tool),
+                "auto-injection must grant cross-chat injection with {tool}: {names:?}"
+            );
+        }
+        // Still excluded, and each for its own reason rather than as leftovers
+        // of one rule. `workspace_set_tools` rewrites another conversation's
+        // provider, extensions and skills — a capability change, not a message,
+        // and the thing §5's always-confirm inspector exists for.
+        // `workspace_open` mints sessions and moves the user's tabs.
+        for tool in [
             "workspace__workspace_set_tools",
             "workspace__workspace_open",
         ] {
@@ -13005,6 +13085,12 @@ mod tests {
     /// on the call path too (`extension_manager.rs`, the
     /// `config.is_tool_available` re-check in `dispatch_tool_call`), so a
     /// remembered tool name cannot reach the handler.
+    ///
+    /// Driven with `workspace_set_tools`. It used to be `workspace_send_prompt`,
+    /// which is now IN the injected set — and the substitution is the point:
+    /// the allowlist still has teeth, it is just a different list. A
+    /// capability change to another conversation is the thing a delegating
+    /// agent is not handed; a message to one is.
     #[tokio::test]
     async fn an_auto_injected_session_cannot_dispatch_a_cross_session_tool() {
         let (agent, session_id) = agent_with_one_extension_for_tests().await;
@@ -13015,12 +13101,14 @@ mod tests {
                 &session_id,
                 rmcp::model::CallToolRequestParams {
                     meta: None,
-                    name: "workspace__workspace_send_prompt".into(),
+                    name: "workspace__workspace_set_tools".into(),
                     arguments: Some(
-                        serde_json::json!({ "session_id": "other", "text": "hi", "mode": "note" })
-                            .as_object()
-                            .unwrap()
-                            .clone(),
+                        serde_json::json!({
+                            "session_id": "other", "add_extensions": ["developer"]
+                        })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
                     ),
                     task: None,
                 },
@@ -13032,7 +13120,7 @@ mod tests {
         // Ok payload) does not compile — match instead.
         let err = match dispatched {
             Ok(_) => panic!(
-                "workspace_send_prompt is outside the auto-injection's \
+                "workspace_set_tools is outside the auto-injection's \
                  available_tools and must not reach a handler"
             ),
             Err(e) => e,
@@ -13095,10 +13183,9 @@ mod tests {
             .map(|t| t.name.to_string())
             .collect();
         assert!(
-            !names
-                .iter()
-                .any(|n| n == "workspace__workspace_send_prompt"),
-            "precondition: only the spawn tool was injected: {names:?}"
+            !names.iter().any(|n| n == "workspace__workspace_set_tools"),
+            "precondition: the restricted injection was applied, not the full \
+             surface: {names:?}"
         );
 
         // Now the user enables Workspace Control in Settings.
