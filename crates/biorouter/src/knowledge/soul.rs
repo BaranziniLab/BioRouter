@@ -925,7 +925,7 @@ mod tests {
         assert!(seeded.is_file(), "not seeded into the bundle");
         assert!(!root.join(SOUL_SKILL_DIR).exists(), "also seeded flat");
 
-        let discovered = SkillsClient::discover_skills_in_directories(&[root.clone()]);
+        let discovered = SkillsClient::discover_skills_in_directories(std::slice::from_ref(&root));
         assert_eq!(
             discovered[SOUL_SKILL_DIR].bundle_name.as_deref(),
             Some(KNOWLEDGE_BUNDLE),

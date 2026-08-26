@@ -3053,7 +3053,8 @@ Working dir biorouter content
         let skills_dir = temp_dir.path().join("skills");
         SkillsClient::ensure_builtin_skills(&skills_dir);
 
-        let discovered = SkillsClient::discover_skills_in_directories(&[skills_dir.clone()]);
+        let discovered =
+            SkillsClient::discover_skills_in_directories(std::slice::from_ref(&skills_dir));
         for (name, content) in KNOWLEDGE_SKILLS {
             let seeded = knowledge_bundle_dir(&skills_dir)
                 .join(name)
