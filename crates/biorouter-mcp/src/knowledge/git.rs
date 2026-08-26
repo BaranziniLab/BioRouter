@@ -3,9 +3,11 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::Path;
 
-/// One spelling of the lock's relative path, shared with `service::kb_lock_path`
-/// (which takes it) and `brkb::walk` (which keeps it out of an archive for the
-/// same reason this keeps it out of a commit).
+/// One spelling of the lock's **historical** in-tree path, shared with
+/// `brkb::walk` (which keeps it out of an archive for the same reason this
+/// keeps it out of a commit). The live lock now sits beside the bases
+/// (`paths::kb_write_lock_path`), so this only ever matches the file a base
+/// created before that move still carries — which still must not be committed.
 use crate::knowledge::paths::KB_WRITE_LOCK_REL as WRITE_LOCK_PATH;
 
 /// The one directory that holds curated knowledge. `raw/`, `log.md`, `index.md`

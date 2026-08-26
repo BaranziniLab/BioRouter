@@ -1515,7 +1515,15 @@ mod tests {
     /// §6.2b the native decoder emitted one message per block (`[1, 1]`), which
     /// forced serial execution; that shape is what the kill switch restores
     /// (`test_streaming_kill_switch_restores_serial_tool_messages`).
+    ///
+    /// ⚠ Same `serial_test` group as the kill-switch test, and this is not
+    /// hygiene: that test sets `BIOROUTER_TOOL_CALL_BATCHING=0` process-wide,
+    /// `serial` only excludes tests carrying the SAME key, and every decoder
+    /// reads the flag at construction. Unannotated, this test read the kill
+    /// switch's env var and asserted `[1, 1] == [2]` — `test (ubuntu-latest)`
+    /// red on a diff nowhere near it, and 7 failures in 8 local runs.
     #[tokio::test]
+    #[serial_test::serial(tool_call_batching_env)]
     async fn test_streaming_batches_multiple_tool_uses_into_one_message() -> Result<()> {
         use tokio::pin;
         use tokio_stream::StreamExt;
@@ -1597,7 +1605,14 @@ mod tests {
     /// with **no** `message_delta` (straight to `[DONE]`) must still flush its
     /// batched tools via the after-loop flush — otherwise a whole multi-tool turn
     /// would silently vanish.
+    ///
+    /// ⚠ In the kill switch's `serial_test` group for the reason spelled out on
+    /// `test_streaming_batches_multiple_tool_uses_into_one_message`: it decodes
+    /// two `tool_use` blocks, so it reads `BIOROUTER_TOOL_CALL_BATCHING` and
+    /// raced the test that sets it. Any future test that decodes more than one
+    /// tool block belongs here too.
     #[tokio::test]
+    #[serial_test::serial(tool_call_batching_env)]
     async fn test_streaming_batches_tools_without_message_delta() -> Result<()> {
         // Drop the trailing message_delta; end with [DONE] instead.
         let mut lines: Vec<&'static str> = TWO_TOOL_USE_LINES[..7].to_vec();

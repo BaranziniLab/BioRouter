@@ -385,6 +385,27 @@ impl Drop for CancelOnDrop {
     }
 }
 
+/// Did `try_lock_exclusive` fail because somebody else holds the lock — as
+/// opposed to failing for real?
+///
+/// ⚠ **The error kind alone is not the answer, and the platform that disagrees
+/// is Windows.** `fs2` reports contention with whatever the OS returned: Unix's
+/// `EWOULDBLOCK` decodes to [`std::io::ErrorKind::WouldBlock`], but Windows
+/// returns `ERROR_LOCK_VIOLATION` (os error 33), which `std` does not decode at
+/// all and leaves `Uncategorized`. Matching on the kind therefore made every
+/// contended acquisition on Windows a hard error: the poll loop propagated it
+/// instead of waiting, so a queued lint reported "another process has locked a
+/// portion of the file" and a cancellable mutation returned that instead of
+/// "cancelled". `fs2::lock_contended_error()` is the crate's own name for the
+/// error it raises, so asking it is the platform-correct question.
+fn is_lock_contended(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return true;
+    }
+    let contended = fs2::lock_contended_error();
+    error.raw_os_error().is_some() && error.raw_os_error() == contended.raw_os_error()
+}
+
 impl FileLockGuard {
     fn acquire(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -401,29 +422,12 @@ impl FileLockGuard {
         Ok(Self { file })
     }
 
-    fn acquire_existing(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path)?;
-        file.lock_exclusive()?;
-        Ok(Self { file })
-    }
-
     /// Interruptible `flock` acquisition for async callers. There is no
     /// artificial deadline: a live operation waits as long as its owner does,
     /// while cancellation bounds shutdown latency to one poll interval.
-    fn acquire_cancellable(
-        path: &Path,
-        create_parent: bool,
-        cancel: &CancellationToken,
-    ) -> Result<Self> {
-        if create_parent {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+    fn acquire_cancellable(path: &Path, cancel: &CancellationToken) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
         let file = OpenOptions::new()
             .create(true)
@@ -443,7 +447,7 @@ impl FileLockGuard {
                     }
                     return Ok(Self { file });
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(error) if is_lock_contended(&error) => {
                     std::thread::park_timeout(std::time::Duration::from_millis(10));
                 }
                 Err(error) => return Err(error.into()),
@@ -1056,8 +1060,32 @@ impl KnowledgeService {
         self.root.join(".knowledge-root.lock")
     }
 
+    /// ⚠ **Beside the base, never inside it** — see
+    /// [`paths::kb_write_lock_path`]. Holding a handle to a file under
+    /// `kb_root` makes Windows refuse to rename or remove `kb_root`, and both
+    /// the delete transaction and a base rename do exactly that with this lock
+    /// held.
     fn kb_lock_path(&self, kb_id: &str) -> PathBuf {
-        paths::kb_root(&self.root, kb_id).join(paths::KB_WRITE_LOCK_REL)
+        paths::kb_write_lock_path(&self.root, kb_id)
+    }
+
+    /// Carry a base's write lock across a rename, so the guard its renamer is
+    /// holding keeps excluding writers of the base under its new id.
+    ///
+    /// A missing source is not an error: the lock file only exists once
+    /// somebody has taken the lock, and a base that has never been locked has
+    /// nothing to move.
+    fn rename_kb_lock(&self, from_id: &str, to_id: &str) -> Result<()> {
+        let from = self.kb_lock_path(from_id);
+        if !from.exists() {
+            return Ok(());
+        }
+        let to = self.kb_lock_path(to_id);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(&from, &to)
+            .with_context(|| format!("move the knowledge write lock from '{from_id}' to '{to_id}'"))
     }
 
     /// Transaction lock for synchronous mutations of an existing base. Call
@@ -1070,14 +1098,13 @@ impl KnowledgeService {
         if !kb_root.exists() {
             anyhow::bail!("kb '{kb_id}' not found");
         }
-        let guard =
-            FileLockGuard::acquire_existing(&self.kb_lock_path(kb_id)).map_err(|error| {
-                if !kb_root.exists() {
-                    anyhow::anyhow!("kb '{kb_id}' not found")
-                } else {
-                    error
-                }
-            })?;
+        let guard = FileLockGuard::acquire(&self.kb_lock_path(kb_id)).map_err(|error| {
+            if !kb_root.exists() {
+                anyhow::anyhow!("kb '{kb_id}' not found")
+            } else {
+                error
+            }
+        })?;
         if kb_root.join(".git").is_dir() {
             GitRepo::open(&kb_root)?.recover_orphaned_txn()?;
         }
@@ -1090,9 +1117,7 @@ impl KnowledgeService {
 
     fn lock_root_cancellable(&self, cancel: Option<&CancellationToken>) -> Result<FileLockGuard> {
         match cancel {
-            Some(cancel) => {
-                FileLockGuard::acquire_cancellable(&self.root_lock_path(), true, cancel)
-            }
+            Some(cancel) => FileLockGuard::acquire_cancellable(&self.root_lock_path(), cancel),
             None => self.lock_root(),
         }
     }
@@ -1319,7 +1344,7 @@ impl KnowledgeService {
         kb_id: &str,
         cancel: Option<&CancellationToken>,
     ) -> Result<KnowledgeWriteGuard> {
-        self.lock_kb_path_cancellable(kb_id, cancel, false).await
+        self.lock_kb_path_cancellable(kb_id, cancel).await
     }
 
     pub(crate) async fn lock_existing_kb_cancellable(
@@ -1332,7 +1357,7 @@ impl KnowledgeService {
         if !kb_root.exists() {
             anyhow::bail!("kb '{kb_id}' not found");
         }
-        self.lock_kb_path_cancellable(kb_id, cancel, true)
+        self.lock_kb_path_cancellable(kb_id, cancel)
             .await
             .map_err(|error| {
                 if !kb_root.exists() {
@@ -1343,12 +1368,16 @@ impl KnowledgeService {
             })
     }
 
+    /// ⚠ `validate_kb_id` FIRST, and not only for the callers that already do.
+    /// The lock's filename is now the id ([`paths::kb_write_lock_path`]), so an
+    /// id that is not a plain slug is a path, and `lock_kb` is reachable
+    /// straight from an HTTP handler with a caller-supplied one.
     async fn lock_kb_path_cancellable(
         &self,
         kb_id: &str,
         cancel: Option<&CancellationToken>,
-        existing: bool,
     ) -> Result<KnowledgeWriteGuard> {
+        paths::validate_kb_id(kb_id)?;
         let m = self
             .locks
             .entry(kb_id.to_string())
@@ -1375,8 +1404,7 @@ impl KnowledgeService {
             .unwrap_or_default();
         let cancel_waiter_on_drop = CancelOnDrop(waiter_cancel.clone());
         let acquire = tokio::task::spawn_blocking(move || {
-            let file_guard =
-                FileLockGuard::acquire_cancellable(&lock_path, !existing, &waiter_cancel)?;
+            let file_guard = FileLockGuard::acquire_cancellable(&lock_path, &waiter_cancel)?;
             if kb_root.join(".git").is_dir() {
                 GitRepo::open(&kb_root)?.recover_orphaned_txn()?;
             }
@@ -2108,36 +2136,7 @@ impl KnowledgeService {
             };
 
             if target_id != id {
-                // The open lock file moves with its directory. Keep this guard
-                // through the registry/classification rewrite and commit so a
-                // caller using the new id opens the same locked inode rather
-                // than a second transaction domain.
-                std::fs::rename(&current_root, &target_root)?;
-                registry::replace(
-                    &self.root,
-                    id,
-                    RegistryEntry {
-                        id: target_id.clone(),
-                        path: target_root.clone(),
-                    },
-                )?;
-
-                if self.get_primary_persisted_unlocked()?.as_deref() == Some(id) {
-                    self.set_primary_persisted_unlocked(Some(&target_id))?;
-                }
-                self.rewrite_session_primary_refs_unlocked(id, Some(&target_id))?;
-                self.rewrite_hidden_refs_unlocked(id, Some(&target_id))?;
-                // ⚠ The classification is keyed by kb id too, so it has to move
-                // with everything else above. It did not, and the consequence
-                // was not the one it looks like: the TIER survived by accident
-                // (`tier::is_private` reads an unknown id whose directory
-                // exists as private), while the AFFILIATION did not — an id
-                // with no row answers `Owners(∅)`, which is *unclaimed* rather
-                // than *nobody's*, and every private model may reach it. So
-                // renaming a base holding one institution's data made it
-                // readable by another institution's private model, with nothing
-                // on screen marking the change.
-                crate::knowledge::tier::rename_unlocked(&self.root, id, &target_id)?;
+                self.move_base_to_new_id(id, &target_id, &current_root, &target_root)?;
             }
 
             manifest::save(&target_root, &current)?;
@@ -2151,6 +2150,64 @@ impl KnowledgeService {
         }
 
         Ok(current)
+    }
+
+    /// Carry every id-keyed thing a base owns from `id` to `target_id`: its
+    /// write lock, its directory, its registry row, the primary pointers that
+    /// name it, the hidden-selection references, and its classification.
+    ///
+    /// Called with the root lock held and the caller's KB lock for `id` still
+    /// alive.
+    ///
+    /// ⚠ **The lock moves FIRST, and that ordering is the rollback point.** The
+    /// caller's guard has to keep covering this base under its new id — the
+    /// lock's name IS the id ([`paths::kb_write_lock_path`]) — so it has to
+    /// move, and a caller that later opens the new id then gets the same locked
+    /// file rather than a second transaction domain. It is also the step most
+    /// likely to fail (on Windows it renames a file this process holds open,
+    /// legal there only because `std` opens with `FILE_SHARE_DELETE`), and
+    /// doing it before the directory has moved is what leaves nothing
+    /// half-applied when it does.
+    fn move_base_to_new_id(
+        &self,
+        id: &str,
+        target_id: &str,
+        current_root: &Path,
+        target_root: &Path,
+    ) -> Result<()> {
+        self.rename_kb_lock(id, target_id)?;
+        if let Err(error) = std::fs::rename(current_root, target_root) {
+            // Put the lock back, so the guard the caller still holds names the
+            // base that still exists.
+            let _ = self.rename_kb_lock(target_id, id);
+            return Err(error).with_context(|| {
+                format!("rename knowledge base directory '{id}' to '{target_id}'")
+            });
+        }
+        registry::replace(
+            &self.root,
+            id,
+            RegistryEntry {
+                id: target_id.to_string(),
+                path: target_root.to_path_buf(),
+            },
+        )?;
+
+        if self.get_primary_persisted_unlocked()?.as_deref() == Some(id) {
+            self.set_primary_persisted_unlocked(Some(target_id))?;
+        }
+        self.rewrite_session_primary_refs_unlocked(id, Some(target_id))?;
+        self.rewrite_hidden_refs_unlocked(id, Some(target_id))?;
+        // ⚠ The classification is keyed by kb id too, so it has to move with
+        // everything else above. It did not, and the consequence was not the one
+        // it looks like: the TIER survived by accident (`tier::is_private` reads
+        // an unknown id whose directory exists as private), while the
+        // AFFILIATION did not — an id with no row answers `Owners(∅)`, which is
+        // *unclaimed* rather than *nobody's*, and every private model may reach
+        // it. So renaming a base holding one institution's data made it readable
+        // by another institution's private model, with nothing on screen marking
+        // the change.
+        crate::knowledge::tier::rename_unlocked(&self.root, id, target_id)
     }
 
     pub fn set_default_model(&self, id: &str, model: Option<ModelRef>) -> Result<Manifest> {
@@ -4984,6 +5041,192 @@ mod tests {
                 .any(|line| line == paths::KB_WRITE_LOCK_REL),
             "GITIGNORE does not ignore {}: {GITIGNORE:?}",
             paths::KB_WRITE_LOCK_REL
+        );
+    }
+
+    /// The structural half of the Windows fix, and the only half Unix can
+    /// falsify.
+    ///
+    /// Windows refuses to rename or remove a directory while any file inside it
+    /// is open, so a write lock kept under the base it guards made `delete_base`
+    /// and a base rename fail there with `Access is denied. (os error 5)` — on
+    /// every machine, not as a race. Unix cannot reproduce that, but it can
+    /// assert the property that makes it impossible: nothing the guard holds
+    /// open lives under `kb_root`.
+    #[test]
+    fn the_kb_write_lock_lives_beside_the_base_not_inside_it() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let kb_root = paths::kb_root(svc.root(), "k");
+        let lock_path = svc.kb_lock_path("k");
+
+        let guard = svc.lock_existing_kb("k").unwrap();
+        assert!(
+            lock_path.exists(),
+            "the guard did not materialise {}",
+            lock_path.display()
+        );
+        assert!(
+            !lock_path.starts_with(&kb_root),
+            "the write lock {} is inside the base it locks ({}); Windows then refuses to move that base",
+            lock_path.display(),
+            kb_root.display()
+        );
+        assert!(
+            !kb_root.join(paths::KB_WRITE_LOCK_REL).exists(),
+            "a lock file was left at the base's historical in-tree path"
+        );
+        drop(guard);
+    }
+
+    /// The behavioural half. It passes trivially on Unix and is the exact
+    /// operation that failed on Windows: stage the base for deletion while its
+    /// own write lock is held.
+    #[test]
+    fn a_base_can_be_staged_for_deletion_while_its_write_lock_is_held() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let _guard = svc.lock_existing_kb("k").unwrap();
+        let kb_root = paths::kb_root(svc.root(), "k");
+        let staged = svc.root().join(".deleting-k-probe");
+
+        std::fs::rename(&kb_root, &staged)
+            .expect("a base must be movable while its own write lock is held");
+        std::fs::rename(&staged, &kb_root).unwrap();
+    }
+
+    /// A rename moves the base *and* its lock, so the guard the renamer holds
+    /// keeps excluding writers of the base under its new id. Without this the
+    /// commit at the end of `update_base` would run against a base a macro
+    /// could already have opened under the new id.
+    #[test]
+    fn renaming_a_base_carries_its_write_lock_to_the_new_id() {
+        let (_dir, svc) = svc();
+        svc.create_base("kb-a", "KB A", None).unwrap();
+        drop(svc.lock_existing_kb("kb-a").unwrap());
+        assert!(svc.kb_lock_path("kb-a").exists());
+
+        let renamed = svc.update_base("kb-a", Some("Renamed KB"), None).unwrap();
+
+        assert_eq!(renamed.id, "renamed-kb");
+        assert!(
+            !svc.kb_lock_path("kb-a").exists(),
+            "the old id's lock survived the rename, so two ids now lock separately"
+        );
+        assert!(
+            svc.kb_lock_path("renamed-kb").exists(),
+            "the lock did not move to the new id"
+        );
+    }
+
+    /// The lock directory must never read as a knowledge base to the scanners
+    /// that walk the knowledge root by directory name (`tier::ensure_migrated_unlocked`,
+    /// `soul::purge_unregistered_legacy`). Both filter on `validate_kb_id`.
+    #[test]
+    fn the_lock_directory_is_not_mistakable_for_a_knowledge_base() {
+        assert!(paths::validate_kb_id(paths::KB_LOCKS_DIR).is_err());
+    }
+
+    /// ⚠ Windows does not report a contended lock the way Unix does: `fs2`
+    /// surfaces `ERROR_LOCK_VIOLATION` (os error 33), which `std` leaves
+    /// `Uncategorized`, so a `kind() == WouldBlock` test there turned every
+    /// queued acquisition into a hard error. This runs on every platform and
+    /// asks the real question of the real API.
+    #[test]
+    fn a_contended_try_lock_is_recognised_as_contention_on_every_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("contended.lock");
+        let held = FileLockGuard::acquire(&path).unwrap();
+
+        let second = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let error = second
+            .try_lock_exclusive()
+            .expect_err("a second exclusive lock must not be granted while the first is held");
+
+        assert!(
+            is_lock_contended(&error),
+            "contention was not recognised: {error:?} (kind {:?}, raw {:?}); the poll loop would \
+             propagate it instead of waiting",
+            error.kind(),
+            error.raw_os_error()
+        );
+        drop(held);
+    }
+
+    /// The same question asked of `fs2`'s own name for the error, so the two
+    /// cannot drift if the crate changes which code it raises.
+    #[test]
+    fn fs2s_own_contention_error_counts_as_contention() {
+        assert!(is_lock_contended(&fs2::lock_contended_error()));
+    }
+
+    /// ⚠ Every lock wait must route contention through [`is_lock_contended`],
+    /// and no Unix run can fail on the difference — which is why this is
+    /// asserted at the source.
+    ///
+    /// `error.kind() == WouldBlock` is the shape that was here, and it is right
+    /// on Unix and wrong on Windows: `fs2` raises `ERROR_LOCK_VIOLATION` there,
+    /// os error 33, which `std` leaves `Uncategorized`. The arm then falls
+    /// through to `Err(error) => return Err(...)`, so a *contended* lock — the
+    /// ordinary case the loop exists to wait out — became a hard failure, and
+    /// five tests went red on windows-latest with "another process has locked a
+    /// portion of the file" surfacing where a queued wait or a cancellation
+    /// message belonged.
+    #[test]
+    fn every_lock_wait_asks_the_platform_aware_contention_question() {
+        let production = include_str!("service.rs")
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("service.rs has a production half above its tests");
+
+        assert!(
+            production.contains("Err(error) if is_lock_contended(&error) =>"),
+            "the cancellable acquisition loop stopped routing contention through is_lock_contended"
+        );
+        let banned = concat!(
+            "if error.kind() == std::io::ErrorKind::",
+            "WouldBlock",
+            " =>"
+        );
+        assert_eq!(
+            production.matches(banned).count(),
+            0,
+            "a lock wait is matching the error KIND again; that arm is a no-op on Windows, \
+             where contention is ERROR_LOCK_VIOLATION rather than WouldBlock"
+        );
+    }
+
+    /// The other half of the same argument, and the one a reviewer is most
+    /// likely to undo while "simplifying": the write lock's path must never be
+    /// derived from [`paths::kb_root`]. Windows refuses to move a directory
+    /// with an open handle underneath it, so a lock built that way breaks
+    /// `delete_base` and every base rename there and nowhere else.
+    #[test]
+    fn the_write_lock_path_is_never_derived_from_the_base_root() {
+        let production = include_str!("service.rs")
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("service.rs has a production half above its tests");
+        let body = production
+            .split("fn kb_lock_path(&self, kb_id: &str) -> PathBuf {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .expect("kb_lock_path is still a one-expression function");
+
+        assert!(
+            body.contains("kb_write_lock_path"),
+            "kb_lock_path no longer delegates to paths::kb_write_lock_path: {body:?}"
+        );
+        assert!(
+            !body.contains("kb_root"),
+            "the write lock is being built under the base it locks again; Windows then \
+             refuses to rename or remove that base while the lock is held: {body:?}"
         );
     }
 
