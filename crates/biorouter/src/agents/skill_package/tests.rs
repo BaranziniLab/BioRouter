@@ -944,3 +944,56 @@ fn removing_a_shipped_skill_or_bundle_is_refused() {
     // The trap: a name that merely resembles a shipped one.
     assert!(install::refuse_shipped(seeded, seeded, "about-biorouter-notes").is_none());
 }
+
+/// ⚠ **The WIRING, not the predicate.** The test above drives
+/// `refuse_shipped` directly, so deleting the `bail!` that calls it from
+/// `remove` leaves it green while restoring the exact regression it describes.
+/// This one goes through `remove` itself, and through `install`, so both call
+/// sites are held.
+///
+/// `BIOROUTER_PATH_ROOT` is process-global, so this serialises through the
+/// repo's `env_lock` rather than assuming it runs alone — the reason
+/// `refuse_shipped` takes the seeded root as an argument in the first place.
+#[test]
+fn remove_refuses_a_shipped_name_through_its_own_entry_point() {
+    let tmp = TempDir::new().unwrap();
+    let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(tmp.path().to_str().unwrap()))]);
+
+    let root = crate::config::paths::Paths::config_dir().join("skills");
+    let seeded = root.join("about-biorouter");
+    std::fs::create_dir_all(&seeded).unwrap();
+    std::fs::write(
+        seeded.join("SKILL.md"),
+        "---\nname: about-biorouter\ndescription: Shipped\n---\nBody\n",
+    )
+    .unwrap();
+
+    let error = install::remove("about-biorouter", &root).unwrap_err();
+    let error = format!("{error:#}");
+    assert!(error.contains("ships with Biorouter"), "{error}");
+    assert!(
+        seeded.join("SKILL.md").is_file(),
+        "remove deleted a shipped skill and only the refusal text was missing"
+    );
+
+    // ⚠ And the write side. Installing over a shipped name renames the seeded
+    // directory aside and deletes it; the seeder then writes `SKILL.md` back
+    // inside the user's package, and `remove` above refuses to uninstall the
+    // result. A guard on one half of the pair is worse than a guard on neither.
+    let mine = plan(
+        &[(
+            "about-biorouter/SKILL.md",
+            skill_md("about-biorouter", "Mine"),
+        )],
+        WrapperHint::Infer,
+        &[],
+    )
+    .unwrap();
+    let error = format!("{:#}", install::install(&mine, &root).unwrap_err());
+    assert!(error.contains("ships with Biorouter"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(seeded.join("SKILL.md")).unwrap(),
+        "---\nname: about-biorouter\ndescription: Shipped\n---\nBody\n",
+        "install overwrote a shipped skill"
+    );
+}

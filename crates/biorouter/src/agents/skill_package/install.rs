@@ -89,6 +89,16 @@ pub fn install(plan: &ImportPlan, root: &Path) -> Result<InstalledPackage> {
     if plan.components.is_empty() {
         bail!("nothing selected to install");
     }
+    // ⚠ **The same guard as `remove`, and it has to be here too.** Installing
+    // over a shipped name renames the seeded directory aside and deletes it,
+    // and then three things compound: the next `ensure_builtin_skills` writes
+    // `SKILL.md` back *inside* the user's package, producing a hybrid; the
+    // Delete control is hidden because `builtin` now reads true; and `remove`
+    // REFUSES it. A guard on one side of the pair turns a shadowing bug into
+    // something the user cannot uninstall by any means.
+    if let Some(refusal) = refuse_shipped(&Paths::config_dir().join("skills"), root, &plan.id) {
+        bail!(refusal);
+    }
 
     std::fs::create_dir_all(root)
         .with_context(|| format!("creating the skills directory {}", root.display()))?;
@@ -263,7 +273,11 @@ pub fn remove(id: &str, root: &Path) -> Result<PackageSummary> {
     Ok(summary)
 }
 
-/// Why removing `id` from `root` is refused, or `None` to go ahead.
+/// Why touching `id` under `root` is refused, or `None` to go ahead.
+///
+/// Called from **both** [`install`] and [`remove`]. Guarding only one of them
+/// is worse than guarding neither: an install that shadows a shipped name then
+/// meets a `remove` that refuses it, and nothing can undo it.
 ///
 /// ⚠ **The one choke point, so the refusal lands on every surface.** Both
 /// `biorouter skill remove` and deleting from the Skills pane arrive at
@@ -285,9 +299,10 @@ pub(super) fn refuse_shipped(seeded_root: &Path, root: &Path, sanitized: &str) -
         return None;
     }
     Some(format!(
-        "`{sanitized}` ships with Biorouter and is restored on every start, so removing it would \
-         not last. Turn it off instead: Settings -> Chat -> Contexts, or \
-         `biorouter skill disable {sanitized}`."
+        "`{sanitized}` is the name of something that ships with Biorouter and is rewritten on \
+         every start, so this would not last. To turn it off, use Settings -> Chat -> Contexts \
+         or `biorouter skill disable {sanitized}`; to install a package of your own, give it \
+         another name."
     ))
 }
 

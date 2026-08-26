@@ -84,10 +84,13 @@ the format from the pages you happen to have read.
 
 Some bases predate both formats — `title:` / `kind:` frontmatter and untyped
 `[[wiki links]]`. That storage is **retired**: Biorouter purges it on startup, and until
-it has, every knowledge tool refuses such a base rather than reading it. `kb_validate_page`,
-`kb_lint` and `kb_add_raw_source` all return "uses the retired pre-OKF format; restart
-Biorouter to finish the legacy purge". If you meet one, stop and tell the user to restart
-Biorouter; do not try to repair the base yourself.
+it has, every tool that writes or validates refuses it — `kb_write_page`, `kb_add_raw_source`, `kb_validate_page`, `kb_lint`,
+`kb_begin_txn` and `kb_append_log` —
+returning "uses the retired pre-OKF format; restart Biorouter to finish the legacy purge".
+The read-only tools (`kb_read_page`, `kb_search`, `kb_get_graph`, `kb_list_pages`,
+`kb_list_history`, `kb_export`) still work, so the content is recoverable. If you meet
+one, stop and tell the user to restart Biorouter; do not try to repair the base
+yourself.
 
 `biorouter kb create` has no `--format` flag, so a base created from the terminal is
 always OKF. Use `kb_create_base` to pick BioOKF.

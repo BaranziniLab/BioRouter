@@ -52,16 +52,22 @@ install` CLI.
 }
 ```
 
-**Required to be present:** `name`, `display_name`, `description`, `version`,
-`entry_point`, `repository`. All six are plain (non-defaulted) string fields, so
-the manifest fails to parse at all if any one is missing.
+**Required:** `name`, `display_name`, `description`, `version`, `entry_point`,
+`repository` — all six present and non-empty — plus `env_vars` as a JSON array
+(`[]` when the extension needs none).
 
-**Checked non-empty:** only `name` and `entry_point`. The other four may be
-empty strings and still install — ship real values anyway, because they are what
-the user reads in the Extensions page.
+⚠ **Three code paths validate this and they do not agree.** Author to the strict
+rule above, because it is the only one that works everywhere:
 
-**Optional:** `env_vars` (defaults to an empty list, so it may be omitted
-entirely; write `[]` for clarity if you prefer) and `tools_count`. Inside an
+| Path | What it enforces |
+| --- | --- |
+| Desktop app (`ui/desktop/src/main.ts`) | all six non-empty, `env_vars` must be an array |
+| `POST` install over HTTP (`routes/shell.rs`, `require_manifest_fields`) | the same |
+| `biorouter extension install` (`extension_install/brxt.rs`) | serde needs the six *keys* to exist; only `name` and `entry_point` are checked non-empty, and `env_vars` is `#[serde(default)]` |
+
+A bundle that omits `env_vars`, or leaves `description` blank, installs from the
+terminal and is then rejected by the app the user actually runs — so the CLI's
+laxity is a trap, not a licence. `tools_count` is genuinely optional. Inside an
 `env_vars` entry only `key` is required; `required`, `auto_propagate`,
 `description`, `secret` and `default` all default.
 
@@ -233,11 +239,12 @@ Biorouter installs by:
    <entry_point>`, storing any secret env vars in the OS keyring.
 
 The desktop app and the `biorouter extension install` CLI run the same three
-steps and share the same four-entry validation, but they **differ on the `uv
-sync` timeout**: the desktop app caps it at 10 minutes (generous, so a
-legitimate from-source build has time to finish) and reports a timeout as such;
-the CLI runs `uv sync` to completion with no timeout at all, so a wedged
-resolve there hangs until you interrupt it.
+steps and both require the same four archive entries, but they diverge in two
+places. Manifest validation is one (see the table above). The other is the `uv
+sync` timeout: the desktop app caps it at 10 minutes — generous, so a legitimate
+from-source build has time to finish — and reports a timeout as such, while the
+CLI runs `uv sync` to completion with no timeout at all, so a wedged resolve
+there hangs until you interrupt it.
 
 **Uninstalling does not delete files by default.** Removing an extension from
 the desktop **Extensions** page, or `biorouter extension remove <name>`,
@@ -255,10 +262,10 @@ Before distributing a `.brxt`, verify:
 [ ] ZIP contains README.md at root
 [ ] ZIP contains pyproject.toml at root
 [ ] ZIP contains src/ directory
-[ ] manifest.json has all six required keys present (name, display_name,
-    description, version, entry_point, repository), with name and entry_point
-    non-empty and the other four filled in for the user's sake
-[ ] env_vars, if present, is a JSON array; omit it or use [] when there are none
+[ ] manifest.json has all six required keys, each non-empty (name, display_name,
+    description, version, entry_point, repository)
+[ ] env_vars is present and is a JSON array (use [] when there are none) — the
+    desktop app and the HTTP install path both reject a manifest without it
 [ ] pyproject.toml declares [project.scripts] with an entry whose name equals
     manifest.json's entry_point (Biorouter runs `uv run <entry_point>`)
 [ ] Each SKILL.md has --- frontmatter with name and description, and name is

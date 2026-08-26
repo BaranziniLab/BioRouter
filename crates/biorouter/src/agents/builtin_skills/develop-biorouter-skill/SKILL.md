@@ -83,8 +83,10 @@ as `user-invocable: true` are tolerated and ignored by the loader):
 | `description` | yes | Non-empty, ≤ ~1024 chars. **Third person.** State both *what it does* and *when to use it*, with concrete trigger keywords. |
 
 ⚠ **Those standards are authoring conventions, not validation.** The loader
-requires exactly two things: that the frontmatter parses and that `name` is
-non-empty. Nothing checks the length of `name` or `description`, nothing rejects
+requires the frontmatter to parse with both `name` and `description` present —
+`SkillMetadata` has neither as an `Option`, so serde rejects a missing one — and
+its line-based fallback parser additionally requires `name` to be non-empty.
+That is all. Nothing checks the length of `name` or `description`, nothing rejects
 a reserved word, and nothing enforces that `name` matches the folder — a skill
 whose `name` disagrees with its directory installs happily and then answers to a
 different label than the one on disk. Hold yourself to the table; the tooling

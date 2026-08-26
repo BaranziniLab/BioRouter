@@ -399,10 +399,15 @@ function BundleRow({
   const entryPoint = bundle.package?.entryPoint ?? null;
   // ⚠ From the daemon, not from a list here. Rust owns the seeder, so Rust owns
   // the answer — the same rule `SkillItem` follows for a skill row. A bundle
-  // needs its own answer because this is a different control on a different
-  // directory: `CatalogSkill.builtin` gates the Trash on a member and reaches
-  // nothing here, which left a seeded bundle offering a Delete that succeeded,
-  // toasted, and was silently rewritten on the next start.
+  // needs its own answer because this is a different control over a different
+  // directory; `CatalogSkill.builtin` gates the Trash on a member and reaches
+  // nothing here.
+  //
+  // ⚠ Defence in depth: the one shipped bundle is a Context, and
+  // `pickerBundles` removes Contexts before this component sees a row, so on
+  // today's data this cannot fire. It is here for a seeded bundle that is not
+  // a Context — and the refusal that actually holds on every surface lives in
+  // the daemon, in `skill_package::refuse_shipped`.
   const builtin = bundle.builtin;
   return (
     <div className="biorouter-list-row px-3 py-3 group">

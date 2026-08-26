@@ -69,6 +69,14 @@ export interface SkillCatalogState {
   entries: SkillCatalogEntry[];
   /** Every skill, including bundle members — for search and for detail rows. */
   skills: CatalogSkill[];
+  /**
+   * Bundles a picker may show — Contexts already removed.
+   *
+   * ⚠ Filtered, unlike `skills`. An unfiltered list here is a loaded gun
+   * sitting beside the `pickerBundles` helper that exists *because* three call
+   * sites forgot to filter; nothing reads this field today, and the next thing
+   * that does should not have to know.
+   */
   bundles: CatalogBundle[];
   roots: SkillRoot[];
   /** Bumped by the daemon on every rescan. */
@@ -302,7 +310,7 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
   return {
     entries,
     skills: view.skills,
-    bundles: view.bundles,
+    bundles: pickerBundles(view),
     roots: view.roots,
     generation: view.generation,
     loading,

@@ -129,8 +129,12 @@ cross-reference is an ordinary markdown link to the target page's path (BioOKF
 additionally declares graph relations as typed `edges:` in the frontmatter).
 Two different things are called "legacy" here, and only one of them still
 works. A base in the retired **pre-OKF format** (`title:`/`kind:` frontmatter)
-is purged on startup and refused by every knowledge tool until it has been —
-tell the user to restart Biorouter rather than trying to repair it. Untyped
+is purged on startup, and until it has been, every tool that WRITES or
+validates refuses it — `kb_write_page`, `kb_add_raw_source`, `kb_validate_page`, `kb_lint`,
+`kb_begin_txn` and `kb_append_log`. The read-only tools
+(`kb_read_page`, `kb_list_pages`, `kb_search`, `kb_get_graph`, `kb_list_history`,
+`kb_export`) still work, so the user can get their content out. Tell them to
+restart Biorouter rather than trying to repair the base. Untyped
 `[[double bracket]]` **links** inside a current OKF or BioOKF page are a
 different matter: they are still read, permanently, so do not rewrite an old
 page — just stop writing new ones.
@@ -160,7 +164,8 @@ Bedrock (institution-hosted, UCSF), Claude Code, Codex, Databricks, GCP Vertex
 AI, GitHub Copilot, Google, LiteLLM, Llama Server, Ollama, OpenAI, OpenRouter,
 SageMaker TGI, Snowflake, Tetrate, Venice, xAI, Xiaomi MiMo, and Z.ai. (Three of
 them — Bedrock, Versa Bedrock and SageMaker TGI — sit behind the
-`aws-providers` build feature.)
+`aws-providers` build feature, which is **on by default**, so a shipped build
+has all 23.)
 
 - **Local models need no setup: Llama Server** (`llamacpp`) runs a llama.cpp
   server bundled with the desktop app and downloads models on first use;
@@ -190,9 +195,11 @@ API keys and other secrets are resolved in this order:
    **Always Allow**. Authorization is per binary, so the desktop backend
    (`biorouterd`) and the CLI (`biorouter`) each get their own grant.
 3. **Plaintext `~/.config/biorouter/secrets.yaml`**, used when the keyring is
-   switched off with `BIOROUTER_DISABLE_KEYRING=true`, or when the platform
-   store is unavailable (headless Linux, SSH, WSL, no Secret Service daemon),
-   where Biorouter falls back to it automatically.
+   switched off with `BIOROUTER_DISABLE_KEYRING`, or when the platform store is
+   unavailable (headless Linux, SSH, WSL, no Secret Service daemon), where
+   Biorouter falls back to it automatically. ⚠ **Any value switches it off** —
+   the check is on the variable's presence, so `BIOROUTER_DISABLE_KEYRING=false`
+   disables the keyring exactly as `=true` does. Unset it to re-enable.
 
 There is no configurable "secrets backend" key and no encrypted-file store.
 On Windows a large secret set is transparently chunked across several
@@ -208,7 +215,7 @@ behind a **Components** disclosure — collapsed by default, and remembered —
 holding **Workflows**, **Scheduler**, **Extensions**, **Skills**, **Knowledge**,
 **Built apps** (apps built with Agent Drafter) and **MCP apps** (apps advertised
 by installed extensions, shown only when some extension provides one). Below
-that is a **Recents** list of recent chats with a "view all" link to the full
+that is a **Recents** list of recent chats with a **See all** link to the full
 session history, and **Settings** (providers, models, permissions, theme) is
 pinned at the bottom. Chat renders markdown, syntax-highlighted code and
 expandable tool-call messages; figures, reports and other artifacts the agent

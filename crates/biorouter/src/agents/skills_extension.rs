@@ -199,17 +199,40 @@ pub fn context_config_key(id: &str) -> String {
 /// `searchSkills` and the `{skill_count}` sentence) and nothing else.
 fn hidden_contexts_in(config: &crate::config::Config) -> std::collections::HashSet<String> {
     context_ids()
-        .filter(|name| {
-            // `Err` is "no opinion recorded" (or an unreadable config), which
-            // must read as ON — see the absence rule above. Only a literal
-            // `false` hides a Context.
-            matches!(
-                config.get_param::<bool>(&context_config_key(name)),
-                Ok(false)
-            )
-        })
+        .filter(|name| is_context_off(config, name))
         .map(str::to_string)
         .collect()
+}
+
+/// Has the user switched this Context off?
+///
+/// `Err` is "no opinion recorded" (or an unreadable config), which must read as
+/// ON — see the absence rule on [`hidden_contexts_in`]. Only a literal `false`
+/// hides a Context.
+///
+/// ⚠ **[`KNOWLEDGE_BUNDLE`] falls back to the key its predecessor wrote.**
+/// `update-soul` was a Context in its own right, labelled "Updates", and it is
+/// now a member of this bundle. A user who switched that off had `false` under
+/// `context_update_soul`, and that key is read by nothing any more — so without
+/// this fallback the upgrade silently turns the skill back on, adds four more
+/// beside it, and files them under a row the user has never seen. An opt-out
+/// that reverts itself on upgrade is worse than one that was never offered,
+/// and this one writes to the user's personal knowledge base.
+///
+/// The fallback is one-directional and read-only: an explicit
+/// `context_knowledge_bases` always wins, so the first use of the new switch
+/// ends the inheritance, and the stale key is never written back.
+fn is_context_off(config: &crate::config::Config, name: &str) -> bool {
+    if let Ok(explicit) = config.get_param::<bool>(&context_config_key(name)) {
+        return !explicit;
+    }
+    if name == KNOWLEDGE_BUNDLE {
+        return matches!(
+            config.get_param::<bool>(&context_config_key(crate::knowledge::soul::SOUL_SKILL_DIR)),
+            Ok(false)
+        );
+    }
+    false
 }
 
 /// [`hidden_contexts_in`] against the process's real configuration.
@@ -535,6 +558,15 @@ impl SkillsClient {
                     .map(|entry| (entry, bundle_dir.clone())),
             );
 
+        // ⚠ **Migration runs BEFORE the seed, and it renames.** Both halves
+        // matter. A rename carries the whole directory — including supporting
+        // files, which the seeder has never written and never owned — and it
+        // leaves a `SKILL.md` at the new path for the loop below to refresh.
+        // Deleting after seeding instead would destroy a user's `reference.md`
+        // or `scripts/` beside a skill they never edited, and would delete the
+        // working flat copy even on the runs where the seed had just failed.
+        let migrated = Self::migrate_pre_bundle_knowledge_skills(skills_dir);
+
         let mut wrote = false;
         for ((name, content), parent) in placements {
             let dir = parent.join(name);
@@ -554,8 +586,6 @@ impl SkillsClient {
             }
         }
 
-        let migrated = Self::remove_pre_bundle_knowledge_skills(skills_dir);
-
         if wrote || migrated {
             // ⚠ Not left to the mtime check. Creating `<bundle>/<child>/` bumps
             // the BUNDLE's mtime, not the root's, and mtime has one-second
@@ -566,48 +596,98 @@ impl SkillsClient {
         }
     }
 
-    /// Delete the flat `<root>/<knowledge skill>/` directories that installs
+    /// Relocate the flat `<root>/<knowledge skill>/` directories that installs
     /// predating [`KNOWLEDGE_BUNDLE`] left behind.
     ///
-    /// ⚠ **Not cosmetic — a stale copy resurrects as the live one.**
+    /// ⚠ **Not tidiness — a stale copy resurrects as the live one.**
     /// Discovery keys by frontmatter `name`, so a flat `knowledge-lint` and a
     /// bundled `knowledge-lint` are two candidates for one map key and the
     /// winner is whichever `read_dir` happens to yield last. Half the installs
     /// would get a `bundle_name: None` knowledge skill: a standalone picker row
     /// the bundle's Context toggle does not reach.
     ///
-    /// Same shape as `soul.rs`'s removal of the renamed-away `soul-writer`
-    /// folder — but **not** the same deletion rule, and the difference is the
-    /// seeder's own semantics. `update-soul` is written with
-    /// `create_built_in_file_if_missing`, so a user's edits to it survive every
-    /// startup and its migration has to *move* the file. These four are
-    /// rewritten whenever their content differs, so the seeder has always owned
-    /// these exact paths and overwritten whatever was at them on every start:
-    /// nothing a user wrote could have survived here to be lost now.
+    /// ⚠ **Moved, never deleted, and that is not caution — it is correctness.**
+    /// The seeder writes exactly one file per skill, `SKILL.md`. Every *other*
+    /// file in that directory has survived every startup since the skill
+    /// shipped, and those files are load-bearing: [`Self::find_supporting_files`]
+    /// collects them and `loadSkill` serves them to the model. A `remove_dir_all`
+    /// here would take a user's `reference.md` or `scripts/` with it — which is
+    /// why the earlier draft's claim that "nothing a user wrote could have
+    /// survived here" was false, and why this now does what `soul.rs` does.
+    ///
+    /// A rename that fails leaves the flat copy in place. A duplicate picker
+    /// row is a visible annoyance; a deleted file is not recoverable.
     ///
     /// Scoped to `skills_dir`, which is Biorouter's own root. A skill of the
     /// same name under `~/.claude/skills` is the user's and is not touched.
     ///
-    /// Returns whether anything was removed, so the caller can invalidate.
-    fn remove_pre_bundle_knowledge_skills(skills_dir: &Path) -> bool {
-        let mut removed = false;
+    /// Returns whether anything moved, so the caller can invalidate.
+    fn migrate_pre_bundle_knowledge_skills(skills_dir: &Path) -> bool {
+        let bundle = knowledge_bundle_dir(skills_dir);
+        let mut moved = false;
         for (name, _) in KNOWLEDGE_SKILLS {
-            let stale = skills_dir.join(name);
-            if !stale.is_dir() {
+            let flat = skills_dir.join(name);
+            if !flat.is_dir() {
                 continue;
             }
-            match std::fs::remove_dir_all(&stale) {
+            let target = bundle.join(name);
+            if target.exists() {
+                // Both copies present, which only a hand-assembled tree
+                // produces. The bundled one wins; take anything the flat one
+                // has that it lacks before dropping the duplicate.
+                Self::rescue_supporting_files(&flat, &target);
+                match std::fs::remove_dir_all(&flat) {
+                    Ok(()) => {
+                        tracing::info!("removed duplicate skill at {}", flat.display());
+                        moved = true;
+                    }
+                    Err(e) => tracing::warn!(
+                        "failed to remove duplicate skill at {}: {e}",
+                        flat.display()
+                    ),
+                }
+                continue;
+            }
+            match std::fs::create_dir_all(&bundle).and_then(|()| std::fs::rename(&flat, &target)) {
                 Ok(()) => {
-                    tracing::info!("removed pre-bundle skill at {}", stale.display());
-                    removed = true;
+                    tracing::info!("moved {} into the knowledge bundle", name);
+                    moved = true;
                 }
                 Err(e) => tracing::warn!(
-                    "failed to remove pre-bundle skill at {}: {e}",
-                    stale.display()
+                    "failed to move {} into {}: {e}; leaving the old copy in place",
+                    name,
+                    target.display()
                 ),
             }
         }
-        removed
+        moved
+    }
+
+    /// Move every file beside a `SKILL.md` from `from` into `to`, skipping any
+    /// the destination already has. Best-effort: a file that cannot be moved is
+    /// logged and left where it is, so the caller's `remove_dir_all` is the
+    /// only thing that can lose it — which is why the caller only reaches this
+    /// on the branch where a bundled copy already exists.
+    fn rescue_supporting_files(from: &Path, to: &Path) {
+        let Ok(entries) = std::fs::read_dir(from) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name == "SKILL.md" {
+                continue;
+            }
+            let destination = to.join(&name);
+            if destination.exists() {
+                continue;
+            }
+            if let Err(e) = std::fs::rename(entry.path(), &destination) {
+                tracing::warn!(
+                    "failed to carry {} into the knowledge bundle: {e}",
+                    entry.path().display()
+                );
+            }
+        }
     }
 
     /// Every directory skills are discovered under, in override order (later
@@ -3093,6 +3173,48 @@ Working dir biorouter content
     /// the disk: the failure is that discovery picks the *flat* one — whichever
     /// `read_dir` yields last — so a test that only checked the bundled file
     /// exists would pass while the picker showed a standalone row.
+    /// ⚠ **Supporting files are user data and the migration must carry them.**
+    /// The seeder writes exactly one file per skill, `SKILL.md`; everything
+    /// else in that directory has survived every startup since the skill
+    /// shipped, and `find_supporting_files` serves it to the model. An earlier
+    /// draft `remove_dir_all`'d the flat directory after seeding and asserted
+    /// in its own comment that nothing could be lost — which was false, and
+    /// which no test then contradicted because every fixture wrote only a
+    /// `SKILL.md`.
+    #[test]
+    fn migrating_carries_the_supporting_files_beside_a_knowledge_skill() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        let flat = skills_dir.join("knowledge-lint");
+        fs::create_dir_all(flat.join("scripts")).unwrap();
+        fs::write(
+            flat.join("SKILL.md"),
+            "---\nname: knowledge-lint\ndescription: x\n---\nold\n",
+        )
+        .unwrap();
+        fs::write(flat.join("reference.md"), "my notes").unwrap();
+        fs::write(flat.join("scripts").join("fix.sh"), "#!/bin/sh\n").unwrap();
+
+        SkillsClient::ensure_builtin_skills(&skills_dir);
+
+        let moved = knowledge_bundle_dir(&skills_dir).join("knowledge-lint");
+        assert_eq!(
+            fs::read_to_string(moved.join("reference.md")).unwrap(),
+            "my notes",
+            "a supporting file was destroyed by the migration"
+        );
+        assert!(moved.join("scripts").join("fix.sh").is_file());
+        // The SKILL.md itself is seeder-owned and IS refreshed to the shipped
+        // bytes — the rename put it where the seed loop could find it.
+        let shipped = KNOWLEDGE_SKILLS
+            .iter()
+            .find(|(name, _)| *name == "knowledge-lint")
+            .unwrap()
+            .1;
+        assert_eq!(fs::read_to_string(moved.join("SKILL.md")).unwrap(), shipped);
+        assert!(!flat.exists());
+    }
+
     #[test]
     fn seeding_removes_the_pre_bundle_flat_knowledge_directories() {
         let temp_dir = TempDir::new().unwrap();
@@ -3269,6 +3391,50 @@ Working dir biorouter content
                 "{name} derives a key that is not a plain identifier: {key}"
             );
         }
+    }
+
+    /// ⚠ **A user's "Updates" opt-out survives the promotion.**
+    ///
+    /// `update-soul` was a Context of its own before it became a bundle
+    /// member, so a user who switched it off has `context_update_soul: false`
+    /// and nothing reads that key any more. Without the fallback the upgrade
+    /// silently turns the skill back on — and adds four beside it, under a row
+    /// the user has never seen. This is the skill that writes to their personal
+    /// knowledge base as a chat goes on, so an opt-out that reverts itself is
+    /// the worst version available of a silent default change.
+    #[test]
+    fn the_old_updates_opt_out_still_hides_the_knowledge_bundle() {
+        let temp = TempDir::new().unwrap();
+        let config = crate::config::Config::new_with_file_secrets(
+            temp.path().join("config.yaml"),
+            temp.path().join("secrets.yaml"),
+        )
+        .unwrap();
+
+        // The upgraded user: the old key says off, the new key is absent.
+        config.set_param("context_update_soul", false).unwrap();
+        assert!(
+            hidden_contexts_in(&config).contains(KNOWLEDGE_BUNDLE),
+            "the Updates opt-out was discarded by the promotion"
+        );
+
+        // ⚠ The fallback is a fallback. Touching the new switch ends the
+        // inheritance in BOTH directions, so a user who turns Knowledge back on
+        // is not overruled forever by a key no interface shows them.
+        config.set_param("context_knowledge_bases", true).unwrap();
+        assert!(!hidden_contexts_in(&config).contains(KNOWLEDGE_BUNDLE));
+        config.set_param("context_knowledge_bases", false).unwrap();
+        assert!(hidden_contexts_in(&config).contains(KNOWLEDGE_BUNDLE));
+
+        // And it applies to this bundle only — a stale key for some other
+        // Context does not leak sideways.
+        let other = crate::config::Config::new_with_file_secrets(
+            temp.path().join("other.yaml"),
+            temp.path().join("other-secrets.yaml"),
+        )
+        .unwrap();
+        other.set_param("context_update_soul", false).unwrap();
+        assert!(!hidden_contexts_in(&other).contains("about-biorouter"));
     }
 
     /// Absence means ON, `false` means off, and nothing else is consulted.

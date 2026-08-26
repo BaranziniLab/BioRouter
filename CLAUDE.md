@@ -901,13 +901,19 @@ read `useSkillCatalog`.
   bundle toggle writes a name no skill matches.
 - ⚠ `CatalogSkill.builtin` answers "did Biorouter put this here?", and
   `CatalogBundle.builtin` answers it for a bundle **row**, which is a different
-  control over a different directory — a seeded bundle without it renders a
-  Trash that succeeds, toasts, and is undone by the next startup. The
+  control over a different directory. That second field is defence in depth —
+  the one shipped bundle is a Context and `pickerBundles` strips Contexts before
+  a row renders — so do not mistake it for the thing that closes the
+  delete-succeeds-then-reverts hole; that is `refuse_shipped`, below. The
   hand-synced `skillUtils.BUILTIN_SKILL_NAMES` copy is gone; `contexts.test.ts`
   now asserts it has not come back. The single refusal that makes "no seeded
   skill can be deleted" true on **every** surface — GUI Trash and
   `biorouter skill remove` alike — is `refuse_shipped` in
-  `skill_package/install.rs`, scoped to Biorouter's own skills root.
+  `skill_package/install.rs`, scoped to Biorouter's own skills root and called
+  from **both** `remove` and `install`. ⚠ Guarding only `remove` is worse than
+  guarding neither: an install that shadows a shipped name renames the seeded
+  directory aside and deletes it, the seeder then writes `SKILL.md` back inside
+  the user's package, and `remove` refuses to uninstall the result.
 - **A Context row may name a bundle, not a skill.** The four knowledge-format
   skills plus `update-soul` are seeded into `<skills root>/knowledge-bases/` and
   offered as *one* switch, "Knowledge". Three consequences, each of which was a
@@ -921,10 +927,17 @@ read `useSkillCatalog`.
   than skills — `count_user_skills`, the CLI status line — must ask
   `is_shipped_entry_name`, because `is_builtin_skill_name` does not know the
   bundle directory and reads it as one skill the user installed.
-  ⚠ `ensure_soul_skill` and `ensure_builtin_skills` both delete the flat
-  directories a pre-bundle install left behind. That is not tidiness: discovery
-  keys by frontmatter `name`, so a flat copy and a bundled copy are two
-  candidates for one map key and `read_dir` order decides.
+  ⚠ `ensure_soul_skill` and `ensure_builtin_skills` both **move** — not delete
+  — the flat directories a pre-bundle install left behind, and both do the move
+  *before* seeding. Two reasons, and flattening them is how the first draft got
+  it wrong. Relocating at all is not tidiness: discovery keys by frontmatter
+  `name`, so a flat copy and a bundled copy are two candidates for one map key
+  and `read_dir` order decides. Moving rather than deleting is because the
+  seeder writes exactly one file per skill, `SKILL.md` — every *other* file in
+  that directory is a supporting file the user may have put there, which
+  `find_supporting_files` serves to the model, and which `remove_dir_all` would
+  take with it. A failed move leaves the old copy alone: a duplicate row is
+  visible and fixable, a deleted file is not.
 
 **One import pipeline** — `crates/biorouter/src/agents/skill_package/`, reached
 from Add Skill (URL or `.zip`), the marketplace, the `importSkillPackage` MCP

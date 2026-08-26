@@ -32,7 +32,8 @@ read as application bugs, not version problems.
 After a fresh clone, install the frontend dependencies once:
 
 ```bash
-just install-deps             # npm ci in ui/desktop — the only JS tree in the repo
+just install-deps             # npm ci in ui/desktop (landing/video is a second,
+                              # unrelated JS tree with its own install)
 ```
 
 ## Repository layout

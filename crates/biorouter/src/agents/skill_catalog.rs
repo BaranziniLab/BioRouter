@@ -265,11 +265,19 @@ pub struct CatalogBundle {
     pub package: Option<PackageSummary>,
     /// Shipped with Biorouter, so the interface offers no Delete for it.
     ///
-    /// ⚠ **The bundle needs its own answer.** `CatalogSkill.builtin` gates the
-    /// Delete on a *skill* row, and a bundle row is a different control on a
-    /// different directory: without this, a seeded bundle rendered a working
-    /// Trash — the delete succeeding, the toast confirming, and the next
-    /// startup rewriting the folder. That is regression 1 of #77, one level up.
+    /// ⚠ **The bundle needs its own answer**, because `CatalogSkill.builtin`
+    /// gates the Delete on a *skill* row and a bundle row is a different
+    /// control over a different directory.
+    ///
+    /// ⚠ **This is defence in depth, not the live fix, and saying otherwise
+    /// invites someone to delete the real one.** Today the only shipped bundle
+    /// is a Context, and `pickerBundles` strips Contexts before `SkillsView`
+    /// renders a row at all, so this flag cannot fire on it. What actually
+    /// closed the "delete succeeds, toast confirms, next startup rewrites it"
+    /// regression on every surface is `skill_package::refuse_shipped`, which
+    /// `biorouter skill remove` bypassed entirely while the interface gate held.
+    /// This field earns its place for the case the filter does not cover: a
+    /// bundle that is seeded but not a Context, should one ever ship.
     pub builtin: bool,
     pub state: SkillState,
 }
@@ -474,7 +482,14 @@ impl SkillCatalog {
                     source: self.source_of(&record.source_root),
                     skills: record.members.clone(),
                     package: record.package.clone(),
-                    builtin: skills_extension::is_shipped_entry_name(name),
+                    // ⚠ `== KNOWLEDGE_BUNDLE`, not `is_shipped_entry_name`.
+                    // That predicate also answers yes for the nine shipped
+                    // SKILL names, and this is a bundle: a user package whose
+                    // directory happens to be called `knowledge-lint` would
+                    // read as built-in, lose its Delete control, and be refused
+                    // by `refuse_shipped` — the same false-positive class the
+                    // predicate's own test rules out one level down.
+                    builtin: name == skills_extension::KNOWLEDGE_BUNDLE,
                     state,
                 }
             })
@@ -658,6 +673,80 @@ mod tests {
 
     fn biorouter_root() -> SkillSource {
         SkillSource::new(SkillSourceKind::Biorouter, None)
+    }
+
+    /// ⚠ **`compose_state`'s bundle arm, tested where it lives.**
+    ///
+    /// `SkillsClient::is_hidden_context` is a *different function on a
+    /// different path*: `is_skill_enabled_for_session` passes an empty hidden
+    /// set, so the two arms are genuinely independent and a test of one says
+    /// nothing about the other. An earlier draft tested only that one and
+    /// claimed both — delete the `|| bundle.is_some_and(...)` clause below and
+    /// every `CatalogSkill` row for a bundle member reports
+    /// `hiddenContext: false, effective: true`, which is the answer the
+    /// INTERFACE renders, with the whole suite green.
+    #[test]
+    fn a_hidden_context_that_names_a_bundle_hides_the_bundles_members() {
+        let none = SessionSkillOverride::default();
+        let machine = HashSet::new();
+        let hidden = HashSet::from(["knowledge-bases".to_string()]);
+
+        let member = compose_state(
+            "knowledge-lint",
+            Some("knowledge-bases"),
+            &machine,
+            &hidden,
+            &none,
+        );
+        assert!(member.hidden_context, "the member escaped its bundle's row");
+        assert!(!member.effective);
+        // The switch is a Context, not a machine-wide disable: the member is
+        // still ENABLED, just not surfaced. Conflating the two is what would
+        // make `handle_load_skill` refuse a skill the system prompt asks for.
+        assert!(member.machine_enabled);
+
+        // The bundle row itself, which `view()` composes with `bundle: None`.
+        let row = compose_state("knowledge-bases", None, &machine, &hidden, &none);
+        assert!(row.hidden_context && !row.effective);
+
+        // A member of some other bundle is untouched, and so is a skill that
+        // merely carries the same name with no bundle on it.
+        assert!(
+            !compose_state(
+                "brainstorming",
+                Some("superpowers"),
+                &machine,
+                &hidden,
+                &none
+            )
+            .hidden_context
+        );
+        assert!(!compose_state("knowledge-lint", None, &machine, &hidden, &none).hidden_context);
+    }
+
+    /// A per-chat grant must not put back something switched off in Settings —
+    /// the `hidden_context` test sits OUTSIDE the session match, and adding the
+    /// bundle arm must not have moved it.
+    #[test]
+    fn a_per_chat_grant_cannot_resurrect_a_hidden_context_bundle() {
+        let machine = HashSet::new();
+        let hidden = HashSet::from(["knowledge-bases".to_string()]);
+        let granted = SessionSkillOverride {
+            add: vec!["knowledge-lint".to_string()],
+            ..Default::default()
+        };
+        let state = compose_state(
+            "knowledge-lint",
+            Some("knowledge-bases"),
+            &machine,
+            &hidden,
+            &granted,
+        );
+        assert_eq!(state.session, SessionState::Added);
+        assert!(
+            !state.effective,
+            "a session grant overrode a Settings switch"
+        );
     }
 
     /// The bundles a temporary root actually contains.

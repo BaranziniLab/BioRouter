@@ -368,11 +368,19 @@ export type CatalogBundle = {
     /**
      * Shipped with Biorouter, so the interface offers no Delete for it.
      *
-     * ⚠ **The bundle needs its own answer.** `CatalogSkill.builtin` gates the
-     * Delete on a *skill* row, and a bundle row is a different control on a
-     * different directory: without this, a seeded bundle rendered a working
-     * Trash — the delete succeeding, the toast confirming, and the next
-     * startup rewriting the folder. That is regression 1 of #77, one level up.
+     * ⚠ **The bundle needs its own answer**, because `CatalogSkill.builtin`
+     * gates the Delete on a *skill* row and a bundle row is a different
+     * control over a different directory.
+     *
+     * ⚠ **This is defence in depth, not the live fix, and saying otherwise
+     * invites someone to delete the real one.** Today the only shipped bundle
+     * is a Context, and `pickerBundles` strips Contexts before `SkillsView`
+     * renders a row at all, so this flag cannot fire on it. What actually
+     * closed the "delete succeeds, toast confirms, next startup rewrites it"
+     * regression on every surface is `skill_package::refuse_shipped`, which
+     * `biorouter skill remove` bypassed entirely while the interface gate held.
+     * This field earns its place for the case the filter does not cover: a
+     * bundle that is seeded but not a Context, should one ever ship.
      */
     builtin: boolean;
     directory: string;

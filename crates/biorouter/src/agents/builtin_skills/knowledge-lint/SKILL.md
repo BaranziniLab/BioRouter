@@ -39,8 +39,9 @@ decide deliberately not to and say why.
 Two corollaries worth internalising:
 
 - A base that predates both formats is not linted at all — `kb_lint` **refuses** it,
-  because that retired pre-OKF storage is purged on startup. If you get that refusal,
-  tell the user to restart Biorouter rather than trying to repair the base.
+  because that retired pre-OKF storage is purged on startup. `kb_read_page` and
+  `kb_search` still work on one, so the content is recoverable; you just cannot lint
+  or repair. Tell the user to restart Biorouter.
 - `kb_lint` caps how many diagnostics it returns. If `total` exceeds the length of
   `items`, fix a batch and run it again rather than assuming you have seen everything.
 

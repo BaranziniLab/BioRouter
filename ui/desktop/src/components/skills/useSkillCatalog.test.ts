@@ -129,17 +129,31 @@ describe('Context bundles are not picker rows', () => {
   });
 
   /**
-   * ⚠ The regression this exists for: a member seeded flat rather than into the
-   * bundle — an install that predates the bundle, or a fallback that forgot the
-   * placement — arrives with `bundle: null` and would be a standalone row.
-   * `isContextSkill` covers it by name as well, so it stays out either way.
+   * ⚠ **A member that reaches the renderer WITHOUT its bundle is not covered,
+   * and this pins that rather than pretending otherwise.**
+   *
+   * It is reachable: the migration logs-and-continues if it cannot move a flat
+   * directory, discovery keys by frontmatter name so the flat copy can win the
+   * race, and a project-local `.claude/skills/knowledge-lint` shadows the
+   * bundled one outright (project roots sort last in `roots()`).
+   *
+   * `isContextSkill('knowledge-lint', null)` is `CONTEXT_IDS.has('knowledge-lint')`,
+   * which is false — the Context row names the BUNDLE. So such a skill is a
+   * standalone picker row with the Knowledge switch showing off. An earlier
+   * draft of this test asserted the opposite and passed, because its fixture
+   * was a skill NAMED `knowledge-bases`, which no code path produces.
+   *
+   * The fix belongs in the migration, not in a name-matching special case here:
+   * a stray copy that shadows the bundled one is a *different* skill on disk
+   * and the renderer cannot tell. Asserted so the gap is visible and a future
+   * change to it is deliberate.
    */
-  it('drops a member that arrives without its bundle', () => {
+  it('cannot cover a member that arrives without its bundle', () => {
     const stray: CatalogView = {
       ...contextView,
-      skills: [skill('solo', null), skill('knowledge-bases', null)],
+      skills: [skill('solo', null), skill('knowledge-lint', null)],
       bundles: [],
     };
-    expect(standaloneSkills(stray).map((s) => s.name)).toEqual(['solo']);
+    expect(standaloneSkills(stray).map((s) => s.name)).toEqual(['solo', 'knowledge-lint']);
   });
 });
