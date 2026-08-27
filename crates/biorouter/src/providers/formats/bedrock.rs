@@ -3058,3 +3058,83 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod safe_detail_tests {
+    use super::*;
+    use aws_sdk_bedrockruntime::error::ProvideErrorMetadata;
+
+    /// A stand-in for an SDK error whose Debug rendering carries the raw
+    /// response -- which is where the SigV4 `authorization` header lives.
+    #[derive(Debug)]
+    struct FakeSdkError {
+        message: Option<String>,
+        code: Option<String>,
+    }
+
+    impl ProvideErrorMetadata for FakeSdkError {
+        fn meta(&self) -> &aws_smithy_types::error::ErrorMetadata {
+            // Not reached: `safe_detail` uses `message()`/`code()` below.
+            unimplemented!("safe_detail must not need the full metadata")
+        }
+        fn message(&self) -> Option<&str> {
+            self.message.as_deref()
+        }
+        fn code(&self) -> Option<&str> {
+            self.code.as_deref()
+        }
+    }
+
+    /// The real 403 from the UCSF proxy. What the user needs is these three
+    /// words; what they were shown was ~40 lines of Rust debug output.
+    #[test]
+    fn the_service_message_is_what_survives() {
+        let e = FakeSdkError {
+            message: Some("Invalid Client Id".into()),
+            code: None,
+        };
+        assert_eq!(safe_detail(&e), "Invalid Client Id");
+    }
+
+    /// ⚠ THE SECURITY ASSERTION. `format!("{:?}", err)` on a real
+    /// `ServiceError` includes the raw response, and the raw response carries
+    ///
+    ///   "authorization": "AWS4-HMAC-SHA256 Credential=…, Signature=…"
+    ///
+    /// so a user reporting a 403 was pasting a live request signature wherever
+    /// they pasted the error. Nothing derived from the transport may appear.
+    #[test]
+    fn no_transport_material_can_reach_the_message() {
+        let e = FakeSdkError {
+            message: Some("Invalid Client Id".into()),
+            code: Some("AccessDenied".into()),
+        };
+        let out = safe_detail(&e);
+        for forbidden in [
+            "AWS4-HMAC-SHA256",
+            "Signature=",
+            "Credential=",
+            "authorization",
+            "x-amz-security-token",
+        ] {
+            assert!(
+                !out.contains(forbidden),
+                "`{forbidden}` reached a user-facing message: {out}"
+            );
+        }
+    }
+
+    /// An error with no message still has to say something, or the caller
+    /// formats an empty string into "Bedrock endpoint returned HTTP 403 ()".
+    #[test]
+    fn an_empty_message_falls_back_to_the_code_then_to_prose() {
+        let coded = FakeSdkError {
+            message: Some("   ".into()),
+            code: Some("ThrottlingException".into()),
+        };
+        assert_eq!(safe_detail(&coded), "error code ThrottlingException");
+
+        let bare = FakeSdkError { message: None, code: None };
+        assert_eq!(safe_detail(&bare), "no further detail was returned");
+    }
+}

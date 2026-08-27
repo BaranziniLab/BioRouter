@@ -122,14 +122,44 @@ impl VersaAzureProvider {
             .get_param("AZURE_OPENAI_API_VERSION")
             .unwrap_or_else(|_| VERSA_AZURE_API_VERSION.to_string());
 
-        let credential_source = if config
-            .get_secret("VERSA_AZURE_API_KEY")
-            .ok()
-            .is_some_and(|key: String| !key.is_empty())
-        {
-            VersaAzureCredentialSource::ApiKey
-        } else {
-            VersaAzureCredentialSource::AzureCli
+        // ⚠ `.ok()` here used to discard the REASON the key was unavailable, and
+        // that is what produced the field report
+        //
+        //     Failed to get authentication token: Token exchange failed:
+        //     Failed to execute Azure CLI: No such file or directory (os error 2)
+        //
+        // from a user who had a perfectly good `VERSA_AZURE_API_KEY`. Two very
+        // different situations collapsed into one:
+        //
+        //   * no key configured        -> falling back to the Azure CLI is right
+        //   * the key could not be READ -> falling back is wrong, and the CLI
+        //     error names a tool the user never configured and does not have
+        //
+        // The second happens on macOS whenever the credential store refuses the
+        // read: a Keychain ACL grant is bound to the binary's signature, so a
+        // freshly signed build asks again, and a prompt nobody answers (or a
+        // locked keychain) fails the read. This provider is "API Key only" --
+        // its own description says so -- so a failed read must be reported, not
+        // routed around.
+        let credential_source = match config.get_secret::<String>("VERSA_AZURE_API_KEY") {
+            Ok(key) if !key.trim().is_empty() => VersaAzureCredentialSource::ApiKey,
+            // Configured but blank, or genuinely absent: the Azure CLI is the
+            // documented alternative and the user may well intend it.
+            Ok(_) | Err(crate::config::ConfigError::NotFound(_)) => {
+                VersaAzureCredentialSource::AzureCli
+            }
+            // Anything else is the store failing, not the key being absent.
+            Err(error) => {
+                return Err(anyhow::anyhow!(
+                    "Could not read VERSA_AZURE_API_KEY from the credential store: {error}\n\n\
+                     The key appears to be configured, so this is the store refusing the \
+                     read rather than a missing key. On macOS a Keychain grant is tied to \
+                     the application's signature, so a newly installed or re-signed build \
+                     asks for permission again -- answer the prompt with \u{201c}Always \
+                     Allow\u{201d}. Biorouter did NOT silently fall back to the Azure CLI, \
+                     because this provider signs in with the API key."
+                ));
+            }
         };
 
         Self::from_resolved(

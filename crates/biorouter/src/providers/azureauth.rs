@@ -141,20 +141,7 @@ impl AzureAuth {
         // providers, which resolve their CLI the same way.
         let az = crate::config::search_path::SearchPaths::builder()
             .resolve("az")
-            .map_err(|_| {
-                AuthError::TokenExchange(
-                    "The Azure CLI (`az`) was not found.\n\n\
-                     This provider signs in with your own Azure login, so it needs \
-                     the Azure CLI installed and signed in:\n\
-                     \u{20}\u{20}1. Install it -- `brew install azure-cli` on macOS, or see \
-                     https://learn.microsoft.com/cli/azure/install-azure-cli\n\
-                     \u{20}\u{20}2. Sign in with `az login`\n\
-                     \u{20}\u{20}3. Start a new chat\n\n\
-                     If it IS installed, Biorouter looked in ~/.local/bin, /usr/local/bin, \
-                     /opt/homebrew/bin and /opt/local/bin as well as this process's PATH."
-                        .to_string(),
-                )
-            })?;
+            .map_err(|_| AuthError::TokenExchange(azure_cli_missing_message()))?;
         let mut command = tokio::process::Command::new(&az);
         command.args([
             "account",
@@ -201,5 +188,64 @@ impl AzureAuth {
         });
 
         Ok(auth_token)
+    }
+}
+
+/// What to tell a user whose Azure CLI is missing.
+///
+/// Extracted so it can be asserted: the previous message was
+/// `Failed to execute Azure CLI: No such file or directory (os error 2)`,
+/// which names the symptom and none of the remedy -- and was ALSO produced when
+/// `az` was installed but simply unreachable from a GUI process's PATH.
+fn azure_cli_missing_message() -> String {
+    "The Azure CLI (`az`) was not found.\n\n\
+     This provider signs in with your own Azure login, so it needs the Azure CLI \
+     installed and signed in:\n\
+     \u{20}\u{20}1. Install it -- `brew install azure-cli` on macOS, or see \
+     https://learn.microsoft.com/cli/azure/install-azure-cli\n\
+     \u{20}\u{20}2. Sign in with `az login`\n\
+     \u{20}\u{20}3. Start a new chat\n\n\
+     If it IS installed, Biorouter looked in ~/.local/bin, /usr/local/bin, \
+     /opt/homebrew/bin and /opt/local/bin as well as this process's PATH."
+        .to_string()
+}
+
+#[cfg(test)]
+mod cli_discovery_tests {
+    use super::*;
+
+    /// The message has to carry the REMEDY, not just the symptom. A user who
+    /// sees only "No such file or directory" has no way to know what to install
+    /// or that PATH is even involved.
+    #[test]
+    fn the_missing_cli_message_says_what_to_do() {
+        let m = azure_cli_missing_message();
+        assert!(m.contains("brew install azure-cli"), "no install command: {m}");
+        assert!(m.contains("az login"), "no sign-in step: {m}");
+        assert!(m.contains("/opt/homebrew/bin"), "does not say where it looked: {m}");
+        assert!(
+            !m.contains("os error 2"),
+            "the raw errno is the old message, not the new one: {m}"
+        );
+    }
+
+    /// ⚠ The regression this guards is not the message -- it is the LOOKUP.
+    /// `Command::new("az")` resolves against the child's PATH, and a desktop app
+    /// launched from Finder inherits `/usr/bin:/bin:/usr/sbin:/sbin`. An `az`
+    /// installed by Homebrew is then invisible and the user is told it is not
+    /// installed, so installing it does not fix anything. The search must
+    /// include the standard user-tool directories.
+    #[test]
+    fn the_cli_is_looked_for_outside_a_gui_processs_path() {
+        let path = crate::config::search_path::SearchPaths::builder()
+            .path()
+            .expect("joinable");
+        let entries: Vec<_> = std::env::split_paths(&path).collect();
+        for want in ["/usr/local/bin", "/opt/homebrew/bin"] {
+            assert!(
+                entries.iter().any(|e| e == std::path::Path::new(want)),
+                "{want} missing from the Azure CLI search path: {entries:?}"
+            );
+        }
     }
 }

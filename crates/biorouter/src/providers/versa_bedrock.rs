@@ -159,22 +159,36 @@ impl VersaBedrockProvider {
         binding.validate()?;
 
         let config = crate::config::Config::global();
-        let access_key_id: String = config
-            .get_secret::<String>("VERSA_BEDROCK_ACCESS_KEY_ID")
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "VERSA_BEDROCK_ACCESS_KEY_ID is not configured. \
-                     Add it under Versa API Bedrock in Settings."
-                )
-            })?;
-        let secret_access_key: String = config
-            .get_secret::<String>("VERSA_BEDROCK_SECRET_ACCESS_KEY")
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "VERSA_BEDROCK_SECRET_ACCESS_KEY is not configured. \
-                     Add it under Versa API Bedrock in Settings."
-                )
-            })?;
+        // ⚠ `map_err(|_| "... is not configured")` DISCARDS the reason, and the
+        // two reasons need opposite responses from the user:
+        //
+        //   NotFound        -> "add it in Settings" is right
+        //   anything else   -> the key IS there and the store refused the read,
+        //                      so "add it in Settings" sends the user to retype
+        //                      a credential that is already correct
+        //
+        // On macOS the second happens whenever the Keychain grant no longer
+        // covers the running binary -- the grant is bound to the signature, so a
+        // newly installed or re-signed build asks again, and an unanswered
+        // prompt fails the read.
+        let read_key = |name: &str| -> anyhow::Result<String> {
+            match config.get_secret::<String>(name) {
+                Ok(value) => Ok(value),
+                Err(crate::config::ConfigError::NotFound(_)) => Err(anyhow::anyhow!(
+                    "{name} is not configured. Add it under Versa API Bedrock in Settings."
+                )),
+                Err(error) => Err(anyhow::anyhow!(
+                    "Could not read {name} from the credential store: {error}\n\n\
+                     The credential appears to be configured, so this is the store \
+                     refusing the read rather than a missing key -- do NOT re-enter it. \
+                     On macOS a Keychain grant is tied to the application's signature, \
+                     so a newly installed or re-signed build asks for permission again; \
+                     answer that prompt with \u{201c}Always Allow\u{201d}."
+                )),
+            }
+        };
+        let access_key_id: String = read_key("VERSA_BEDROCK_ACCESS_KEY_ID")?;
+        let secret_access_key: String = read_key("VERSA_BEDROCK_SECRET_ACCESS_KEY")?;
         anyhow::ensure!(
             !access_key_id.trim().is_empty() && !secret_access_key.trim().is_empty(),
             "Versa Bedrock access key id / secret access key is empty"
