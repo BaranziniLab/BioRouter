@@ -1112,6 +1112,41 @@ fn get_agent_messages(
 
 #[cfg(test)]
 mod tests {
+
+    /// Await a subagent run with a CEILING.
+    ///
+    /// ⚠ Every one of these awaits was unbounded, and that is what turned an
+    /// intermittent deadlock *inside* the run into a CANCELLED CI job rather
+    /// than a test failure. The stuck run keeps its `serial_test` lock, every
+    /// other test in the `workspace_services` group piles up behind it, and the
+    /// runner eventually kills the job -- discarding the ~3000 results that had
+    /// already passed and naming no test at all. The macOS log said only that
+    /// two tests "have been running for over 60 seconds", and one of those two
+    /// was merely queued behind the other.
+    ///
+    /// This does NOT fix the deadlock. It makes it legible and cheap: the one
+    /// stuck run fails by name inside two minutes, releases its lock, and the
+    /// rest of the suite reports normally. A run that is merely slow is well
+    /// inside the ceiling -- these tests replay a cassette and finish in
+    /// milliseconds.
+    macro_rules! run_subagent_bounded {
+        ($($arg:tt)*) => {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                run_complete_subagent_task($($arg)*),
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(_) => panic!(
+                    "run_complete_subagent_task did not finish within 120s. This is the \
+                     known intermittent subagent deadlock; it is reported here instead of \
+                     hanging, because an unbounded await starves every other test sharing \
+                     the `workspace_services` lock and gets the whole job cancelled."
+                ),
+            }
+        };
+    }
     use super::*;
     use crate::conversation::message::ProvenanceKind;
     use crate::session::session_manager::SessionType;
@@ -1728,8 +1763,7 @@ mod tests {
             .await;
 
         let result =
-            run_complete_subagent_task(config, workflow, task_config, true, child.id.clone(), None)
-                .await;
+            run_subagent_bounded!(config, workflow, task_config, true, child.id.clone(), None);
 
         // The provider fails, so the envelope reports an error/incomplete run.
         // Assert its SHAPE — `SubagentResult` always carries a status and a
@@ -1820,9 +1854,7 @@ mod tests {
         let cached = manager.get_or_create_agent(child.clone()).await.unwrap();
 
         let (config, workflow, task_config) = bracket_fixture(&temp, &sm);
-        let _ =
-            run_complete_subagent_task(config, workflow, task_config, true, child.clone(), None)
-                .await;
+        let _ = run_subagent_bounded!(config, workflow, task_config, true, child.clone(), None);
 
         // `Deregister::drop` releases on a spawned task, so poll until the pin
         // stops answering — `peek_agent` reports the run's live child until then,
@@ -2192,8 +2224,7 @@ mod tests {
         let spy = LeaseSpy::new().watching_for(sentinel.clone()).install();
         let (config, workflow, task_config) = bracket_fixture(&temp, &sm);
         let result =
-            run_complete_subagent_task(config, workflow, task_config, true, child.clone(), None)
-                .await;
+            run_subagent_bounded!(config, workflow, task_config, true, child.clone(), None);
         crate::workspace_services::clear_test_override();
 
         assert_eq!(
@@ -2279,15 +2310,14 @@ mod tests {
         let spy = LeaseSpy::new().cancelling_mid_run().install();
         let (config, workflow, task_config) = bracket_fixture(&temp, &sm);
         let parent_token = CancellationToken::new();
-        let _ = run_complete_subagent_task(
+        let _ = run_subagent_bounded!(
             config,
             workflow,
             task_config,
             true,
             child.clone(),
             Some(parent_token.clone()),
-        )
-        .await;
+        );
         crate::workspace_services::clear_test_override();
 
         assert_eq!(
@@ -2332,8 +2362,7 @@ mod tests {
             .install();
         let (config, workflow, task_config) = bracket_fixture(&temp, &sm);
         let result =
-            run_complete_subagent_task(config, workflow, task_config, true, child.clone(), None)
-                .await;
+            run_subagent_bounded!(config, workflow, task_config, true, child.clone(), None);
         crate::workspace_services::clear_test_override();
 
         assert_eq!(
@@ -2437,8 +2466,7 @@ mod tests {
         };
 
         let _result =
-            run_complete_subagent_task(config, workflow, task_config, true, child.id.clone(), None)
-                .await;
+            run_subagent_bounded!(config, workflow, task_config, true, child.id.clone(), None);
 
         // Drain the whole ring into a Vec, because every property this task is
         // about is a property of the SEQUENCE, not of set membership. The
@@ -2680,8 +2708,7 @@ mod tests {
         let (config, workflow, task_config) = bracket_fixture(&temp, &sm);
 
         let result =
-            run_complete_subagent_task(config, workflow, task_config, true, ghost.clone(), None)
-                .await;
+            run_subagent_bounded!(config, workflow, task_config, true, ghost.clone(), None);
         assert_eq!(
             result.status,
             crate::agents::subagent_result::SubagentStatus::Error,
@@ -2735,15 +2762,14 @@ mod tests {
         // token — the shape a stopped parent turn produces.
         let parent_token = CancellationToken::new();
         parent_token.cancel();
-        let _ = run_complete_subagent_task(
+        let _ = run_subagent_bounded!(
             config,
             workflow,
             task_config,
             true,
             ghost.clone(),
             Some(parent_token),
-        )
-        .await;
+        );
 
         let events: Vec<SessionBusEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert!(
@@ -2788,7 +2814,7 @@ mod tests {
         // Spawned so the panic is contained here instead of failing the test:
         // it is the subject, not an accident.
         let joined = tokio::spawn(async move {
-            run_complete_subagent_task(config, workflow, task_config, true, ghost, None).await
+            run_subagent_bounded!(config, workflow, task_config, true, ghost, None)
         })
         .await;
         assert!(
