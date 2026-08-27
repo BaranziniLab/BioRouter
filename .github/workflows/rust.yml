@@ -121,14 +121,38 @@ jobs:
       # assertions, overflow checks and panic locations while omitting debugger
       # symbols that CI never consumes. Set it before rust-cache so the action's
       # CARGO_* environment hash separates these artifacts from debug=2 builds.
-      - name: Disable Windows CI test debuginfo
-        if: matrix.os == 'windows-latest'
+      #
+      # macOS is included for a different reason: it is the only runner in this
+      # matrix with NO Rust cache (see the cache-on-failure note below), so it
+      # pays a cold full-workspace build every run and its debug symbols are
+      # what would push the repository over GitHub's 10 GiB cache ceiling once
+      # it finally saves one. Ubuntu is deliberately LEFT OUT — it has a warm
+      # 1.7 GiB cache today and adding the variable would change rust-cache's
+      # CARGO_* environment hash, throwing that cache away to fix a problem
+      # ubuntu does not have.
+      - name: Reduce CI test debuginfo
+        if: matrix.os == 'windows-latest' || matrix.os == 'macos-latest'
         shell: bash
         run: echo 'CARGO_PROFILE_TEST_DEBUG=0' >> "$GITHUB_ENV"
 
+      # ⚠ `cache-on-failure` is what breaks a self-perpetuating deadlock, not a
+      # convenience. rust-cache's post step is skipped whenever the job does not
+      # succeed, so a job that cannot finish never saves a cache, is cold on the
+      # next run, and therefore cannot finish. That is exactly what happened to
+      # `test (macos-latest)`: it was cancelled on main at d0a177f8 after 360
+      # minutes with its post step skipped, and `gh cache list` subsequently
+      # showed no `v0-rust-macos-latest-*` entry at all while ubuntu and windows
+      # both had one. Every macOS run since has compiled the whole workspace
+      # from scratch — 56+ minutes against a 20 minute budget, versus 17.8m on
+      # the last run that had a warm cache (44ac420f).
+      #
+      # Compiled dependencies are valid whether or not the *tests* passed, so
+      # saving them on a red job costs nothing and means a broken test can never
+      # again strand the cache.
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}
+          cache-on-failure: "true"
 
       - name: Install protoc (build-script dep)
         uses: arduino/setup-protoc@v3
