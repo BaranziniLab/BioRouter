@@ -149,10 +149,29 @@ jobs:
       # Compiled dependencies are valid whether or not the *tests* passed, so
       # saving them on a red job costs nothing and means a broken test can never
       # again strand the cache.
+      # ⚠ `save-if` restricts SAVING to main, and that is what keeps a cache
+      # available to anyone at all. GitHub scopes a cache to the branch that
+      # wrote it: a feature branch can read its own caches and **main's**, and
+      # nothing else. So every feature-branch run was writing its own private
+      # 1-1.7 GiB copy per OS that no other branch could ever use, while the
+      # repository sat at 9.74 GiB against a 10 GiB ceiling — evicting main's
+      # copies, which are the only ones shared. Measured on windows-latest, by
+      # rust-cache's own restore time:
+      #
+      #   restore 0.7m -> `cargo test`  9.4m   (hit, branch's own earlier cache)
+      #   restore 0.1m -> `cargo test` 19.5m   (miss)
+      #   restore 0.1m -> `cargo test` 17.4m   (miss)
+      #
+      # With saving confined to main, every branch restores one authoritative,
+      # continuously refreshed cache and none of them compete for the ceiling.
+      # A PR that changes Cargo.lock still builds cold and cannot save; that is
+      # the accepted cost, and it is much smaller than three OSes' worth of
+      # write-only caches evicting the shared ones on every push.
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}
           cache-on-failure: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install protoc (build-script dep)
         uses: arduino/setup-protoc@v3
