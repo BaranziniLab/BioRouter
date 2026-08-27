@@ -466,6 +466,9 @@ impl ModelConfig {
         Ok(Self::resolve_context_window(model_name))
     }
 
+    /// Pure half of [`Self::parse_context_limit`]: decide what a context-limit
+    /// string means, with no environment access of its own. See the note above
+    /// `parse_temperature` for why every setting in this impl is split this way.
     fn validate_context_limit(val: &str, env_var: &str) -> Result<usize, ConfigError> {
         let limit = val.parse::<usize>().map_err(|_| {
             ConfigError::InvalidValue(
@@ -485,29 +488,71 @@ impl ModelConfig {
         Ok(limit)
     }
 
+    // ── Reading a setting vs. deciding what it means ────────────────────────
+    //
+    // Each setting below is split in two: a thin `parse_*` wrapper that READS
+    // the environment (or, for max tokens, the config layer), and a pure
+    // `validate_*` half that decides what the value means. Tests drive the
+    // `validate_*` half with synthetic inputs and never touch the process
+    // environment. `validate_context_limit` above is the same shape and was
+    // the precedent.
+    //
+    // ⚠ The split is not a stylistic preference — it is the fix for a real CI
+    // race, and the shape of that race matters before anyone undoes it. The
+    // rejection tests DO hold `env_lock`, and always did: the guard is present
+    // and correct. It cannot help, because `env_lock` only serialises callers
+    // that *ask* for it, and these readers never do — `parse_max_tokens` goes
+    // straight to `Config::global().get_param`, the rest straight to
+    // `std::env::var`. So while a properly-guarded test held
+    // `BIOROUTER_MAX_TOKENS=not_a_number`, any *other* test in the same binary
+    // that called `ModelConfig::new` read the poisoned value, got `Err`, and —
+    // through `new_or_fail` — panicked. It surfaced on `test (windows-latest)`
+    // as `agents::agent::gate_a_bind_tests::a_new_same_name_composite_bind_
+    // wins_while_the_old_snapshot_is_parked` failing with "Failed to create
+    // model config for gpt-5.6-codex": a test with no connection to max tokens.
+    //
+    // If that recurs, do NOT reach for a lock in the tests. It is already
+    // there. Keep the rejection cases off the environment instead.
+
     fn parse_temperature() -> Result<Option<f32>, ConfigError> {
-        if let Ok(val) = std::env::var("BIOROUTER_TEMPERATURE") {
-            let temp = val.parse::<f32>().map_err(|_| {
-                ConfigError::InvalidValue(
-                    "BIOROUTER_TEMPERATURE".to_string(),
-                    val.clone(),
-                    "must be a valid number".to_string(),
-                )
-            })?;
-            if temp < 0.0 {
-                return Err(ConfigError::InvalidRange(
-                    "BIOROUTER_TEMPERATURE".to_string(),
-                    val,
-                ));
-            }
-            Ok(Some(temp))
-        } else {
-            Ok(None)
+        let raw = std::env::var("BIOROUTER_TEMPERATURE").ok();
+        Self::validate_temperature(raw.as_deref())
+    }
+
+    /// Pure half of [`Self::parse_temperature`]: `None` means unset.
+    fn validate_temperature(raw: Option<&str>) -> Result<Option<f32>, ConfigError> {
+        let Some(val) = raw else {
+            return Ok(None);
+        };
+        let temp = val.parse::<f32>().map_err(|_| {
+            ConfigError::InvalidValue(
+                "BIOROUTER_TEMPERATURE".to_string(),
+                val.to_string(),
+                "must be a valid number".to_string(),
+            )
+        })?;
+        if temp < 0.0 {
+            return Err(ConfigError::InvalidRange(
+                "BIOROUTER_TEMPERATURE".to_string(),
+                val.to_string(),
+            ));
         }
+        Ok(Some(temp))
     }
 
     fn parse_max_tokens() -> Result<Option<i32>, ConfigError> {
-        match crate::config::Config::global().get_param::<i32>("BIOROUTER_MAX_TOKENS") {
+        Self::validate_max_tokens(
+            crate::config::Config::global().get_param::<i32>("BIOROUTER_MAX_TOKENS"),
+        )
+    }
+
+    /// Pure half of [`Self::parse_max_tokens`]: interpret whatever the config
+    /// layer returned for `BIOROUTER_MAX_TOKENS`. `NotFound` means unset;
+    /// any other lookup error is a malformed value.
+    fn validate_max_tokens(
+        looked_up: Result<i32, crate::config::ConfigError>,
+    ) -> Result<Option<i32>, ConfigError> {
+        match looked_up {
             Ok(tokens) => {
                 if tokens <= 0 {
                     return Err(ConfigError::InvalidRange(
@@ -527,30 +572,43 @@ impl ModelConfig {
     }
 
     fn parse_toolshim() -> Result<bool, ConfigError> {
-        if let Ok(val) = std::env::var("BIOROUTER_TOOLSHIM") {
-            match val.to_lowercase().as_str() {
-                "1" | "true" | "yes" | "on" => Ok(true),
-                "0" | "false" | "no" | "off" => Ok(false),
-                _ => Err(ConfigError::InvalidValue(
-                    "BIOROUTER_TOOLSHIM".to_string(),
-                    val,
-                    "must be one of: 1, true, yes, on, 0, false, no, off".to_string(),
-                )),
-            }
-        } else {
-            Ok(false)
+        let raw = std::env::var("BIOROUTER_TOOLSHIM").ok();
+        Self::validate_toolshim(raw.as_deref())
+    }
+
+    /// Pure half of [`Self::parse_toolshim`]: `None` means unset, which is
+    /// `false` rather than an error.
+    fn validate_toolshim(raw: Option<&str>) -> Result<bool, ConfigError> {
+        let Some(val) = raw else {
+            return Ok(false);
+        };
+        match val.to_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            _ => Err(ConfigError::InvalidValue(
+                "BIOROUTER_TOOLSHIM".to_string(),
+                val.to_string(),
+                "must be one of: 1, true, yes, on, 0, false, no, off".to_string(),
+            )),
         }
     }
 
     fn parse_toolshim_model() -> Result<Option<String>, ConfigError> {
-        match std::env::var("BIOROUTER_TOOLSHIM_OLLAMA_MODEL") {
-            Ok(val) if val.trim().is_empty() => Err(ConfigError::InvalidValue(
+        let raw = std::env::var("BIOROUTER_TOOLSHIM_OLLAMA_MODEL").ok();
+        Self::validate_toolshim_model(raw.as_deref())
+    }
+
+    /// Pure half of [`Self::parse_toolshim_model`]: unset is fine, but set-and-
+    /// blank is a mistake worth reporting rather than silently ignoring.
+    fn validate_toolshim_model(raw: Option<&str>) -> Result<Option<String>, ConfigError> {
+        match raw {
+            Some(val) if val.trim().is_empty() => Err(ConfigError::InvalidValue(
                 "BIOROUTER_TOOLSHIM_OLLAMA_MODEL".to_string(),
-                val,
+                val.to_string(),
                 "cannot be empty if set".to_string(),
             )),
-            Ok(val) => Ok(Some(val)),
-            Err(_) => Ok(None),
+            Some(val) => Ok(Some(val.to_string())),
+            None => Ok(None),
         }
     }
 
@@ -732,28 +790,287 @@ mod tests {
         assert_eq!(result, None);
     }
 
+    // ── Rejection cases, asserted WITHOUT touching the process environment ──
+    //
+    // ⚠ The three max-tokens tests below used to set BIOROUTER_MAX_TOKENS to
+    // "not_a_number" / "0" / "-100" under `env_lock`. The lock was correct and
+    // was never the problem: `parse_max_tokens` reads that variable through
+    // `Config::global().get_param` WITHOUT taking it, so a concurrent
+    // `ModelConfig::new` anywhere in this binary read the poisoned value and
+    // `new_or_fail` panicked. On `test (windows-latest)` that surfaced as an
+    // unrelated gate-A bind test failing with "Failed to create model config
+    // for gpt-5.6-codex".
+    //
+    // So: do not "fix" a recurrence by adding a lock to these tests — it is
+    // already there and cannot help an unguarded reader. Drive the pure
+    // `validate_*` half instead and leave the environment alone.
+    //
+    // `no_test_poisons_a_shared_setting` below is the standing guard: it fails
+    // if any test in this crate puts an invalid value in one of these five
+    // variables. That check cannot flake, which is the point — the race it
+    // replaces needed an interleaving CI produced and this machine rarely does.
+
     #[test]
     fn test_parse_max_tokens_invalid_string() {
-        let _guard = env_lock::lock_env([("BIOROUTER_MAX_TOKENS", Some("not_a_number"))]);
-        let result = ModelConfig::parse_max_tokens();
+        // What `get_param::<i32>` hands back for a non-numeric value.
+        let looked_up = Err(crate::config::ConfigError::DeserializeError(
+            "invalid type: string \"not_a_number\", expected i32".to_string(),
+        ));
+        let result = ModelConfig::validate_max_tokens(looked_up);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ConfigError::InvalidValue(..)));
     }
 
     #[test]
     fn test_parse_max_tokens_zero() {
-        let _guard = env_lock::lock_env([("BIOROUTER_MAX_TOKENS", Some("0"))]);
-        let result = ModelConfig::parse_max_tokens();
+        let result = ModelConfig::validate_max_tokens(Ok(0));
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ConfigError::InvalidRange(..)));
     }
 
     #[test]
     fn test_parse_max_tokens_negative() {
-        let _guard = env_lock::lock_env([("BIOROUTER_MAX_TOKENS", Some("-100"))]);
-        let result = ModelConfig::parse_max_tokens();
+        let result = ModelConfig::validate_max_tokens(Ok(-100));
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ConfigError::InvalidRange(..)));
+    }
+
+    /// The `NotFound` arm, which `test_parse_max_tokens_not_set` reaches
+    /// through the environment. Pinned here too so the mapping cannot regress
+    /// if that env-driven test is ever weakened.
+    #[test]
+    fn an_absent_max_tokens_is_none_not_an_error() {
+        let looked_up = Err(crate::config::ConfigError::NotFound(
+            "BIOROUTER_MAX_TOKENS".to_string(),
+        ));
+        assert_eq!(ModelConfig::validate_max_tokens(looked_up).unwrap(), None);
+    }
+
+    #[test]
+    fn a_positive_max_tokens_passes_through() {
+        assert_eq!(
+            ModelConfig::validate_max_tokens(Ok(4096)).unwrap(),
+            Some(4096)
+        );
+    }
+
+    // The other four settings, same treatment. `parse_*` is pinned to the right
+    // key by one surviving env round-trip each (further down); everything that
+    // could reject a value is asserted here, off the environment.
+
+    #[test]
+    fn temperature_rejects_a_non_number_and_a_negative() {
+        assert!(matches!(
+            ModelConfig::validate_temperature(Some("warm")).unwrap_err(),
+            ConfigError::InvalidValue(..)
+        ));
+        assert!(matches!(
+            ModelConfig::validate_temperature(Some("-0.5")).unwrap_err(),
+            ConfigError::InvalidRange(..)
+        ));
+    }
+
+    #[test]
+    fn temperature_accepts_zero_and_unset() {
+        assert_eq!(
+            ModelConfig::validate_temperature(Some("0")).unwrap(),
+            Some(0.0)
+        );
+        assert_eq!(
+            ModelConfig::validate_temperature(Some("0.7")).unwrap(),
+            Some(0.7)
+        );
+        assert_eq!(ModelConfig::validate_temperature(None).unwrap(), None);
+    }
+
+    #[test]
+    fn context_limit_rejects_a_non_number_and_anything_under_4k() {
+        assert!(matches!(
+            ModelConfig::validate_context_limit("lots", "BIOROUTER_CONTEXT_LIMIT").unwrap_err(),
+            ConfigError::InvalidValue(..)
+        ));
+        assert!(matches!(
+            ModelConfig::validate_context_limit("4095", "BIOROUTER_CONTEXT_LIMIT").unwrap_err(),
+            ConfigError::InvalidRange(..)
+        ));
+        assert_eq!(
+            ModelConfig::validate_context_limit("4096", "BIOROUTER_CONTEXT_LIMIT").unwrap(),
+            4096
+        );
+    }
+
+    /// The error names whichever variable was read, not a hardcoded one — the
+    /// custom-env-var path in `parse_context_limit` depends on that.
+    #[test]
+    fn context_limit_errors_name_the_variable_they_came_from() {
+        let err = ModelConfig::validate_context_limit("12", "BIOROUTER_WORKER_CONTEXT_LIMIT")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("BIOROUTER_WORKER_CONTEXT_LIMIT"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn toolshim_accepts_both_spellings_and_rejects_the_rest() {
+        for on in ["1", "true", "TRUE", "yes", "On"] {
+            assert!(ModelConfig::validate_toolshim(Some(on)).unwrap(), "{on}");
+        }
+        for off in ["0", "false", "No", "OFF"] {
+            assert!(!ModelConfig::validate_toolshim(Some(off)).unwrap(), "{off}");
+        }
+        assert!(
+            !ModelConfig::validate_toolshim(None).unwrap(),
+            "unset is off"
+        );
+        assert!(matches!(
+            ModelConfig::validate_toolshim(Some("maybe")).unwrap_err(),
+            ConfigError::InvalidValue(..)
+        ));
+    }
+
+    #[test]
+    fn toolshim_model_rejects_set_but_blank() {
+        assert_eq!(ModelConfig::validate_toolshim_model(None).unwrap(), None);
+        assert_eq!(
+            ModelConfig::validate_toolshim_model(Some("qwen3")).unwrap(),
+            Some("qwen3".to_string())
+        );
+        for blank in ["", "   "] {
+            assert!(
+                matches!(
+                    ModelConfig::validate_toolshim_model(Some(blank)).unwrap_err(),
+                    ConfigError::InvalidValue(..)
+                ),
+                "{blank:?}"
+            );
+        }
+    }
+
+    /// The standing guard against the race the split above fixed.
+    ///
+    /// These five variables are read process-wide by `ModelConfig::new`, which
+    /// takes no lock. So a test that parks an **invalid** value in one of them —
+    /// however correctly it holds `env_lock` — makes every concurrent
+    /// `ModelConfig::new` in the same binary return `Err`, and every
+    /// `new_or_fail` panic. A *valid* value is harmless: it changes what a
+    /// concurrent config resolves to, not whether it resolves.
+    ///
+    /// This is deliberately a source scan rather than a runtime assertion: the
+    /// race needs an interleaving CI produces and a fast laptop rarely does, so
+    /// "we ran the suite twenty times and it was green" is weak evidence. This
+    /// check cannot flake.
+    ///
+    /// It reads literal values in the two shapes these are actually written in
+    /// — `env_lock::lock_env([("KEY", Some("value"))])` and
+    /// `set_var("KEY", "value")`. A value passed through a variable
+    /// (`("KEY", worker_limit)`) is invisible to it; if you need one of those,
+    /// make sure it can only ever hold values these validators accept.
+    #[test]
+    fn no_test_poisons_a_shared_setting() {
+        fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if path.is_dir() {
+                    if name != "target" && name != "node_modules" && name != ".git" {
+                        rs_files(&path, out);
+                    }
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let mut files = Vec::new();
+        rs_files(&crates_dir, &mut files);
+        assert!(
+            files.len() > 100,
+            "the scan reads {} and found only {} .rs files; if that path is wrong this test \
+             proves nothing",
+            crates_dir.display(),
+            files.len()
+        );
+
+        // Longest-first is not needed: each alternative is followed by a closing
+        // quote in the patterns, so `BIOROUTER_TOOLSHIM` cannot swallow
+        // `BIOROUTER_TOOLSHIM_OLLAMA_MODEL`.
+        let keys = "BIOROUTER_MAX_TOKENS|BIOROUTER_TEMPERATURE|BIOROUTER_CONTEXT_LIMIT\
+                    |BIOROUTER_TOOLSHIM|BIOROUTER_TOOLSHIM_OLLAMA_MODEL";
+        // `("KEY", Some("value"))` — the `env_lock::lock_env` shape.
+        let tuple = regex::Regex::new(&format!(r#"\(\s*"({keys})"\s*,\s*Some\(\s*"([^"]*)"\s*\)"#))
+            .unwrap();
+        // `set_var("KEY", "value")`.
+        let set_var =
+            regex::Regex::new(&format!(r#"set_var\(\s*"({keys})"\s*,\s*"([^"]*)""#)).unwrap();
+
+        let mut seen = 0usize;
+        let mut offenders = Vec::new();
+        for file in &files {
+            let Ok(src) = std::fs::read_to_string(file) else {
+                continue;
+            };
+            for caps in tuple.captures_iter(&src).chain(set_var.captures_iter(&src)) {
+                seen += 1;
+                let key = caps.get(1).unwrap().as_str();
+                let value = caps.get(2).unwrap().as_str();
+                let verdict = match key {
+                    "BIOROUTER_MAX_TOKENS" => match value.parse::<i32>() {
+                        Ok(n) => ModelConfig::validate_max_tokens(Ok(n)).map(|_| ()),
+                        Err(_) => Err(ConfigError::InvalidValue(
+                            key.to_string(),
+                            value.to_string(),
+                            "must be a valid integer".to_string(),
+                        )),
+                    },
+                    "BIOROUTER_TEMPERATURE" => {
+                        ModelConfig::validate_temperature(Some(value)).map(|_| ())
+                    }
+                    "BIOROUTER_CONTEXT_LIMIT" => {
+                        ModelConfig::validate_context_limit(value, key).map(|_| ())
+                    }
+                    "BIOROUTER_TOOLSHIM" => ModelConfig::validate_toolshim(Some(value)).map(|_| ()),
+                    "BIOROUTER_TOOLSHIM_OLLAMA_MODEL" => {
+                        ModelConfig::validate_toolshim_model(Some(value)).map(|_| ())
+                    }
+                    other => unreachable!("unhandled key {other}"),
+                };
+                if let Err(err) = verdict {
+                    offenders.push(format!(
+                        "{}: {key}={value:?} — {err}",
+                        file.strip_prefix(&crates_dir).unwrap_or(file).display()
+                    ));
+                }
+            }
+        }
+
+        // Non-vacuity: this file alone sets BIOROUTER_MAX_TOKENS=8192 and pins
+        // four more to None, so a scan that matches nothing means the patterns
+        // rotted, not that the tree is clean.
+        assert!(
+            seen >= 2,
+            "the scan matched {seen} literal assignments across {} files. Either the patterns \
+             no longer recognise how these variables are written — in which case a clean \
+             result means nothing and the patterns need updating — or the last env-driven \
+             tests were removed, in which case lower this floor deliberately",
+            files.len()
+        );
+        assert!(
+            offenders.is_empty(),
+            "these tests park an invalid value in a setting `ModelConfig::new` reads without a \
+             lock, which makes unrelated tests in the same binary panic in \
+             `new_or_fail`. Assert the rejection against the pure `validate_*` function \
+             instead of the environment:\n  {}",
+            offenders.join("\n  ")
+        );
     }
 
     #[test]
