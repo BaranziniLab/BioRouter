@@ -162,7 +162,29 @@ jobs:
       # batch of Windows fixes made the job fail one binary further along, which
       # read as "a new rotating set of failures" and was really one hidden queue
       # being drained one CI round-trip at a time. One run now names them all.
+      # ⚠ **The OS credential store must be off, or macOS hangs until the job
+      # is killed.** `Config::read` resolves a secret through `keyring`, and on
+      # a runner with no unlocked login keychain `SecKeychainFindGenericPassword`
+      # blocks on an authorization prompt nothing is there to answer. The
+      # secrets tests in `routes::action_required` sit on that call, so the
+      # whole binary stops: `test (macos-latest)` ran SIX HOURS on main
+      # (run 32997530845) and was cancelled. Reproduced locally and sampled —
+      # `Config::read` -> `keyring::Entry::get_password` ->
+      # `SecKeychainFindGenericPassword` -> `CSSM_DecryptData`, blocked. With
+      # this set the same binary finishes in seconds.
+      #
+      # Windows reaches the same code through the Credential Manager. Whether
+      # that is what has made windows-latest slow is NOT measured, so this is
+      # not offered as the explanation there — it is set on the whole matrix
+      # because the store is unwanted on every runner, not as a Windows fix.
+      #
+      # It costs no coverage: nothing in the workspace asserts keyring
+      # behaviour — the store is incidental to these tests, which are about
+      # routes. `serve` below and `release-artifact-smoke.yml` already set it
+      # for the same reason; this is the one job that was missing it.
       - name: cargo test (workspace, lib + bins)
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
         run: cargo test --workspace --lib --bins --locked --no-fail-fast --timings
 
       - name: Upload Windows Cargo timings
