@@ -981,7 +981,13 @@ deleted, not kept in step.
 
 Tests: `cargo test -p biorouter --lib -- skill`,
 `cargo test -p biorouter-server --lib -- routes::skills`,
-`cargo test -p biorouter-cli --lib` (**needs an isolated `HOME`**), and
+`cargo test -p biorouter-cli --lib` (**needs an isolated `HOME` — and `CARGO_HOME`
+kept pointing at the real one**: cargo derives `CARGO_HOME` from `$HOME`, so a bare
+`HOME=$(mktemp -d) cargo test …` loses the crate registry and dies with
+`error[E0463]: can't find crate for \`biorouter\``. That surfaces as **rc=101 with zero
+failing tests**, which reads as a flake rather than as nothing having compiled — and a
+harness that greps for `test result:` reports the PREVIOUS build's count. Use
+`HOME=$(mktemp -d) CARGO_HOME="$HOME/.cargo" cargo test -p biorouter-cli`), and
 `cd ui/desktop && npm run test:run`.
 
 ### Workspace control (several conversations at once)
