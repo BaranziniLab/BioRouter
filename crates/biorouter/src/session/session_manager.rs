@@ -4593,6 +4593,42 @@ impl SessionStorage {
         Ok(())
     }
 
+    /// The 8-character prefix a new session id is built on.
+    ///
+    /// Production uses today's date, which is what makes ids sort and read
+    /// sensibly. **Tests must not**, and the reason is worth stating because the
+    /// symptom is nothing like the cause: ids are minted as `PREFIX_N` where `N`
+    /// is `MAX(N) + 1` *within this database*, and every test builds its own
+    /// `TempDir` manager over an EMPTY one. So the first session of every test
+    /// is `20260827_1`, the second `20260827_2`, and so on — ids collide across
+    /// tests by construction.
+    ///
+    /// That matters because `agents::subagent_handle::HANDLES` is process-global
+    /// and keyed by session id. A test that leaves a handle behind hands it to
+    /// whichever later test mints the same id, whose `Agent::reply` then waits
+    /// on a handle belonging to a test that finished long ago. That is what hung
+    /// `test (macos-latest)` and `test (windows-latest)` until the job timed out,
+    /// discarding ~3000 passing results, and nothing in the failure named it.
+    ///
+    /// ⚠ The prefix MUST stay 8 characters. `create_session` reads the counter
+    /// back with `SUBSTR(id, 10)`, which assumes 8 + the underscore.
+    ///
+    /// Derived from the store's own directory, so it is stable for one manager
+    /// (the counter still increments correctly) and distinct between managers
+    /// (each test has its own `TempDir`).
+    #[cfg(test)]
+    fn id_prefix(&self) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.session_dir.hash(&mut hasher);
+        format!("{:08x}", hasher.finish() as u32)
+    }
+
+    #[cfg(not(test))]
+    fn id_prefix(&self) -> String {
+        chrono::Utc::now().format("%Y%m%d").to_string()
+    }
+
     async fn create_session(
         &self,
         working_dir: PathBuf,
@@ -4602,7 +4638,7 @@ impl SessionStorage {
         let pool = self.pool().await?;
         let mut tx = pool.begin().await?;
 
-        let today = chrono::Utc::now().format("%Y%m%d").to_string();
+        let today = self.id_prefix();
         let session = sqlx::query_as(
             r#"
                 INSERT INTO sessions (id, name, user_set_name, session_type, working_dir, extension_data, incarnation)
