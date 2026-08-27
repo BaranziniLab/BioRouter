@@ -1177,6 +1177,39 @@ record_result(all);"#;
 
     /// Every spelling a model might use, built independently of the production
     /// helper so the test does not agree with the code by construction.
+    /// Hold `BIOROUTER_PATH_ROOT` still for the duration of a test.
+    ///
+    /// ⚠ Every test below resolves the store **twice** — once here, via
+    /// [`store_path_spellings`], to build the path it expects to see refused,
+    /// and again inside [`global_memory_gate`] when the assertion runs. Both go
+    /// through `biorouter_mcp::global_memory_dir()` -> `config_dir()`, which
+    /// reads `BIOROUTER_PATH_ROOT` each time.
+    ///
+    /// Other tests in this binary legitimately point that variable at their own
+    /// temporary root and put it back — `logging.rs`, `managed/mod.rs`,
+    /// `providers/utils.rs` and `session/diagnostics.rs` all do, correctly,
+    /// under `env_lock`. This module took no lock at all, so one of those could
+    /// land between our two resolutions: the expected path was built against
+    /// one root and the gate matched against another, no refusal fired, and the
+    /// test failed claiming
+    ///
+    /// ```text
+    /// developer__shell {"command":"rm -rf …/config/memory"}
+    ///   points at the machine-wide store and must be refused
+    /// ```
+    ///
+    /// which reads as a hole in the #63 consent gate and is really a harness
+    /// race. Measured at 6 failures in 20 full-suite runs before this guard.
+    ///
+    /// The writers were never the problem and adding a lock to them would not
+    /// help — `env_lock` serialises only the tasks that ASK for it, and the
+    /// reader here never did. Pinning to the variable's *current* value is
+    /// deliberate: the point is to hold the lock, not to change the root.
+    fn pinned_store_root() -> env_lock::EnvGuard<'static> {
+        let current = std::env::var("BIOROUTER_PATH_ROOT").ok();
+        env_lock::lock_env([("BIOROUTER_PATH_ROOT", current.as_deref())])
+    }
+
     fn store_path_spellings() -> Vec<String> {
         let store = biorouter_mcp::global_memory_dir();
         let mut forms = vec![store.to_string_lossy().into_owned()];
@@ -1203,6 +1236,7 @@ record_result(all);"#;
     /// disclose a memory category, and there is a call that *is*.
     #[test]
     fn a_tool_that_names_the_store_path_is_refused() {
+        let _root = pinned_store_root();
         for store in store_path_spellings() {
             for (tool, arguments) in [
                 (
@@ -1299,6 +1333,7 @@ record_result(all);"#;
     /// which resolves paths and cannot be talked out of it.
     #[test]
     fn prose_that_merely_quotes_the_store_path_is_not_refused() {
+        let _root = pinned_store_root();
         for store in store_path_spellings() {
             for (tool, arguments) in [
                 // The regression as review found it: documentation about the
@@ -1377,6 +1412,7 @@ record_result(all);"#;
     /// fix that let these through would be worse than the regression.
     #[test]
     fn a_path_argument_naming_the_store_is_still_refused_after_the_narrowing() {
+        let _root = pinned_store_root();
         for store in store_path_spellings() {
             for (tool, arguments) in [
                 (
@@ -1427,6 +1463,7 @@ record_result(all);"#;
     /// store's path in its storage table, and rewriting it is an ordinary edit.
     #[test]
     fn this_repositorys_own_documentation_can_still_be_edited() {
+        let _root = pinned_store_root();
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(|p| p.parent())
