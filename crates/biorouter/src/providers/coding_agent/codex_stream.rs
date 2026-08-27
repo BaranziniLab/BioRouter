@@ -842,12 +842,44 @@ fn i64_at(value: &Value, path: &[&str]) -> Option<i64> {
 fn error_message(error: Option<&Value>) -> Option<String> {
     let error = error?;
     if let Some(s) = error.as_str() {
-        return (!s.is_empty()).then(|| s.to_string());
+        return (!s.is_empty()).then(|| explain_disabled_native_tool(s));
     }
     error
         .get("message")
         .and_then(Value::as_str)
-        .map(str::to_string)
+        .map(explain_disabled_native_tool)
+}
+
+/// Turn the vendor's internal failure for a tool Biorouter disabled into
+/// something a reader can act on.
+///
+/// Biorouter passes `multi_agent` (and a dozen more) to Codex's `--disable`,
+/// because a coding-agent child running its own unmediated tools is exactly
+/// what the tool bridge exists to prevent. Codex keeps ADVERTISING those tools
+/// anyway, so a model asked to delegate calls `spawn_agent` and gets
+/// `no thread with id` back — which names nothing the user did, nothing they
+/// can change, and makes a perfectly healthy bridge look broken.
+///
+/// ⚠ **This is a safety net, not the fix.** The fix is
+/// [`coding_agent::native_tools_notice`], which tells the model up front which
+/// tools are real; this only catches the case where it reaches for one anyway.
+/// It is also best-effort in a second sense: the vendor may keep such a failure
+/// inside its own agent loop and only ever report it as prose to the model, in
+/// which case nothing reaches here to rewrite. It is matched on a vendor
+/// string, so it will stop matching without warning if that string changes —
+/// which costs only the explanation, never correctness.
+fn explain_disabled_native_tool(message: &str) -> String {
+    const VENDOR_MISSING_THREAD: &str = "no thread with id";
+    if !message.to_ascii_lowercase().contains(VENDOR_MISSING_THREAD) {
+        return message.to_string();
+    }
+    format!(
+        "{message}\n\n\
+         This is Codex's own sub-agent machinery, which Biorouter switches off: a \
+         coding agent running inside Biorouter uses Biorouter's tools, behind its \
+         inspectors and privacy gates, rather than its own. Ask for the work \
+         directly instead of asking Codex to delegate it."
+    )
 }
 
 /// Read an integer field under either the camelCase or the snake_case spelling.
@@ -1067,6 +1099,38 @@ mod tests {
         // The turn's text is still the whole message, exactly once.
         assert_eq!(d.text(), vec![COMMENTARY_TEXT.to_string()]);
         assert_eq!(d.item_phase(COMMENTARY_ITEM_ID), Some("commentary"));
+    }
+
+    /// The vendor's bare `no thread with id` names nothing a reader can act on.
+    /// It is what Codex returns for its OWN sub-agent tool, which Biorouter
+    /// disables on purpose, so the reader needs to be told that and told what to
+    /// do instead.
+    #[test]
+    fn a_disabled_native_tool_error_explains_itself() {
+        let out = super::explain_disabled_native_tool("Error: no thread with id abc123");
+        assert!(out.starts_with("Error: no thread with id abc123"), "{out}");
+        assert!(
+            out.contains("Biorouter switches off"),
+            "no explanation: {out}"
+        );
+        assert!(
+            out.contains("Ask for the work directly"),
+            "no remedy: {out}"
+        );
+    }
+
+    /// ⚠ Everything else must pass through UNCHANGED. This rewrite is matched on
+    /// a vendor substring, and a rewrite that fires too widely would bury real
+    /// errors under advice about a tool that had nothing to do with them.
+    #[test]
+    fn an_unrelated_error_is_left_exactly_alone() {
+        for untouched in [
+            "rate limit exceeded",
+            "stream closed before the turn completed",
+            "Unknown feature flag: skill_search",
+        ] {
+            assert_eq!(super::explain_disabled_native_tool(untouched), untouched);
+        }
     }
 
     /// The other half of the same rule: a message that never streamed is the

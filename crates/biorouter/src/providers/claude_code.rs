@@ -243,8 +243,16 @@ impl ClaudeCodeProvider {
 
         // Biorouter's system prompt replaces Claude Code's, rather than being
         // appended to it.
+        //
+        // The tools note is appended for the same reason it is on the Codex
+        // side: a coding-agent child arrives with native tools Biorouter
+        // deliberately switches off, and naming the real ones is cheaper than
+        // letting the model discover the disabled ones by failing.
         args.push("--system-prompt".into());
-        args.push(system.to_string());
+        args.push(format!(
+            "{system}{}",
+            coding_agent::native_tools_notice(bridge::active_bridge_url().as_deref())
+        ));
 
         // Sessions are Biorouter's to persist. Letting the CLI also write them
         // would leave a second, divergent transcript on disk that no Biorouter

@@ -906,6 +906,26 @@ pub fn lookup(nonce: &str) -> Option<Arc<BridgeGrant>> {
     GRANTS.read().ok()?.get(nonce).cloned()
 }
 
+/// The tools this bridge advertises, by name, for a URL already issued.
+///
+/// The nonce rides the URL (`.../tool_bridge/{nonce}`), so a provider holding
+/// the child's bridge URL can name the tools the child will actually be given
+/// without threading the grant through every call site.
+pub fn advertised_tool_names(bridge_url: &str) -> Vec<String> {
+    let Some(nonce) = bridge_url.trim_end_matches('/').rsplit('/').next() else {
+        return Vec::new();
+    };
+    lookup(nonce)
+        .map(|grant| {
+            grant
+                .tools()
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// How many grants are live.
 ///
 /// Diagnostic rather than test-facing: `GRANTS` is process-global, so a count is

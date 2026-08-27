@@ -425,6 +425,14 @@ impl CodexProvider {
     /// the transcript, and a second copy on disk would be governed by none of
     /// Biorouter's controls.
     fn thread_params(system: &str, cwd: &str, model: &str, bridge_url: Option<&str>) -> Value {
+        // ⚠ Say which tools are real BEFORE the model picks one. Codex keeps
+        // advertising `spawn_agent` even though `multi_agent` is in
+        // `DISABLED_CHILD_FEATURES`, so a model asked to delegate reaches for it
+        // and gets the vendor's `no thread with id` -- which reads as a broken
+        // bridge and is not. Appended here rather than at the three call sites,
+        // because this is the one place every Codex turn's instructions are
+        // built.
+        let system = format!("{system}{}", coding_agent::native_tools_notice(bridge_url));
         let mut params = json!({
             "cwd": cwd,
             "ephemeral": true,

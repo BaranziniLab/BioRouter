@@ -132,6 +132,50 @@ where
 ///
 /// Held inside the returned stream, so the abort fires exactly when the consumer
 /// lets go of it.
+/// Tell a coding-agent child which tools are real before it reaches for one
+/// that is not.
+///
+/// ⚠ **The child is a whole agent, and Biorouter switches its NATIVE tools
+/// off** — they run outside Biorouter's inspectors, permission mode, vault and
+/// privacy gates, which is precisely what the tool bridge exists to prevent.
+/// The vendor CLI does not stop ADVERTISING all of them when the feature behind
+/// them is disabled, so the model can still pick one. Measured with Codex
+/// 0.147.0: asked to delegate, it called its own `spawn_agent` even though
+/// `multi_agent` was passed to `--disable`, and got the vendor's internal
+/// `no thread with id` back — an error that describes nothing the user can act
+/// on and makes a working bridge look broken.
+///
+/// The cheap fix is to say so up front. Re-enabling the vendor's own multi-agent
+/// tools would silence it too, and would hand the child exactly the unmediated
+/// surface the bridge is there to deny.
+///
+/// Returns an empty string when there is no bridge, so a child with no Biorouter
+/// tools is not told about tools it does not have.
+pub fn native_tools_notice(bridge_url: Option<&str>) -> String {
+    let Some(url) = bridge_url else {
+        return String::new();
+    };
+    let names = bridge::advertised_tool_names(url);
+    if names.is_empty() {
+        return String::new();
+    }
+    let listed = names
+        .iter()
+        .map(|n| format!("`{n}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "\n\n# Tools in this environment\n\n\
+         Your own built-in tools are DISABLED here and calling one fails with an \
+         internal error from your CLI, not from Biorouter. In particular you have \
+         no native sub-agent, delegation or multi-agent tool: do not call \
+         `spawn_agent` or anything like it.\n\n\
+         The tools you actually have are provided over MCP by Biorouter, and they \
+         are: {listed}. Use those, and if none of them fits, say so plainly \
+         instead of reaching for a tool of your own."
+    )
+}
+
 pub struct AbortOnDrop(pub tokio::task::AbortHandle);
 
 impl Drop for AbortOnDrop {
@@ -187,6 +231,16 @@ pub fn unavailable_error(kind: CodingAgentKind, availability: &AgentAvailability
 
 #[cfg(test)]
 mod tests {
+    /// A child with no bridge has none of Biorouter's tools, so telling it which
+    /// ones it has would be a lie. Say nothing.
+    #[test]
+    fn no_bridge_means_no_notice() {
+        assert!(super::native_tools_notice(None).is_empty());
+        assert!(
+            super::native_tools_notice(Some("http://127.0.0.1:1/tool_bridge/unknown")).is_empty()
+        );
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
