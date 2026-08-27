@@ -2636,8 +2636,32 @@ mod cancellation_tests {
         unsafe { libc::kill(pid, 0) == 0 }
     }
 
+    /// How long these tests wait for a child process to spawn or to exit.
+    ///
+    /// ⚠ Deliberately generous, and it used to be `100` — five seconds. Five
+    /// seconds is not a process-spawn budget on a CI runner. `test
+    /// (macos-latest)` compiles the whole workspace cold on three cores, and
+    /// this loop was measured failing on a developer machine at load ~20 with
+    /// three worktrees building:
+    ///
+    /// ```text
+    /// dropping_an_unread_stream_reaps_the_child
+    ///   panicked at claude_code.rs: "the child should have started and wrote its pid"
+    /// ```
+    ///
+    /// The failure reads as a defect in child reaping and is really the
+    /// scheduler not having got round to the child yet. It is also
+    /// self-perpetuating: CI saves its Rust cache only on a green run, so one
+    /// such red job keeps the next run cold, which makes the next timeout
+    /// MORE likely.
+    ///
+    /// Raising it costs nothing when the child behaves — every loop here exits
+    /// the moment it sees what it is waiting for, so the ceiling is only ever
+    /// paid by a genuine failure.
+    const CHILD_WAIT_TICKS: usize = 1_200; // 60 s at 50 ms per tick
+
     async fn wait_for_exit(pid: i32) -> bool {
-        for _ in 0..100 {
+        for _ in 0..CHILD_WAIT_TICKS {
             if !alive(pid) {
                 return true;
             }
@@ -2730,7 +2754,7 @@ mod cancellation_tests {
 
         // Give the child long enough to start and record its pid.
         let mut pid = None;
-        for _ in 0..100 {
+        for _ in 0..CHILD_WAIT_TICKS {
             if let Ok(text) = std::fs::read_to_string(&pid_file) {
                 if let Ok(parsed) = text.trim().parse::<i32>() {
                     pid = Some(parsed);

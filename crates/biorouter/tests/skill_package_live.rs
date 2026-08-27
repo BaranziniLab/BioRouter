@@ -70,6 +70,30 @@ async fn hyperframes_main_imports_as_one_package_with_every_declared_skill() {
         declared.len()
     );
 
+    // The version the repository itself declares, read here for the same reason
+    // the component list above is: a literal asserts upstream's RELEASE CADENCE
+    // rather than our importer. It was pinned to "0.8.12", HyperFrames shipped
+    // 0.8.16, and this test then failed *before* reaching the package-identity
+    // assertions it exists for — so a real change to `plan.rs` went unvalidated
+    // while the failure pointed somewhere else entirely.
+    //
+    // ⚠ Read BEFORE `plan_from_entries`, which takes `fetched.entries` BY VALUE,
+    // and own the string — a `&str` borrowed out of `plugin_manifest` would
+    // still be live across that move.
+    let plugin_manifest: serde_json::Value = serde_json::from_str(
+        &fetched
+            .entries
+            .iter()
+            .find(|entry| entry.name == ".codex-plugin/plugin.json")
+            .expect(".codex-plugin/plugin.json")
+            .text(),
+    )
+    .expect(".codex-plugin/plugin.json parses");
+    let declared_version = plugin_manifest["version"]
+        .as_str()
+        .expect("the plugin manifest declares a version")
+        .to_string();
+
     let plan = skill_package::plan_from_entries(fetched.entries, &fetched.id_hints, fetched.source)
         .expect("plan");
 
@@ -82,7 +106,7 @@ async fn hyperframes_main_imports_as_one_package_with_every_declared_skill() {
         plan.ambiguity.is_none(),
         "an explicitly declared package must not ask the user to choose"
     );
-    assert_eq!(plan.version.as_deref(), Some("0.8.12"));
+    assert_eq!(plan.version.as_deref(), Some(declared_version.as_str()));
 
     // Every skill the manifest declares, and only those.
     let mut components: Vec<String> = plan.components.iter().map(|c| c.name.clone()).collect();
