@@ -5980,6 +5980,7 @@ pub(crate) mod tests {
     /// has to be in the target's conversation afterwards. A handler that
     /// reported success and appended nothing would satisfy `is_error != true`.
     #[tokio::test]
+    #[serial_test::serial(workspace_services)]
     async fn workspace_writes_reach_any_visible_conversation_not_only_children() {
         use crate::session::session_manager::SessionType;
 
@@ -6100,6 +6101,7 @@ pub(crate) mod tests {
     /// enforcement off nothing is refused, and this pins that the widened rule
     /// did not accidentally become the only reason writes succeed.
     #[tokio::test]
+    #[serial_test::serial(workspace_services)]
     async fn an_opted_out_caller_still_writes_into_an_unrelated_conversation() {
         use crate::session::session_manager::SessionType;
 
@@ -6373,6 +6375,7 @@ pub(crate) mod tests {
     /// before the write — a bubble the renderer cannot reconcile against the
     /// stored twin arriving with the next snapshot.
     #[tokio::test]
+    #[serial_test::serial(workspace_services)]
     async fn an_appended_note_reaches_the_targets_open_tab_live() {
         use crate::session::session_manager::SessionType;
         const NOTE: &str = "br71-note-live-marker";
@@ -6455,6 +6458,7 @@ pub(crate) mod tests {
     /// note must not be in the conversation afterwards, read back by a caller
     /// that is allowed to look.
     #[tokio::test]
+    #[serial_test::serial(workspace_services)]
     async fn a_public_caller_cannot_inject_into_a_private_conversation() {
         let f = tier_fixture().await;
         const INJECTED: &str = "workspace-tier-injection-marker";
@@ -8010,6 +8014,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(workspace_services)]
     async fn send_prompt_note_appends_with_provenance_without_running_a_turn() {
         use crate::conversation::message::ProvenanceKind;
         let c = client();
@@ -8484,15 +8489,37 @@ pub(crate) mod tests {
             // Bind out of the guard before the early return: a live `MutexGuard`
             // across the tail of an `async fn` makes the future `!Send`.
             let failure = self.gui_error.lock().unwrap().clone();
-            let queued = self.gui_answers.lock().unwrap().pop_front();
             match failure {
                 Some(message) => Err(message),
                 // A fire-and-forget emit never carries an `ok` — the real
                 // `ServerWorkspaceServices` answers `{"sent": true}` — so a
                 // caller that did not wait cannot learn anything, and the fake
                 // must not hand it a verdict it could not have had.
+                //
+                // ⚠ **It must not CONSUME one either, and that is a fix rather
+                // than a tidy-up.** The `pop_front` used to happen above this
+                // match, so an emit that could not return an answer still took
+                // one off the queue — directly contradicting the sentence above
+                // it. Any staged reply was then stolen from the read it was
+                // staged for, which fell through to the `{"ok": true}` default
+                // and made a test fail on an assertion about something else
+                // entirely. `panel_secret_guard_rejects_top_level_and_wrapped_locators`
+                // is the one that showed it: it stages two secret-bearing panel
+                // replies and consumes them with two reads, so one stolen answer
+                // turns its second read into a harmless default and the
+                // SecretGuard refusal it asserts on never happens.
+                //
+                // Every `notify_target` toast is such an emit, and BR-71 §3c
+                // added a second (`reflect_in_target_tab`, on every accepted
+                // injection), which is what made a rare pre-existing flake
+                // frequent enough to catch.
                 None if !wait_result => Ok(serde_json::json!({ "sent": true })),
-                None => Ok(queued.unwrap_or_else(|| serde_json::json!({ "ok": true }))),
+                None => Ok(self
+                    .gui_answers
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or_else(|| serde_json::json!({ "ok": true }))),
             }
         }
     }
