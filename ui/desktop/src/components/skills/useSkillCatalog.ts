@@ -49,7 +49,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { CatalogBundle, CatalogSkill, CatalogView, SkillRoot } from '../../api';
 import { refreshSkillCatalog, setSessionSkills, skillCatalogHandler } from '../../api';
-import { isContextSkill } from '../settings/contexts/contexts';
+import { isContextBundle, isContextSkill } from '../settings/contexts/contexts';
 import {
   loadSkillOverrides,
   saveSkillOverrides,
@@ -69,6 +69,14 @@ export interface SkillCatalogState {
   entries: SkillCatalogEntry[];
   /** Every skill, including bundle members — for search and for detail rows. */
   skills: CatalogSkill[];
+  /**
+   * Bundles a picker may show — Contexts already removed.
+   *
+   * ⚠ Filtered, unlike `skills`. An unfiltered list here is a loaded gun
+   * sitting beside the `pickerBundles` helper that exists *because* three call
+   * sites forgot to filter; nothing reads this field today, and the next thing
+   * that does should not have to know.
+   */
   bundles: CatalogBundle[];
   roots: SkillRoot[];
   /** Bumped by the daemon on every rescan. */
@@ -111,11 +119,35 @@ function errorText(err: unknown): string {
 
 /**
  * Contexts ship with the app, so they are not what a user means by "skills".
- * Filtered here rather than in the daemon: the catalog is also what Settings
- * and the importer read, and both of those legitimately want the full set.
+ * Filtered here rather than in the daemon, because the catalog is also what the
+ * importer and the Settings **Contexts** pane read, and those legitimately want
+ * the full set. (Settings -> Skills reads `entries`, so it is filtered too —
+ * deliberately: a Context's switch lives in the Contexts pane.)
+ *
+ * ⚠ **`skill.bundle` is passed as a belt to the braces, not as the fix.** Both
+ * call sites test `!skill.bundle` first, so today a member never reaches this
+ * function with a bundle set — deleting the argument would fail no test, and
+ * the comment saying otherwise would have been a lie. What it buys is the case
+ * those two clauses do not cover between them: a member the daemon reports with
+ * a bundle from a surface that has not filtered members out. The bundle row
+ * itself is filtered by `pickerBundles`, which IS load-bearing.
  */
 function isPickerSkill(skill: CatalogSkill): boolean {
-  return !isContextSkill(skill.name);
+  return !isContextSkill(skill.name, skill.bundle);
+}
+
+/**
+ * Bundle rows for a picker — every bundle except the ones that are Contexts.
+ *
+ * ⚠ **Exported, and used by all three pickers.** Bundles reached the composer,
+ * the `@`-mention list and the workflow resource picker through three separate
+ * unfiltered `view.bundles` reads. One helper, three callers: a Context bundle
+ * cannot be filtered out of two of them and left in the third. The composer one
+ * matters most — its rows feed "Enable all", which writes `skills-config.json`,
+ * the one file `contexts.ts` forbids a Context from reaching.
+ */
+export function pickerBundles(view: CatalogView): CatalogBundle[] {
+  return view.bundles.filter((bundle) => !isContextBundle(bundle.name));
 }
 
 /**
@@ -136,7 +168,7 @@ export async function fetchSkillCatalog(sessionId?: string | null): Promise<Cata
 
 /** Standalone skills — bundle members are reached through their bundle. */
 export function standaloneSkills(view: CatalogView): CatalogSkill[] {
-  return view.skills.filter((skill) => !skill.bundle && !isContextSkill(skill.name));
+  return view.skills.filter((skill) => !skill.bundle && isPickerSkill(skill));
 }
 
 export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
@@ -253,7 +285,7 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
   );
 
   const entries = useMemo((): SkillCatalogEntry[] => {
-    const bundles: SkillCatalogEntry[] = view.bundles
+    const bundles: SkillCatalogEntry[] = pickerBundles(view)
       .map((bundle) => ({
         kind: 'bundle' as const,
         key: bundle.name,
@@ -278,7 +310,7 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
   return {
     entries,
     skills: view.skills,
-    bundles: view.bundles,
+    bundles: pickerBundles(view),
     roots: view.roots,
     generation: view.generation,
     loading,

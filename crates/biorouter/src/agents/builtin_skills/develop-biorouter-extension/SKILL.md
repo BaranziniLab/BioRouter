@@ -52,9 +52,24 @@ install` CLI.
 }
 ```
 
-**Required fields:** `name`, `display_name`, `description`, `version`,
-`entry_point`, `repository`, and `env_vars`. The first six must be non-empty
-strings; `env_vars` must be a JSON array (use `[]` if the extension needs none).
+**Required:** `name`, `display_name`, `description`, `version`, `entry_point`,
+`repository` — all six present and non-empty — plus `env_vars` as a JSON array
+(`[]` when the extension needs none).
+
+⚠ **Three code paths validate this and they do not agree.** Author to the strict
+rule above, because it is the only one that works everywhere:
+
+| Path | What it enforces |
+| --- | --- |
+| Desktop app (`ui/desktop/src/main.ts`) | all six non-empty, `env_vars` must be an array |
+| `POST` install over HTTP (`routes/shell.rs`, `require_manifest_fields`) | the same |
+| `biorouter extension install` (`extension_install/brxt.rs`) | serde needs the six *keys* to exist; only `name` and `entry_point` are checked non-empty, and `env_vars` is `#[serde(default)]` |
+
+A bundle that omits `env_vars`, or leaves `description` blank, installs from the
+terminal and is then rejected by the app the user actually runs — so the CLI's
+laxity is a trap, not a licence. `tools_count` is genuinely optional. Inside an
+`env_vars` entry only `key` is required; `required`, `auto_propagate`,
+`description`, `secret` and `default` all default.
 
 **`env_vars` field reference:**
 
@@ -176,12 +191,17 @@ Each `SKILL.md` must begin with valid YAML frontmatter:
 
 ```markdown
 ---
-name: My Skill Name
+name: my-skill-slug
 description: One-line description of what this skill does.
 ---
 
 Skill body in markdown...
 ```
+
+**`name` must equal the skill's folder slug** — lowercase, hyphenated, no
+spaces. A title-cased display name in `name` does not match the directory it
+sits in, and the two views of the catalog then disagree about what the skill is
+called.
 
 Skills install to `~/.config/biorouter/extensions/<name>/skills/<slug>/SKILL.md`
 and are auto-discovered by the agent on startup (Biorouter scans the `skills/`
@@ -212,18 +232,26 @@ Exclude `.venv/`, `__pycache__/`, and any build artifacts.
 
 Biorouter installs by:
 1. Unzipping all contents to `~/.config/biorouter/extensions/<name>/`.
-2. Running `uv sync` (timeout: 10 minutes, generous so a legitimate
-   from-source build of a dependency has time to finish) to build the virtual
-   environment. If `uv sync` fails, Biorouter surfaces uv's output along with a
-   hint for common causes (missing/broken Rust toolchain, no wheel for the
-   platform).
+2. Running `uv sync` to build the virtual environment. If it fails, Biorouter
+   surfaces uv's output along with a hint for common causes (missing/broken
+   Rust toolchain, no wheel for the platform).
 3. Registering a stdio MCP extension that runs `uv run --directory <dir>
    <entry_point>`, storing any secret env vars in the OS keyring.
 
-Both the desktop app and the `biorouter extension install` CLI follow this same
-flow. Uninstallation removes the entire
-`~/.config/biorouter/extensions/<name>/` directory, including any bundled
-skills.
+The desktop app and the `biorouter extension install` CLI run the same three
+steps and both require the same four archive entries, but they diverge in two
+places. Manifest validation is one (see the table above). The other is the `uv
+sync` timeout: the desktop app caps it at 10 minutes — generous, so a legitimate
+from-source build has time to finish — and reports a timeout as such, while the
+CLI runs `uv sync` to completion with no timeout at all, so a wedged resolve
+there hangs until you interrupt it.
+
+**Uninstalling does not delete files by default.** Removing an extension from
+the desktop **Extensions** page, or `biorouter extension remove <name>`,
+*unregisters* it — the entry leaves the config and the server stops being
+launched, while `~/.config/biorouter/extensions/<name>/` (the venv, the source
+and any bundled skills) stays on disk. Pass `biorouter extension remove <name>
+--purge` to delete that directory as well.
 
 ## Validation Checklist
 
@@ -234,12 +262,14 @@ Before distributing a `.brxt`, verify:
 [ ] ZIP contains README.md at root
 [ ] ZIP contains pyproject.toml at root
 [ ] ZIP contains src/ directory
-[ ] manifest.json has all required fields (name, display_name, description,
-    version, entry_point, repository, env_vars)
-[ ] env_vars is a JSON array (even if empty: [])
+[ ] manifest.json has all six required keys, each non-empty (name, display_name,
+    description, version, entry_point, repository)
+[ ] env_vars is present and is a JSON array (use [] when there are none) — the
+    desktop app and the HTTP install path both reject a manifest without it
 [ ] pyproject.toml declares [project.scripts] with an entry whose name equals
     manifest.json's entry_point (Biorouter runs `uv run <entry_point>`)
-[ ] Each SKILL.md has --- frontmatter with name and description
+[ ] Each SKILL.md has --- frontmatter with name and description, and name is
+    the folder slug (lowercase, hyphenated)
 [ ] .venv/ and __pycache__/ are excluded from the ZIP
 [ ] uv sync completes cleanly from the unzipped directory
 [ ] Every dependency has a wheel for each target platform, OR a marker-scoped

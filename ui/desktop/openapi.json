@@ -6338,9 +6338,14 @@
           "sourceRoot",
           "source",
           "skills",
+          "builtin",
           "state"
         ],
         "properties": {
+          "builtin": {
+            "type": "boolean",
+            "description": "Shipped with Biorouter, so the interface offers no Delete for it.\n\n⚠ **The bundle needs its own answer**, because `CatalogSkill.builtin`\ngates the Delete on a *skill* row and a bundle row is a different\ncontrol over a different directory.\n\n⚠ **This is defence in depth, not the live fix, and saying otherwise\ninvites someone to delete the real one.** Today the only shipped bundle\nis a Context, and `pickerBundles` strips Contexts before `SkillsView`\nrenders a row at all, so this flag cannot fire on it. What actually\nclosed the \"delete succeeds, toast confirms, next startup rewrites it\"\nregression on every surface is `skill_package::refuse_shipped`, which\n`biorouter skill remove` bypassed entirely while the interface gate held.\nThis field earns its place for the case the filter does not cover: a\nbundle that is seeded but not a Context, should one ever ship."
+          },
           "directory": {
             "type": "string"
           },

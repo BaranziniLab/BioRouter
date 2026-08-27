@@ -12,13 +12,14 @@ Two tools report the same kind of finding at two scopes:
 - **`kb_lint`** — the whole base. Run it after a batch of edits, and before exporting or
   sharing.
 
-Both return **diagnostics**. Each carries four things, and you act on all four:
+Both return **diagnostics**. Each carries five things, four of them always:
 
 | field | what it is |
 | --- | --- |
 | `rule` | a stable id like `biookf.edge.missing_primary_source`. Match on this, never on the message — messages get reworded. |
 | `severity` | `error`, `warning` or `info`. |
-| `subject` | the page or edge the finding is about. |
+| `subject` | the page or edge the finding is about. Never empty. |
+| `path` | the page's bundle-relative path, when the finding has one. Absent for a base-wide finding, and for a draft that has no path yet. |
 | `message` | what is wrong, in a sentence. |
 
 The rule id's prefix says which layer objected, and that tells you how to read it:
@@ -37,9 +38,10 @@ decide deliberately not to and say why.
 
 Two corollaries worth internalising:
 
-- A base created before this format shipped reports **no** format diagnostics at all.
-  That is the correct answer for it, not a failure: such a base keeps its own
-  `title`/`kind` frontmatter and `[[wiki links]]`, is never rewritten, and works.
+- A base that predates both formats is not linted at all — `kb_lint` **refuses** it,
+  because that retired pre-OKF storage is purged on startup. `kb_read_page` and
+  `kb_search` still work on one, so the content is recoverable; you just cannot lint
+  or repair. Tell the user to restart Biorouter.
 - `kb_lint` caps how many diagnostics it returns. If `total` exceeds the length of
   `items`, fix a batch and run it again rather than assuming you have seen everything.
 
@@ -67,11 +69,15 @@ and will not be found by anyone navigating it.
 | `okf.footnote.unresolved` | a `[^id]` in the body with no matching `sources[].id` | add the source entry, or remove the footnote |
 | `okf.verified.bare_mapping` | `verified` is a single mapping, not a list | informational; a list is the canonical shape |
 | `okf.attestation.unchecked` | the page declares an attested computation | informational: this build does not verify them, and says so rather than implying it did |
+| `okf.index.frontmatter` | `index.md`'s frontmatter is missing or malformed | a warning about the bundle's own scaffold rather than about a concept page |
+| `okf.log.date_heading` | `log.md` carries an entry with no `## YYYY-MM-DD` heading | give the entry a date heading |
 
 ## The profile rules (`biookf.`) — BioOKF bases only
 
 **Vocabulary**
 
+- `biookf.type.missing` — the page has no `type` at all. Every page in this profile needs
+  one of the 28; this is the distinct case from an invented one.
 - `biookf.type.invalid` — the `type` is not one of the 28. Re-run the typing decision
   procedure in **knowledge-ingest-biookf**; do not invent a 29th type. If genuinely
   nothing fits, `Other` plus a note is the honest answer.

@@ -173,12 +173,19 @@ async fn hyperframes_main_imports_as_one_package_with_every_declared_skill() {
     }];
     let view = biorouter::agents::skill_catalog::SkillCatalog::scan(roots, 1)
         .view(&biorouter::agents::session_skills::SessionSkillOverride::default());
-    assert_eq!(view.bundles.len(), 1);
-    assert_eq!(view.bundles[0].name, "hyperframes");
-    assert_eq!(view.bundles[0].display_name, "HyperFrames by HeyGen");
-    assert_eq!(view.bundles[0].skills.len(), declared.len());
+    // ⚠ `add_missing_shipped_skills` injects `KNOWLEDGE_BUNDLE` into every
+    // scan, so filter to what this test installed before counting or indexing.
+    let bundles: Vec<_> = view
+        .bundles
+        .iter()
+        .filter(|b| b.name != biorouter::agents::skills_extension::KNOWLEDGE_BUNDLE)
+        .collect();
+    assert_eq!(bundles.len(), 1);
+    assert_eq!(bundles[0].name, "hyperframes");
+    assert_eq!(bundles[0].display_name, "HyperFrames by HeyGen");
+    assert_eq!(bundles[0].skills.len(), declared.len());
     assert_eq!(
-        view.bundles[0]
+        bundles[0]
             .package
             .as_ref()
             .and_then(|p| p.entry_point.as_deref()),

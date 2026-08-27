@@ -85,7 +85,10 @@ model's filter and the interface's switch read it:
 1. a Context switched off in Settings → Contexts hides the skill **before**
    anything below is consulted, so a per-chat grant cannot put back something
    the user turned off in Settings (it stays loadable by exact name; see
-   [built-in/skills.md](built-in/skills.md))
+   [built-in/skills.md](built-in/skills.md)). ⚠ A Context id may name a
+   **bundle** — `knowledge-bases` covers the four knowledge-format skills plus
+   `update-soul` — so this step tests a skill's bundle as well as its own name,
+   exactly as step 6 does
 2. the session `add` list names the skill
 3. the session `remove` list names the skill
 4. the session `add` list names the skill's **bundle**
@@ -200,7 +203,26 @@ refused, which is what makes it safe for this handler to cover
    "removed"` means this chat, and `sessionViaBundle: true` means the chat
    turned off the bundle rather than the skill.
 4. `hiddenContext: true` means Settings → Contexts, and the skill is still
-   loadable by exact name — that asymmetry is intentional.
+   loadable by exact name — that asymmetry is intentional. For a bundle member
+   the switch is the **bundle's**: `knowledge-bases` is one Context row over
+   five skills.
+5. `builtin: true` — on a skill row or a bundle row — means Biorouter seeded it,
+   so no surface offers a Delete, and `skill_package::remove` **and `install`**
+   both refuse that name under Biorouter's own skills root. It is restored on
+   every start; disable it instead.
+6. ⚠ **A knowledge skill disabled machine-wide before it became a bundle member
+   is honoured but no longer reachable from the interface.** Those four were
+   ordinary picker rows once, so `skills-config.json` may name one directly.
+   Nothing writes that entry any more and no surface renders the member, so the
+   Knowledge Context reads ON while that one skill stays out of the model's
+   catalog. The entry is deliberately **not** discarded on upgrade — silently
+   overruling an explicit choice is the defect, not the fix — and the terminal
+   still shows and clears it:
+
+   ```bash
+   biorouter skill list          # the member shows ○
+   biorouter skill enable knowledge-lint
+   ```
 
 ## Related documentation
 

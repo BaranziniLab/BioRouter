@@ -226,8 +226,10 @@ An IL-6 receptor antagonist, trialled in severe COVID-19.
 - **`identifier` is human-readable and bundle-unique, not a CURIE.** CURIEs go in
   `xref`. Two pages with the same `identifier` is an error; an `object` naming nothing
   is a dangling edge. `kb_validate_page` catches both before the write.
-- **Only `edges:` entries are in the graph.** Prose may restate a relationship and
-  markdown links are fine for navigation, but the graph is built from `edges:`.
+- **Only `edges:` entries carry a predicate and provenance.** Bundle-local markdown
+  links and `[[…]]` links do become graph edges too, but *untyped* ones — so a
+  relationship you want typed, attributed and queryable has to go in `edges:`. A typed
+  entry also wins the tie-break against a prose link that restates it.
 - **Quote any YAML scalar containing `: ` (colon-space)** or the frontmatter will not
   parse. `identifier: Chen 2020 (IL-6 and severe COVID-19)` is fine; anything with a
   colon-space needs quotes.

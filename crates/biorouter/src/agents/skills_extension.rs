@@ -40,32 +40,51 @@ pub static BUILTIN_SKILLS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Skills that ship with Biorouter and teach the **knowledge-base formats** —
-/// which of OKF and BioOKF to create, how to ingest into each, and how to read a
-/// lint report. Seeded exactly like the array above.
+/// The bundle directory the knowledge skills are seeded into.
 ///
-/// ⚠ **A separate array, and the separation is not cosmetic.** The list above is
-/// also the *Contexts* list: the shipped skills the desktop Settings pane offers
-/// as toggles, hand-synced into two TypeScript copies, and pinned by
-/// `ui/desktop/src/components/settings/contexts/contexts.test.ts`, which reads
-/// **this file's source text** — it slices from the identifier above to its
-/// closing `];` and matches the `("name", include_str!` pairs inside. Adding a
-/// knowledge skill there would make that test fail on a UI this change does not
-/// touch. These four are shipped skills that are not Contexts, which is a real
-/// distinction (they trigger on a task, they are not always-on self-knowledge)
-/// and is why they can live here honestly rather than as a workaround.
+/// A bundle in this codebase is a *directory*: `<root>/<bundle>/<child>/SKILL.md`.
+/// [`SkillsClient::discover_skills_in_directories`] derives `bundle_name` from
+/// that layout and `skills-config.json`'s `disabled[]` accepts a bundle name as
+/// readily as a skill name, so seeding under a shared parent is the whole of
+/// what "make these a bundle" means.
 ///
-/// ⚠ **`BUILTIN_SKILL_NAMES` lists these; `CONTEXTS` must not.** That asymmetry
-/// is the whole point of the split, and it mirrors the two functions below:
-/// `context_skill_names()` is BUILTIN_SKILLS + soul, and `is_builtin_skill_name()`
-/// is over `shipped_skills()`, which includes these four.
+/// ⚠ **Not `knowledge`.** That is already the name of a built-in *extension*,
+/// and the CLI's `@`-reference popup draws skills and extensions into one list
+/// (`completion.rs`), so the shorter name would print twice with two meanings.
+pub const KNOWLEDGE_BUNDLE: &str = "knowledge-bases";
+
+/// Where [`KNOWLEDGE_SKILLS`] and the Soul skill are written, under a given
+/// skills root.
 ///
-/// It was not always so. These shipped without being in either TypeScript list,
-/// so the Skills pane offered a Delete control on a seeded skill: the delete
-/// succeeded, the toast said so, and the next startup rewrote the folder. A
-/// button that reports success and silently reverts is worse than no button.
-/// `contexts.test.ts` could not catch it either — it sliced only the array
-/// above, so the census was blind to exactly the names it needed to see.
+/// Exported because `knowledge::soul` seeds its own member through the same
+/// path and must not spell the join a second time.
+pub fn knowledge_bundle_dir(skills_dir: &Path) -> PathBuf {
+    skills_dir.join(KNOWLEDGE_BUNDLE)
+}
+
+/// Skills that ship with Biorouter and teach the **knowledge bases** — which of
+/// OKF and BioOKF to create, how to ingest into each, how to read a lint
+/// report. Seeded like [`BUILTIN_SKILLS`], but into [`KNOWLEDGE_BUNDLE`] rather
+/// than flat at the skills root.
+///
+/// ⚠ **A separate array, and the separation is not cosmetic.** These five —
+/// the four here plus `update-soul`, which is a Rust string in `soul.rs`
+/// rather than an `include_str!` — are the members of one bundle, and the
+/// bundle, not any member, is the Context row Settings offers. The array above
+/// is the flat, one-skill-per-Context list. `contexts.test.ts` reads **this
+/// file's source text**, slicing each identifier to its closing `];` and
+/// matching the `("name", include_str!` pairs inside, so both arrays and
+/// [`KNOWLEDGE_BUNDLE`] are pinned against the desktop's copy from here.
+///
+/// It was not always so, twice over. These first shipped in neither TypeScript
+/// list, so the Skills pane offered a Delete control on a seeded skill: the
+/// delete succeeded, the toast said so, and the next startup rewrote the
+/// folder. A button that reports success and silently reverts is worse than no
+/// button. `contexts.test.ts` could not catch it either — it sliced only
+/// `BUILTIN_SKILLS`, so the census was blind to exactly the names it needed to
+/// see. Then they were shipped skills that were deliberately *not* Contexts,
+/// which put four rows in every chat's skill picker for a feature the user
+/// either uses or does not. Bundling them answers both: one row, in Settings.
 pub static KNOWLEDGE_SKILLS: &[(&str, &str)] = &[
     (
         "knowledge-choose-a-format",
@@ -99,32 +118,53 @@ pub(crate) fn install_builtin_skills() {
     SkillsClient::ensure_builtin_skills(&Paths::config_dir().join("skills"));
 }
 
-/// Every shipped **Context**, by the `name:` in its `SKILL.md` frontmatter —
-/// which is also its directory name and the key it occupies in the skill map.
+/// Every shipped **Context**, by the identifier its enablement is keyed on.
 ///
-/// The four [`BUILTIN_SKILLS`] plus the Soul skill, which is defined as a Rust
-/// string in `soul.rs` rather than in that array. Hand-synced with
-/// `ui/desktop/src/components/settings/contexts/contexts.ts`, whose
-/// `contexts.test.ts` reads *this file* and asserts the two agree (#77).
+/// ⚠ **These are not all skill names.** A Context is one row in Settings, and a
+/// row may stand for a whole bundle: the four [`BUILTIN_SKILLS`] contribute
+/// their own `name:`, and [`KNOWLEDGE_BUNDLE`] contributes a *directory* name
+/// covering its five members. That is why `compose_state` tests a skill's
+/// bundle against this set as well as the skill's own name — exactly as it
+/// already does for `skills-config.json`'s `disabled[]`, which has always held
+/// both kinds of identifier.
 ///
-/// ⚠ Deliberately **not** [`shipped_skills`]. The two answer different questions
-/// — see [`KNOWLEDGE_SKILLS`] — and widening this one would change what the
-/// Settings pane claims to offer.
-pub fn context_skill_names() -> impl Iterator<Item = &'static str> {
+/// Hand-synced with `ui/desktop/src/components/settings/contexts/contexts.ts`,
+/// whose `contexts.test.ts` reads *this file* and asserts the two agree (#77).
+///
+/// ⚠ Deliberately **not** [`shipped_skills`]. The two answer different
+/// questions — see [`KNOWLEDGE_SKILLS`] — and widening this one would change
+/// what the Settings pane claims to offer.
+pub fn context_ids() -> impl Iterator<Item = &'static str> {
     BUILTIN_SKILLS
         .iter()
         .map(|(name, _)| *name)
-        .chain(std::iter::once(crate::knowledge::soul::SOUL_SKILL_DIR))
+        .chain(std::iter::once(KNOWLEDGE_BUNDLE))
 }
 
-/// Did Biorouter put this skill on disk? Every shipped skill, not only the
+/// Did Biorouter put this **skill** on disk? Every shipped skill, not only the
 /// Contexts — a knowledge skill the seeder wrote is not one the user installed,
-/// so it must not be counted as one by [`count_user_skills`].
+/// so it must not be counted as one by [`count_user_skills`], and the interface
+/// must offer it no Delete.
 pub fn is_builtin_skill_name(name: &str) -> bool {
     shipped_skills()
         .map(|(name, _)| *name)
         .chain(std::iter::once(crate::knowledge::soul::SOUL_SKILL_DIR))
         .any(|builtin_name| builtin_name == name)
+}
+
+/// Did Biorouter put this **entry** on disk, skill or bundle?
+///
+/// ⚠ Distinct from [`is_builtin_skill_name`] for one reason, and it is the
+/// reason a count goes wrong: the callers below enumerate *directory entries at
+/// a skills root* ([`count_user_skills`]) or the CLI's reference list, both of
+/// which name a bundle by its directory and never by a member. Ask the
+/// skill-only question there and [`KNOWLEDGE_BUNDLE`] reads as a skill the user
+/// installed — one phantom entry in every count on every install.
+///
+/// Defined in terms of [`is_builtin_skill_name`] rather than beside it, so the
+/// two cannot drift.
+pub fn is_shipped_entry_name(name: &str) -> bool {
+    name == KNOWLEDGE_BUNDLE || is_builtin_skill_name(name)
 }
 
 /// The config key holding one Context's enablement, as the desktop Settings
@@ -158,18 +198,41 @@ pub fn context_config_key(id: &str) -> String {
 /// ([`SkillsClient::enabled_skill_entries`], and through it `listSkills`,
 /// `searchSkills` and the `{skill_count}` sentence) and nothing else.
 fn hidden_contexts_in(config: &crate::config::Config) -> std::collections::HashSet<String> {
-    context_skill_names()
-        .filter(|name| {
-            // `Err` is "no opinion recorded" (or an unreadable config), which
-            // must read as ON — see the absence rule above. Only a literal
-            // `false` hides a Context.
-            matches!(
-                config.get_param::<bool>(&context_config_key(name)),
-                Ok(false)
-            )
-        })
+    context_ids()
+        .filter(|name| is_context_off(config, name))
         .map(str::to_string)
         .collect()
+}
+
+/// Has the user switched this Context off?
+///
+/// `Err` is "no opinion recorded" (or an unreadable config), which must read as
+/// ON — see the absence rule on [`hidden_contexts_in`]. Only a literal `false`
+/// hides a Context.
+///
+/// ⚠ **[`KNOWLEDGE_BUNDLE`] falls back to the key its predecessor wrote.**
+/// `update-soul` was a Context in its own right, labelled "Updates", and it is
+/// now a member of this bundle. A user who switched that off had `false` under
+/// `context_update_soul`, and that key is read by nothing any more — so without
+/// this fallback the upgrade silently turns the skill back on, adds four more
+/// beside it, and files them under a row the user has never seen. An opt-out
+/// that reverts itself on upgrade is worse than one that was never offered,
+/// and this one writes to the user's personal knowledge base.
+///
+/// The fallback is one-directional and read-only: an explicit
+/// `context_knowledge_bases` always wins, so the first use of the new switch
+/// ends the inheritance, and the stale key is never written back.
+fn is_context_off(config: &crate::config::Config, name: &str) -> bool {
+    if let Ok(explicit) = config.get_param::<bool>(&context_config_key(name)) {
+        return !explicit;
+    }
+    if name == KNOWLEDGE_BUNDLE {
+        return matches!(
+            config.get_param::<bool>(&context_config_key(crate::knowledge::soul::SOUL_SKILL_DIR)),
+            Ok(false)
+        );
+    }
+    false
 }
 
 /// [`hidden_contexts_in`] against the process's real configuration.
@@ -206,7 +269,9 @@ pub fn count_user_skills() -> usize {
         .into_iter()
         .flatten()
         .filter_map(|entry| entry.ok())
-        .filter(|entry| !is_builtin_skill_name(&entry.file_name().to_string_lossy()))
+        // ⚠ [`is_shipped_entry_name`], not [`is_builtin_skill_name`]: these are
+        // directory entries, and the knowledge skills' entry is the BUNDLE.
+        .filter(|entry| !is_shipped_entry_name(&entry.file_name().to_string_lossy()))
         .count()
 }
 
@@ -224,18 +289,29 @@ pub fn reset_to_builtin_skills() -> Result<usize> {
     }
 
     SkillsClient::ensure_builtin_skills(&skills_dir);
-    let soul_skill_dir = skills_dir.join(crate::knowledge::soul::SOUL_SKILL_DIR);
+    let soul_skill_dir =
+        knowledge_bundle_dir(&skills_dir).join(crate::knowledge::soul::SOUL_SKILL_DIR);
     std::fs::create_dir_all(&soul_skill_dir)?;
     std::fs::write(
         soul_skill_dir.join("SKILL.md"),
         crate::knowledge::soul::SOUL_SKILL_MD,
     )?;
 
-    for (name, _) in shipped_skills() {
+    for (name, _) in BUILTIN_SKILLS {
         if !skills_dir.join(name).join("SKILL.md").is_file() {
             anyhow::bail!("failed to restore built-in skill '{name}'");
         }
     }
+    for (name, _) in KNOWLEDGE_SKILLS {
+        if !knowledge_bundle_dir(&skills_dir)
+            .join(name)
+            .join("SKILL.md")
+            .is_file()
+        {
+            anyhow::bail!("failed to restore built-in skill '{name}'");
+        }
+    }
+    skill_catalog::invalidate();
     Ok(removed)
 }
 
@@ -431,20 +507,36 @@ impl SkillsClient {
     /// by [`skill_catalog::SkillCatalog::scan`] so that *every* view of the
     /// catalog has them — not only the one a client happened to build.
     pub(crate) fn add_missing_shipped_skills(skills: &mut HashMap<String, Skill>) {
-        for (name, content) in shipped_skills() {
+        let root = Paths::config_dir().join("skills");
+        // ⚠ The fallback must place each skill where the SEEDER would have, or
+        // the two views disagree about the one field the picker keys on: a
+        // knowledge skill reconstructed here with `bundle_name: None` would be
+        // a standalone row that no bundle toggle reaches, on exactly the
+        // installs (read-only config dir, shadowed slug) where nobody can look
+        // at the disk to see why.
+        let placements = BUILTIN_SKILLS.iter().map(|entry| (entry, None)).chain(
+            KNOWLEDGE_SKILLS
+                .iter()
+                .map(|entry| (entry, Some(KNOWLEDGE_BUNDLE))),
+        );
+        for ((name, content), bundle) in placements {
             if skills.contains_key(*name) {
                 continue;
             }
             if let Ok((metadata, body)) = Self::parse_frontmatter(content) {
+                let directory = match bundle {
+                    Some(bundle) => root.join(bundle).join(name),
+                    None => root.join(name),
+                };
                 skills.insert(
                     metadata.name.clone(),
                     Skill {
                         metadata,
                         body,
-                        directory: Paths::config_dir().join("skills").join(name),
+                        directory,
                         supporting_files: Vec::new(),
-                        bundle_name: None,
-                        source_root: Paths::config_dir().join("skills"),
+                        bundle_name: bundle.map(str::to_string),
+                        source_root: root.clone(),
                     },
                 );
             }
@@ -456,8 +548,28 @@ impl SkillsClient {
     /// rewritten when it differs so app updates propagate. Failures are
     /// non-fatal: the in-memory fallback in `new()` still registers them.
     fn ensure_builtin_skills(skills_dir: &Path) {
-        for (name, content) in shipped_skills() {
-            let dir = skills_dir.join(name);
+        let bundle_dir = knowledge_bundle_dir(skills_dir);
+        let placements = BUILTIN_SKILLS
+            .iter()
+            .map(|entry| (entry, skills_dir.to_path_buf()))
+            .chain(
+                KNOWLEDGE_SKILLS
+                    .iter()
+                    .map(|entry| (entry, bundle_dir.clone())),
+            );
+
+        // ⚠ **Migration runs BEFORE the seed, and it renames.** Both halves
+        // matter. A rename carries the whole directory — including supporting
+        // files, which the seeder has never written and never owned — and it
+        // leaves a `SKILL.md` at the new path for the loop below to refresh.
+        // Deleting after seeding instead would destroy a user's `reference.md`
+        // or `scripts/` beside a skill they never edited, and would delete the
+        // working flat copy even on the runs where the seed had just failed.
+        let migrated = Self::migrate_pre_bundle_knowledge_skills(skills_dir);
+
+        let mut wrote = false;
+        for ((name, content), parent) in placements {
+            let dir = parent.join(name);
             let file = dir.join("SKILL.md");
             let up_to_date = std::fs::read_to_string(&file)
                 .map(|existing| existing == *content)
@@ -469,6 +581,111 @@ impl SkillsClient {
                 std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, content))
             {
                 tracing::warn!("failed to seed builtin skill '{}': {}", name, e);
+            } else {
+                wrote = true;
+            }
+        }
+
+        if wrote || migrated {
+            // ⚠ Not left to the mtime check. Creating `<bundle>/<child>/` bumps
+            // the BUNDLE's mtime, not the root's, and mtime has one-second
+            // granularity — a seed in the same second as the last scan is
+            // invisible. `skill_catalog` says so in its header and asks writers
+            // to say what they did instead of hoping.
+            skill_catalog::invalidate();
+        }
+    }
+
+    /// Relocate the flat `<root>/<knowledge skill>/` directories that installs
+    /// predating [`KNOWLEDGE_BUNDLE`] left behind.
+    ///
+    /// ⚠ **Not tidiness — a stale copy resurrects as the live one.**
+    /// Discovery keys by frontmatter `name`, so a flat `knowledge-lint` and a
+    /// bundled `knowledge-lint` are two candidates for one map key and the
+    /// winner is whichever `read_dir` happens to yield last. Half the installs
+    /// would get a `bundle_name: None` knowledge skill: a standalone picker row
+    /// the bundle's Context toggle does not reach.
+    ///
+    /// ⚠ **Moved, never deleted, and that is not caution — it is correctness.**
+    /// The seeder writes exactly one file per skill, `SKILL.md`. Every *other*
+    /// file in that directory has survived every startup since the skill
+    /// shipped, and those files are load-bearing: [`Self::find_supporting_files`]
+    /// collects them and `loadSkill` serves them to the model. A `remove_dir_all`
+    /// here would take a user's `reference.md` or `scripts/` with it — which is
+    /// why the earlier draft's claim that "nothing a user wrote could have
+    /// survived here" was false, and why this now does what `soul.rs` does.
+    ///
+    /// A rename that fails leaves the flat copy in place. A duplicate picker
+    /// row is a visible annoyance; a deleted file is not recoverable.
+    ///
+    /// Scoped to `skills_dir`, which is Biorouter's own root. A skill of the
+    /// same name under `~/.claude/skills` is the user's and is not touched.
+    ///
+    /// Returns whether anything moved, so the caller can invalidate.
+    fn migrate_pre_bundle_knowledge_skills(skills_dir: &Path) -> bool {
+        let bundle = knowledge_bundle_dir(skills_dir);
+        let mut moved = false;
+        for (name, _) in KNOWLEDGE_SKILLS {
+            let flat = skills_dir.join(name);
+            if !flat.is_dir() {
+                continue;
+            }
+            let target = bundle.join(name);
+            if target.exists() {
+                // Both copies present, which only a hand-assembled tree
+                // produces. The bundled one wins; take anything the flat one
+                // has that it lacks before dropping the duplicate.
+                Self::rescue_supporting_files(&flat, &target);
+                match std::fs::remove_dir_all(&flat) {
+                    Ok(()) => {
+                        tracing::info!("removed duplicate skill at {}", flat.display());
+                        moved = true;
+                    }
+                    Err(e) => tracing::warn!(
+                        "failed to remove duplicate skill at {}: {e}",
+                        flat.display()
+                    ),
+                }
+                continue;
+            }
+            match std::fs::create_dir_all(&bundle).and_then(|()| std::fs::rename(&flat, &target)) {
+                Ok(()) => {
+                    tracing::info!("moved {} into the knowledge bundle", name);
+                    moved = true;
+                }
+                Err(e) => tracing::warn!(
+                    "failed to move {} into {}: {e}; leaving the old copy in place",
+                    name,
+                    target.display()
+                ),
+            }
+        }
+        moved
+    }
+
+    /// Move every file beside a `SKILL.md` from `from` into `to`, skipping any
+    /// the destination already has. Best-effort: a file that cannot be moved is
+    /// logged and left where it is, so the caller's `remove_dir_all` is the
+    /// only thing that can lose it — which is why the caller only reaches this
+    /// on the branch where a bundled copy already exists.
+    fn rescue_supporting_files(from: &Path, to: &Path) {
+        let Ok(entries) = std::fs::read_dir(from) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name == "SKILL.md" {
+                continue;
+            }
+            let destination = to.join(&name);
+            if destination.exists() {
+                continue;
+            }
+            if let Err(e) = std::fs::rename(entry.path(), &destination) {
+                tracing::warn!(
+                    "failed to carry {} into the knowledge bundle: {e}",
+                    entry.path().display()
+                );
             }
         }
     }
@@ -739,6 +956,19 @@ impl SkillsClient {
     /// a switched-off Context stays loadable by exact name (see
     /// [`hidden_contexts_in`] for why that asymmetry is required rather than
     /// merely tolerated).
+    /// Is this skill hidden by a Context switch — its own, or its bundle's?
+    ///
+    /// The same two-key test [`skill_catalog::compose_state`] applies, kept as
+    /// one function so the model-facing filter and the interface's switches
+    /// cannot come to disagree about what a bundle-level Context covers.
+    fn is_hidden_context(
+        name: &str,
+        bundle: Option<&str>,
+        hidden_contexts: &std::collections::HashSet<String>,
+    ) -> bool {
+        hidden_contexts.contains(name) || bundle.is_some_and(|b| hidden_contexts.contains(b))
+    }
+
     fn enabled_skill_entries<'a>(
         skills: &'a HashMap<String, Skill>,
         over: &crate::agents::session_skills::SessionSkillOverride,
@@ -753,7 +983,13 @@ impl SkillsClient {
                 // everything", and a Context the user switched off in Settings
                 // is not something `workspace_set_tools` should be able to put
                 // back into the catalog on the model's say-so.
-                !hidden_contexts.contains(name.as_str())
+                //
+                // ⚠ The BUNDLE is tested too. A Context row may stand for a
+                // whole bundle (see [`context_ids`]), and a member carries its
+                // own `name:` — so matching only on the skill's name would
+                // leave every member of a switched-off bundle in the catalog
+                // the model is told about, while the Settings switch sat off.
+                !Self::is_hidden_context(name, skill.bundle_name.as_deref(), &hidden_contexts)
                     && Self::is_skill_enabled_for_session(name, skill, &disabled, over)
             })
             .collect();
@@ -2884,41 +3120,221 @@ Working dir biorouter content
         );
     }
 
-    /// The knowledge-format skills seed through the same path and are
-    /// recognised as shipped, so `count_user_skills` does not report four
-    /// skills the user never installed.
+    /// The knowledge skills seed into the BUNDLE, are recognised as shipped,
+    /// and are discovered with the bundle name on them.
+    ///
+    /// ⚠ The `bundle_name` assertion is the load-bearing one. Seeding to the
+    /// right path and being read back with `bundle_name: None` would look
+    /// entirely correct on disk while leaving every member a standalone picker
+    /// row that no bundle toggle and no Context switch reaches.
     #[test]
-    fn the_knowledge_skills_ship_and_are_not_counted_as_the_users() {
+    fn the_knowledge_skills_ship_as_one_bundle() {
         let temp_dir = TempDir::new().unwrap();
         let skills_dir = temp_dir.path().join("skills");
         SkillsClient::ensure_builtin_skills(&skills_dir);
+
+        let discovered =
+            SkillsClient::discover_skills_in_directories(std::slice::from_ref(&skills_dir));
         for (name, content) in KNOWLEDGE_SKILLS {
-            let seeded = skills_dir.join(name).join("SKILL.md");
-            assert!(seeded.exists(), "{name} should be seeded");
+            let seeded = knowledge_bundle_dir(&skills_dir)
+                .join(name)
+                .join("SKILL.md");
+            assert!(seeded.exists(), "{name} should be seeded into the bundle");
             assert_eq!(fs::read_to_string(seeded).unwrap(), *content);
             assert!(is_builtin_skill_name(name), "{name} reads as a user skill");
+            assert!(
+                !skills_dir.join(name).exists(),
+                "{name} was also seeded flat, which resurrects as a duplicate"
+            );
+            assert_eq!(
+                discovered
+                    .get(*name)
+                    .unwrap_or_else(|| panic!("{name} was not discovered"))
+                    .bundle_name
+                    .as_deref(),
+                Some(KNOWLEDGE_BUNDLE),
+                "{name} is discovered without its bundle, so no bundle toggle reaches it"
+            );
+        }
+
+        // The four `BUILTIN_SKILLS` stay flat — they are one Context each.
+        for (name, _) in BUILTIN_SKILLS {
+            assert!(
+                skills_dir.join(name).join("SKILL.md").is_file(),
+                "{name} should stay flat at the skills root"
+            );
         }
     }
 
-    /// ⚠ **They are shipped, and they are NOT Contexts.** `contexts.test.ts`
-    /// reads this file's source, slices the `BUILTIN_SKILLS` literal, and
-    /// asserts the desktop's two hand-synced copies name exactly those four plus
-    /// `update-soul`. The knowledge skills live in their own array *because* of
-    /// that: they are task-triggered, not always-on self-knowledge, so they do
-    /// not belong in the Settings Contexts pane — and putting them there would
-    /// fail a UI test from a Rust edit. This asserts the separation directly, so
-    /// the reason cannot be lost by someone tidying the two arrays into one.
+    /// An install that predates the bundle keeps its flat directories, and a
+    /// flat copy alongside a bundled one is two candidates for one map key.
+    ///
+    /// ⚠ Asserted through `discover_skills_in_directories`, not by looking at
+    /// the disk: the failure is that discovery picks the *flat* one — whichever
+    /// `read_dir` yields last — so a test that only checked the bundled file
+    /// exists would pass while the picker showed a standalone row.
+    /// ⚠ **Supporting files are user data and the migration must carry them.**
+    /// The seeder writes exactly one file per skill, `SKILL.md`; everything
+    /// else in that directory has survived every startup since the skill
+    /// shipped, and `find_supporting_files` serves it to the model. An earlier
+    /// draft `remove_dir_all`'d the flat directory after seeding and asserted
+    /// in its own comment that nothing could be lost — which was false, and
+    /// which no test then contradicted because every fixture wrote only a
+    /// `SKILL.md`.
     #[test]
-    fn a_knowledge_skill_is_shipped_but_is_not_a_context() {
-        let contexts: Vec<&str> = context_skill_names().collect();
+    fn migrating_carries_the_supporting_files_beside_a_knowledge_skill() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        let flat = skills_dir.join("knowledge-lint");
+        fs::create_dir_all(flat.join("scripts")).unwrap();
+        fs::write(
+            flat.join("SKILL.md"),
+            "---\nname: knowledge-lint\ndescription: x\n---\nold\n",
+        )
+        .unwrap();
+        fs::write(flat.join("reference.md"), "my notes").unwrap();
+        fs::write(flat.join("scripts").join("fix.sh"), "#!/bin/sh\n").unwrap();
+
+        SkillsClient::ensure_builtin_skills(&skills_dir);
+
+        let moved = knowledge_bundle_dir(&skills_dir).join("knowledge-lint");
+        assert_eq!(
+            fs::read_to_string(moved.join("reference.md")).unwrap(),
+            "my notes",
+            "a supporting file was destroyed by the migration"
+        );
+        assert!(moved.join("scripts").join("fix.sh").is_file());
+        // The SKILL.md itself is seeder-owned and IS refreshed to the shipped
+        // bytes — the rename put it where the seed loop could find it.
+        let shipped = KNOWLEDGE_SKILLS
+            .iter()
+            .find(|(name, _)| *name == "knowledge-lint")
+            .unwrap()
+            .1;
+        assert_eq!(fs::read_to_string(moved.join("SKILL.md")).unwrap(), shipped);
+        assert!(!flat.exists());
+    }
+
+    #[test]
+    fn seeding_removes_the_pre_bundle_flat_knowledge_directories() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+
+        for (name, content) in KNOWLEDGE_SKILLS {
+            let stale = skills_dir.join(name);
+            fs::create_dir_all(&stale).unwrap();
+            fs::write(stale.join("SKILL.md"), content).unwrap();
+        }
+        // A user skill at the same root must survive the migration untouched.
+        let mine = skills_dir.join("my-own-skill");
+        fs::create_dir_all(&mine).unwrap();
+        fs::write(
+            mine.join("SKILL.md"),
+            "---\nname: my-own-skill\ndescription: Mine\n---\nBody\n",
+        )
+        .unwrap();
+
+        SkillsClient::ensure_builtin_skills(&skills_dir);
+
+        for (name, _) in KNOWLEDGE_SKILLS {
+            assert!(
+                !skills_dir.join(name).exists(),
+                "{name} still has its pre-bundle flat directory"
+            );
+        }
+        assert!(mine.join("SKILL.md").is_file(), "a user skill was removed");
+
+        let discovered = SkillsClient::discover_skills_in_directories(&[skills_dir]);
+        for (name, _) in KNOWLEDGE_SKILLS {
+            assert_eq!(
+                discovered[*name].bundle_name.as_deref(),
+                Some(KNOWLEDGE_BUNDLE),
+                "{name} still resolves to the stale flat copy"
+            );
+        }
+    }
+
+    /// ⚠ **The bundle is the Context, and no member is one on its own.**
+    /// `contexts.test.ts` reads this file's source, slices both arrays and
+    /// `KNOWLEDGE_BUNDLE`, and asserts the desktop's copy names exactly the
+    /// four flat skills plus the bundle. Listing a member here as well would
+    /// give the user two switches for one thing, the narrower of which the
+    /// bundle switch silently overrides.
+    #[test]
+    fn the_knowledge_bundle_is_the_context_and_its_members_are_not() {
+        let contexts: Vec<&str> = context_ids().collect();
         assert_eq!(contexts.len(), 5, "the Contexts list moved: {contexts:?}");
+        assert!(
+            contexts.contains(&KNOWLEDGE_BUNDLE),
+            "the knowledge bundle is not offered as a Context: {contexts:?}"
+        );
         for (name, _) in KNOWLEDGE_SKILLS {
             assert!(
                 !contexts.contains(name),
-                "{name} became a Context; ui/desktop's CONTEXTS and \
-                 skillUtils.BUILTIN_SKILL_NAMES must gain it in the same change"
+                "{name} is a Context in its own right as well as a bundle member"
             );
         }
+        assert!(
+            !contexts.contains(&crate::knowledge::soul::SOUL_SKILL_DIR),
+            "update-soul is still its own Context; it is a bundle member now"
+        );
+    }
+
+    /// Switching the bundle off must reach every member, and it is the BUNDLE
+    /// name the config key is derived from.
+    ///
+    /// ⚠ Without the bundle arm in `compose_state` / `is_hidden_context` this
+    /// fails in the most misleading way available: the switch moves, the value
+    /// is stored, and all five skills stay in the catalog the model is told
+    /// about.
+    #[test]
+    fn hiding_the_knowledge_bundle_hides_every_member() {
+        let hidden = std::collections::HashSet::from([KNOWLEDGE_BUNDLE.to_string()]);
+        for (name, _) in KNOWLEDGE_SKILLS {
+            assert!(
+                SkillsClient::is_hidden_context(name, Some(KNOWLEDGE_BUNDLE), &hidden),
+                "{name} survives its bundle's Context switch"
+            );
+            assert!(
+                !SkillsClient::is_hidden_context(name, None, &hidden),
+                "{name} is hidden even when it is not in the bundle"
+            );
+        }
+        assert!(
+            SkillsClient::is_hidden_context(
+                crate::knowledge::soul::SOUL_SKILL_DIR,
+                Some(KNOWLEDGE_BUNDLE),
+                &hidden
+            ),
+            "update-soul survives its bundle's Context switch"
+        );
+        assert!(
+            !SkillsClient::is_hidden_context("single-cell", Some("superpowers"), &hidden),
+            "an unrelated bundle's member is hidden"
+        );
+    }
+
+    /// ⚠ **A bundle directory is not a skill name, and the counts read
+    /// directory entries.** Ask the skill-only question at a skills root and
+    /// [`KNOWLEDGE_BUNDLE`] reads as a skill the user installed — one phantom
+    /// entry in the chip, the CLI status line and the reset dialog, on every
+    /// install, forever.
+    #[test]
+    fn the_bundle_directory_is_shipped_even_though_it_is_not_a_skill() {
+        assert!(
+            !is_builtin_skill_name(KNOWLEDGE_BUNDLE),
+            "the bundle is not a skill and must not answer the skill question"
+        );
+        assert!(is_shipped_entry_name(KNOWLEDGE_BUNDLE));
+        for (name, _) in shipped_skills() {
+            assert!(is_shipped_entry_name(name), "{name}");
+        }
+        assert!(is_shipped_entry_name(
+            crate::knowledge::soul::SOUL_SKILL_DIR
+        ));
+        assert!(!is_shipped_entry_name("single-cell"));
+        // The trap: a user skill whose name merely resembles a shipped one.
+        assert!(!is_shipped_entry_name("knowledge-bases-of-mine"));
     }
 
     /// Every shipped skill parses, and its frontmatter `name` is its directory
@@ -2954,14 +3370,17 @@ Working dir biorouter content
             context_config_key("about-biorouter"),
             "context_about_biorouter"
         );
-        assert_eq!(context_config_key("update-soul"), "context_update_soul");
+        assert_eq!(
+            context_config_key(KNOWLEDGE_BUNDLE),
+            "context_knowledge_bases"
+        );
         assert_eq!(
             context_config_key("develop-biorouter-extension"),
             "context_develop_biorouter_extension"
         );
         // Every shipped Context must produce a plain identifier — the same
         // assertion `contexts.test.ts` makes with /^context_[a-z0-9_]+$/.
-        for name in context_skill_names() {
+        for name in context_ids() {
             let key = context_config_key(name);
             let body = key
                 .strip_prefix("context_")
@@ -2972,6 +3391,50 @@ Working dir biorouter content
                 "{name} derives a key that is not a plain identifier: {key}"
             );
         }
+    }
+
+    /// ⚠ **A user's "Updates" opt-out survives the promotion.**
+    ///
+    /// `update-soul` was a Context of its own before it became a bundle
+    /// member, so a user who switched it off has `context_update_soul: false`
+    /// and nothing reads that key any more. Without the fallback the upgrade
+    /// silently turns the skill back on — and adds four beside it, under a row
+    /// the user has never seen. This is the skill that writes to their personal
+    /// knowledge base as a chat goes on, so an opt-out that reverts itself is
+    /// the worst version available of a silent default change.
+    #[test]
+    fn the_old_updates_opt_out_still_hides_the_knowledge_bundle() {
+        let temp = TempDir::new().unwrap();
+        let config = crate::config::Config::new_with_file_secrets(
+            temp.path().join("config.yaml"),
+            temp.path().join("secrets.yaml"),
+        )
+        .unwrap();
+
+        // The upgraded user: the old key says off, the new key is absent.
+        config.set_param("context_update_soul", false).unwrap();
+        assert!(
+            hidden_contexts_in(&config).contains(KNOWLEDGE_BUNDLE),
+            "the Updates opt-out was discarded by the promotion"
+        );
+
+        // ⚠ The fallback is a fallback. Touching the new switch ends the
+        // inheritance in BOTH directions, so a user who turns Knowledge back on
+        // is not overruled forever by a key no interface shows them.
+        config.set_param("context_knowledge_bases", true).unwrap();
+        assert!(!hidden_contexts_in(&config).contains(KNOWLEDGE_BUNDLE));
+        config.set_param("context_knowledge_bases", false).unwrap();
+        assert!(hidden_contexts_in(&config).contains(KNOWLEDGE_BUNDLE));
+
+        // And it applies to this bundle only — a stale key for some other
+        // Context does not leak sideways.
+        let other = crate::config::Config::new_with_file_secrets(
+            temp.path().join("other.yaml"),
+            temp.path().join("other-secrets.yaml"),
+        )
+        .unwrap();
+        other.set_param("context_update_soul", false).unwrap();
+        assert!(!hidden_contexts_in(&other).contains("about-biorouter"));
     }
 
     /// Absence means ON, `false` means off, and nothing else is consulted.
@@ -3032,7 +3495,7 @@ Working dir biorouter content
 
         // Pin every Context key so the developer's own config cannot decide the
         // outcome either way.
-        let all_on: std::collections::HashMap<String, String> = context_skill_names()
+        let all_on: std::collections::HashMap<String, String> = context_ids()
             .map(|n| (context_config_key(n).to_uppercase(), "true".to_string()))
             .collect();
         let mut about_off = all_on.clone();

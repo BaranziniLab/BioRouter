@@ -80,6 +80,20 @@ pub fn install_root() -> PathBuf {
 /// installer that quietly picked one of the answers would be the flattening
 /// this module exists to remove.
 pub fn install(plan: &ImportPlan, root: &Path) -> Result<InstalledPackage> {
+    install_in(&Paths::config_dir().join("skills"), plan, root)
+}
+
+/// [`install`] against an explicit seeded root.
+///
+/// Split out for the same reason [`refuse_shipped`] takes that root as an
+/// argument: a test can then hold both halves without setting
+/// `BIOROUTER_PATH_ROOT`, whose process-global reach makes a test of it
+/// order-dependent on everything else in the binary.
+pub(super) fn install_in(
+    seeded_root: &Path,
+    plan: &ImportPlan,
+    root: &Path,
+) -> Result<InstalledPackage> {
     if let Some(ambiguity) = &plan.ambiguity {
         bail!(
             "this import needs an answer before it can be installed: {}",
@@ -88,6 +102,16 @@ pub fn install(plan: &ImportPlan, root: &Path) -> Result<InstalledPackage> {
     }
     if plan.components.is_empty() {
         bail!("nothing selected to install");
+    }
+    // ⚠ **The same guard as `remove`, and it has to be here too.** Installing
+    // over a shipped name renames the seeded directory aside and deletes it,
+    // and then three things compound: the next `ensure_builtin_skills` writes
+    // `SKILL.md` back *inside* the user's package, producing a hybrid; the
+    // Delete control is hidden because `builtin` now reads true; and `remove`
+    // REFUSES it. A guard on one side of the pair turns a shadowing bug into
+    // something the user cannot uninstall by any means.
+    if let Some(refusal) = refuse_shipped(seeded_root, root, &plan.id) {
+        bail!(refusal);
     }
 
     std::fs::create_dir_all(root)
@@ -226,11 +250,20 @@ fn stage(plan: &ImportPlan, staging: &Path) -> Result<()> {
 /// Renamed aside first and then deleted, so the directory disappears from the
 /// catalog's view in one step rather than emptying out under a scan in flight.
 pub fn remove(id: &str, root: &Path) -> Result<PackageSummary> {
+    remove_in(&Paths::config_dir().join("skills"), id, root)
+}
+
+/// [`remove`] against an explicit seeded root. See [`install_in`].
+pub(super) fn remove_in(seeded_root: &Path, id: &str, root: &Path) -> Result<PackageSummary> {
     let sanitized = super::sanitize_package_id(id)
         .ok_or_else(|| anyhow::anyhow!("`{id}` is not a valid package name"))?;
     let directory = root.join(&sanitized);
     if !directory.is_dir() {
         bail!("no package named `{sanitized}` is installed");
+    }
+
+    if let Some(refusal) = refuse_shipped(seeded_root, root, &sanitized) {
+        bail!(refusal);
     }
 
     let summary = std::fs::read_to_string(directory.join(PACKAGE_RECORD_FILE))
@@ -257,6 +290,39 @@ pub fn remove(id: &str, root: &Path) -> Result<PackageSummary> {
 
     skill_catalog::refresh();
     Ok(summary)
+}
+
+/// Why touching `id` under `root` is refused, or `None` to go ahead.
+///
+/// Called from **both** [`install`] and [`remove`]. Guarding only one of them
+/// is worse than guarding neither: an install that shadows a shipped name then
+/// meets a `remove` that refuses it, and nothing can undo it.
+///
+/// ⚠ **The one choke point, so the refusal lands on every surface.** Both
+/// `biorouter skill remove` and deleting from the Skills pane arrive at
+/// [`remove`]. Without this, removing a seeded skill or the knowledge bundle
+/// *succeeded*: the directory went, the CLI printed a tick, the toast confirmed
+/// it, and the next startup silently rewrote the folder — a control that reports
+/// success and reverts, which is regression 1 of #77.
+///
+/// ⚠ **Scoped to Biorouter's own skills root**, which is the only root the
+/// seeder writes. A package a user happens to have named `develop-biorouter`
+/// under `~/.claude/skills` is theirs to delete, and refusing that would be this
+/// guard reaching past its own reason to exist.
+///
+/// Takes the seeded root as an argument rather than reading `Paths` itself, so
+/// a test can state both halves without setting `BIOROUTER_PATH_ROOT` — a
+/// process-global whose use here would make the test order-dependent.
+pub(super) fn refuse_shipped(seeded_root: &Path, root: &Path, sanitized: &str) -> Option<String> {
+    if root != seeded_root || !crate::agents::skills_extension::is_shipped_entry_name(sanitized) {
+        return None;
+    }
+    Some(format!(
+        "`{sanitized}` is the name of something that ships with Biorouter and is rewritten on \
+         every start, so this would not last. To turn it off, use Settings -> Chat -> Contexts \
+         or `biorouter skill disable {sanitized}`; to install a package of your own, give it \
+         another name."
+    ))
 }
 
 fn nonce() -> String {

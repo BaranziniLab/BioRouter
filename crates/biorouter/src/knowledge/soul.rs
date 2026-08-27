@@ -12,14 +12,19 @@
 //! [`install`] is idempotent and safe to call on every startup: it only creates
 //! what is missing and never overwrites user edits.
 //!
-//! The skill is named `update-soul` (it was previously `soul-writer`);
-//! [`ensure_soul_skill`] removes the stale `soul-writer` folder on startup so
-//! users don't see a duplicate after upgrading.
+//! The skill is named `update-soul` (it was previously `soul-writer`) and is
+//! seeded as a member of the knowledge skill bundle
+//! ([`crate::agents::skills_extension::KNOWLEDGE_BUNDLE`]), so Settings offers
+//! one "Knowledge" switch over it and the four format skills rather than five.
+//! [`ensure_soul_skill`] removes both directories it used to live in — the old
+//! `soul-writer` name and the old flat placement — so an upgraded user does not
+//! end up with two candidates for one skill name.
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::agents::skills_extension;
 use crate::config::paths::Paths;
 use crate::scheduler::ScheduledJob;
 use crate::scheduler_trait::SchedulerTrait;
@@ -614,30 +619,92 @@ fn create_built_in_file_if_missing(path: &std::path::Path, content: &str) -> any
 }
 
 /// Write the update-soul skill if it is not already present.
+///
+/// ⚠ **Into the knowledge bundle, not flat at the skills root.** The skill is a
+/// member of `skills_extension::KNOWLEDGE_BUNDLE` alongside the four
+/// `include_str!`-shipped knowledge skills, and the bundle — not this skill —
+/// is the Context row Settings offers. Seeding it flat would give it a
+/// `bundle_name` of `None`, which is a standalone picker row that the bundle's
+/// Context toggle does not reach.
 pub fn ensure_soul_skill() -> anyhow::Result<()> {
-    // Drop the skill's former directory (`soul-writer`) so upgraded users don't
-    // see a stale duplicate next to the renamed `update-soul` skill. It is a
-    // built-in instruction asset, never user data, so removing it is safe.
-    let legacy = Paths::config_dir()
-        .join("skills")
-        .join(SOUL_SKILL_DIR_LEGACY);
-    if legacy.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&legacy) {
-            tracing::warn!(
-                "Soul: failed to remove legacy skill at {}: {e}",
-                legacy.display()
-            );
-        } else {
-            tracing::info!("Soul: removed legacy skill at {}", legacy.display());
-        }
-    }
-    let dir = Paths::config_dir().join("skills").join(SOUL_SKILL_DIR);
-    let skill_file = dir.join("SKILL.md");
-    std::fs::create_dir_all(&dir)?;
-    if create_built_in_file_if_missing(&skill_file, SOUL_SKILL_MD)? {
-        tracing::info!("Soul: installed skill at {}", skill_file.display());
+    if place_soul_skill(&Paths::config_dir().join("skills"))? {
+        // Creating `<bundle>/<child>/` bumps the bundle's mtime and not the
+        // root's, and mtime is one-second granular — see `skill_catalog`'s
+        // header. A writer says what it did rather than hoping to be noticed.
+        crate::agents::skill_catalog::invalidate();
     }
     Ok(())
+}
+
+/// [`ensure_soul_skill`] against an explicit skills root. Returns whether
+/// anything on disk moved, so the caller knows whether to invalidate.
+///
+/// Split out so a test can drive the migration over a `TempDir` without setting
+/// `BIOROUTER_PATH_ROOT`, whose process-global reach would make it depend on
+/// whatever ran before it.
+fn place_soul_skill(skills_root: &Path) -> anyhow::Result<bool> {
+    let bundle = skills_extension::knowledge_bundle_dir(skills_root);
+
+    let dir = bundle.join(SOUL_SKILL_DIR);
+
+    // Leave neither of the two directories this skill has previously occupied
+    // behind. Not tidiness: discovery keys by frontmatter `name`, so a flat
+    // `update-soul` and a bundled one are two candidates for one map key and
+    // whichever `read_dir` yields last wins — half the installs would get the
+    // stale one, with no bundle on it and so out of reach of the Context
+    // switch.
+    //
+    // ⚠ The flat copy is **moved**, not deleted, when the bundle has no member
+    // yet. This skill is written with `create_built_in_file_if_missing`
+    // precisely so a user's edits to it survive every later startup, and
+    // deleting the file that holds them on the one startup that relocates it
+    // would take back that promise at the worst possible moment. (The four
+    // `include_str!` knowledge skills are rewritten whenever their content
+    // differs, so their migration can simply delete — each migration matches
+    // its own seeder's semantics.)
+    let mut migrated = false;
+    let legacy_flat = skills_root.join(SOUL_SKILL_DIR);
+    if legacy_flat.is_dir() && !dir.exists() {
+        std::fs::create_dir_all(&bundle)?;
+        match std::fs::rename(&legacy_flat, &dir) {
+            Ok(()) => {
+                tracing::info!(
+                    "Soul: moved skill into the knowledge bundle at {}",
+                    dir.display()
+                );
+                migrated = true;
+            }
+            Err(e) => tracing::warn!("Soul: failed to move skill into {}: {e}", dir.display()),
+        }
+    }
+    // Whatever the move did not claim — the pre-rename `soul-writer` folder,
+    // and a flat copy the bundle already had a member for — is a duplicate.
+    for stale in [
+        skills_root.join(SOUL_SKILL_DIR_LEGACY),
+        skills_root.join(SOUL_SKILL_DIR),
+    ] {
+        if !stale.is_dir() {
+            continue;
+        }
+        match std::fs::remove_dir_all(&stale) {
+            Ok(()) => {
+                tracing::info!("Soul: removed stale skill at {}", stale.display());
+                migrated = true;
+            }
+            Err(e) => tracing::warn!(
+                "Soul: failed to remove stale skill at {}: {e}",
+                stale.display()
+            ),
+        }
+    }
+
+    let skill_file = dir.join("SKILL.md");
+    std::fs::create_dir_all(&dir)?;
+    let installed = create_built_in_file_if_missing(&skill_file, SOUL_SKILL_MD)?;
+    if installed {
+        tracing::info!("Soul: installed skill at {}", skill_file.display());
+    }
+    Ok(installed || migrated)
 }
 
 /// Register the daily 3:00 AM Meditation job if it is not already scheduled.
@@ -833,6 +900,106 @@ mod tests {
             .unwrap_or_default()
             .iter()
             .any(|s| s == "update-soul"));
+    }
+
+    /// The skill lands in the knowledge bundle, and a pre-bundle install is
+    /// migrated rather than duplicated.
+    ///
+    /// ⚠ **`bundle_name` is the assertion that matters.** Writing to the right
+    /// path and being read back with `bundle_name: None` looks entirely correct
+    /// on disk while leaving this skill a standalone picker row that the
+    /// bundle's one Settings switch cannot reach — which is the whole point of
+    /// moving it.
+    #[test]
+    fn the_soul_skill_is_seeded_into_the_knowledge_bundle() {
+        use crate::agents::skills_extension::{SkillsClient, KNOWLEDGE_BUNDLE};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+
+        assert!(place_soul_skill(&root).unwrap(), "a first seed is a change");
+        let seeded = root
+            .join(KNOWLEDGE_BUNDLE)
+            .join(SOUL_SKILL_DIR)
+            .join("SKILL.md");
+        assert!(seeded.is_file(), "not seeded into the bundle");
+        assert!(!root.join(SOUL_SKILL_DIR).exists(), "also seeded flat");
+
+        let discovered = SkillsClient::discover_skills_in_directories(std::slice::from_ref(&root));
+        assert_eq!(
+            discovered[SOUL_SKILL_DIR].bundle_name.as_deref(),
+            Some(KNOWLEDGE_BUNDLE),
+            "discovered without its bundle, so no bundle toggle reaches it"
+        );
+
+        // Idempotent: a second pass changes nothing.
+        assert!(!place_soul_skill(&root).unwrap());
+    }
+
+    /// ⚠ **The user's edits survive the move.** This skill is written with
+    /// `create_built_in_file_if_missing` so that a user who tailors it keeps
+    /// their version forever; a migration that deleted the flat directory would
+    /// break that promise on the one startup that relocates it, silently, and
+    /// with no way back.
+    #[test]
+    fn migrating_a_pre_bundle_soul_skill_keeps_what_the_user_wrote() {
+        use crate::agents::skills_extension::{SkillsClient, KNOWLEDGE_BUNDLE};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        let flat = root.join(SOUL_SKILL_DIR);
+        std::fs::create_dir_all(&flat).unwrap();
+        let edited = format!("{SOUL_SKILL_MD}\n\nAlways call the user Dr Gu.\n");
+        std::fs::write(flat.join("SKILL.md"), &edited).unwrap();
+        // The pre-rename folder too, which has no edits worth keeping.
+        let ancient = root.join(SOUL_SKILL_DIR_LEGACY);
+        std::fs::create_dir_all(&ancient).unwrap();
+        std::fs::write(ancient.join("SKILL.md"), "old").unwrap();
+
+        assert!(place_soul_skill(&root).unwrap());
+
+        let moved = root
+            .join(KNOWLEDGE_BUNDLE)
+            .join(SOUL_SKILL_DIR)
+            .join("SKILL.md");
+        assert_eq!(std::fs::read_to_string(&moved).unwrap(), edited);
+        assert!(
+            !flat.exists(),
+            "the flat copy would resurrect as a duplicate"
+        );
+        assert!(!ancient.exists(), "the pre-rename folder is still there");
+
+        // One candidate for the name, and it carries the bundle.
+        let discovered = SkillsClient::discover_skills_in_directories(&[root]);
+        assert_eq!(
+            discovered[SOUL_SKILL_DIR].bundle_name.as_deref(),
+            Some(KNOWLEDGE_BUNDLE)
+        );
+    }
+
+    /// A flat copy alongside an existing bundled one is a duplicate, and the
+    /// bundled one wins. Without this arm the two would race in `read_dir`.
+    #[test]
+    fn a_flat_copy_beside_a_bundled_one_is_removed() {
+        use crate::agents::skills_extension::KNOWLEDGE_BUNDLE;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        let bundled = root.join(KNOWLEDGE_BUNDLE).join(SOUL_SKILL_DIR);
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::write(bundled.join("SKILL.md"), "the bundled one").unwrap();
+        let flat = root.join(SOUL_SKILL_DIR);
+        std::fs::create_dir_all(&flat).unwrap();
+        std::fs::write(flat.join("SKILL.md"), "the stale one").unwrap();
+
+        assert!(place_soul_skill(&root).unwrap());
+
+        assert!(!flat.exists());
+        assert_eq!(
+            std::fs::read_to_string(bundled.join("SKILL.md")).unwrap(),
+            "the bundled one",
+            "the stale flat copy overwrote the bundled one"
+        );
     }
 
     #[test]

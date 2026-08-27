@@ -10,7 +10,7 @@ import { WorkflowParameter } from './shared/workflowFormSchema';
 import { toastError } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
 import type { ExtensionConfig, Manifest } from '../../api';
-import { fetchSkillCatalog, standaloneSkills } from '../skills/useSkillCatalog';
+import { fetchSkillCatalog, pickerBundles, standaloneSkills } from '../skills/useSkillCatalog';
 import type { WorkflowResourceItem } from './shared/WorkflowResourcePicker';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
 import { storeSubscriptionCleanup } from '../../utils/storeSubscription';
@@ -132,7 +132,7 @@ export default function CreateWorkflowFromSessionModal({
       fetchSkillCatalog()
         .then((view) => {
           if (cancelled) return;
-          const bundleItems: WorkflowResourceItem[] = view.bundles.map((bundle) => ({
+          const bundleItems: WorkflowResourceItem[] = pickerBundles(view).map((bundle) => ({
             id: bundle.name,
             label: bundle.displayName,
             description: bundle.skills.join(', '),
