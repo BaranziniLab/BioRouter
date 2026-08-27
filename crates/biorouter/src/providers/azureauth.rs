@@ -198,16 +198,33 @@ impl AzureAuth {
 /// which names the symptom and none of the remedy -- and was ALSO produced when
 /// `az` was installed but simply unreachable from a GUI process's PATH.
 fn azure_cli_missing_message() -> String {
-    "The Azure CLI (`az`) was not found.\n\n\
+    format!(
+        "The Azure CLI (`az`) was not found.\n\n\
      This provider signs in with your own Azure login, so it needs the Azure CLI \
      installed and signed in:\n\
      \u{20}\u{20}1. Install it -- `brew install azure-cli` on macOS, or see \
      https://learn.microsoft.com/cli/azure/install-azure-cli\n\
      \u{20}\u{20}2. Sign in with `az login`\n\
      \u{20}\u{20}3. Start a new chat\n\n\
-     If it IS installed, Biorouter looked in ~/.local/bin, /usr/local/bin, \
-     /opt/homebrew/bin and /opt/local/bin as well as this process's PATH."
-        .to_string()
+     If it IS installed, Biorouter looked in {} as well as this process's PATH.",
+        searched_dirs()
+    )
+}
+
+/// The directories [`SearchPaths::builder`] adds on THIS platform.
+///
+/// Naming Homebrew paths to a Windows user is worse than saying nothing: it
+/// describes a search that did not happen, so a reader who checks them and
+/// finds nothing concludes the message is lying rather than that their `az` is
+/// somewhere else.
+fn searched_dirs() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "~/.local/bin, /usr/local/bin, /opt/homebrew/bin and /opt/local/bin"
+    } else if cfg!(windows) {
+        "~/.local/bin"
+    } else {
+        "~/.local/bin and /usr/local/bin"
+    }
 }
 
 #[cfg(test)]
@@ -226,8 +243,8 @@ mod cli_discovery_tests {
         );
         assert!(m.contains("az login"), "no sign-in step: {m}");
         assert!(
-            m.contains("/opt/homebrew/bin"),
-            "does not say where it looked: {m}"
+            m.contains(searched_dirs()),
+            "does not say where it looked on this platform: {m}"
         );
         assert!(
             !m.contains("os error 2"),
@@ -239,18 +256,59 @@ mod cli_discovery_tests {
     /// `Command::new("az")` resolves against the child's PATH, and a desktop app
     /// launched from Finder inherits `/usr/bin:/bin:/usr/sbin:/sbin`. An `az`
     /// installed by Homebrew is then invisible and the user is told it is not
-    /// installed, so installing it does not fix anything. The search must
-    /// include the standard user-tool directories.
+    /// installed, so installing it does not fix anything.
+    ///
+    /// ⚠ The directories that fixes this are PLATFORM-SPECIFIC, and asserting
+    /// macOS's set everywhere is what made this test fail on Linux and Windows
+    /// while passing on the machine it was written on. `/usr/local/bin` is unix
+    /// only and `/opt/homebrew/bin` is macOS only, so each platform is checked
+    /// for what `SearchPaths::builder` actually adds there. What is common to
+    /// all three -- and the part a regression would break first -- is that the
+    /// search STRICTLY EXTENDS the process PATH rather than replacing it.
     #[test]
     fn the_cli_is_looked_for_outside_a_gui_processs_path() {
         let path = crate::config::search_path::SearchPaths::builder()
             .path()
             .expect("joinable");
         let entries: Vec<_> = std::env::split_paths(&path).collect();
-        for want in ["/usr/local/bin", "/opt/homebrew/bin"] {
+        let has = |p: &str| entries.iter().any(|e| *e == std::path::Path::new(p));
+
+        // Every platform: the user-level tool dir a GUI PATH omits.
+        // ⚠ Compared with `Path::ends_with`, which matches whole COMPONENTS, so
+        // it is separator-agnostic. A `==` against `home.join(..)` would rest on
+        // how Windows normalises the `/` that `shellexpand` leaves in
+        // `C:\Users\me/.local/bin` -- an assumption this test cannot check from
+        // the machine it was written on, and the same class of assumption that
+        // made the first version of it fail off-macOS.
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.ends_with(std::path::Path::new(".local").join("bin"))),
+            "~/.local/bin missing from the Azure CLI search path: {entries:?}"
+        );
+
+        if cfg!(target_os = "macos") {
+            for want in ["/usr/local/bin", "/opt/homebrew/bin", "/opt/local/bin"] {
+                assert!(has(want), "{want} missing on macOS: {entries:?}");
+            }
+        } else if cfg!(unix) {
+            assert!(has("/usr/local/bin"), "/usr/local/bin missing: {entries:?}");
             assert!(
-                entries.iter().any(|e| e == std::path::Path::new(want)),
-                "{want} missing from the Azure CLI search path: {entries:?}"
+                !has("/opt/homebrew/bin"),
+                "Homebrew's macOS-only dir must not be searched here: {entries:?}"
+            );
+        }
+
+        // And the process PATH is extended, never replaced.
+        for inherited in std::env::var_os("PATH")
+            .as_ref()
+            .map(std::env::split_paths)
+            .into_iter()
+            .flatten()
+        {
+            assert!(
+                entries.contains(&inherited),
+                "the search path dropped an inherited PATH entry {inherited:?}"
             );
         }
     }
