@@ -194,17 +194,50 @@ mod tests {
         assert!(allowed.contains("(allow network*)"));
     }
 
+    /// ⚠ Both roots here MUST NOT EXIST on the running machine.
+    ///
+    /// `wrap` canonicalizes each root and falls back to the literal path only
+    /// when canonicalization fails — i.e. when the path is absent. This test
+    /// used `/tmp/x`, whose existence is not something a test gets to assume:
+    /// on a machine where some other process had left a `/tmp/x`, macOS
+    /// resolved it to `/private/tmp/x` (`/tmp` is a symlink) and the assertion
+    /// failed. It passed everywhere `/tmp/x` happened to be absent, which is
+    /// why it read as stable. A test whose outcome depends on whether an
+    /// unrelated file exists is a flake waiting for a runner to create it.
     #[test]
     fn writable_roots_become_params() {
-        let policy = SeatbeltPolicy::new(vec![PathBuf::from("/work"), PathBuf::from("/tmp/x")]);
+        let absent_a = PathBuf::from("/biorouter-test-absent-root-a");
+        let absent_b = PathBuf::from("/biorouter-test-absent-root-b");
+        assert!(
+            !absent_a.exists() && !absent_b.exists(),
+            "this test needs both roots absent so the fallback branch is the one taken"
+        );
+
+        let policy = SeatbeltPolicy::new(vec![absent_a.clone(), absent_b.clone()]);
         let profile = policy.profile();
         assert!(profile.contains("(subpath (param \"WRITABLE_ROOT_0\"))"));
         assert!(profile.contains("(subpath (param \"WRITABLE_ROOT_1\"))"));
 
         let (prog, args) = policy.wrap("/bin/zsh");
         assert_eq!(prog, SANDBOX_EXEC);
-        assert!(args.contains(&"-DWRITABLE_ROOT_0=/work".to_string()));
-        assert!(args.contains(&"-DWRITABLE_ROOT_1=/tmp/x".to_string()));
+        assert!(args.contains(&format!("-DWRITABLE_ROOT_0={}", absent_a.display())));
+        assert!(args.contains(&format!("-DWRITABLE_ROOT_1={}", absent_b.display())));
+    }
+
+    /// The other half of the branch above: a root that DOES exist is passed as
+    /// its canonical path, not as written. On macOS that is the difference
+    /// between `/tmp/...` and `/private/tmp/...`, and the sandbox profile is
+    /// matched against the real path, so passing the symlink would not grant
+    /// what the caller asked for.
+    #[test]
+    fn an_existing_root_is_passed_canonicalized() {
+        let dir = std::env::temp_dir();
+        let canonical = dir.canonicalize().expect("the temp dir exists");
+        let (_, args) = SeatbeltPolicy::new(vec![dir]).wrap("/bin/zsh");
+        assert!(
+            args.contains(&format!("-DWRITABLE_ROOT_0={}", canonical.display())),
+            "an existing root must be canonicalized: {args:?}"
+        );
     }
 
     #[test]
