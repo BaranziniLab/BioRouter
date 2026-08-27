@@ -2786,6 +2786,30 @@ for line in sys.stdin:
         unsafe { libc::kill(pid, 0) == 0 }
     }
 
+    /// How long these tests wait for a child process to spawn or to exit.
+    ///
+    /// ⚠ Deliberately generous, and it used to be `100` — five seconds. Five
+    /// seconds is not a process-spawn budget on a CI runner. `test
+    /// (macos-latest)` compiles the whole workspace cold on three cores, and
+    /// this loop was measured failing on a developer machine at load ~20 with
+    /// three worktrees building:
+    ///
+    /// ```text
+    /// dropping_an_unread_stream_reaps_the_child
+    ///   panicked at claude_code.rs: "the child should have started and wrote its pid"
+    /// ```
+    ///
+    /// The failure reads as a defect in child reaping and is really the
+    /// scheduler not having got round to the child yet. It is also
+    /// self-perpetuating: CI saves its Rust cache only on a green run, so one
+    /// such red job keeps the next run cold, which makes the next timeout
+    /// MORE likely.
+    ///
+    /// Raising it costs nothing when the child behaves — every loop here exits
+    /// the moment it sees what it is waiting for, so the ceiling is only ever
+    /// paid by a genuine failure.
+    const CHILD_WAIT_TICKS: usize = 1_200; // 60 s at 50 ms per tick
+
     /// Dropping the stream mid-turn reaps the app server.
     #[tokio::test]
     async fn dropping_a_live_stream_reaps_the_app_server() {
@@ -2833,7 +2857,7 @@ for line in sys.stdin:
         drop(stream);
 
         let mut reaped = false;
-        for _ in 0..100 {
+        for _ in 0..CHILD_WAIT_TICKS {
             if !alive(pid) {
                 reaped = true;
                 break;
