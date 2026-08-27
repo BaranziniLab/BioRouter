@@ -137,7 +137,21 @@ jobs:
 
       - name: Install Linux native build dependencies
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config
+        run: |
+          # ⚠ Drop the runner image's Microsoft apt repositories FIRST.
+          # `packages.microsoft.com` has repeatedly answered 403 for the
+          # `azure-cli` and `prod` lists that the hosted image ships
+          # preinstalled, and `apt-get update` exits 100 on any repository it
+          # cannot refresh — so an outage on a third-party CDN we do not use
+          # fails this job with `E: ... is no longer signed`. Nothing here
+          # installs from them. Removing them makes the update depend only on
+          # the archives the packages below actually come from.
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/azure-cli.list \
+                     /etc/apt/sources.list.d/microsoft-prod.sources \
+                     /etc/apt/sources.list.d/azure-cli.sources
+          sudo apt-get update
+          sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config
 
       # Start narrow (lib + bins on every OS) so the matrix is green on arrival;
       # widen as it proves stable. This selector leaves out `tests/`, so the
@@ -289,6 +303,18 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install Linux native build dependencies
         run: |
+          # ⚠ Drop the runner image's Microsoft apt repositories FIRST.
+          # `packages.microsoft.com` has repeatedly answered 403 for the
+          # `azure-cli` and `prod` lists that the hosted image ships
+          # preinstalled, and `apt-get update` exits 100 on any repository it
+          # cannot refresh — so an outage on a third-party CDN we do not use
+          # fails this job with `E: ... is no longer signed`. Nothing here
+          # installs from them. Removing them makes the update depend only on
+          # the archives the packages below actually come from.
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/azure-cli.list \
+                     /etc/apt/sources.list.d/microsoft-prod.sources \
+                     /etc/apt/sources.list.d/azure-cli.sources
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends libdbus-1-dev libxdo-dev
 
