@@ -88,7 +88,7 @@ fn lock() -> std::sync::MutexGuard<'static, HashSet<(String, String)>> {
 
 /// Test-only: forget every recorded crossing.
 #[cfg(test)]
-pub(crate) fn reset_for_test() {
+pub fn reset_for_test() {
     lock().clear();
 }
 

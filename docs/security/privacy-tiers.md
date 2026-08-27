@@ -187,8 +187,16 @@ this section is the ledger.
      and never had). Widening the write rule is what settled the operator decision that had been
      outstanding against it: the public targets a private caller can reach are no longer only the
      ones it spawned itself, so the disclosure went from nice-to-have to load-bearing.
-  2. **`workspace_open { new: … }` implements none of §8.2's spawn matrix.** §7's last row defers
-     that form to §8.2. The extension dimension is now gated (above), but the **model** dimension
+  2. **`workspace_open { new: … }` implements none of §8.2's spawn matrix, and `new.prompt`
+     is now the sharpest edge of it.** A new session is minted PUBLIC (the schema default), so
+     a private-capability caller passing `new: { prompt: … }` puts private-origin text in front
+     of a public model with no first-crossing approval — the disclosure covers
+     `workspace_send_prompt` and `workspace_set_tools`, both of which name an existing
+     `session_id`, and a session that does not exist yet has no (caller, target) pair to key on.
+     `workspace_open` is not in the delegation tier's injected tool list, so this needs the
+     explicit Workspace Control opt-in.
+
+     The older half of this item stands unchanged. §7's last row defers that form to §8.2. The extension dimension is now gated (above), but the **model** dimension
      is not: `open_new_session` creates the session through `WorkspaceServices::start_session`,
      which takes no capability and binds the machine default provider, and then optionally seeds it
      with a detached turn carrying prompt text the model wrote. §8.2's hard refusal (public parent,

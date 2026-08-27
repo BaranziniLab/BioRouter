@@ -16747,6 +16747,14 @@ unit-testable without a database and BR-71's tool handlers can call it rather th
 | Create | `crates/biorouter/src/privacy/visibility.rs` | new |
 | Reference | `crates/biorouter/src/session/session_manager.rs` | `Session.parent_session_id` (Task 6) |
 
+> ⚠ **The Rust in the rest of this task is a HISTORICAL ARTIFACT and no longer
+> describes the tree.** It reproduces `visibility.rs` as Task 21 shipped it, when
+> the write rule was `WRITE ⇔ VIS ∧ L ∈ {self, child}`. R6 is retired: `may_write`
+> takes no lineage, `Lineage` and `lineage_of` are deleted, and the matrix's
+> `( CPub, TPub, Other, true, false, true )` row now expects `write: true`. Read
+> `crates/biorouter/src/privacy/visibility.rs`, not the blocks below; they are
+> kept only so the shape of the original task stays legible.
+
 - [ ] **Step 1: Write the failing test — the design's table, cell for cell**
 
 ```rust

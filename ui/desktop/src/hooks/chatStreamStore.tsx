@@ -1197,11 +1197,16 @@ class ChatStreamController {
    * steer retirement, and landed-tool-skeleton removal into one updater, so a
    * token event costs exactly one snapshot swap.
    */
+  /// `keepIdle` holds the chat's running state where it is: the message is a
+  /// row appended to a conversation with no turn in flight (an injected note),
+  /// so nothing is generating and nothing will ever arrive to retire a running
+  /// state. Only the observer path passes it; see the call site.
   private applyMessageEvent = (
     msg: Message,
     messages: Message[],
     tokenState: TokenState,
-    receivedAt: number
+    receivedAt: number,
+    keepIdle = false
   ): void => {
     this.messagesRef = messages;
     // A streamed message is not the row (or rows) it was stored as; see
@@ -1219,7 +1224,7 @@ class ChatStreamController {
     const hasSecretRequest = msg.content.some(
       (content) => content.type === 'actionRequired' && content.data.actionType === 'secretRequest'
     );
-    const chatState =
+    const derivedChatState =
       hasToolConfirmation || hasElicitation || hasSecretRequest
         ? ChatState.WaitingForUserInput
         : getCompactingMessage(msg)
@@ -1227,6 +1232,11 @@ class ChatStreamController {
           : getThinkingMessage(msg)
             ? ChatState.Thinking
             : ChatState.Streaming;
+    // A confirmation card still parks the chat even when nothing is running —
+    // it is genuinely waiting on the person — so `keepIdle` yields to it rather
+    // than overriding it.
+    const chatState =
+      keepIdle && derivedChatState !== ChatState.WaitingForUserInput ? null : derivedChatState;
 
     // The authoritative request(s) landed: drop any matching pending skeletons
     // so the real tool card replaces the placeholder with no flicker or ghost.
@@ -1248,7 +1258,8 @@ class ChatStreamController {
       return {
         ...prev,
         messages,
-        chatState,
+        // `null` is `keepIdle`: leave the running state exactly where it was.
+        chatState: chatState ?? prev.chatState,
         tokenState,
         lastMessageAt: receivedAt,
         pendingSteer: steerLanded ? undefined : prev.pendingSteer,
@@ -1888,7 +1899,31 @@ class ChatStreamController {
             currentMessages = pushMessage(currentMessages, msg);
             // #22 — one snapshot swap (state + tokens + transcript + skeleton
             // cleanup) per streamed event, not three.
-            this.applyMessageEvent(msg, currentMessages, event.token_state, Date.now());
+            //
+            // BR-71 §3c: on an OBSERVER feed with no turn in flight, a message
+            // is a row appended to an IDLE conversation, not a turn producing
+            // output. `workspace_send_prompt mode:"note"` is exactly that — it
+            // publishes the stored row and starts nothing — and
+            // `applyMessageEvent` derives `ChatState.Streaming` from any
+            // message, so without this the target tab claimed "Thinking…" with
+            // a stop button, indefinitely, for a turn that did not exist and so
+            // could never publish a terminal to retire it. Measured in the
+            // running app: `/active_work` empty, tab at `data-working="true"`.
+            //
+            // Narrow on purpose. A real observed turn announces itself first —
+            // `TurnStarted` sets `activeTurnId` via `applyObservedTurnState`,
+            // and the SSE handler sends `TurnState` right after its snapshot —
+            // so a running turn's messages still raise the running state. Only
+            // the no-turn case is held back, and only for an observer; the
+            // driver path is untouched.
+            const appendedWhileIdle = this.observing && !this.activeTurnId;
+            this.applyMessageEvent(
+              msg,
+              currentMessages,
+              event.token_state,
+              Date.now(),
+              appendedWhileIdle
+            );
             break;
           }
           case 'Error':

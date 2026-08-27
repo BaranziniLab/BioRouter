@@ -271,12 +271,14 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter/src/agents/workspace_extension.rs",
-                counts: c(2, 0, 0),
+                counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
-                what: "the RECORD half, in `handle_send_prompt` and `handle_set_tools`: the \
-                       pair is marked as crossed only once the write has landed, so a \
-                       denied approval — or a tier refusal underneath it — cannot buy \
-                       silence for the retry",
+                what: "`record_crossing_if_disclosed`, the RECORD half, called by both \
+                       `handle_send_prompt` and `handle_set_tools`. ONE call site for two \
+                       handlers, deliberately: the pair is marked as crossed only once the \
+                       write has landed AND only when there was something to disclose, and \
+                       a second copy of that pair of conditions is how one of them goes \
+                       missing",
             },
         ],
     },

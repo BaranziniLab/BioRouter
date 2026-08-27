@@ -222,6 +222,15 @@ const commonToastOptions: ToastOptions = {
   closeOnClick: true,
   pauseOnHover: true,
   draggable: true,
+  // ⚠ **Off, and this is what makes `autoClose` mean anything.**
+  // react-toastify defaults `pauseOnFocusLoss` to true, so every dismissal
+  // timer stops the moment the window is not frontmost — and a notification
+  // the user has already walked away from is exactly the one that most needs
+  // to expire. The observed result was a stack of toasts still sitting there
+  // minutes later, which reads as "these need dismissing" rather than "these
+  // were FYI". `pauseOnHover` stays on: that one pauses because the user is
+  // reading it, which is a reason to wait.
+  pauseOnFocusLoss: false,
 };
 
 /**

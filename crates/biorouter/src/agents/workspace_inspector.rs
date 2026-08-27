@@ -390,7 +390,18 @@ impl ToolInspector for WorkspaceMutationInspector {
 /// The tool families that carry a PAYLOAD into another conversation, and so
 /// have something for a first crossing to disclose. `workspace_close` is
 /// deliberately absent: it carries no text.
-fn crossing_payload(tool_name: &str, args: &JsonObject) -> Option<(String, String)> {
+///
+/// ⚠ **Two halves ask this, and they must be the same half.** The inspector
+/// below asks it to decide whether to raise the card; `handle_send_prompt` and
+/// `handle_set_tools` ask it to decide whether a landed write may mark the pair
+/// as having crossed. A record for a change this function calls payload-free
+/// would consume the pair's one disclosure without ever having shown one — and
+/// that is not hypothetical: `workspace_set_tools { set_knowledge_bases: [] }`
+/// is a real, accepted change (it CLEARS the target's bases) that produces no
+/// payload here, so a handler recording on "the write succeeded" alone let a
+/// caller silence the disclosure with a call the user never saw. Asking one
+/// function is what makes the two halves unable to disagree.
+pub(crate) fn crossing_payload(tool_name: &str, args: &JsonObject) -> Option<(String, String)> {
     let target = args.get("session_id").and_then(serde_json::Value::as_str)?;
     let payload = if is_send_prompt_call(tool_name) {
         let mode = args
@@ -398,7 +409,7 @@ fn crossing_payload(tool_name: &str, args: &JsonObject) -> Option<(String, Strin
             .and_then(serde_json::Value::as_str)
             .unwrap_or("turn");
         let text = args.get("text").and_then(serde_json::Value::as_str)?;
-        format!("mode {mode}, text:\n{text}")
+        format!("mode {mode} — {text}")
     } else if is_set_tools_call(tool_name) {
         // Not the prose a model wrote, but still caller-chosen content that
         // reconfigures a public conversation: which extensions, skills, model
@@ -424,7 +435,7 @@ fn crossing_payload(tool_name: &str, args: &JsonObject) -> Option<(String, Strin
         if parts.is_empty() {
             return None;
         }
-        parts.join("\n")
+        parts.join("; ")
     } else {
         return None;
     };
@@ -462,6 +473,64 @@ pub(crate) fn is_send_prompt_call(tool_name: &str) -> bool {
 /// function, so the decision is split — [`crossing_payload`] and
 /// [`crate::privacy::crossing::needs_disclosure`] are both testable without an
 /// agent, and this `inspect` is the two of them plus two lookups.
+/// The refusal a dispatch boundary that never reaches a [`ToolInspector`] must
+/// return for a workspace write that would be a **first crossing**.
+///
+/// ⚠ **An inspector is not a gate at every door.** `ExtensionManager::dispatch_tool_call`
+/// is reached from four places and only one of them runs the inspector stack;
+/// the JS sandbox's tool handler hands a script's inner calls straight to it
+/// (`agents/code_execution_extension.rs`), which is why that file already
+/// carries boundary refusals for the global memory store and the session
+/// database. This is the third, and it is needed for a sharper reason than the
+/// other two: skipping the card would not merely let ONE undisclosed write
+/// through — the handler would then **record the pair as crossed**, so every
+/// later, properly-inspected write to that same conversation would be silent
+/// too. One un-inspected call would permanently disable the disclosure.
+///
+/// Deliberately narrow. It refuses only what would otherwise have raised a
+/// card: a same-tier write is untouched, so is a pair the user has already
+/// approved, and so is every tool that carries no payload. A script that needs
+/// to make a first crossing is told to make the call where the user can see it.
+pub async fn uninspected_crossing_refusal(
+    cap: crate::privacy::CallCapability,
+    caller_session_id: &str,
+    tool_name: &str,
+    args: Option<&JsonObject>,
+    boundary: crate::security::UninspectedBoundary,
+) -> Option<String> {
+    if !cap.enforced() || !cap.tier().is_private() {
+        return None;
+    }
+    let (target, _) = crossing_payload(tool_name, args?)?;
+    let row = crate::session::session_manager::SessionManager::instance()
+        .get_session(&target, false)
+        .await
+        .ok()?;
+    if !crate::privacy::crossing::needs_disclosure(
+        cap.tier(),
+        row.privacy_tier,
+        caller_session_id,
+        &target,
+    ) {
+        return None;
+    }
+    tracing::warn!(
+        counter.biorouter.workspace_crossing_uninspected_refused = 1,
+        tool_name = %tool_name,
+        target_session = %target,
+        boundary = ?boundary,
+        "Refused a first-crossing workspace write at a boundary no inspector sees"
+    );
+    Some(format!(
+        "Refused: this conversation runs on a model hosted inside your institution, and \
+         {tool_name} would send text to conversation {target}, which does not. The first \
+         time that happens the user has to see the exact payload and approve it — and a \
+         call made from inside a script never reaches the approval. Call {tool_name} \
+         directly instead of from `execute_code`; after the user approves once, this pair \
+         of conversations stops asking."
+    ))
+}
+
 pub struct WorkspaceCrossingInspector {
     provider: crate::agents::types::SharedProvider,
 }
@@ -540,12 +609,21 @@ impl ToolInspector for WorkspaceCrossingInspector {
             results.push(InspectionResult {
                 tool_request_id: request.id.clone(),
                 action: InspectionAction::RequireApproval(Some(format!(
+                    // ⚠ The payload goes LAST, and it is fenced. The card renders
+                    // this string into a single element, so every newline in it
+                    // collapses to a space — measured in the running app, where
+                    // "…the 2019 relapse counts Approving sends this now" read as
+                    // one sentence and the reader could not tell where the
+                    // quoted text stopped and Biorouter's own words resumed.
+                    // That matters more here than in an ordinary confirmation:
+                    // the whole point of the card is that the user can see
+                    // exactly what would leave, so its boundary has to be
+                    // unambiguous even with the whitespace gone.
                     "🔒 This conversation is on a model hosted inside your institution. \
-                     It is about to send text to conversation {target}, which is NOT.\n\n\
-                     What it would send:\n{payload}\n\n\
-                     Approving sends this now, and stops asking for this pair of \
+                     It is about to send text to conversation {target}, which is NOT. \
+                     Approving sends it now, and stops asking for this pair of \
                      conversations. This confirmation appears in every permission mode, \
-                     including Fully Automatic."
+                     including Fully Automatic. ⟪WHAT IT WOULD SEND⟫ {payload} ⟪END⟫"
                 ))),
                 reason: format!("Private-to-public workspace write into {target}"),
                 confidence: 1.0,
@@ -1028,6 +1106,44 @@ mod tests {
             &args(serde_json::json!({ "session_id": "s-public", "scope": "turn" })),
         )
         .is_none());
+    }
+
+    /// **The ledger must not be poisonable by a write that disclosed nothing.**
+    ///
+    /// `workspace_set_tools { set_knowledge_bases: [] }` is an ACCEPTED change —
+    /// `set_knowledge_bases` is an `Option<Vec<_>>`, so `Some(vec![])` is a real
+    /// request to clear the target's bases, and `handle_set_tools` applies it and
+    /// reports success. Neither workspace inspector raises a card for it, because
+    /// there is no payload to show.
+    ///
+    /// A record half that fired on "the write succeeded" alone would therefore
+    /// let a private caller consume a public target's one disclosure with a call
+    /// the user never saw, and the very next `workspace_send_prompt` into that
+    /// conversation would ship its payload to the public model in silence. That
+    /// is why `record_crossing_if_disclosed` asks THIS function rather than
+    /// re-deriving what counts as a payload.
+    #[test]
+    fn a_change_with_nothing_to_disclose_has_no_payload_to_record() {
+        assert!(
+            crossing_payload(
+                "workspace_set_tools",
+                &args(serde_json::json!({
+                    "session_id": "s-public", "set_knowledge_bases": []
+                })),
+            )
+            .is_none(),
+            "an empty set_knowledge_bases has no payload, so a write carrying one must \
+             not be able to mark a pair as crossed"
+        );
+        // The control: the same tool with something to show is still covered, so
+        // this is not "the predicate answers None for set_tools".
+        assert!(crossing_payload(
+            "workspace_set_tools",
+            &args(serde_json::json!({
+                "session_id": "s-public", "set_knowledge_bases": ["ms-cohort"]
+            })),
+        )
+        .is_some());
     }
 
     #[test]

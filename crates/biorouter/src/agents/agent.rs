@@ -6384,9 +6384,30 @@ impl Agent {
             // its children's ids from the spawn results and knows no others. A
             // grant that advertises a tool the holder can never supply an
             // argument for is worse than not granting it: the model tries.
-            // What keeps it safe is that `appears_in_list` OMITS private rows
-            // rather than redacting them, so the discovery surface is exactly
-            // the set this capability may already read.
+            // What keeps the TIER safe is that `appears_in_list` OMITS private
+            // rows rather than redacting them, so the discovery surface is
+            // exactly the set this capability may already read.
+            //
+            // ⚠ **The tier is not the whole cost, and the rest is a real
+            // trade rather than a non-issue.** A row carries the conversation's
+            // name (LLM-generated from its contents), its working directory,
+            // its enabled extensions and its GUI placement, and `scope:"all"`
+            // returns every same-tier conversation on the machine. A user who
+            // turned on "delegate to subagents" did not knowingly turn on
+            // "enumerate my chats and their tool grants", and the enumeration is
+            // what makes an injection *aimable* — a chat can find a
+            // conversation whose extensions include `developer` and inject text
+            // that runs there, in that conversation's permission context.
+            //
+            // It is included anyway, because the requirement is explicit that a
+            // chat should be able to see which conversations exist and which are
+            // running, and because the alternative is worse rather than safer:
+            // `workspace_send_prompt` without it is a tool whose one required
+            // argument the holder cannot obtain, so the model tries and fails
+            // instead of not trying. Two things bound it, and both are load-
+            // bearing: this tier exists only in `BioRouterMode::Auto`
+            // (`subagents_enabled`), and every injection is provenance-stamped
+            // and toasted on the target's tab.
             //
             // The other four are unchanged, and the two child-scoped ones stay
             // child-scoped: `refuse_unless_direct_subagent_child` gates

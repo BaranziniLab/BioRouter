@@ -1398,26 +1398,8 @@ impl WorkspaceClient {
     /// advertised tool surface against the capability table. A hand-maintained
     /// mirror of this function is the one place either guard can rot silently.
     pub fn get_tools() -> Vec<Tool> {
-        vec![
-            Self::tool(
-                "workspace_read_panel",
-                "Read what the preview panel is currently showing: the rendered \
-                 document, figure, file or live web page. **Prefer this over \
-                 workspace_capture_panel** — text is cheaper and can be acted \
-                 on, where a screenshot can only be looked at. Returns nothing \
-                 readable for an image; capture it instead.",
-                serde_json::to_value(schema_for!(WorkspacePanelParams)).unwrap(),
-                true,
-            ),
-            Self::tool(
-                "workspace_capture_panel",
-                "Screenshot the preview panel, saved as a PNG whose path is \
-                 returned. Use it to judge how something LOOKS — a figure, a \
-                 rendered page, a layout. You cannot act on a screenshot: to \
-                 find or change content, use workspace_read_panel.",
-                serde_json::to_value(schema_for!(WorkspacePanelParams)).unwrap(),
-                true,
-            ),
+        let mut tools = Self::panel_tools();
+        tools.extend([
             Self::tool(
                 "workspace_list",
                 "List conversations in the workspace: id, name, type, running \
@@ -1503,6 +1485,39 @@ impl WorkspaceClient {
                  created and the result says no tab was opened.",
                 serde_json::to_value(schema_for!(WorkspaceOpenParams)).unwrap(),
                 false,
+            ),
+        ]);
+        tools
+    }
+
+    /// The preview-panel pair, split out of [`Self::get_tools`] only because
+    /// that function outgrew the per-function line baseline. These two belong
+    /// together — `workspace_read_panel` and `workspace_capture_panel` are the
+    /// text and the picture of the same surface, and each description tells the
+    /// model to prefer the other in the case it does not cover — so they are the
+    /// natural seam. **`get_tools` is still the whole advertised surface**, and
+    /// `workspace_open_is_advertised_and_completes_the_surface` still holds it
+    /// against the instruction block name for name.
+    fn panel_tools() -> Vec<Tool> {
+        vec![
+            Self::tool(
+                "workspace_read_panel",
+                "Read what the preview panel is currently showing: the rendered \
+                 document, figure, file or live web page. **Prefer this over \
+                 workspace_capture_panel** — text is cheaper and can be acted \
+                 on, where a screenshot can only be looked at. Returns nothing \
+                 readable for an image; capture it instead.",
+                serde_json::to_value(schema_for!(WorkspacePanelParams)).unwrap(),
+                true,
+            ),
+            Self::tool(
+                "workspace_capture_panel",
+                "Screenshot the preview panel, saved as a PNG whose path is \
+                 returned. Use it to judge how something LOOKS — a figure, a \
+                 rendered page, a layout. You cannot act on a screenshot: to \
+                 find or change content, use workspace_read_panel.",
+                serde_json::to_value(schema_for!(WorkspacePanelParams)).unwrap(),
+                true,
             ),
         ]
     }
@@ -2486,6 +2501,45 @@ impl WorkspaceClient {
         }
     }
 
+    /// The RECORD half of the first-crossing disclosure — the half that decides
+    /// a pair has crossed and may stop being asked about.
+    ///
+    /// Three conditions, and the third is the one that is easy to leave out.
+    /// The write must have landed (the caller checks that); the write must
+    /// really have been a crossing (`requires_first_crossing_approval` against
+    /// the classification the gate resolved, so this cannot disagree with the
+    /// gate); and **there must have been something to disclose**, asked of the
+    /// same [`crossing_payload`] the inspector asks.
+    ///
+    /// ⚠ Without the third, a change the inspector considers payload-free
+    /// consumes the pair's one disclosure. `workspace_set_tools
+    /// { set_knowledge_bases: [] }` is exactly that: an accepted change that
+    /// clears the target's knowledge bases, raises no card from either
+    /// workspace inspector, and would otherwise mark the pair as crossed — so
+    /// the caller's next `workspace_send_prompt` into that conversation would
+    /// ship its payload to a public model in silence, with no approval ever
+    /// having been shown.
+    ///
+    /// [`crossing_payload`]: crate::agents::workspace_inspector::crossing_payload
+    fn record_crossing_if_disclosed(
+        cap: crate::privacy::CallCapability,
+        resolved_tier: Option<crate::privacy::SessionClassification>,
+        caller_session_id: &str,
+        target_session_id: &str,
+        tool_name: &str,
+        arguments: Option<&JsonObject>,
+    ) {
+        let Some(tier) = resolved_tier else { return };
+        if !crate::privacy::visibility::requires_first_crossing_approval(cap.tier(), tier) {
+            return;
+        }
+        let Some(args) = arguments else { return };
+        if crate::agents::workspace_inspector::crossing_payload(tool_name, args).is_none() {
+            return;
+        }
+        crate::privacy::crossing::record(caller_session_id, target_session_id);
+    }
+
     /// **§3c: make the target's open tab render this NOW, not on reload.**
     ///
     /// The durable row is published on the session bus by whichever code path
@@ -2513,13 +2567,24 @@ impl WorkspaceClient {
     async fn reflect_in_target_tab(&self, session_id: &str) {
         if let Some(services) = workspace_services::get() {
             if services.gui_attached() {
+                // ⚠ `gui_command_near`, not `gui_command`. The plain form
+                // resolves to `focused_or_recent()` — ONE window, the focused
+                // one — so a conversation open in a background window while the
+                // user works in another gets its attach frame delivered to the
+                // wrong renderer, which answers "no tab in this window" and
+                // attaches nothing. That is exactly the case this method exists
+                // for, and exactly the case where a user is least likely to
+                // notice a conversation being steered. `gui_command_near`
+                // routes by `bridge_for_session` and falls back to the focused
+                // window only when no window claims the session.
                 let _ = services
-                    .gui_command(
+                    .gui_command_near(
                         json!({
                             "type": "workspace", "cmd": "observe",
                             "session_id": session_id,
                         }),
                         false,
+                        session_id,
                     )
                     .await;
             }
@@ -2565,6 +2630,10 @@ impl WorkspaceClient {
         cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
+        // Kept before `parse_args` consumes it: the record half of the
+        // first-crossing disclosure asks `crossing_payload` with the SAME raw
+        // arguments the inspector asked it with. See the note on that function.
+        let raw_arguments = arguments.clone();
         let args: WorkspaceSendPromptParams = parse_args(arguments)?;
         if args.session_id == caller_session_id {
             return Err(
@@ -2612,11 +2681,14 @@ impl WorkspaceClient {
         // or a refusal underneath it — buy silence for the retry.
         if delivered.is_ok() {
             self.reflect_in_target_tab(&target_session_id).await;
-            if let Some(tier) = write_target {
-                if crate::privacy::visibility::requires_first_crossing_approval(cap.tier(), tier) {
-                    crate::privacy::crossing::record(caller_session_id, &target_session_id);
-                }
-            }
+            Self::record_crossing_if_disclosed(
+                cap,
+                write_target,
+                caller_session_id,
+                &target_session_id,
+                "workspace_send_prompt",
+                raw_arguments.as_ref(),
+            );
         }
         delivered
     }
@@ -2904,6 +2976,9 @@ impl WorkspaceClient {
         cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
+        // See `handle_send_prompt`: the record half asks `crossing_payload`
+        // with the same raw arguments the inspector did.
+        let raw_arguments = arguments.clone();
         let args: WorkspaceSetToolsParams = parse_args(arguments)?;
 
         // ⚠ **A conversation may not re-tool ITSELF through this door.**
@@ -2979,51 +3054,10 @@ impl WorkspaceClient {
         };
 
         if let Some(agent) = &agent {
-            // **Gate F1's UNLOAD half, at this tool's own door (issue #56,
-            // finding 14's SECOND door).** `manage_extensions {disable}` has
-            // asked `assert_extension_manageable` since finding 14 landed; this
-            // handler reached the very same executor — `Agent::remove_extension`,
-            // a passthrough to `ExtensionManager::remove_extension` — with no
-            // privacy decision anywhere on the path. So the capability was gated
-            // at one entrance and open at the other, and the reachable caller is
-            // the one finding 14 names: a chat classified Private but bound to a
-            // public model passes `refuse_unless_visible` for its own row, and
-            // then unloaded the private connector the public model may not see,
-            // may not call into, and may not name.
-            //
-            // ⚠ **The same predicate as the other door, called by name — not a
-            // second spelling of it.** `assert_extension_manageable` is
-            // `assert_extension_reachable(&normalize(name), Some(admitted))`
-            // verbatim, so all three of its consequences arrive here too, and
-            // all three are wanted: an unknown name reads Private and is refused
-            // (which is what stops this refusal being the existence oracle
-            // `add_extensions` needed a comment to avoid), the name is
-            // normalized to the key the executor removes under, and a model
-            // bound to another institution may see a mismatched connector but
-            // may not unload it. Writing the rule out here in this file's own
-            // words is exactly how these two doors drifted apart in the first
-            // place.
-            //
-            // ⚠ **Asked on the TARGET's manager**, because it is the target's
-            // loaded set that is about to change and the tier is a property of
-            // that entry — while `cap` is the CALLER's, because the caller is
-            // the one being entitled. Both halves matter when the two
-            // conversations differ.
-            //
-            // ⚠ **BEFORE `apply_extension_changes`, not inside its remove loop**,
-            // so a refused removal cannot land after that function has already
-            // applied the adds — the "resolve everything before mutating
-            // anything" rule the add half states above, held across both halves.
-            for name in &args.remove_extensions {
-                agent
-                    .extension_manager
-                    .assert_extension_manageable(name, cap)
-                    .await
-                    .map_err(|e| e.message.to_string())?;
-            }
             applied.extend(
-                Self::apply_extension_changes(
+                Self::apply_extension_changes_gated(
                     agent,
+                    cap,
                     &args.session_id,
                     add_configs,
                     &args.remove_extensions,
@@ -3077,11 +3111,14 @@ impl WorkspaceClient {
         // The first-crossing disclosure's record half, exactly as in
         // `handle_send_prompt`: taken once the change is applied, never at the
         // gate that asked about it.
-        if let Some(tier) = write_target {
-            if crate::privacy::visibility::requires_first_crossing_approval(cap.tier(), tier) {
-                crate::privacy::crossing::record(caller_session_id, &args.session_id);
-            }
-        }
+        Self::record_crossing_if_disclosed(
+            cap,
+            write_target,
+            caller_session_id,
+            &args.session_id,
+            "workspace_set_tools",
+            raw_arguments.as_ref(),
+        );
 
         let next_turn_note = if applied.iter().any(|a| a.starts_with("model=")) {
             " The model change applies to this conversation's NEXT turn."
@@ -3093,6 +3130,63 @@ impl WorkspaceClient {
             args.session_id,
             applied.join(", ")
         ))])
+    }
+
+    /// The extension half of `workspace_set_tools`: **Gate F1's unload check,
+    /// then the apply**. Lifted out of the handler whole — body and reasoning
+    /// together — when the handler outgrew the per-function line baseline; the
+    /// order it encodes (every removal entitled BEFORE anything is applied) is
+    /// the part that must not be rearranged, and it is argued for inline.
+    async fn apply_extension_changes_gated(
+        agent: &std::sync::Arc<crate::agents::Agent>,
+        cap: crate::privacy::CallCapability,
+        session_id: &str,
+        add_configs: Vec<crate::agents::ExtensionConfig>,
+        remove_extensions: &[String],
+    ) -> Result<Vec<String>, String> {
+        // **Gate F1's UNLOAD half, at this tool's own door (issue #56,
+        // finding 14's SECOND door).** `manage_extensions {disable}` has
+        // asked `assert_extension_manageable` since finding 14 landed; this
+        // handler reached the very same executor — `Agent::remove_extension`,
+        // a passthrough to `ExtensionManager::remove_extension` — with no
+        // privacy decision anywhere on the path. So the capability was gated
+        // at one entrance and open at the other, and the reachable caller is
+        // the one finding 14 names: a chat classified Private but bound to a
+        // public model passes `refuse_unless_visible` for its own row, and
+        // then unloaded the private connector the public model may not see,
+        // may not call into, and may not name.
+        //
+        // ⚠ **The same predicate as the other door, called by name — not a
+        // second spelling of it.** `assert_extension_manageable` is
+        // `assert_extension_reachable(&normalize(name), Some(admitted))`
+        // verbatim, so all three of its consequences arrive here too, and
+        // all three are wanted: an unknown name reads Private and is refused
+        // (which is what stops this refusal being the existence oracle
+        // `add_extensions` needed a comment to avoid), the name is
+        // normalized to the key the executor removes under, and a model
+        // bound to another institution may see a mismatched connector but
+        // may not unload it. Writing the rule out here in this file's own
+        // words is exactly how these two doors drifted apart in the first
+        // place.
+        //
+        // ⚠ **Asked on the TARGET's manager**, because it is the target's
+        // loaded set that is about to change and the tier is a property of
+        // that entry — while `cap` is the CALLER's, because the caller is
+        // the one being entitled. Both halves matter when the two
+        // conversations differ.
+        //
+        // ⚠ **BEFORE `apply_extension_changes`, not inside its remove loop**,
+        // so a refused removal cannot land after that function has already
+        // applied the adds — the "resolve everything before mutating
+        // anything" rule the add half states above, held across both halves.
+        for name in remove_extensions {
+            agent
+                .extension_manager
+                .assert_extension_manageable(name, cap)
+                .await
+                .map_err(|e| e.message.to_string())?;
+        }
+        Self::apply_extension_changes(agent, session_id, add_configs, remove_extensions).await
     }
 
     /// **Gate F1, at the workspace's own two enable doors** (issue #56,
@@ -9488,6 +9582,113 @@ pub(crate) mod tests {
             "a turn must ask its target's tab to attach a live feed; got {:?}",
             services.all_frames()
         );
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// **A write with nothing to disclose must not mark the pair as crossed.**
+    ///
+    /// The behavioural half of
+    /// `workspace_inspector::tests::a_change_with_nothing_to_disclose_has_no_payload_to_record`,
+    /// and the half that can actually fail: that one asserts what
+    /// `crossing_payload` answers, which stays true however
+    /// `record_crossing_if_disclosed` is wired. This one drives the real handler
+    /// and reads the ledger afterwards, so dropping the payload check goes red
+    /// here and nowhere else.
+    ///
+    /// `workspace_set_tools { set_knowledge_bases: [] }` is an accepted change
+    /// that clears the target's bases and raises no approval card. If it could
+    /// record a crossing, a private caller would silence a public target's one
+    /// disclosure with a call the user never saw — and the next
+    /// `workspace_send_prompt` would ship its payload in silence.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_payload_free_change_cannot_silence_the_first_crossing_disclosure() {
+        use crate::session::session_manager::SessionType;
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let caller = sm
+            .create_session(
+                std::env::temp_dir(),
+                "private lead".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let target = sm
+            .create_session(
+                std::env::temp_dir(),
+                "public worker".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let _services = FakeServices::with_gui(true).install();
+
+        // Precondition: this pair has not crossed, so the disclosure is owed.
+        crate::privacy::crossing::reset_for_test();
+        let owed = || {
+            crate::privacy::crossing::needs_disclosure(
+                crate::privacy::ProviderTier::Private,
+                crate::privacy::SessionClassification::Public,
+                &caller.id,
+                &target.id,
+            )
+        };
+        assert!(owed(), "precondition: the pair has not crossed yet");
+
+        let cleared = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({ "session_id": target.id, "set_knowledge_bases": [] }),
+            crate::agents::mcp_client::McpMeta::new(
+                caller.id.clone(),
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Private,
+                    true,
+                ),
+            ),
+        )
+        .await;
+        // The change really landed — otherwise this test would pass against a
+        // handler that refused it, which proves nothing about the ledger.
+        assert_ne!(cleared.is_error, Some(true), "{}", text_of(&cleared));
+        assert!(
+            text_of(&cleared).contains("kb="),
+            "the clearing change did not apply, so the ledger was never at risk: {}",
+            text_of(&cleared)
+        );
+
+        assert!(
+            owed(),
+            "a payload-free change marked the pair as crossed; the caller's next \
+             injection into this conversation would cross to a public model with no \
+             approval ever having been shown"
+        );
+
+        // The mirror: a change that DOES carry a payload records, so this is not
+        // "set_tools never records".
+        let retooled = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({
+                "session_id": target.id, "set_knowledge_bases": ["ms-cohort"]
+            }),
+            crate::agents::mcp_client::McpMeta::new(
+                caller.id.clone(),
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Private,
+                    true,
+                ),
+            ),
+        )
+        .await;
+        assert_ne!(retooled.is_error, Some(true), "{}", text_of(&retooled));
+        assert!(
+            !owed(),
+            "a disclosed change failed to record, so the user would be asked again \
+             for a pair they have already approved"
+        );
+        crate::privacy::crossing::reset_for_test();
         crate::workspace_services::clear_test_override();
     }
 

@@ -14,8 +14,8 @@
 //! ⚠ **`BIOROUTER_PATH_ROOT` must be set before ANYTHING touches the store.**
 //! `SESSION_STORAGE` is a `LazyLock` over `Paths::data_dir()`; once it has been
 //! forced, this test would be reading and writing the developer's own
-//! `sessions.db`. It is set at the top of the one test in this file, and the
-//! file has exactly one test for that reason.
+//! `sessions.db`. It is set once, by the first test to run, and every test in
+//! this file goes through `fixture()` so none of them can forget.
 
 use std::sync::Arc;
 
@@ -79,14 +79,26 @@ fn send_prompt_request(id: &str, target: &str, text: &str) -> ToolRequest {
     }
 }
 
+/// Point the process-global store at a temp directory, once, before anything
+/// forces the `LazyLock`. Serialized because `set_var` is, and because the
+/// crossing ledger below it is process-global too.
+fn store_root() -> &'static tempfile::TempDir {
+    static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = tempfile::TempDir::new().unwrap();
+        // SAFETY: inside a `OnceLock` initializer, so exactly one thread runs
+        // it, and it runs before any test in this binary reads the store.
+        unsafe {
+            std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
+        }
+        root
+    })
+}
+
 #[tokio::test]
+#[serial_test::serial(workspace_crossing)]
 async fn a_private_chat_writing_into_a_public_one_discloses_its_payload_exactly_once() {
-    let root = tempfile::TempDir::new().unwrap();
-    // SAFETY: single-threaded prelude of a test binary whose only test this is;
-    // nothing else in this process has read an env var yet.
-    unsafe {
-        std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
-    }
+    let root = store_root();
 
     const PAYLOAD: &str = "the MS cohort's 2019 relapse counts, verbatim";
 
@@ -208,5 +220,132 @@ async fn a_private_chat_writing_into_a_public_one_discloses_its_payload_exactly_
     assert!(
         same_tier.is_empty(),
         "a private→private write raised a crossing disclosure: {same_tier:?}"
+    );
+}
+
+/// **A first crossing cannot be made from inside an `execute_code` script.**
+///
+/// The disclosure is a `ToolInspector`, and the JS sandbox hands a script's
+/// inner tool calls straight to `ExtensionManager::dispatch_tool_call` — a door
+/// no inspector sees. That is why `code_execution_extension` already carries
+/// boundary refusals for the global memory store and the session database; this
+/// is the third.
+///
+/// The stakes are higher than one skipped card: the handler records the pair as
+/// crossed afterwards, so a single un-inspected script call would silence the
+/// disclosure for that pair permanently.
+#[tokio::test]
+#[serial_test::serial(workspace_crossing)]
+async fn a_first_crossing_is_refused_at_the_uninspected_script_boundary() {
+    use biorouter::agents::workspace_inspector::uninspected_crossing_refusal;
+    use biorouter::privacy::CallCapability;
+    use biorouter::security::UninspectedBoundary;
+
+    let root = store_root();
+    let sm = SessionManager::instance();
+    let public_target = sm
+        .create_session(
+            root.path().to_path_buf(),
+            "script target".into(),
+            SessionType::User,
+        )
+        .await
+        .unwrap();
+    let private_target = sm
+        .create_session(
+            root.path().to_path_buf(),
+            "script peer".into(),
+            SessionType::User,
+        )
+        .await
+        .unwrap();
+    sm.update(&private_target.id)
+        .raise_privacy(SessionClassification::Private, "test:script-boundary")
+        .apply()
+        .await
+        .unwrap();
+
+    let obj = |v: serde_json::Value| v.as_object().unwrap().clone();
+    let send = |target: &str| {
+        obj(serde_json::json!({
+            "session_id": target, "mode": "turn", "text": "the cohort, verbatim"
+        }))
+    };
+    // Built through the PUBLIC constructor a production caller uses. There is a
+    // test-only one, but it is `#[cfg(test)]` and so invisible from an
+    // integration binary — which is the point of the census in
+    // `tests/privacy_capability.rs`: a capability comes from `sample` or from
+    // `public_enforced`, and nowhere else.
+    let institutional: biorouter::agents::types::SharedProvider =
+        Arc::new(tokio::sync::Mutex::new(Some(Arc::new(InstitutionalModel))));
+    let private_caller = CallCapability::sample(&institutional).await;
+    assert!(
+        private_caller.tier().is_private() && private_caller.enforced(),
+        "the fixture caller is not a private, enforced capability, so nothing below \
+         is testing the disclosure"
+    );
+
+    let refusal = uninspected_crossing_refusal(
+        private_caller,
+        "script-caller",
+        "workspace_send_prompt",
+        Some(&send(&public_target.id)),
+        UninspectedBoundary::ExecuteCodeScript,
+    )
+    .await
+    .expect("a first crossing from a script must be refused, not silently recorded");
+    assert!(refusal.contains(&public_target.id), "{refusal}");
+    // The refusal has to say what to do instead, or the model retries the same
+    // call until it gives up.
+    assert!(refusal.contains("directly"), "{refusal}");
+
+    // Narrow by construction — each of these must pass straight through.
+    // 1. Same tier: nothing is crossing.
+    assert!(uninspected_crossing_refusal(
+        private_caller,
+        "script-caller",
+        "workspace_send_prompt",
+        Some(&send(&private_target.id)),
+        UninspectedBoundary::ExecuteCodeScript,
+    )
+    .await
+    .is_none());
+    // 2. A public caller: it cannot reach a private target at all, and a
+    //    public→public write crosses nothing.
+    assert!(uninspected_crossing_refusal(
+        CallCapability::public_enforced(),
+        "script-caller",
+        "workspace_send_prompt",
+        Some(&send(&public_target.id)),
+        UninspectedBoundary::ExecuteCodeScript,
+    )
+    .await
+    .is_none());
+    // 3. A tool with no payload.
+    assert!(uninspected_crossing_refusal(
+        private_caller,
+        "script-caller",
+        "workspace_close",
+        Some(&obj(serde_json::json!({
+            "session_id": public_target.id, "scope": "turn"
+        }))),
+        UninspectedBoundary::ExecuteCodeScript,
+    )
+    .await
+    .is_none());
+    // 4. A pair the user has already approved. This is the one that keeps the
+    //    refusal from becoming "scripts may never touch the workspace".
+    biorouter::privacy::crossing::record("script-caller", &public_target.id);
+    assert!(
+        uninspected_crossing_refusal(
+            private_caller,
+            "script-caller",
+            "workspace_send_prompt",
+            Some(&send(&public_target.id)),
+            UninspectedBoundary::ExecuteCodeScript,
+        )
+        .await
+        .is_none(),
+        "a pair the user already approved must not be refused for ever after"
     );
 }

@@ -1,5 +1,5 @@
 import { catalogChanges } from '../api';
-import type { CatalogChanged, CatalogDelta } from '../api';
+import type { CatalogChanged, CatalogDelta, CatalogExtensionChange } from '../api';
 
 /**
  * Issue #112. The renderer's ear on the extension catalogue.
@@ -166,14 +166,48 @@ export function changedExtensionKeys(delta: CatalogDelta): string[] {
   return [...keys];
 }
 
-/** The extensions a delta reports as newly installed and enabled. */
+/**
+ * Whether this catalogue entry is something **Biorouter ships**, as opposed to
+ * something the user installed.
+ *
+ * `bundled: true` is the flag the daemon sets on its own baseline; the
+ * `builtin` and `platform` config shapes are in-process servers that only
+ * Biorouter can register, so neither can arrive from a marketplace install.
+ * A missing `config` is treated as NOT built-in — the safe direction here is to
+ * risk one extra notification, never to silence a real third-party install.
+ */
+function isShippedWithBiorouter(config: CatalogExtensionChange['config']): boolean {
+  if (!config) return false;
+  if ('bundled' in config && config.bundled) return true;
+  return config.type === 'builtin' || config.type === 'platform';
+}
+
+/**
+ * The extensions a delta reports as newly installed and enabled **by the
+ * user**.
+ *
+ * ⚠ **Biorouter's own bundled extensions are excluded, and that is the point.**
+ * On a first run the daemon writes its baseline — `developer`,
+ * `computercontroller`, `autovisualiser`, `memory`, `knowledge`,
+ * `agent_drafter` — into the catalogue, and every one of them arrived here as
+ * an `added` + `enabled` change. The user then met a fresh install with six
+ * stacked "Extension installed. Turn it on for this chat…" toasts for things
+ * they had never heard of and had not asked for, on a screen where they had not
+ * yet set anything up at all. The notification is worth having for the case it
+ * was written for — an install made in another window or another terminal, which
+ * this chat can now opt into — and that case is always a third-party extension.
+ */
 export function newlyInstalledExtensions(
   delta: CatalogDelta
 ): Array<{ key: string; name: string }> {
   const found = new Map<string, { key: string; name: string }>();
   for (const change of (delta.changes ?? []) as CatalogChanged[]) {
     for (const extension of change.extensions ?? []) {
-      if (extension.change === 'added' && extension.enabled) {
+      if (
+        extension.change === 'added' &&
+        extension.enabled &&
+        !isShippedWithBiorouter(extension.config)
+      ) {
         found.set(extension.key, { key: extension.key, name: extension.name });
       }
     }
