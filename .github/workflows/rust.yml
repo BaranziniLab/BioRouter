@@ -49,6 +49,20 @@ env:
 jobs:
   # ── 1. Cheap guards ────────────────────────────────────────────────────────
   guards:
+    # ⚠ A job with no timeout burns GitHub's SIX HOUR ceiling when it hangs,
+    # and this workflow has done exactly that: `test (macos-latest)` finished
+    # BUILDING in ~13 minutes and then sat silent for 5h46m on three
+    # `subagent_handler` tests that await `run_complete_subagent_task`
+    # unbounded, until the ceiling cancelled it. Same three names on a feature
+    # branch and on clean main; not reproducible on a developer's own macOS.
+    #
+    # These budgets are deliberately well ABOVE the measured maxima (warm
+    # cache, 2026-08-27: guards 0.1m, cross-check 8.2m, test 15.0m, serve
+    # 9.5m) so a merely slow run is never failed -- they exist to make a HANG
+    # cheap and legible, not to police duration. A deadlock now costs 40
+    # minutes of runner time instead of six hours, on every branch that
+    # pushes.
+    timeout-minutes: 10
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -62,6 +76,7 @@ jobs:
   #      scripts/release.sh (both source scripts/cross-env.sh). ubuntu-latest is
   #      just the docker HOST; the TARGET triple is what is being proven.
   cross-check:
+    timeout-minutes: 30
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     strategy:
@@ -103,6 +118,7 @@ jobs:
   #      NOTE: windows-latest is MSVC; we SHIP mingw/gnu. Job 2 covers the gnu
   #      ABI, this job covers the Windows behaviour. Both are load-bearing.
   test:
+    timeout-minutes: 40
     if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
@@ -268,6 +284,7 @@ jobs:
   # ── 4. Nightly: the FULL cross BUILD. `check` cannot catch link errors
   #      (aws-lc-sys / winpthread) or glibc symbol-version regressions.
   cross-build-nightly:
+    timeout-minutes: 120
     # The three jobs above are gated `!= 'schedule'`, so they pick up
     # workflow_dispatch on their own; this one has to name it, or the button
     # would run everything EXCEPT the job it was added for.
@@ -349,6 +366,7 @@ jobs:
   # docs/deployment/serve-decisions.md). What it does assert is everything
   # between the browser and that boundary.
   serve:
+    timeout-minutes: 30
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:

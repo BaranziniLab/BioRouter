@@ -866,6 +866,19 @@ impl CodexProvider {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| ".".to_string());
+        // ⚠ A coding-agent turn with no bridge silently has NO Biorouter tools --
+        // the child answers from the model alone and the user cannot tell why.
+        // Worth a warning rather than a silence: the failure mode is "the agent
+        // ignored my request to use a tool", which reads as a model problem.
+        if bridge_url.is_none() {
+            tracing::warn!(
+                "Codex turn is starting WITHOUT a tool bridge: the child will have \
+                 none of Biorouter's tools. Expected only when the daemon has not \
+                 published its base URL (a CLI process with no HTTP server)."
+            );
+        } else {
+            tracing::debug!("Codex turn has a tool bridge");
+        }
         let thread = server
             .request(
                 "thread/start",
