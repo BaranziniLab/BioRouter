@@ -63,6 +63,35 @@ pub fn bedrock_blocking_inference_config(
 /// Keeping the allowance inside the post-threshold headroom closes the band by
 /// construction. The floor is the conservative default, so this can never ask
 /// for less than the provider would have applied with the field omitted.
+
+/// A short, safe description of an SDK error for a user-facing message.
+///
+/// ⚠ **Never `format!("{:?}", err)` on an SDK error.** The Debug rendering of a
+/// `ServiceError` includes the RAW RESPONSE, and the raw response carries the
+/// request headers -- among them the SigV4 `authorization` header:
+///
+/// ```text
+/// "authorization": "AWS4-HMAC-SHA256 Credential=47dd…/us-west-2/bedrock/aws4_request,
+///                   SignedHeaders=…, Signature=93d6a424…"
+/// ```
+///
+/// That was being rendered into the chat as ~40 lines of Rust debug output, so a
+/// user reporting a 403 would paste a live request signature into an issue
+/// tracker. It is also unreadable: the one useful token in the whole dump was
+/// `"Invalid Client Id"`.
+///
+/// This returns the service's own message when there is one, and a bare
+/// description otherwise. Both are safe to show and are what the reader needs.
+fn safe_detail<E: aws_sdk_bedrockruntime::error::ProvideErrorMetadata>(err: &E) -> String {
+    match err.message() {
+        Some(m) if !m.trim().is_empty() => m.trim().to_string(),
+        _ => match err.code() {
+            Some(c) if !c.trim().is_empty() => format!("error code {}", c.trim()),
+            _ => "no further detail was returned".to_string(),
+        },
+    }
+}
+
 fn bounded_by_context_window(max_tokens: i32, context_limit: usize) -> i32 {
     let headroom =
         (context_limit as f64 * (1.0 - crate::context_mgmt::DEFAULT_COMPACTION_THRESHOLD)) as i32;
@@ -687,8 +716,8 @@ pub fn classify_bedrock_converse_error(err: SdkError<ConverseError>) -> Provider
         _ => {}
     }
 
-    // Keep a compact detail string for logs/telemetry before consuming `err`.
-    let detail = format!("Failed to call Bedrock: {:?}", err);
+    // Compact, credential-free detail. See `safe_detail`.
+    let detail = format!("Failed to call Bedrock: {}", safe_detail(&err));
 
     match err.into_service_error() {
         ConverseError::ThrottlingException(e) => ProviderError::RateLimitExceeded {
@@ -833,7 +862,7 @@ pub fn classify_bedrock_converse_stream_error(err: SdkError<ConverseStreamError>
         _ => {}
     }
 
-    let detail = format!("Failed to open Bedrock stream: {:?}", err);
+    let detail = format!("Failed to open Bedrock stream: {}", safe_detail(&err));
 
     match err.into_service_error() {
         ConverseStreamError::ThrottlingException(e) => ProviderError::RateLimitExceeded {
@@ -922,7 +951,7 @@ pub fn classify_bedrock_stream_event_error<R: std::fmt::Debug + Send + Sync + 's
         _ => {}
     }
 
-    let detail = format!("Bedrock stream error: {:?}", err);
+    let detail = format!("Bedrock stream error: {}", safe_detail(&err));
 
     match err.into_service_error() {
         ConverseStreamOutputError::ThrottlingException(e) => ProviderError::RateLimitExceeded {

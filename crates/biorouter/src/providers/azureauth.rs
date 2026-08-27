@@ -126,19 +126,52 @@ impl AzureAuth {
             }
         }
 
-        // Get new token using Azure CLI credential
-        let mut command = tokio::process::Command::new("az");
+        // Get new token using Azure CLI credential.
+        //
+        // ⚠ Resolved through `SearchPaths`, NOT spawned as the bare name `az`.
+        // A bare name is looked up in the child's PATH, and a desktop app
+        // launched from Finder or the Dock inherits `/usr/bin:/bin:/usr/sbin:
+        // /sbin` -- not the user's shell PATH. So an `az` installed by Homebrew
+        // into /opt/homebrew/bin is invisible, and the user is told
+        //
+        //     Failed to execute Azure CLI: No such file or directory (os error 2)
+        //
+        // which reads as "not installed" when it is installed and simply not on
+        // the path this process was given. Same defect class as the coding-agent
+        // providers, which resolve their CLI the same way.
+        let az = crate::config::search_path::SearchPaths::builder()
+            .resolve("az")
+            .map_err(|_| {
+                AuthError::TokenExchange(
+                    "The Azure CLI (`az`) was not found.\n\n\
+                     This provider signs in with your own Azure login, so it needs \
+                     the Azure CLI installed and signed in:\n\
+                     \u{20}\u{20}1. Install it -- `brew install azure-cli` on macOS, or see \
+                     https://learn.microsoft.com/cli/azure/install-azure-cli\n\
+                     \u{20}\u{20}2. Sign in with `az login`\n\
+                     \u{20}\u{20}3. Start a new chat\n\n\
+                     If it IS installed, Biorouter looked in ~/.local/bin, /usr/local/bin, \
+                     /opt/homebrew/bin and /opt/local/bin as well as this process's PATH."
+                        .to_string(),
+                )
+            })?;
+        let mut command = tokio::process::Command::new(&az);
         command.args([
             "account",
             "get-access-token",
             "--resource",
             "https://cognitiveservices.azure.com",
         ]);
+        if let Ok(path) = crate::config::search_path::SearchPaths::builder().path() {
+            command.env("PATH", path);
+        }
         crate::subprocess::prepare_agent_child_command(&mut command);
-        let output = command
-            .output()
-            .await
-            .map_err(|e| AuthError::TokenExchange(format!("Failed to execute Azure CLI: {}", e)))?;
+        let output = command.output().await.map_err(|e| {
+            AuthError::TokenExchange(format!(
+                "Could not run the Azure CLI at {}: {e}",
+                az.display()
+            ))
+        })?;
 
         if !output.status.success() {
             return Err(AuthError::TokenExchange(

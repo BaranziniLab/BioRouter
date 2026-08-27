@@ -230,7 +230,10 @@ fn unknown_model_hint(model: &str) -> String {
     )
 }
 
-#[derive(Debug, serde::Serialize)]
+// `Clone` so the streaming path can hand a spawner to its pump task and go
+// through `spawn_app_server` rather than building a second command of its own.
+// Every field is cheap to clone (a path, a model config, a name).
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CodexProvider {
     command: PathBuf,
     model: ModelConfig,
@@ -276,6 +279,7 @@ impl CodexProvider {
     fn app_server_command(
         &self,
         isolated_home: Option<&std::path::Path>,
+        features: &[&str],
     ) -> tokio::process::Command {
         let mut cmd = tokio::process::Command::new(&self.command);
         cmd.arg("app-server");
@@ -283,7 +287,7 @@ impl CodexProvider {
         // the isolation settings below and exposing a host-reading built-in.
         cmd.arg("--strict-config");
 
-        for feature in DISABLED_CHILD_FEATURES {
+        for feature in features {
             cmd.arg("--disable").arg(feature);
         }
 
@@ -319,10 +323,97 @@ impl CodexProvider {
         cmd
     }
 
+    /// The name in `Error: Unknown feature flag: <name>`, if that is what killed
+    /// the child.
+    ///
+    /// Matched on the vendor's exact wording, deliberately: anything looser
+    /// would let an unrelated failure silently drop an isolation flag, which is
+    /// the one outcome this must never produce.
+    fn unknown_feature_flag(stderr: &str) -> Option<String> {
+        stderr.split("Unknown feature flag:").nth(1).and_then(|rest| {
+            let name = rest
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect::<String>();
+            (!name.is_empty()).then_some(name)
+        })
+    }
+
+    /// Start `codex app-server`, dropping any feature name this build of the CLI
+    /// does not recognise.
+    ///
+    /// ⚠ **Why this cannot just fail.** `--strict-config` makes an unknown
+    /// `--disable` name FATAL, and [`DISABLED_CHILD_FEATURES`] is a hard-coded
+    /// list of names owned by the vendor. So the day OpenAI renames or retires
+    /// any one of them, every Biorouter user loses Codex completely — the child
+    /// exits during `initialize` and no turn can start. That is not
+    /// hypothetical: it was reported from the field as
+    ///
+    /// ```text
+    /// app server exited during `initialize`: Error: Unknown feature flag: skill_search
+    /// ```
+    ///
+    /// ⚠ **Why dropping the name is SAFE, which is the part worth checking.**
+    /// An unknown feature flag disables nothing: the feature it names does not
+    /// exist in this build, so not passing it removes no protection. The flags
+    /// that DO exist are still passed and still enforced. The alternative --
+    /// dropping `--strict-config` -- would be the unsafe fix, because it makes
+    /// the CLI *silently ignore* a name it does not know, and then a genuinely
+    /// misspelled `shell_tool` would leave the child holding a shell.
+    ///
+    /// Bounded by the list length, and each pass drops exactly the one name the
+    /// CLI named, so it cannot loop.
     async fn spawn_app_server(&self) -> Result<AppServer, ProviderError> {
-        let home = isolated_codex_home(&discovery::codex_home())?;
-        let command = self.app_server_command(Some(home.path()));
-        AppServer::spawn_with_home(command, Some(home)).await
+        let mut features: Vec<&str> = DISABLED_CHILD_FEATURES.to_vec();
+        let mut dropped: Vec<String> = Vec::new();
+
+        for _ in 0..=DISABLED_CHILD_FEATURES.len() {
+            let home = isolated_codex_home(&discovery::codex_home())?;
+            let command = self.app_server_command(Some(home.path()), &features);
+            let server = AppServer::spawn_with_home(command, Some(home)).await?;
+
+            match server
+                .request(
+                    "initialize",
+                    json!({
+                        "clientInfo": { "name": "biorouter", "version": env!("CARGO_PKG_VERSION") },
+                        "capabilities": { "experimentalApi": true }
+                    }),
+                )
+                .await
+            {
+                Ok(_) => {
+                    if !dropped.is_empty() {
+                        tracing::warn!(
+                            dropped = ?dropped,
+                            "this `codex` build does not know these feature names;                              they were not passed. Update DISABLED_CHILD_FEATURES."
+                        );
+                    }
+                    return Ok(server);
+                }
+                Err(error) => {
+                    let text = error.to_string();
+                    let Some(unknown) = Self::unknown_feature_flag(&text) else {
+                        server.shutdown().await;
+                        return Err(error);
+                    };
+                    server.shutdown().await;
+                    let before = features.len();
+                    features.retain(|f| *f != unknown.as_str());
+                    if features.len() == before {
+                        // It named something we never passed — retrying would
+                        // spawn the identical command forever.
+                        return Err(error);
+                    }
+                    dropped.push(unknown);
+                }
+            }
+        }
+
+        Err(ProviderError::ExecutionError(
+            "`codex app-server` rejected every feature name Biorouter knows".into(),
+        ))
     }
 
     /// `thread/start` parameters.
@@ -679,18 +770,11 @@ impl CodexProvider {
         system: &str,
         prompt: &transcript::Prompt,
     ) -> Result<TurnOutcome, ProviderError> {
-        server
-            .request(
-                "initialize",
-                json!({
-                    // Identify honestly. Some harnesses shape this to look like the
-                    // vendor's own first-party client; doing so is exactly what the
-                    // vendors' terms prohibit, so Biorouter says who it is.
-                    "clientInfo": { "name": "biorouter", "version": env!("CARGO_PKG_VERSION") },
-                    "capabilities": { "experimentalApi": true }
-                }),
-            )
-            .await?;
+        // `initialize` already happened in `spawn_app_server`, which owns it
+        // because it is the request that reveals an unknown feature name and so
+        // decides whether the child needs respawning. Identity is declared
+        // there: Biorouter says who it is rather than impersonating the vendor's
+        // own first-party client, which their terms prohibit.
         server.notify("initialized", Value::Null).await?;
 
         // Before `thread/start`, so a metered run is refused without sending the
@@ -769,15 +853,10 @@ impl CodexProvider {
         tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
         steering: Option<ProviderSteerReceiver>,
     ) -> Result<(), ProviderError> {
-        server
-            .request(
-                "initialize",
-                json!({
-                    "clientInfo": { "name": "biorouter", "version": env!("CARGO_PKG_VERSION") },
-                    "capabilities": { "experimentalApi": true }
-                }),
-            )
-            .await?;
+        // `initialize` already happened in `spawn_app_server` -- it is the
+        // request that reveals an unknown feature name, so the spawner owns it
+        // and respawns on one. Sending it twice makes the app server reject the
+        // second as an out-of-order handshake.
         server.notify("initialized", Value::Null).await?;
 
         // Before `thread/start`, so a metered run is refused without sending the
@@ -1335,15 +1414,20 @@ impl CodexProvider {
 
         let bridge_url = bridge::active_bridge_url();
         let model_config = self.model.clone();
-        let home = isolated_codex_home(&discovery::codex_home())?;
-        let command = self.app_server_command(Some(home.path()));
         let system = system.to_string();
+        // ⚠ Spawn through `spawn_app_server`, NOT by building a command here.
+        // This is the path the desktop app actually takes, and it used to build
+        // and spawn its own command -- which meant the unknown-feature self-heal
+        // covered the non-streaming path only, i.e. covered nothing a user
+        // would ever hit. Two spawn sites with one recovery between them is the
+        // shape of that bug; there is now one.
+        let spawner = self.clone();
 
         let (tx, rx) =
             tokio::sync::mpsc::unbounded_channel::<Result<ProviderStreamItem, ProviderError>>();
 
         let pump = tokio::spawn(async move {
-            let server = match AppServer::spawn_with_home(command, Some(home)).await {
+            let server = match spawner.spawn_app_server().await {
                 Ok(server) => server,
                 Err(e) => {
                     let _ = tx.send(Err(e));
@@ -1884,7 +1968,7 @@ for line in sys.stdin:
             "the child's config home must not inherit personal MCP servers"
         );
 
-        let command = test_provider().app_server_command(Some(isolated.path()));
+        let command = test_provider().app_server_command(Some(isolated.path()), DISABLED_CHILD_FEATURES);
         let args: Vec<_> = command.as_std().get_args().collect();
         assert!(args.iter().any(|arg| *arg == "--strict-config"));
         for feature in DISABLED_CHILD_FEATURES {
