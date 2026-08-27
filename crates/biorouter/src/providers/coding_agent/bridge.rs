@@ -2004,6 +2004,43 @@ mod tests {
         CallCapability::public_enforced()
     }
 
+    /// The notice a coding-agent child is given must name the tools it will
+    /// ACTUALLY have, read from the live grant rather than from a hard-coded
+    /// list that can drift away from what the bridge advertises.
+    ///
+    /// It must also say the thing that prompted it: Codex keeps advertising its
+    /// own `spawn_agent` even though `multi_agent` is disabled, so a model told
+    /// nothing reaches for it and gets an internal vendor error back.
+    #[tokio::test]
+    async fn the_notice_names_the_tools_the_grant_really_advertises() {
+        publish_base_url("http://127.0.0.1:65535");
+        let lease = issue(dummy_grant()).expect("a base URL is published");
+
+        let named = advertised_tool_names(lease.url());
+        assert!(!named.is_empty(), "the grant advertises tools: {named:?}");
+
+        let notice = crate::providers::coding_agent::native_tools_notice(Some(lease.url()));
+        for tool in &named {
+            assert!(notice.contains(tool), "notice omits {tool}: {notice}");
+        }
+        assert!(
+            notice.contains("spawn_agent"),
+            "no warning off the vendor tool: {notice}"
+        );
+        assert!(
+            notice.contains("DISABLED"),
+            "does not say its own tools are off: {notice}"
+        );
+
+        // ⚠ And once the lease drops the grant is revoked, so there is nothing
+        // to name — a stale URL must not produce a confident list.
+        drop(lease);
+        assert!(crate::providers::coding_agent::native_tools_notice(Some(
+            "http://127.0.0.1:65535/tool_bridge/gone"
+        ))
+        .is_empty());
+    }
+
     fn dummy_grant() -> BridgeGrant {
         grant_cancelled_by(None)
     }
