@@ -3131,7 +3131,11 @@ export type Session = {
      * Id of the parent session that spawned this one as a subagent (BR-71).
      * Sibling of `diverged_from` (branch lineage): `diverged_from` records a
      * user fork; this records a delegation. `None` for non-subagent sessions.
-     * It is also what the §7 capability matrix's `L` axis reads (issue #56).
+     * It is what the interface groups tabs by, and what
+     * `refuse_unless_direct_subagent_child` reads to keep a delegation-scoped
+     * grant pointed at its own children. It is NOT read by the §7 capability
+     * matrix any more: that matrix had an `L` axis until lineage stopped being
+     * a boundary for writes (issue #56).
      */
     parent_session_id?: string | null;
     /**

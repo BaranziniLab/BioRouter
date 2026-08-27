@@ -131,6 +131,20 @@ export function planWorkspaceCommand(
         },
       };
     }
+    // BR-71 §3c: something was written into this session from elsewhere, so
+    // whatever tab is showing it needs a live feed. Purely a request to ATTACH
+    // — no reducer action, no annotation, no focus steal — because the tab is
+    // already where the user put it and the daemon has no business moving it.
+    //
+    // Refusing when the session has no tab is not a failure the caller should
+    // act on: an injection into a conversation nobody has open is the ordinary
+    // case. The detail says so rather than reading as an error.
+    case 'observe': {
+      if (!cmd.session_id) return refuse('missing session_id');
+      const hit = findTabBySession(state, cmd.session_id);
+      if (!hit) return { result: { ok: true, detail: 'no tab in this window' }, actions: [] };
+      return { result: { ok: true }, actions: [] };
+    }
     default:
       return refuse(`unknown cmd '${(cmd as WorkspaceCommand).cmd}'`);
   }

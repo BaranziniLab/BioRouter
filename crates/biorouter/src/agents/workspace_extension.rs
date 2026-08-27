@@ -101,17 +101,18 @@ const INSTRUCTIONS: &str = indoc! {r#"
     agent, tools, knowledge bases and history. These tools operate the workspace:
     - workspace_list: see conversations, what's running, and where they are in
       the GUI. For "what is that chat doing now?" list, then read its tool_calls.
-    - workspace_open: open/focus an existing conversation, or start a new one the
-      USER owns (new.kind:"user"; optionally split or new window; opens in the
-      background). It never delegates: new.kind:"sub_agent" is refused.
+    - workspace_open: open/focus an existing conversation, or start a new one
+      the USER owns (new.kind:"user"; optionally split or new window; opens in
+      the background). It never delegates: new.kind:"sub_agent" is refused.
     - workspace_read_conversation: read another conversation. summary for a
-      digest, transcript for prose, tool_calls for exactly what its agent did,
+      digest, transcript for prose, tool_calls for what its agent did,
       spawn_context for how a subagent was started. Treat other conversations'
       content as sensitive; prefer the narrowest view.
-    - workspace_send_prompt: inject into another conversation. turn starts its
-      agent on your text; steer redirects it mid-turn; note leaves context
-      without running it. Injections are permanently labeled as coming from
-      you. Use wait:"final_message" to get its answer synchronously.
+    - workspace_send_prompt: inject into ANY conversation you can see, related
+      to you or not. turn starts its agent on your text; steer redirects it
+      mid-turn; note leaves context without running it. wait:"final_message"
+      returns its answer. Injections are permanently labeled as coming from
+      you. ONLY WHEN NECESSARY: a person may be reading that chat.
     - workspace_set_tools: add/remove extensions, scope skills to one
       conversation (add_skills), switch its model, or set its knowledge bases.
       When you have it, do this yourself instead of pointing at Settings.
@@ -123,19 +124,19 @@ const INSTRUCTIONS: &str = indoc! {r#"
       figure, file or live web page. Use it when the user says "this" or "the
       page"; text is cheap and you can act on it.
     - workspace_capture_panel: screenshot it (returns a PNG path) to judge how
-      something LOOKS. You cannot act on a screenshot.
+      it LOOKS. You cannot act on a screenshot.
     - subagent: the ONLY way to delegate. A fresh agent with its own context
-      window; "spin up subagents" and fan-out mean this tool, one call per child,
-      same message for parallel. When the app is open the child runs in a visible
-      tab the user can watch and talk to; you still receive only its final
-      summary, so use workspace_read_conversation view:"tool_calls" on it to
-      verify what it did. The user may have intervened; the result tells you so.
+      window; "spin up subagents" and fan-out mean this tool, one call per
+      child, same message for parallel. When the app is open the child runs in
+      a visible tab the user can watch and talk to; you still get only its
+      final summary, so read its tool_calls to verify what it did. The result
+      tells you if the user intervened.
     Only the workspace tools in your tool list are available.
-    Routing: to search past conversations by content use chatrecall (if
-    enabled), not these tools. Durable facts belong in Memory. To fold a
-    conversation into a knowledge base use ingest_conversation; to re-read an
-    externalized payload use read_session_blob. If no GUI is attached these
-    tools still manage conversations headlessly and say so.
+    Routing: to search past conversations by content use chatrecall, not these
+    tools. Durable facts belong in Memory. To fold a conversation into a
+    knowledge base use ingest_conversation; to re-read an externalized payload
+    use read_session_blob. With no GUI attached these tools still manage
+    conversations headlessly and say so.
 "#};
 
 const PANEL_MOIM_MAX_CHARS: usize = 8_000;
@@ -1397,26 +1398,8 @@ impl WorkspaceClient {
     /// advertised tool surface against the capability table. A hand-maintained
     /// mirror of this function is the one place either guard can rot silently.
     pub fn get_tools() -> Vec<Tool> {
-        vec![
-            Self::tool(
-                "workspace_read_panel",
-                "Read what the preview panel is currently showing: the rendered \
-                 document, figure, file or live web page. **Prefer this over \
-                 workspace_capture_panel** — text is cheaper and can be acted \
-                 on, where a screenshot can only be looked at. Returns nothing \
-                 readable for an image; capture it instead.",
-                serde_json::to_value(schema_for!(WorkspacePanelParams)).unwrap(),
-                true,
-            ),
-            Self::tool(
-                "workspace_capture_panel",
-                "Screenshot the preview panel, saved as a PNG whose path is \
-                 returned. Use it to judge how something LOOKS — a figure, a \
-                 rendered page, a layout. You cannot act on a screenshot: to \
-                 find or change content, use workspace_read_panel.",
-                serde_json::to_value(schema_for!(WorkspacePanelParams)).unwrap(),
-                true,
-            ),
+        let mut tools = Self::panel_tools();
+        tools.extend([
             Self::tool(
                 "workspace_list",
                 "List conversations in the workspace: id, name, type, running \
@@ -1435,10 +1418,16 @@ impl WorkspaceClient {
             ),
             Self::tool(
                 "workspace_send_prompt",
-                "Inject a prompt into another conversation. mode turn: start its \
-                 agent (target idle); steer: redirect mid-turn (target running); \
-                 note: append context without a turn. Injections are permanently \
-                 provenance-labeled. wait:\"final_message\" returns its answer.",
+                "Inject a prompt into ANY conversation you can see — a subagent \
+                 you spawned or an unrelated chat. mode turn: start its agent \
+                 (target idle); steer: redirect mid-turn (target running); note: \
+                 append context without a turn. Injections are permanently \
+                 provenance-labeled. wait:\"final_message\" returns its answer. \
+                 ONLY WHEN NECESSARY: a human may be reading that conversation, \
+                 and this interrupts them. Prefer answering here, or reading the \
+                 other conversation, over writing into it; do not use it to chat \
+                 with yourself, to spread a task you could do, or to nudge a \
+                 conversation that is already working.",
                 serde_json::to_value(schema_for!(WorkspaceSendPromptParams)).unwrap(),
                 false,
             ),
@@ -1496,6 +1485,39 @@ impl WorkspaceClient {
                  created and the result says no tab was opened.",
                 serde_json::to_value(schema_for!(WorkspaceOpenParams)).unwrap(),
                 false,
+            ),
+        ]);
+        tools
+    }
+
+    /// The preview-panel pair, split out of [`Self::get_tools`] only because
+    /// that function outgrew the per-function line baseline. These two belong
+    /// together — `workspace_read_panel` and `workspace_capture_panel` are the
+    /// text and the picture of the same surface, and each description tells the
+    /// model to prefer the other in the case it does not cover — so they are the
+    /// natural seam. **`get_tools` is still the whole advertised surface**, and
+    /// `workspace_open_is_advertised_and_completes_the_surface` still holds it
+    /// against the instruction block name for name.
+    fn panel_tools() -> Vec<Tool> {
+        vec![
+            Self::tool(
+                "workspace_read_panel",
+                "Read what the preview panel is currently showing: the rendered \
+                 document, figure, file or live web page. **Prefer this over \
+                 workspace_capture_panel** — text is cheaper and can be acted \
+                 on, where a screenshot can only be looked at. Returns nothing \
+                 readable for an image; capture it instead.",
+                serde_json::to_value(schema_for!(WorkspacePanelParams)).unwrap(),
+                true,
+            ),
+            Self::tool(
+                "workspace_capture_panel",
+                "Screenshot the preview panel, saved as a PNG whose path is \
+                 returned. Use it to judge how something LOOKS — a figure, a \
+                 rendered page, a layout. You cannot act on a screenshot: to \
+                 find or change content, use workspace_read_panel.",
+                serde_json::to_value(schema_for!(WorkspacePanelParams)).unwrap(),
+                true,
             ),
         ]
     }
@@ -1564,15 +1586,34 @@ impl WorkspaceClient {
         .await
     }
 
+    /// WRITE ⇔ VIS: the tier is the only boundary a cross-session mutation has.
+    ///
+    /// ⚠ **Lineage is not a boundary, and used to be.** This body used to
+    /// classify the target as self / child / other and refuse the third, so an
+    /// agent could steer a conversation it had spawned and only read one it had
+    /// not. That is retired — an agent may inject into any conversation it can
+    /// see. What did not change is the half that matters: the read gate still
+    /// runs first, so a public-capability caller is refused a private target
+    /// before this function looks at anything, and the refusal is still one
+    /// sentence for private, unreadable and absent alike.
+    ///
+    /// The caller's own id is NOT an argument: nothing in the write decision
+    /// reads it any more. The one thing still keyed on the (caller, target)
+    /// pair is the first-crossing disclosure, and that is asked and recorded by
+    /// the handlers — see [`crate::privacy::crossing`].
+    ///
+    /// Returns the target's classification on success, so the caller can decide
+    /// whether the write it is about to perform is a first crossing without
+    /// resolving the same row a third time. `None` is the master opt-out (DR-15)
+    /// — with enforcement off there is no tier to cross.
     async fn refuse_unless_writable(
         &self,
         cap: crate::privacy::CallCapability,
-        caller_session_id: &str,
         target_session_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<Option<crate::privacy::SessionClassification>, String> {
         self.refuse_unless_visible(cap, target_session_id).await?;
         if !cap.enforced() {
-            return Ok(());
+            return Ok(None);
         }
 
         let target = self
@@ -1581,16 +1622,8 @@ impl WorkspaceClient {
             .get_session(target_session_id, false)
             .await
             .map_err(|_| crate::privacy::refusal::workspace_out_of_reach())?;
-        let lineage = if target.id == caller_session_id {
-            crate::privacy::visibility::Lineage::Zelf
-        } else {
-            crate::privacy::visibility::lineage_of(
-                target.parent_session_id.as_deref(),
-                caller_session_id,
-            )
-        };
-        if crate::privacy::visibility::may_write(cap.tier(), target.privacy_tier, lineage) {
-            Ok(())
+        if crate::privacy::visibility::may_write(cap.tier(), target.privacy_tier) {
+            Ok(Some(target.privacy_tier))
         } else {
             Err(crate::privacy::refusal::workspace_out_of_reach())
         }
@@ -2468,6 +2501,96 @@ impl WorkspaceClient {
         }
     }
 
+    /// The RECORD half of the first-crossing disclosure — the half that decides
+    /// a pair has crossed and may stop being asked about.
+    ///
+    /// Three conditions, and the third is the one that is easy to leave out.
+    /// The write must have landed (the caller checks that); the write must
+    /// really have been a crossing (`requires_first_crossing_approval` against
+    /// the classification the gate resolved, so this cannot disagree with the
+    /// gate); and **there must have been something to disclose**, asked of the
+    /// same [`crossing_payload`] the inspector asks.
+    ///
+    /// ⚠ Without the third, a change the inspector considers payload-free
+    /// consumes the pair's one disclosure. `workspace_set_tools
+    /// { set_knowledge_bases: [] }` is exactly that: an accepted change that
+    /// clears the target's knowledge bases, raises no card from either
+    /// workspace inspector, and would otherwise mark the pair as crossed — so
+    /// the caller's next `workspace_send_prompt` into that conversation would
+    /// ship its payload to a public model in silence, with no approval ever
+    /// having been shown.
+    ///
+    /// [`crossing_payload`]: crate::agents::workspace_inspector::crossing_payload
+    fn record_crossing_if_disclosed(
+        cap: crate::privacy::CallCapability,
+        resolved_tier: Option<crate::privacy::SessionClassification>,
+        caller_session_id: &str,
+        target_session_id: &str,
+        tool_name: &str,
+        arguments: Option<&JsonObject>,
+    ) {
+        let Some(tier) = resolved_tier else { return };
+        if !crate::privacy::visibility::requires_first_crossing_approval(cap.tier(), tier) {
+            return;
+        }
+        let Some(args) = arguments else { return };
+        if crate::agents::workspace_inspector::crossing_payload(tool_name, args).is_none() {
+            return;
+        }
+        crate::privacy::crossing::record(caller_session_id, target_session_id);
+    }
+
+    /// **§3c: make the target's open tab render this NOW, not on reload.**
+    ///
+    /// The durable row is published on the session bus by whichever code path
+    /// made it durable — `send_prompt_note` here, the drain loop for `steer`,
+    /// `Agent::reply` for `turn`. That is necessary and not sufficient: a
+    /// `publish` is a pure lookup and a no-op when the session has no
+    /// subscriber, and **a tab the user opened has no subscriber**. Nothing in
+    /// the renderer attaches an observer to an ordinary tab; it is normally
+    /// driven by its own `/reply` stream, and an idle tab has nothing to listen
+    /// to. Cross-chat injection is exactly the case that breaks that assumption.
+    ///
+    /// So the tab is asked to attach one. The frame carries no placement, no
+    /// focus and no annotation: the daemon is not moving the user's tabs, it is
+    /// telling the window that this conversation is now changing underneath it.
+    ///
+    /// ⚠ **This is deliberately NOT ordered against the publish, and must not
+    /// be made to depend on it.** An observer's first frame is a full
+    /// `UpdateConversation` snapshot read from the store, so a tab that attaches
+    /// *after* the publish still renders the injected row. Whichever arrives
+    /// first, the message shows; requiring a handshake to win a race against a
+    /// broadcast would be the fragile version of this.
+    ///
+    /// Best-effort, like [`Self::notify_target`]: a frame that cannot be
+    /// delivered never fails the tool.
+    async fn reflect_in_target_tab(&self, session_id: &str) {
+        if let Some(services) = workspace_services::get() {
+            if services.gui_attached() {
+                // ⚠ `gui_command_near`, not `gui_command`. The plain form
+                // resolves to `focused_or_recent()` — ONE window, the focused
+                // one — so a conversation open in a background window while the
+                // user works in another gets its attach frame delivered to the
+                // wrong renderer, which answers "no tab in this window" and
+                // attaches nothing. That is exactly the case this method exists
+                // for, and exactly the case where a user is least likely to
+                // notice a conversation being steered. `gui_command_near`
+                // routes by `bridge_for_session` and falls back to the focused
+                // window only when no window claims the session.
+                let _ = services
+                    .gui_command_near(
+                        json!({
+                            "type": "workspace", "cmd": "observe",
+                            "session_id": session_id,
+                        }),
+                        false,
+                        session_id,
+                    )
+                    .await;
+            }
+        }
+    }
+
     /// Decision 4, read from the RIGHT place — and read WITHOUT creating an
     /// agent.
     ///
@@ -2507,6 +2630,10 @@ impl WorkspaceClient {
         cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
+        // Kept before `parse_args` consumes it: the record half of the
+        // first-crossing disclosure asks `crossing_payload` with the SAME raw
+        // arguments the inspector asked it with. See the note on that function.
+        let raw_arguments = arguments.clone();
         let args: WorkspaceSendPromptParams = parse_args(arguments)?;
         if args.session_id == caller_session_id {
             return Err(
@@ -2517,22 +2644,24 @@ impl WorkspaceClient {
             return Err("text must not be empty".into());
         }
         // Issue #56, design §7 row 5 (`workspace_send_prompt` = ✗ at C=Pub,
-        // T=Priv, under every lineage). It is on this list as a **reader** as
-        // well as a writer, and that is the half easy to miss: `mode:"turn"`
-        // with `wait:"final_message"` parks on the target's turn and returns
-        // its final assistant message verbatim — a private conversation's
-        // content, arriving through a tool whose name says "send".
+        // T=Priv). It is on this list as a **reader** as well as a writer, and
+        // that is the half easy to miss: `mode:"turn"` with
+        // `wait:"final_message"` parks on the target's turn and returns its
+        // final assistant message verbatim — a private conversation's content,
+        // arriving through a tool whose name says "send".
         //
         // Placed after the two pure argument checks above (neither touches the
         // store, and neither can say anything about the target) and before
         // `caller_provenance`, which is this handler's first store read.
         //
-        self.refuse_unless_writable(cap, caller_session_id, &args.session_id)
-            .await?;
+        // The gate no longer asks about lineage: an unrelated conversation is a
+        // legal target, a private one still is not.
+        let write_target = self.refuse_unless_writable(cap, &args.session_id).await?;
         let provenance = self.caller_provenance(caller_session_id).await;
         let services = workspace_services::get();
+        let target_session_id = args.session_id.clone();
 
-        match args.mode.as_str() {
+        let delivered = match args.mode.as_str() {
             "note" => self.send_prompt_note(args, provenance).await,
             "steer" => {
                 self.send_prompt_steer(caller_session_id, args, provenance, services)
@@ -2543,7 +2672,25 @@ impl WorkspaceClient {
                     .await
             }
             other => Err(format!("unknown mode '{other}' (turn | steer | note)")),
+        };
+        // The disclosure's other half. `WorkspaceCrossingInspector` asked, in
+        // the caller's own turn, whether this (caller, target) pair had crossed
+        // yet and raised the payload for approval if it had not; this is the
+        // record that it now has, taken only once the write has actually
+        // landed. Recording at the gate instead would let a denied approval —
+        // or a refusal underneath it — buy silence for the retry.
+        if delivered.is_ok() {
+            self.reflect_in_target_tab(&target_session_id).await;
+            Self::record_crossing_if_disclosed(
+                cap,
+                write_target,
+                caller_session_id,
+                &target_session_id,
+                "workspace_send_prompt",
+                raw_arguments.as_ref(),
+            );
         }
+        delivered
     }
 
     /// `mode:"note"` — leave context on the target without running it.
@@ -2594,6 +2741,25 @@ impl WorkspaceClient {
             .add_message_adopting_uid(&args.session_id, &mut message)
             .await
             .map_err(|e| format!("failed to append note: {e}"))?;
+        // AFTER the row is durable, and with the row's own identity: an open tab
+        // renders this the moment it lands instead of on the next reload.
+        //
+        // ⚠ The order is the whole point. `add_message_adopting_uid` stamps the
+        // minted uid onto `message` (#41), so publishing here sends the stored
+        // row; publishing a pre-write copy would paint a bubble with no `id`,
+        // which the renderer cannot reconcile against the stored twin that
+        // arrives with the next snapshot — a message that renders and then
+        // duplicates or vanishes is worse than one that arrives late.
+        //
+        // `publish` is a pure lookup and a no-op when the target has no
+        // observer, so this costs a hash lookup for a conversation nobody is
+        // watching, and the durable row is the only thing anyone relies on.
+        crate::session_events::publish(
+            &args.session_id,
+            crate::session_events::SessionBusEvent::Agent(crate::agents::AgentEvent::Message(
+                message,
+            )),
+        );
         Ok(vec![Content::text(format!(
             "Note appended to session {} (no turn started; preserved across \
              compaction).",
@@ -2810,6 +2976,9 @@ impl WorkspaceClient {
         cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
+        // See `handle_send_prompt`: the record half asks `crossing_payload`
+        // with the same raw arguments the inspector did.
+        let raw_arguments = arguments.clone();
         let args: WorkspaceSetToolsParams = parse_args(arguments)?;
 
         // ⚠ **A conversation may not re-tool ITSELF through this door.**
@@ -2848,8 +3017,7 @@ impl WorkspaceClient {
         // conversation must certainly not re-tool one. FIRST, before any store
         // read that could answer a question about the target.
         //
-        self.refuse_unless_writable(cap, caller_session_id, &args.session_id)
-            .await?;
+        let write_target = self.refuse_unless_writable(cap, &args.session_id).await?;
 
         // ---- Resolve EVERYTHING before mutating anything, so a bad name is a
         // clean no-op rather than a half-applied change. ------------------
@@ -2886,51 +3054,10 @@ impl WorkspaceClient {
         };
 
         if let Some(agent) = &agent {
-            // **Gate F1's UNLOAD half, at this tool's own door (issue #56,
-            // finding 14's SECOND door).** `manage_extensions {disable}` has
-            // asked `assert_extension_manageable` since finding 14 landed; this
-            // handler reached the very same executor — `Agent::remove_extension`,
-            // a passthrough to `ExtensionManager::remove_extension` — with no
-            // privacy decision anywhere on the path. So the capability was gated
-            // at one entrance and open at the other, and the reachable caller is
-            // the one finding 14 names: a chat classified Private but bound to a
-            // public model passes `refuse_unless_visible` for its own row, and
-            // then unloaded the private connector the public model may not see,
-            // may not call into, and may not name.
-            //
-            // ⚠ **The same predicate as the other door, called by name — not a
-            // second spelling of it.** `assert_extension_manageable` is
-            // `assert_extension_reachable(&normalize(name), Some(admitted))`
-            // verbatim, so all three of its consequences arrive here too, and
-            // all three are wanted: an unknown name reads Private and is refused
-            // (which is what stops this refusal being the existence oracle
-            // `add_extensions` needed a comment to avoid), the name is
-            // normalized to the key the executor removes under, and a model
-            // bound to another institution may see a mismatched connector but
-            // may not unload it. Writing the rule out here in this file's own
-            // words is exactly how these two doors drifted apart in the first
-            // place.
-            //
-            // ⚠ **Asked on the TARGET's manager**, because it is the target's
-            // loaded set that is about to change and the tier is a property of
-            // that entry — while `cap` is the CALLER's, because the caller is
-            // the one being entitled. Both halves matter when the two
-            // conversations differ.
-            //
-            // ⚠ **BEFORE `apply_extension_changes`, not inside its remove loop**,
-            // so a refused removal cannot land after that function has already
-            // applied the adds — the "resolve everything before mutating
-            // anything" rule the add half states above, held across both halves.
-            for name in &args.remove_extensions {
-                agent
-                    .extension_manager
-                    .assert_extension_manageable(name, cap)
-                    .await
-                    .map_err(|e| e.message.to_string())?;
-            }
             applied.extend(
-                Self::apply_extension_changes(
+                Self::apply_extension_changes_gated(
                     agent,
+                    cap,
                     &args.session_id,
                     add_configs,
                     &args.remove_extensions,
@@ -2981,6 +3108,18 @@ impl WorkspaceClient {
         )
         .await;
 
+        // The first-crossing disclosure's record half, exactly as in
+        // `handle_send_prompt`: taken once the change is applied, never at the
+        // gate that asked about it.
+        Self::record_crossing_if_disclosed(
+            cap,
+            write_target,
+            caller_session_id,
+            &args.session_id,
+            "workspace_set_tools",
+            raw_arguments.as_ref(),
+        );
+
         let next_turn_note = if applied.iter().any(|a| a.starts_with("model=")) {
             " The model change applies to this conversation's NEXT turn."
         } else {
@@ -2991,6 +3130,63 @@ impl WorkspaceClient {
             args.session_id,
             applied.join(", ")
         ))])
+    }
+
+    /// The extension half of `workspace_set_tools`: **Gate F1's unload check,
+    /// then the apply**. Lifted out of the handler whole — body and reasoning
+    /// together — when the handler outgrew the per-function line baseline; the
+    /// order it encodes (every removal entitled BEFORE anything is applied) is
+    /// the part that must not be rearranged, and it is argued for inline.
+    async fn apply_extension_changes_gated(
+        agent: &std::sync::Arc<crate::agents::Agent>,
+        cap: crate::privacy::CallCapability,
+        session_id: &str,
+        add_configs: Vec<crate::agents::ExtensionConfig>,
+        remove_extensions: &[String],
+    ) -> Result<Vec<String>, String> {
+        // **Gate F1's UNLOAD half, at this tool's own door (issue #56,
+        // finding 14's SECOND door).** `manage_extensions {disable}` has
+        // asked `assert_extension_manageable` since finding 14 landed; this
+        // handler reached the very same executor — `Agent::remove_extension`,
+        // a passthrough to `ExtensionManager::remove_extension` — with no
+        // privacy decision anywhere on the path. So the capability was gated
+        // at one entrance and open at the other, and the reachable caller is
+        // the one finding 14 names: a chat classified Private but bound to a
+        // public model passes `refuse_unless_visible` for its own row, and
+        // then unloaded the private connector the public model may not see,
+        // may not call into, and may not name.
+        //
+        // ⚠ **The same predicate as the other door, called by name — not a
+        // second spelling of it.** `assert_extension_manageable` is
+        // `assert_extension_reachable(&normalize(name), Some(admitted))`
+        // verbatim, so all three of its consequences arrive here too, and
+        // all three are wanted: an unknown name reads Private and is refused
+        // (which is what stops this refusal being the existence oracle
+        // `add_extensions` needed a comment to avoid), the name is
+        // normalized to the key the executor removes under, and a model
+        // bound to another institution may see a mismatched connector but
+        // may not unload it. Writing the rule out here in this file's own
+        // words is exactly how these two doors drifted apart in the first
+        // place.
+        //
+        // ⚠ **Asked on the TARGET's manager**, because it is the target's
+        // loaded set that is about to change and the tier is a property of
+        // that entry — while `cap` is the CALLER's, because the caller is
+        // the one being entitled. Both halves matter when the two
+        // conversations differ.
+        //
+        // ⚠ **BEFORE `apply_extension_changes`, not inside its remove loop**,
+        // so a refused removal cannot land after that function has already
+        // applied the adds — the "resolve everything before mutating
+        // anything" rule the add half states above, held across both halves.
+        for name in remove_extensions {
+            agent
+                .extension_manager
+                .assert_extension_manageable(name, cap)
+                .await
+                .map_err(|e| e.message.to_string())?;
+        }
+        Self::apply_extension_changes(agent, session_id, add_configs, remove_extensions).await
     }
 
     /// **Gate F1, at the workspace's own two enable doors** (issue #56,
@@ -3409,8 +3605,10 @@ impl WorkspaceClient {
             self.refuse_unless_direct_subagent_child(caller_session_id, &args.session_id)
                 .await?;
         }
-        self.refuse_unless_writable(cap, caller_session_id, &args.session_id)
-            .await?;
+        // The target's classification is not needed here: `workspace_close`
+        // carries no payload, so there is nothing for a first crossing to
+        // disclose.
+        self.refuse_unless_writable(cap, &args.session_id).await?;
         let services = workspace_services::get();
         let background = background_subagent_for(caller_session_id, &args.session_id);
 
@@ -5745,54 +5943,45 @@ pub(crate) mod tests {
         ))
     }
 
+    /// Call a workspace tool as `meta`'s session.
+    ///
+    /// ⚠ **This used to LINK the target to the caller first** — it rewrote the
+    /// target's `parent_session_id` to the caller's id before every
+    /// `send_prompt` / `set_tools` / `close`, because the write rule was
+    /// `VIS ∧ L ∈ {self, child}` and a tier assertion could not otherwise get
+    /// past it. That fabrication is gone with the rule, and its removal is a
+    /// strengthening rather than a tidy-up: every tier test below now drives an
+    /// UNRELATED conversation, which is the case the old helper was quietly
+    /// converting into a related one.
     async fn call_as(
         c: &WorkspaceClient,
         tool: &str,
         args: serde_json::Value,
         meta: crate::agents::mcp_client::McpMeta,
     ) -> CallToolResult {
-        if matches!(
-            tool,
-            "workspace_send_prompt" | "workspace_set_tools" | "workspace_close"
-        ) {
-            if let Some(target) = args.get("session_id").and_then(serde_json::Value::as_str) {
-                if target != meta.session_id
-                    && c.context
-                        .session_manager
-                        .get_session(target, false)
-                        .await
-                        .is_ok()
-                {
-                    c.context
-                        .session_manager
-                        .update(target)
-                        .parent_session_id(Some(meta.session_id.clone()))
-                        .apply()
-                        .await
-                        .expect("test target can be linked to its caller");
-                }
-            }
-        }
         let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
         c.call_tool(tool, Some(args), meta, CancellationToken::new())
             .await
             .unwrap()
     }
 
-    async fn call_as_without_test_lineage(
-        c: &WorkspaceClient,
-        tool: &str,
-        args: serde_json::Value,
-        meta: crate::agents::mcp_client::McpMeta,
-    ) -> CallToolResult {
-        let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
-        c.call_tool(tool, Some(args), meta, CancellationToken::new())
-            .await
-            .unwrap()
-    }
-
+    /// **The headline behaviour of the cross-chat injection change**, and the
+    /// exact inverse of the test it replaces.
+    ///
+    /// `workspace_writes_are_limited_to_direct_children` built this same
+    /// parent / child / grandchild / unrelated fixture and asserted that
+    /// `send_prompt`, `set_tools` and `close` into the grandchild and the
+    /// unrelated conversation were REFUSED with `workspace_out_of_reach()`.
+    /// The write rule no longer reads lineage, so all four targets are
+    /// reachable. Rewritten rather than deleted: this is where an accidental
+    /// re-narrowing shows up as a failure.
+    ///
+    /// The reachability is asserted as an EFFECT, not as a non-error — the note
+    /// has to be in the target's conversation afterwards. A handler that
+    /// reported success and appended nothing would satisfy `is_error != true`.
     #[tokio::test]
-    async fn workspace_writes_are_limited_to_direct_children() {
+    #[serial_test::serial(workspace_services)]
+    async fn workspace_writes_reach_any_visible_conversation_not_only_children() {
         use crate::session::session_manager::SessionType;
 
         let c = client();
@@ -5834,62 +6023,100 @@ pub(crate) mod tests {
                 crate::privacy::CallCapability::for_test_restricted(),
             )
         };
-        let child_result = call_as_without_test_lineage(
-            &c,
-            "workspace_send_prompt",
-            serde_json::json!({
-                "session_id": child.id, "text": "direct-child-marker", "mode": "note"
-            }),
-            meta(),
-        )
-        .await;
-        assert_ne!(
-            child_result.is_error,
-            Some(true),
-            "{}",
-            text_of(&child_result)
-        );
 
-        for target in [&unrelated.id, &grandchild.id] {
-            let refused = call_as_without_test_lineage(
+        // A direct child, a TRANSITIVE grandchild (one hop was the old rule's
+        // limit) and a conversation with no relationship to the caller at all.
+        for (label, target) in [
+            ("child", &child.id),
+            ("grandchild", &grandchild.id),
+            ("unrelated", &unrelated.id),
+        ] {
+            let marker = format!("reaches-{label}");
+            let sent = call_as(
                 &c,
                 "workspace_send_prompt",
                 serde_json::json!({
-                    "session_id": target, "text": "must-not-land", "mode": "note"
+                    "session_id": target, "text": marker, "mode": "note"
                 }),
                 meta(),
             )
             .await;
-            assert_eq!(refused.is_error, Some(true), "{}", text_of(&refused));
+            assert_ne!(sent.is_error, Some(true), "{label}: {}", text_of(&sent));
+
+            let after = text_of(
+                &call_as(
+                    &c,
+                    "workspace_read_conversation",
+                    serde_json::json!({ "session_id": target }),
+                    meta(),
+                )
+                .await,
+            );
             assert!(
-                text_of(&refused).contains(&crate::privacy::refusal::workspace_out_of_reach()),
-                "{}",
-                text_of(&refused)
+                after.contains(&marker),
+                "{label}: the injection reported success and landed nowhere: {after}"
             );
         }
 
-        for (tool, args) in [
-            (
-                "workspace_set_tools",
-                serde_json::json!({
-                    "session_id": unrelated.id, "add_extensions": ["unknown-extension"]
-                }),
-            ),
-            (
+        // The two other write verbs widened with it. `set_tools` is driven with
+        // an unknown extension so the assertion is about the GATE and not about
+        // whether the machine running the test happens to have one installed:
+        // an out-of-reach target refuses before the name is resolved, so a
+        // reachable one must fail differently.
+        let retooled = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({
+                "session_id": unrelated.id, "add_extensions": ["unknown-extension"]
+            }),
+            meta(),
+        )
+        .await;
+        let retooled = text_of(&retooled);
+        assert!(
+            !retooled.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+            "set_tools still refuses an unrelated conversation as out of reach: {retooled}"
+        );
+
+        // `close` is asserted the same way and for a second reason: every scope
+        // it has needs the daemon, which a unit test does not have, so "not
+        // out of reach" is the strongest true statement available here.
+        let closed = text_of(
+            &call_as(
+                &c,
                 "workspace_close",
-                serde_json::json!({ "session_id": unrelated.id, "scope": "everything" }),
-            ),
-        ] {
-            let refused = call_as_without_test_lineage(&c, tool, args, meta()).await;
-            assert_eq!(refused.is_error, Some(true), "{}", text_of(&refused));
-            assert!(
-                text_of(&refused).contains(&crate::privacy::refusal::workspace_out_of_reach()),
-                "{tool}: {}",
-                text_of(&refused)
-            );
-        }
+                serde_json::json!({ "session_id": unrelated.id, "scope": "turn" }),
+                meta(),
+            )
+            .await,
+        );
+        assert!(
+            !closed.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+            "close still refuses an unrelated conversation as out of reach: {closed}"
+        );
+    }
 
-        let opted_out = call_as_without_test_lineage(
+    /// The tier is still a boundary for a caller that opted the feature OUT,
+    /// which is a different thing from the lineage rule going away: with
+    /// enforcement off nothing is refused, and this pins that the widened rule
+    /// did not accidentally become the only reason writes succeed.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn an_opted_out_caller_still_writes_into_an_unrelated_conversation() {
+        use crate::session::session_manager::SessionType;
+
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let caller = sm
+            .create_session(std::env::temp_dir(), "parent".into(), SessionType::User)
+            .await
+            .unwrap();
+        let unrelated = sm
+            .create_session(std::env::temp_dir(), "unrelated".into(), SessionType::User)
+            .await
+            .unwrap();
+
+        let opted_out = call_as(
             &c,
             "workspace_send_prompt",
             serde_json::json!({
@@ -5945,7 +6172,7 @@ pub(crate) mod tests {
             )
             .with_workspace_child_scope_only(true)
         };
-        let readable = call_as_without_test_lineage(
+        let readable = call_as(
             &c,
             "workspace_read_conversation",
             serde_json::json!({ "session_id": child.id, "view": "summary" }),
@@ -5968,7 +6195,7 @@ pub(crate) mod tests {
                 serde_json::json!({ "session_id": unrelated.id, "scope": "turn" }),
             ),
         ] {
-            let refused = call_as_without_test_lineage(&c, tool, args, meta()).await;
+            let refused = call_as(&c, tool, args, meta()).await;
             assert_eq!(
                 refused.is_error,
                 Some(true),
@@ -6137,6 +6364,91 @@ pub(crate) mod tests {
         assert!(ids.contains(&f.public_id), "{ids:?}");
     }
 
+    /// **`mode:"note"` reflects in an open tab live.** The other two modes reach
+    /// the bus through the target's own turn (steer via the drain loop, turn via
+    /// `Agent::reply` at the point the row is persisted); `note` starts no turn,
+    /// so there is nothing else to carry it and the handler publishes it itself.
+    /// Before this, an open tab showed an appended note only after a reload.
+    ///
+    /// Asserted on the DURABLE row. `add_message_adopting_uid` stamps the minted
+    /// uid onto the message, so a frame with `id: None` would be one published
+    /// before the write — a bubble the renderer cannot reconcile against the
+    /// stored twin arriving with the next snapshot.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn an_appended_note_reaches_the_targets_open_tab_live() {
+        use crate::session::session_manager::SessionType;
+        const NOTE: &str = "br71-note-live-marker";
+
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let caller = sm
+            .create_session(std::env::temp_dir(), "caller".into(), SessionType::User)
+            .await
+            .unwrap();
+        let target = sm
+            .create_session(std::env::temp_dir(), "target".into(), SessionType::User)
+            .await
+            .unwrap();
+
+        // Subscribed BEFORE the call: the bus is a broadcast with no replay, and
+        // `publish` is a pure lookup that is a NO-OP when nobody is listening —
+        // so a subscription opened afterwards would pass whatever happened.
+        let mut observer = crate::session_events::subscribe(&target.id);
+
+        let sent = call_as(
+            &c,
+            "workspace_send_prompt",
+            serde_json::json!({
+                "session_id": target.id, "text": NOTE, "mode": "note"
+            }),
+            crate::agents::mcp_client::McpMeta::new(
+                caller.id,
+                crate::privacy::CallCapability::for_test_restricted(),
+            ),
+        )
+        .await;
+        assert_ne!(sent.is_error, Some(true), "{}", text_of(&sent));
+
+        let mut published = None;
+        while let Ok(event) = observer.try_recv() {
+            if let SessionBusEvent::Agent(crate::agents::AgentEvent::Message(m)) = event {
+                if m.content
+                    .iter()
+                    .any(|content| content.as_text().is_some_and(|text| text.contains(NOTE)))
+                {
+                    published = Some(m);
+                }
+            }
+        }
+        let published = published.expect(
+            "the note was appended but never published, so an open tab would show \
+             it only after a reload",
+        );
+        assert!(
+            published.id.is_some(),
+            "the note was published before it was durable"
+        );
+
+        // The published row IS the stored row, not a look-alike.
+        let stored = sm
+            .get_session(&target.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .expect("the target has a conversation");
+        assert!(
+            stored.messages().iter().any(|m| m.id == published.id),
+            "the published uid names no stored message"
+        );
+        // And the provenance survives onto the frame, so the renderer attributes
+        // it to the sending conversation rather than drawing it as the user's own.
+        assert_eq!(
+            published.metadata.provenance.as_ref().map(|p| p.kind),
+            Some(crate::conversation::message::ProvenanceKind::AgentInjection),
+        );
+    }
+
     /// §7 row 5. `workspace_send_prompt` is on the gated list as a **reader** as
     /// well as a writer: `mode:"turn"` with `wait:"final_message"` returns the
     /// target's final assistant message verbatim.
@@ -6146,6 +6458,7 @@ pub(crate) mod tests {
     /// note must not be in the conversation afterwards, read back by a caller
     /// that is allowed to look.
     #[tokio::test]
+    #[serial_test::serial(workspace_services)]
     async fn a_public_caller_cannot_inject_into_a_private_conversation() {
         let f = tier_fixture().await;
         const INJECTED: &str = "workspace-tier-injection-marker";
@@ -7230,8 +7543,8 @@ pub(crate) mod tests {
         // §7 column C, at every handler that names another conversation.
         // Four read-only handler sites call the read gate directly; its helper
         // contains the fifth occurrence. Three mutating handlers call the
-        // write gate, which composes the same read gate before its lineage
-        // check. Together those are read_conversation, open (existing),
+        // write gate, which composes the same read gate before asking
+        // `may_write`. Together those are read_conversation, open (existing),
         // send_prompt, set_tools, close, watch, and the panel pair (which share
         // one handler). Exact counts make a new door fail this audit until its
         // gate is chosen deliberately.
@@ -7701,6 +8014,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(workspace_services)]
     async fn send_prompt_note_appends_with_provenance_without_running_a_turn() {
         use crate::conversation::message::ProvenanceKind;
         let c = client();
@@ -8175,15 +8489,37 @@ pub(crate) mod tests {
             // Bind out of the guard before the early return: a live `MutexGuard`
             // across the tail of an `async fn` makes the future `!Send`.
             let failure = self.gui_error.lock().unwrap().clone();
-            let queued = self.gui_answers.lock().unwrap().pop_front();
             match failure {
                 Some(message) => Err(message),
                 // A fire-and-forget emit never carries an `ok` — the real
                 // `ServerWorkspaceServices` answers `{"sent": true}` — so a
                 // caller that did not wait cannot learn anything, and the fake
                 // must not hand it a verdict it could not have had.
+                //
+                // ⚠ **It must not CONSUME one either, and that is a fix rather
+                // than a tidy-up.** The `pop_front` used to happen above this
+                // match, so an emit that could not return an answer still took
+                // one off the queue — directly contradicting the sentence above
+                // it. Any staged reply was then stolen from the read it was
+                // staged for, which fell through to the `{"ok": true}` default
+                // and made a test fail on an assertion about something else
+                // entirely. `panel_secret_guard_rejects_top_level_and_wrapped_locators`
+                // is the one that showed it: it stages two secret-bearing panel
+                // replies and consumes them with two reads, so one stolen answer
+                // turns its second read into a harmless default and the
+                // SecretGuard refusal it asserts on never happens.
+                //
+                // Every `notify_target` toast is such an emit, and BR-71 §3c
+                // added a second (`reflect_in_target_tab`, on every accepted
+                // injection), which is what made a rare pre-existing flake
+                // frequent enough to catch.
                 None if !wait_result => Ok(serde_json::json!({ "sent": true })),
-                None => Ok(queued.unwrap_or_else(|| serde_json::json!({ "ok": true }))),
+                None => Ok(self
+                    .gui_answers
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or_else(|| serde_json::json!({ "ok": true }))),
             }
         }
     }
@@ -9177,6 +9513,250 @@ pub(crate) mod tests {
             frames[0]["message"].as_str().unwrap().contains("steered"),
             "got {frames:?}"
         );
+    }
+
+    /// **§3c, the half a bus publish cannot do on its own.** Publishing the
+    /// durable row is necessary and not sufficient: `session_events::publish` is
+    /// a pure lookup that is a NO-OP when the session has no subscriber, and a
+    /// tab the *user* opened has no subscriber — nothing in the renderer
+    /// attaches an observer to an ordinary tab. So every accepted injection also
+    /// asks the window holding that conversation to attach one.
+    ///
+    /// All three modes, because all three change a conversation somebody may be
+    /// looking at. `note` is the one that would be easiest to skip and the one
+    /// that needs it most: it starts no turn, so there is no other frame of any
+    /// kind heading for that tab.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn every_injection_asks_the_targets_tab_for_a_live_feed() {
+        use crate::agents::agent::TurnId;
+        let c = client();
+        let caller = c
+            .context
+            .session_manager
+            .create_session(
+                std::env::temp_dir(),
+                "injector".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        // note — no daemon work at all beyond the frame.
+        let note_target = seeded_target(&c, "note-target").await;
+        let services = FakeServices::with_gui(true).install();
+        let sent = send_prompt(
+            &c,
+            &caller.id,
+            serde_json::json!({
+                "session_id": note_target, "text": "context for later", "mode": "note"
+            }),
+        )
+        .await;
+        assert_ne!(sent.is_error, Some(true), "{}", text_of(&sent));
+        let frame = services
+            .frame_with_cmd("observe")
+            .expect("a note must ask its target's tab to attach a live feed");
+        assert_eq!(frame["session_id"], serde_json::json!(note_target));
+        // No placement, no focus, no annotation: the daemon is not moving the
+        // user's tabs, only telling the window this conversation is changing.
+        assert!(frame.get("placement").is_none(), "{frame}");
+        assert!(frame.get("focus").is_none(), "{frame}");
+        crate::workspace_services::clear_test_override();
+
+        // steer — a live turn on the target.
+        let steer_target = seeded_target(&c, "steer-feed-target").await;
+        let services = FakeServices::with_gui(true).busy(&steer_target).install();
+        let manager = crate::execution::manager::AgentManager::instance()
+            .await
+            .expect("agent manager");
+        let agent = manager
+            .get_or_create_agent(steer_target.clone())
+            .await
+            .expect("agent");
+        agent.open_for_turn(TurnId::new("feed-turn-live"));
+        let sent = send_prompt(
+            &c,
+            &caller.id,
+            serde_json::json!({
+                "session_id": steer_target, "text": "narrow it to 2019", "mode": "steer"
+            }),
+        )
+        .await;
+        assert_ne!(sent.is_error, Some(true), "{}", text_of(&sent));
+        assert!(
+            services.frame_with_cmd("observe").is_some(),
+            "a steer must ask its target's tab to attach a live feed; got {:?}",
+            services.all_frames()
+        );
+        let _ = agent.drain_soft_interrupts();
+        crate::workspace_services::clear_test_override();
+
+        // turn — a detached turn started on an idle target.
+        let turn_target = seeded_target(&c, "turn-feed-target").await;
+        let services = FakeServices::with_gui(true).install();
+        let sent = send_prompt(
+            &c,
+            &caller.id,
+            serde_json::json!({
+                "session_id": turn_target, "text": "start on the QC pass", "mode": "turn"
+            }),
+        )
+        .await;
+        assert_ne!(sent.is_error, Some(true), "{}", text_of(&sent));
+        assert!(
+            services.frame_with_cmd("observe").is_some(),
+            "a turn must ask its target's tab to attach a live feed; got {:?}",
+            services.all_frames()
+        );
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// **A write with nothing to disclose must not mark the pair as crossed.**
+    ///
+    /// The behavioural half of
+    /// `workspace_inspector::tests::a_change_with_nothing_to_disclose_has_no_payload_to_record`,
+    /// and the half that can actually fail: that one asserts what
+    /// `crossing_payload` answers, which stays true however
+    /// `record_crossing_if_disclosed` is wired. This one drives the real handler
+    /// and reads the ledger afterwards, so dropping the payload check goes red
+    /// here and nowhere else.
+    ///
+    /// `workspace_set_tools { set_knowledge_bases: [] }` is an accepted change
+    /// that clears the target's bases and raises no approval card. If it could
+    /// record a crossing, a private caller would silence a public target's one
+    /// disclosure with a call the user never saw — and the next
+    /// `workspace_send_prompt` would ship its payload in silence.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_payload_free_change_cannot_silence_the_first_crossing_disclosure() {
+        use crate::session::session_manager::SessionType;
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let caller = sm
+            .create_session(
+                std::env::temp_dir(),
+                "private lead".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let target = sm
+            .create_session(
+                std::env::temp_dir(),
+                "public worker".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let _services = FakeServices::with_gui(true).install();
+
+        // Precondition: this pair has not crossed, so the disclosure is owed.
+        crate::privacy::crossing::reset_for_test();
+        let owed = || {
+            crate::privacy::crossing::needs_disclosure(
+                crate::privacy::ProviderTier::Private,
+                crate::privacy::SessionClassification::Public,
+                &caller.id,
+                &target.id,
+            )
+        };
+        assert!(owed(), "precondition: the pair has not crossed yet");
+
+        let cleared = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({ "session_id": target.id, "set_knowledge_bases": [] }),
+            crate::agents::mcp_client::McpMeta::new(
+                caller.id.clone(),
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Private,
+                    true,
+                ),
+            ),
+        )
+        .await;
+        // The change really landed — otherwise this test would pass against a
+        // handler that refused it, which proves nothing about the ledger.
+        assert_ne!(cleared.is_error, Some(true), "{}", text_of(&cleared));
+        assert!(
+            text_of(&cleared).contains("kb="),
+            "the clearing change did not apply, so the ledger was never at risk: {}",
+            text_of(&cleared)
+        );
+
+        assert!(
+            owed(),
+            "a payload-free change marked the pair as crossed; the caller's next \
+             injection into this conversation would cross to a public model with no \
+             approval ever having been shown"
+        );
+
+        // The mirror: a change that DOES carry a payload records, so this is not
+        // "set_tools never records".
+        let retooled = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({
+                "session_id": target.id, "set_knowledge_bases": ["ms-cohort"]
+            }),
+            crate::agents::mcp_client::McpMeta::new(
+                caller.id.clone(),
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Private,
+                    true,
+                ),
+            ),
+        )
+        .await;
+        assert_ne!(retooled.is_error, Some(true), "{}", text_of(&retooled));
+        assert!(
+            !owed(),
+            "a disclosed change failed to record, so the user would be asked again \
+             for a pair they have already approved"
+        );
+        crate::privacy::crossing::reset_for_test();
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// The control for the test above. A REFUSED injection must not ask for
+    /// anything: an attach frame for a write that did not happen tells the
+    /// window a conversation is changing when it is not, and — for a refusal
+    /// that is about the privacy tier — would confirm to the caller's window
+    /// that the named conversation exists.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_refused_injection_asks_for_no_live_feed() {
+        let c = client();
+        let caller = c
+            .context
+            .session_manager
+            .create_session(
+                std::env::temp_dir(),
+                "injector".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let services = FakeServices::with_gui(true).install();
+
+        // Idle target, `steer` — refused because there is no turn to redirect.
+        let target = seeded_target(&c, "idle-target").await;
+        let refused = send_prompt(
+            &c,
+            &caller.id,
+            serde_json::json!({
+                "session_id": target, "text": "too late", "mode": "steer"
+            }),
+        )
+        .await;
+        assert_eq!(refused.is_error, Some(true), "{}", text_of(&refused));
+        assert!(
+            services.frame_with_cmd("observe").is_none(),
+            "a refused injection asked the tab to attach anyway: {:?}",
+            services.all_frames()
+        );
+        crate::workspace_services::clear_test_override();
     }
 
     /// #69: the server's turn lock and the agent's interrupt queue can disagree,

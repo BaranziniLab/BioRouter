@@ -2106,6 +2106,65 @@ impl CodeExecutionClient {
         }
     }
 
+    /// The refusals this door owes because **no [`ToolInspector`] reaches it**.
+    ///
+    /// The JS sandbox hands a script's inner tool calls straight to
+    /// `ExtensionManager::dispatch_tool_call`, so the whole inspector stack —
+    /// which is where the global-memory consent gate, the session-store refusal
+    /// and issue #56's first-crossing disclosure all live — is simply not on
+    /// this path. Each of the three is therefore re-asked here, against the
+    /// **already-evaluated** arguments rather than against the script text: a
+    /// path or a payload the script computed at runtime is fully assembled by
+    /// the time it arrives, which is what makes these boundary checks strictly
+    /// stronger than their inspectors rather than copies of them.
+    ///
+    /// Returns the metric label and the sentence to answer with. Kept as one
+    /// function so the loop has one refusal branch: three inline copies is how
+    /// a fourth boundary gets added to two of them.
+    ///
+    /// [`ToolInspector`]: crate::tool_inspection::ToolInspector
+    async fn uninspected_boundary_refusal(
+        cap: crate::privacy::CallCapability,
+        session_id: &str,
+        tool_name: &str,
+        evaluated: Option<&rmcp::model::JsonObject>,
+    ) -> Option<(&'static str, String)> {
+        const BOUNDARY: crate::security::UninspectedBoundary =
+            crate::security::UninspectedBoundary::ExecuteCodeScript;
+
+        if let Some(refusal) = crate::security::global_memory::uninspected_boundary_refusal(
+            tool_name, evaluated, BOUNDARY,
+        ) {
+            return Some(("global_memory_consent", refusal));
+        }
+        // Issue #56. The same boundary, the same reason, for the transcript
+        // store: `SessionStoreInspector`'s literal-path scan of the script text
+        // is out-computed by exactly one line
+        // (`const p = home + "/.config/biorouter/sessions/sessions.db"`). Here
+        // the path has already been assembled, so there is nothing left to
+        // compute. The store is every conversation on this machine.
+        if let Some(refusal) = crate::security::session_store::uninspected_boundary_refusal(
+            tool_name, evaluated, BOUNDARY,
+        ) {
+            return Some(("session_store_read", refusal));
+        }
+        // Issue #56, the first-crossing disclosure, and the sharpest of the
+        // three: an undisclosed write here does not merely escape ONE approval
+        // card — the handler then records the (caller, target) pair as having
+        // crossed, so every later, properly-inspected write to that conversation
+        // is silent too. One script call would permanently disable the
+        // disclosure for that pair. Narrow by construction: same-tier writes,
+        // already-approved pairs and payload-free tools all pass through.
+        if let Some(refusal) = crate::agents::workspace_inspector::uninspected_crossing_refusal(
+            cap, session_id, tool_name, evaluated, BOUNDARY,
+        )
+        .await
+        {
+            return Some(("workspace_tier_crossing", refusal));
+        }
+        None
+    }
+
     async fn run_tool_handler(
         session_id: String,
         cap: crate::privacy::CallCapability,
@@ -2152,39 +2211,17 @@ impl CodeExecutionClient {
             // arguments. A boundary that cannot ask the user refuses.
             let evaluated = serde_json::from_str::<serde_json::Value>(&arguments).ok();
             let evaluated = evaluated.as_ref().and_then(serde_json::Value::as_object);
-            if let Some(refusal) = crate::security::global_memory::uninspected_boundary_refusal(
-                &tool_name,
-                evaluated,
-                crate::security::UninspectedBoundary::ExecuteCodeScript,
-            ) {
+            // Every boundary refusal this door owes, asked in one place. See
+            // `uninspected_boundary_refusal` for why a door that no
+            // `ToolInspector` reaches has to carry its own.
+            if let Some((kind, refusal)) =
+                Self::uninspected_boundary_refusal(cap, &session_id, &tool_name, evaluated).await
+            {
                 Self::refuse_sub_call(
                     &collected_artifacts,
                     &tool_name,
                     &arguments,
-                    "global_memory_consent",
-                    refusal,
-                    response_tx,
-                )
-                .await;
-                continue;
-            }
-            // Issue #56. The same boundary, the same reason, for the transcript
-            // store: `SessionStoreInspector` runs in the agent loop and never
-            // sees a script's inner calls, and its literal-path scan of the
-            // script text is out-computed by exactly one line
-            // (`const p = home + "/.config/biorouter/sessions/sessions.db"`).
-            // Here the path has already been assembled, so there is nothing left
-            // to compute. The store is every conversation on this machine.
-            if let Some(refusal) = crate::security::session_store::uninspected_boundary_refusal(
-                &tool_name,
-                evaluated,
-                crate::security::UninspectedBoundary::ExecuteCodeScript,
-            ) {
-                Self::refuse_sub_call(
-                    &collected_artifacts,
-                    &tool_name,
-                    &arguments,
-                    "session_store_read",
+                    kind,
                     refusal,
                     response_tx,
                 )

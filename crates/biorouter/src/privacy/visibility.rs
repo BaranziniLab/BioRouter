@@ -2,10 +2,32 @@
 //!
 //! ```text
 //! VIS(T)     <=>  T <= C                      // a public caller sees public only
-//! READ       <=>  VIS                         // any lineage — R6's read-only floor
-//! WRITE      <=>  VIS && L in {self, child}
+//! READ       <=>  VIS
+//! WRITE      <=>  VIS
 //! BIND(P->T) <=>  WRITE && tier(P) >= T       // Gate A, evaluated on the target
 //! ```
+//!
+//! **The privacy tier is the only boundary, and lineage is not one.** WRITE used
+//! to carry a second clause, `L in {self, child}`, so an agent could steer a
+//! conversation it had spawned and only read one it had not. That is retired:
+//! an agent may inject into ANY conversation it can see, related or not. What it
+//! may never do is cross the tier — a public-capability caller is still refused
+//! a private target under every verb, and a private caller writing into a public
+//! one still discloses its payload on the first crossing
+//! ([`requires_first_crossing_approval`]).
+//!
+//! The rule that replaced it is narrower than "anything goes" in two ways worth
+//! naming, because both are what keep the retirement safe:
+//!
+//! * READ and WRITE now coincide, so **there is no verb that can reach a
+//!   conversation the caller could not already read in full**. Widening WRITE to
+//!   VIS adds no target; it removes a read-only cell.
+//! * The delegation-scoped grant is a SEPARATE mechanism and is untouched.
+//!   `McpMeta::workspace_child_scope_only` still confines an auto-injected
+//!   supervision surface's read/close/watch to direct children
+//!   (`workspace_extension::refuse_unless_direct_subagent_child`), and a
+//!   `SessionType::SubAgent` is still refused every `workspace_*` tool outright.
+//!   Neither of those is `may_write`, and neither moved.
 //!
 //! Design §7 is a nine-column table over three inputs. Written once, as pure
 //! functions, it is unit-testable without a database and BR-71's tool handlers
@@ -52,65 +74,34 @@
 //!   headless background-child watch. It returns a turn's end *reason*, not the
 //!   conversation.
 //! * `workspace_close` and `workspace_set_tools` — writes that return no content.
-//!   §7's write row is `may_write`, i.e. VIS **and** lineage, and this change
-//!   implements no lineage anywhere; wiring half of it here would make the other
-//!   half look done.
+//!   Both go through `refuse_unless_writable`, so they ask [`may_write`]; this
+//!   bullet records only that neither returns a transcript, so neither needs the
+//!   read adapter above.
 
 use super::{visible_to, ProviderTier, SessionClassification};
 
-/// The lineage of a target session relative to the caller, as design §7 defines
-/// it: **one hop, never transitive**.
-///
-/// `Zelf` is spelled with a Z because `Self` is a keyword; it is the design's
-/// `self` column. It is not produced by [`lineage_of`] — a caller establishes it
-/// by comparing session ids before it ever looks at parentage — and it exists as
-/// a variant because the matrix has a column for it and because `self` and
-/// `child` behaving identically is a property worth being able to assert.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lineage {
-    /// The target *is* the caller's own session.
-    Zelf,
-    /// The caller spawned the target directly: `target.parent_session_id == caller`.
-    Child,
-    /// Everything else — a sibling, an unrelated session, a transitive
-    /// grandchild, and any session with a NULL parent.
-    Other,
-}
-
-/// Classify a target by its stored `parent_session_id` against the caller's own
-/// session id.
-///
-/// **One hop.** A grandchild is `Other`: R6 says "sessions the caller *did*
-/// spawn", and a grandchild was spawned by the child. BR-71's
-/// `workspace_list { parent_session_id: "<me>" }` filter already yields exactly
-/// the one-hop set, so no recursive CTE and no new "control my subtree" surface
-/// is invented. A leader that needs deeper control asks its child.
-///
-/// A NULL parent is `Other`, i.e. read-only — the safe direction, and what every
-/// session predating `parent_session_id` (Task 6) carries.
-///
-/// This function cannot return [`Lineage::Zelf`]: parentage does not encode
-/// identity. A handler that has the target's id decides `Zelf` first:
-/// `if target.id == caller { Zelf } else { lineage_of(target.parent_session_id, caller) }`.
-/// Getting that wrong is not a privilege escalation — `Zelf` and `Child` are
-/// merged under every rule of the matrix — but it is worth spelling out.
-pub fn lineage_of(target_parent: Option<&str>, caller_session_id: &str) -> Lineage {
-    match target_parent {
-        Some(parent) if parent == caller_session_id => Lineage::Child,
-        _ => Lineage::Other,
-    }
-}
-
-/// READ ⇔ VIS, under **any** lineage — R6's read-only floor. A caller may read
-/// any session it can see, whether or not it spawned it.
+/// READ ⇔ VIS. A caller may read any session it can see, whether or not it
+/// spawned it.
 pub fn may_read(c: ProviderTier, t: SessionClassification) -> bool {
     visible_to(c, t)
 }
 
-/// WRITE ⇔ VIS ∧ L ∈ {self, child}. Seeing a sibling does not license steering
-/// it; that is what makes column B a read-only cell rather than a refusal.
-pub fn may_write(c: ProviderTier, t: SessionClassification, l: Lineage) -> bool {
-    visible_to(c, t) && !matches!(l, Lineage::Other)
+/// WRITE ⇔ VIS. A caller may steer any session it can see — a child, a sibling,
+/// an unrelated conversation — and may steer none that it cannot.
+///
+/// ⚠ **This deliberately coincides with [`may_read`], and the duplication is the
+/// point rather than an oversight.** WRITE used to be `VIS ∧ L ∈ {self, child}`,
+/// which made an unrelated conversation a read-only cell; that clause is retired
+/// (see the module header). Keeping WRITE as its own named predicate is what
+/// gives the write gate somewhere to disagree with the read gate again — a later
+/// narrowing lands here and is caught by the matrix test, instead of being
+/// hand-written a second time inside whichever handler needed it. Collapsing the
+/// two into one function is how one table becomes eight.
+///
+/// A private-capability caller writing into a public target is permitted and
+/// **discloses itself**: see [`requires_first_crossing_approval`].
+pub fn may_write(c: ProviderTier, t: SessionClassification) -> bool {
+    visible_to(c, t)
 }
 
 /// `workspace_list` OMITS private rows rather than redacting them: a row
@@ -134,7 +125,13 @@ pub fn appears_in_list(c: ProviderTier, t: SessionClassification) -> bool {
 ///
 /// "First" is per (caller, target) pair and is state the *caller* of this
 /// predicate keeps; this function is the pure classifier of whether a crossing
-/// is happening at all.
+/// is happening at all. That state, and the one call to this predicate, live in
+/// [`super::crossing`] — for a long time neither existed and the disclosure
+/// documented above never fired, which is what
+/// `crates/biorouter/tests/privacy_guard_wiring.rs` recorded as an outstanding
+/// operator decision. Retiring the lineage clause is what settled it: the set of
+/// public targets a private caller can write into is no longer "the ones it
+/// spawned".
 pub fn requires_first_crossing_approval(c: ProviderTier, t: SessionClassification) -> bool {
     c.is_private() && !t.is_private()
 }
@@ -193,41 +190,46 @@ mod tests {
 
     #[test]
     fn the_capability_matrix_matches_the_design_table_cell_for_cell() {
-        use Lineage::{Child, Other, Zelf};
-        // Columns A..G of design §7. `self` and `child` behave identically under
-        // every rule and are merged in the table; D and F are what prove it, so
-        // both are enumerated here rather than assumed.
+        // Design §7 was a NINE-column table over three inputs (caller tier,
+        // target classification, lineage). Lineage is retired, so the eight
+        // lineage columns A/B, D/E and F/G collapse pairwise onto the four rows
+        // below — and the collapse is the assertion: the `write` column of the
+        // `Other` half used to read `false` in three of those rows.
         #[rustfmt::skip]
         let cases = [
-            //  caller   target  lineage  read   write  list-visible
-            ( CPub,  TPub,  Zelf,  true,  true,  true ),   // A
-            ( CPub,  TPub,  Child, true,  true,  true ),   // A
-            ( CPub,  TPub,  Other, true,  false, true ),   // B — R6's read-only floor
-            ( CPub,  TPriv, Zelf,  false, false, false),   // C — row OMITTED, not redacted
-            ( CPub,  TPriv, Child, false, false, false),   // C
-            ( CPub,  TPriv, Other, false, false, false),   // C
-            ( CPriv, TPub,  Zelf,  true,  true,  true ),   // D
-            ( CPriv, TPub,  Child, true,  true,  true ),   // D
-            ( CPriv, TPub,  Other, true,  false, true ),   // E
-            ( CPriv, TPriv, Zelf,  true,  true,  true ),   // F
-            ( CPriv, TPriv, Child, true,  true,  true ),   // F
-            ( CPriv, TPriv, Other, true,  false, true ),   // G
+            //  caller   target  read   write  list-visible
+            ( CPub,  TPub,  true,  true,  true ),   // A+B
+            ( CPub,  TPriv, false, false, false),   // C — row OMITTED, not redacted
+            ( CPriv, TPub,  true,  true,  true ),   // D+E, and a first-crossing disclosure
+            ( CPriv, TPriv, true,  true,  true ),   // F+G
         ];
-        for (c, t, l, read, write, list) in cases {
-            assert_eq!(may_read(c, t), read, "read {c:?}/{t:?}/{l:?}");
-            assert_eq!(may_write(c, t, l), write, "write {c:?}/{t:?}/{l:?}");
-            assert_eq!(appears_in_list(c, t), list, "list {c:?}/{t:?}/{l:?}");
+        for (c, t, read, write, list) in cases {
+            assert_eq!(may_read(c, t), read, "read {c:?}/{t:?}");
+            assert_eq!(may_write(c, t), write, "write {c:?}/{t:?}");
+            assert_eq!(appears_in_list(c, t), list, "list {c:?}/{t:?}");
         }
     }
 
+    /// The headline behaviour change, asserted as a property rather than as a
+    /// row of the table above: **WRITE is exactly READ**.
+    ///
+    /// The retired rule differed from READ in precisely the three cells where
+    /// the caller could see the target but had not spawned it. Stating the
+    /// equality over the whole cross product is what makes a re-narrowing fail
+    /// here — a second clause reintroduced on any one cell breaks it, whichever
+    /// cell it is, without anyone having to remember to add a case.
     #[test]
-    fn a_grandchild_is_other_and_a_null_parent_is_other() {
-        // Lineage is ONE hop: R6 says "sessions the caller DID spawn", and a
-        // grandchild was spawned by the child. NULL parent is `other` => read-only,
-        // which is the safe direction and is what every pre-upgrade subagent has.
-        assert_eq!(lineage_of(Some("me"), "me"), Lineage::Child);
-        assert_eq!(lineage_of(Some("my-child"), "me"), Lineage::Other);
-        assert_eq!(lineage_of(None, "me"), Lineage::Other);
+    fn write_reaches_every_session_the_caller_can_read() {
+        for c in [CPub, CPriv] {
+            for t in [TPub, TPriv] {
+                assert_eq!(
+                    may_write(c, t),
+                    may_read(c, t),
+                    "write and read disagree at {c:?}/{t:?}; the tier is the only \
+                     boundary, so a caller that may read a conversation may steer it"
+                );
+            }
+        }
     }
 
     /// **The assertion that would have caught the release blocker: these
@@ -336,7 +338,7 @@ mod tests {
         // lets you spawn one but never send it a prompt makes the permission
         // useless. The prompt text IS private-origin content crossing into a
         // public model, so the FIRST crossing per (caller,target) discloses it.
-        assert!(may_write(CPriv, TPub, Lineage::Zelf));
+        assert!(may_write(CPriv, TPub));
         assert!(requires_first_crossing_approval(CPriv, TPub));
         assert!(!requires_first_crossing_approval(CPriv, TPriv));
         assert!(!requires_first_crossing_approval(CPub, TPub));

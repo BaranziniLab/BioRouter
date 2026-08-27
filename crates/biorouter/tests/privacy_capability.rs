@@ -135,6 +135,22 @@ const EXPECTED: &[Site] = &[
     },
     Site {
         needle: "CallCapability::sample(",
+        file: "crates/biorouter/src/agents/workspace_inspector.rs",
+        count: 1,
+        what: "`WorkspaceCrossingInspector::inspect`, the first-crossing \
+               disclosure. A `ToolInspector` runs BEFORE the dispatch that would \
+               admit a capability — that is the point of an inspector — so there \
+               is none in scope to inherit, and the alternative to sampling here \
+               is not inheriting but deciding on `Config::global()`, which is the \
+               bug this type exists to prevent. Sampled ONCE per batch rather than \
+               per request, because two calls in one batch must not be able to \
+               gate on two different models, and only after a cheap name check \
+               has established that the batch contains a cross-session write at \
+               all: an ordinary turn must not pay a provider-mutex read for a \
+               disclosure that cannot apply to it",
+    },
+    Site {
+        needle: "CallCapability::sample(",
         file: "crates/biorouter/src/agents/knowledge_tool.rs",
         count: 1,
         what: "`handle_ingest_conversation`, the conversation-ingest branch of \

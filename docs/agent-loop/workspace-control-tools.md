@@ -187,6 +187,12 @@ When the projection exceeds `max_chars` it is cut and the reply appends `… [cl
 
 Writes into another conversation. Three modes with three different blast radii; every injection is provenance-stamped `MessageProvenance { kind: AgentInjection, from_session_id, from_session_name }` and the label is stored, so it survives reload.
 
+**Any conversation, not only a child.** The target may be a subagent this conversation spawned, a sibling, or a chat the user opened and this agent has never touched. Lineage is not a boundary — the write rule is `may_write` ⇔ `may_read`, so the reachable set is exactly the set this conversation may already read in full. What *is* a boundary is the privacy tier: a public-capability chat is refused a private conversation under every verb, and a private-capability chat writing into a public one raises a **first-crossing approval showing the exact payload**, once per (caller, target) pair, in every permission mode including Fully Automatic.
+
+The tool's own description tells the model to use it **only when necessary**, and the reason is not politeness: the target may be a conversation a person is reading, and an injection interrupts them.
+
+**All three modes reflect in an open tab live**, without a reload. `note` publishes the stored row onto the session bus itself; `steer` is published by the target's own turn loop when it drains the soft interrupt; `turn`'s injected prompt is published by `Agent::reply` at the point the row becomes durable — which is a case its `MessagesPersisted`-only rule deliberately does not cover, since that rule assumes the client authored the prompt and already holds it. In every case the publish happens **after** the row is durable and carries the row's own minted uid.
+
 ### Arguments
 
 | Name | Type | Default | Meaning |
@@ -223,7 +229,7 @@ Returns, by path:
 - `wait: "final_message"`, the turn errored — an **error** result: `turn {turn_id} ended in error: {e}`.
 - `wait: "final_message"`, timed out — a **success** result: `Turn {turn_id} is still running after {n}s; it continues in the background. Read it later with workspace_read_conversation.` A timeout is not a failure.
 
-Both `steer` and `turn` post a toast on the target's tab naming the calling conversation.
+Both `steer` and `turn` post a toast on the target's tab naming the calling conversation. The toast is a notice, not the message — the message itself arrives in the transcript through the session bus (see above).
 
 ### When to reach for it
 

@@ -371,7 +371,22 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
         const opened = cmd.cmd === 'open_tab';
         const annotated =
           cmd.cmd === 'annotate_tab' && !!findTabBySession(stateRef.current, cmd.session_id);
-        if (opened || annotated) {
+        // BR-71 §3c. A tab the USER opened has no observer — nothing in this
+        // renderer attaches one, because the tab is normally driven by its own
+        // `/reply` stream and an idle tab has nothing to listen to. That stops
+        // being true the moment another conversation can write into this one:
+        // `workspace_send_prompt` makes the session change while this window is
+        // looking straight at it, and with no observer the transcript sits
+        // stale until a reload.
+        //
+        // The daemon sends this frame after the row is durable, and the
+        // observer's FIRST frame is a full `UpdateConversation` snapshot from
+        // the store — so the injected message renders whether or not the bus
+        // publish beat the attach. That is deliberate: an ordering guarantee
+        // between a broadcast and a socket handshake is not one worth relying on.
+        const observed =
+          cmd.cmd === 'observe' && !!findTabBySession(stateRef.current, cmd.session_id);
+        if (opened || annotated || observed) {
           const stream = defaultChatStreamRegistry.getController(
             cmd.session_id
           ) as unknown as ObservableStream;

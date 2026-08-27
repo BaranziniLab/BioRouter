@@ -22,7 +22,9 @@ Everything below is the mechanics behind those three.
 
 ## Turning it on
 
-Workspace control ships in two sizes. The small one is automatic: any session allowed to delegate gets the spawn tool (`subagent`) and nothing else. The full surface — reading other conversations, injecting prompts into them, changing their tool sets — is an explicit opt-in, because those tools reach into conversations the agent did not create.
+Workspace control ships in two sizes. The small one is automatic: any session allowed to delegate gets `subagent`, the child-scoped supervision tools (`workspace_read_conversation`, `workspace_close`, `workspace_watch`), and the two that make cross-chat injection usable — `workspace_list` to see which conversations exist and which are running, and `workspace_send_prompt` to write into one. The full surface — changing another conversation's tool set with `workspace_set_tools`, opening and moving tabs with `workspace_open`, reading the preview panel — is an explicit opt-in.
+
+The line between the two is **message versus capability change**: the automatic tier can talk to another conversation, and only the opt-in can re-tool one.
 
 In the desktop app, open **Extensions** in the left sidebar and turn on **Workspace Control**. From the terminal, run `biorouter configure`, choose `Toggle Extensions`, and enable `workspace`. The extension is registered `default_enabled: false`; nothing enables it for you.
 
@@ -35,7 +37,7 @@ Jobs 1 and 3 need that full surface. Job 2 does not — but "allowed to delegate
 All of the following must hold:
 
 - **The permission mode is Completely Autonomous** (`auto`). In Manual Approval, Smart Approval and Chat Only — three of the [four modes](../security/permission-modes.md) — there is no spawn tool at all. Autonomous is the default, so most people never meet this; anyone who has turned the mode down will, and the symptom is an ordinary answer where a child conversation was expected.
-- **The session is not itself a subagent.** A child cannot spawn grandchildren, which is the same rule that stops a child being granted workspace control.
+- **The session is not itself a subagent.** A child cannot spawn grandchildren, which is the same rule that stops a child being granted workspace control. This is a *lineage* rule and it survives; it is not the retired §7 write rule, which no longer looks at lineage at all.
 - **At least one ordinary extension is loaded.** The auto-injected `workspace` entry is deliberately not counted — otherwise one turn's grant would justify the next one's, and an agent that dropped its last real extension would keep delegating forever off a grant it derived from itself.
 - **The active model name does not begin with `gemini`.** This is a flat exclusion in the gate, with no rationale recorded in the source, so treat it as observed behaviour rather than a rule with a reason: on a Gemini model, delegation is off whatever your mode says.
 - **The session is not a BioRouter app that delegates through `consult`.** Apps with worker profiles route delegation through their own mechanism and have the generic tool withdrawn so the two cannot both be offered.

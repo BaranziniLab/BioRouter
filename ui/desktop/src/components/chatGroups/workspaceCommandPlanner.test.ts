@@ -23,6 +23,46 @@ function stateWithSessions(ids: string[]): ChatGroupsState {
 }
 
 describe('planWorkspaceCommand', () => {
+  // BR-71 §3c. `observe` is the frame the daemon sends after writing into a
+  // conversation from somewhere else. It asks the window holding that
+  // conversation to attach a live feed and does NOTHING else — no reducer
+  // action, no annotation, no focus — because the tab is already where the user
+  // put it.
+  it('observe plans no state change at all', () => {
+    const state = stateWithSessions(['s-mine']);
+    const plan = planWorkspaceCommand(
+      { type: 'workspace', cmd: 'observe', session_id: 's-mine' },
+      state
+    );
+    expect(plan.result.ok).toBe(true);
+    expect(plan.actions).toEqual([]);
+    expect(plan.annotate).toBeUndefined();
+    expect(plan.notify).toBeUndefined();
+    expect(plan.openWindowSessionId).toBeUndefined();
+  });
+
+  it('observe for a session this window has no tab for succeeds, saying so', () => {
+    // An injection into a conversation nobody has open is the ORDINARY case, so
+    // it must not read as a failure the daemon should act on. `ok: false` here
+    // would put a refusal in the injecting agent's tool result for a write that
+    // worked perfectly.
+    const plan = planWorkspaceCommand(
+      { type: 'workspace', cmd: 'observe', session_id: 's-elsewhere' },
+      stateWithSessions(['s-mine'])
+    );
+    expect(plan.result.ok).toBe(true);
+    expect(plan.result.detail).toContain('no tab');
+    expect(plan.actions).toEqual([]);
+  });
+
+  it('observe without a session_id is refused', () => {
+    const plan = planWorkspaceCommand(
+      { type: 'workspace', cmd: 'observe' },
+      stateWithSessions(['s-mine'])
+    );
+    expect(plan.result.ok).toBe(false);
+  });
+
   it('open_tab focus:false opens then restores the previously active tab', () => {
     const state = stateWithSessions(['s-mine']);
     const prevActive = activeTabOf(state)?.tabId;

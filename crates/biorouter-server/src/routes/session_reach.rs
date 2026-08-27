@@ -66,8 +66,9 @@
 //!   target's classification instead of asking for a human. Its refusal answers
 //!   "private" and "no such conversation" in one sentence, for the same reason
 //!   [`SESSION_OUT_OF_REACH`] does. `workspace_close` and `workspace_set_tools`
-//!   now enforce the same one-hop `may_write` lineage as
-//!   `workspace_send_prompt`; `workspace_watch` is parent-scoped through the
+//!   enforce the same `may_write` rule as `workspace_send_prompt` — which is
+//!   the tier and nothing else, the one-hop lineage clause having been
+//!   retired; `workspace_watch` is parent-scoped through the
 //!   caller's registered background handles rather than an arbitrary session
 //!   write;
 //! * and the daemon still has no principal, which is the actual subject of #47.

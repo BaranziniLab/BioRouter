@@ -120,13 +120,13 @@ this section is the ledger.
   plan Tasks 14A–14F are `DEFERRED`, not deleted. A public-capability chat with a shell can still
   read ordinary files on this machine, including files an earlier private chat wrote outside
   Biorouter's own storage. This is disclosed to the user rather than mechanised.
-- **§7's cross-session capability matrix: READ is wired on all seven workspace tools, WRITE is
-  wired on none.** ⚠ **This entry was false, and was rewritten against the tree on 2026-08-06.**
-  It used to claim that `crates/biorouter/src/privacy/visibility.rs` had **no production caller**
-  and that `workspace_list` and `workspace_read_conversation` *"do not consult `privacy_tier`"* —
-  and then to name those two tools as the whole of the exposure. Every part of that was wrong by
-  the time it was read: the predicates have callers, and the still-open set is neither those two
-  tools nor a set of that size. A security document that understates its coverage costs as much
+- **§7's cross-session capability matrix: READ and WRITE are both wired now.** ⚠ This entry has
+  been wrong twice, and both times in the direction of understating coverage. It first claimed
+  that `crates/biorouter/src/privacy/visibility.rs` had **no production caller** and that
+  `workspace_list` and `workspace_read_conversation` *"do not consult `privacy_tier`"* — rewritten
+  against the tree on 2026-08-06, because every part of it was already false. It then claimed
+  WRITE was "wired on none", which was false too: `refuse_unless_writable` has composed the read
+  gate with `may_write` since. A security document that understates its coverage costs as much
   trust as one that overstates it, so what follows is the state of the tree, symbol by symbol.
 
   ⚠ **Re-verify before you rely on this.** This branch is under concurrent repair; between the
@@ -177,17 +177,26 @@ this section is the ledger.
 
   **Still open:**
 
-  1. **§7's WRITE row is implemented nowhere, so every wired write enforces VIS only.**
-     `visibility::may_write`, `lineage_of`, `Lineage` and `requires_first_crossing_approval` have
-     **zero** production callers — a tree-wide search for each returns `visibility.rs` itself and
-     two doc comments. So R6's lineage floor (columns B, E and G, `✗ R6`) is unenforced: a public
-     caller may steer, re-tool and close a **public sibling it did not spawn**. And column D's
-     `✓!` first-crossing approval — the disclosure that is the entire reason a private→public
-     downgrade write is *permitted* rather than refused — never fires. `workspace_send_prompt` and
-     `workspace_set_tools` both say so in their own source: *"⚠ This enforces VIS only. §7's write
-     row is `may_write` … and the lineage half is not implemented anywhere"*.
-  2. **`workspace_open { new: … }` implements none of §8.2's spawn matrix.** §7's last row defers
-     that form to §8.2. The extension dimension is now gated (above), but the **model** dimension
+  1. ~~**§7's WRITE row is implemented nowhere, so every wired write enforces VIS only.**~~
+     **CLOSED, and in both directions at once.** Half of it was closed by ruling rather than by
+     code: R6's lineage floor is retired, so "a public caller may steer a public sibling it did
+     not spawn" is the intended behaviour and `Lineage`/`lineage_of` are deleted. The other half
+     was a real gap and is now built: column D's `✓!` first-crossing approval fires, through
+     `agents/workspace_inspector.rs`'s `WorkspaceCrossingInspector` (which asks) and
+     `privacy/crossing.rs` (which is the per-(caller, target) state the predicate always needed
+     and never had). Widening the write rule is what settled the operator decision that had been
+     outstanding against it: the public targets a private caller can reach are no longer only the
+     ones it spawned itself, so the disclosure went from nice-to-have to load-bearing.
+  2. **`workspace_open { new: … }` implements none of §8.2's spawn matrix, and `new.prompt`
+     is now the sharpest edge of it.** A new session is minted PUBLIC (the schema default), so
+     a private-capability caller passing `new: { prompt: … }` puts private-origin text in front
+     of a public model with no first-crossing approval — the disclosure covers
+     `workspace_send_prompt` and `workspace_set_tools`, both of which name an existing
+     `session_id`, and a session that does not exist yet has no (caller, target) pair to key on.
+     `workspace_open` is not in the delegation tier's injected tool list, so this needs the
+     explicit Workspace Control opt-in.
+
+     The older half of this item stands unchanged. §7's last row defers that form to §8.2. The extension dimension is now gated (above), but the **model** dimension
      is not: `open_new_session` creates the session through `WorkspaceServices::start_session`,
      which takes no capability and binds the machine default provider, and then optionally seeds it
      with a detached turn carrying prompt text the model wrote. §8.2's hard refusal (public parent,
@@ -375,7 +384,7 @@ Each verified by reading the code, each fixed as a by-product of this design:
 | R3 | Classification is a permanent ratchet. |
 | R4 | A private session may spawn public children; a public session may never gain private reach. |
 | R5 | Children inherit the parent's model and lead/worker mode unless the user says otherwise. |
-| R6 | Lineage decides write access: sessions the caller spawned get full control, everything else is read-only. |
+| R6 | ~~Lineage decides write access: sessions the caller spawned get full control, everything else is read-only.~~ **RETIRED.** Superseded by the product owner's ruling that an agent may inject a prompt into *any* conversation — child or unrelated — provided it does not cross the private/public boundary. WRITE ⇔ VIS; the tier is the only boundary (§7). |
 | R7 | A global opt-out exists, off by default. It is a **master** switch: with it off there is no gate and no ratchet anywhere (§10.6). ⚠ It does **not** switch off R15's disclosure — with enforcement off the exposure is larger, not smaller. |
 | R8 | A public model must never reach a private session. |
 | R9 | Only the user can deprivatise a session, from history settings, with a warning. Nothing automatic, nothing agent-invocable. |
@@ -857,21 +866,28 @@ deliberately no builder setter that accepts `Public`.
 - **C** = `capability(caller)` = `least` over the components of the caller's currently-bound
   provider. `Pub` | `Priv`.
 - **T** = `target.privacy_tier`, the stored classification. `Pub` | `Priv`.
-- **L** = lineage of target relative to caller: `self` · `child`
-  (`target.parent_session_id == caller_session_id`) · `other` (includes NULL parent and every
-  transitive descendant).
+**Lineage was a third input and is not one any more.** The matrix used to take
+`L ∈ {self, child, other}` and make WRITE depend on it, so an agent could steer a conversation it
+had spawned and only *read* one it had not (R6). The product owner has since ruled the opposite:
+an agent may inject a prompt into **any** conversation — a subagent child or an unrelated chat —
+as long as it does not cross the private/public boundary. **The privacy tier is the only boundary.**
+R6 is retired, and `Lineage`/`lineage_of` are deleted rather than left as an unread argument.
 
-**Lineage is one hop.** A grandchild is `other`: R6 says "sessions the caller *did* spawn", and a
-grandchild was spawned by the child. BR-71's `workspace_list { parent_session_id: "<me>" }` filter
-already yields exactly the one-hop set, so no recursive CTE and no new "control my subtree" surface
-is invented. A leader that needs deeper control asks its child.
+Two things make that retirement smaller than it sounds, and both are load-bearing:
+
+- READ and WRITE now coincide, so **no verb reaches a conversation the caller could not already
+  read in full**. Widening WRITE removes a read-only cell; it does not add a target.
+- The two *other* one-hop rules in this product are untouched, and neither is `may_write`. A
+  delegation-scoped grant (`McpMeta::workspace_child_scope_only`) still confines an auto-injected
+  supervision surface's read/close/watch to direct children, and a `SessionType::SubAgent` is
+  still refused every `workspace_*` tool outright (§8.2).
 
 **The three rules.**
 
 ```
 VIS(T)     ⇔  T ≤ C                      // a public caller sees public only
-READ       ⇔  VIS                        // any lineage — R6's read-only floor
-WRITE      ⇔  VIS ∧ L ∈ {self, child}
+READ       ⇔  VIS
+WRITE      ⇔  VIS
 BIND(P→T)  ⇔  WRITE ∧ tier(P) ≥ T        // Gate A, evaluated on the target
 ```
 
@@ -883,21 +899,22 @@ crossing into a public model, so the first `workspace_send_prompt` / `workspace_
 given caller into a given public target raises an approval showing the exact payload.
 
 **The matrix.** `✓` allowed · `✓!` allowed, first crossing requires approval showing the payload ·
-`✗` refused with a teaching message · `∅` omitted from results entirely. `self` and `child` behave
-identically under every rule and are merged; columns D and F prove it.
+`✗` refused with a teaching message · `∅` omitted from results entirely. Nine columns became four:
+with lineage gone, A and B collapse, as do D and E, and F and G — and the collapse is exactly where
+the behaviour changed, because the `other` half of each pair used to read `✗ R6` on every write row.
 
-| BR-71 tool | Class | **A**<br>C=Pub T=Pub<br>self/child | **B**<br>C=Pub T=Pub<br>other | **C**<br>C=Pub T=**Priv**<br>any L | **D**<br>C=Priv T=Pub<br>self/child | **E**<br>C=Priv T=Pub<br>other | **F**<br>C=Priv T=Priv<br>self/child | **G**<br>C=Priv T=Priv<br>other |
-|---|---|---|---|---|---|---|---|---|
-| `workspace_list` | read | ✓ | ✓ | **∅ row omitted** | ✓ | ✓ | ✓ | ✓ |
-| `workspace_read_conversation` | read | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
-| `workspace_watch` | read | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
-| `workspace_open` *(existing session)* | read | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
-| `workspace_send_prompt` *(turn / steer / note)* | write | ✓ | ✗ R6 | ✗ | **✓!** | ✗ R6 | ✓ | ✗ R6 |
-| `workspace_set_tools` — extensions / skills / KBs | write | ✓ | ✗ R6 | ✗ | **✓!** | ✗ R6 | ✓ | ✗ R6 |
-| `workspace_set_tools` — `add_extensions` naming a **private** extension | write | ✗ target is public-capability | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ R6 |
-| `workspace_set_tools` — `{ provider, model }` | bind | ✓ if `tier(P) ≥ Pub` (always) | ✗ R6 | ✗ | **✓!** if `tier(P) ≥ Pub` | ✗ R6 | ✓ **only if `tier(P)=Priv`** | ✗ R6 |
-| `workspace_close` | write | ✓ | ✗ R6 | ✗ | ✓ | ✗ R6 | ✓ | ✗ R6 |
-| `workspace_spawn_subagent` / `workspace_open { new: … }` | spawn | see §8.2 | | | | | | |
+| BR-71 tool | Class | **A**<br>C=Pub T=Pub | **C**<br>C=Pub T=**Priv** | **D**<br>C=Priv T=Pub | **F**<br>C=Priv T=Priv |
+|---|---|---|---|---|---|
+| `workspace_list` | read | ✓ | **∅ row omitted** | ✓ | ✓ |
+| `workspace_read_conversation` | read | ✓ | ✗ | ✓ | ✓ |
+| `workspace_watch` | read | ✓ | ✗ | ✓ | ✓ |
+| `workspace_open` *(existing session)* | read | ✓ | ✗ | ✓ | ✓ |
+| `workspace_send_prompt` *(turn / steer / note)* | write | ✓ | ✗ | **✓!** | ✓ |
+| `workspace_set_tools` — extensions / skills / KBs | write | ✓ | ✗ | **✓!** | ✓ |
+| `workspace_set_tools` — `add_extensions` naming a **private** extension | write | ✗ target is public-capability | ✗ | ✗ | ✓ |
+| `workspace_set_tools` — `{ provider, model }` | bind | ✓ if `tier(P) ≥ Pub` (always) | ✗ | **✓!** if `tier(P) ≥ Pub` | ✓ **only if `tier(P)=Priv`** |
+| `workspace_close` | write | ✓ | ✗ | ✓ | ✓ |
+| `workspace_spawn_subagent` / `workspace_open { new: … }` | spawn | see §8.2 | | | |
 
 **`workspace_list` omits private rows rather than redacting them.** The operator ruled existence
 leaks *acceptable*, not *required*, and omission is strictly simpler: a `workspace_list` row
@@ -1464,7 +1481,7 @@ is the correct placement call); a stale provider inside the extension manager (t
 `Arc` is the same one `update_provider` writes through); a mixed composite calling a private MCP
 server (`least = Public` → refused); a public parent spawning a private child then reading its
 output; a private parent's public child reading back up (VIS is evaluated on the child's
-capability); `workspace_read_conversation` on an ancestor (lineage widens *write*, never *read*);
+capability); `workspace_read_conversation` on an ancestor (which was never about lineage, and is even less so now that lineage decides nothing);
 `chatrecall` SEARCH after Gate D; a stale registry copy downgrading an extension (the union rule
 holds).
 
@@ -2709,7 +2726,7 @@ See §15.5 and §16 for what the backfill actually does to a real machine on day
 | Unknown provider | Public | fail-**safe**, not fail-open: Public is the *less* privileged tier |
 | Unlisted extension | Public | fail-open, **operator ruling R11(ii)**, isolated to the final `ProviderTier::Public` of one function — `classify_extension_entry`, which `classify_extension(name)` now delegates to — with one const and one comment naming the ruling, so reversing it later is a one-line change rather than an audit |
 | Any gate's lookup fails | refuse | encoded as a refusal inside `Ok(...)`, never as `Err` |
-| NULL `parent_session_id` | `other` ⇒ read-only | safe for R6 |
+| ~~NULL `parent_session_id`~~ | ~~`other` ⇒ read-only~~ | **moot.** R6 is retired and lineage is no longer an input to any rule, so a NULL parent decides nothing. The column itself remains, for the interface's parent/child grouping. |
 
 ### 15.4 Sessions, configs and extensions
 
@@ -2979,9 +2996,10 @@ public caller's list **omits** private rows. Task 4 already amends this projecti
 **Task 15 (`workspace_set_tools`).** Three constraints, all resolved off lookups the task already
 performs: `{ provider, model }` **must call `Agent::update_provider`** rather than reimplement the
 persist; `add_extensions` naming a private extension gains the tier refusal beside the issue-#42
-operator-disabled gate the plan already wires in at `get_extension_entry_by_name`; and lineage gates
-the whole tool to `self`/`child`, with a private→public invocation raising the first-crossing
-approval.
+operator-disabled gate the plan already wires in at `get_extension_entry_by_name`; and a
+private→public invocation raises the first-crossing approval. ⚠ This paragraph also said *"lineage
+gates the whole tool to `self`/`child`"* — that clause is retired with R6; the tool is gated by the
+tier alone.
 
 **Tasks 17 / 19 / 13 / 14 / 16 / 24 (the tool surface).** The matrix in §7 covers `workspace_list`
 (12), `workspace_read_conversation` (13), `workspace_send_prompt` (14), `workspace_set_tools` (15),
@@ -2995,7 +3013,9 @@ subagent the whole stretch runs in a detached `tokio::spawn`, so a daemon kill l
 `SubAgent` row with no provider and no parent. One INSERT closes both windows.
 
 **Task 36 (the subagent guard).** The existing refusal (a `SessionType::SubAgent` session may not
-call the subagent tool) is the shape and the location; the lineage and tier checks belong beside it.
+call the subagent tool) is the shape and the location; the tier check belongs beside it. (This read
+"the lineage and tier checks" until R6 was retired. The `SubAgent` refusal itself is a *different*
+one-hop rule and stays.)
 
 **Tasks 22-28 (GUI).** Tab-bar dots, workspace-row badges, provenance chips, set-tools toasts.
 

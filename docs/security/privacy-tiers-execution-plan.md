@@ -16747,6 +16747,14 @@ unit-testable without a database and BR-71's tool handlers can call it rather th
 | Create | `crates/biorouter/src/privacy/visibility.rs` | new |
 | Reference | `crates/biorouter/src/session/session_manager.rs` | `Session.parent_session_id` (Task 6) |
 
+> ⚠ **The Rust in the rest of this task is a HISTORICAL ARTIFACT and no longer
+> describes the tree.** It reproduces `visibility.rs` as Task 21 shipped it, when
+> the write rule was `WRITE ⇔ VIS ∧ L ∈ {self, child}`. R6 is retired: `may_write`
+> takes no lineage, `Lineage` and `lineage_of` are deleted, and the matrix's
+> `( CPub, TPub, Other, true, false, true )` row now expects `write: true`. Read
+> `crates/biorouter/src/privacy/visibility.rs`, not the blocks below; they are
+> kept only so the shape of the original task stays legible.
+
 - [ ] **Step 1: Write the failing test — the design's table, cell for cell**
 
 ```rust
@@ -22155,7 +22163,7 @@ the implementation is wrong.
 | **DR-2** | **Two lattices, opposite directions.** CAPABILITY (what a session may DO) = the **least** privileged model bound to it, so a mixed lead/worker config gets public reach. CLASSIFICATION (how sensitive its CONTENTS are) = the **most** sensitive thing it has touched, a permanent ratchet. A session can be classified private while holding only public capability. |
 | **DR-3** | **A public model must never reach a private session.** Not once, not read-only, not indirectly. The converse is unrestricted: a private model may read anything. |
 | **DR-4** | **The ratchet fires on the first TURN and on a permitted private-extension dispatch — never on the bind.** Binding is not when content appears, and ratcheting there would privatise a chat on a mis-click while still missing `POST /agent/call_tool`, which dispatches straight into the extension manager without touching the reply path. |
-| **DR-5** | **Lineage decides write access.** Sessions the caller spawned get full control; everything else is read-only. Lineage is **one hop** — a grandchild is `other`. |
+| **DR-5** | ~~**Lineage decides write access.** Sessions the caller spawned get full control; everything else is read-only. Lineage is **one hop** — a grandchild is `other`.~~ **RETIRED** by the product owner: an agent may inject a prompt into *any* conversation, child or unrelated, provided it does not cross the private/public boundary. WRITE ⇔ VIS. |
 | **DR-6** | **The BAAM registry is the sole grantor of a private badge, and anything not on BAAM is PUBLIC** (fail-open, by decision). The private set is exactly **`ucsfomopagent`** and **`cdwagent`**. Built-ins, platform servers and in-process app servers are public. Skills carry no classification. |
 | **DR-7** | **`chatrecall` obeys the barrier** — private models recall from private and public, public models from public only. **Side channels (existence, counts, timing) are explicitly out of scope**: no count padding, no constant-time responses, no decoys. Only content must not cross. |
 | **DR-8** | **Declassification is the user's alone** — an explicit deprivatise action in History. Nothing automatic, nothing an agent can invoke. Graded by `privacy_reason`: `mcp:*` gets a typed confirmation, `turn:*`-only gets single-click with undo. |
@@ -22903,24 +22911,32 @@ workflow — but two implementations of one capability is what produced the hole
 workspace tool"* — true, and actively misleading, because four of the six doors to a transcript are
 not workspace tools.
 
-### D2 — the private→public write is refused, like the spawn already is
+### D2 — the private→public write ~~is refused, like the spawn already is~~ discloses its payload
 
-The same act gets opposite rulings depending on the tool: `subagent` with a public override is
-**refused** (`spawn_downgrade`), while `workspace_send_prompt` into a public chat and
-`workspace_open {new:{prompt}}` are **permitted and silent** — the latter minting a permanently
-public row holding private-origin text.
+⚠ **SUPERSEDED.** This audit ruling — *"refuse the downgrade write"* — was overruled by the product
+owner, who requires that an agent be able to inject into any conversation it can see, the tier being
+the only boundary. Refusing a private→public write would forbid exactly the private-leader /
+public-worker arrangement R2 names, and R4 already permits a private session to spawn public
+children. **The disclosure was built instead of the refusal**: the first `workspace_send_prompt` /
+`workspace_set_tools` from a given caller into a given public target raises an approval showing the
+exact payload (`agents/workspace_inspector.rs`, `privacy/crossing.rs`).
 
-**Ruled: refuse the downgrade write.** One branch, and it removes the contradiction rather than
-documenting it.
+The audit's underlying observation stands and is worth keeping: the same act had opposite rulings
+depending on the tool — `subagent` with a public override is **refused** (`spawn_downgrade`), while
+`workspace_send_prompt` into a public chat and `workspace_open {new:{prompt}}` were **permitted and
+silent**. What changed is which way the inconsistency was resolved: the silent half became loud
+rather than the permitted half becoming refused.
 
 ⚠ **Amend `spawn_downgrade`'s advice text in the same change.** It currently reads *"start a new chat
 on it and give it the task directly"* — which points at exactly the path being closed. This is the
 audit's sharpest finding: **the refusals were routing cooperative agents into the ungated paths.** A
 model that reads its refusals carefully was *more* likely to find the bypass than one that gave up.
 
-Deleting `requires_first_crossing_approval`, `may_write` and `lineage_of` is in scope here — refusing
-makes all three unnecessary, and shipping a fifth correct-but-uncalled guard is worse than shipping
-none.
+~~Deleting `requires_first_crossing_approval`, `may_write` and `lineage_of` is in scope here~~ — that
+followed from the refusal and does not follow from the disclosure. Of the three, only `lineage_of`
+was deleted (with `Lineage`, and because R6 retired, not because of this ruling); `may_write` stayed
+and lost its lineage clause; and `requires_first_crossing_approval` is now WIRED, which is the
+opposite of the "fifth correct-but-uncalled guard" this paragraph was worried about.
 
 ### D3 — private payloads stay out of the logs, and diagnostics stop being cross-session
 
@@ -22967,15 +22983,27 @@ required for this release.
       message bodies. ⚠ Enumerate the doors — this bug existed because one door was found and four
       were not.
 
-### Task 63: Refuse the private→public write (D2)
+### Task 63: ~~Refuse~~ **Disclose** the private→public write (D2)
 
-- [ ] `workspace_send_prompt` and `workspace_open {new:{prompt}}` refuse a private→public downgrade,
-      reusing `spawn_downgrade`'s predicate and shape.
-- [ ] Amend `spawn_downgrade`'s advice text.
-- [ ] Delete `requires_first_crossing_approval`, `may_write`, `lineage_of` — refusing makes them dead.
-- [ ] **Gate:** the same downgrade is refused through spawn, send-prompt and open, asserted per path.
-      Plus: no privacy refusal in the tree advises an action another gate forbids — this is the
-      finding, made mechanical.
+⚠ **Rewritten after the owner overruled D2's refusal.** The original checklist is kept struck
+through, because a later reader finding only the new one would not know a refusal was ever
+considered.
+
+- [x] `workspace_send_prompt` and `workspace_set_tools` raise a first-crossing approval showing the
+      exact payload on a private→public write, once per (caller, target) pair, in every permission
+      mode — `WorkspaceCrossingInspector` + `privacy::crossing`.
+- [ ] ~~`workspace_send_prompt` and `workspace_open {new:{prompt}}` refuse a private→public
+      downgrade, reusing `spawn_downgrade`'s predicate and shape.~~
+- [ ] Amend `spawn_downgrade`'s advice text. **Still open, and now more so:** it advises *"start a
+      new chat on it and give it the task directly"*, which is a path the widened write rule makes
+      easier rather than harder. `workspace_open {new:{prompt}}` is still ungated on the model
+      dimension (§7 open item 2).
+- [ ] ~~Delete `requires_first_crossing_approval`, `may_write`, `lineage_of`~~ — see above; the
+      disclosure needs the first of these and the write gate needs the second.
+- [x] **Gate:** the disclosure is raised per path and cannot be bought by a denial (asking never
+      records the crossing).
+- [ ] **Gate:** no privacy refusal in the tree advises an action another gate forbids — this is the
+      finding, made mechanical. Still open.
 
 ### Task 64: Keep private payloads out of logs and bug reports (D3)
 

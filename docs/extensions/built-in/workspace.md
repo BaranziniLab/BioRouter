@@ -16,12 +16,12 @@ Workspace Control ships in **two sizes**, and most people only ever meet the sma
 
 | Tier | How you get it | What the agent can do |
 |------|----------------|-----------------------|
-| **Delegation only** (default) | Automatic. Any session that may delegate loads the extension with a tool list of exactly `subagent`. | Spawn subagents. Nothing cross-session. |
-| **Full workspace control** | You enable the `workspace` extension explicitly. | The seven `workspace_*` tools as well: read other conversations, inject prompts into them, change their tool sets. |
+| **Delegation** (default) | Automatic. Any session that may delegate loads the extension with a fixed six-tool list: `subagent`, `workspace_list`, `workspace_read_conversation`, `workspace_send_prompt`, `workspace_close`, `workspace_watch`. | Spawn subagents and supervise them; see which conversations exist and which are running; inject a prompt into one. |
+| **Full workspace control** | You enable the `workspace` extension explicitly. | Everything above plus `workspace_set_tools` (change another conversation's extensions, skills, model, knowledge bases), `workspace_open`, and the preview-panel pair. |
 
-The split exists because the two tiers have very different blast radii. Delegation creates a *new* conversation whose contents the agent already owns. The cross-session tools reach into conversations the agent did **not** create — so they are an explicit, informed opt-in, and the capability summary you are agreeing to is the same one the design records: **read other conversations, inject prompts into them, and change their tool sets.**
+The split is no longer "your own children versus everyone else's" — an injection may go to any conversation the session can see. What separates the tiers now is **capability change versus message**: the delegation tier can *talk to* another conversation, and only the explicit opt-in can *re-tool* one or mint and move tabs. Three of the delegation tier's six tools stay child-scoped whatever the write rule says — `workspace_read_conversation`, `workspace_close` and `workspace_watch` are confined to direct subagent children by `refuse_unless_direct_subagent_child`, which is a separate mechanism from the privacy matrix and did not move.
 
-Concretely, the extension is registered `default_enabled: false` (like Chat Recall). When a session has any ordinary extension loaded and delegation is permitted by your [permission mode](../../security/permission-modes.md), BioRouter auto-injects `workspace` for the spawn tool alone; that injection is derived state and is dropped again if the reason for it goes away. Enabling `workspace` yourself is what unlocks the rest, and an explicit enable is never downgraded to the injected one.
+Concretely, the extension is registered `default_enabled: false` (like Chat Recall). When a session has any ordinary extension loaded and delegation is permitted by your [permission mode](../../security/permission-modes.md), BioRouter auto-injects `workspace` with that six-tool list; the injection is derived state and is dropped again if the reason for it goes away. Enabling `workspace` yourself is what unlocks the rest, and an explicit enable is never downgraded to the injected one.
 
 ### Turning on the full surface
 
@@ -59,7 +59,9 @@ Hidden sessions are refused. Reads are recorded as tool calls in the *reading* c
 
 ### `workspace_send_prompt`
 
-Injects text into another conversation. `mode: "turn"` starts its agent on your text (it must be idle), `mode: "steer"` redirects it mid-turn (it must be running), `mode: "note"` leaves context without running anything.
+Injects text into **any** conversation the agent can see — a subagent it spawned, or a chat you opened that it has never touched. `mode: "turn"` starts its agent on the text (it must be idle), `mode: "steer"` redirects it mid-turn (it must be running), `mode: "note"` leaves context without running anything. The message appears in that conversation's tab **as it is sent**, with no reload.
+
+The one boundary is privacy: a chat on a public model cannot inject into a conversation marked private, and a chat on your institution's own model injecting into a public one asks you **the first time**, showing the exact text it would send. Read "the first time" literally — the approval is remembered per pair of conversations, not per message, so once you have approved one write from chat A into chat B, later writes on that pair go through without asking. That is the deliberate trade (a card on every message is a card nobody reads), and it is the thing to know before approving one: you are agreeing to the channel, not just to the text in front of you. The tool's instructions also tell the agent to use it only when it genuinely needs to — you may be reading the conversation it interrupts.
 
 > "Tell the QC chat to stop at step 3 and summarise." → `workspace_send_prompt { session_id: "…", text: "Stop at step 3 and summarize.", mode: "steer" }`
 

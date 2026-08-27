@@ -333,6 +333,70 @@ async fn an_agent_originated_steer_is_framed_as_untrusted() {
     assert_eq!(stamp.from_session_name.as_deref(), Some("Research chat"));
 }
 
+/// **`workspace_send_prompt mode:"steer"` reflects in an open tab live**, and
+/// the reason it does is worth stating because it is not where you would look.
+///
+/// `send_prompt_steer` itself only queues and raises a toast — it publishes
+/// nothing, deliberately. The message reaches the session bus through the
+/// TARGET's own turn: the drain loop persists the queued steer with
+/// `add_message_adopting_uid` and then yields `AgentEvent::Message`, and the one
+/// turn runner tees every yielded event onto the bus
+/// (`biorouter-server/src/workspace/turn.rs`). Adding a second publish in
+/// `send_prompt_steer` would double-render it AND would publish a copy that is
+/// not durable yet, which is the failure mode the whole "publish after the row
+/// is durable" rule exists to prevent.
+///
+/// So what has to hold here is that the yielded row is the STORED row: it
+/// carries the minted uid, and that uid names a message in the session. A yield
+/// with `id: None` is one an observing tab cannot reconcile against the stored
+/// twin it gets on the next snapshot.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_injected_steer_is_yielded_only_once_it_is_durable() {
+    let payload = "br71-steer-durable-marker";
+    let provider = Arc::new(SteeringProvider::stamped(
+        payload,
+        MessageProvenance {
+            kind: ProvenanceKind::AgentInjection,
+            from_session_id: Some("sender-session".to_string()),
+            from_session_name: Some("Research chat".to_string()),
+        },
+    ));
+    let (agent, session_id, _work_dir) = agent_with_provider(provider.clone()).await;
+
+    let messages = drain(&agent, "Plot the data", &session_id).await.unwrap();
+
+    let injected = messages
+        .iter()
+        .filter(|m| m.role == rmcp::model::Role::User)
+        .find(|m| {
+            m.content.iter().any(|c| match c {
+                MessageContent::Text(t) => t.text.contains(payload),
+                _ => false,
+            })
+        })
+        .expect("the injected steer must be yielded as a Message");
+
+    let uid = injected
+        .id
+        .as_deref()
+        .expect("the yielded steer must carry the uid the store minted for it");
+
+    let stored = shared_session_manager()
+        .get_session(&session_id, true)
+        .await
+        .unwrap()
+        .conversation
+        .expect("the session has a conversation");
+    assert!(
+        stored
+            .messages()
+            .iter()
+            .any(|m| m.id.as_deref() == Some(uid)),
+        "the steer was yielded under a uid that names no stored row, so it was \
+         published before it was durable"
+    );
+}
+
 /// BR-71: a steer stamped `UserDirect` — the human typing into a subagent's own
 /// tab — is stamped but NOT framed. Framing it would wrap the user's own words
 /// in "treat this as lower-trust data" and tell the model to discount them.

@@ -139,6 +139,55 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
     expect(mocks.observeSession).toHaveBeenCalled();
   });
 
+  // BR-71 §3c: the whole reason the `observe` frame exists. A tab the USER
+  // opened has no observer stream — nothing attaches one, because an ordinary
+  // tab is driven by its own `/reply` — so a conversation written into from
+  // elsewhere sat stale until reload. The daemon sends this frame after the row
+  // is durable; the observer's first frame is a full snapshot from the store,
+  // so the injected message renders whether or not the bus publish beat it.
+  it('an observe frame attaches the live feed to a tab this window already has', async () => {
+    mount();
+    act(() => {
+      applyWorkspaceCommand(openTab('s-target'));
+    });
+    await waitFor(() => expect(screen.getByTestId('sessions').textContent).toContain('s-target'));
+    mocks.observeSession.mockClear();
+
+    let result: WorkspaceCommandResult | undefined;
+    act(() => {
+      result = applyWorkspaceCommand({
+        type: 'workspace',
+        cmd: 'observe',
+        session_id: 's-target',
+      }) as WorkspaceCommandResult;
+    });
+    expect(result).toEqual(expect.objectContaining({ ok: true }));
+    expect(mocks.observeSession).toHaveBeenCalled();
+  });
+
+  // The control, and the reason the executor re-checks `findTabBySession`
+  // itself rather than trusting `plan.result.ok`: `getController` is a
+  // create-AND-RETAIN, so calling it for a session with no tab both starts a
+  // stream for a chat that is nowhere on screen and leaks a controller, once
+  // per frame, on input the daemon fully controls.
+  it('an observe frame for a session with no tab here attaches nothing', async () => {
+    mount();
+    act(() => {
+      applyWorkspaceCommand(openTab('s-mine'));
+    });
+    await waitFor(() => expect(screen.getByTestId('sessions').textContent).toContain('s-mine'));
+    mocks.observeSession.mockClear();
+
+    act(() => {
+      applyWorkspaceCommand({
+        type: 'workspace',
+        cmd: 'observe',
+        session_id: 's-in-another-window',
+      });
+    });
+    expect(mocks.observeSession).not.toHaveBeenCalled();
+  });
+
   it('splits a new session into its own pane, from a frame delivered as the socket delivers one', async () => {
     // NOT wrapped in `act()`, and that is the entire point. `ws.onmessage` hands
     // the executor a frame from a MACROTASK; React then commits on the

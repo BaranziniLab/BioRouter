@@ -461,6 +461,16 @@ fn workflow_inspectors(tool_risks: Arc<ToolRiskRegistry>) -> ToolInspectionManag
     use crate::security::security_inspector::SecurityInspector;
     use crate::security::sensitive_ops::SensitiveOpsInspector;
 
+    // ⚠ **Neither workspace inspector is here, and that is a latent gap rather
+    // than a decision.** `WorkspaceMutationInspector` (§5's always-confirm on a
+    // cross-session capability change) and `WorkspaceCrossingInspector` (issue
+    // #56's first-crossing payload disclosure) are registered only in
+    // `Agent::create_tool_inspection_manager`. It costs nothing today: the one
+    // production caller of this stack is `knowledge/provider_completer.rs`,
+    // which supplies a bridge over the knowledge sub-agent's own `kb_*` surface
+    // and cannot reach a `workspace_*` tool at all. The moment anything routes
+    // the workspace surface through here, both controls silently do not apply —
+    // so add them in the same change, do not discover it afterwards.
     let managed = Arc::new(ManagedPolicy::empty());
     let mut manager = ToolInspectionManager::new();
     manager.add_inspector(Box::new(ManagedPolicyInspector::new(Arc::clone(&managed))));

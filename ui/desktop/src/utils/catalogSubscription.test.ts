@@ -214,6 +214,56 @@ describe('reading a delta', () => {
     expect(newlyInstalledExtensions(d)).toEqual([{ key: 'bioroffice', name: 'bioroffice' }]);
   });
 
+  /**
+   * ⚠ **A first run is not six installs.** The daemon writes its own bundled
+   * baseline into the catalogue the first time it starts, and every entry
+   * arrives as `added` + `enabled` — so a brand-new user, who had set nothing
+   * up, met a stack of "Extension installed. Turn it on for this chat…" toasts
+   * naming `developer`, `computercontroller`, `autovisualiser`, `memory`,
+   * `knowledge` and `agent_drafter`. The notification exists for an install
+   * made somewhere else that this chat can now opt into; Biorouter's own
+   * baseline is never that.
+   */
+  it('does not announce Biorouter\'s own bundled extensions', () => {
+    const d = delta(1, ['developer']);
+    d.changes![0].extensions![0].config = {
+      name: 'developer',
+      description: 'Developer tools',
+      type: 'builtin',
+      bundled: true,
+    } as never;
+    expect(newlyInstalledExtensions(d)).toEqual([]);
+
+    // A platform extension is the same case by a different config shape: only
+    // Biorouter can register an in-process server.
+    const p = delta(2, ['workspace']);
+    p.changes![0].extensions![0].config = {
+      name: 'workspace',
+      description: 'Workspace Control',
+      type: 'platform',
+    } as never;
+    expect(newlyInstalledExtensions(p)).toEqual([]);
+  });
+
+  it('still announces a third-party install, and one with no config at all', () => {
+    // The control. Silencing the baseline must not silence the case the
+    // notification was written for.
+    const d = delta(3, ['bioroffice']);
+    d.changes![0].extensions![0].config = {
+      name: 'bioroffice',
+      description: 'Office documents',
+      type: 'stdio',
+      cmd: 'bioroffice',
+      args: [],
+    } as never;
+    expect(newlyInstalledExtensions(d)).toEqual([{ key: 'bioroffice', name: 'bioroffice' }]);
+
+    // No config: fail towards NOTIFYING. One extra notification is a smaller
+    // harm than silently swallowing a real third-party install.
+    const bare = delta(4, ['mystery']);
+    expect(newlyInstalledExtensions(bare)).toEqual([{ key: 'mystery', name: 'mystery' }]);
+  });
+
   /** A toggle is not an install; offering to attach one would be noise. */
   it('does not treat an enable as a new install', () => {
     const d = delta(1, ['bioroffice']);

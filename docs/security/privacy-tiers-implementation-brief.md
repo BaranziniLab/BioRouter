@@ -261,7 +261,7 @@ read the full row before implementing against it.
 | **DR-2** | "**Two lattices, opposite directions.** CAPABILITY (what a session may DO) = the **least** privileged model bound to it… CLASSIFICATION (how sensitive its CONTENTS are) = the **most** sensitive thing it has touched, a permanent ratchet." |
 | **DR-3** | "**A public model must never reach a private session.** Not once, not read-only, not indirectly. The converse is unrestricted: a private model may read anything." |
 | **DR-4** | "**The ratchet fires on the first TURN and on a permitted private-extension dispatch — never on the bind.**" |
-| **DR-5** | "**Lineage decides write access.** Sessions the caller spawned get full control; everything else is read-only. Lineage is **one hop** — a grandchild is `other`." |
+| **DR-5** | ~~"**Lineage decides write access.** Sessions the caller spawned get full control; everything else is read-only. Lineage is **one hop** — a grandchild is `other`."~~ **RETIRED.** Superseded by the ruling that an agent may inject a prompt into any conversation, child or unrelated, provided it does not cross the private/public boundary. WRITE ⇔ VIS. |
 | **DR-6** | "**The BAAM registry is the sole grantor of a private badge, and anything not on BAAM is PUBLIC** (fail-open, by decision). The private set is exactly **`ucsfomopagent`** and **`cdwagent`**." |
 | **DR-7** | "**`chatrecall` obeys the barrier**… **Side channels (existence, counts, timing) are explicitly out of scope**: no count padding, no constant-time responses, no decoys. Only content must not cross." |
 | **DR-8** | "**Declassification is the user's alone** — an explicit deprivatise action in History. Nothing automatic, nothing an agent can invoke." |
