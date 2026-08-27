@@ -43,11 +43,14 @@ vi.mock('../api', async (importOriginal) => {
 const { ChatStreamRegistry } = await import('./chatStreamStore');
 const { ChatState } = await import('../types/chatState');
 
-const tokenState: TokenState = {
-  input_tokens: 0,
-  output_tokens: 0,
-  total_tokens: 0,
-} as TokenState;
+const tokenState = {
+  inputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0,
+  accumulatedInputTokens: 0,
+  accumulatedOutputTokens: 0,
+  accumulatedTotalTokens: 0,
+} as unknown as TokenState;
 
 function userMessage(id: string, text: string): Message {
   return {
