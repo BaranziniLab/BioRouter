@@ -81,7 +81,7 @@ describe('a working directory outside the home tree', () => {
       userData: '/Users/someone/Library/Application Support/Biorouter',
       appTemp: '/var/folders/xx/T/biorouter',
       systemTemp: '/var/folders/xx/T',
-      platform: 'darwin' as NodeJS.Platform,
+      platform: 'darwin' as typeof process.platform,
     };
 
     it('includes the session working directory', () => {
@@ -109,7 +109,7 @@ describe('a working directory outside the home tree', () => {
     it('drops /tmp on Windows and still carries the working directory', () => {
       const roots = previewFileRoots({
         ...base,
-        platform: 'win32' as NodeJS.Platform,
+        platform: 'win32' as typeof process.platform,
         sessionWorkingDir: 'D:\\ws',
       });
       expect(roots).not.toContain('/tmp');

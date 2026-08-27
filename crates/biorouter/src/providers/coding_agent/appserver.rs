@@ -27,6 +27,16 @@
 
 use std::collections::HashMap;
 use std::process::Stdio;
+
+/// What the stdout reader hands to every in-flight request when the child's
+/// stdout closes — i.e. when the vendor CLI died.
+///
+/// ⚠ It is a SENTINEL, not a message to show anyone. On its own it says only
+/// that the pipe closed, which is the least useful true statement available:
+/// the reason is on the child's stderr and this arrives without it. The request
+/// path recognises it and re-reports with `stderr_suffix()` attached; see the
+/// note there.
+const CLOSED_OUTPUT: &str = "app server closed its output";
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
@@ -176,10 +186,25 @@ impl AppServer {
 
         match rx.await {
             Ok(Ok(result)) => Ok(result),
+            // ⚠ The child-died case arrives HERE, not in the `Err(_)` arm below,
+            // and that is why this arm cannot just format `e`. When stdout
+            // closes the reader drains `pending` and answers every waiter with
+            // `CLOSED_OUTPUT` — so the sender is used, not dropped, and the arm
+            // written to explain a dead child never runs. Reported literally it
+            // produced
+            //
+            //     Request failed: initialize: app server closed its output
+            //
+            // for a `codex` that had exited instantly with `env: node: No such
+            // file or directory`, which was sitting unread on its stderr the
+            // whole time. The pipe closing is the symptom; stderr is the cause.
+            Ok(Err(e)) if e == CLOSED_OUTPUT => Err(ProviderError::ExecutionError(format!(
+                "app server exited during `{method}`{}",
+                self.stderr_suffix().await
+            ))),
             Ok(Err(e)) => Err(ProviderError::RequestFailed(format!("{method}: {e}"))),
-            // The reader dropped the sender, which only happens when stdout
-            // closed — i.e. the child died. Its stderr is the only useful thing
-            // left to say.
+            // The reader dropped the sender without answering. Rarer than the
+            // arm above, and the same explanation applies.
             Err(_) => Err(ProviderError::ExecutionError(format!(
                 "app server exited during `{method}`{}",
                 self.stderr_suffix().await
@@ -262,7 +287,7 @@ fn spawn_reader(
         // stdout closed: fail every in-flight request rather than hanging.
         let mut guard = pending.lock().await;
         for (_, sender) in guard.drain() {
-            let _ = sender.send(Err("app server closed its output".into()));
+            let _ = sender.send(Err(CLOSED_OUTPUT.into()));
         }
     });
 }

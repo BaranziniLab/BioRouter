@@ -175,7 +175,7 @@ export function previewFileRoots(opts: {
   userData: string;
   appTemp: string;
   systemTemp: string;
-  platform: NodeJS.Platform;
+  platform: typeof process.platform;
   pathRootOverride?: string;
 }): string[] {
   return [

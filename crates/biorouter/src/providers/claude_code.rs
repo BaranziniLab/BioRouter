@@ -124,10 +124,25 @@ fn known_models() -> Vec<ModelInfo> {
     // Each window must equal the one `MODEL_CONTEXT_WINDOWS` declares, because
     // `tests/context_windows.rs::provider_declared_windows_match_the_registry`
     // compares the two.
+    // Verified against the installed CLI (claude 2.1.235) on 2026-08-27 by
+    // running each id and checking the answer, not by reading a changelog.
+    //
+    // ⚠ The probe has to be checked before it is trusted: `claude --model X -p`
+    // ACCEPTS an unknown id and merely warns —
+    //   "X" is not a model this version of Claude Code recognizes, so
+    //   auto-compact will keep this session within 200k tokens
+    // — so "it ran" proves nothing on its own. `definitely-not-a-model`,
+    // `claude-opus-99` and `gpt-4` each produce that warning; the five below
+    // produce a clean answer, which is what makes the list evidence.
+    //
+    // `claude-sonnet-5` was absent here while being a real, current model — the
+    // CLI's own `--help` names `fable`, `opus` and `sonnet` as the aliases for
+    // the latest models.
     vec![
-        ModelInfo::new("claude-sonnet-4-6", 1_000_000).with_vision(),
         ModelInfo::new("claude-opus-5", 1_000_000).with_vision(),
         ModelInfo::new("claude-fable-5", 1_000_000).with_vision(),
+        ModelInfo::new("claude-sonnet-5", 1_000_000).with_vision(),
+        ModelInfo::new("claude-sonnet-4-6", 1_000_000).with_vision(),
         ModelInfo::new("claude-haiku-4-5", 200_000).with_vision(),
     ]
 }
@@ -275,7 +290,20 @@ impl ClaudeCodeProvider {
         // augmented PATH too. Two of the four deleted CLI providers did this and
         // two did not; the two that did not were the ones that failed under the
         // GUI's truncated PATH.
-        if let Ok(path) = SearchPaths::builder().with_npm().path() {
+        //
+        // ⚠ `node` is the one that decides whether the child runs at all where
+        // the CLI is installed as a Node script rather than a native binary —
+        // the Codex provider fails outright on exactly that, exiting 127 before
+        // it opens stdout. `claude` is a native binary on some installs and an
+        // npm shim on others, so it gets the same treatment: the CLI's own
+        // directory first (an npm global install puts `node` beside it), then
+        // the version managers a GUI child never inherits, because it does not
+        // run a shell profile.
+        let mut search = SearchPaths::builder().with_npm().with_node_runtimes();
+        if let Some(dir) = self.command.parent() {
+            search = search.with_leading_dir(dir);
+        }
+        if let Ok(path) = search.path() {
             cmd.env("PATH", path);
         }
 

@@ -96,6 +96,18 @@ impl ModelInfo {
     }
 
     /// Mark this model as supporting image inputs (multimodal vision).
+    /// Mark the model as **known** not to take images.
+    ///
+    /// Distinct from leaving `supports_vision` as `None`, which says only that
+    /// nobody has looked. A provider that can enumerate its catalog knows the
+    /// answer and should say so: Codex's `model/list` reports `inputModalities`
+    /// per model, and `gpt-5.3-codex-spark` is `["text"]`. Recording that as
+    /// "unknown" throws away a fact the provider was told.
+    pub fn without_vision(mut self) -> Self {
+        self.supports_vision = Some(false);
+        self
+    }
+
     pub fn with_vision(mut self) -> Self {
         self.supports_vision = Some(true);
         if self.supported_input_mime_types.is_none() {

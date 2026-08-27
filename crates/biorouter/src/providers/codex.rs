@@ -163,11 +163,42 @@ fn link_codex_auth(source: &Path, target: &Path) -> std::io::Result<()> {
 /// Each window must match what `MODEL_CONTEXT_WINDOWS` declares, because
 /// `tests/context_windows.rs` compares the two.
 fn known_models() -> Vec<ModelInfo> {
+    // Read from the CLI itself, not from a blog post: `codex app-server`
+    // answers `model/list` with the catalog the signed-in account actually
+    // has. Measured against codex-cli 0.147.0 on 2026-08-27 —
+    //
+    //   gpt-5.6-sol          GPT-5.6-Sol    text+image   (account default)
+    //   gpt-5.6-terra        GPT-5.6-Terra  text+image
+    //   gpt-5.6-luna         GPT-5.6-Luna   text+image
+    //   gpt-5.5              GPT-5.5        text+image
+    //   gpt-5.4              GPT-5.4        text+image
+    //   gpt-5.4-mini         GPT-5.4-Mini   text+image
+    //   gpt-5.3-codex-spark  Spark          TEXT ONLY
+    //
+    // Two corrections fall out of that, and both were live defects:
+    //
+    //   * `gpt-5.3-codex` was offered and DOES NOT EXIST. The real id gained a
+    //     `-spark` suffix; choosing the old one could only ever fail.
+    //   * `gpt-5.3-codex-spark` is text-only, so it must NOT be marked
+    //     `with_vision()` — the other six are.
+    //
+    // `gpt-5.6-pro` appears in the binary's strings but is absent from the
+    // catalog, so it is deliberately not offered: a model the account cannot
+    // select is worse than one missing from the list.
+    //
+    // Re-derive rather than trusting this comment:
+    //   codex app-server --strict-config   # then: {"id":1,"method":"model/list"}
     vec![
+        ModelInfo::new("gpt-5.6-sol", 1_050_000).with_vision(),
+        ModelInfo::new("gpt-5.6-terra", 1_050_000).with_vision(),
+        ModelInfo::new("gpt-5.6-luna", 1_050_000).with_vision(),
         ModelInfo::new("gpt-5.5", 1_050_000).with_vision(),
         ModelInfo::new("gpt-5.4", 1_050_000).with_vision(),
         ModelInfo::new("gpt-5.4-mini", 400_000).with_vision(),
-        ModelInfo::new("gpt-5.3-codex", 400_000).with_vision(),
+        // ⚠ `without_vision()`, not a bare `new()`. A bare one leaves vision
+        // UNKNOWN, and `model/list` told us the answer: inputModalities is
+        // `["text"]`. Recording a known fact as unknown is its own defect.
+        ModelInfo::new("gpt-5.3-codex-spark", 400_000).without_vision(),
     ]
 }
 
@@ -259,7 +290,25 @@ impl CodexProvider {
         // `codex` is an npm shim that execs a sibling native binary and shells out
         // to git and ripgrep on its own account, so the resolved absolute path is
         // not enough — it needs the augmented PATH too.
-        if let Ok(path) = SearchPaths::builder().with_npm().path() {
+        //
+        // ⚠ It is `#!/usr/bin/env node`, so without `node` on this PATH it does
+        // not merely lose a feature — it never starts. A desktop app launched
+        // from Finder inherits `/usr/bin:/bin:/usr/sbin:/sbin`, not the user's
+        // shell PATH, so a Node installed by Homebrew or (much worse) by a
+        // version manager is invisible. The child then exits 127 with
+        // `env: node: No such file or directory` before opening stdout, which
+        // is the whole of the "app server closed its output" report.
+        //
+        // `with_leading_dir` is the reliable half: an npm global install puts
+        // `node` beside the CLI, so wherever THIS machine put `codex` is the
+        // best place to look. `with_node_runtimes` covers nvm / fnm / Volta /
+        // asdf, which a GUI child never picks up because it does not run a
+        // shell profile.
+        let mut search = SearchPaths::builder().with_npm().with_node_runtimes();
+        if let Some(dir) = self.command.parent() {
+            search = search.with_leading_dir(dir);
+        }
+        if let Ok(path) = search.path() {
             cmd.env("PATH", path);
         }
         if let Some(home) = isolated_home {
@@ -2241,12 +2290,52 @@ for line in sys.stdin:
         assert!(m.config_keys[0].required);
         assert!(!m.config_keys[0].secret);
         assert_eq!(m.config_keys[0].default.as_deref(), Some("codex"));
+        // ⚠ Vision is PER MODEL, not a property of the provider. This used to
+        // assert that every advertised model took images, which was true only
+        // while the list happened to contain no text-only model. `model/list`
+        // reports `inputModalities` per entry and `gpt-5.3-codex-spark` is
+        // `["text"]` alone, so the blanket claim is now false — and asserting it
+        // would force the catalog to lie about a real model's capability.
+        //
+        // What is worth pinning is that each entry says something definite, and
+        // that the one known text-only model is not advertised as accepting
+        // images: a model wrongly marked vision-capable takes an image, sends
+        // it, and fails mid-turn.
         assert!(
             m.known_models
                 .iter()
-                .all(|model| model.supports_vision == Some(true)),
-            "every model advertised by the Codex CLI provider accepts image inputs"
+                .all(|model| model.supports_vision.is_some()),
+            "every advertised model must state whether it takes images, rather \
+             than leaving it unknown"
         );
+        let spark = m
+            .known_models
+            .iter()
+            .find(|model| model.name == "gpt-5.3-codex-spark")
+            .expect("the Spark model is advertised");
+        assert_eq!(
+            spark.supports_vision,
+            Some(false),
+            "`model/list` reports inputModalities [\"text\"] for Spark"
+        );
+        assert!(
+            m.known_models
+                .iter()
+                .filter(|model| model.name != "gpt-5.3-codex-spark")
+                .all(|model| model.supports_vision == Some(true)),
+            "every other advertised Codex model accepts image inputs"
+        );
+        assert!(
+            !m.known_models.iter().any(|model| model.name == "gpt-5.3-codex"),
+            "`gpt-5.3-codex` is not a real model id any more — `model/list` \
+             reports only `gpt-5.3-codex-spark`, so offering it can only fail"
+        );
+        for id in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            assert!(
+                m.known_models.iter().any(|model| model.name == id),
+                "{id} is in the live catalog and must be offered"
+            );
+        }
     }
 }
 
