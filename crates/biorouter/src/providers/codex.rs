@@ -330,14 +330,17 @@ impl CodexProvider {
     /// would let an unrelated failure silently drop an isolation flag, which is
     /// the one outcome this must never produce.
     fn unknown_feature_flag(stderr: &str) -> Option<String> {
-        stderr.split("Unknown feature flag:").nth(1).and_then(|rest| {
-            let name = rest
-                .trim_start()
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect::<String>();
-            (!name.is_empty()).then_some(name)
-        })
+        stderr
+            .split("Unknown feature flag:")
+            .nth(1)
+            .and_then(|rest| {
+                let name = rest
+                    .trim_start()
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect::<String>();
+                (!name.is_empty()).then_some(name)
+            })
     }
 
     /// Start `codex app-server`, dropping any feature name this build of the CLI
@@ -1981,7 +1984,8 @@ for line in sys.stdin:
             "the child's config home must not inherit personal MCP servers"
         );
 
-        let command = test_provider().app_server_command(Some(isolated.path()), DISABLED_CHILD_FEATURES);
+        let command =
+            test_provider().app_server_command(Some(isolated.path()), DISABLED_CHILD_FEATURES);
         let args: Vec<_> = command.as_std().get_args().collect();
         assert!(args.iter().any(|arg| *arg == "--strict-config"));
         for feature in DISABLED_CHILD_FEATURES {
@@ -2423,7 +2427,9 @@ for line in sys.stdin:
             "every other advertised Codex model accepts image inputs"
         );
         assert!(
-            !m.known_models.iter().any(|model| model.name == "gpt-5.3-codex"),
+            !m.known_models
+                .iter()
+                .any(|model| model.name == "gpt-5.3-codex"),
             "`gpt-5.3-codex` is not a real model id any more — `model/list` \
              reports only `gpt-5.3-codex-spark`, so offering it can only fail"
         );

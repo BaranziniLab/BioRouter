@@ -220,9 +220,15 @@ mod cli_discovery_tests {
     #[test]
     fn the_missing_cli_message_says_what_to_do() {
         let m = azure_cli_missing_message();
-        assert!(m.contains("brew install azure-cli"), "no install command: {m}");
+        assert!(
+            m.contains("brew install azure-cli"),
+            "no install command: {m}"
+        );
         assert!(m.contains("az login"), "no sign-in step: {m}");
-        assert!(m.contains("/opt/homebrew/bin"), "does not say where it looked: {m}");
+        assert!(
+            m.contains("/opt/homebrew/bin"),
+            "does not say where it looked: {m}"
+        );
         assert!(
             !m.contains("os error 2"),
             "the raw errno is the old message, not the new one: {m}"

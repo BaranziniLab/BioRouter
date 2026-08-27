@@ -83,7 +83,8 @@ impl SearchPaths {
             self.paths.push(home.join(".nvm/current/bin"));
             self.paths.push(home.join(".fnm/aliases/default/bin"));
             self.paths.push(home.join(".asdf/shims"));
-            self.paths.push(home.join(".local/share/fnm/aliases/default/bin"));
+            self.paths
+                .push(home.join(".local/share/fnm/aliases/default/bin"));
         }
         self
     }
@@ -242,9 +243,11 @@ mod tests {
     /// breaking every Homebrew binary; widening must add, never replace.
     #[test]
     fn adding_node_runtimes_keeps_the_standard_tool_dirs() {
-        let plain: Vec<PathBuf> = env::split_paths(&SearchPaths::builder().path().unwrap()).collect();
+        let plain: Vec<PathBuf> =
+            env::split_paths(&SearchPaths::builder().path().unwrap()).collect();
         let widened: Vec<PathBuf> =
-            env::split_paths(&SearchPaths::builder().with_node_runtimes().path().unwrap()).collect();
+            env::split_paths(&SearchPaths::builder().with_node_runtimes().path().unwrap())
+                .collect();
         for entry in plain {
             assert!(
                 widened.contains(&entry),
