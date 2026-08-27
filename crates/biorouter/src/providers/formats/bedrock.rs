@@ -48,22 +48,6 @@ pub fn bedrock_blocking_inference_config(
     bedrock_inference_config_with_limit(model_config, Some(BEDROCK_BLOCKING_MAX_TOKENS))
 }
 
-/// Bound a *default* output allowance by the room compaction leaves for it.
-///
-/// Bedrock rejects a request whose `input + maxTokens` exceeds the model's
-/// context window — "input length and max_tokens exceed context limit: 196395 +
-/// 64000 > 204698". Auto-compaction does not fire until input reaches
-/// [`DEFAULT_COMPACTION_THRESHOLD`] of the window, so a fixed 64,000 allowance
-/// opens a band on every 200K-context model (Haiku 4.5, Sonnet 4.5, Opus 4.5)
-/// where input is past `context - 64_000` but not yet past the compaction
-/// trigger: every request in that band 400s on a turn the agent believed was in
-/// budget. It recovers — `looks_like_context_overflow` classifies it and
-/// compacts — but at the cost of a wasted round trip each time.
-///
-/// Keeping the allowance inside the post-threshold headroom closes the band by
-/// construction. The floor is the conservative default, so this can never ask
-/// for less than the provider would have applied with the field omitted.
-
 /// A short, safe description of an SDK error for a user-facing message.
 ///
 /// ⚠ **Never `format!("{:?}", err)` on an SDK error.** The Debug rendering of a
@@ -92,6 +76,21 @@ fn safe_detail<E: aws_sdk_bedrockruntime::error::ProvideErrorMetadata>(err: &E) 
     }
 }
 
+/// Bound a *default* output allowance by the room compaction leaves for it.
+///
+/// Bedrock rejects a request whose `input + maxTokens` exceeds the model's
+/// context window — "input length and max_tokens exceed context limit: 196395 +
+/// 64000 > 204698". Auto-compaction does not fire until input reaches
+/// [`DEFAULT_COMPACTION_THRESHOLD`] of the window, so a fixed 64,000 allowance
+/// opens a band on every 200K-context model (Haiku 4.5, Sonnet 4.5, Opus 4.5)
+/// where input is past `context - 64_000` but not yet past the compaction
+/// trigger: every request in that band 400s on a turn the agent believed was in
+/// budget. It recovers — `looks_like_context_overflow` classifies it and
+/// compacts — but at the cost of a wasted round trip each time.
+///
+/// Keeping the allowance inside the post-threshold headroom closes the band by
+/// construction. The floor is the conservative default, so this can never ask
+/// for less than the provider would have applied with the field omitted.
 fn bounded_by_context_window(max_tokens: i32, context_limit: usize) -> i32 {
     let headroom =
         (context_limit as f64 * (1.0 - crate::context_mgmt::DEFAULT_COMPACTION_THRESHOLD)) as i32;
@@ -3134,7 +3133,10 @@ mod safe_detail_tests {
         };
         assert_eq!(safe_detail(&coded), "error code ThrottlingException");
 
-        let bare = FakeSdkError { message: None, code: None };
+        let bare = FakeSdkError {
+            message: None,
+            code: None,
+        };
         assert_eq!(safe_detail(&bare), "no further detail was returned");
     }
 }
