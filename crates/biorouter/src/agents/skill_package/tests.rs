@@ -947,33 +947,32 @@ fn removing_a_shipped_skill_or_bundle_is_refused() {
 
 /// ⚠ **The WIRING, not the predicate.** The test above drives
 /// `refuse_shipped` directly, so deleting the `bail!` that calls it from
-/// `remove` leaves it green while restoring the exact regression it describes.
-/// This one goes through `remove` itself, and through `install`, so both call
-/// sites are held.
+/// `remove` or `install` leaves it green while restoring the exact regression
+/// it describes. This one goes through the function bodies themselves.
 ///
-/// `BIOROUTER_PATH_ROOT` is process-global, so this serialises through the
-/// repo's `env_lock` rather than assuming it runs alone — the reason
-/// `refuse_shipped` takes the seeded root as an argument in the first place.
+/// ⚠ **No `BIOROUTER_PATH_ROOT`.** `install_in`/`remove_in` take the seeded
+/// root as an argument for exactly this reason — the one-line public wrappers
+/// supply `Paths::config_dir()`, and everything below that is pure. A previous
+/// draft set the env var under a global lock, which contradicted the rationale
+/// written on `refuse_shipped` itself and made this test order-dependent on
+/// every other test in the binary.
 #[test]
-fn remove_refuses_a_shipped_name_through_its_own_entry_point() {
+fn remove_and_install_both_refuse_a_shipped_name_through_their_own_bodies() {
     let tmp = TempDir::new().unwrap();
-    let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(tmp.path().to_str().unwrap()))]);
+    let seeded = tmp.path().join("biorouter-skills");
+    let package = seeded.join("about-biorouter");
+    std::fs::create_dir_all(&package).unwrap();
+    let shipped = "---\nname: about-biorouter\ndescription: Shipped\n---\nBody\n";
+    std::fs::write(package.join("SKILL.md"), shipped).unwrap();
 
-    let root = crate::config::paths::Paths::config_dir().join("skills");
-    let seeded = root.join("about-biorouter");
-    std::fs::create_dir_all(&seeded).unwrap();
-    std::fs::write(
-        seeded.join("SKILL.md"),
-        "---\nname: about-biorouter\ndescription: Shipped\n---\nBody\n",
-    )
-    .unwrap();
-
-    let error = install::remove("about-biorouter", &root).unwrap_err();
-    let error = format!("{error:#}");
+    let error = format!(
+        "{:#}",
+        install::remove_in(&seeded, "about-biorouter", &seeded).unwrap_err()
+    );
     assert!(error.contains("ships with Biorouter"), "{error}");
     assert!(
-        seeded.join("SKILL.md").is_file(),
-        "remove deleted a shipped skill and only the refusal text was missing"
+        package.join("SKILL.md").is_file(),
+        "remove deleted a shipped skill; only the refusal text was missing"
     );
 
     // ⚠ And the write side. Installing over a shipped name renames the seeded
@@ -989,11 +988,23 @@ fn remove_refuses_a_shipped_name_through_its_own_entry_point() {
         &[],
     )
     .unwrap();
-    let error = format!("{:#}", install::install(&mine, &root).unwrap_err());
+    let error = format!(
+        "{:#}",
+        install::install_in(&seeded, &mine, &seeded).unwrap_err()
+    );
     assert!(error.contains("ships with Biorouter"), "{error}");
     assert_eq!(
-        std::fs::read_to_string(seeded.join("SKILL.md")).unwrap(),
-        "---\nname: about-biorouter\ndescription: Shipped\n---\nBody\n",
+        std::fs::read_to_string(package.join("SKILL.md")).unwrap(),
+        shipped,
         "install overwrote a shipped skill"
     );
+
+    // ⚠ And the same package under a root Biorouter does not seed is THEIRS.
+    // Without this the guard would be a blanket ban on the name.
+    let elsewhere = tmp.path().join("claude-skills");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    install::install_in(&seeded, &mine, &elsewhere)
+        .expect("a same-named package under another root must install");
+    install::remove_in(&seeded, "about-biorouter", &elsewhere)
+        .expect("and must be removable again");
 }

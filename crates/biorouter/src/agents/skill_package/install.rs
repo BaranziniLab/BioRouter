@@ -80,6 +80,20 @@ pub fn install_root() -> PathBuf {
 /// installer that quietly picked one of the answers would be the flattening
 /// this module exists to remove.
 pub fn install(plan: &ImportPlan, root: &Path) -> Result<InstalledPackage> {
+    install_in(&Paths::config_dir().join("skills"), plan, root)
+}
+
+/// [`install`] against an explicit seeded root.
+///
+/// Split out for the same reason [`refuse_shipped`] takes that root as an
+/// argument: a test can then hold both halves without setting
+/// `BIOROUTER_PATH_ROOT`, whose process-global reach makes a test of it
+/// order-dependent on everything else in the binary.
+pub(super) fn install_in(
+    seeded_root: &Path,
+    plan: &ImportPlan,
+    root: &Path,
+) -> Result<InstalledPackage> {
     if let Some(ambiguity) = &plan.ambiguity {
         bail!(
             "this import needs an answer before it can be installed: {}",
@@ -96,7 +110,7 @@ pub fn install(plan: &ImportPlan, root: &Path) -> Result<InstalledPackage> {
     // Delete control is hidden because `builtin` now reads true; and `remove`
     // REFUSES it. A guard on one side of the pair turns a shadowing bug into
     // something the user cannot uninstall by any means.
-    if let Some(refusal) = refuse_shipped(&Paths::config_dir().join("skills"), root, &plan.id) {
+    if let Some(refusal) = refuse_shipped(seeded_root, root, &plan.id) {
         bail!(refusal);
     }
 
@@ -236,6 +250,11 @@ fn stage(plan: &ImportPlan, staging: &Path) -> Result<()> {
 /// Renamed aside first and then deleted, so the directory disappears from the
 /// catalog's view in one step rather than emptying out under a scan in flight.
 pub fn remove(id: &str, root: &Path) -> Result<PackageSummary> {
+    remove_in(&Paths::config_dir().join("skills"), id, root)
+}
+
+/// [`remove`] against an explicit seeded root. See [`install_in`].
+pub(super) fn remove_in(seeded_root: &Path, id: &str, root: &Path) -> Result<PackageSummary> {
     let sanitized = super::sanitize_package_id(id)
         .ok_or_else(|| anyhow::anyhow!("`{id}` is not a valid package name"))?;
     let directory = root.join(&sanitized);
@@ -243,7 +262,7 @@ pub fn remove(id: &str, root: &Path) -> Result<PackageSummary> {
         bail!("no package named `{sanitized}` is installed");
     }
 
-    if let Some(refusal) = refuse_shipped(&Paths::config_dir().join("skills"), root, &sanitized) {
+    if let Some(refusal) = refuse_shipped(seeded_root, root, &sanitized) {
         bail!(refusal);
     }
 
