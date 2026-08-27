@@ -65,7 +65,7 @@ import {
   type GhostSpec,
   type GhostWindowHandle,
 } from './dragGhostWindow';
-import { expandTilde } from './utils/pathUtils';
+import { expandTilde, reinterpretTildeAsAbsolute } from './utils/pathUtils';
 import { friendlyArtifactFileError } from './utils/artifactFileErrors';
 import {
   assertSafeRasterImageDimensions,
@@ -76,7 +76,7 @@ import {
 import { artifactSourceRevision } from './utils/artifactSourceRevision';
 import { sanitizeUntrustedLabel } from './utils/untrustedText';
 import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
-import { isFilePathAllowedForPreview } from './utils/pathContainment';
+import { isFilePathAllowedForPreview, previewFileRoots } from './utils/pathContainment';
 import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
 import log from './utils/logger';
 import { ensureWinShims } from './utils/winShims';
@@ -179,7 +179,12 @@ function resolveImagePath(filename: string): string | undefined {
 }
 
 function expandBiorouterPath(filePath: string): string {
-  const expandedPath = expandTilde(filePath);
+  // `reinterpretTildeAsAbsolute` recovers `~/ws/…` when the chat's working
+  // directory is outside the home tree; it is a no-op whenever the home reading
+  // exists, so it can never redirect a path that already works.
+  const expandedPath = reinterpretTildeAsAbsolute(filePath, expandTilde(filePath), (candidate) =>
+    fsSync.existsSync(candidate)
+  );
   const pathRoot = process.env.BIOROUTER_PATH_ROOT;
   if (!pathRoot) return expandedPath;
 
@@ -190,24 +195,28 @@ function expandBiorouterPath(filePath: string): string {
   return expandedPath;
 }
 
-export function allowedFileRoots(): string[] {
-  return [
-    os.homedir(),
-    app.getPath('userData'),
-    app.getPath('temp'),
-    // The SYSTEM temp dir, distinct from Electron's per-app temp above. Agent
-    // tools (shell, text_editor) write to /tmp constantly, and the artifact
-    // panel must be able to preview what the session itself just created —
-    // "Access denied: path '/tmp/…' is outside allowed directories" on a file
-    // the task wrote is a false positive. Home is already an allowed root, so
-    // admitting tmp is a smaller exposure than the existing posture. (A
-    // "paths the task touched" registry would be tighter, but main never sees
-    // the tool stream, and letting the renderer register paths would let a
-    // compromised renderer register anything — voiding the boundary.)
-    os.tmpdir(),
-    ...(process.platform !== 'win32' ? ['/tmp'] : []),
-    ...(process.env.BIOROUTER_PATH_ROOT ? [process.env.BIOROUTER_PATH_ROOT] : []),
-  ];
+/**
+ * @param sessionWorkingDir the working directory of the window making the
+ *   request, when known. **Must come from the main process's own record of the
+ *   window** (see `windowWorkingDirs`), never from an IPC argument — a renderer
+ *   that could name its own root would void the boundary entirely, which is why
+ *   the "paths the task touched" registry mentioned below was rejected.
+ */
+export function allowedFileRoots(sessionWorkingDir?: string): string[] {
+  // Thin wrapper: the SET lives in utils/pathContainment.ts so it is testable
+  // (nothing can import main.ts under vitest). The comment about why a
+  // renderer-declared "paths the task touched" registry was rejected still
+  // applies — `sessionWorkingDir` must come from `windowWorkingDirs`, which
+  // main populates itself when it builds the window.
+  return previewFileRoots({
+    sessionWorkingDir,
+    home: os.homedir(),
+    userData: app.getPath('userData'),
+    appTemp: app.getPath('temp'),
+    systemTemp: os.tmpdir(),
+    platform: process.platform,
+    pathRootOverride: process.env.BIOROUTER_PATH_ROOT,
+  });
 }
 
 /** The biorouter config.yaml path in the main process (honours the test-only
@@ -251,14 +260,33 @@ export function isFullyAutomaticMode(): boolean {
   return readBiorouterMode() === 'auto';
 }
 
-export function isAllowedFilePath(resolvedPath: string): boolean {
+export function isAllowedFilePath(resolvedPath: string, sessionWorkingDir?: string): boolean {
   // Symlink-aware containment + Directive 2 mode-aware scope: Fully-Automatic
   // mode admits any non-sensitive path (parity with the backend, which lets the
   // agent write anywhere); sensitive paths stay denied regardless of mode. See
   // utils/pathContainment.ts.
-  return isFilePathAllowedForPreview(resolvedPath, allowedFileRoots(), {
+  //
+  // A sensitive path stays denied even when it IS the working directory: the
+  // widening adds a root to the allowlist, it does not bypass
+  // `isSensitivePreviewPath`. Pointing a chat at ~/.ssh does not make it
+  // readable.
+  return isFilePathAllowedForPreview(resolvedPath, allowedFileRoots(sessionWorkingDir), {
     fullyAutomatic: isFullyAutomaticMode(),
   });
+}
+
+/**
+ * Per-window working directory, as the MAIN process recorded it when it built
+ * the window. This is the trusted source for `isAllowedFilePath`'s widening —
+ * `windowWorkingDir` is computed in `createChat` from the launch argument, not
+ * received over IPC.
+ */
+const windowWorkingDirs = new Map<number, string>();
+
+/** The working directory of the window that sent `event`, if it has one. */
+export function workingDirForSender(event: { sender: Electron.WebContents }): string | undefined {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  return win ? windowWorkingDirs.get(win.id) : undefined;
 }
 
 /**
@@ -1600,6 +1628,10 @@ const createChat = async (
   });
 
   windowMap.set(windowId, mainWindow);
+  // Recorded here, from main's own `windowWorkingDir`, so the preview allowlist
+  // can admit the folder the user chose for THIS chat without ever trusting a
+  // renderer to name it.
+  windowWorkingDirs.set(windowId, workingDir);
 
   // ── Tab tear-off: keep the strip-band registry's view of this window honest.
   //
@@ -1632,6 +1664,7 @@ const createChat = async (
   // Handle window closure
   mainWindow.on('closed', () => {
     windowMap.delete(windowId);
+    windowWorkingDirs.delete(windowId);
     // A closed window stops being a merge target on the very next pointermove
     // (design §6), and cannot be left holding a caret nobody will clear.
     forgetWindowFromTabDrag(windowId, 'window closed');
@@ -2969,11 +3002,11 @@ ipcMain.handle('check-ollama', async () => {
   }
 });
 
-ipcMain.handle('read-file', async (_event, filePath) => {
+ipcMain.handle('read-file', async (event, filePath) => {
   const expandedPath = expandBiorouterPath(filePath);
   try {
     const resolvedPath = path.resolve(expandedPath);
-    if (!isAllowedFilePath(resolvedPath)) {
+    if (!isAllowedFilePath(resolvedPath, workingDirForSender(event))) {
       throw new Error(`Access denied: path '${resolvedPath}' is outside allowed directories`);
     }
     // Single fs.readFile path for all platforms. The previous `spawn('cat')`
@@ -3170,12 +3203,12 @@ ipcMain.handle('embedded-browser:destroy', (event, payload: { viewId: string }) 
   if (window) destroyEmbeddedBrowser(window, payload.viewId);
 });
 
-ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
+ipcMain.handle('read-artifact-file', async (event, filePath: string) => {
   const expandedPath = expandBiorouterPath(filePath);
   const resolvedPath = path.resolve(expandedPath);
   const title = path.basename(resolvedPath) || resolvedPath;
   try {
-    if (!isAllowedFilePath(resolvedPath)) {
+    if (!isAllowedFilePath(resolvedPath, workingDirForSender(event))) {
       throw new Error(`Access denied: path '${resolvedPath}' is outside allowed directories`);
     }
 

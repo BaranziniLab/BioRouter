@@ -159,3 +159,36 @@ export function isFilePathAllowedForPreview(
   if (opts.fullyAutomatic) return true;
   return isPathContained(candidate, roots);
 }
+
+/**
+ * The preview allowlist's ROOTS, as a pure function of its inputs.
+ *
+ * Split out of `main.ts`'s `allowedFileRoots` so the set can be asserted at all:
+ * nothing can import `main.ts` under vitest, and a test that hand-builds a roots
+ * array proves only that `isPathContained` works — it cannot catch a root that
+ * was never added, which is precisely the defect this exists to prevent.
+ */
+export function previewFileRoots(opts: {
+  /** The folder the user pointed THIS chat at, when there is one. */
+  sessionWorkingDir?: string;
+  home: string;
+  userData: string;
+  appTemp: string;
+  systemTemp: string;
+  platform: NodeJS.Platform;
+  pathRootOverride?: string;
+}): string[] {
+  return [
+    // ⚠ First, and load-bearing. Without it a working directory outside the
+    // home tree made every file the agent had just written unpreviewable: the
+    // panel refused a file the session itself created, while the session kept
+    // writing there. Choosing the folder is the act that puts it in scope.
+    ...(opts.sessionWorkingDir ? [opts.sessionWorkingDir] : []),
+    opts.home,
+    opts.userData,
+    opts.appTemp,
+    opts.systemTemp,
+    ...(opts.platform !== 'win32' ? ['/tmp'] : []),
+    ...(opts.pathRootOverride ? [opts.pathRootOverride] : []),
+  ];
+}
