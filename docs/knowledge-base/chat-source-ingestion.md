@@ -78,18 +78,18 @@ tool loop that Biorouter itself runs:
 fn supports_tool_calls(&self) -> bool { true }   // Provider trait default
 ```
 
-`claude_code` and `codex` override it to `false`. They accept a `tools` argument and
-forward nothing: Biorouter's tools reach their child agent over the MCP tool bridge, which
-only the agent *turn loop* establishes. A knowledge sub-agent runs outside that turn, so
-the child would be handed no tools and the run would end having written nothing — a
-failure indistinguishable, at the far end, from a model that had nothing more to do. That
-is why it is caught by asking rather than diagnosed afterwards from a silent run.
+Ordinary API providers receive the tools in the request. `claude_code` and `codex` do not
+forward that argument, so `ProviderCompleter::complete_with_dispatch` establishes a scoped
+MCP bridge from their child process to the knowledge macro's dispatcher. The same
+transaction-bound tools, inspectors, approval routing, and cancellation therefore apply
+on both paths.
 
 `LeadWorkerProvider` folds the two halves with `&&`, exactly as it folds `tier` and
 `affiliation`, because a turn lands on either one.
 
-When the answer is no, the tool **refuses by name and ingests nothing**. It does not fall
-back to an API provider that would work: that would move the user's inference onto a
+If a provider implementation has neither request tool calls nor an equivalent bridge, it
+overrides the capability to false. The tool then **refuses by name and ingests nothing**.
+It does not fall back to another provider: that would move the user's inference onto a
 different account and a different bill without the user choosing it. The refusal states
 both remedies — switch the chat's model, or name one in `model` — and leaves the choice
 where it belongs.
@@ -141,13 +141,9 @@ and separate raw/curation commits; a source that curates nothing retains its raw
 raw commit while leaving no curated page or curation commit behind; and one failing source
 does not discard the others.
 
-## Still open
-
-The Claude Code / Codex end-to-end path waits on
-[issue #109](https://github.com/BaranziniLab/biorouter/issues/109), which adds a
-provider-driven tool-turn primitive. When it lands, those two providers' `supports_tool_calls`
-overrides come off and this tool needs no change — that seam is the whole reason the
-capability is declared on the provider rather than checked by name here.
+The coding-agent bridge round trip is covered by `knowledge_macro_tool_bridge`: the child
+sees the macro's exact tool surface, calls its transaction-bound dispatcher, and returns
+the mirrored execution as a record rather than causing a duplicate write.
 
 ## Related documentation
 

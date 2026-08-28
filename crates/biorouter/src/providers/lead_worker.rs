@@ -823,18 +823,46 @@ mod tests {
     #[test]
     fn the_composite_can_call_tools_only_when_both_halves_can() {
         use super::LeadWorkerProvider;
+        use crate::conversation::message::Message;
         use crate::model::ModelConfig;
-        use crate::providers::base::Provider;
+        use crate::providers::base::{Provider, ProviderMetadata, ProviderUsage};
         use crate::providers::claude_code::ClaudeCodeProvider;
+        use crate::providers::errors::ProviderError;
         use crate::providers::ollama::OllamaProvider;
+        use rmcp::model::Tool;
         use std::sync::Arc;
 
-        // Real providers on both sides: the fact under test is what production
-        // `supports_tool_calls` returns, not what a stub was told to return.
-        // A real provider, built the way a declarative JSON file builds one —
-        // `from_custom_config` rather than `from_env`, which is async and reads
-        // the user's config. Not a stub: production `supports_tool_calls` is the
-        // fact under test.
+        struct ToollessProvider;
+
+        #[async_trait::async_trait]
+        impl Provider for ToollessProvider {
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata::empty()
+            }
+
+            fn get_name(&self) -> &str {
+                "tool-less-fixture"
+            }
+
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new_or_fail("tool-less-model")
+            }
+
+            fn supports_tool_calls(&self) -> bool {
+                false
+            }
+
+            async fn complete_with_model(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<(Message, ProviderUsage), ProviderError> {
+                unreachable!("the capability check never calls the provider")
+            }
+        }
+
         let config = crate::config::declarative_providers::DeclarativeProviderConfig {
             name: "ingest-fixture".to_string(),
             engine: crate::config::declarative_providers::ProviderEngine::Ollama,
@@ -851,12 +879,17 @@ mod tests {
             OllamaProvider::from_custom_config(ModelConfig::new_or_fail("qwen3"), config)
                 .expect("a declarative ollama provider must construct"),
         );
-        let cannot: Arc<dyn Provider> = Arc::new(ClaudeCodeProvider::for_tests(
+        let coding_agent: Arc<dyn Provider> = Arc::new(ClaudeCodeProvider::for_tests(
             std::path::PathBuf::from("/usr/bin/claude"),
             "claude-sonnet-4-6",
         ));
+        let cannot: Arc<dyn Provider> = Arc::new(ToollessProvider);
         assert!(can.supports_tool_calls());
+        assert!(coding_agent.supports_tool_calls());
         assert!(!cannot.supports_tool_calls());
+
+        let bridged_pair = LeadWorkerProvider::new(can.clone(), coding_agent, Some(3));
+        assert!(bridged_pair.supports_tool_calls());
 
         for (lead, worker, expected) in [
             (&can, &can, true),

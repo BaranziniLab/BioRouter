@@ -29,10 +29,11 @@
 //!   choke point of its own, so there is no fifth place for a base's tier to be
 //!   raised, and none for a read-only path to raise one by accident.
 //! * **Provider selection.** The caller decides which provider runs the
-//!   sub-agent and passes a completer factory built from it. A provider that
-//!   cannot drive a Biorouter-run tool loop is *reported*
-//!   ([`tool_capability_refusal`]), never silently swapped for one that can —
-//!   that would move the user's inference onto a different bill.
+//!   sub-agent and passes a completer factory built from it. Ordinary providers
+//!   receive tools in the request; coding-agent providers receive the same
+//!   dispatcher through their scoped bridge. A provider with neither mechanism
+//!   is *reported* ([`tool_capability_refusal`]), never silently swapped for one
+//!   that can — that would move the user's inference onto a different bill.
 
 use std::path::PathBuf;
 
@@ -284,14 +285,12 @@ impl SourceIngestReport {
 /// `Some(refusal)` when this provider cannot drive the ingest sub-agent, in the
 /// sentence the user reads; `None` when it can.
 ///
-/// The coding-agent providers accept a `tools` argument and do not forward it:
-/// Biorouter's tools reach their child agent over the MCP tool bridge, which
-/// only the agent *turn loop* establishes. A loop Biorouter runs outside that
-/// turn — which is what every knowledge macro is — therefore gets a child with
-/// no tools, and the run ends having written nothing. That failure is
-/// indistinguishable, at the far end, from a model that simply had nothing more
-/// to do, which is precisely why it is caught here by asking the provider rather
-/// than diagnosed afterwards from a silent run.
+/// Ordinary providers drive the macro through request tool calls. Coding-agent
+/// providers drive it through `ProviderCompleter::complete_with_dispatch`,
+/// which installs a scoped MCP bridge to the macro's dispatcher. Providers with
+/// neither mechanism must be rejected before the source is touched; otherwise a
+/// tool-less completion is indistinguishable from a model that simply had
+/// nothing more to do.
 ///
 /// ⚠ **A capability question, never a name check, and never a substitution.**
 /// The refusal names the model, says why, and hands back the two choices that
@@ -303,13 +302,10 @@ pub fn tool_capability_refusal(provider: &dyn Provider) -> Option<String> {
         return None;
     }
     Some(format!(
-        "Knowledge ingestion cannot run on `{}`. That provider drives a whole coding agent of its \
-         own, and Biorouter's tools reach it only over the tool bridge a chat turn sets up — a \
-         knowledge sub-agent runs outside that turn, so it would be handed no tools and would \
-         write no pages. Nothing was ingested and nothing was billed. Either switch this chat to \
-         a model that can call tools (Anthropic, OpenAI, UCSF Versa, or a local Llama Server / \
-         Ollama model), or pass `model` to run this one ingest on such a model while the chat \
-         stays where it is.",
+        "Knowledge ingestion cannot run on `{}` because that provider cannot drive the bounded \
+         Knowledge tool loop. Nothing was ingested and nothing was billed. Either switch this \
+         chat to a model that can use tools, or pass `model` to run this one ingest on such a \
+         model while the chat stays where it is.",
         provider.get_name()
     ))
 }
@@ -543,6 +539,43 @@ mod tests {
     use super::*;
     use biorouter_mcp::knowledge::subagent::loop_::Completer;
 
+    struct ToollessProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for ToollessProvider {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::empty()
+        }
+
+        fn get_name(&self) -> &str {
+            "tool-less-fixture"
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("tool-less-model")
+        }
+
+        fn supports_tool_calls(&self) -> bool {
+            false
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[crate::conversation::message::Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<
+            (
+                crate::conversation::message::Message,
+                crate::providers::base::ProviderUsage,
+            ),
+            crate::providers::errors::ProviderError,
+        > {
+            unreachable!("the capability check never calls the provider")
+        }
+    }
+
     fn outcome(label: &str, ok: bool) -> SourceOutcome {
         SourceOutcome {
             label: label.into(),
@@ -639,15 +672,11 @@ mod tests {
         assert!(!text.contains("verified clean"), "got: {text}");
     }
 
-    /// A provider that cannot drive the sub-agent is refused **before** any
-    /// source is touched, by name, with both remedies stated — and nothing is
-    /// re-routed. Issue #108: a silent switch to a provider that works would
-    /// move the user's inference onto a different bill.
-    ///
-    /// Real providers on both sides. Which providers lack the capability is
-    /// pinned in their own files; what this test owns is the refusal.
+    /// Both request-tool and bridge-tool providers are accepted. A provider
+    /// with neither mechanism is refused before any source is touched and is
+    /// never silently replaced.
     #[test]
-    fn a_provider_that_cannot_call_tools_is_refused_by_name_and_never_swapped() {
+    fn providers_with_a_real_tool_path_are_accepted_and_others_are_refused() {
         use crate::model::ModelConfig;
         use crate::providers::claude_code::ClaudeCodeProvider;
         use crate::providers::ollama::OllamaProvider;
@@ -679,10 +708,16 @@ mod tests {
             std::path::PathBuf::from("/usr/bin/claude"),
             "claude-sonnet-4-6",
         );
-        let refusal = tool_capability_refusal(&coding_agent)
-            .expect("a provider that forwards no tools must be refused");
         assert!(
-            refusal.contains(coding_agent.get_name()),
+            tool_capability_refusal(&coding_agent).is_none(),
+            "the provider-driven bridge makes macro tools reachable"
+        );
+
+        let unsupported = ToollessProvider;
+        let refusal = tool_capability_refusal(&unsupported)
+            .expect("a provider with no tool path must be refused");
+        assert!(
+            refusal.contains(unsupported.get_name()),
             "the refusal must name the model it refused: {refusal}"
         );
         assert!(

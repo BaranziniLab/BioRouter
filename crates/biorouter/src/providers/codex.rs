@@ -1587,17 +1587,6 @@ impl Provider for CodexProvider {
         true
     }
 
-    /// The child agent's tools come from the MCP bridge the *agent turn loop*
-    /// installs, so a loop Biorouter runs outside that turn (the knowledge
-    /// macros' sub-agent) gets a child with no tools at all. Saying so lets a
-    /// caller report the mismatch instead of watching a run finish with nothing
-    /// written — and instead of quietly re-routing the work to an API provider
-    /// the user is billed for separately. Flip to the trait default once a
-    /// provider-driven tool turn exists (issue #109).
-    fn supports_tool_calls(&self) -> bool {
-        false
-    }
-
     /// Stream one turn: text appears as the model writes it.
     ///
     /// The app server already sends everything needed for this — the previous
@@ -1881,15 +1870,14 @@ for line in sys.stdin:
         }
     }
 
-    /// Issue #108, the twin of `claude_code`'s. Codex accepts `_tools` and
-    /// forwards nothing for the same reason, so it declares the same limitation
-    /// and a knowledge ingest refuses it by name rather than running to a silent
-    /// empty result.
+    /// Issue #109, the twin of `claude_code`'s. Codex does not forward `_tools`,
+    /// but the provider-driven tool-turn seam supplies the macro dispatcher over
+    /// its MCP bridge.
     #[test]
-    fn the_provider_declares_that_it_cannot_drive_a_biorouter_run_tool_loop() {
+    fn the_provider_declares_that_it_can_drive_a_biorouter_run_tool_loop() {
         assert!(
-            !test_provider().supports_tool_calls(),
-            "codex forwards no tools; flip this only together with the seam that does"
+            test_provider().supports_tool_calls(),
+            "the provider-driven bridge makes macro tools reachable"
         );
     }
 

@@ -1015,14 +1015,11 @@ pub trait Provider: Send + Sync {
     /// that Biorouter itself runs**, such as the knowledge sub-agent behind the
     /// ingest / query / lint macros.
     ///
-    /// True for every ordinary API provider. False for the coding-agent
-    /// providers (`claude_code`, `codex`), which drive a whole child agent: they
-    /// accept `tools` and do not forward them, because Biorouter's tools reach
-    /// that child over the MCP tool bridge, which only the agent turn loop
-    /// establishes (see `providers::coding_agent::bridge`). A loop *outside*
-    /// that turn hands them tool specs the child never sees, and the run comes
-    /// back with no tool calls — which is indistinguishable from "the model had
-    /// nothing more to do".
+    /// True for ordinary API providers and for coding-agent providers. The
+    /// latter do not forward the `tools` argument themselves, but
+    /// `ProviderCompleter::complete_with_dispatch` gives their child a scoped
+    /// MCP bridge to the loop's dispatcher. A provider that has neither request
+    /// tool calls nor an equivalent bridge overrides this to `false`.
     ///
     /// ⚠ It is a capability question, never a name check. Ask this, and report
     /// the mismatch; do not silently substitute a different provider, which

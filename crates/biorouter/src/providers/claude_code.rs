@@ -1444,17 +1444,6 @@ impl Provider for ClaudeCodeProvider {
         true
     }
 
-    /// The child agent's tools come from the MCP bridge the *agent turn loop*
-    /// installs, so a loop Biorouter runs outside that turn (the knowledge
-    /// macros' sub-agent) gets a child with no tools at all. Saying so lets a
-    /// caller report the mismatch instead of watching a run finish with nothing
-    /// written — and instead of quietly re-routing the work to an API provider
-    /// the user is billed for separately. Flip to the trait default once a
-    /// provider-driven tool turn exists (issue #109).
-    fn supports_tool_calls(&self) -> bool {
-        false
-    }
-
     /// Stream one turn: the answer appears as the model writes it.
     ///
     /// # The three rules this obeys, each learned the hard way
@@ -1590,20 +1579,14 @@ mod tests {
         }
     }
 
-    /// Issue #108. `complete_with_model` takes `_tools` and forwards nothing —
-    /// the child's tools come from the MCP bridge a chat turn installs — so a
-    /// tool loop Biorouter runs itself (the knowledge macros' sub-agent) would
-    /// get a child with no tools and a run that wrote nothing. Saying so lets a
-    /// caller refuse with an explanation instead of reporting a silent success.
-    ///
-    /// ⚠ This is pinned HERE, on a real provider, and not by a caller's stub:
-    /// the fact under test is this provider's own capability, and a stub that
-    /// hardcodes `false` would keep passing after the bridge lands.
+    /// Issue #109. The provider does not forward `_tools`, but the
+    /// provider-driven tool-turn seam supplies the macro dispatcher over its MCP
+    /// bridge, so coding-agent-backed knowledge loops are supported.
     #[test]
-    fn the_provider_declares_that_it_cannot_drive_a_biorouter_run_tool_loop() {
+    fn the_provider_declares_that_it_can_drive_a_biorouter_run_tool_loop() {
         assert!(
-            !provider().supports_tool_calls(),
-            "claude_code forwards no tools; flip this only together with the seam that does"
+            provider().supports_tool_calls(),
+            "the provider-driven bridge makes macro tools reachable"
         );
     }
 

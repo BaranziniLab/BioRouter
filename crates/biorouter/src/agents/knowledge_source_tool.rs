@@ -13,8 +13,9 @@
 //!    not require a filesystem to re-check.
 //! 2. **Choosing a provider without ever substituting one.** The chat's own
 //!    model runs the ingest unless the caller explicitly names another in
-//!    `model`; a model that cannot drive the pipeline's tool loop is refused by
-//!    name, with both remedies stated. See [`source_ingest::tool_capability_refusal`].
+//!    `model`; ordinary providers use request tool calls and coding agents use
+//!    the provider-driven bridge. A model with neither mechanism is refused by
+//!    name. See [`source_ingest::tool_capability_refusal`].
 //! 3. **Answering truthfully.** The report names the model, gives per-source
 //!    status, and cannot read as success when only raw sources were staged.
 //!
