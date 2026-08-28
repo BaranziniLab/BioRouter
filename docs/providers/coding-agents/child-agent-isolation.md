@@ -181,13 +181,16 @@ Isolation is not a sandbox, and this section is the honest statement of the boun
   therefore the child's complete MCP server set. An event from any other MCP server is still shown
   as a `child` tool card so an upstream isolation regression is visible rather than misattributed.
 - **It has network access**, because it must reach its vendor to do inference at all.
-- **It has only an audited workspace-control subset and knowledge tools in the turn's bridge grant**, gated as
-  described in [the tool bridge](tool-bridge.md#what-still-fires-on-a-bridged-call). Generic and
-  custom extensions are withheld because they may read arbitrary host files, including the
-  subscription credential the child process itself needs. A delegated child's inherited extension
-  set is narrowed to the same two surfaces even if it overrides its provider. `tools/call` also
-  checks exact membership in the grant, so calling an unadvertised bare or prefixed name cannot
-  bypass the filter.
+- **It has only an audited workspace-control subset, read-only Knowledge tools, and the transactional
+  `platform__ingest_source` macro in the turn's bridge grant**, gated as described in
+  [the tool bridge](tool-bridge.md#what-still-fires-on-a-bridged-call). Raw Knowledge mutations,
+  generic extensions and custom extensions are withheld because they can read or write arbitrary
+  host files, including the subscription credential the child process itself needs. A delegated
+  child's persisted extension profile is narrowed to the same Knowledge surface even if it
+  overrides its provider. An explicit request for an extension outside that surface is refused
+  before the child is created instead of recording a capability the child cannot receive.
+  `tools/call` also checks exact membership in the grant, so calling an unadvertised bare or
+  prefixed name cannot bypass the filter.
 - **It does not have BioRouter's own credentials.** `BIOROUTER_SERVER__SECRET_KEY` and the rest of
   the daemon's secrets are stripped from the child's environment, so it cannot act as the daemon
   against its REST API. The inference-diverting credentials are stripped too — see

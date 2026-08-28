@@ -22,6 +22,7 @@
 //! graph rebuild, the post-commit verification — belongs to the macro.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rmcp::model::Content;
 use serde_json::Value;
@@ -35,6 +36,7 @@ use crate::knowledge::source_ingest::{
 use crate::knowledge::ProviderCompleter;
 use crate::mcp_utils::ToolResult;
 use crate::privacy::ProviderTier;
+use crate::providers::base::Provider;
 use crate::session::session_manager::Session;
 use biorouter_mcp::knowledge::service::KnowledgeService;
 use biorouter_mcp::knowledge::subagent::loop_::SubAgentBounds;
@@ -57,118 +59,135 @@ impl Agent {
         session: &Session,
         cancel: Option<CancellationToken>,
     ) -> ToolResult<Vec<Content>> {
-        let svc = KnowledgeService::new_default().map_err(internal)?;
-
-        let sources = parse_sources(&arguments, &session.working_dir).map_err(invalid_params)?;
-
-        // Issue #56. The identity of the model *in this chat* — the audience of
-        // the candidate list `resolve_target_kb` may put in its no-target error.
-        // One sample of the provider mutex, for the reason `CallCapability`
-        // exists; the same read `handle_ingest_conversation` makes.
-        let chat_capability = crate::privacy::CallCapability::sample(&self.provider).await;
-        let kb_id = resolve_target_kb(&svc, &arguments, &session.id, &kb_caller(chat_capability))
-            .map_err(invalid_params)?;
-
-        let chosen = self
-            .choose_ingest_model(&arguments, session, cancel.clone())
-            .await?;
-
-        let report = ingest_sources(
-            &svc,
-            SourceIngestArgs {
-                kb_id,
-                // Issue #56. The tier and affiliation of the provider that will
-                // actually run the sub-agent — from `paired_factory`, so they and
-                // every completer in the batch come off one binding.
-                caller_capability: chosen.capability,
-                caller_affiliation: chosen.affiliation,
-                sources,
-                completer: chosen.completer,
-                focus: arguments
-                    .get("focus")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                bounds: ingest_bounds(),
-                event_sink: None,
-                cancel,
-                model_label: chosen.label,
-            },
+        let chat_provider = self.provider().await.ok();
+        let pinned_provider = Arc::new(tokio::sync::Mutex::new(chat_provider.clone()));
+        let chat_capability = crate::privacy::CallCapability::sample(&pinned_provider).await;
+        handle_ingest_source_with_provider(
+            arguments,
+            session,
+            cancel,
+            chat_capability,
+            chat_provider,
         )
         .await
-        .map_err(internal)?;
+    }
+}
 
-        Ok(vec![Content::text(report.summary())])
+/// Run the chat-side transactional ingest with a provider already pinned to the
+/// current turn. Coding-agent bridge calls use this entry point so the tool does
+/// not need a second, weaker implementation outside the ordinary handler.
+pub(crate) async fn handle_ingest_source_with_provider(
+    arguments: Value,
+    session: &Session,
+    cancel: Option<CancellationToken>,
+    chat_capability: crate::privacy::CallCapability,
+    chat_provider: Option<Arc<dyn Provider>>,
+) -> ToolResult<Vec<Content>> {
+    let svc = KnowledgeService::new_default().map_err(internal)?;
+
+    let sources = parse_sources(&arguments, &session.working_dir).map_err(invalid_params)?;
+
+    // Issue #56. The identity of the model *in this chat* — the audience of
+    // the candidate list `resolve_target_kb` may put in its no-target error.
+    // The bridge hands in the same once-per-call capability its dispatcher and
+    // privacy gates use, so this path cannot re-sample a different model.
+    let kb_id = resolve_target_kb(&svc, &arguments, &session.id, &kb_caller(chat_capability))
+        .map_err(invalid_params)?;
+
+    let chosen = choose_ingest_model(&arguments, session, cancel.clone(), chat_provider).await?;
+
+    let report = ingest_sources(
+        &svc,
+        SourceIngestArgs {
+            kb_id,
+            // Issue #56. The tier and affiliation of the provider that will
+            // actually run the sub-agent — from `paired_factory`, so they and
+            // every completer in the batch come off one binding.
+            caller_capability: chosen.capability,
+            caller_affiliation: chosen.affiliation,
+            sources,
+            completer: chosen.completer,
+            focus: arguments
+                .get("focus")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            bounds: ingest_bounds(),
+            event_sink: None,
+            cancel,
+            model_label: chosen.label,
+        },
+    )
+    .await
+    .map_err(internal)?;
+
+    Ok(vec![Content::text(report.summary())])
+}
+
+/// Which model runs this ingest — **never** a silent substitution.
+///
+/// Order: an explicitly named `model` (an alternate provider, so Gate H
+/// applies), otherwise the model pinned to this chat turn. Either way the
+/// provider is asked whether it can drive a Biorouter-run tool loop before any
+/// source is touched, so a mismatch costs nothing and is reported rather than
+/// discovered from a run that quietly wrote nothing.
+async fn choose_ingest_model(
+    arguments: &Value,
+    session: &Session,
+    cancel: Option<CancellationToken>,
+    chat_provider: Option<Arc<dyn Provider>>,
+) -> Result<ChosenModel, rmcp::model::ErrorData> {
+    if biorouter_mcp::knowledge::test_mode::env_enabled() {
+        // The third of the named test-mode exemptions (the HTTP route's
+        // `build_completer` and `build_model_ref_completer` are the others).
+        // No provider is constructed, so there is no instance to read a tier
+        // from, and nothing leaves the process for a gate to refuse.
+        return Ok(ChosenModel {
+            completer: Box::new(|| {
+                Box::new(biorouter_mcp::knowledge::test_mode::TestModeCompleter)
+            }),
+            capability: ProviderTier::Public,
+            affiliation: None,
+            label: "test-mode".to_string(),
+        });
     }
 
-    /// Which model runs this ingest — **never** a silent substitution.
-    ///
-    /// Order: an explicitly named `model` (an alternate provider, so Gate H
-    /// applies), otherwise the model bound to this chat. Either way the provider
-    /// is asked whether it can drive a Biorouter-run tool loop before any source
-    /// is touched, so a mismatch costs nothing and is reported rather than
-    /// discovered from a run that quietly wrote nothing.
-    async fn choose_ingest_model(
-        &self,
-        arguments: &Value,
-        session: &Session,
-        cancel: Option<CancellationToken>,
-    ) -> Result<ChosenModel, rmcp::model::ErrorData> {
-        if biorouter_mcp::knowledge::test_mode::env_enabled() {
-            // The third of the named test-mode exemptions (the HTTP route's
-            // `build_completer` and `build_model_ref_completer` are the others).
-            // No provider is constructed, so there is no instance to read a tier
-            // from, and nothing leaves the process for a gate to refuse.
-            return Ok(ChosenModel {
-                completer: Box::new(|| {
-                    Box::new(biorouter_mcp::knowledge::test_mode::TestModeCompleter)
-                }),
-                capability: ProviderTier::Public,
-                affiliation: None,
-                label: "test-mode".to_string(),
-            });
+    let (provider, label) = match parse_model_ref(arguments) {
+        Some(model) => {
+            let label = format!("{}/{}", model.provider, model.model);
+            let provider = build_model_ref_provider(
+                &model,
+                session.privacy_tier,
+                "ingesting these sources",
+                "this tool's `model` argument",
+            )
+            .await
+            .map_err(invalid_params)?;
+            (provider, label)
         }
-
-        let (provider, label) = match parse_model_ref(arguments) {
-            Some(model) => {
-                let label = format!("{}/{}", model.provider, model.model);
-                let provider = build_model_ref_provider(
-                    &model,
-                    session.privacy_tier,
-                    "ingesting these sources",
-                    "this tool's `model` argument",
-                )
-                .await
-                .map_err(invalid_params)?;
-                (provider, label)
-            }
-            None => {
-                let provider = self.provider().await.map_err(|e| {
-                    internal(format!(
-                        "a model provider is required to ingest documents: {e}"
-                    ))
-                })?;
-                let label = format!(
-                    "{}/{}",
-                    provider.get_name(),
-                    provider.get_active_model_name()
-                );
-                (provider, label)
-            }
-        };
-
-        if let Some(refusal) = source_ingest::tool_capability_refusal(provider.as_ref()) {
-            return Err(invalid_params(refusal));
+        None => {
+            let provider = chat_provider
+                .ok_or_else(|| internal("a model provider is required to ingest documents"))?;
+            let label = format!(
+                "{}/{}",
+                provider.get_name(),
+                provider.get_active_model_name()
+            );
+            (provider, label)
         }
+    };
 
-        let (completer, capability, affiliation) =
-            ProviderCompleter::paired_factory(provider, Some(session.id.clone()), cancel);
-        Ok(ChosenModel {
-            completer,
-            capability,
-            affiliation,
-            label,
-        })
+    if let Some(refusal) = source_ingest::tool_capability_refusal(provider.as_ref()) {
+        return Err(invalid_params(refusal));
     }
+
+    let (completer, capability, affiliation) =
+        ProviderCompleter::paired_factory(provider, Some(session.id.clone()), cancel);
+    Ok(ChosenModel {
+        completer,
+        capability,
+        affiliation,
+        label,
+    })
 }
 
 /// The same bounds the HTTP ingest route uses. Stated here rather than shared

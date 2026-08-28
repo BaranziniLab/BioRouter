@@ -927,6 +927,20 @@ pub(crate) fn handle_bridged_subagent_tool(
     working_dir: PathBuf,
     cancellation_token: Option<CancellationToken>,
 ) -> ToolCallResult {
+    let unsupported = unsupported_bridged_extension_names(&params, &task_config.extensions);
+    if !unsupported.is_empty() {
+        return ToolCallResult::from(Err(ErrorData {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!(
+                "Subscription-backed coding-agent subagents cannot inherit extension(s): {}. \
+                 Nothing was started. Omit `extensions` to use the audited Knowledge search, \
+                 lint, and transactional source-ingestion tools, or run the task in the parent \
+                 session.",
+                unsupported.join(", ")
+            )),
+            data: None,
+        }));
+    }
     handle_subagent_tool_inner(
         config,
         params,
@@ -936,6 +950,25 @@ pub(crate) fn handle_bridged_subagent_tool(
         cancellation_token,
         Some(true),
     )
+}
+
+fn unsupported_bridged_extension_names(
+    params: &Value,
+    available: &[crate::agents::ExtensionConfig],
+) -> Vec<String> {
+    let Some(requested) = params.get("extensions").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let available: std::collections::HashSet<String> = available
+        .iter()
+        .map(|extension| crate::agents::extension_manager::normalize(&extension.name()))
+        .collect();
+    requested
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|name| !available.contains(&crate::agents::extension_manager::normalize(name)))
+        .map(str::to_string)
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2036,6 +2069,31 @@ mod tests {
     #[test]
     fn test_tool_name() {
         assert_eq!(SUBAGENT_TOOL_NAME, "subagent");
+    }
+
+    #[test]
+    fn a_bridged_spawn_refuses_extensions_the_child_cannot_receive() {
+        let available = vec![crate::agents::ExtensionConfig::Builtin {
+            name: "knowledge".into(),
+            description: "Knowledge".into(),
+            display_name: None,
+            timeout: None,
+            bundled: Some(true),
+            available_tools: vec!["kb_search".into(), "kb_lint".into()],
+        }];
+        let unsupported = unsupported_bridged_extension_names(
+            &serde_json::json!({
+                "extensions": ["Knowledge", "developer", "computercontroller"]
+            }),
+            &available,
+        );
+        assert_eq!(unsupported, ["developer", "computercontroller"]);
+        assert!(unsupported_bridged_extension_names(
+            &serde_json::json!({"extensions": []}),
+            &available
+        )
+        .is_empty());
+        assert!(unsupported_bridged_extension_names(&serde_json::json!({}), &available).is_empty());
     }
 
     // --- the pending queue ------------------------------------------------

@@ -670,6 +670,7 @@ fn get_agent_messages(
             );
         }
 
+        let uses_coding_agent_bridge = task_config.provider.uses_tool_bridge();
         agent
             .update_provider(task_config.provider, &session_id)
             .await
@@ -708,7 +709,23 @@ fn get_agent_messages(
         // into `task_instructions`.
         let task_instructions_for_record = system_instructions.clone();
 
-        let tools = agent.list_tools(&session_id, None).await;
+        let mut tools = agent.list_tools(&session_id, None).await;
+        if uses_coding_agent_bridge {
+            let knowledge_target =
+                crate::agents::extension_manager::resolve_bundled_extension("knowledge");
+            let trusted_knowledge = knowledge_target.as_ref().is_some_and(|target| {
+                loaded
+                    .iter()
+                    .any(|extension| target.matches_config(extension))
+            });
+            tools.retain(|tool| {
+                crate::agents::agent::coding_agent_bridge_allows_tool(
+                    tool.name.as_ref(),
+                    false,
+                    trusted_knowledge,
+                )
+            });
+        }
         let subagent_prompt = render_global_file(
             "subagent_system.md",
             &SubagentPromptContext {

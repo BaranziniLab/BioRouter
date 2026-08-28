@@ -35,10 +35,9 @@ MCP tools/call   ->  the inspector stack, then ExtensionManager::dispatch_tool_c
 ## The tools do not have to be an extension's (#109)
 
 `tools/call` lands on a `BridgeToolDispatch`, not on a hardcoded
-`ExtensionManager`. A chat turn's dispatcher *is* the session's extension manager
-— that is what `providers::tool_turn::session_tools` says — but a bounded
-workflow has its own small surface with its own dispatcher, and those tools are in
-no extension at all. The knowledge ingest macro is the case that forced it: its
+`ExtensionManager`. A chat turn's dispatcher wraps the session's extension manager and the one
+audited platform ingest macro; a bounded workflow has its own small surface with its own
+dispatcher, and those tools are in no extension at all. The knowledge ingest macro is the case that forced it: its
 `KbToolDispatch` carries the git transaction every write in the run must land on,
 so a call routed to the `knowledge` extension instead would commit somewhere else.
 
@@ -85,11 +84,16 @@ become available to a child. That falls out of both sides already speaking MCP: 
 `CallToolRequestParams`. The bridge is a relay between two things that already fit.
 
 The consequence worth stating plainly: the relay is generic, but the subscription boundary is an
-allowlist. Chat children receive an audited `workspace` subset and the `knowledge` surface; generic
-and custom extensions are withheld because they may read arbitrary host files, including the credential
-file the vendor CLI must retain. Adding another surface requires an isolation review, not merely
-loading a plugin. The bridge enforces its advertised list again at `tools/call`, so an unadvertised
-name cannot be invoked directly to bypass this boundary.
+allowlist. Chat children receive an audited `workspace` subset, read-only `knowledge` tools, and
+`platform__ingest_source`. That platform macro is the one bounded write: it performs source
+expansion, transactional curation, rollback, graph rebuild and post-commit verification itself.
+Raw Knowledge mutations such as `kb_write_page`, along with generic and custom extensions, remain
+withheld because they may read or write arbitrary host files, including the credential file the
+vendor CLI must retain. Adding another surface requires an isolation review, not merely loading a
+plugin. The bridge enforces its advertised list again at `tools/call`, so an unadvertised name
+cannot be invoked directly to bypass this boundary. A delegated child also persists only the
+Knowledge tools this bridge can serve; if a caller explicitly requests another extension, the
+spawn fails before creating a child rather than silently narrowing the request.
 
 Verified against a 60-tool surface — both CLIs accepted a 73-character prefixed tool name, a schema
 using `$defs`/`$ref`/`oneOf`, an image result, and a `ui://` embedded resource, all passed through

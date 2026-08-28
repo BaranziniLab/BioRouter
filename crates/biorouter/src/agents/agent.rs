@@ -821,13 +821,50 @@ const CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS: &[&str] = &[
     "knowledge__kb_get_active",
 ];
 
-fn coding_agent_bridge_allows_tool(
+const CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS: &[&str] = &[PLATFORM_INGEST_SOURCE_TOOL_NAME];
+
+pub(crate) fn coding_agent_bridge_allows_tool(
     tool_name: &str,
     trusted_workspace: bool,
     trusted_knowledge: bool,
 ) -> bool {
     (trusted_workspace && CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&tool_name))
         || (trusted_knowledge && CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS.contains(&tool_name))
+        || (trusted_knowledge && CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&tool_name))
+}
+
+fn coding_agent_bridge_child_extensions(
+    extensions: Vec<ExtensionConfig>,
+    trusted_knowledge: bool,
+    knowledge_target: Option<&crate::agents::extension_manager::BundledExtensionTarget>,
+) -> Vec<ExtensionConfig> {
+    if !trusted_knowledge {
+        return Vec::new();
+    }
+    let Some(target) = knowledge_target else {
+        return Vec::new();
+    };
+    let allowed_tools: Vec<String> = CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS
+        .iter()
+        .filter_map(|name| name.strip_prefix("knowledge__"))
+        .map(str::to_string)
+        .collect();
+
+    extensions
+        .into_iter()
+        .filter_map(|mut extension| {
+            if !target.matches_config(&extension) {
+                return None;
+            }
+            match &mut extension {
+                ExtensionConfig::Builtin {
+                    available_tools, ..
+                } => *available_tools = allowed_tools.clone(),
+                _ => return None,
+            }
+            Some(extension)
+        })
+        .collect()
 }
 
 fn coding_agent_bridge_can_delegate(tools: &[Tool], trusted_workspace: bool) -> bool {
@@ -989,6 +1026,7 @@ async fn take_structured_final_output_action(
 struct ChatBridgeDispatch {
     extensions: Arc<ExtensionManager>,
     session_manager: Arc<SessionManager>,
+    ingest_provider: Arc<dyn Provider>,
     subagent: Option<BridgedSubagentContext>,
     workspace_target: Option<crate::agents::extension_manager::BundledExtensionTarget>,
     knowledge_target: Option<crate::agents::extension_manager::BundledExtensionTarget>,
@@ -1078,6 +1116,14 @@ impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
             if !self.extensions.is_bundled_target_enabled(target).await {
                 return Err("The bundled Knowledge extension is no longer enabled".into());
             }
+        } else if CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&name.as_str()) {
+            let target = self
+                .knowledge_target
+                .as_ref()
+                .ok_or_else(|| "The bundled Knowledge extension is not available".to_string())?;
+            if !self.extensions.is_bundled_target_enabled(target).await {
+                return Err("The bundled Knowledge extension is no longer enabled".into());
+            }
         }
         if is_spawn_tool_call(&name) {
             let context = self.subagent.as_ref().ok_or_else(|| {
@@ -1110,6 +1156,39 @@ impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
                 .result
                 .await
                 .map_err(|error| format!("`{name}` failed: {error}"));
+        }
+        if name == PLATFORM_INGEST_SOURCE_TOOL_NAME {
+            let session = self
+                .session_manager
+                .get_session(session_id, false)
+                .await
+                .map_err(|error| format!("`{name}` could not load its session: {error}"))?;
+            let arguments = call
+                .arguments
+                .map(Value::Object)
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+            return match crate::agents::knowledge_source_tool::handle_ingest_source_with_provider(
+                arguments,
+                &session,
+                Some(cancel),
+                capability,
+                Some(Arc::clone(&self.ingest_provider)),
+            )
+            .await
+            {
+                Ok(content) => Ok(CallToolResult {
+                    content,
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+                Err(error) => Ok(CallToolResult {
+                    content: vec![Content::text(error.message.to_string())],
+                    structured_content: None,
+                    is_error: Some(true),
+                    meta: None,
+                }),
+            };
         }
 
         coding_agent_bridge::BridgeToolDispatch::dispatch(
@@ -5584,13 +5663,11 @@ impl Agent {
 
         let delegation_available = coding_agent_bridge_can_delegate(tools, trusted_workspace);
         let subagent = if delegation_available {
-            let mut extensions = self.get_extension_configs().await;
-            extensions.retain(|extension| {
-                trusted_knowledge
-                    && knowledge_target
-                        .as_ref()
-                        .is_some_and(|target| target.matches_config(extension))
-            });
+            let extensions = coding_agent_bridge_child_extensions(
+                self.get_extension_configs().await,
+                trusted_knowledge,
+                knowledge_target.as_ref(),
+            );
             Some(BridgedSubagentContext {
                 agent_config: self.config.clone(),
                 task_config: TaskConfig::new(
@@ -5625,7 +5702,6 @@ impl Agent {
             let dispatched_elsewhere = name
                 == crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME
                 || name == crate::agents::platform_tools::PLATFORM_INGEST_CONVERSATION_TOOL_NAME
-                || name == crate::agents::platform_tools::PLATFORM_INGEST_SOURCE_TOOL_NAME
                 || name == crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME
                 || name == crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
                 || self.is_frontend_tool(name).await;
@@ -5646,6 +5722,7 @@ impl Agent {
             Arc::new(ChatBridgeDispatch {
                 extensions: Arc::clone(&self.extension_manager),
                 session_manager: Arc::clone(&self.config.session_manager),
+                ingest_provider: Arc::clone(iteration_provider),
                 subagent,
                 workspace_target: trusted_workspace.then_some(workspace_target).flatten(),
                 knowledge_target: trusted_knowledge.then_some(knowledge_target).flatten(),
@@ -11841,6 +11918,7 @@ mod tests {
             "workspace__subagent",
             "workspace__workspace_watch",
             "knowledge__kb_search",
+            PLATFORM_INGEST_SOURCE_TOOL_NAME,
         ] {
             assert!(
                 coding_agent_bridge_allows_tool(allowed, true, true),
@@ -11857,6 +11935,179 @@ mod tests {
             true,
             false
         ));
+        assert!(!coding_agent_bridge_allows_tool(
+            PLATFORM_INGEST_SOURCE_TOOL_NAME,
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn coding_agent_children_persist_only_the_knowledge_tools_the_bridge_serves() {
+        let target = resolve_bundled_extension("knowledge").expect("bundled Knowledge target");
+        let knowledge = ExtensionConfig::Builtin {
+            name: "knowledge".into(),
+            description: "Knowledge".into(),
+            display_name: None,
+            timeout: None,
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        let developer = ExtensionConfig::Builtin {
+            name: "developer".into(),
+            description: "Developer".into(),
+            display_name: None,
+            timeout: None,
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+
+        let grants =
+            coding_agent_bridge_child_extensions(vec![knowledge, developer], true, Some(&target));
+        assert_eq!(grants.len(), 1);
+        let ExtensionConfig::Builtin {
+            name,
+            available_tools,
+            ..
+        } = &grants[0]
+        else {
+            panic!("Knowledge must stay a bundled extension")
+        };
+        assert_eq!(name, "knowledge");
+        let expected: Vec<String> = CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS
+            .iter()
+            .map(|name| name.trim_start_matches("knowledge__").to_string())
+            .collect();
+        assert_eq!(available_tools, &expected);
+        assert!(!available_tools.contains(&"kb_write_page".to_string()));
+        assert!(coding_agent_bridge_child_extensions(vec![], false, Some(&target)).is_empty());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn coding_agent_bridge_ingests_searches_and_lints_knowledge() {
+        coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
+
+        let path_root = tempfile::TempDir::new().expect("an isolated Knowledge root");
+        let path_root_value = path_root.path().to_string_lossy().into_owned();
+        let _env = env_lock::lock_env([
+            ("BIOROUTER_PATH_ROOT", Some(path_root_value.as_str())),
+            ("BIOROUTER_KNOWLEDGE_TEST_MODE", Some("true")),
+        ]);
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let knowledge_target = resolve_bundled_extension("knowledge").expect("bundled Knowledge");
+        agent
+            .add_extension(knowledge_target.into_config("Knowledge bridge regression".into()))
+            .await
+            .expect("enable the trusted Knowledge extension");
+
+        let iteration_provider: Arc<dyn Provider> =
+            Arc::new(BridgedChildProvider { name: "codex" });
+        agent
+            .update_provider(Arc::clone(&iteration_provider), &session_id)
+            .await
+            .expect("bind a coding-agent-shaped provider");
+        let tools = agent.list_tools(&session_id, None).await;
+        for expected in [
+            PLATFORM_INGEST_SOURCE_TOOL_NAME,
+            "knowledge__kb_search",
+            "knowledge__kb_lint",
+        ] {
+            assert!(
+                tools.iter().any(|tool| tool.name.as_ref() == expected),
+                "the prepared parent surface must contain {expected}"
+            );
+        }
+
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, true)
+            .await
+            .expect("read the bridge parent");
+        let conversation = session
+            .conversation
+            .clone()
+            .unwrap_or_else(Conversation::empty);
+        let lease = agent
+            .issue_tool_bridge(&iteration_provider, &session, &conversation, &tools, None)
+            .await
+            .expect("coding-agent providers need a live grant");
+        let nonce = lease
+            .url()
+            .rsplit('/')
+            .next()
+            .expect("the bridge URL ends in its nonce");
+        let grant = coding_agent_bridge::lookup(nonce).expect("the bridge grant is live");
+        assert!(
+            grant
+                .tools()
+                .iter()
+                .any(|tool| tool.name.as_ref() == PLATFORM_INGEST_SOURCE_TOOL_NAME),
+            "the audited transactional ingest macro must cross the bridge"
+        );
+        assert!(
+            !grant
+                .tools()
+                .iter()
+                .any(|tool| tool.name.as_ref() == "knowledge__kb_write_page"),
+            "raw Knowledge writes must remain outside the bridge"
+        );
+
+        let marker = "BRIDGE_KNOWLEDGE_REGRESSION_9417";
+        let ingest = grant
+            .call(CallToolRequestParams {
+                name: PLATFORM_INGEST_SOURCE_TOOL_NAME.into(),
+                arguments: Some(object!({
+                    "new_kb_name": "Coding agent bridge regression",
+                    "text": format!("A source containing the unique marker {marker}."),
+                    "title": "Bridge regression source"
+                })),
+                meta: None,
+                task: None,
+            })
+            .await
+            .expect("the transactional ingest call must dispatch");
+        assert_eq!(ingest.is_error, Some(false), "{ingest:?}");
+        let ingest_text = ingest
+            .content
+            .iter()
+            .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+            .collect::<String>();
+        assert!(
+            ingest_text.contains("Curated 1 of 1 source"),
+            "{ingest_text}"
+        );
+
+        let service = biorouter_mcp::knowledge::service::KnowledgeService::new_default()
+            .expect("open the isolated Knowledge root");
+        let kb_id = service
+            .list_bases()
+            .expect("list bases after ingest")
+            .into_iter()
+            .find(|base| base.name == "Coding agent bridge regression")
+            .expect("the bridge ingest created its target base")
+            .id;
+
+        for (name, arguments) in [
+            (
+                "knowledge__kb_search",
+                object!({"kb_id": kb_id, "query": marker, "limit": 5}),
+            ),
+            ("knowledge__kb_lint", object!({"kb_id": kb_id})),
+        ] {
+            let result = grant
+                .call(CallToolRequestParams {
+                    name: name.into(),
+                    arguments: Some(arguments),
+                    meta: None,
+                    task: None,
+                })
+                .await
+                .unwrap_or_else(|error| panic!("{name} must dispatch: {error}"));
+            assert_eq!(result.is_error, Some(false), "{name}: {result:?}");
+        }
     }
 
     #[tokio::test]
