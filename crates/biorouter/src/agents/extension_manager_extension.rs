@@ -2229,6 +2229,299 @@ mod tests {
         }
     }
 
+    struct DeletionFixture {
+        registry_id: String,
+        config_key: String,
+        extension_name: String,
+        install_dir: PathBuf,
+        entry: ExtensionEntry,
+    }
+
+    impl DeletionFixture {
+        fn assert_provenance_present(&self) {
+            assert!(
+                crate::privacy::provenance::marketplace_installs_for_registry_id(&self.registry_id)
+                    .iter()
+                    .any(|provenance| provenance.config_key == self.config_key),
+                "the marketplace provenance for {} must still be current",
+                self.registry_id
+            );
+        }
+
+        fn assert_provenance_removed(&self) {
+            assert!(
+                crate::privacy::provenance::marketplace_installs_for_registry_id(&self.registry_id)
+                    .iter()
+                    .all(|provenance| provenance.config_key != self.config_key),
+                "the marketplace provenance for {} survived deletion",
+                self.registry_id
+            );
+        }
+
+        fn remove_persisted_artifacts(&self) {
+            crate::config::extensions::remove_extension(&self.config_key);
+            if let Some(provenance) =
+                crate::privacy::provenance::marketplace_installs_for_registry_id(&self.registry_id)
+                    .into_iter()
+                    .find(|provenance| provenance.config_key == self.config_key)
+            {
+                let _ =
+                    crate::privacy::provenance::remove_marketplace_install_provenance(&provenance);
+            }
+            if self.install_dir.exists() {
+                let _ = std::fs::remove_dir_all(&self.install_dir);
+            }
+        }
+    }
+
+    impl Drop for DeletionFixture {
+        fn drop(&mut self) {
+            self.remove_persisted_artifacts();
+        }
+    }
+
+    fn pinned_path_root() -> env_lock::EnvGuard<'static> {
+        let current = std::env::var("BIOROUTER_PATH_ROOT").ok();
+        env_lock::lock_env([("BIOROUTER_PATH_ROOT", current.as_deref())])
+    }
+
+    async fn install_deletion_fixture(registry_id: &str, label: &str) -> DeletionFixture {
+        let descriptor = trusted_marketplace_extension(registry_id, ProviderTier::Public)
+            .await
+            .unwrap_or_else(|error| panic!("the shipped {registry_id} descriptor loads: {error}"));
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let extension_name = format!("ManagerDelete{label}{suffix}");
+        let config_key = crate::config::extensions::name_to_key(&extension_name);
+        let install_dir = crate::extension_install::brxt::extensions_root().join(&extension_name);
+        std::fs::create_dir_all(&install_dir).unwrap();
+        let entry = package_entry(&extension_name, &install_dir);
+        crate::config::extensions::set_extension(entry.clone());
+        crate::privacy::provenance::record(
+            &extension_name,
+            crate::privacy::provenance::ExtensionProvenance {
+                install_id: Some(format!("delete-fixture-{suffix}")),
+                registry_id: registry_id.to_owned(),
+                install_dir: Some(install_dir.display().to_string()),
+                source_url: Some(descriptor.download_url.as_str().to_owned()),
+                bundle_sha256: None,
+                recorded_at: None,
+            },
+        )
+        .unwrap();
+        let fixture = DeletionFixture {
+            registry_id: registry_id.to_owned(),
+            config_key,
+            extension_name,
+            install_dir,
+            entry,
+        };
+        fixture.assert_provenance_present();
+        fixture
+    }
+
+    fn tool_result_text(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|content| content.as_text().map(|text| text.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    async fn wait_for_delete_card(session_id: &str) -> String {
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            crate::action_required_manager::ActionRequiredManager::global()
+                .request_arrived(session_id),
+        )
+        .await
+        .expect("the deletion call must publish its approval card");
+        let messages = crate::action_required_manager::ActionRequiredManager::global()
+            .drain_requests(session_id);
+        let approval_id = messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .find_map(|content| {
+                let crate::conversation::message::MessageContent::ActionRequired(action) = content
+                else {
+                    return None;
+                };
+                let crate::conversation::message::ActionRequiredData::ToolConfirmation {
+                    id,
+                    tool_name,
+                    ..
+                } = &action.data
+                else {
+                    return None;
+                };
+                (tool_name == DELETE_EXTENSION_PACKAGE_TOOL_NAME).then(|| id.clone())
+            })
+            .expect("the deletion call must publish a tool-confirmation card");
+        assert!(crate::pending_user_action::PendingUserActions::global()
+            .requires_user_proof_in_session(session_id, &approval_id));
+        approval_id
+    }
+
+    async fn approve_delete_card(session_id: &str) {
+        let approval_id = wait_for_delete_card(session_id).await;
+        assert_eq!(
+            crate::pending_user_action::PendingUserActions::global().resolve_in_session(
+                session_id,
+                &approval_id,
+                crate::pending_user_action::UserActionOutcome::Approved {
+                    permission: crate::permission::Permission::AllowOnce,
+                },
+            ),
+            crate::pending_user_action::ResolveOutcome::Delivered
+        );
+    }
+
+    async fn run_approved_delete(
+        client: Arc<ExtensionManagerClient>,
+        session_id: String,
+        arguments: Value,
+    ) -> CallToolResult {
+        let running = tokio::spawn({
+            let session_id = session_id.clone();
+            async move {
+                client
+                    .call_tool(
+                        DELETE_EXTENSION_PACKAGE_TOOL_NAME,
+                        Some(arguments.as_object().unwrap().clone()),
+                        McpMeta::new(
+                            session_id,
+                            CallCapability::for_test(ProviderTier::Public, true),
+                        ),
+                        CancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+        approve_delete_card(&session_id).await;
+        tokio::time::timeout(Duration::from_secs(30), running)
+            .await
+            .expect("the approved deletion must finish promptly")
+            .expect("the deletion task must not panic")
+            .expect("the extension manager must return a tool result")
+    }
+
+    #[tokio::test]
+    async fn approved_single_package_deletion_removes_package_config_provenance_and_session_state()
+    {
+        let _path_root = pinned_path_root();
+        let fixture = install_deletion_fixture("playwrightagent", "Single").await;
+        let (_manager_root, manager, client) = a_live_tool_client();
+        assert!(!manager.is_extension_enabled(&fixture.config_key).await);
+        let session_id = format!("delete-single-{}", uuid::Uuid::new_v4());
+
+        let result = run_approved_delete(
+            Arc::new(client),
+            session_id,
+            serde_json::json!({ "registry_id": fixture.registry_id.clone() }),
+        )
+        .await;
+
+        assert_ne!(result.is_error, Some(true), "{}", tool_result_text(&result));
+        let report: Value = serde_json::from_str(&tool_result_text(&result)).unwrap();
+        assert_eq!(report["state"], "deleted");
+        assert_eq!(report["results"][0]["status"], "deleted");
+        assert!(!fixture.install_dir.exists());
+        assert!(get_extension_entry_by_name(&fixture.extension_name).is_none());
+        fixture.assert_provenance_removed();
+        assert!(!manager.is_extension_enabled(&fixture.config_key).await);
+    }
+
+    #[tokio::test]
+    async fn approved_batch_deletion_removes_every_package_config_provenance_and_session_state() {
+        let _path_root = pinned_path_root();
+        let first = install_deletion_fixture("codegraphagent", "BatchOne").await;
+        let second = install_deletion_fixture("bioroffice", "BatchTwo").await;
+        let (_manager_root, manager, client) = a_live_tool_client();
+        let session_id = format!("delete-batch-{}", uuid::Uuid::new_v4());
+
+        let result = run_approved_delete(
+            Arc::new(client),
+            session_id,
+            serde_json::json!({
+                "registry_ids": [first.registry_id.clone(), second.registry_id.clone()]
+            }),
+        )
+        .await;
+
+        assert_ne!(result.is_error, Some(true), "{}", tool_result_text(&result));
+        let report: Value = serde_json::from_str(&tool_result_text(&result)).unwrap();
+        assert_eq!(report["state"], "deleted");
+        assert_eq!(report["results"].as_array().map(Vec::len), Some(2));
+        for fixture in [&first, &second] {
+            assert!(!fixture.install_dir.exists());
+            assert!(get_extension_entry_by_name(&fixture.extension_name).is_none());
+            fixture.assert_provenance_removed();
+            assert!(!manager.is_extension_enabled(&fixture.config_key).await);
+        }
+    }
+
+    #[tokio::test]
+    async fn post_approval_config_revalidation_leaves_the_replacement_and_package_untouched() {
+        let _path_root = pinned_path_root();
+        let fixture = install_deletion_fixture("opennotebookagent", "Revalidate").await;
+        let (_manager_root, manager, client) = a_live_tool_client();
+        let client = Arc::new(client);
+        let session_id = format!("delete-revalidate-{}", uuid::Uuid::new_v4());
+        let running = tokio::spawn({
+            let client = Arc::clone(&client);
+            let session_id = session_id.clone();
+            let registry_id = fixture.registry_id.clone();
+            async move {
+                client
+                    .call_tool(
+                        DELETE_EXTENSION_PACKAGE_TOOL_NAME,
+                        Some(
+                            serde_json::json!({ "registry_id": registry_id })
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                        ),
+                        McpMeta::new(
+                            session_id,
+                            CallCapability::for_test(ProviderTier::Public, true),
+                        ),
+                        CancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+        let approval_id = wait_for_delete_card(&session_id).await;
+        let mut replacement = fixture.entry.clone();
+        replacement.enabled = false;
+        crate::config::extensions::set_extension(replacement.clone());
+        assert_eq!(
+            crate::pending_user_action::PendingUserActions::global().resolve_in_session(
+                &session_id,
+                &approval_id,
+                crate::pending_user_action::UserActionOutcome::Approved {
+                    permission: crate::permission::Permission::AllowOnce,
+                },
+            ),
+            crate::pending_user_action::ResolveOutcome::Delivered
+        );
+
+        let result = tokio::time::timeout(Duration::from_secs(30), running)
+            .await
+            .expect("the stale approved deletion must finish promptly")
+            .expect("the deletion task must not panic")
+            .expect("the extension manager must return a tool result");
+        assert_eq!(result.is_error, Some(true), "{}", tool_result_text(&result));
+        assert!(tool_result_text(&result).contains("changed after approval"));
+        assert!(fixture.install_dir.is_dir());
+        let current = get_extension_entry_by_name(&fixture.extension_name)
+            .expect("the replacement config must remain registered");
+        assert!(!current.enabled);
+        assert_eq!(current.config, replacement.config);
+        fixture.assert_provenance_present();
+        assert!(!manager.is_extension_enabled(&fixture.config_key).await);
+        fixture.remove_persisted_artifacts();
+    }
+
     #[tokio::test]
     async fn package_deletion_accepts_only_one_direct_validated_marketplace_child() {
         let temp = tempfile::tempdir().unwrap();

@@ -9,8 +9,9 @@
 //! scheduled job ("Daily Meditation") keep it growing from the user's
 //! conversation history.
 //!
-//! [`install`] is idempotent and safe to call on every startup: it only creates
-//! what is missing and never overwrites user edits.
+//! [`install`] is idempotent and safe to call on every startup: it creates what
+//! is missing and upgrades byte-identical shipped assets without overwriting
+//! user edits.
 //!
 //! The skill is named `update-soul` (it was previously `soul-writer`) and is
 //! seeded as a member of the knowledge skill bundle
@@ -36,6 +37,7 @@ use biorouter_mcp::knowledge::types::{
 };
 use biorouter_mcp::knowledge::{manifest, okf, paths, registry, tier};
 use fs2::FileExt as _;
+use sha2::{Digest as _, Sha256};
 
 pub const SOUL_KB_ID: &str = "soul";
 pub const SOUL_KB_NAME: &str = "Soul";
@@ -54,6 +56,8 @@ pub const MEDITATION_CRON: &str = "0 0 3 * * *";
 pub const SOUL_COLOR: &str = "#9c6b3f";
 
 const SOUL_RECONCILE_LOCK: &str = ".soul-reconcile.lock";
+const PREVIOUS_MEDITATION_WORKFLOW_SHA256: &[&str] =
+    &["142edbf98aca3e521649ddec05ed156ab16936303cc42cbe8cce1bc79c630772"];
 const SOUL_OKF_SCHEMA: &str = include_str!("../../../biorouter-mcp/src/knowledge/schema_okf.md");
 const SOUL_LOG: &str = "# Log\n\n";
 const SOUL_GITIGNORE: &str =
@@ -596,10 +600,44 @@ pub fn ensure_meditation_workflow() -> anyhow::Result<PathBuf> {
     let dir = Paths::config_dir().join("workflows");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(MEDITATION_WORKFLOW_FILE);
-    if create_built_in_file_if_missing(&path, MEDITATION_WORKFLOW_YAML)? {
-        tracing::info!("Soul: installed Meditation workflow at {}", path.display());
+    if create_or_upgrade_built_in_file(
+        &path,
+        MEDITATION_WORKFLOW_YAML,
+        PREVIOUS_MEDITATION_WORKFLOW_SHA256,
+    )? {
+        tracing::info!(
+            "Soul: installed or upgraded Meditation workflow at {}",
+            path.display()
+        );
     }
     Ok(path)
+}
+
+fn create_or_upgrade_built_in_file(
+    path: &Path,
+    content: &str,
+    previous_sha256: &[&str],
+) -> anyhow::Result<bool> {
+    use std::io::Write as _;
+
+    if create_built_in_file_if_missing(path, content)? {
+        return Ok(true);
+    }
+    let installed = std::fs::read(path)?;
+    let installed_sha256 = format!("{:x}", Sha256::digest(&installed));
+    if !previous_sha256.contains(&installed_sha256.as_str()) {
+        return Ok(false);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("built-in asset has no parent directory"))?;
+    let mut replacement = tempfile::NamedTempFile::new_in(parent)?;
+    replacement.write_all(content.as_bytes())?;
+    replacement.as_file_mut().sync_all()?;
+    replacement
+        .persist(path)
+        .map_err(|error| anyhow::anyhow!(error.error))?;
+    Ok(true)
 }
 
 fn create_built_in_file_if_missing(path: &std::path::Path, content: &str) -> anyhow::Result<bool> {
@@ -712,12 +750,17 @@ pub async fn ensure_meditation_schedule(
     scheduler: &Arc<dyn SchedulerTrait>,
     workflow_path: PathBuf,
 ) -> anyhow::Result<()> {
-    let already = scheduler
-        .list_scheduled_jobs()
-        .await
-        .into_iter()
-        .any(|j| j.id == MEDITATION_SCHEDULE_ID);
-    if already {
+    let jobs = scheduler.list_scheduled_jobs().await;
+    if let Some(upgraded) = upgrade_existing_meditation_workflow(
+        &jobs,
+        MEDITATION_WORKFLOW_YAML,
+        PREVIOUS_MEDITATION_WORKFLOW_SHA256,
+    )? {
+        if upgraded {
+            tracing::info!(
+                "Soul: upgraded the workflow copy used by the existing Daily Meditation schedule"
+            );
+        }
         return Ok(());
     }
     let job = ScheduledJob {
@@ -743,11 +786,30 @@ pub async fn ensure_meditation_schedule(
     Ok(())
 }
 
+/// Upgrade the scheduler-owned workflow copy without replacing the schedule.
+///
+/// Returning `Some` means the job already exists. Keeping the existing job is
+/// important: removing and adding it again would erase its successful-run
+/// cursor, pause state, run count, and any active-run bookkeeping.
+fn upgrade_existing_meditation_workflow(
+    jobs: &[ScheduledJob],
+    content: &str,
+    previous_sha256: &[&str],
+) -> anyhow::Result<Option<bool>> {
+    let Some(job) = jobs.iter().find(|job| job.id == MEDITATION_SCHEDULE_ID) else {
+        return Ok(None);
+    };
+    if job.source.trim().is_empty() {
+        anyhow::bail!("the existing Daily Meditation schedule has no workflow source");
+    }
+    create_or_upgrade_built_in_file(Path::new(&job.source), content, previous_sha256).map(Some)
+}
+
 /// The "Meditation" workflow definition. It uses the user's configured
 /// default provider/model (no `settings` override), loads the update-soul
 /// skill, focuses on the Soul KB, and instructs the agent to digest recent
 /// user interactions into durable, personalised knowledge.
-pub const MEDITATION_WORKFLOW_YAML: &str = r#"version: 1.0.0
+pub const MEDITATION_WORKFLOW_YAML: &str = r#"version: 1.0.1
 title: Meditation
 description: >-
   Review the user's recent Biorouter sessions and save what matters about them
@@ -763,10 +825,13 @@ instructions: |-
   personalised knowledge about THE USER, not a summary of every chat.
 
   Procedure:
-  1. Find the user's recent REAL chat sessions with the `chatrecall` tool
-     (search mode, with a recent date range and broad queries). Collect their
-     session ids. Skip scheduled-job sessions (names starting with
-     "Scheduled job:"), especially this very session.
+  1. Find the user's recent REAL chat sessions with the `chatrecall` tool.
+     Start with one broad search call over the supplied recent date range; make
+     at most one follow-up search only when the first result is truncated or
+     genuinely ambiguous. Do not fan out over synonymous queries. Skip
+     scheduled-job sessions (names starting with "Scheduled job:"), especially
+     this very session. Select at most three real sessions, prioritising the
+     most recent high-signal work over greetings or routine follow-ups.
   2. Call `platform__ingest_conversation` with EXPLICIT `session_ids` for the
      most relevant recent session(s), targeting the `soul` knowledge base.
      Never omit `session_ids`: omitting it defaults to the current scheduled
@@ -798,11 +863,6 @@ extensions:
 - type: platform
   name: skills
   description: Search the skills installed on this machine and load the one that matches the task in hand
-  bundled: true
-  available_tools: []
-- type: platform
-  name: todo
-  description: Keep a running checklist through a multi-step task, so Biorouter tracks what is done and what is left
   bundled: true
   available_tools: []
 - type: platform
@@ -899,6 +959,7 @@ mod tests {
         let wf: Workflow = serde_yaml::from_str(MEDITATION_WORKFLOW_YAML)
             .expect("Meditation workflow YAML must deserialize");
         assert_eq!(wf.title, "Meditation");
+        assert_eq!(wf.version, "1.0.1");
         let kbs = wf.knowledge_bases.expect("knowledge_bases present");
         assert_eq!(kbs.default.as_deref(), Some("soul"));
         assert!(kbs.visible.iter().any(|k| k == "soul"));
@@ -907,6 +968,25 @@ mod tests {
             .unwrap_or_default()
             .iter()
             .any(|s| s == "update-soul"));
+    }
+
+    #[test]
+    fn meditation_keeps_discovery_bounded_and_omits_unneeded_todo_state() {
+        let wf: Workflow = serde_yaml::from_str(MEDITATION_WORKFLOW_YAML)
+            .expect("Meditation workflow YAML must deserialize");
+        let instructions = wf.instructions.expect("Meditation instructions");
+        assert!(
+            instructions.contains("one broad search call"),
+            "{instructions}"
+        );
+        assert!(instructions.contains("at most three"), "{instructions}");
+        assert!(
+            wf.extensions
+                .unwrap_or_default()
+                .iter()
+                .all(|extension| !extension.name().eq_ignore_ascii_case("todo")),
+            "Meditation does not need a task list for its fixed procedure"
+        );
     }
 
     /// The skill lands in the knowledge bundle, and a pre-bundle install is
@@ -1035,6 +1115,88 @@ mod tests {
             std::fs::read_to_string(missing).unwrap(),
             MEDITATION_WORKFLOW_YAML
         );
+    }
+
+    #[test]
+    fn shipped_workflow_upgrades_only_a_byte_identical_previous_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(MEDITATION_WORKFLOW_FILE);
+        let previous = "previous shipped workflow\n";
+        std::fs::write(&path, previous).unwrap();
+        let previous_sha256 = format!("{:x}", Sha256::digest(previous.as_bytes()));
+
+        assert!(create_or_upgrade_built_in_file(
+            &path,
+            MEDITATION_WORKFLOW_YAML,
+            &[previous_sha256.as_str()],
+        )
+        .unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            MEDITATION_WORKFLOW_YAML
+        );
+
+        let customized = "user-customized workflow\n";
+        std::fs::write(&path, customized).unwrap();
+        assert!(!create_or_upgrade_built_in_file(
+            &path,
+            MEDITATION_WORKFLOW_YAML,
+            &["not-a-match"]
+        )
+        .unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), customized);
+    }
+
+    #[test]
+    fn existing_schedule_upgrades_its_stock_copy_without_resetting_the_job() {
+        let tmp = tempfile::tempdir().unwrap();
+        let scheduled_copy = tmp.path().join("daily-meditation.yaml");
+        let previous = "previous shipped workflow\n";
+        std::fs::write(&scheduled_copy, previous).unwrap();
+        let previous_sha256 = format!("{:x}", Sha256::digest(previous.as_bytes()));
+        let jobs = vec![ScheduledJob {
+            id: MEDITATION_SCHEDULE_ID.to_string(),
+            source: scheduled_copy.to_string_lossy().into_owned(),
+            cron: MEDITATION_CRON.to_string(),
+            last_run: Some(chrono::Utc::now()),
+            currently_running: false,
+            paused: true,
+            current_session_id: None,
+            process_start_time: None,
+            run_count: 7,
+            max_runs: None,
+            creator_session_id: None,
+            last_error: Some("preserved diagnostic".to_string()),
+        }];
+        let metadata_before = serde_json::to_value(&jobs[0]).unwrap();
+
+        assert_eq!(
+            upgrade_existing_meditation_workflow(
+                &jobs,
+                MEDITATION_WORKFLOW_YAML,
+                &[previous_sha256.as_str()],
+            )
+            .unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&scheduled_copy).unwrap(),
+            MEDITATION_WORKFLOW_YAML
+        );
+        assert_eq!(serde_json::to_value(&jobs[0]).unwrap(), metadata_before);
+
+        let customized = "user-customized scheduled workflow\n";
+        std::fs::write(&scheduled_copy, customized).unwrap();
+        assert_eq!(
+            upgrade_existing_meditation_workflow(
+                &jobs,
+                MEDITATION_WORKFLOW_YAML,
+                &[previous_sha256.as_str()],
+            )
+            .unwrap(),
+            Some(false)
+        );
+        assert_eq!(std::fs::read_to_string(scheduled_copy).unwrap(), customized);
     }
 
     fn make_legacy(svc: &KnowledgeService, id: &str, name: &str) {
