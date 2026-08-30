@@ -1592,6 +1592,25 @@ impl ExtensionManager {
         ))
     }
 
+    /// Get the model-facing tool surface for a turn whose privacy capability
+    /// has already been sampled.
+    ///
+    /// Coding-agent providers receive their callable tools over Biorouter's
+    /// short-lived MCP bridge. Code Execution deliberately removes ordinary
+    /// extension tools from the provider-facing list, but the bridge still
+    /// needs to recover the small audited manager surface from the live
+    /// extension registry. Re-sampling the currently bound provider here would
+    /// let a model swap between those two steps change the privacy verdict, so
+    /// this variant carries the turn's pinned capability into Gate E.
+    pub(crate) async fn get_prefixed_tools_for_capability(
+        &self,
+        admitted: crate::privacy::CallCapability,
+    ) -> ExtensionResult<Vec<Tool>> {
+        let snapshot = self.get_all_tools_cached().await?;
+        let reach = self.extension_reach(Some(admitted)).await;
+        Ok(self.filter_tools(&snapshot.tools, None, None, &snapshot.keys, &reach))
+    }
+
     /// The `execute_code` bridge's importable-module catalogue, which is a
     /// discovery surface in its own right: `search_modules` and `read_module`
     /// serve tool names, signatures and descriptions out of it on demand, so

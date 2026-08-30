@@ -838,6 +838,7 @@ struct EnabledCodingAgentBridgeTargets {
 const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__subagent",
     "workspace__workspace_read_conversation",
+    "workspace__workspace_send_prompt",
     "workspace__workspace_close",
     "workspace__workspace_watch",
 ];
@@ -987,6 +988,33 @@ fn prepare_coding_agent_bridge_tool(tool: &Tool) -> Tool {
             }
         }
         bridged.input_schema = Arc::new(schema);
+    } else if tool.name.as_ref() == "workspace__workspace_send_prompt" {
+        bridged.description = Some(
+            "Steer one running direct child created by this chat. The bridge cannot start a new \
+             turn, send a note, wait on the child, or reach a parent, sibling, grandchild, or \
+             unrelated conversation."
+                .into(),
+        );
+        bridged.input_schema = Arc::new(object!({
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Session id of a running direct child created by this chat."
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Correction or additional instruction to deliver immediately."
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["steer"],
+                    "description": "The bridge permits only live steering."
+                }
+            },
+            "required": ["session_id", "text", "mode"],
+            "additionalProperties": false
+        }));
     }
     bridged
 }
@@ -1012,8 +1040,13 @@ fn delegated_work_supervision_prompt(parent_session_id: &str) -> Option<String> 
         "Your delegated subagent sessions still require supervision or result collection: {}. \
          Continue supervising them now. \
          Call workspace_watch for these session ids, inspect progress with \
-         workspace_read_conversation, and use workspace_close if a child must stop. Do not give \
-         a final answer until every listed child has finished and you have collected its result.",
+         workspace_read_conversation, use workspace_send_prompt with mode:\"steer\" if a running \
+         child needs correction, and use workspace_close if a child must stop. If watch reports \
+         that a completed result was shortened and remains uncollected, do not watch that \
+         completed result again: follow the exact workspace_read_conversation call in the reply \
+         so its bounded summary receipt records collection without repeating the completed watch. \
+         Do not give a final answer until every listed child has finished and you have collected \
+         its result.",
         running.join(", ")
     ))
 }
@@ -1156,7 +1189,7 @@ impl ChatBridgeDispatch {
         if CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&name) {
             self.require_enabled_target(self.workspace_target.as_ref(), "Workspace Control")
                 .await?;
-            self.enforce_child_collector_scope(session_id, call).await
+            self.enforce_child_supervision_scope(session_id, call).await
         } else if CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS.contains(&name)
             || CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&name)
         {
@@ -1271,7 +1304,7 @@ impl ChatBridgeDispatch {
         }
     }
 
-    async fn enforce_child_collector_scope(
+    async fn enforce_child_supervision_scope(
         &self,
         parent_session_id: &str,
         call: &CallToolRequestParams,
@@ -1281,6 +1314,35 @@ impl ChatBridgeDispatch {
             .as_ref()
             .ok_or_else(|| "Child supervision requires a direct subagent session id".to_string())?;
         match call.name.as_ref() {
+            "workspace__workspace_send_prompt" => {
+                let allowed = ["session_id", "text", "mode"];
+                if arguments.len() != allowed.len()
+                    || arguments.keys().any(|key| !allowed.contains(&key.as_str()))
+                {
+                    return Err(
+                        "Coding-agent child steering accepts exactly session_id, text, and mode"
+                            .to_string(),
+                    );
+                }
+                if arguments.get("mode").and_then(Value::as_str) != Some("steer") {
+                    return Err(
+                        "Coding-agent child supervision permits only mode:\"steer\"".to_string()
+                    );
+                }
+                if arguments
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_none_or(|text| text.trim().is_empty())
+                {
+                    return Err("Coding-agent child steering requires text".to_string());
+                }
+                let child = arguments
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "Child supervision requires session_id".to_string())?;
+                self.refuse_unless_direct_subagent_child(parent_session_id, child)
+                    .await
+            }
             "workspace__workspace_read_conversation" | "workspace__workspace_close" => {
                 let child = arguments
                     .get("session_id")
@@ -1306,10 +1368,47 @@ impl ChatBridgeDispatch {
             _ => Ok(()),
         }
     }
+
+    async fn preflight_child_supervision(
+        &self,
+        parent_session_id: &str,
+        call: &CallToolRequestParams,
+    ) -> std::result::Result<(), String> {
+        self.enforce_child_supervision_scope(parent_session_id, call)
+            .await?;
+        if call.name.as_ref() != "workspace__workspace_send_prompt" {
+            return Ok(());
+        }
+        let child = call
+            .arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get("session_id"))
+            .and_then(Value::as_str)
+            .expect("the scope check validated session_id");
+        let services = crate::workspace_services::get()
+            .ok_or_else(|| "Child steering requires the BioRouter daemon".to_string())?;
+        if services.is_turn_active(child) {
+            Ok(())
+        } else {
+            Err("target child has no turn in flight; live steering cannot be delivered".to_string())
+        }
+    }
 }
 
 #[async_trait::async_trait]
 impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
+    async fn preflight(
+        &self,
+        session_id: &str,
+        call: &CallToolRequestParams,
+    ) -> std::result::Result<(), String> {
+        if CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&call.name.as_ref()) {
+            self.preflight_child_supervision(session_id, call).await
+        } else {
+            Ok(())
+        }
+    }
+
     async fn dispatch(
         &self,
         session_id: &str,
@@ -5831,6 +5930,7 @@ impl Agent {
         // outside `ExtensionManager`. Offering those over this bridge would
         // advertise calls that can never resolve in its dispatch path.
         let mut bridged = Vec::with_capacity(tools.len());
+        let mut seen = HashSet::new();
         for tool in tools {
             let name = tool.name.as_ref();
             let dispatched_elsewhere = name
@@ -5847,6 +5947,7 @@ impl Agent {
                     targets.skills.is_some(),
                     targets.extension_manager.is_some(),
                 )
+                && seen.insert(name.to_string())
             {
                 bridged.push(prepare_coding_agent_bridge_tool(tool));
             }
@@ -5959,9 +6060,37 @@ impl Agent {
         } else {
             None
         };
+
+        // Code Execution intentionally leaves the provider with only its own
+        // executor and Workspace supervision tools. Subscription-backed coding
+        // agents, however, reach Biorouter through this bridge and need the
+        // explicitly audited Knowledge, Skills, and Extension Manager surface
+        // to carry out bounded management work. Recover candidate schemas from
+        // the live registry under the turn's already-pinned privacy capability;
+        // `prepare_coding_agent_bridge_tools` still admits only the exact
+        // allowlists above, so this cannot expose Developer, arbitrary MCPs, or
+        // any other host tool.
+        let mut bridge_candidates = tools.to_vec();
+        match self
+            .extension_manager
+            .get_prefixed_tools_for_capability(capability)
+            .await
+        {
+            Ok(mut registry_tools) => bridge_candidates.append(&mut registry_tools),
+            Err(error) => tracing::warn!(
+                session_id = session.id,
+                "could not recover audited coding-agent manager tools: {error}"
+            ),
+        }
+        if targets.knowledge.is_some() {
+            bridge_candidates.push(platform_tools::ingest_source_tool());
+        }
         let bridged = self
-            .prepare_coding_agent_bridge_tools(tools, delegation_available, &targets)
+            .prepare_coding_agent_bridge_tools(&bridge_candidates, delegation_available, &targets)
             .await;
+        let mut risk_surface = tools.to_vec();
+        risk_surface.extend(bridged.iter().cloned());
+        self.tool_risks.refresh_from_tools(&risk_surface);
         let dispatch = self.chat_bridge_dispatch(iteration_provider, subagent, targets);
         self.create_coding_agent_bridge_lease(
             session,
@@ -12193,7 +12322,6 @@ mod tests {
             "code_execution__execute_code",
             "code_execution__read_module",
             "custom_local_mcp__read_any_path",
-            "workspace__workspace_send_prompt",
             "workspace__workspace_set_tools",
             "workspace__workspace_open",
             "workspace__workspace_read_panel",
@@ -12211,6 +12339,7 @@ mod tests {
         for allowed in [
             "workspace__subagent",
             "workspace__workspace_watch",
+            "workspace__workspace_send_prompt",
             "knowledge__kb_search",
             PLATFORM_INGEST_SOURCE_TOOL_NAME,
             "skills__importSkillPackage",
@@ -12608,6 +12737,257 @@ mod tests {
     }
 
     #[test]
+    fn coding_agent_bridge_exposes_only_live_direct_child_steering() {
+        let send = bridge_test_tool("workspace__workspace_send_prompt");
+        let attached = prepare_coding_agent_bridge_tool(&send);
+        let schema = attached.input_schema.as_ref();
+        let properties = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("child steering has an object schema");
+
+        assert_eq!(
+            properties
+                .keys()
+                .map(String::as_str)
+                .collect::<HashSet<_>>(),
+            HashSet::from(["session_id", "text", "mode"])
+        );
+        assert_eq!(
+            properties
+                .get("mode")
+                .and_then(Value::as_object)
+                .and_then(|mode| mode.get("enum"))
+                .and_then(Value::as_array),
+            Some(&vec![Value::String("steer".into())])
+        );
+        assert_eq!(
+            schema.get("additionalProperties"),
+            Some(&Value::Bool(false))
+        );
+        assert!(attached
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("direct child")));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    #[serial_test::serial(agent_manager_pin)]
+    async fn coding_agent_bridge_steering_is_scoped_to_direct_children_and_live_mode() {
+        let _clear_override = ClearWorkspaceServicesOverride;
+        coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
+        let (mut agent, parent_id) = agent_with_one_extension_for_tests().await;
+        let working_dir = agent
+            .config
+            .session_manager
+            .get_session(&parent_id, false)
+            .await
+            .expect("read the bridge parent")
+            .working_dir;
+        let child = agent
+            .config
+            .session_manager
+            .create_session(
+                working_dir.clone(),
+                "direct child".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .expect("create a direct child");
+        agent
+            .config
+            .session_manager
+            .update(&child.id)
+            .parent_session_id(Some(parent_id.clone()))
+            .apply()
+            .await
+            .expect("link the direct child");
+        let sibling = agent
+            .config
+            .session_manager
+            .create_session(working_dir, "sibling".into(), SessionType::User)
+            .await
+            .expect("create an unrelated session");
+        let child_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        crate::workspace_services::set_for_tests(Some(Arc::new(ReplacementTurnServices {
+            child_session_id: child.id.clone(),
+            active: Arc::clone(&child_active),
+        })));
+        let iteration_provider: Arc<dyn Provider> =
+            Arc::new(BridgedChildProvider { name: "codex" });
+        let tools = agent.list_tools(&parent_id, None).await;
+        let targets = agent.enabled_coding_agent_bridge_targets().await;
+        assert!(targets.workspace.is_some(), "Workspace must be enabled");
+        agent.config.biorouter_mode = BioRouterMode::Approve;
+        let dispatch = agent.chat_bridge_dispatch(&iteration_provider, None, targets);
+        let call = |session_id: &str, mode: &str, extra: Option<(&str, Value)>| {
+            let mut arguments = object!({
+                "session_id": session_id,
+                "text": "also verify update-soul",
+                "mode": mode
+            });
+            if let Some((key, value)) = extra {
+                arguments.insert(key.into(), value);
+            }
+            CallToolRequestParams {
+                name: "workspace__workspace_send_prompt".into(),
+                arguments: Some(arguments),
+                meta: None,
+                task: None,
+            }
+        };
+
+        let parent = agent
+            .config
+            .session_manager
+            .get_session(&parent_id, true)
+            .await
+            .expect("read the bridge parent");
+        let conversation = parent
+            .conversation
+            .clone()
+            .unwrap_or_else(Conversation::empty);
+        let lease = agent
+            .issue_tool_bridge(&iteration_provider, &parent, &conversation, &tools, None)
+            .await
+            .expect("issue the production bridge grant");
+        let nonce = lease.url().rsplit('/').next().expect("a bridge nonce");
+        let grant = coding_agent_bridge::lookup(nonce).expect("the bridge grant is live");
+        let preflight_error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            grant.call(call(&child.id, "note", None)),
+        )
+        .await
+        .expect("an invalid mode must fail before inspection or approval")
+        .expect_err("the raw bridge must reject note mode");
+        assert!(
+            preflight_error.contains("only mode:\"steer\""),
+            "{preflight_error}"
+        );
+        assert!(
+            ActionRequiredManager::global()
+                .drain_requests(&parent_id)
+                .is_empty(),
+            "an inevitably refused bridge call must not publish an approval card"
+        );
+
+        let whitespace_error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            grant.call(CallToolRequestParams {
+                name: "workspace__workspace_send_prompt".into(),
+                arguments: Some(object!({
+                    "session_id": child.id.as_str(),
+                    "text": " \n\t ",
+                    "mode": "steer"
+                })),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await
+        .expect("empty steering text must fail before inspection or approval")
+        .expect_err("whitespace-only steering must be refused");
+        assert!(
+            whitespace_error.contains("requires text"),
+            "{whitespace_error}"
+        );
+        let idle_error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            grant.call(call(&child.id, "steer", None)),
+        )
+        .await
+        .expect("idle-child steering must fail before inspection or approval")
+        .expect_err("an idle child cannot receive live steering");
+        assert!(idle_error.contains("no turn in flight"), "{idle_error}");
+        assert!(
+            ActionRequiredManager::global()
+                .drain_requests(&parent_id)
+                .is_empty(),
+            "empty or idle steering must not publish an approval card"
+        );
+
+        child_active.store(true, std::sync::atomic::Ordering::SeqCst);
+        dispatch
+            .preflight_child_supervision(&parent_id, &call(&child.id, "steer", None))
+            .await
+            .expect("an active direct child can receive live steering");
+
+        dispatch
+            .enforce_child_supervision_scope(&parent_id, &call(&child.id, "steer", None))
+            .await
+            .expect("a live-mode steer to a direct child must pass the bridge guard");
+        let note_error = dispatch
+            .enforce_child_supervision_scope(&parent_id, &call(&child.id, "note", None))
+            .await
+            .expect_err("a bridge must not add an idle note or replacement turn");
+        assert!(note_error.contains("only mode:\"steer\""), "{note_error}");
+        let extra_error = dispatch
+            .enforce_child_supervision_scope(
+                &parent_id,
+                &call(
+                    &child.id,
+                    "steer",
+                    Some(("future_bridge_option", Value::Bool(true))),
+                ),
+            )
+            .await
+            .expect_err("unknown arguments must not silently widen this bridge later");
+        assert!(
+            extra_error.contains("accepts exactly session_id, text, and mode"),
+            "{extra_error}"
+        );
+        let reach_error = dispatch
+            .enforce_child_supervision_scope(&parent_id, &call(&sibling.id, "steer", None))
+            .await
+            .expect_err("a bridge must not steer an unrelated conversation");
+        assert!(
+            reach_error.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+            "{reach_error}"
+        );
+
+        let target_agent = Arc::new(Agent::with_config(AgentConfig::new(
+            Arc::clone(&agent.config.session_manager),
+            Arc::clone(&agent.config.permission_manager),
+            None,
+            BioRouterMode::Auto,
+        )));
+        target_agent.open_for_turn(TurnId::new("bridge-live-steer"));
+        let manager = crate::execution::manager::AgentManager::instance()
+            .await
+            .expect("the agent manager");
+        manager
+            .register_agent(child.id.clone(), Arc::clone(&target_agent))
+            .await;
+        agent.config.biorouter_mode = BioRouterMode::Auto;
+        let auto_lease = agent
+            .issue_tool_bridge(&iteration_provider, &parent, &conversation, &tools, None)
+            .await
+            .expect("issue a non-prompting production bridge grant");
+        let auto_nonce = auto_lease.url().rsplit('/').next().expect("a bridge nonce");
+        let auto_grant = coding_agent_bridge::lookup(auto_nonce).expect("the bridge grant is live");
+        let delivered = auto_grant
+            .call(call(&child.id, "steer", None))
+            .await
+            .expect("the active direct-child steer must dispatch successfully");
+        let delivered = serde_json::to_string(&delivered).expect("serialise the steer result");
+        assert!(delivered.contains("Steer queued"), "{delivered}");
+        let queued = target_agent.drain_soft_interrupts();
+        assert_eq!(queued.len(), 1, "the live child must receive one steer");
+        assert_eq!(queued[0].text, "also verify update-soul");
+        assert_eq!(
+            queued[0]
+                .provenance
+                .as_ref()
+                .map(|provenance| provenance.kind),
+            Some(crate::conversation::message::ProvenanceKind::AgentInjection)
+        );
+        manager
+            .deregister_agent_if_same(&child.id, &target_agent)
+            .await;
+    }
+
+    #[test]
     fn destiny_style_repository_install_is_routed_to_the_audited_skills_manager() {
         let mut spawn = crate::agents::subagent_tool::create_subagent_tool(&[]);
         spawn.name = "workspace__subagent".into();
@@ -12639,6 +13019,237 @@ mod tests {
             true,
             true,
         ));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn coding_agent_bridge_recovers_managers_hidden_by_code_execution() {
+        coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
+
+        let path_root = tempfile::TempDir::new().expect("an isolated capability root");
+        let path_root_value = path_root.path().to_string_lossy().into_owned();
+        let _env = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(path_root_value.as_str()))]);
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        for name in ["knowledge", "skills", "Extension Manager", "code_execution"] {
+            let target = resolve_bundled_extension(name)
+                .unwrap_or_else(|| panic!("{name} must resolve as a bundled capability"));
+            agent
+                .add_extension(target.into_config(format!("{name} bridge regression")))
+                .await
+                .unwrap_or_else(|error| panic!("enable {name}: {error}"));
+        }
+
+        let iteration_provider: Arc<dyn Provider> =
+            Arc::new(BridgedChildProvider { name: "codex" });
+        agent
+            .update_provider(Arc::clone(&iteration_provider), &session_id)
+            .await
+            .expect("bind a coding-agent-shaped provider");
+
+        let full_surface = agent.list_tools(&session_id, None).await;
+        for expected in [
+            "skills__importSkillPackage",
+            "extensionmanager__install_extension",
+            "knowledge__kb_search",
+            PLATFORM_INGEST_SOURCE_TOOL_NAME,
+        ] {
+            assert!(
+                full_surface
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == expected),
+                "precondition: the live registry must expose {expected}"
+            );
+        }
+
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, true)
+            .await
+            .expect("read the bridge parent");
+        let (filtered_surface, _, system_prompt) = agent
+            .prepare_tools_and_prompt(&session_id, &session.working_dir)
+            .await
+            .expect("prepare the real Code Execution tool surface");
+        assert!(
+            filtered_surface
+                .iter()
+                .any(|tool| tool.name.as_ref() == "code_execution__execute_code"),
+            "precondition: Code Execution must be active"
+        );
+        assert!(
+            filtered_surface
+                .iter()
+                .all(|tool| !tool.name.starts_with("skills__")
+                    && !tool.name.starts_with("extensionmanager__")
+                    && !tool.name.starts_with("knowledge__")),
+            "the regression requires the ordinary manager tools to be filtered"
+        );
+        assert!(
+            system_prompt.contains("Use Code Execution when the task needs computation"),
+            "the real prompt builder must recognize the active executor"
+        );
+        let conversation = session
+            .conversation
+            .clone()
+            .unwrap_or_else(Conversation::empty);
+        let lease = agent
+            .issue_tool_bridge(
+                &iteration_provider,
+                &session,
+                &conversation,
+                &filtered_surface,
+                None,
+            )
+            .await
+            .expect("the coding provider needs a live bridge");
+        let nonce = lease
+            .url()
+            .rsplit('/')
+            .next()
+            .expect("the bridge URL ends in its nonce");
+        let grant = coding_agent_bridge::lookup(nonce).expect("the bridge grant is live");
+        let bridged_names: Vec<_> = grant
+            .tools()
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect();
+
+        for expected in [
+            "skills__importSkillPackage",
+            "skills__hotLoadSkill",
+            "extensionmanager__install_extension",
+            "knowledge__kb_search",
+            "workspace__workspace_send_prompt",
+            PLATFORM_INGEST_SOURCE_TOOL_NAME,
+        ] {
+            assert_eq!(
+                bridged_names
+                    .iter()
+                    .filter(|name| **name == expected)
+                    .count(),
+                1,
+                "the audited bridge must expose {expected} exactly once: {bridged_names:?}"
+            );
+        }
+        let steer = grant
+            .tools()
+            .iter()
+            .find(|tool| tool.name.as_ref() == "workspace__workspace_send_prompt")
+            .expect("the bridge exposes direct-child steering");
+        let steer_properties = steer
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("the steer schema has properties");
+        assert_eq!(
+            steer_properties
+                .keys()
+                .map(String::as_str)
+                .collect::<HashSet<_>>(),
+            HashSet::from(["session_id", "text", "mode"])
+        );
+        for forbidden in [
+            "developer__shell",
+            "code_execution__execute_code",
+            "knowledge__kb_write_page",
+            "extensionmanager__read_resource",
+        ] {
+            assert!(
+                !bridged_names.contains(&forbidden),
+                "the recovery must not widen the bridge to {forbidden}"
+            );
+        }
+        let listed = grant
+            .call(CallToolRequestParams {
+                name: "skills__listSkills".into(),
+                arguments: Some(object!({"offset": 0, "limit": 5})),
+                meta: None,
+                task: None,
+            })
+            .await
+            .expect("the restored Skills schema must dispatch through the live bridge");
+        assert_eq!(listed.is_error, Some(false), "{listed:?}");
+
+        assert_eq!(
+            agent.tool_risks.risk_for("skills__listSkills"),
+            crate::permission::tool_risk::ToolRisk::Low,
+            "restored read-only manager tools must retain their low-risk grade"
+        );
+        assert_eq!(
+            agent.tool_risks.risk_for("skills__removeSkillPackage"),
+            crate::permission::tool_risk::ToolRisk::High,
+            "restored destructive manager tools must retain their high-risk grade"
+        );
+        assert_eq!(
+            agent
+                .tool_risks
+                .risk_for("workspace__workspace_send_prompt"),
+            crate::permission::tool_risk::ToolRisk::High,
+            "recovered child steering must retain its destructive risk grade"
+        );
+
+        let approval_dispatch = agent.chat_bridge_dispatch(
+            &iteration_provider,
+            None,
+            agent.enabled_coding_agent_bridge_targets().await,
+        );
+        let approval_grant = Arc::new(coding_agent_bridge::BridgeGrant::new(
+            session.clone(),
+            BioRouterMode::Approve,
+            Arc::new(approval_dispatch),
+            Arc::clone(&agent.tool_inspection_manager),
+            crate::privacy::CallCapability::for_test_restricted(),
+            grant.tools().to_vec(),
+            conversation,
+            None,
+            Arc::clone(&agent.hooks_manager),
+            agent.vault.lock().await.clone(),
+            Arc::clone(&agent.tool_risks),
+        ));
+        let running = tokio::spawn({
+            let approval_grant = Arc::clone(&approval_grant);
+            async move {
+                approval_grant
+                    .call(CallToolRequestParams {
+                        name: "skills__removeSkillPackage".into(),
+                        arguments: Some(object!({ "name": "synthetic-package" })),
+                        meta: None,
+                        task: None,
+                    })
+                    .await
+            }
+        });
+        let approval = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let requests = ActionRequiredManager::global().drain_requests(&session.id);
+                if let Some(message) = requests.into_iter().next() {
+                    return message;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the destructive restored manager call must raise an approval card");
+        let risk = approval.content.iter().find_map(|content| {
+            let MessageContent::ActionRequired(action) = content else {
+                return None;
+            };
+            let ActionRequiredData::ToolConfirmation {
+                tool_name, risk, ..
+            } = &action.data
+            else {
+                return None;
+            };
+            (tool_name == "skills__removeSkillPackage").then_some(*risk)
+        });
+        assert_eq!(
+            risk,
+            Some(Some(crate::permission::tool_risk::ToolRisk::High)),
+            "the user-facing approval must carry the restored tool's High grade: {approval:?}"
+        );
+        running.abort();
     }
 
     fn armed_structured_final_output(output: &str) -> Arc<Mutex<Option<FinalOutputTool>>> {
@@ -12810,6 +13421,8 @@ mod tests {
         assert!(prompt.contains(&child));
         assert!(prompt.contains("workspace_watch"));
         assert!(prompt.contains("workspace_read_conversation"));
+        assert!(prompt.contains("do not watch that completed result again"));
+        assert!(prompt.contains("bounded summary receipt"));
         assert!(prompt.contains("workspace_close"));
         assert!(handle.continuation_pending());
         assert!(
@@ -13122,7 +13735,17 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(workspace_services)]
     async fn coding_agent_bridges_delegate_to_real_children_for_claude_and_codex() {
+        struct ClearWorkspaceServicesOverride;
+        impl Drop for ClearWorkspaceServicesOverride {
+            fn drop(&mut self) {
+                crate::workspace_services::clear_test_override();
+            }
+        }
+
+        crate::workspace_services::set_for_tests(None);
+        let _clear_workspace_services = ClearWorkspaceServicesOverride;
         coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
 
         let (agent, first_session_id) = agent_with_one_extension_for_tests().await;

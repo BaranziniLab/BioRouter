@@ -539,27 +539,15 @@ impl WorkspaceCrossingInspector {
     pub fn new(provider: crate::agents::types::SharedProvider) -> Self {
         Self { provider }
     }
-}
 
-#[async_trait]
-impl ToolInspector for WorkspaceCrossingInspector {
-    fn name(&self) -> &'static str {
-        "workspace_tier_crossing"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    async fn inspect(
+    async fn inspect_with_pinned_capability(
         &self,
         tool_requests: &[ToolRequest],
-        _messages: &[Message],
-        _biorouter_mode: BioRouterMode,
         session: &Session,
+        capability: Option<crate::privacy::CallCapability>,
     ) -> Result<Vec<InspectionResult>> {
-        // Cheapest discriminator first: a turn with no workspace write in it
-        // must not sample the provider mutex or touch the session store.
+        // Reject non-workspace-write batches before sampling a provider or
+        // touching session storage. This inspector is on every tool batch.
         let candidates: Vec<(&ToolRequest, String, String)> = tool_requests
             .iter()
             .filter_map(|request| {
@@ -573,10 +561,13 @@ impl ToolInspector for WorkspaceCrossingInspector {
             return Ok(Vec::new());
         }
 
-        // ONE sample, for the whole batch, at one instant — the same discipline
-        // `CallCapability` exists to enforce. Re-reading the mutex per request
-        // would let two calls in one batch gate on two different models.
-        let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+        // A bridge grant supplies the capability it sampled at issue time. The
+        // ordinary agent path has no pinned value, so sample exactly once for
+        // the whole batch rather than letting calls observe different models.
+        let cap = match capability {
+            Some(capability) => capability,
+            None => crate::privacy::CallCapability::sample(&self.provider).await,
+        };
         if !cap.enforced() || !cap.tier().is_private() {
             return Ok(Vec::new());
         }
@@ -584,12 +575,10 @@ impl ToolInspector for WorkspaceCrossingInspector {
         let session_manager = crate::session::session_manager::SessionManager::instance();
         let mut results = Vec::new();
         for (request, target, payload) in candidates {
-            // Metadata-only: resolving the tier must never be the way to load
-            // the conversation the disclosure is about.
+            // Metadata only: resolving the disclosure boundary must never load
+            // the target conversation. An absent row is left to the handler's
+            // anti-oracle refusal rather than disclosed here.
             let Ok(row) = session_manager.get_session(&target, false).await else {
-                // An unresolvable target is refused by the handler's own gate a
-                // moment later, in one sentence that does not say whether the
-                // conversation exists. Escalating here would answer that.
                 continue;
             };
             if !crate::privacy::crossing::needs_disclosure(
@@ -609,16 +598,9 @@ impl ToolInspector for WorkspaceCrossingInspector {
             results.push(InspectionResult {
                 tool_request_id: request.id.clone(),
                 action: InspectionAction::RequireApproval(Some(format!(
-                    // ⚠ The payload goes LAST, and it is fenced. The card renders
-                    // this string into a single element, so every newline in it
-                    // collapses to a space — measured in the running app, where
-                    // "…the 2019 relapse counts Approving sends this now" read as
-                    // one sentence and the reader could not tell where the
-                    // quoted text stopped and Biorouter's own words resumed.
-                    // That matters more here than in an ordinary confirmation:
-                    // the whole point of the card is that the user can see
-                    // exactly what would leave, so its boundary has to be
-                    // unambiguous even with the whitespace gone.
+                    // Keep the untrusted payload last and fenced. The desktop
+                    // card collapses whitespace, so prose after it would blur
+                    // the boundary between quoted text and Biorouter's warning.
                     "🔒 This conversation is on a model hosted inside your institution. \
                      It is about to send text to conversation {target}, which is NOT. \
                      Approving sends it now, and stops asking for this pair of \
@@ -627,11 +609,45 @@ impl ToolInspector for WorkspaceCrossingInspector {
                 ))),
                 reason: format!("Private-to-public workspace write into {target}"),
                 confidence: 1.0,
-                inspector_name: self.name().to_string(),
+                inspector_name: "workspace_tier_crossing".to_string(),
                 finding_id: Some(format!("WSXING-{}", Uuid::new_v4().simple())),
             });
         }
         Ok(results)
+    }
+}
+
+#[async_trait]
+impl ToolInspector for WorkspaceCrossingInspector {
+    fn name(&self) -> &'static str {
+        "workspace_tier_crossing"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    async fn inspect(
+        &self,
+        tool_requests: &[ToolRequest],
+        _messages: &[Message],
+        _biorouter_mode: BioRouterMode,
+        session: &Session,
+    ) -> Result<Vec<InspectionResult>> {
+        self.inspect_with_pinned_capability(tool_requests, session, None)
+            .await
+    }
+
+    async fn inspect_with_capability(
+        &self,
+        tool_requests: &[ToolRequest],
+        _messages: &[Message],
+        _biorouter_mode: BioRouterMode,
+        session: &Session,
+        capability: Option<crate::privacy::CallCapability>,
+    ) -> Result<Vec<InspectionResult>> {
+        self.inspect_with_pinned_capability(tool_requests, session, capability)
+            .await
     }
 }
 

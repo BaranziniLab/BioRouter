@@ -91,6 +91,14 @@ use crate::tool_inspection::ToolInspectionManager;
 /// decides only *where the call lands*, never *whether it may*.
 #[async_trait::async_trait]
 pub trait BridgeToolDispatch: Send + Sync {
+    async fn preflight(
+        &self,
+        _session_id: &str,
+        _call: &CallToolRequestParams,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     async fn dispatch(
         &self,
         session_id: &str,
@@ -463,9 +471,10 @@ impl BridgeGrant {
         {
             return Err(format!(
                 "`{name}` is not granted to this coding-agent turn. Only tools returned by \
-                 this bridge's tools/list response may be called."
+                this bridge's tools/list response may be called."
             ));
         }
+        self.dispatcher.preflight(&self.session.id, &call).await?;
         let mut requests = vec![ToolRequest {
             id: request_id,
             tool_call: Ok(call),
@@ -475,11 +484,12 @@ impl BridgeGrant {
 
         let mut inspections = self
             .inspections
-            .inspect_tools(
+            .inspect_tools_with_capability(
                 &requests,
                 self.conversation.messages(),
                 self.mode,
                 &self.session,
+                Some(self.capability),
             )
             .await
             .map_err(|e| format!("could not inspect `{name}`: {e}"))?;
@@ -751,14 +761,26 @@ impl BridgeGrant {
             return Ok(());
         }
 
+        for request in requests.iter() {
+            let call = request
+                .tool_call
+                .as_ref()
+                .map_err(|error| anyhow::anyhow!("rewritten bridged call is invalid: {error}"))?;
+            self.dispatcher
+                .preflight(&self.session.id, call)
+                .await
+                .map_err(anyhow::Error::msg)?;
+        }
+
         let mut revalidated = self
             .inspections
-            .inspect_tools_excluding(
+            .inspect_tools_excluding_with_capability(
                 &[crate::hooks::inspector::HOOK_INSPECTOR_NAME],
                 requests,
                 self.conversation.messages(),
                 self.mode,
                 &self.session,
+                Some(self.capability),
             )
             .await?;
         inspections
@@ -1323,6 +1345,64 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_pretooluse_rewrite_must_pass_dispatch_preflight_before_approval() {
+        let _guard = path_jail_lock().await;
+        let dispatcher = Arc::new(RecordingBridgeDispatch::default());
+        let hooks = hooks_returning(
+            "datasql__data_query",
+            &serde_json::json!({ "updatedInput": { "forbidden": true } }),
+        );
+        let session = session_named(&format!("rewrite-preflight-{}", uuid::Uuid::new_v4()));
+        let session_id = session.id.clone();
+        let grant = BridgeGrant::new(
+            session,
+            BioRouterMode::Approve,
+            Arc::clone(&dispatcher) as Arc<dyn BridgeToolDispatch>,
+            Arc::new(inspections_with(&hooks, false)),
+            test_capability(),
+            granted_fixture_tools(),
+            Conversation::new_unvalidated(vec![]),
+            None,
+            hooks,
+            None,
+            Arc::new(ToolRiskRegistry::new()),
+        );
+
+        let refusal = tokio::time::timeout(
+            Duration::from_secs(1),
+            grant.call(CallToolRequestParams {
+                name: "datasql__data_query".into(),
+                arguments: Some(
+                    query_args("7")
+                        .as_object()
+                        .expect("query arguments are an object")
+                        .clone(),
+                ),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await
+        .expect("rewritten preflight must fail before Approve mode can park for a card")
+        .expect_err("the rewritten arguments must be preflighted");
+
+        assert!(
+            refusal.contains("rewritten bridge call failed preflight"),
+            "the dispatcher preflight refusal must be preserved: {refusal}"
+        );
+        assert!(
+            dispatcher.calls.lock().expect("the calls lock").is_empty(),
+            "a rewritten call that fails preflight must not dispatch"
+        );
+        assert!(
+            crate::action_required_manager::ActionRequiredManager::global()
+                .drain_requests(&session_id)
+                .is_empty(),
+            "an inevitably refused rewritten call must not publish an approval card"
+        );
+    }
+
     /// A rewrite is re-judged, not waved through.
     ///
     /// The security and permission inspectors ran on the arguments the child's
@@ -1687,6 +1767,24 @@ mod tests {
 
     #[async_trait::async_trait]
     impl BridgeToolDispatch for RecordingBridgeDispatch {
+        async fn preflight(
+            &self,
+            _session_id: &str,
+            call: &CallToolRequestParams,
+        ) -> Result<(), String> {
+            if call
+                .arguments
+                .as_ref()
+                .and_then(|arguments| arguments.get("forbidden"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
+                Err("rewritten bridge call failed preflight".into())
+            } else {
+                Ok(())
+            }
+        }
+
         async fn dispatch(
             &self,
             _session_id: &str,
@@ -2308,6 +2406,119 @@ mod tests {
             "the published message must be a tool-confirmation card"
         );
         running.abort();
+    }
+
+    #[tokio::test]
+    async fn workspace_crossing_inspection_uses_the_grants_pinned_private_capability() {
+        let session = session_named(&format!("pinned-crossing-{}", uuid::Uuid::new_v4()));
+        let session_id = session.id.clone();
+        let sessions = crate::session::SessionManager::instance();
+        let target = sessions
+            .create_session(
+                std::env::temp_dir(),
+                format!("public-target-{}", uuid::Uuid::new_v4()),
+                crate::session::SessionType::User,
+            )
+            .await
+            .expect("create a public target");
+        let mutable_provider = Arc::new(tokio::sync::Mutex::new(None));
+        let hooks = no_hooks();
+        let steer_tool = Tool::new(
+            "workspace__workspace_send_prompt",
+            "test workspace write",
+            serde_json::Map::new(),
+        )
+        .annotate(rmcp::model::ToolAnnotations {
+            title: Some("test crossing".into()),
+            read_only_hint: Some(true),
+            destructive_hint: Some(false),
+            idempotent_hint: Some(true),
+            open_world_hint: Some(false),
+        });
+        let risks = Arc::new(ToolRiskRegistry::new());
+        risks.refresh_from_tools(std::slice::from_ref(&steer_tool));
+        let mut inspections = ToolInspectionManager::new();
+        inspections.add_inspector(Box::new(
+            crate::permission::permission_inspector::PermissionInspector::new(
+                Arc::clone(&risks),
+                Arc::new(crate::config::permission::PermissionManager::new(
+                    std::env::temp_dir()
+                        .join(format!("br-crossing-perms-{}", uuid::Uuid::new_v4())),
+                )),
+                Arc::new(crate::managed::ManagedPolicy::empty()),
+                Arc::new(tokio::sync::Mutex::new(None)),
+            ),
+        ));
+        inspections.add_inspector(Box::new(crate::hooks::HookInspector::new(Arc::clone(
+            &hooks,
+        ))));
+        inspections.add_inspector(Box::new(
+            crate::agents::workspace_inspector::WorkspaceCrossingInspector::new(mutable_provider),
+        ));
+        let dispatcher = Arc::new(RecordingBridgeDispatch::default());
+        let grant = Arc::new(BridgeGrant::new(
+            session,
+            BioRouterMode::Auto,
+            Arc::clone(&dispatcher) as Arc<dyn BridgeToolDispatch>,
+            Arc::new(inspections),
+            CallCapability::for_test(crate::privacy::ProviderTier::Private, true),
+            vec![steer_tool],
+            Conversation::new_unvalidated(vec![]),
+            None,
+            hooks,
+            None,
+            risks,
+        ));
+        let running = tokio::spawn({
+            let grant = Arc::clone(&grant);
+            let target_id = target.id.clone();
+            async move {
+                grant
+                    .call(CallToolRequestParams {
+                        name: "workspace__workspace_send_prompt".into(),
+                        arguments: Some(
+                            serde_json::json!({
+                                "session_id": target_id,
+                                "text": "private-origin payload",
+                                "mode": "steer"
+                            })
+                            .as_object()
+                            .expect("an object")
+                            .clone(),
+                        ),
+                        meta: None,
+                        task: None,
+                    })
+                    .await
+            }
+        });
+
+        let card = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let drained = crate::action_required_manager::ActionRequiredManager::global()
+                    .drain_requests(&session_id);
+                if let Some(message) = drained.into_iter().next() {
+                    return message;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the pinned private capability must raise a crossing card");
+        let rendered = format!("{card:?}");
+        assert!(
+            rendered.contains("private-origin payload"),
+            "the first-crossing card must show the exact payload: {rendered}"
+        );
+        assert!(
+            dispatcher.calls.lock().expect("the calls lock").is_empty(),
+            "the crossing must remain parked until the user approves"
+        );
+        running.abort();
+        sessions
+            .delete_session(&target.id)
+            .await
+            .expect("clean up the public target");
     }
 
     /// A denial comes back as an ordinary tool result the model can act on, and

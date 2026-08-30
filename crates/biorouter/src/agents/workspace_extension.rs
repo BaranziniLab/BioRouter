@@ -105,6 +105,8 @@ const INSTRUCTIONS: &str = indoc! {r#"
       new.kind:"sub_agent".
     - workspace_read_conversation: read summary, transcript, tool_calls or
       spawn_context. Other conversations are sensitive; use the narrowest view.
+      A fully returned summary collects any terminal subagent result through a
+      bounded completion receipt.
     - workspace_send_prompt: inject into ANY conversation you can see, related
       or not. turn starts it; steer redirects it mid-turn; note adds context
       without running it. wait:"final_message" returns its answer. Injections
@@ -116,6 +118,8 @@ const INSTRUCTIONS: &str = indoc! {r#"
       agent (agent).
     - workspace_watch: wait until one of several conversations finishes. Use it
       after starting background work; never poll workspace_read_conversation.
+      A shortened completed result is not collected; follow the exact read call
+      in the reply instead of watching that completed result again.
     - workspace_read_panel: read what the preview panel shows now: document,
       figure, file or live web page. Use it when the user says "this" or "the
       page"; text is cheap and you can act on it.
@@ -757,8 +761,10 @@ struct NewSession {
 /// Max sessions one watch call may subscribe to. Each id costs one broadcast
 /// receiver for the duration of the park.
 const WATCH_MAX_SESSIONS: usize = 32;
-const WATCH_RESULT_MAX_CHARS: usize = 12_000;
-const WATCH_RESULTS_TOTAL_MAX_CHARS: usize = 48_000;
+const WATCH_RESULT_MAX_CHARS: usize = 3_000;
+const WATCH_RESULTS_TOTAL_MAX_CHARS: usize = 5_000;
+const WATCH_SESSION_IDS_MAX_CHARS: usize = 1_000;
+const SUMMARY_SECTION_MAX_CHARS: usize = 2_000;
 
 struct CollectionClaim {
     handle: std::sync::Arc<crate::agents::subagent_handle::BackgroundSubagent>,
@@ -785,9 +791,7 @@ fn bounded_watch_reason(reason: String) -> RenderedWatchReason {
         };
     }
     let mut bounded: String = reason.chars().take(WATCH_RESULT_MAX_CHARS).collect();
-    bounded.push_str(
-        "\n… result shortened in this watch; use workspace_read_conversation for the full text",
-    );
+    bounded.push_str("\n… result shortened in this watch and remains uncollected");
     RenderedWatchReason {
         text: bounded,
         complete: false,
@@ -802,6 +806,32 @@ fn background_watch_reason(
         result.status.as_str(),
         result.to_agent_text()
     ))
+}
+
+fn bounded_session_id_list(ids: &[&String]) -> String {
+    const NOTICE_RESERVE: usize = 32;
+    let mut rendered = String::new();
+    let mut included = 0usize;
+    for id in ids {
+        let separator_chars = if included > 0 { 2 } else { 0 };
+        let next_chars = separator_chars + id.chars().count();
+        if rendered.chars().count() + next_chars + NOTICE_RESERVE > WATCH_SESSION_IDS_MAX_CHARS {
+            break;
+        }
+        if included > 0 {
+            rendered.push_str(", ");
+        }
+        rendered.push_str(id);
+        included += 1;
+    }
+    let omitted = ids.len().saturating_sub(included);
+    if omitted > 0 {
+        if !rendered.is_empty() {
+            rendered.push_str(", ");
+        }
+        rendered.push_str(&format!("… {omitted} more"));
+    }
+    rendered
 }
 
 /// Whether a session is running, idle, or not knowable from here.
@@ -876,6 +906,29 @@ struct ConversationProjection {
     collection: Option<CollectionClaim>,
 }
 
+fn compact_summary_section(text: String, label: &str) -> String {
+    if text.chars().count() <= SUMMARY_SECTION_MAX_CHARS {
+        return text;
+    }
+    let notice = format!(
+        "\n… [{label} shortened in this summary view; the complete conversation remains \
+         available through view:\"transcript\"] …\n"
+    );
+    let available = SUMMARY_SECTION_MAX_CHARS.saturating_sub(notice.chars().count());
+    let head_chars = available / 2;
+    let tail_chars = available - head_chars;
+    let head: String = text.chars().take(head_chars).collect();
+    let tail: String = text
+        .chars()
+        .rev()
+        .take(tail_chars)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{head}{notice}{tail}")
+}
+
 fn read_conversation_body(
     caller_session_id: &str,
     args: &WorkspaceReadParams,
@@ -893,10 +946,11 @@ fn read_conversation_body(
         None => 0,
     };
     let ranged = &messages[from_start..];
-    let tail = match args.last {
-        Some(n) if n < ranged.len() => &ranged[ranged.len() - n..],
-        _ => ranged,
+    let tail_start = match args.last {
+        Some(n) if n < ranged.len() => messages.len() - n,
+        _ => from_start,
     };
+    let tail = &messages[tail_start..];
 
     let projected = match view {
         "tool_calls" => ConversationProjection {
@@ -925,7 +979,10 @@ fn read_conversation_summary(
     session: &crate::session::session_manager::Session,
     messages: &[crate::conversation::message::Message],
 ) -> ConversationProjection {
-    let mut summary = project_summary(session, messages);
+    let mut summary = compact_summary_section(
+        project_summary(session, messages),
+        "conversation projection",
+    );
     let Some(handle) = background_subagent_for(caller_session_id, target_session_id) else {
         return ConversationProjection {
             body: summary,
@@ -934,7 +991,10 @@ fn read_conversation_summary(
     };
     if let Some((result, collection)) = current_background_result(&handle) {
         summary.push_str("\n\n--- Background result ---\n");
-        summary.push_str(&result.to_agent_text());
+        summary.push_str(&compact_summary_section(
+            result.to_agent_text(),
+            "background completion receipt",
+        ));
         return ConversationProjection {
             body: summary,
             collection: Some(collection),
@@ -1005,7 +1065,15 @@ impl WatchedCompletion {
         result: &crate::agents::subagent_result::SubagentResult,
         collection: CollectionClaim,
     ) -> Self {
-        let reason = background_watch_reason(result);
+        let mut reason = background_watch_reason(result);
+        if !reason.complete {
+            reason.text.push_str(&format!(
+                "\nDo not watch this completed result again. Collect its final answer with \
+                 workspace_read_conversation {{\"session_id\":\"{id}\",\"view\":\"summary\",\
+                 \"max_chars\":20000}}. This returns a bounded completion receipt for every \
+                 terminal status and records collection only if that receipt is delivered."
+            ));
+        }
         Self {
             id,
             reason: reason.text,
@@ -1406,7 +1474,9 @@ impl WorkspaceClient {
                 "workspace_read_conversation",
                 "Structured read of any conversation. view: transcript (prose), \
                  tool_calls (exactly what its agent did), summary (head/tail), \
-                 spawn_context (how a subagent was started). Refuses hidden sessions.",
+                 spawn_context (how a subagent was started). A fully returned \
+                 summary collects any terminal subagent result through a bounded \
+                 completion receipt. Refuses hidden sessions.",
                 serde_json::to_value(schema_for!(WorkspaceReadParams)).unwrap(),
                 true,
             ),
@@ -1450,6 +1520,9 @@ impl WorkspaceClient {
                  background subagents or injecting turns instead of polling. A \
                  timeout is NEVER an error: the reply lists whatever finished and \
                  whatever is still running, so call it again to keep waiting. The \
+                 reply explicitly says when a completed result was shortened and \
+                 remains uncollected; follow its exact workspace_read_conversation \
+                 call instead of watching that completed result again. The \
                  wait may be shortened to fit the transport carrying this turn — \
                  when it is, the reply says the effective wait and the one you \
                  asked for.",
@@ -1952,7 +2025,12 @@ impl WorkspaceClient {
         );
         if body_fully_returned {
             if let Some(collection) = projection.collection {
-                if crate::agents::large_response_handler::text_will_remain_inline(&rendered).await {
+                if crate::agents::large_response_handler::text_will_remain_inline_for_tool(
+                    &rendered,
+                    "workspace__workspace_read_conversation",
+                )
+                .await
+                {
                     collection.commit();
                 }
             }
@@ -3864,7 +3942,11 @@ impl WorkspaceClient {
         );
         if !report.collections.is_empty() {
             let remains_inline =
-                crate::agents::large_response_handler::text_will_remain_inline(&report.text).await;
+                crate::agents::large_response_handler::text_will_remain_inline_for_tool(
+                    &report.text,
+                    "workspace__workspace_watch",
+                )
+                .await;
             report.commit_collections_if_inline(remains_inline);
         }
         Ok(vec![Content::text(report.text)])
@@ -3957,11 +4039,7 @@ impl WorkspaceClient {
                 "No conversation finished within {}s. Still running: {}. \
                  They keep running; watch again or read them later.\n",
                 timeout.as_secs(),
-                still_running
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                bounded_session_id_list(still_running)
             ));
             if unknown_liveness > 0 {
                 // Honest about the headless case rather than implying we
@@ -3996,11 +4074,7 @@ impl WorkspaceClient {
             if !still_running.is_empty() {
                 report.push_str(&format!(
                     "Still running: {}\n",
-                    still_running
-                        .iter()
-                        .map(|s| s.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    bounded_session_id_list(still_running)
                 ));
             }
             report.push_str(
@@ -10813,6 +10887,198 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_shortened_summary_false_result_collects_from_a_bounded_summary_receipt() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        use crate::agents::subagent_result::SubagentResult;
+        use crate::conversation::message::{Message, MessageProvenance, ProvenanceKind};
+
+        let c = client();
+        let child = seeded_target(&c, "shortened-transcript-collection").await;
+        let handle = BackgroundSubagent::register(
+            "caller",
+            &child,
+            "large summary:false result",
+            CancellationToken::new(),
+        );
+        let mut injection = Message::user()
+            .with_text("Verify Soul ingestion too")
+            .with_provenance(MessageProvenance {
+                kind: ProvenanceKind::AgentInjection,
+                from_session_id: Some("caller".into()),
+                from_session_name: Some("parent".into()),
+            });
+        let mut large_tool_result = Message::user().with_tool_response(
+            "large-tool-result",
+            Ok(rmcp::model::CallToolResult::success(vec![Content::text(
+                "x".repeat(WATCH_RESULT_MAX_CHARS + 10_000),
+            )])),
+        );
+        let mut final_answer = Message::assistant()
+            .with_text("FINAL CHILD ANSWER: Soul and both OKF skills verified.");
+        for message in [&mut injection, &mut large_tool_result, &mut final_answer] {
+            c.context
+                .session_manager
+                .add_message_adopting_uid(&child, message)
+                .await
+                .expect("persist the child transcript");
+        }
+        let conversation = crate::conversation::Conversation::new_unvalidated([
+            injection,
+            large_tool_result,
+            final_answer,
+        ]);
+        handle.complete(SubagentResult::from_conversation(
+            &conversation,
+            None,
+            false,
+        ));
+
+        let watch_args = || {
+            serde_json::from_value::<rmcp::model::JsonObject>(serde_json::json!({
+                "session_ids": [child.as_str()],
+                "timeout_s": 1
+            }))
+            .expect("watch arguments")
+        };
+        let shortened = c
+            .call_tool(
+                "workspace_watch",
+                Some(watch_args()),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("watch the completed child");
+        let shortened = text_of(&shortened);
+        assert!(shortened.contains("remains uncollected"), "{shortened}");
+        assert!(
+            shortened.contains(&format!(
+                "workspace_read_conversation {{\"session_id\":\"{child}\",\"view\":\"summary\",\"max_chars\":20000}}"
+            )),
+            "the shortened result must provide one exact recovery call: {shortened}"
+        );
+        assert!(!handle.latest_generation_collected());
+
+        let summary_receipt = c
+            .call_tool(
+                "workspace_read_conversation",
+                Some(
+                    serde_json::from_value(serde_json::json!({
+                        "session_id": child.as_str(),
+                        "view": "summary",
+                        "max_chars": 20_000
+                    }))
+                    .expect("summary arguments"),
+                ),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("read the bounded summary receipt");
+        assert!(
+            text_of(&summary_receipt).contains("FINAL CHILD ANSWER"),
+            "the receipt must retain the completed result's useful tail"
+        );
+        assert!(!text_of(&summary_receipt).contains("clipped at 20000 chars"));
+        assert!(
+            handle.latest_generation_collected(),
+            "a fully returned bounded summary receipt must release supervision"
+        );
+
+        let settled = c
+            .call_tool(
+                "workspace_watch",
+                Some(watch_args()),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("watch the settled child");
+        let settled = text_of(&settled);
+        assert!(settled.contains("already idle"), "{settled}");
+        assert!(!settled.contains("FINAL CHILD ANSWER"), "{settled}");
+    }
+
+    #[tokio::test]
+    async fn bounded_summary_receipts_collect_every_shortened_terminal_status() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        use crate::agents::subagent_result::{SubagentResult, SubagentStatus};
+
+        for status in [
+            SubagentStatus::Completed,
+            SubagentStatus::Blocked,
+            SubagentStatus::Incomplete,
+            SubagentStatus::Error,
+        ] {
+            let c = client();
+            let child = seeded_target(&c, &format!("large-terminal-{status:?}")).await;
+            let handle = BackgroundSubagent::register(
+                "caller",
+                &child,
+                "large terminal envelope",
+                CancellationToken::new(),
+            );
+            handle.complete(SubagentResult {
+                status,
+                summary: format!("{status:?} head\n{}\n{status:?} tail", "z".repeat(30_000)),
+                error: (status == SubagentStatus::Error).then(|| "synthetic failure".into()),
+                question: (status == SubagentStatus::Blocked)
+                    .then(|| "Which source should I use?".into()),
+                artifacts: Vec::new(),
+                tokens: None,
+                human_intervened: false,
+            });
+
+            let watched = c
+                .call_tool(
+                    "workspace_watch",
+                    Some(
+                        serde_json::from_value(serde_json::json!({
+                            "session_ids": [child.as_str()],
+                            "timeout_s": 1
+                        }))
+                        .expect("watch arguments"),
+                    ),
+                    test_meta(),
+                    CancellationToken::new(),
+                )
+                .await
+                .expect("watch the terminal child");
+            assert!(text_of(&watched).contains("remains uncollected"));
+            assert!(!handle.latest_generation_collected());
+
+            let receipt = c
+                .call_tool(
+                    "workspace_read_conversation",
+                    Some(
+                        serde_json::from_value(serde_json::json!({
+                            "session_id": child.as_str(),
+                            "view": "summary",
+                            "max_chars": 20_000
+                        }))
+                        .expect("summary arguments"),
+                    ),
+                    test_meta(),
+                    CancellationToken::new(),
+                )
+                .await
+                .expect("read the terminal receipt");
+            let receipt = text_of(&receipt);
+            assert!(receipt.contains(&format!("{status:?} head")), "{receipt}");
+            assert!(receipt.contains(&format!("{status:?} tail")), "{receipt}");
+            assert!(
+                receipt.contains("completion receipt shortened"),
+                "{receipt}"
+            );
+            assert!(!receipt.contains("clipped at 20000 chars"), "{receipt}");
+            assert!(
+                handle.latest_generation_collected(),
+                "{status:?} must be collectable without replaying its full envelope"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn read_never_collects_an_idle_but_stale_background_generation() {
         use crate::agents::subagent_handle::{self, BackgroundSubagent};
         use crate::agents::subagent_result::SubagentResult;
@@ -10893,6 +11159,9 @@ pub(crate) mod tests {
         );
 
         assert!(report.text.contains("result shortened in this watch"));
+        assert!(report.text.contains("remains uncollected"));
+        assert!(report.text.contains("view\":\"summary"));
+        assert!(report.text.contains("max_chars\":20000"));
         report.commit_collections();
         assert!(
             !handle.latest_generation_collected(),
@@ -10915,7 +11184,7 @@ pub(crate) mod tests {
                 "aggregate result",
                 CancellationToken::new(),
             );
-            handle.complete(SubagentResult::from_error("y".repeat(11_000)));
+            handle.complete(SubagentResult::from_error("y".repeat(2_000)));
             let (result, claim) = current_background_result(&handle).expect("current result claim");
             completed.push(WatchedCompletion::background(child, &result, claim));
             handles.push(handle);
@@ -10944,6 +11213,54 @@ pub(crate) mod tests {
                 "collection must exactly match aggregate rendering"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn worst_case_bounded_watch_report_stays_inline_for_protocol_delivery() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        use crate::agents::subagent_result::SubagentResult;
+
+        let mut completed = Vec::new();
+        for index in 0..2 {
+            let child = unique_id(&format!("watch-inline-{index}"));
+            let handle = BackgroundSubagent::register(
+                "watch-inline-parent",
+                &child,
+                "bounded result",
+                CancellationToken::new(),
+            );
+            handle.complete(SubagentResult::from_error("z".repeat(2_400)));
+            let (result, claim) = current_background_result(&handle).expect("current result claim");
+            completed.push(WatchedCompletion::background(child, &result, claim));
+        }
+        let still_running: Vec<String> = (0..30)
+            .map(|index| format!("{index:02}{}", "s".repeat(126)))
+            .collect();
+        let still_running_refs: Vec<&String> = still_running.iter().collect();
+        let report = WorkspaceClient::watch_report(
+            &completed,
+            &still_running_refs,
+            std::time::Duration::from_secs(1),
+            Some(std::time::Duration::from_secs(600)),
+            0,
+            true,
+        );
+
+        assert!(report.text.contains("… 23 more"));
+        assert!(report.text.contains("watch was cancelled"));
+        assert!(report.text.contains("of the 600s requested"));
+        assert!(
+            report.text.chars().count() <= 8_192,
+            "protocol report exceeded its guaranteed inline floor"
+        );
+        assert!(
+            crate::agents::large_response_handler::text_will_remain_inline_for_tool(
+                &report.text,
+                "workspace__workspace_watch",
+            )
+            .await,
+            "bounded protocol report must not be externalized"
+        );
     }
 
     #[test]

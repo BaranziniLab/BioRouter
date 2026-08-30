@@ -6,6 +6,7 @@ use crate::config::BioRouterMode;
 use crate::conversation::message::{Message, ToolRequest};
 use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
+use crate::privacy::CallCapability;
 use crate::session::Session;
 
 /// Result of inspecting a tool call
@@ -49,6 +50,21 @@ pub trait ToolInspector: Send + Sync {
         session: &Session,
     ) -> Result<Vec<InspectionResult>>;
 
+    async fn inspect_with_capability(
+        &self,
+        tool_requests: &[ToolRequest],
+        messages: &[Message],
+        biorouter_mode: BioRouterMode,
+        session: &Session,
+        _capability: Option<CallCapability>,
+    ) -> Result<Vec<InspectionResult>> {
+        // Most inspectors do not depend on provider privacy. The workspace
+        // crossing inspector overrides this so bridge calls can retain the
+        // capability pinned when their grant was issued.
+        self.inspect(tool_requests, messages, biorouter_mode, session)
+            .await
+    }
+
     /// Whether this inspector is enabled
     fn is_enabled(&self) -> bool {
         true
@@ -84,8 +100,27 @@ impl ToolInspectionManager {
         biorouter_mode: BioRouterMode,
         session: &Session,
     ) -> Result<Vec<InspectionResult>> {
-        self.inspect_tools_excluding(&[], tool_requests, messages, biorouter_mode, session)
+        self.inspect_tools_with_capability(tool_requests, messages, biorouter_mode, session, None)
             .await
+    }
+
+    pub async fn inspect_tools_with_capability(
+        &self,
+        tool_requests: &[ToolRequest],
+        messages: &[Message],
+        biorouter_mode: BioRouterMode,
+        session: &Session,
+        capability: Option<CallCapability>,
+    ) -> Result<Vec<InspectionResult>> {
+        self.inspect_tools_excluding_with_capability(
+            &[],
+            tool_requests,
+            messages,
+            biorouter_mode,
+            session,
+            capability,
+        )
+        .await
     }
 
     /// Run every inspector *except* the named ones.
@@ -104,6 +139,26 @@ impl ToolInspectionManager {
         biorouter_mode: BioRouterMode,
         session: &Session,
     ) -> Result<Vec<InspectionResult>> {
+        self.inspect_tools_excluding_with_capability(
+            excluded,
+            tool_requests,
+            messages,
+            biorouter_mode,
+            session,
+            None,
+        )
+        .await
+    }
+
+    pub async fn inspect_tools_excluding_with_capability(
+        &self,
+        excluded: &[&str],
+        tool_requests: &[ToolRequest],
+        messages: &[Message],
+        biorouter_mode: BioRouterMode,
+        session: &Session,
+        capability: Option<CallCapability>,
+    ) -> Result<Vec<InspectionResult>> {
         let mut all_results = Vec::new();
 
         for inspector in &self.inspectors {
@@ -118,7 +173,13 @@ impl ToolInspectionManager {
             );
 
             match inspector
-                .inspect(tool_requests, messages, biorouter_mode, session)
+                .inspect_with_capability(
+                    tool_requests,
+                    messages,
+                    biorouter_mode,
+                    session,
+                    capability,
+                )
                 .await
             {
                 Ok(results) => {
