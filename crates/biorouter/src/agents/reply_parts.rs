@@ -217,6 +217,24 @@ impl Agent {
         session_id: &str,
         working_dir: &std::path::Path,
     ) -> Result<(Vec<Tool>, Vec<Tool>, String)> {
+        let provider = self.provider().await?;
+        let (tools, toolshim_tools, system_prompt, _bridge_plan) = self
+            .prepare_tools_and_prompt_for_provider(session_id, working_dir, &provider)
+            .await?;
+        Ok((tools, toolshim_tools, system_prompt))
+    }
+
+    pub(super) async fn prepare_tools_and_prompt_for_provider(
+        &self,
+        session_id: &str,
+        working_dir: &std::path::Path,
+        provider: &Arc<dyn Provider>,
+    ) -> Result<(
+        Vec<Tool>,
+        Vec<Tool>,
+        String,
+        Option<crate::agents::agent::CodingAgentBridgePlan>,
+    )> {
         // Get tools from extension manager
         let mut tools = self.list_tools(session_id, None).await;
 
@@ -232,9 +250,24 @@ impl Agent {
             .is_extension_enabled(CODE_EXECUTION_EXTENSION)
             .await;
         let effective_tools = tools.clone();
-        let code_execution_active =
-            code_execution_mode_is_active(code_execution_loaded, &effective_tools);
-        if code_execution_active {
+        let bridge_plan = self
+            .prepare_coding_agent_bridge_plan(provider, &effective_tools)
+            .await;
+        let bridge_replaces_tool_surface = provider.uses_tool_bridge_for_tool_surface();
+        let active_bridge_plan = if bridge_replaces_tool_surface {
+            Some(
+                bridge_plan
+                    .as_ref()
+                    .expect("a bridge-backed provider always has a bridge plan"),
+            )
+        } else {
+            None
+        };
+        let code_execution_active = !bridge_replaces_tool_surface
+            && code_execution_mode_is_active(code_execution_loaded, &effective_tools);
+        if let Some(plan) = active_bridge_plan {
+            tools.clone_from(&plan.tools);
+        } else if code_execution_active {
             let code_exec_prefix = format!("{CODE_EXECUTION_EXTENSION}__");
             tools.retain(|tool| survives_code_execution_filter(&tool.name, &code_exec_prefix));
         }
@@ -253,8 +286,10 @@ impl Agent {
 
         // Prepare system prompt
         let mut extensions_info = self.extension_manager.get_extensions_info().await;
-        add_core_platform_capability(&mut extensions_info, &effective_tools);
-        attach_effective_tool_rosters(&mut extensions_info, &effective_tools, &tools);
+        let prompt_tools = active_bridge_plan
+            .map_or_else(|| effective_tools.as_slice(), |plan| plan.tools.as_slice());
+        add_core_platform_capability(&mut extensions_info, prompt_tools);
+        attach_effective_tool_rosters(&mut extensions_info, prompt_tools, &tools);
         if extensions_info.iter().any(|info| {
             info.classification == crate::agents::extension::ExtensionClassification::Capability
                 && info.name.eq_ignore_ascii_case("skills")
@@ -268,8 +303,6 @@ impl Agent {
             attach_skill_inventory(&mut extensions_info, &inventory);
         }
 
-        // Get model name from provider
-        let provider = self.provider().await?;
         let model_config = provider.get_model_config();
 
         // BR-3: pick the system-prompt variant for this provider/model so small
@@ -280,13 +313,17 @@ impl Agent {
         );
 
         let prompt_manager = self.prompt_manager.lock().await;
+        let enable_subagents = match active_bridge_plan {
+            Some(plan) => plan.delegation_available,
+            None => self.subagents_enabled(session_id).await,
+        };
         let mut system_prompt = prompt_manager
             .builder()
             .with_extensions(extensions_info.into_iter())
             .with_frontend_instructions(self.frontend_instructions.lock().await.clone())
             .with_code_execution_mode(code_execution_active)
             .with_hints(working_dir)
-            .with_enable_subagents(self.subagents_enabled(session_id).await)
+            .with_enable_subagents(enable_subagents)
             .with_prompt_variant(prompt_variant)
             .build();
 
@@ -315,7 +352,7 @@ impl Agent {
             tools = vec![];
         }
 
-        Ok((tools, toolshim_tools, system_prompt))
+        Ok((tools, toolshim_tools, system_prompt, bridge_plan))
     }
 
     /// Stream a response from the LLM provider.

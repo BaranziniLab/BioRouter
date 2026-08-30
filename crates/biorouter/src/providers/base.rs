@@ -825,6 +825,15 @@ pub trait Provider: Send + Sync {
         crate::providers::coding_agent::bridge::provider_uses_bridge(self.get_name())
     }
 
+    /// Whether the provider selected for this completion must have its ordinary
+    /// request-tool surface replaced by the coding-agent bridge roster.
+    /// Composite providers may still return `true` from [`Self::uses_tool_bridge`]
+    /// so a lease exists for another component while returning `false` here for
+    /// the currently active ordinary component.
+    fn uses_tool_bridge_for_tool_surface(&self) -> bool {
+        self.uses_tool_bridge()
+    }
+
     // Internal implementation of complete, used by complete_fast and complete
     // Providers should override this to implement their actual completion logic
     async fn complete_with_model(

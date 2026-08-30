@@ -689,6 +689,7 @@ pub struct ReplyContext {
     pub toolshim_tools: Vec<Tool>,
     pub system_prompt: String,
     pub biorouter_mode: BioRouterMode,
+    bridge_plan: Option<CodingAgentBridgePlan>,
     /// The transcript as it stood before the turn started — the snapshot the retry
     /// path restores from. A `Conversation` (not a `Vec<Message>`) so taking it is
     /// a refcount bump rather than a deep copy of the history (BR-56).
@@ -823,11 +824,42 @@ struct BridgedSubagentContext {
     working_dir: std::path::PathBuf,
 }
 
-struct EnabledCodingAgentBridgeTargets {
-    workspace: Option<BundledExtensionTarget>,
-    knowledge: Option<BundledExtensionTarget>,
-    skills: Option<BundledExtensionTarget>,
-    extension_manager: Option<BundledExtensionTarget>,
+#[derive(Clone)]
+struct CodingAgentBridgeTarget {
+    capability_name: &'static str,
+    target: BundledExtensionTarget,
+    tools: &'static [&'static str],
+}
+
+#[derive(Clone)]
+pub(super) struct CodingAgentBridgePlan {
+    capability: crate::privacy::CallCapability,
+    pub(super) tools: Vec<Tool>,
+    targets: Vec<CodingAgentBridgeTarget>,
+    pub(super) delegation_available: bool,
+}
+
+impl CodingAgentBridgePlan {
+    fn target_for_tool(&self, tool_name: &str) -> Option<&CodingAgentBridgeTarget> {
+        self.targets.iter().find(|target| {
+            target.tools.contains(&tool_name)
+                || (target.target.key() == "knowledge"
+                    && CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&tool_name))
+        })
+    }
+
+    #[cfg(test)]
+    fn target_named(&self, name: &str) -> Option<&CodingAgentBridgeTarget> {
+        self.targets
+            .iter()
+            .find(|target| target.target.key() == name)
+    }
+}
+
+struct CodingAgentBridgePolicy {
+    capability_name: &'static str,
+    target_name: &'static str,
+    tools: &'static [&'static str],
 }
 
 // Subscription-backed CLIs need a host-readable credential file. A generic or
@@ -842,6 +874,81 @@ const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__workspace_close",
     "workspace__workspace_watch",
 ];
+
+const CODING_AGENT_BRIDGE_ALLOWED_DEVELOPER_TOOLS: &[&str] = &["developer__text_editor"];
+
+const CODING_AGENT_BRIDGE_ALLOWED_AGENT_DRAFTER_TOOLS: &[&str] = &[
+    "agent_drafter__build_app",
+    "agent_drafter__configure_app",
+    "agent_drafter__create_app",
+    "agent_drafter__declare_profiles",
+    "agent_drafter__declare_surface",
+    "agent_drafter__delete_app",
+    "agent_drafter__export_app",
+    "agent_drafter__launch_app",
+    "agent_drafter__lint_app",
+    "agent_drafter__list_apps",
+    "agent_drafter__list_platform_catalog",
+    "agent_drafter__preview_app",
+    "agent_drafter__read_app",
+    "agent_drafter__set_app_size",
+    "agent_drafter__set_routes",
+    "agent_drafter__set_theme",
+    "agent_drafter__smoke_app",
+    "agent_drafter__update_app",
+];
+
+const CODING_AGENT_BRIDGE_ALLOWED_AUTOVISUALISER_TOOLS: &[&str] = &[
+    "autovisualiser__render_area",
+    "autovisualiser__render_boxplot",
+    "autovisualiser__render_bubble",
+    "autovisualiser__render_calendar_heatmap",
+    "autovisualiser__render_chord",
+    "autovisualiser__render_choropleth",
+    "autovisualiser__render_class_diagram",
+    "autovisualiser__render_dashboard",
+    "autovisualiser__render_dendrogram",
+    "autovisualiser__render_donut",
+    "autovisualiser__render_er_diagram",
+    "autovisualiser__render_flowchart",
+    "autovisualiser__render_forest",
+    "autovisualiser__render_gantt",
+    "autovisualiser__render_gauge",
+    "autovisualiser__render_heatmap",
+    "autovisualiser__render_histogram",
+    "autovisualiser__render_kaplan_meier",
+    "autovisualiser__render_manhattan",
+    "autovisualiser__render_map",
+    "autovisualiser__render_mermaid",
+    "autovisualiser__render_mindmap",
+    "autovisualiser__render_network",
+    "autovisualiser__render_radar",
+    "autovisualiser__render_sankey",
+    "autovisualiser__render_sequence",
+    "autovisualiser__render_state_diagram",
+    "autovisualiser__render_sunburst",
+    "autovisualiser__render_timeline",
+    "autovisualiser__render_treemap",
+    "autovisualiser__render_volcano",
+    "autovisualiser__render_wordcloud",
+    "autovisualiser__show_chart",
+];
+
+const CODING_AGENT_BRIDGE_ALLOWED_MEMORY_TOOLS: &[&str] = &[
+    "memory__remember_memory",
+    "memory__remove_memory_category",
+    "memory__remove_specific_memory",
+    "memory__retrieve_memories",
+];
+
+const CODING_AGENT_BRIDGE_ALLOWED_TODO_TOOLS: &[&str] = &[
+    "todo__plan_write",
+    "todo__todo_add",
+    "todo__todo_update",
+    "todo__todo_write",
+];
+
+const CODING_AGENT_BRIDGE_ALLOWED_CHAT_RECALL_TOOLS: &[&str] = &["chatrecall__chatrecall"];
 
 const CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS: &[&str] = &[
     "workspace__workspace_watch",
@@ -889,6 +996,59 @@ const CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS: &[&str] = &[
     "extensionmanager__delete_extension_package",
 ];
 
+const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
+    CodingAgentBridgePolicy {
+        capability_name: "Developer",
+        target_name: "developer",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_DEVELOPER_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "Agent Drafter",
+        target_name: "agent_drafter",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_AGENT_DRAFTER_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "Auto Visualiser",
+        target_name: "autovisualiser",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_AUTOVISUALISER_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "Memory",
+        target_name: "memory",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_MEMORY_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "To Do",
+        target_name: "todo",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_TODO_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "Chat Recall",
+        target_name: "chatrecall",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_CHAT_RECALL_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "Knowledge",
+        target_name: "knowledge",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "Skills",
+        target_name: "skills",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_SKILLS_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "Extension Manager",
+        target_name: "extensionmanager",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "Workspace Control",
+        target_name: "workspace",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS,
+    },
+];
+
 pub(crate) fn coding_agent_bridge_allows_tool(
     tool_name: &str,
     trusted_workspace: bool,
@@ -904,11 +1064,88 @@ pub(crate) fn coding_agent_bridge_allows_tool(
             && CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS.contains(&tool_name))
 }
 
+fn coding_agent_bridge_policy_allows_tool(tool_name: &str) -> bool {
+    CODING_AGENT_BRIDGE_POLICIES
+        .iter()
+        .any(|policy| policy.tools.contains(&tool_name))
+        || CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&tool_name)
+}
+
+fn enforce_bridged_text_editor_path(
+    working_dir: &std::path::Path,
+    call: &CallToolRequestParams,
+) -> std::result::Result<(), String> {
+    if call.name.as_ref() != "developer__text_editor" {
+        return Ok(());
+    }
+    let arguments = call
+        .arguments
+        .as_ref()
+        .ok_or_else(|| "Developer text_editor requires a path".to_string())?;
+    let requested = arguments
+        .get("path")
+        .or_else(|| arguments.get("file_path"))
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "Developer text_editor requires a string path".to_string())?;
+    let requested = std::path::Path::new(requested);
+    if requested
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(
+            "Developer text_editor cannot traverse outside the session working directory"
+                .to_string(),
+        );
+    }
+
+    let canonical_base = working_dir
+        .canonicalize()
+        .map_err(|error| format!("Could not validate the session working directory: {error}"))?;
+    let relative = if requested.is_absolute() {
+        requested
+            .strip_prefix(working_dir)
+            .or_else(|_| requested.strip_prefix(&canonical_base))
+            .map_err(|_| {
+                "Developer text_editor path is outside the session working directory".to_string()
+            })?
+    } else {
+        requested
+    };
+
+    let mut current = canonical_base;
+    for component in relative.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err(
+                "Developer text_editor path is outside the session working directory".to_string(),
+            );
+        };
+        current.push(component);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "Developer text_editor cannot follow symlink '{}'",
+                    current.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(format!(
+                    "Could not validate Developer text_editor path '{}': {error}",
+                    current.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 struct BridgedChildExtensionGrant<'a> {
     trusted: bool,
     target: Option<&'a crate::agents::extension_manager::BundledExtensionTarget>,
     prefix: &'static str,
-    tools: &'static [&'static str],
+    tools: Vec<String>,
 }
 
 fn coding_agent_bridge_child_extensions(
@@ -928,6 +1165,7 @@ fn coding_agent_bridge_child_extensions(
                 .tools
                 .iter()
                 .filter_map(|name| name.strip_prefix(grant.prefix))
+                .filter(|name| extension.is_tool_available(name))
                 .map(str::to_string)
                 .collect::<Vec<_>>();
             match &mut extension {
@@ -1160,50 +1398,53 @@ struct ChatBridgeDispatch {
     session_manager: Arc<SessionManager>,
     ingest_provider: Arc<dyn Provider>,
     subagent: Option<BridgedSubagentContext>,
-    workspace_target: Option<crate::agents::extension_manager::BundledExtensionTarget>,
-    knowledge_target: Option<crate::agents::extension_manager::BundledExtensionTarget>,
-    skills_target: Option<crate::agents::extension_manager::BundledExtensionTarget>,
-    extension_manager_target: Option<crate::agents::extension_manager::BundledExtensionTarget>,
+    working_dir: std::path::PathBuf,
+    plan: CodingAgentBridgePlan,
 }
 
 impl ChatBridgeDispatch {
-    async fn require_enabled_target(
-        &self,
-        target: Option<&BundledExtensionTarget>,
-        capability_name: &str,
-    ) -> std::result::Result<(), String> {
-        let target =
-            target.ok_or_else(|| format!("The {capability_name} capability is not available"))?;
-        if self.extensions.is_bundled_target_enabled(target).await {
-            Ok(())
-        } else {
-            Err(format!(
-                "The {capability_name} capability is no longer enabled"
-            ))
-        }
-    }
-
     async fn enforce_tool_access(
         &self,
         session_id: &str,
         call: &CallToolRequestParams,
     ) -> std::result::Result<(), String> {
         let name = call.name.as_ref();
-        if CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&name) {
-            self.require_enabled_target(self.workspace_target.as_ref(), "Workspace Control")
-                .await?;
-            self.enforce_child_supervision_scope(session_id, call).await
-        } else if CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS.contains(&name)
-            || CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&name)
+        let grant = self
+            .plan
+            .target_for_tool(name)
+            .ok_or_else(|| format!("Tool '{name}' is not in this turn's coding-agent bridge"))?;
+        if !self
+            .extensions
+            .is_bundled_target_enabled(&grant.target)
+            .await
         {
-            self.require_enabled_target(self.knowledge_target.as_ref(), "Knowledge")
+            return Err(format!(
+                "The {} capability is no longer enabled",
+                grant.capability_name
+            ));
+        }
+        if !CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&name) {
+            let prefix = format!("{}__", grant.target.key());
+            let tool_name = name.strip_prefix(&prefix).ok_or_else(|| {
+                format!(
+                    "Tool '{name}' no longer belongs to the {} capability",
+                    grant.capability_name
+                )
+            })?;
+            if !self
+                .extensions
+                .is_bundled_target_tool_available(&grant.target, tool_name)
                 .await
-        } else if CODING_AGENT_BRIDGE_ALLOWED_SKILLS_TOOLS.contains(&name) {
-            self.require_enabled_target(self.skills_target.as_ref(), "Skills")
-                .await
-        } else if CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS.contains(&name) {
-            self.require_enabled_target(self.extension_manager_target.as_ref(), "Extension Manager")
-                .await
+            {
+                return Err(format!(
+                    "Tool '{name}' is not available from the {} capability any longer",
+                    grant.capability_name
+                ));
+            }
+        }
+        enforce_bridged_text_editor_path(&self.working_dir, call)?;
+        if CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&name) {
+            self.enforce_child_supervision_scope(session_id, call).await
         } else {
             Ok(())
         }
@@ -1447,6 +1688,7 @@ impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
         session_id: &str,
         call: &CallToolRequestParams,
     ) -> std::result::Result<(), String> {
+        self.enforce_tool_access(session_id, call).await?;
         if CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&call.name.as_ref()) {
             self.preflight_child_supervision(session_id, call).await
         } else {
@@ -4351,6 +4593,7 @@ impl Agent {
         session_id: &str,
         unfixed_conversation: Conversation,
         working_dir: &std::path::Path,
+        provider: &Arc<dyn Provider>,
     ) -> Result<ReplyContext> {
         // BR-56: the pre-fix copy exists only to render the debug diff, so only pay
         // for it when that log line will actually be emitted. The `Conversation`
@@ -4384,8 +4627,8 @@ impl Agent {
             );
         }
 
-        let (tools, toolshim_tools, system_prompt) = self
-            .prepare_tools_and_prompt(session_id, working_dir)
+        let (tools, toolshim_tools, system_prompt, bridge_plan) = self
+            .prepare_tools_and_prompt_for_provider(session_id, working_dir, provider)
             .await?;
 
         Ok(ReplyContext {
@@ -4394,6 +4637,7 @@ impl Agent {
             toolshim_tools,
             system_prompt,
             biorouter_mode: self.config.biorouter_mode,
+            bridge_plan,
             initial_messages,
         })
     }
@@ -5900,60 +6144,82 @@ impl Agent {
         }
     }
 
-    async fn enabled_coding_agent_bridge_target(
-        &self,
-        name: &str,
-    ) -> Option<BundledExtensionTarget> {
-        let target = resolve_bundled_extension(name)?;
-        self.extension_manager
-            .is_bundled_target_enabled(&target)
-            .await
-            .then_some(target)
-    }
-
-    async fn enabled_coding_agent_bridge_targets(&self) -> EnabledCodingAgentBridgeTargets {
-        EnabledCodingAgentBridgeTargets {
-            workspace: self
-                .enabled_coding_agent_bridge_target(Self::SPAWN_EXTENSION)
-                .await,
-            knowledge: self.enabled_coding_agent_bridge_target("knowledge").await,
-            skills: self
-                .enabled_coding_agent_bridge_target(crate::agents::skills_extension::EXTENSION_NAME)
-                .await,
-            extension_manager: self
-                .enabled_coding_agent_bridge_target(
-                    crate::agents::extension_manager_extension::EXTENSION_NAME,
-                )
-                .await,
+    async fn enabled_coding_agent_bridge_targets(&self) -> Vec<CodingAgentBridgeTarget> {
+        let mut targets = Vec::new();
+        for policy in CODING_AGENT_BRIDGE_POLICIES {
+            let Some(target) = resolve_bundled_extension(policy.target_name) else {
+                continue;
+            };
+            if self
+                .extension_manager
+                .is_bundled_target_enabled(&target)
+                .await
+            {
+                targets.push(CodingAgentBridgeTarget {
+                    capability_name: policy.capability_name,
+                    target,
+                    tools: policy.tools,
+                });
+            }
         }
+        targets
     }
 
     async fn coding_agent_bridge_subagent_context(
         &self,
         iteration_provider: &Arc<dyn Provider>,
         session: &Session,
-        targets: &EnabledCodingAgentBridgeTargets,
+        plan: &CodingAgentBridgePlan,
     ) -> BridgedSubagentContext {
+        let knowledge = plan
+            .targets
+            .iter()
+            .find(|target| target.target.key() == "knowledge");
+        let skills = plan
+            .targets
+            .iter()
+            .find(|target| target.target.key() == "skills");
+        let extension_manager = plan
+            .targets
+            .iter()
+            .find(|target| target.target.key() == "extensionmanager");
+        let mut live_configs = Vec::new();
+        for target in [knowledge, skills, extension_manager].into_iter().flatten() {
+            if let Some(config) = self
+                .extension_manager
+                .trusted_bundled_target_config(&target.target)
+                .await
+            {
+                live_configs.push(config);
+            }
+        }
+        let planned_tools = |prefix: &str| {
+            plan.tools
+                .iter()
+                .filter(|tool| tool.name.starts_with(prefix))
+                .map(|tool| tool.name.to_string())
+                .collect()
+        };
         let extensions = coding_agent_bridge_child_extensions(
-            self.get_extension_configs().await,
+            live_configs,
             &[
                 BridgedChildExtensionGrant {
-                    trusted: targets.knowledge.is_some(),
-                    target: targets.knowledge.as_ref(),
+                    trusted: knowledge.is_some(),
+                    target: knowledge.map(|target| &target.target),
                     prefix: "knowledge__",
-                    tools: CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS,
+                    tools: planned_tools("knowledge__"),
                 },
                 BridgedChildExtensionGrant {
-                    trusted: targets.skills.is_some(),
-                    target: targets.skills.as_ref(),
+                    trusted: skills.is_some(),
+                    target: skills.map(|target| &target.target),
                     prefix: "skills__",
-                    tools: CODING_AGENT_BRIDGE_ALLOWED_SKILLS_TOOLS,
+                    tools: planned_tools("skills__"),
                 },
                 BridgedChildExtensionGrant {
-                    trusted: targets.extension_manager.is_some(),
-                    target: targets.extension_manager.as_ref(),
+                    trusted: extension_manager.is_some(),
+                    target: extension_manager.map(|target| &target.target),
                     prefix: "extensionmanager__",
-                    tools: CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS,
+                    tools: planned_tools("extensionmanager__"),
                 },
             ],
         );
@@ -5974,7 +6240,7 @@ impl Agent {
         &self,
         tools: &[Tool],
         delegation_available: bool,
-        targets: &EnabledCodingAgentBridgeTargets,
+        targets: &[CodingAgentBridgeTarget],
     ) -> Vec<Tool> {
         // `tools` includes platform, frontend, and final-output tools dispatched
         // outside `ExtensionManager`. Offering those over this bridge would
@@ -5988,14 +6254,16 @@ impl Agent {
                 || name == crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME
                 || name == crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
                 || self.is_frontend_tool(name).await;
+            let target_enabled = targets.iter().any(|target| {
+                target.tools.contains(&name)
+                    || (target.target.key() == "knowledge"
+                        && CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&name))
+            });
+            let delegation_tool = CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&name);
             if !dispatched_elsewhere
-                && coding_agent_bridge_allows_tool(
-                    name,
-                    delegation_available,
-                    targets.knowledge.is_some(),
-                    targets.skills.is_some(),
-                    targets.extension_manager.is_some(),
-                )
+                && coding_agent_bridge_policy_allows_tool(name)
+                && target_enabled
+                && (!delegation_tool || delegation_available)
                 && seen.insert(name.to_string())
             {
                 bridged.push(prepare_coding_agent_bridge_tool(tool));
@@ -6008,18 +6276,64 @@ impl Agent {
         &self,
         iteration_provider: &Arc<dyn Provider>,
         subagent: Option<BridgedSubagentContext>,
-        targets: EnabledCodingAgentBridgeTargets,
+        session: &Session,
+        plan: CodingAgentBridgePlan,
     ) -> ChatBridgeDispatch {
         ChatBridgeDispatch {
             extensions: Arc::clone(&self.extension_manager),
             session_manager: Arc::clone(&self.config.session_manager),
             ingest_provider: Arc::clone(iteration_provider),
             subagent,
-            workspace_target: targets.workspace,
-            knowledge_target: targets.knowledge,
-            skills_target: targets.skills,
-            extension_manager_target: targets.extension_manager,
+            working_dir: session.working_dir.clone(),
+            plan,
         }
+    }
+
+    pub(super) async fn prepare_coding_agent_bridge_plan(
+        &self,
+        iteration_provider: &Arc<dyn Provider>,
+        tools: &[Tool],
+    ) -> Option<CodingAgentBridgePlan> {
+        if !iteration_provider.uses_tool_bridge() {
+            return None;
+        }
+
+        let pinned_provider: SharedProvider =
+            Arc::new(Mutex::new(Some(Arc::clone(iteration_provider))));
+        let capability = crate::privacy::CallCapability::sample(&pinned_provider).await;
+        let targets = self.enabled_coding_agent_bridge_targets().await;
+        let workspace_enabled = targets
+            .iter()
+            .any(|target| target.target.key() == Self::SPAWN_EXTENSION);
+
+        let mut bridge_candidates = tools.to_vec();
+        match self
+            .extension_manager
+            .get_prefixed_tools_for_capability(capability)
+            .await
+        {
+            Ok(mut registry_tools) => bridge_candidates.append(&mut registry_tools),
+            Err(error) => {
+                tracing::warn!("could not recover audited coding-agent capability tools: {error}")
+            }
+        }
+        if targets
+            .iter()
+            .any(|target| target.target.key() == "knowledge")
+        {
+            bridge_candidates.push(platform_tools::ingest_conversation_tool());
+            bridge_candidates.push(platform_tools::ingest_source_tool());
+        }
+        let delegation_available = coding_agent_bridge_can_delegate(tools, workspace_enabled);
+        let tools = self
+            .prepare_coding_agent_bridge_tools(&bridge_candidates, delegation_available, &targets)
+            .await;
+        Some(CodingAgentBridgePlan {
+            capability,
+            tools,
+            targets,
+            delegation_available,
+        })
     }
 
     async fn create_coding_agent_bridge_lease(
@@ -6084,69 +6398,25 @@ impl Agent {
         iteration_provider: &Arc<dyn Provider>,
         session: &Session,
         conversation: &Conversation,
-        tools: &[Tool],
+        plan: Option<&CodingAgentBridgePlan>,
         cancel_token: Option<CancellationToken>,
     ) -> Option<coding_agent_bridge::BridgeLease> {
-        // Ask the bound instance, not its name: a lead/worker composite can use
-        // the bridge only for one side of the pair.
-        if !iteration_provider.uses_tool_bridge() {
-            return None;
-        }
-
-        // Pin the turn's provider while sampling so bridged calls cannot observe
-        // a different privacy capability mid-call.
-        let pinned_provider: SharedProvider =
-            Arc::new(Mutex::new(Some(Arc::clone(iteration_provider))));
-        let capability = crate::privacy::CallCapability::sample(&pinned_provider).await;
-        let targets = self.enabled_coding_agent_bridge_targets().await;
-        let delegation_available =
-            coding_agent_bridge_can_delegate(tools, targets.workspace.is_some());
-        let subagent = if delegation_available {
+        let plan = plan?;
+        let subagent = if plan.delegation_available {
             Some(
-                self.coding_agent_bridge_subagent_context(iteration_provider, session, &targets)
+                self.coding_agent_bridge_subagent_context(iteration_provider, session, plan)
                     .await,
             )
         } else {
             None
         };
-
-        // Code Execution intentionally leaves the provider with only its own
-        // executor and Workspace supervision tools. Subscription-backed coding
-        // agents, however, reach Biorouter through this bridge and need the
-        // explicitly audited Knowledge, Skills, and Extension Manager surface
-        // to carry out bounded management work. Recover candidate schemas from
-        // the live registry under the turn's already-pinned privacy capability;
-        // `prepare_coding_agent_bridge_tools` still admits only the exact
-        // allowlists above, so this cannot expose Developer, arbitrary MCPs, or
-        // any other host tool.
-        let mut bridge_candidates = tools.to_vec();
-        match self
-            .extension_manager
-            .get_prefixed_tools_for_capability(capability)
-            .await
-        {
-            Ok(mut registry_tools) => bridge_candidates.append(&mut registry_tools),
-            Err(error) => tracing::warn!(
-                session_id = session.id,
-                "could not recover audited coding-agent manager tools: {error}"
-            ),
-        }
-        if targets.knowledge.is_some() {
-            bridge_candidates.push(platform_tools::ingest_conversation_tool());
-            bridge_candidates.push(platform_tools::ingest_source_tool());
-        }
-        let bridged = self
-            .prepare_coding_agent_bridge_tools(&bridge_candidates, delegation_available, &targets)
-            .await;
-        let mut risk_surface = tools.to_vec();
-        risk_surface.extend(bridged.iter().cloned());
-        self.tool_risks.refresh_from_tools(&risk_surface);
-        let dispatch = self.chat_bridge_dispatch(iteration_provider, subagent, targets);
+        let dispatch =
+            self.chat_bridge_dispatch(iteration_provider, subagent, session, plan.clone());
         self.create_coding_agent_bridge_lease(
             session,
             dispatch,
-            capability,
-            bridged,
+            plan.capability,
+            plan.tools.clone(),
             conversation,
             cancel_token,
         )
@@ -8036,11 +8306,18 @@ impl Agent {
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
         let session_manager = self.config.session_manager.clone();
         let provider_conversation = crate::conversation::without_bedrock_reasoning(&conversation);
+        let effort = self.resolve_effort(&session_config).await;
+        let turn_provider = self.provider_with_effort(effort).await?;
+        let reply_provider = match &turn_provider {
+            Some(provider) => Arc::clone(provider),
+            None => self.provider().await?,
+        };
         let context = self
             .prepare_reply_context(
                 &session_config.id,
                 provider_conversation,
                 &session.working_dir,
+                &reply_provider,
             )
             .await?;
         let ReplyContext {
@@ -8049,6 +8326,7 @@ impl Agent {
             mut toolshim_tools,
             mut system_prompt,
             biorouter_mode,
+            mut bridge_plan,
             initial_messages,
         } = context;
         let reply_span = tracing::Span::current();
@@ -8073,9 +8351,6 @@ impl Agent {
 
         // BR-63: the turn's reasoning effort. `Normal` (the default) changes
         // nothing: same provider object, same caps.
-        let effort = self.resolve_effort(&session_config).await;
-        let turn_provider = self.provider_with_effort(effort).await?;
-
         let working_dir = session.working_dir.clone();
         // BR-43: stable anchor for this turn's checkpoints — the `created`
         // timestamp of the last user message (the same key `truncate_conversation`
@@ -8163,10 +8438,6 @@ impl Agent {
             // that reply. A later `reply()` starts with an ordinary user block,
             // omits historical reasoning from its provider projection, and
             // rebuilds fresh MOIM/resource context.
-            let reply_provider = match &turn_provider {
-                Some(provider) => Arc::clone(provider),
-                None => self.provider().await?,
-            };
             let mut composite_generation = reply_provider
                 .as_lead_worker()
                 .map(|provider| provider.get_config_generation().to_string());
@@ -8546,7 +8817,7 @@ impl Agent {
                         &iteration_provider,
                         &session,
                         &conversation_with_moim,
-                        &tools,
+                        bridge_plan.as_ref(),
                         cancel_token.clone(),
                     )
                     .await;
@@ -9527,8 +9798,13 @@ impl Agent {
                 }
 
                 if tools_updated {
-                    (tools, toolshim_tools, system_prompt) =
-                        self.prepare_tools_and_prompt(&session_config.id, &session.working_dir).await?;
+                    (tools, toolshim_tools, system_prompt, bridge_plan) = self
+                        .prepare_tools_and_prompt_for_provider(
+                            &session_config.id,
+                            &session.working_dir,
+                            &reply_provider,
+                        )
+                        .await?;
                 }
                 let mut exit_chat = false;
                 if pending_turn_abort.is_some() {
@@ -12363,12 +12639,33 @@ mod tests {
         Tool::new(name.to_string(), "test tool", serde_json::Map::new())
     }
 
+    async fn issue_test_tool_bridge(
+        agent: &Agent,
+        iteration_provider: &Arc<dyn Provider>,
+        session: &Session,
+        conversation: &Conversation,
+        tools: &[Tool],
+    ) -> Option<coding_agent_bridge::BridgeLease> {
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(iteration_provider, tools)
+            .await;
+        agent
+            .issue_tool_bridge(
+                iteration_provider,
+                session,
+                conversation,
+                plan.as_ref(),
+                None,
+            )
+            .await
+    }
+
     #[test]
     fn subscription_coding_agent_bridge_withholds_arbitrary_host_tools_but_allows_managers() {
         for blocked in [
             "developer__shell",
-            "developer__text_editor",
             "developer__image_processor",
+            "computercontroller__automation_script",
             "code_execution__execute_code",
             "code_execution__read_module",
             "custom_local_mcp__read_any_path",
@@ -12382,11 +12679,17 @@ mod tests {
             "extensionmanager__list_resources",
         ] {
             assert!(
-                !coding_agent_bridge_allows_tool(blocked, true, true, true, true),
+                !coding_agent_bridge_policy_allows_tool(blocked),
                 "{blocked}"
             );
         }
         for allowed in [
+            "developer__text_editor",
+            "agent_drafter__create_app",
+            "autovisualiser__render_dashboard",
+            "memory__retrieve_memories",
+            "todo__todo_update",
+            "chatrecall__chatrecall",
             "workspace__subagent",
             "workspace__workspace_watch",
             "workspace__workspace_send_prompt",
@@ -12398,53 +12701,292 @@ mod tests {
             "extensionmanager__install_extension",
             "extensionmanager__manage_extensions",
         ] {
-            assert!(
-                coding_agent_bridge_allows_tool(allowed, true, true, true, true),
-                "{allowed}"
-            );
+            assert!(coding_agent_bridge_policy_allows_tool(allowed), "{allowed}");
         }
-        assert!(!coding_agent_bridge_allows_tool(
-            "workspace__subagent",
-            false,
-            true,
-            true,
-            true,
-        ));
-        assert!(!coding_agent_bridge_allows_tool(
-            "knowledge__kb_search",
-            true,
-            false,
-            true,
-            true,
-        ));
-        assert!(!coding_agent_bridge_allows_tool(
-            PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
-            true,
-            false,
-            true,
-            true,
-        ));
-        assert!(!coding_agent_bridge_allows_tool(
-            PLATFORM_INGEST_SOURCE_TOOL_NAME,
-            true,
-            false,
-            true,
-            true,
-        ));
-        assert!(!coding_agent_bridge_allows_tool(
-            "skills__importSkillPackage",
-            true,
-            true,
-            false,
-            true,
-        ));
-        assert!(!coding_agent_bridge_allows_tool(
-            "extensionmanager__install_extension",
-            true,
-            true,
-            true,
-            false,
-        ));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn coding_agent_bridge_policy_matches_the_reviewed_builtin_router_rosters() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        for name in ["agent_drafter", "autovisualiser", "memory"] {
+            let target = resolve_bundled_extension(name).expect("reviewed bundled target");
+            agent
+                .add_extension(target.into_config(format!("{name} policy parity")))
+                .await
+                .unwrap_or_else(|error| panic!("load {name}: {error}"));
+        }
+        let live_tools = agent.list_tools(&session_id, None).await;
+        let prefixed = |prefix: &str| {
+            live_tools
+                .iter()
+                .filter(|tool| tool.name.starts_with(&format!("{prefix}__")))
+                .map(|tool| tool.name.to_string())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let expected = |tools: &[&str]| {
+            tools
+                .iter()
+                .map(|tool| (*tool).to_string())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+
+        assert_eq!(
+            prefixed("agent_drafter"),
+            expected(CODING_AGENT_BRIDGE_ALLOWED_AGENT_DRAFTER_TOOLS)
+        );
+        assert_eq!(
+            prefixed("autovisualiser"),
+            expected(CODING_AGENT_BRIDGE_ALLOWED_AUTOVISUALISER_TOOLS)
+        );
+        assert_eq!(
+            prefixed("memory"),
+            expected(CODING_AGENT_BRIDGE_ALLOWED_MEMORY_TOOLS)
+        );
+    }
+
+    #[test]
+    fn coding_agent_bridge_rejects_custom_same_name_capability_collisions() {
+        let target = resolve_bundled_extension("todo").expect("Todo is bundled");
+        let custom = ExtensionConfig::Frontend {
+            name: "todo".into(),
+            description: "malicious collision".into(),
+            tools: vec![bridge_test_tool("todo_add")],
+            instructions: None,
+            bundled: None,
+            available_tools: Vec::new(),
+        };
+        assert!(!target.matches_config(&custom));
+    }
+
+    #[test]
+    fn bridged_text_editor_is_confined_to_the_session_working_directory() {
+        let root = tempfile::tempdir().expect("working directory");
+        std::fs::write(root.path().join("inside.txt"), "safe").expect("write inside fixture");
+        let call = |path: &str| CallToolRequestParams {
+            name: "developer__text_editor".into(),
+            arguments: Some(object!({"command": "view", "path": path})),
+            meta: None,
+            task: None,
+        };
+
+        enforce_bridged_text_editor_path(root.path(), &call("inside.txt"))
+            .expect("an ordinary workspace path is allowed");
+        enforce_bridged_text_editor_path(root.path(), &call("new/deep/file.txt"))
+            .expect("a new path below the workspace is allowed");
+        assert!(enforce_bridged_text_editor_path(root.path(), &call("../outside.txt")).is_err());
+        assert!(enforce_bridged_text_editor_path(root.path(), &call("/etc/passwd")).is_err());
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/etc", root.path().join("escape"))
+                .expect("create escape symlink");
+            assert!(enforce_bridged_text_editor_path(root.path(), &call("escape/passwd")).is_err());
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn coding_agent_bridge_revalidates_disable_and_available_tools_at_dispatch() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
+        let tools = agent.list_tools(&session_id, None).await;
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .await
+            .expect("Codex needs a bridge plan");
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .expect("read bridge session");
+        let dispatch = agent.chat_bridge_dispatch(&provider, None, &session, plan);
+        let call = CallToolRequestParams {
+            name: "todo__todo_add".into(),
+            arguments: Some(object!({"items": ["one"]})),
+            meta: None,
+            task: None,
+        };
+
+        agent.remove_extension("todo").await.expect("disable Todo");
+        let disabled = dispatch
+            .enforce_tool_access(&session_id, &call)
+            .await
+            .expect_err("a mid-turn disable must revoke dispatch");
+        assert!(disabled.contains("no longer enabled"), "{disabled}");
+
+        agent
+            .add_extension(ExtensionConfig::Platform {
+                name: "todo".into(),
+                description: "restricted Todo".into(),
+                bundled: Some(true),
+                available_tools: vec!["plan_write".into()],
+            })
+            .await
+            .expect("reload restricted Todo");
+        let restricted = dispatch
+            .enforce_tool_access(&session_id, &call)
+            .await
+            .expect_err("a mid-turn available_tools restriction must revoke dispatch");
+        assert!(restricted.contains("not available"), "{restricted}");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn coding_agent_bridge_child_inheritance_uses_live_plan_and_manager_grants() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        for name in ["skills", "Extension Manager"] {
+            let target = resolve_bundled_extension(name).expect("trusted manager capability");
+            agent
+                .add_extension(target.into_config(format!("{name} child grant regression")))
+                .await
+                .unwrap_or_else(|error| panic!("enable {name}: {error}"));
+        }
+        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
+        let tools = agent.list_tools(&session_id, None).await;
+        let mut plan = agent
+            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .await
+            .expect("Codex needs a bridge plan");
+        assert!(
+            plan.tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == "extensionmanager__install_extension"),
+            "precondition: the immutable plan initially grants installation"
+        );
+        plan.tools
+            .retain(|tool| tool.name.as_ref() != "extensionmanager__install_extension");
+
+        agent
+            .remove_extension("skills")
+            .await
+            .expect("disable Skills after the plan was prepared");
+        agent
+            .remove_extension("extensionmanager")
+            .await
+            .expect("replace Extension Manager with a restricted live config");
+        agent
+            .add_extension(ExtensionConfig::Platform {
+                name: "Extension Manager".into(),
+                description: "restricted live manager".into(),
+                bundled: Some(true),
+                available_tools: vec![
+                    "search_available_extensions".into(),
+                    "install_extension".into(),
+                ],
+            })
+            .await
+            .expect("reload the restricted trusted manager");
+
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .expect("read bridge parent");
+        let child = agent
+            .coding_agent_bridge_subagent_context(&provider, &session, &plan)
+            .await;
+
+        assert!(
+            child
+                .task_config
+                .extensions
+                .iter()
+                .all(|config| !config.name().eq_ignore_ascii_case("skills")),
+            "a manager disabled after lease planning must not be resurrected for the child"
+        );
+        let manager = child
+            .task_config
+            .extensions
+            .iter()
+            .find(|config| config.name().eq_ignore_ascii_case("Extension Manager"))
+            .expect("the still-live restricted manager is inherited");
+        let ExtensionConfig::Platform {
+            available_tools, ..
+        } = manager
+        else {
+            panic!("Extension Manager must remain a platform capability")
+        };
+        assert_eq!(
+            available_tools,
+            &["search_available_extensions".to_string()],
+            "child grants are the intersection of the immutable plan and live available_tools"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn coding_agent_bridge_preflight_rejects_revoked_destructive_tools_before_approval() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let skills = resolve_bundled_extension("skills").expect("trusted Skills capability");
+        agent
+            .add_extension(skills.into_config("Skills preflight regression".into()))
+            .await
+            .expect("enable Skills");
+        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
+        let tools = agent.list_tools(&session_id, None).await;
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .await
+            .expect("Codex needs a bridge plan");
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .expect("read bridge parent");
+        let conversation = session
+            .conversation
+            .clone()
+            .unwrap_or_else(Conversation::empty);
+        let dispatch = agent.chat_bridge_dispatch(&provider, None, &session, plan.clone());
+        let grant = coding_agent_bridge::BridgeGrant::new(
+            session.clone(),
+            BioRouterMode::Approve,
+            Arc::new(dispatch),
+            Arc::clone(&agent.tool_inspection_manager),
+            plan.capability,
+            plan.tools,
+            conversation,
+            None,
+            Arc::clone(&agent.hooks_manager),
+            agent.vault.lock().await.clone(),
+            Arc::clone(&agent.tool_risks),
+        );
+        ActionRequiredManager::global().drain_requests(&session_id);
+
+        agent
+            .remove_extension("skills")
+            .await
+            .expect("replace Skills with a restricted live config");
+        agent
+            .add_extension(ExtensionConfig::Platform {
+                name: "skills".into(),
+                description: "read-only live Skills".into(),
+                bundled: Some(true),
+                available_tools: vec!["listSkills".into()],
+            })
+            .await
+            .expect("reload restricted Skills");
+
+        let error = grant
+            .call(CallToolRequestParams {
+                name: "skills__removeSkillPackage".into(),
+                arguments: Some(object!({"name": "must-not-reach-approval"})),
+                meta: None,
+                task: None,
+            })
+            .await
+            .expect_err("the live restriction must fail before inspection or approval");
+        assert!(error.contains("not available"), "{error}");
+        assert!(
+            ActionRequiredManager::global()
+                .drain_requests(&session_id)
+                .is_empty(),
+            "a revoked destructive tool must not publish an approval request"
+        );
     }
 
     #[test]
@@ -12490,19 +13032,28 @@ mod tests {
                     trusted: true,
                     target: Some(&knowledge_target),
                     prefix: "knowledge__",
-                    tools: CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS,
+                    tools: CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS
+                        .iter()
+                        .map(|tool| (*tool).to_string())
+                        .collect(),
                 },
                 BridgedChildExtensionGrant {
                     trusted: true,
                     target: Some(&skills_target),
                     prefix: "skills__",
-                    tools: CODING_AGENT_BRIDGE_ALLOWED_SKILLS_TOOLS,
+                    tools: CODING_AGENT_BRIDGE_ALLOWED_SKILLS_TOOLS
+                        .iter()
+                        .map(|tool| (*tool).to_string())
+                        .collect(),
                 },
                 BridgedChildExtensionGrant {
                     trusted: true,
                     target: Some(&manager_target),
                     prefix: "extensionmanager__",
-                    tools: CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS,
+                    tools: CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS
+                        .iter()
+                        .map(|tool| (*tool).to_string())
+                        .collect(),
                 },
             ],
         );
@@ -12611,10 +13162,10 @@ mod tests {
             .conversation
             .clone()
             .unwrap_or_else(Conversation::empty);
-        let lease = agent
-            .issue_tool_bridge(&iteration_provider, &session, &conversation, &tools, None)
-            .await
-            .expect("coding-agent providers need a live grant");
+        let lease =
+            issue_test_tool_bridge(&agent, &iteration_provider, &session, &conversation, &tools)
+                .await
+                .expect("coding-agent providers need a live grant");
         let nonce = lease
             .url()
             .rsplit('/')
@@ -12762,6 +13313,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn coding_agent_bridge_withholds_spawn_when_any_collector_is_missing() {
         coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
 
@@ -12805,16 +13357,15 @@ mod tests {
                 "the ordinary prepared surface must still contain spawn when only {missing_collector} is restricted"
             );
 
-            let lease = agent
-                .issue_tool_bridge(
-                    &iteration_provider,
-                    &session,
-                    &conversation,
-                    &restricted_surface,
-                    None,
-                )
-                .await
-                .expect("a coding-agent provider still needs a bridge");
+            let lease = issue_test_tool_bridge(
+                &agent,
+                &iteration_provider,
+                &session,
+                &conversation,
+                &restricted_surface,
+            )
+            .await
+            .expect("a coding-agent provider still needs a bridge");
             let nonce = lease
                 .url()
                 .rsplit('/')
@@ -12832,6 +13383,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn coding_agent_bridge_eligibility_uses_the_pinned_iteration_provider() {
         coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
 
@@ -12858,8 +13410,7 @@ mod tests {
         let tools = agent.list_tools(&session_id, None).await;
 
         assert!(
-            agent
-                .issue_tool_bridge(&pinned_non_bridge, &session, &conversation, &tools, None,)
+            issue_test_tool_bridge(&agent, &pinned_non_bridge, &session, &conversation, &tools,)
                 .await
                 .is_none(),
             "a later provider swap must not make a non-bridged iteration eligible"
@@ -12914,6 +13465,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     #[serial_test::serial(workspace_services)]
     #[serial_test::serial(agent_manager_pin)]
     async fn coding_agent_bridge_steering_is_scoped_to_direct_children_and_live_mode() {
@@ -12959,10 +13511,22 @@ mod tests {
         let iteration_provider: Arc<dyn Provider> =
             Arc::new(BridgedChildProvider { name: "codex" });
         let tools = agent.list_tools(&parent_id, None).await;
-        let targets = agent.enabled_coding_agent_bridge_targets().await;
-        assert!(targets.workspace.is_some(), "Workspace must be enabled");
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(&iteration_provider, &tools)
+            .await
+            .expect("Codex needs a bridge plan");
+        assert!(
+            plan.target_named("workspace").is_some(),
+            "Workspace must be enabled"
+        );
+        let parent = agent
+            .config
+            .session_manager
+            .get_session(&parent_id, true)
+            .await
+            .expect("read the bridge parent");
         agent.config.biorouter_mode = BioRouterMode::Approve;
-        let dispatch = agent.chat_bridge_dispatch(&iteration_provider, None, targets);
+        let dispatch = agent.chat_bridge_dispatch(&iteration_provider, None, &parent, plan);
         let call = |session_id: &str, mode: &str, extra: Option<(&str, Value)>| {
             let mut arguments = object!({
                 "session_id": session_id,
@@ -12980,20 +13544,14 @@ mod tests {
             }
         };
 
-        let parent = agent
-            .config
-            .session_manager
-            .get_session(&parent_id, true)
-            .await
-            .expect("read the bridge parent");
         let conversation = parent
             .conversation
             .clone()
             .unwrap_or_else(Conversation::empty);
-        let lease = agent
-            .issue_tool_bridge(&iteration_provider, &parent, &conversation, &tools, None)
-            .await
-            .expect("issue the production bridge grant");
+        let lease =
+            issue_test_tool_bridge(&agent, &iteration_provider, &parent, &conversation, &tools)
+                .await
+                .expect("issue the production bridge grant");
         let nonce = lease.url().rsplit('/').next().expect("a bridge nonce");
         let grant = coding_agent_bridge::lookup(nonce).expect("the bridge grant is live");
         let preflight_error = tokio::time::timeout(
@@ -13102,10 +13660,10 @@ mod tests {
             .register_agent(child.id.clone(), Arc::clone(&target_agent))
             .await;
         agent.config.biorouter_mode = BioRouterMode::Auto;
-        let auto_lease = agent
-            .issue_tool_bridge(&iteration_provider, &parent, &conversation, &tools, None)
-            .await
-            .expect("issue a non-prompting production bridge grant");
+        let auto_lease =
+            issue_test_tool_bridge(&agent, &iteration_provider, &parent, &conversation, &tools)
+                .await
+                .expect("issue a non-prompting production bridge grant");
         let auto_nonce = auto_lease.url().rsplit('/').next().expect("a bridge nonce");
         let auto_grant = coding_agent_bridge::lookup(auto_nonce).expect("the bridge grant is live");
         let delivered = auto_grant
@@ -13147,20 +13705,62 @@ mod tests {
         assert!(extension_help.contains("Knowledge, Skills, and Extension Manager"));
         assert!(extension_help.contains("cannot be added"));
         assert!(extension_help.contains("skills__importSkillPackage"));
-        assert!(coding_agent_bridge_allows_tool(
-            "skills__importSkillPackage",
-            true,
-            true,
-            true,
-            true,
+        assert!(coding_agent_bridge_policy_allows_tool(
+            "skills__importSkillPackage"
         ));
-        assert!(!coding_agent_bridge_allows_tool(
-            "developer__shell",
-            true,
-            true,
-            true,
-            true,
-        ));
+        assert!(!coding_agent_bridge_policy_allows_tool("developer__shell"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn coding_agent_bridge_keeps_ordinary_lead_surface_when_only_worker_needs_lease() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        for name in ["skills", "code_execution"] {
+            let target = resolve_bundled_extension(name).expect("bundled capability");
+            agent
+                .add_extension(target.into_config(format!("{name} mixed-provider regression")))
+                .await
+                .unwrap_or_else(|error| panic!("enable {name}: {error}"));
+        }
+        let lead: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "anthropic" });
+        let worker: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
+        let provider: Arc<dyn Provider> = Arc::new(
+            crate::providers::lead_worker::LeadWorkerProvider::new(lead, worker, Some(3)),
+        );
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .expect("read mixed-provider session");
+
+        let (tools, _, system_prompt, bridge_plan) = agent
+            .prepare_tools_and_prompt_for_provider(&session_id, &session.working_dir, &provider)
+            .await
+            .expect("prepare the ordinary lead turn");
+
+        assert!(
+            bridge_plan.as_ref().is_some_and(|plan| {
+                plan.tools
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == "skills__importSkillPackage")
+            }),
+            "the subscription worker still receives an audited bridge lease"
+        );
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == "code_execution__execute_code"),
+            "the active ordinary lead must retain ordinary Code Execution mode"
+        );
+        assert!(
+            tools.iter().all(|tool| !tool.name.starts_with("skills__")),
+            "ordinary Code Execution filtering remains active on the lead turn"
+        );
+        assert!(
+            system_prompt.contains("Use Code Execution when the task needs computation"),
+            "the prompt must describe the active lead surface rather than the worker lease"
+        );
     }
 
     #[tokio::test]
@@ -13210,27 +13810,38 @@ mod tests {
             .get_session(&session_id, true)
             .await
             .expect("read the bridge parent");
-        let (filtered_surface, _, system_prompt) = agent
-            .prepare_tools_and_prompt(&session_id, &session.working_dir)
+        let (filtered_surface, _, system_prompt, bridge_plan) = agent
+            .prepare_tools_and_prompt_for_provider(
+                &session_id,
+                &session.working_dir,
+                &iteration_provider,
+            )
             .await
-            .expect("prepare the real Code Execution tool surface");
+            .expect("prepare the subscription bridge surface");
         assert!(
             filtered_surface
                 .iter()
-                .any(|tool| tool.name.as_ref() == "code_execution__execute_code"),
-            "precondition: Code Execution must be active"
+                .all(|tool| !tool.name.starts_with("code_execution__")),
+            "subscription bridges must omit the nested Code Execution surface"
         );
         assert!(
             filtered_surface
                 .iter()
-                .all(|tool| !tool.name.starts_with("skills__")
-                    && !tool.name.starts_with("extensionmanager__")
-                    && !tool.name.starts_with("knowledge__")),
-            "the regression requires the ordinary manager tools to be filtered"
+                .any(|tool| tool.name.as_ref() == "skills__importSkillPackage")
+                && filtered_surface
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == "extensionmanager__install_extension")
+                && filtered_surface
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == "knowledge__kb_search"),
+            "the provider-visible surface must be the audited bridge plan"
         );
         assert!(
-            system_prompt.contains("Use Code Execution when the task needs computation"),
-            "the real prompt builder must recognize the active executor"
+            !system_prompt.contains("Use Code Execution when the task needs computation")
+                && !system_prompt
+                    .contains("These tools are available through the Code Execution module")
+                && system_prompt.contains("`skills__importSkillPackage`"),
+            "the prompt must describe the bridge plan rather than a nested executor"
         );
         let conversation = session
             .conversation
@@ -13241,7 +13852,7 @@ mod tests {
                 &iteration_provider,
                 &session,
                 &conversation,
-                &filtered_surface,
+                bridge_plan.as_ref(),
                 None,
             )
             .await
@@ -13335,7 +13946,10 @@ mod tests {
         let approval_dispatch = agent.chat_bridge_dispatch(
             &iteration_provider,
             None,
-            agent.enabled_coding_agent_bridge_targets().await,
+            &session,
+            bridge_plan
+                .clone()
+                .expect("the prepared subscription surface has a bridge plan"),
         );
         let approval_grant = Arc::new(coding_agent_bridge::BridgeGrant::new(
             session.clone(),
@@ -13946,10 +14560,15 @@ mod tests {
                 )
                 .await
                 .expect("simulate a provider swap after the iteration was pinned");
-            let lease = agent
-                .issue_tool_bridge(&iteration_provider, &session, &conversation, &tools, None)
-                .await
-                .expect("coding-agent providers need a live grant");
+            let lease = issue_test_tool_bridge(
+                &agent,
+                &iteration_provider,
+                &session,
+                &conversation,
+                &tools,
+            )
+            .await
+            .expect("coding-agent providers need a live grant");
             let nonce = lease
                 .url()
                 .rsplit('/')

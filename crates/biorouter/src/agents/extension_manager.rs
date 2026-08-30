@@ -110,6 +110,11 @@ struct Extension {
     /// any registry, so they are excluded from `get_extension_configs` (never
     /// persisted/replayed/propagated) and re-injected per connect instead.
     inprocess: bool,
+    /// Set only by `add_extension_with_origin` after resolving the config
+    /// through a shipped Builtin/Platform registry. A lookalike injected by
+    /// `add_client` or `add_inprocess_server` is never trusted by the coding
+    /// agent bridge, even if it uses the same name and config variant.
+    trusted_bundled: bool,
     /// Keeps a shared (pooled) process alive while this extension references it
     /// (BR-54). When the last extension across all sessions drops this `Arc`, the
     /// pool's `Weak` dies and the child process is reaped. `None` for unpooled and
@@ -908,6 +913,13 @@ impl ExtensionManager {
         } else {
             None
         };
+        let trusted_bundled = match &config {
+            ExtensionConfig::Builtin { name, .. } => biorouter_mcp::BUILTIN_EXTENSIONS
+                .contains_key(normalize(&crate::config::extensions::name_to_key(name)).as_str()),
+            ExtensionConfig::Platform { name, .. } => PLATFORM_EXTENSIONS
+                .contains_key(normalize(&crate::config::extensions::name_to_key(name)).as_str()),
+            _ => false,
+        };
         let routed_only = pool_key.is_some();
 
         // The actual client construction, deferred into a closure so the pool can
@@ -1090,6 +1102,7 @@ impl ExtensionManager {
                 server_info,
                 _temp_dir: None,
                 inprocess: false,
+                trusted_bundled,
                 _pooled: Some(entry),
                 origin,
             },
@@ -1195,6 +1208,7 @@ impl ExtensionManager {
                 server_info: info,
                 _temp_dir: temp_dir,
                 inprocess: false,
+                trusted_bundled: false,
                 _pooled: None,
                 origin: ExtensionOrigin::Explicit,
             },
@@ -1260,6 +1274,7 @@ impl ExtensionManager {
                 server_info: info,
                 _temp_dir: None,
                 inprocess: true,
+                trusted_bundled: false,
                 _pooled: None,
                 // An in-process server is injected by `configure_agent` at the
                 // caller's request, i.e. as explicitly as anything gets; it is
@@ -1369,7 +1384,39 @@ impl ExtensionManager {
             .lock()
             .await
             .get(&target.key())
-            .is_some_and(|extension| target.matches_config(&extension.config))
+            .is_some_and(|extension| {
+                extension.trusted_bundled && target.matches_config(&extension.config)
+            })
+    }
+
+    pub async fn is_bundled_target_tool_available(
+        &self,
+        target: &BundledExtensionTarget,
+        tool: &str,
+    ) -> bool {
+        self.extensions
+            .lock()
+            .await
+            .get(&target.key())
+            .is_some_and(|extension| {
+                extension.trusted_bundled
+                    && target.matches_config(&extension.config)
+                    && extension.config.is_tool_available(tool)
+            })
+    }
+
+    pub async fn trusted_bundled_target_config(
+        &self,
+        target: &BundledExtensionTarget,
+    ) -> Option<ExtensionConfig> {
+        self.extensions
+            .lock()
+            .await
+            .get(&target.key())
+            .filter(|extension| {
+                extension.trusted_bundled && target.matches_config(&extension.config)
+            })
+            .map(|extension| extension.config.clone())
     }
 
     /// The extension configs that are safe to write down: everything a user
@@ -4889,6 +4936,34 @@ mod tests {
         assert!(resolve_bundled_extension("developer")
             .expect("`developer` is a bundled extension")
             .matches_config(&bundled));
+    }
+
+    #[tokio::test]
+    async fn bundled_target_enablement_rejects_injected_builtin_lookalikes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let target = resolve_bundled_extension("developer").expect("Developer is bundled");
+        manager
+            .add_client(
+                "developer".into(),
+                ExtensionConfig::Builtin {
+                    name: "developer".into(),
+                    description: "lookalike".into(),
+                    display_name: None,
+                    timeout: None,
+                    bundled: Some(true),
+                    available_tools: vec!["text_editor".into()],
+                },
+                Arc::new(MockClient {}),
+                None,
+                None,
+            )
+            .await;
+
+        assert!(
+            !manager.is_bundled_target_enabled(&target).await,
+            "matching config text is not trusted registry provenance"
+        );
     }
 
     // ---- issue #57: the daemon's auth secret must not reach an extension ------

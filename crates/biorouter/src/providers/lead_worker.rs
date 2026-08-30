@@ -606,6 +606,11 @@ impl Provider for LeadWorkerProvider {
         self.lead_provider.uses_tool_bridge() || self.worker_provider.uses_tool_bridge()
     }
 
+    fn uses_tool_bridge_for_tool_surface(&self) -> bool {
+        self.get_active_provider()
+            .uses_tool_bridge_for_tool_surface()
+    }
+
     /// Streaming is forwarded, or a lead/worker pair silently loses it.
     ///
     /// `Provider`'s defaults are `supports_streaming() == false` and a `stream()`
@@ -998,6 +1003,27 @@ mod tests {
             worker_is_codex.uses_tool_bridge(),
             "the worker runs every turn past the lead turns; without a bridge that \
              child agent has no way to reach a single Biorouter tool"
+        );
+        assert!(
+            !worker_is_codex.uses_tool_bridge_for_tool_surface(),
+            "the ordinary lead keeps its request tools even though the worker needs a lease"
+        );
+
+        let worker_turn = LeadWorkerProvider::new_with_settings_and_state(
+            plain(),
+            coding_agent(),
+            3,
+            2,
+            2,
+            "worker-turn".into(),
+            LeadWorkerRoutingState {
+                turn_count: 3,
+                ..LeadWorkerRoutingState::default()
+            },
+        );
+        assert!(
+            worker_turn.uses_tool_bridge_for_tool_surface(),
+            "the active coding-agent worker receives the bridge roster"
         );
 
         let lead_is_codex = LeadWorkerProvider::new(coding_agent(), plain(), Some(3));
