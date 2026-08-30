@@ -614,6 +614,16 @@ fn compatible_is_the_only_function_that_compares_two_affiliations() {
         // Gate C's classification ratchet destructures `Institutions(..)` to
         // record the owners a chat has touched — a read, never a comparison.
         "crates/biorouter/src/agents/extension_manager.rs",
+        // Serialises a marketplace descriptor for the confirmation card. It
+        // never compares the extension affiliation with a model affiliation.
+        "crates/biorouter/src/agents/extension_manager_extension.rs",
+        // Validates and carries registry affiliation metadata. Its conservative
+        // extension-authority merge delegates to `privacy::affiliation`; model
+        // reach still delegates to `compatible`.
+        "crates/biorouter/src/marketplace.rs",
+        // Converts the durable private-authority representation into the shared
+        // affiliation vocabulary. No model affiliation enters this module.
+        "crates/biorouter/src/privacy/registry_live.rs",
         // The `cfg(test)` module exempted above.
         CFG_TEST_MODULE,
     ];

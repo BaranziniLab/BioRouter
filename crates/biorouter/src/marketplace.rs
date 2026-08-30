@@ -411,7 +411,10 @@ fn raise_with_known_authority(
         let known = crate::privacy::resolve_extension(identity, None);
         if known.tier.is_private() {
             privacy = ProviderTier::Private;
-            affiliation = restrict_affiliation(affiliation, known.affiliation);
+            affiliation = crate::privacy::affiliation::restrict_extension_affiliation(
+                affiliation,
+                known.affiliation,
+            );
         }
     }
     (privacy, affiliation)
@@ -463,23 +466,6 @@ fn validate_id(value: &str, field: &str) -> Result<(), MarketplaceError> {
         return invalid(format!("invalid {field} `{value}`"));
     }
     Ok(())
-}
-
-fn restrict_affiliation(
-    current: ExtensionAffiliation,
-    authority: ExtensionAffiliation,
-) -> ExtensionAffiliation {
-    match (current, authority) {
-        (ExtensionAffiliation::Any, affiliation) | (affiliation, ExtensionAffiliation::Any) => {
-            affiliation
-        }
-        (
-            ExtensionAffiliation::Institutions(current),
-            ExtensionAffiliation::Institutions(authority),
-        ) => {
-            ExtensionAffiliation::Institutions(current.intersection(&authority).copied().collect())
-        }
-    }
 }
 
 fn validate_text(value: &str, field: &str) -> Result<(), MarketplaceError> {
