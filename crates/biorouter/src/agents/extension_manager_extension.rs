@@ -1100,6 +1100,9 @@ impl ExtensionManagerClient {
 
                 Use manage_extensions to enable or disable third-party extensions by name.
                 Built-in and platform capabilities are managed separately and this tool refuses them.
+                A successful change applies immediately in the current turn. Its response names the
+                exact availableTools or removedTools; call an available tool directly by that name,
+                and never call a removed tool unless the extension is attached again.
                 Use browse/search to obtain an exact registry id, then install_extension when the
                 extension is not installed at all. Never provide a download URL or install
                 one by running shell commands, and NEVER ask the user to type an API key,
@@ -1275,7 +1278,7 @@ impl ExtensionManagerClient {
                 .map_err(|error| ExtensionManagerToolError::OperationFailed {
                     message: error.message.to_string(),
                 })?;
-                self.attach_extension_to_session(extension_name, config)
+                self.attach_extension_to_session(extension_name, config, cap)
                     .await
                     .map_err(|error| ExtensionManagerToolError::OperationFailed {
                         message: error.message.to_string(),
@@ -1484,6 +1487,15 @@ impl ExtensionManagerClient {
             extension_manager
                 .assert_extension_manageable(&extension_name, cap)
                 .await?;
+            let extension_key = crate::config::extensions::name_to_key(&extension_name);
+            let mut removed_tools = extension_manager
+                .get_prefixed_tools_for_extension_and_capability(&extension_key, cap)
+                .await
+                .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?
+                .into_iter()
+                .map(|tool| tool.name.to_string())
+                .collect::<Vec<_>>();
+            removed_tools.sort();
             return extension_manager
                 .remove_extension(&extension_name)
                 .await
@@ -1493,6 +1505,9 @@ impl ExtensionManagerClient {
                             "extensionName": extension_name,
                             "sessionState": "detached",
                             "persistentConfigurationChanged": false,
+                            "removedTools": removed_tools,
+                            "toolAvailability": "revokedImmediately",
+                            "guidance": "The removedTools are unavailable now. Do not call them unless the extension is attached again.",
                         })
                         .to_string(),
                     )]
@@ -1514,7 +1529,7 @@ impl ExtensionManagerClient {
             check_enable_allowed(entry, persisted, &extension_name, cap)?
         };
 
-        self.attach_extension_to_session(extension_name, config)
+        self.attach_extension_to_session(extension_name, config, cap)
             .await
     }
 
@@ -1522,6 +1537,7 @@ impl ExtensionManagerClient {
         &self,
         extension_name: String,
         config: ExtensionConfig,
+        cap: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, ErrorData> {
         let extension_manager = self
             .context
@@ -1535,20 +1551,30 @@ impl ExtensionManagerClient {
                     None,
                 )
             })?;
+        let extension_key = config.key();
         extension_manager
             .add_extension(config)
             .await
-            .map(|_| {
-                vec![Content::text(
-                    serde_json::json!({
-                        "extensionName": extension_name,
-                        "sessionState": "attached",
-                        "persistentConfigurationChanged": false,
-                    })
-                    .to_string(),
-                )]
+            .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+        let mut available_tools = extension_manager
+            .get_prefixed_tools_for_extension_and_capability(&extension_key, cap)
+            .await
+            .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect::<Vec<_>>();
+        available_tools.sort();
+        Ok(vec![Content::text(
+            serde_json::json!({
+                "extensionName": extension_name,
+                "sessionState": "attached",
+                "persistentConfigurationChanged": false,
+                "availableTools": available_tools,
+                "toolAvailability": "immediate",
+                "guidance": "The availableTools are callable now in this turn. Use the exact tool name needed for the user's task.",
             })
-            .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))
+            .to_string(),
+        )])
     }
 
     /// `admitted` is the capability THIS tool call was admitted on, taken
@@ -1655,6 +1681,8 @@ impl ExtensionManagerClient {
                 "Tool to manage extensions and tools in biorouter context.
             Enable or disable extensions to help complete tasks.
             Enable or disable an extension by providing the extension name.
+            Changes apply immediately in the current turn. The result lists exact availableTools
+            after attach or removedTools after detach; use or stop using those names accordingly.
             ".to_string(),
                 Arc::new(
                     serde_json::to_value(schema_for!(ManageExtensionsParams))
@@ -3289,6 +3317,115 @@ mod tests {
         };
         let client = ExtensionManagerClient::new(context).expect("the platform client builds");
         (dir, em, client)
+    }
+
+    #[tokio::test]
+    async fn attach_result_names_every_tool_that_is_immediately_callable() {
+        let (_dir, em, client) = a_live_tool_client();
+        let config = ExtensionConfig::Platform {
+            name: "extensionmanager".to_owned(),
+            description: "Extension Manager".to_owned(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+
+        let content = client
+            .attach_extension_to_session(
+                "Extension Manager".to_owned(),
+                config,
+                CallCapability::for_test(ProviderTier::Public, true),
+            )
+            .await
+            .expect("the platform extension attaches");
+        let text = content[0].as_text().expect("JSON text response");
+        let payload: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+        let reported = payload["availableTools"]
+            .as_array()
+            .expect("attach reports an exact tool roster")
+            .iter()
+            .map(|name| name.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        let mut actual = em
+            .get_prefixed_tools_for_extension_and_capability(
+                "extensionmanager",
+                CallCapability::for_test(ProviderTier::Public, true),
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect::<Vec<_>>();
+        actual.sort();
+
+        assert_eq!(reported, actual);
+        assert!(!reported.is_empty(), "the fixture must expose real tools");
+        assert_eq!(payload["toolAvailability"], "immediate");
+        assert!(payload["guidance"]
+            .as_str()
+            .unwrap()
+            .contains("callable now in this turn"));
+    }
+
+    #[tokio::test]
+    async fn detach_result_names_every_tool_that_is_revoked_immediately() {
+        let (_dir, em, client) = a_live_tool_client();
+        let context = PlatformExtensionContext {
+            extension_manager: Some(std::sync::Arc::downgrade(&em)),
+            session_manager: em.get_context().session_manager.clone(),
+        };
+        let config = ExtensionConfig::stdio(
+            "publicfixture",
+            "unused-fixture-command",
+            "ordinary public extension fixture",
+            30_u64,
+        );
+        em.add_client(
+            config.key(),
+            config,
+            std::sync::Arc::new(
+                ExtensionManagerClient::new(context).expect("fixture client builds"),
+            ),
+            None,
+            None,
+        )
+        .await;
+        let cap = CallCapability::for_test(ProviderTier::Public, true);
+        let mut before = em
+            .get_prefixed_tools_for_extension_and_capability("publicfixture", cap)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect::<Vec<_>>();
+        before.sort();
+        assert!(!before.is_empty(), "the fixture must expose real tools");
+
+        let content = client
+            .manage_extensions_impl(
+                ManageExtensionAction::Disable,
+                "publicfixture".to_owned(),
+                cap,
+                false,
+            )
+            .await
+            .expect("the ordinary public extension detaches");
+        let text = content[0].as_text().expect("JSON text response");
+        let payload: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+        let reported = payload["removedTools"]
+            .as_array()
+            .expect("detach reports an exact revoked roster")
+            .iter()
+            .map(|name| name.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(reported, before);
+        assert_eq!(payload["toolAvailability"], "revokedImmediately");
+        assert!(!em.is_extension_enabled("publicfixture").await);
+        assert!(em
+            .get_prefixed_tools_for_extension_and_capability("publicfixture", cap)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     async fn disable(client: &ExtensionManagerClient, name: &str, cap: CallCapability) -> String {

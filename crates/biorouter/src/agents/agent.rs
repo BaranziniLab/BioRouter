@@ -11172,8 +11172,10 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::extension_manager_extension::MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE;
     use crate::permission::{Permission, PermissionConfirmation};
     use crate::workflow::Response;
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn same_turn_catalog_refresh_covers_every_mutating_manager_tool_only() {
@@ -11212,6 +11214,157 @@ mod tests {
         ] {
             assert_eq!(tool_catalog_mutation(name), None, "{name} is read-only");
         }
+    }
+
+    struct SameTurnCatalogProvider {
+        calls: AtomicUsize,
+        second_request_tools: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for SameTurnCatalogProvider {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::empty()
+        }
+
+        fn get_name(&self) -> &str {
+            "same-turn-catalog-test"
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("same-turn-catalog-model")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            tools: &[Tool],
+        ) -> std::result::Result<
+            (Message, crate::providers::base::ProviderUsage),
+            crate::providers::errors::ProviderError,
+        > {
+            let usage = crate::providers::base::ProviderUsage::new(
+                "same-turn-catalog-model".to_owned(),
+                crate::providers::base::Usage::default(),
+            );
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                assert!(tools
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == "refreshfixture__capability_status"));
+                return Ok((
+                    Message::assistant().with_tool_request(
+                        "detach-refresh-fixture",
+                        Ok(rmcp::model::CallToolRequestParams {
+                            task: None,
+                            meta: None,
+                            name: MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE.into(),
+                            arguments: Some(rmcp::object!({
+                                "action": "disable",
+                                "extension_name": "refreshfixture",
+                            })),
+                        }),
+                    ),
+                    usage,
+                ));
+            }
+
+            *self
+                .second_request_tools
+                .lock()
+                .expect("tool capture lock poisoned") =
+                tools.iter().map(|tool| tool.name.to_string()).collect();
+            Ok((Message::assistant().with_text("catalog refreshed"), usage))
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_manager_mutation_refreshes_the_provider_tool_roster_in_the_same_turn() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        agent
+            .add_extension(ExtensionConfig::Platform {
+                name: "extensionmanager".to_owned(),
+                description: "Extension Manager".to_owned(),
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let fixture = ExtensionConfig::stdio(
+            "refreshfixture",
+            "unused-fixture-command",
+            "ordinary public extension refresh fixture",
+            30_u64,
+        );
+        agent
+            .extension_manager
+            .add_client(
+                fixture.key(),
+                fixture,
+                Arc::new(BridgeFixtureClient),
+                None,
+                None,
+            )
+            .await;
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        agent
+            .update_provider(
+                Arc::new(SameTurnCatalogProvider {
+                    calls: AtomicUsize::new(0),
+                    second_request_tools: Arc::clone(&captured),
+                }),
+                &session_id,
+            )
+            .await
+            .unwrap();
+
+        let stream = agent
+            .reply(
+                Message::user().with_text("remove the fixture and continue"),
+                SessionConfig {
+                    id: session_id,
+                    schedule_id: None,
+                    max_turns: Some(3),
+                    max_tool_calls: None,
+                    budget: None,
+                    retry_config: None,
+                    reasoning_effort: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::pin!(stream);
+        while let Some(event) = stream.next().await {
+            if let AgentEvent::Message(message) = event.unwrap() {
+                if let Some(MessageContent::ActionRequired(action)) = message.content.first() {
+                    if let ActionRequiredData::ToolConfirmation { id, .. } = &action.data {
+                        agent
+                            .handle_confirmation(
+                                id.clone(),
+                                PermissionConfirmation {
+                                    principal_type: crate::permission::permission_confirmation::PrincipalType::Tool,
+                                    permission: Permission::AllowOnce,
+                                },
+                            )
+                            .await;
+                    }
+                }
+            }
+        }
+
+        let second = captured.lock().expect("tool capture lock poisoned");
+        assert!(
+            !second.is_empty(),
+            "the provider must receive a second request"
+        );
+        assert!(second
+            .iter()
+            .any(|name| name == MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE));
+        assert!(!second
+            .iter()
+            .any(|name| name == "refreshfixture__capability_status"));
     }
 
     #[test]

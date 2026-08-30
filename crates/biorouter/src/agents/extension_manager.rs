@@ -1677,6 +1677,26 @@ impl ExtensionManager {
         Ok(self.filter_tools(&snapshot.tools, None, None, &snapshot.keys, &reach))
     }
 
+    /// Get one attached extension's model-facing tools using the capability
+    /// sampled when the lifecycle call was admitted. Lifecycle result payloads
+    /// use this to tell the model exactly what became callable or was revoked
+    /// without re-sampling the provider mid-turn or bypassing Gate E.
+    pub(crate) async fn get_prefixed_tools_for_extension_and_capability(
+        &self,
+        extension_name: &str,
+        admitted: crate::privacy::CallCapability,
+    ) -> ExtensionResult<Vec<Tool>> {
+        let snapshot = self.get_all_tools_cached().await?;
+        let reach = self.extension_reach(Some(admitted)).await;
+        Ok(self.filter_tools(
+            &snapshot.tools,
+            Some(extension_name),
+            None,
+            &snapshot.keys,
+            &reach,
+        ))
+    }
+
     /// The `execute_code` bridge's importable-module catalogue, which is a
     /// discovery surface in its own right: `search_modules` and `read_module`
     /// serve tool names, signatures and descriptions out of it on demand, so
