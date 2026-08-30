@@ -1,10 +1,10 @@
 # Workspace Control tool reference
 
-> **What this is.** The precise reference for the eight tools the Workspace Control extension puts in the model's tool list: exact name, arguments, return shape, refusal conditions, and the cases where a tool reports success it did not earn.
+> **What this is.** The precise reference for the eight tools the Workspace Control capability puts in the model's tool list: exact name, arguments, return shape, refusal conditions, and the cases where a tool reports success it did not earn.
 > **Status:** Current. Two false-success paths and one dead GUI frame are documented in place — see [`subagent`](#subagent) and [`workspace_close`](#workspace_close).
 > **Audience:** developers working on the agent loop, and anyone diagnosing a workspace tool that behaved unexpectedly.
 
-Workspace Control (`workspace`, identifier `Workspace`, display name **Workspace Control**) is a platform extension whose tools operate on BioRouter *sessions* — other conversations — rather than on files or the network. This page is the per-tool contract. It is written for the moment a tool misbehaves and you need to know what it actually promises, so it prefers exact strings and named source paths over explanation. For the user-facing account of what the extension is for, when the tiers differ, and what the confirmation cards say, read [the Workspace Control extension guide](../extensions/built-in/workspace.md) first.
+Workspace Control (`workspace`, identifier `Workspace`, display name **Workspace Control**) is a platform extension whose tools operate on BioRouter *sessions* — other conversations — rather than on files or the network. This page is the per-tool contract. It is written for the moment a tool misbehaves and you need to know what it actually promises, so it prefers exact strings and named source paths over explanation. For the user-facing account of what the extension is for, when the tiers differ, and what the confirmation cards say, read [the Workspace Control capability guide](../extensions/built-in/workspace.md) first.
 
 Everything below is read off `crates/biorouter/src/agents/workspace_extension.rs` (the seven `workspace_*` tools), `crates/biorouter/src/agents/subagent_tool.rs` (`subagent`), `crates/biorouter/src/agents/workspace_inspector.rs` (the always-confirm rule), and `ui/desktop/src/components/chatGroups/workspaceCommandPlanner.ts` (what the renderer does with a frame).
 
@@ -577,7 +577,7 @@ Two names are retired and pinned as such by `RETIRED_TOOL_NAMES`: `subagent_stat
 
 - [Session metadata contract](session-metadata-contract.md) — the ID, kind, parent and subagent-run identity every one of these tools resolves against.
 - [Workspace control](workspace-control.md) — the task-oriented guide: laying work out across tabs, panes and windows, and the caps you meet in practice.
-- [Workspace Control extension](../extensions/built-in/workspace.md) — the user-facing guide: the two tiers, how to enable the full surface, the confirmation card, focus etiquette, and the CLI capability table.
+- [Workspace Control capability](../extensions/built-in/workspace.md) — the user-facing guide: the two tiers, how to enable the full surface, the confirmation card, focus etiquette, and the CLI capability table.
 - [Subagents](subagents.md) — the glass-box tab, `human_intervened`, and what closing a child's tab does and does not do.
 - [Tool routing](tool-routing.md) — which of these tools the model should prefer, and the disambiguation against Chat Recall, Memory and the knowledge base.
 - [Agent workspace control (BR-71 design)](designs/agent-workspace-control.md) — the design of record, including the §4.3 frame vocabulary and the §5 permissions and abuse analysis.

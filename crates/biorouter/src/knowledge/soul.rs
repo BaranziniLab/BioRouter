@@ -788,6 +788,13 @@ instructions: |-
 
   If there is nothing new worth recording, say so and make no changes.
 extensions:
+- type: builtin
+  name: knowledge
+  display_name: Knowledge
+  description: Read, search, validate, and update Biorouter knowledge bases
+  timeout: 300
+  bundled: true
+  available_tools: []
 - type: platform
   name: skills
   description: Search the skills installed on this machine and load the one that matches the task in hand

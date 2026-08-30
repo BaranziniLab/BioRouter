@@ -33,6 +33,7 @@ pub mod master_switch;
 pub mod mixing;
 pub mod provenance;
 pub mod refusal;
+pub(crate) mod registry_live;
 mod registry_private;
 pub mod system_auth;
 // The three platform prompters and the test seam (DR-24). Each carries its own

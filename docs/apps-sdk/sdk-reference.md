@@ -618,5 +618,5 @@ Example apps live under `scripts/agent-drafter-apps/examples/ui/` (`install-exam
 - [Apps SDK v2 design](v2-design.md) — the nine-pillar rationale behind every surface documented here, including the pieces still design-only.
 - [Apps SDK v2 phase roadmap](v2-phase-roadmap.md) — the order in which these features land, and what each phase must prove before it ships.
 - [BioRouter Apps platform design](../agent-drafter/apps-platform-design.md) — the subsystem overview of Agent Drafter, and where this reference sits within it.
-- [Auto Visualiser extension](../extensions/built-in/auto-visualiser.md) — the `render_*` tools `ui_figure` embeds into an app panel.
+- [Auto Visualiser capability](../extensions/built-in/auto-visualiser.md) — the `render_*` tools `ui_figure` embeds into an app panel.
 - [Agent Drafter 100-app test-drive runbook](../agent-drafter/testing/app-test-drive-runbook.md) — how to exercise an authored app end-to-end in a browser.

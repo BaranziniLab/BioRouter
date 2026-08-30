@@ -12,6 +12,7 @@ pub const DEFAULT_EXTENSION_TIMEOUT: u64 = 300;
 pub const DEFAULT_EXTENSION_DESCRIPTION: &str = "";
 pub const DEFAULT_DISPLAY_NAME: &str = "Developer";
 const EXTENSIONS_CONFIG_KEY: &str = "extensions";
+const RETIRED_BUILTIN_EXTENSIONS: &[&str] = &["tutorial"];
 
 #[derive(Debug, Deserialize, Serialize, Clone, ToSchema)]
 pub struct ExtensionEntry {
@@ -41,6 +42,7 @@ fn get_extensions_map() -> IndexMap<String, ExtensionEntry> {
     let mut extensions_map = IndexMap::with_capacity(raw.len());
     for (k, v) in raw {
         match (k, serde_yaml::from_value::<ExtensionEntry>(v)) {
+            (serde_yaml::Value::String(_), Ok(entry)) if is_retired_builtin_extension(&entry) => {}
             (serde_yaml::Value::String(key), Ok(entry)) => {
                 extensions_map.insert(key, entry);
             }
@@ -56,6 +58,14 @@ fn get_extensions_map() -> IndexMap<String, ExtensionEntry> {
 
     inject_platform_extensions(&mut extensions_map);
     extensions_map
+}
+
+fn is_retired_builtin_extension(entry: &ExtensionEntry) -> bool {
+    matches!(
+        &entry.config,
+        ExtensionConfig::Builtin { name, .. }
+            if RETIRED_BUILTIN_EXTENSIONS.contains(&name_to_key(name).as_str())
+    )
 }
 
 fn inject_platform_extensions(extensions: &mut IndexMap<String, ExtensionEntry>) {
@@ -568,5 +578,41 @@ mod reset_tests {
         assert_eq!(retain_bundled_extensions(&mut extensions), 1);
         assert_eq!(extensions.len(), 1);
         assert!(extensions["developer"].config.is_bundled());
+    }
+}
+
+#[cfg(test)]
+mod retired_builtin_tests {
+    use super::*;
+
+    fn entry(config: ExtensionConfig) -> ExtensionEntry {
+        ExtensionEntry {
+            enabled: true,
+            config,
+        }
+    }
+
+    #[test]
+    fn only_the_retired_tutorial_builtin_is_filtered() {
+        let tutorial = entry(ExtensionConfig::Builtin {
+            name: "Tutorial".into(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        });
+        let external_tutorial = entry(ExtensionConfig::stdio(
+            "tutorial",
+            "external-tutorial",
+            "External tutorial",
+            30_u64,
+        ));
+
+        assert!(is_retired_builtin_extension(&tutorial));
+        assert!(!is_retired_builtin_extension(&external_tutorial));
+        assert!(!is_retired_builtin_extension(&entry(
+            ExtensionConfig::default()
+        )));
     }
 }

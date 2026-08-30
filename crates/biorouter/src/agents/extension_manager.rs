@@ -26,8 +26,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, warn};
 
 use super::extension::{
-    ExtensionConfig, ExtensionError, ExtensionInfo, ExtensionResult, PlatformExtensionContext,
-    ToolInfo, PLATFORM_EXTENSIONS,
+    ExtensionClassification, ExtensionConfig, ExtensionError, ExtensionInfo, ExtensionResult,
+    PlatformExtensionContext, ToolInfo, PLATFORM_EXTENSIONS,
 };
 use super::tool_execution::ToolCallResult;
 use super::types::SharedProvider;
@@ -52,6 +52,22 @@ use serde_json::Value;
 /// per-turn dedup in `moim.rs` recognises exactly what this function emits.
 pub const MOIM_OPEN_TAG: &str = "<info-msg>";
 pub const MOIM_CLOSE_TAG: &str = "</info-msg>";
+
+pub(crate) fn capability_management_error(name: &str) -> ErrorData {
+    ErrorData::new(
+        ErrorCode::INVALID_REQUEST,
+        format!(
+            "`{name}` is a built-in Biorouter capability, not an installed extension, and cannot be enabled or disabled through Extension Manager"
+        ),
+        None,
+    )
+}
+
+pub(crate) fn capability_management_refusal(config: &ExtensionConfig) -> Option<ErrorData> {
+    config
+        .is_capability()
+        .then(|| capability_management_error(&config.name()))
+}
 
 /// How an extension entry came to be loaded.
 ///
@@ -1303,10 +1319,15 @@ impl ExtensionManager {
             .iter()
             .filter(|(name, _)| allowed.iter().any(|k| k == *name))
             .map(|(name, ext)| {
-                ExtensionInfo::new(
+                ExtensionInfo::classified(
                     name,
                     ext.get_instructions().unwrap_or_default().as_str(),
                     ext.supports_resources(),
+                    if ext.config.is_capability() {
+                        ExtensionClassification::Capability
+                    } else {
+                        ExtensionClassification::Extension
+                    },
                 )
             })
             .collect()
@@ -2181,7 +2202,20 @@ impl ExtensionManager {
         name: &str,
         admitted: crate::privacy::CallCapability,
     ) -> Result<(), ErrorData> {
-        self.assert_extension_reachable(&normalize(name), Some(admitted))
+        let normalized = normalize(name);
+        if resolve_bundled_extension(&normalized).is_some() {
+            return Err(capability_management_error(name));
+        }
+        if let Some(refusal) = self
+            .extensions
+            .lock()
+            .await
+            .get(&normalized)
+            .and_then(|extension| capability_management_refusal(&extension.config))
+        {
+            return Err(refusal);
+        }
+        self.assert_extension_reachable(&normalized, Some(admitted))
             .await
     }
 
@@ -2923,19 +2957,18 @@ impl ExtensionManager {
     ///     surfaces are made to agree by tightening the looser one, never by
     ///     weakening Gate E.
     ///  3. It is the only listing surface still open. `get_extensions_info`
-    ///     (the system prompt's extension roster) already filters through
+    ///     (the system prompt's capability/extension roster) already filters through
     ///     `allowed_extension_keys`; `get_prefixed_tools` and
     ///     `get_prefixed_tools_excluding` are Gate E proper. Leaving one
     ///     unfiltered listing beside three filtered ones is not a scope
     ///     boundary, it is the gap.
     ///
-    /// So: **both halves of the output are filtered, by the same verdict Gate E
-    /// filters the tool list with.** The "available to disable" half is literally
-    /// [`ExtensionReach::allowed`], so those two cannot disagree at all. The
-    /// "disabled in the config" half is not in `self.extensions` and so cannot
-    /// come from that verdict — [`config_disabled_extension_lines`] applies the
-    /// same predicate (`privacy_refusal`, under `cap.enforced()`) to the config
-    /// entries instead.
+    /// So: **both halves apply the same privacy verdict as Gate E, then exclude
+    /// Biorouter capabilities because this tool manages third-party extensions.**
+    /// The "disabled in the config" half is not in `self.extensions` and so
+    /// cannot come from that verdict — [`config_disabled_extension_lines`]
+    /// applies the same predicate (`privacy_refusal`, under `cap.enforced()`) to
+    /// the config entries instead.
     ///
     /// `admitted` is the capability the `search_available_extensions` tool call
     /// was admitted on. Required rather than `Option`, and never sampled here:
@@ -2952,22 +2985,32 @@ impl ExtensionManager {
 
         // First get disabled extensions from current config; only entries the
         // operator actually persisted with `enabled: false` get the
-        // do-not-enable label (#42) — injected default-off platform entries
-        // stay listed as plainly enableable. Entries this caller may not see at
-        // all never reach the labelling step.
+        // do-not-enable label (#42). Biorouter capabilities are managed on
+        // their own settings surface and never enter this extension listing.
+        // Entries this caller may not see at all never reach the labelling step.
         let disabled_extensions = config_disabled_extension_lines(
             &get_all_extensions(),
             &crate::config::persisted_extension_names(),
             admitted,
         );
 
-        // Get currently enabled extensions that can be disabled — Gate E's own
-        // verdict, so this listing and the tool list are the same set by
-        // construction rather than by two rules that happen to agree today.
+        // Get currently enabled third-party extensions that can be disabled.
+        // Gate E supplies the privacy verdict; the config classification then
+        // removes Biorouter capabilities from this manager-specific listing.
         // Sorted because `extensions` is a `HashMap` with per-process-randomised
         // iteration order, exactly as `cross_affiliation_warnings` sorts.
-        let mut enabled_extensions: Vec<String> =
-            self.extension_reach(Some(admitted)).await.allowed;
+        let allowed = self.extension_reach(Some(admitted)).await.allowed;
+        let mut enabled_extensions: Vec<String> = {
+            let extensions = self.extensions.lock().await;
+            allowed
+                .into_iter()
+                .filter(|name| {
+                    extensions
+                        .get(name)
+                        .is_some_and(|extension| !extension.config.is_capability())
+                })
+                .collect()
+        };
         enabled_extensions.sort();
 
         // Build output string
@@ -3026,13 +3069,17 @@ impl ExtensionManager {
             content.push('\n');
         }
 
-        let platform_clients: Vec<(String, McpClientBox)> = {
+        let platform_clients: Vec<(String, ExtensionConfig, McpClientBox)> = {
             let extensions = self.extensions.lock().await;
             extensions
                 .iter()
                 .filter_map(|(name, extension)| {
                     if let ExtensionConfig::Platform { .. } = &extension.config {
-                        Some((name.clone(), extension.get_client()))
+                        Some((
+                            name.clone(),
+                            extension.config.clone(),
+                            extension.get_client(),
+                        ))
                     } else {
                         None
                     }
@@ -3040,7 +3087,10 @@ impl ExtensionManager {
                 .collect()
         };
 
-        for (name, client) in platform_clients {
+        for (name, config, client) in platform_clients {
+            if !platform_moim_allowed(&name, &config) {
+                continue;
+            }
             let client_guard = &*client;
             if let Some(moim_content) = client_guard.get_moim(session_id).await {
                 tracing::debug!("MOIM content from {}: {} chars", name, moim_content.len());
@@ -3056,6 +3106,11 @@ impl ExtensionManager {
     }
 }
 
+fn platform_moim_allowed(name: &str, config: &ExtensionConfig) -> bool {
+    name != crate::agents::workspace_extension::EXTENSION_NAME
+        || config.is_tool_available("workspace_read_panel")
+}
+
 /// Label appended to every **operator**-disabled entry in
 /// `search_available_extensions` output (#42): these extensions were turned
 /// off by the operator, so the model must not treat the listing as an
@@ -3065,11 +3120,9 @@ pub(crate) const CONFIG_DISABLED_LABEL: &str = "(disabled by user; do not enable
 
 /// One listing line per config-disabled extension. Only entries the operator
 /// actually wrote into the config file (`persisted`, keyed by
-/// `config.name()`) carry [`CONFIG_DISABLED_LABEL`] — an absent platform
-/// extension injected with a default-off entry (e.g. `chatrecall`) is still
-/// listed as available to enable, but unlabeled, because no operator ever
-/// disabled it. Pure so the labeling is unit-testable without a global
-/// config.
+/// `config.name()`) carry [`CONFIG_DISABLED_LABEL`]. Builtin and platform
+/// capabilities are excluded before labeling. Pure so the behavior is
+/// unit-testable without a global config.
 ///
 /// ⚠ **Issue #56 Gate E: an entry `cap` may not see is dropped before it is
 /// ever labelled.** This half of `search_available_extensions` reads the config
@@ -3092,6 +3145,7 @@ fn config_disabled_extension_lines(
     entries
         .iter()
         .filter(|extension| !extension.enabled)
+        .filter(|extension| !extension.config.is_capability())
         .filter(|extension| {
             if !cap.enforced() {
                 // DR-15's master opt-out, read off the capability rather than
@@ -3178,6 +3232,12 @@ mod tests {
             // rule a real extension is (issue #56) and the gates resolve its
             // tier the same way, instead of carrying one hardcoded here.
             self.add_client(sanitized_name, config, client, None, None)
+                .await;
+        }
+
+        async fn add_mock_third_party_extension(&self, name: &str, client: McpClientBox) {
+            let config = ExtensionConfig::stdio(name, "mock-command", "mock extension", 30_u64);
+            self.add_client(name.to_string(), config, client, None, None)
                 .await;
         }
     }
@@ -4079,6 +4139,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn restricted_workspace_does_not_inject_panel_moim() {
+        let restricted = ExtensionConfig::Platform {
+            name: crate::agents::workspace_extension::EXTENSION_NAME.to_string(),
+            description: "delegation only".to_string(),
+            bundled: Some(true),
+            available_tools: vec!["workspace_list".to_string(), "subagent".to_string()],
+        };
+        assert!(!platform_moim_allowed(
+            crate::agents::workspace_extension::EXTENSION_NAME,
+            &restricted
+        ));
+
+        let full = ExtensionConfig::Platform {
+            name: crate::agents::workspace_extension::EXTENSION_NAME.to_string(),
+            description: "delegation and panel control".to_string(),
+            bundled: Some(true),
+            available_tools: vec![],
+        };
+        assert!(platform_moim_allowed(
+            crate::agents::workspace_extension::EXTENSION_NAME,
+            &full
+        ));
+    }
+
     #[tokio::test]
     async fn test_tools_cache_invalidated_on_add_extension() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -4182,9 +4267,37 @@ mod tests {
         assert!(!tool_names.iter().any(|n| n.starts_with("ext_b__")));
     }
 
-    // #42 hardening: operator-disabled entries in search_available_extensions
-    // output must be labeled so the model doesn't treat the listing as an
-    // invitation to silently re-enable what the operator turned off.
+    #[tokio::test]
+    async fn get_extensions_info_classifies_capabilities_and_extensions() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let extension_manager =
+            ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        extension_manager
+            .add_mock_extension("developer".to_string(), Arc::new(MockClient {}))
+            .await;
+        extension_manager
+            .add_mock_third_party_extension("custom", Arc::new(MockClient {}))
+            .await;
+
+        let info = extension_manager.get_extensions_info().await;
+        let developer = info
+            .iter()
+            .find(|entry| entry.name == "developer")
+            .expect("Developer is attached");
+        let custom = info
+            .iter()
+            .find(|entry| entry.name == "custom")
+            .expect("custom extension is attached");
+        assert_eq!(
+            developer.classification,
+            ExtensionClassification::Capability
+        );
+        assert_eq!(custom.classification, ExtensionClassification::Extension);
+    }
+
+    // #42 hardening: operator-disabled third-party extensions in
+    // search_available_extensions output must be labeled. Capabilities use the
+    // capability settings surface instead and are excluded entirely.
     #[test]
     fn config_disabled_lines_label_every_disabled_entry_and_skip_enabled_ones() {
         use crate::config::ExtensionEntry;
@@ -4217,34 +4330,35 @@ mod tests {
         ]);
 
         let lines = config_disabled_extension_lines(&entries, &persisted, a_private_caller());
-        assert_eq!(lines.len(), 2, "enabled entries must not be listed");
+        assert_eq!(
+            lines.len(),
+            1,
+            "only disabled third-party extensions are listed"
+        );
         assert!(
             lines.iter().all(|l| l.contains(CONFIG_DISABLED_LABEL)),
             "every operator-disabled entry must carry the label: {lines:?}"
         );
-        // Empty Builtin description falls back to the display name.
         assert!(
-            lines[0].starts_with("- developer - Developer "),
+            lines[0].starts_with("- custom - A custom server "),
             "{}",
             lines[0]
-        );
-        assert!(
-            lines[1].starts_with("- custom - A custom server "),
-            "{}",
-            lines[1]
         );
         assert!(
             !lines.iter().any(|l| l.contains("running")),
             "enabled extension leaked into the disabled list: {lines:?}"
         );
+        assert!(
+            !lines.iter().any(|l| l.contains("developer")),
+            "capability leaked into extension discovery: {lines:?}"
+        );
     }
 
-    // #42 provenance: an absent platform extension is injected with its
-    // default — a default-off one (chatrecall) reads `enabled: false` without
-    // any operator action. It must still be listed as available to enable,
-    // but must NOT carry the do-not-enable label.
+    // A default-off capability such as Chat Recall is not an extension-manager
+    // discovery result. The third-party extension remains available and keeps
+    // its operator-disabled provenance label.
     #[test]
-    fn config_disabled_lines_leave_injected_default_off_entries_unlabeled() {
+    fn config_disabled_lines_exclude_capabilities() {
         use crate::config::ExtensionEntry;
 
         let entries = vec![
@@ -4266,14 +4380,14 @@ mod tests {
         let persisted = std::collections::HashSet::from(["custom".to_string()]);
 
         let lines = config_disabled_extension_lines(&entries, &persisted, a_private_caller());
-        assert_eq!(lines.len(), 2, "both entries stay listed as enableable");
-        let chatrecall = lines
-            .iter()
-            .find(|l| l.contains("chatrecall"))
-            .expect("injected default-off entry must stay listed");
+        assert_eq!(
+            lines.len(),
+            1,
+            "only third-party extensions are discoverable"
+        );
         assert!(
-            !chatrecall.contains(CONFIG_DISABLED_LABEL),
-            "no operator disabled chatrecall, so it must not be labeled: {chatrecall}"
+            !lines.iter().any(|line| line.contains("chatrecall")),
+            "capabilities must not be presented as extensions: {lines:?}"
         );
         let custom = lines
             .iter()
@@ -4435,8 +4549,12 @@ mod tests {
             "the catalogue named an installed private connector to a public model:\n{public}"
         );
         assert!(
-            public.contains("developer"),
-            "the public extension must still be listed, or this proves nothing:\n{public}"
+            public.contains("custom"),
+            "a public third-party extension must still be listed, or this proves nothing:\n{public}"
+        );
+        assert!(
+            !public.contains("developer"),
+            "a Biorouter capability was presented as an extension:\n{public}"
         );
 
         // Gate E, same manager, same capability. The two surfaces must agree.
@@ -4480,9 +4598,19 @@ mod tests {
             .expect_err("a public model may not unload the clinical connector");
         assert!(err.message.contains("private extension"), "{}", err.message);
 
-        em.assert_extension_manageable("developer", a_public_caller())
+        em.assert_extension_manageable("custom", a_public_caller())
             .await
             .expect("a public extension is still manageable, or the gate is a blanket refusal");
+
+        let capability = em
+            .assert_extension_manageable("developer", a_private_caller())
+            .await
+            .expect_err("built-in capabilities are not managed as extensions");
+        assert!(
+            capability.message.contains("capability"),
+            "{}",
+            capability.message
+        );
 
         em.assert_extension_manageable("ucsfomopagent", a_private_caller())
             .await
@@ -4533,16 +4661,16 @@ mod tests {
     /// The gate resolves the same key its executor removes.
     ///
     /// `remove_extension` normalizes before removing, so a gate that looked up
-    /// the raw spelling would read `Developer` as an unknown name — which
+    /// the raw spelling would read `Custom` as an unknown name — which
     /// `assert_extension_reachable` treats as Private and refuses. The bug that
     /// direction produces is a legitimate disable failing, but the same skew in
     /// a future executor that did NOT normalize would be a bypass.
     #[tokio::test]
     async fn the_disable_gate_normalizes_the_name_its_executor_normalizes() {
         let (_dir, em, _handle) = affiliation_fixture(a_local_model()).await;
-        em.assert_extension_manageable("Developer", a_public_caller())
+        em.assert_extension_manageable("Custom", a_public_caller())
             .await
-            .expect("`Developer` and `developer` are one extension to remove_extension");
+            .expect("`Custom` and `custom` are one extension to remove_extension");
     }
 
     // ---- issue #48: `/ext:` resolution by id + owning registry ----
@@ -7289,8 +7417,9 @@ mod tests {
             .expect("the fixture only discriminates if this pair really mismatches")
     }
 
-    /// A manager holding the UCSF-affiliated `ucsfomopagent` and the
-    /// unaffiliated public `developer`, bound to `provider`.
+    /// A manager holding the UCSF-affiliated `ucsfomopagent`, the unaffiliated
+    /// public `custom` extension, and the `developer` capability, bound to
+    /// `provider`.
     async fn affiliation_fixture(
         provider: Arc<dyn crate::providers::base::Provider>,
     ) -> (TempDir, ExtensionManager, SharedProvider) {
@@ -7300,7 +7429,9 @@ mod tests {
         ));
         let handle: SharedProvider = Arc::new(Mutex::new(Some(provider)));
         let em = ExtensionManager::new(handle.clone(), session_manager);
-        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+        em.add_mock_third_party_extension("ucsfomopagent", Arc::new(MockClient {}))
+            .await;
+        em.add_mock_third_party_extension("custom", Arc::new(MockClient {}))
             .await;
         em.add_mock_extension("developer".to_string(), Arc::new(MockClient {}))
             .await;

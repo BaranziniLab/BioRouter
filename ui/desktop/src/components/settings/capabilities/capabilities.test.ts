@@ -20,7 +20,6 @@ const expectedDefaults = {
   knowledge: true,
   agent_drafter: true,
   chatrecall: false,
-  tutorial: false,
   workspace: true,
 };
 
@@ -46,7 +45,7 @@ describe('capabilities', () => {
       expect(shouldDefaultEnablePromotedCapability({ name, enabled: true }), name).toBe(false);
     }
 
-    for (const name of ['chatrecall', 'tutorial', 'developer']) {
+    for (const name of ['chatrecall', 'memory', 'developer']) {
       expect(shouldDefaultEnablePromotedCapability({ name, enabled: false }), name).toBe(false);
     }
   });
@@ -54,6 +53,6 @@ describe('capabilities', () => {
   it('upgrade-enables Agent Drafter when adopting its new default', () => {
     expect(shouldDefaultEnableAgentDrafter({ name: 'agent_drafter', enabled: false })).toBe(true);
     expect(shouldDefaultEnableAgentDrafter({ name: 'agent_drafter', enabled: true })).toBe(false);
-    expect(shouldDefaultEnableAgentDrafter({ name: 'tutorial', enabled: false })).toBe(false);
+    expect(shouldDefaultEnableAgentDrafter({ name: 'developer', enabled: false })).toBe(false);
   });
 });

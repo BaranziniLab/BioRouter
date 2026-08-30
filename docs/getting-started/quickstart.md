@@ -176,7 +176,7 @@ biorouter will create a plan and then get right to work on it. Once done, your d
 
 ## Enable an extension
 
-While biorouter can already work with files in your directory, wouldn't it be better if it could fetch papers and data from the web for you? Let's give biorouter the ability to browse the web and scrape sources by enabling the [Computer Controller extension](../extensions/built-in/computer-controller.md).
+While biorouter can already work with files in your directory, wouldn't it be better if it could fetch papers and data from the web for you? Let's give biorouter the ability to browse the web and scrape sources by enabling the [Computer Controller capability](../extensions/built-in/computer-controller.md).
 
 ### Desktop
 
@@ -247,5 +247,5 @@ Here are some ideas for next steps:
 - [Installation and setup](installation.md) — the long-form install guide, including UCSF institutional providers, remote MCP agents, and config file locations.
 - [Choosing a model provider](choosing-a-model-provider.md) — per-provider credentials, default models, and how to switch providers.
 - [Usage tips](usage-tips.md) — short habits for prompting, cost control, and session hygiene once you are past the first task.
-- [Computer Controller extension](../extensions/built-in/computer-controller.md) — the full tool list for the extension you enabled above.
+- [Computer Controller capability](../extensions/built-in/computer-controller.md) — the full tool list for the extension you enabled above.
 - [biorouter CLI command reference](../cli/command-reference.md) — every subcommand, including `session` and `web`.

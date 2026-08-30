@@ -172,7 +172,7 @@ fn render_load_parts(parts: &[String]) -> String {
         rendered.push(clip_within(
             part,
             share,
-            "read this session with workspace_read_conversation for the full text",
+            "if Workspace Control offers workspace_read_conversation, use it for the full text",
         ));
     }
 
@@ -185,7 +185,8 @@ fn render_load_parts(parts: &[String]) -> String {
 /// The marker is load-bearing: silent truncation would let the model conclude a
 /// message does not mention something when it simply was not shown.
 fn excerpt(content: &str, query: &str) -> String {
-    const HINT: &str = "read this session with workspace_read_conversation for the full message";
+    const HINT: &str =
+        "if Workspace Control offers workspace_read_conversation, use it for the full message";
 
     let total = content.chars().count();
     if total <= MAX_EXCERPT_CHARS {

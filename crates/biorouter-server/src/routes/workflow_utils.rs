@@ -10,13 +10,11 @@ use crate::state::AppState;
 use anyhow::Result;
 use axum::http::StatusCode;
 use biorouter::agents::Agent;
-use biorouter::prompt_template::render_global_file;
 use biorouter::workflow::build_workflow::{build_workflow_from_template, WorkflowError};
 use biorouter::workflow::local_workflows::{get_workflow_library_dir, list_local_workflows};
 use biorouter::workflow::validate_workflow::validate_workflow_template_from_content;
 use biorouter::workflow::Workflow;
 use serde::Serialize;
-use serde_json::Value;
 use tracing::error;
 use utoipa::ToSchema;
 
@@ -161,31 +159,15 @@ pub async fn build_workflow_with_parameter_values(
 
 pub async fn apply_workflow_to_agent(
     agent: &Arc<Agent>,
+    session_id: &str,
     workflow: &Workflow,
     include_final_output_tool: bool,
-) -> Option<String> {
-    agent
-        .apply_workflow_components(
-            workflow.sub_workflows.clone(),
-            workflow.response.clone(),
-            include_final_output_tool,
-        )
-        .await;
-
-    workflow.instructions.as_ref().map(|instructions| {
-        let mut instructions = instructions.clone();
-        if let Some(skills) = workflow.skills.as_ref().filter(|skills| !skills.is_empty()) {
-            instructions.push_str(
-                "\n\nWorkflow skill selection: when using the skills extension, prefer these skills for this workflow:\n",
-            );
-            for skill in skills {
-                instructions.push_str(&format!("- {skill}\n"));
-            }
-        }
-
-        let mut context: HashMap<&str, Value> = HashMap::new();
-        context.insert("workflow_instructions", Value::String(instructions));
-        render_global_file("desktop_workflow_instruction.md", &context)
-            .expect("Prompt should render")
-    })
+) -> Result<Option<String>> {
+    biorouter::workflow::runtime::apply_to_agent(
+        agent.as_ref(),
+        session_id,
+        workflow,
+        include_final_output_tool,
+    )
+    .await
 }

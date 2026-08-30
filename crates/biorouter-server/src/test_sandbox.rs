@@ -78,6 +78,7 @@ mod tests {
     /// neither is set, because `starts_with("")` is true for every path, so a
     /// missing home makes the check STRICTER rather than vacuous.
     #[test]
+    #[serial_test::serial]
     fn the_session_database_is_not_the_developers() {
         let data_dir = Paths::data_dir();
         let home = std::env::var("HOME")

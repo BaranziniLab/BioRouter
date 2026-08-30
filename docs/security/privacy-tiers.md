@@ -1825,7 +1825,7 @@ existing-but-discarded `live: boolean` is surfaced as "catalogue last updated <d
 | `medcp` | **no** | PUBLIC | verified absent — all 37 ids scanned |
 | `msbaseagent` | **no** | PUBLIC | verified absent |
 | the remaining 34 catalogue entries | yes | PUBLIC | no marker |
-| built-ins: `developer`, `autovisualiser`, `computercontroller`, `memory`, `tutorial`, `agent_drafter`, `knowledge` | n/a | PUBLIC | R11 |
+| built-ins: `developer`, `autovisualiser`, `computercontroller`, `memory`, `agent_drafter`, `knowledge` | n/a | PUBLIC | R11 |
 | platform: `todo`, `chatrecall`, `extensionmanager`, `skills`, `code_execution` | n/a | PUBLIC | R11 |
 | in-process app servers: `appcontrol`, `datasql`, `files`, `compute`, `evidence` | n/a | PUBLIC | per-app sandbox |
 | anything hand-installed | no | PUBLIC | R11(ii) |

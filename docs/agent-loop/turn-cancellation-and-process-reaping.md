@@ -2,7 +2,7 @@
 
 > **What this is.** The contract that makes Stop actually stop things: how a cancelled turn reaches a running OS process, why every link in that chain is cooperative, and the two rules a change to any link must not break.
 > **Status:** Current. Describes the code as it ships — `routes/reply.rs`, `agents/mcp_client.rs`, `agents/code_execution_extension.rs`, and `biorouter-mcp/src/developer/{shell,rmcp_developer}.rs`. Written up after [#72](https://github.com/BaranziniLab/biorouter/issues/72), where one link was severed and Stop left a filesystem scan running.
-> **Audience:** anyone touching the cancel path, the MCP client, or how the Developer extension spawns processes.
+> **Audience:** anyone touching the cancel path, the MCP client, or how the Developer capability spawns processes.
 
 ## The chain
 
@@ -25,7 +25,7 @@ There is a second, independent trigger for F→H. `POST /agent/stop` does two th
 
 ## Rule 1 — never abort a future that owes a cancellation downstream
 
-The link that broke in #72 was C→D. `handle_execute_code` called `tool_handler.abort()` the instant the token tripped. The handler task was parked inside the nested dispatch, and that dispatch is the only thing that sends `notifications/cancelled` to the Developer extension. Aborting it dropped the future before it could send, so `on_cancelled` never fired and the command kept running with nobody waiting for it.
+The link that broke in #72 was C→D. `handle_execute_code` called `tool_handler.abort()` the instant the token tripped. The handler task was parked inside the nested dispatch, and that dispatch is the only thing that sends `notifications/cancelled` to the Developer capability. Aborting it dropped the future before it could send, so `on_cancelled` never fired and the command kept running with nobody waiting for it.
 
 Both futures wake from the same token, so which one won was a scheduling race — roughly one orphan in four on a multi-threaded runtime, and every time on a single-threaded one. That is what "cancel does not *reliably* stop it" looks like in practice, and why an intermittent orphan is not a flake to be retried but a dropped link.
 
@@ -56,7 +56,7 @@ So the tests assert on the OS, not on the code. Each one runs a real command tha
 
 ## Related documentation
 
-- [Developer extension](../extensions/built-in/developer.md) — the user-facing rules for foreground vs background commands and the foreground budget.
-- [Code Execution extension](../extensions/built-in/code-execution.md) — the nested-dispatch path that adds the extra hop.
+- [Developer capability](../extensions/built-in/developer.md) — the user-facing rules for foreground vs background commands and the foreground budget.
+- [Code Execution capability](../extensions/built-in/code-execution.md) — the nested-dispatch path that adds the extra hop.
 - [Environment variables](../configuration/environment-variables.md#foreground-shell-budget) — `BIOROUTER_SHELL_FOREGROUND_TIMEOUT_SECS`.
 - [Agent workspace control](designs/agent-workspace-control.md) — the plan of record for the `active_work` view that lists running work, including foreground commands.

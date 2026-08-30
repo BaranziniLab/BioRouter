@@ -96,6 +96,10 @@ pub struct ToolApprovalRequest {
     /// BR-63's preview — the resolved command, the diff — so the decision is
     /// informed rather than a name and a shrug.
     pub preview: Option<ToolPreview>,
+    /// The answering HTTP request must carry the desktop's proof that a person
+    /// clicked the card. Use this for install/delete and other authorization
+    /// decisions a model must never be able to approve through daemon HTTP.
+    pub requires_user_proof: bool,
 }
 
 /// An ordinary MCP elicitation: free-form data described by a JSON schema.
@@ -406,6 +410,18 @@ impl PendingUserActions {
         self.lock().contains_key(id)
     }
 
+    /// Whether this exact session-scoped approval requires proof of a human
+    /// action. A foreign session learns nothing and cannot satisfy the check.
+    pub fn requires_user_proof_in_session(&self, session_id: &str, id: &str) -> bool {
+        self.lock().get(id).is_some_and(|entry| {
+            entry.session_id.as_deref() == Some(session_id)
+                && matches!(
+                    &entry.request,
+                    UserActionRequest::ToolApproval(request) if request.requires_user_proof
+                )
+        })
+    }
+
     /// The request parked under `id`, if any. A surface uses this to decide
     /// *which* dialog to draw before it answers.
     pub fn peek(&self, id: &str) -> Option<UserActionRequest> {
@@ -608,6 +624,7 @@ mod tests {
             prompt: None,
             risk: None,
             preview: None,
+            requires_user_proof: false,
         })
     }
 

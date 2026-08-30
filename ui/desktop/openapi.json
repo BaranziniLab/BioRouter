@@ -12173,7 +12173,7 @@
           },
           "inherit_primary": {
             "type": "boolean",
-            "description": "Drop this session's own primary override so it follows the machine-wide\ndefault again — the way back from `clear_primary`, and the only way out\nof the explicit \"no primary\" that deleting a session's pinned base\nleaves behind. Mutually exclusive with `primary_kb` and `clear_primary`.\n\nAt machine scope there is nothing above to inherit, so this coincides\nwith `clear_primary`."
+            "description": "Drop this scope's own primary preference. A session then follows the\nmachine-wide choice; at machine scope this restores Biorouter's shipped\nSoul default. This is the way back from `clear_primary`, and the only\nway out of the explicit \"no primary\" that deleting a session's pinned\nbase leaves behind. Mutually exclusive with `primary_kb` and\n`clear_primary`."
           },
           "kb_id": {
             "type": "string",

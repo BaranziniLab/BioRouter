@@ -181,20 +181,25 @@ pub struct ScheduledJob {
 }
 
 /// Decide, under one lock, whether a fired cron job should actually run, and
-/// stamp its start state if so. Returns `true` when the caller should execute.
+/// stamp its start state if so. Returns the run snapshot when the caller should
+/// execute. Its `last_run` is the last successful run, suitable as a cursor.
 ///
 /// Skips when the job is gone, paused, still running from a previous firing
 /// (overlap guard — a slow run never stacks), or has hit its `max_runs` cap
-/// (which also auto-pauses it). On a real run it records `last_run`, marks the
-/// job running, and bumps `run_count`.
-async fn claim_run_slot(jobs: &Arc<Mutex<JobsMap>>, job_id: &str, now: DateTime<Utc>) -> bool {
+/// (which also auto-pauses it). On a real run it marks the job running and bumps
+/// `run_count`; completion advances `last_run` only after success.
+async fn claim_run_slot(
+    jobs: &Arc<Mutex<JobsMap>>,
+    job_id: &str,
+    now: DateTime<Utc>,
+) -> Option<ScheduledJob> {
     let mut jobs_guard = jobs.lock().await;
     match jobs_guard.get_mut(job_id) {
-        None => false,
-        Some((_, job)) if job.paused => false,
+        None => None,
+        Some((_, job)) if job.paused => None,
         Some((_, job)) if job.currently_running => {
             tracing::info!("Skipping job '{}': previous run still in progress", job_id);
-            false
+            None
         }
         Some((_, job)) if job.max_runs.is_some_and(|max| job.run_count >= max) => {
             tracing::info!(
@@ -203,7 +208,7 @@ async fn claim_run_slot(jobs: &Arc<Mutex<JobsMap>>, job_id: &str, now: DateTime<
                 job.max_runs
             );
             job.paused = true;
-            false
+            None
         }
         // Resource-aware deferral (jcode "ambient" idea): skip this firing (the
         // cron fires again next interval) when the provider is rate-limited or a
@@ -214,18 +219,17 @@ async fn claim_run_slot(jobs: &Arc<Mutex<JobsMap>>, job_id: &str, now: DateTime<
                 "Deferring scheduled job '{}': provider rate-limited, backing off",
                 job_id
             );
-            false
+            None
         }
         Some(_) if pause_on_active() && interactive_active() => {
             tracing::info!("Deferring scheduled job '{}': user session active", job_id);
-            false
+            None
         }
         Some((_, job)) => {
-            job.last_run = Some(now);
             job.currently_running = true;
             job.process_start_time = Some(now);
             job.run_count = job.run_count.saturating_add(1);
-            true
+            Some(job.clone())
         }
     }
 }
@@ -317,20 +321,18 @@ impl Scheduler {
             let task_job_id = job_for_task.id.clone();
             let current_jobs_arc = jobs_arc.clone();
             let local_storage_path = storage_path.clone();
-            let job_to_execute = job_for_task.clone();
             let running_tasks = running_tasks_arc.clone();
 
             Box::pin(async move {
-                let should_execute =
-                    claim_run_slot(&current_jobs_arc, &task_job_id, Utc::now()).await;
-
-                if !should_execute {
+                let Some(job_to_execute) =
+                    claim_run_slot(&current_jobs_arc, &task_job_id, Utc::now()).await
+                else {
                     // Persist the auto-pause (if any) so it survives restart.
                     if let Err(e) = persist_jobs(&local_storage_path, &current_jobs_arc).await {
                         tracing::error!("Failed to persist job status: {}", e);
                     }
                     return;
-                }
+                };
 
                 if let Err(e) = persist_jobs(&local_storage_path, &current_jobs_arc).await {
                     tracing::error!("Failed to persist job status: {}", e);
@@ -370,6 +372,9 @@ impl Scheduler {
                             Ok(_) => None,
                             Err(e) => Some(format!("{e:#}")),
                         };
+                        if result.is_ok() {
+                            job.last_run = Some(Utc::now());
+                        }
                     }
                 }
 
@@ -707,7 +712,9 @@ impl Scheduler {
                 job.currently_running = false;
                 job.current_session_id = None;
                 job.process_start_time = None;
-                job.last_run = Some(Utc::now());
+                if result.is_ok() {
+                    job.last_run = Some(Utc::now());
+                }
                 // Issue #56 (§9.3 C2), same rule as the cron path: the failure
                 // is recorded on the schedule, not only returned to whoever
                 // pressed "run now".
@@ -915,6 +922,26 @@ async fn resolve_scheduled_provider(
     Ok((provider_name, crate::model::ModelConfig::new(&model_name)?))
 }
 
+fn scheduled_prompt(job: &ScheduledJob, workflow: &Workflow) -> String {
+    let base = workflow
+        .prompt
+        .as_ref()
+        .or(workflow.instructions.as_ref())
+        .cloned()
+        .unwrap_or_default();
+    if job.id != crate::knowledge::soul::MEDITATION_SCHEDULE_ID {
+        return base;
+    }
+
+    let after = job
+        .last_run
+        .unwrap_or_else(|| Utc::now() - chrono::Duration::days(7));
+    format!(
+        "{base}\n\nMeditation discovery window: when searching Chat Recall, pass after_date exactly as `{}`. This cursor is the last successful Meditation run; on the first run it covers seven days. Exclude this scheduled session and every result whose name starts with `Scheduled job:`. If no real user session remains, make no knowledge write.",
+        after.to_rfc3339()
+    )
+}
+
 #[allow(clippy::too_many_lines)]
 async fn execute_job(
     job: ScheduledJob,
@@ -969,7 +996,8 @@ async fn execute_job(
     let agent_provider =
         crate::providers::create_from_persisted(&provider_name, model_config).await?;
 
-    let extensions = resolve_extensions_for_new_session(workflow.extensions.as_deref(), None);
+    let mut extensions = resolve_extensions_for_new_session(workflow.extensions.as_deref(), None);
+    crate::workflow::runtime::ensure_required_extensions(&workflow, &mut extensions);
     for ext in extensions {
         agent.add_extension(ext.clone()).await?;
     }
@@ -986,17 +1014,43 @@ async fn execute_job(
 
     agent.update_provider(agent_provider, &session.id).await?;
 
+    let prepared_workflow_prompt = crate::workflow::runtime::prepare_prompt(
+        agent.config.session_manager.as_ref(),
+        &session.id,
+        &workflow,
+    )
+    .await?;
+
+    // Persist and apply the workflow before the first model call. Scheduled
+    // runs used to load only `extensions`; their declared knowledge base,
+    // required skills, instructions, and structured-output components were
+    // silently ignored until after the turn had already finished.
+    agent
+        .config
+        .session_manager
+        .update(&session.id)
+        .schedule_id(Some(job.id.clone()))
+        .workflow(Some(workflow.clone()))
+        .apply()
+        .await?;
+
+    let knowledge = biorouter_mcp::knowledge::service::KnowledgeService::new_default()?;
+    crate::workflow::runtime::apply_knowledge_selection(&knowledge, &session.id, &workflow)?;
+    crate::workflow::runtime::apply_prepared_to_agent(
+        &agent,
+        &workflow,
+        true,
+        prepared_workflow_prompt,
+    )
+    .await;
+
     let mut jobs_guard = jobs.lock().await;
     if let Some((_, job_def)) = jobs_guard.get_mut(job_id.as_str()) {
         job_def.current_session_id = Some(session.id.clone());
     }
     drop(jobs_guard);
 
-    let prompt_text = workflow
-        .prompt
-        .as_ref()
-        .or(workflow.instructions.as_ref())
-        .unwrap();
+    let prompt_text = scheduled_prompt(&job, &workflow);
 
     let user_message = Message::user().with_text(prompt_text);
     let mut conversation = Conversation::new_unvalidated(vec![user_message.clone()]);
@@ -1022,21 +1076,14 @@ async fn execute_job(
     use futures::StreamExt;
     let mut stream = std::pin::pin!(stream);
 
+    let mut stream_error = None;
     while let Some(message_result) = stream.next().await {
         tokio::task::yield_now().await;
 
-        match message_result {
-            Ok(AgentEvent::Message(msg)) => {
-                conversation.push(msg);
-            }
-            Ok(AgentEvent::HistoryReplaced(updated)) => {
-                conversation = updated;
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::error!("Error in agent stream: {}", e);
-                break;
-            }
+        if let Err(error) = apply_scheduled_stream_item(&mut conversation, message_result) {
+            tracing::error!("Error in agent stream: {}", error);
+            stream_error = Some(error);
+            break;
         }
     }
 
@@ -1065,16 +1112,22 @@ async fn execute_job(
             .await;
     }
 
-    agent
-        .config
-        .session_manager
-        .update(&session.id)
-        .schedule_id(Some(job.id.clone()))
-        .workflow(Some(workflow))
-        .apply()
-        .await?;
-
+    if let Some(error) = stream_error {
+        return Err(error);
+    }
     Ok(session.id)
+}
+
+fn apply_scheduled_stream_item(
+    conversation: &mut Conversation,
+    item: Result<AgentEvent>,
+) -> Result<()> {
+    match item? {
+        AgentEvent::Message(message) => conversation.push(message),
+        AgentEvent::HistoryReplaced(updated) => *conversation = updated,
+        _ => {}
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -1160,7 +1213,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_job_runs_on_schedule() {
+    async fn test_job_fires_and_records_its_outcome_on_schedule() {
         let temp_dir = tempdir().unwrap();
         let storage_path = temp_dir.path().join("schedule.json");
         let workflow_path = create_test_workflow(temp_dir.path(), "scheduled_job");
@@ -1183,10 +1236,22 @@ mod tests {
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();
-        sleep(Duration::from_millis(1500)).await;
+        let mut observed = None;
+        for _ in 0..40 {
+            let job = scheduler.list_scheduled_jobs().await.remove(0);
+            if job.run_count > 0 && !job.currently_running {
+                observed = Some(job);
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
 
-        let jobs = scheduler.list_scheduled_jobs().await;
-        assert!(jobs[0].last_run.is_some(), "Job should have run");
+        let job = observed.expect("cron should fire and finish within four seconds");
+        assert_eq!(job.run_count, 1, "one cron firing should be claimed");
+        assert!(
+            job.last_run.is_some() || job.last_error.is_some(),
+            "a completed firing must expose either success or failure"
+        );
     }
 
     #[tokio::test]
@@ -1263,6 +1328,93 @@ mod tests {
             jobs[0].process_start_time.is_none(),
             "stale process_start_time should be cleared on load"
         );
+    }
+
+    #[test]
+    fn scheduled_workflow_state_is_applied_before_the_first_model_call() {
+        let source = include_str!("scheduler.rs");
+        let execute = source
+            .split("async fn execute_job(")
+            .nth(1)
+            .and_then(|rest| rest.split("impl SchedulerTrait for Scheduler").next())
+            .expect("execute_job production body");
+        let persisted = execute
+            .find(".workflow(Some(workflow.clone()))")
+            .expect("scheduled workflow is persisted");
+        let prepared = execute
+            .find("runtime::prepare_prompt")
+            .expect("workflow skills and prompt are preflighted");
+        let knowledge = execute
+            .find("apply_knowledge_selection")
+            .expect("scheduled knowledge selection is applied");
+        let skills_and_components = execute
+            .find("runtime::apply_prepared_to_agent")
+            .expect("scheduled skills and components are applied");
+        let reply = execute.find(".reply(").expect("scheduled model call");
+
+        assert!(
+            prepared < persisted,
+            "fallible workflow inputs are preflighted first"
+        );
+        assert!(
+            persisted < knowledge,
+            "workflow must be stored before selection"
+        );
+        assert!(
+            knowledge < skills_and_components,
+            "knowledge precedes prompt assembly"
+        );
+        assert!(
+            skills_and_components < reply,
+            "all workflow state must precede reply"
+        );
+    }
+
+    #[test]
+    fn scheduled_stream_errors_remain_failures_after_event_collection() {
+        let mut conversation = Conversation::default();
+        let error = apply_scheduled_stream_item(
+            &mut conversation,
+            Err(anyhow::anyhow!("fixture scheduled stream failed")),
+        )
+        .expect_err("a failed agent stream must fail the scheduled run");
+        assert!(error
+            .to_string()
+            .contains("fixture scheduled stream failed"));
+    }
+
+    #[test]
+    fn meditation_prompt_uses_the_last_successful_run_as_its_recall_cursor() {
+        let cursor = chrono::DateTime::parse_from_rfc3339("2026-08-28T10:11:12Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let workflow = Workflow::builder()
+            .title("Meditation")
+            .description("test")
+            .instructions("Update Soul")
+            .build()
+            .unwrap();
+        let job = ScheduledJob {
+            id: crate::knowledge::soul::MEDITATION_SCHEDULE_ID.to_string(),
+            source: String::new(),
+            cron: crate::knowledge::soul::MEDITATION_CRON.to_string(),
+            last_run: Some(cursor),
+            currently_running: false,
+            paused: false,
+            current_session_id: None,
+            process_start_time: None,
+            run_count: 1,
+            max_runs: None,
+            creator_session_id: None,
+            last_error: None,
+        };
+        let prompt = scheduled_prompt(&job, &workflow);
+        assert!(prompt.contains("2026-08-28T10:11:12+00:00"), "{prompt}");
+        assert!(
+            prompt.contains("last successful Meditation run"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("Scheduled job:"), "{prompt}");
     }
 }
 

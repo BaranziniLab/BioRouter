@@ -1,12 +1,12 @@
-# Extension Manager extension
+# Extension Manager capability
 
 > **What this is.** User guide to the built-in Extension Manager: how BioRouter discovers, enables and disables other extensions mid-session so the active tool count stays small.
-> **Status:** Current. The extension is enabled by default, so no manual setup is normally needed.
+> **Status:** Current. The capability is enabled by default, so no manual setup is normally needed.
 > **Audience:** end users.
 
 You don't always need to manage extensions by hand. The Extension Manager lets BioRouter discover, enable and disable extensions during an active session. Based on the task you give it, BioRouter recognizes when it needs a specific extension, enables it, and suggests disabling unused ones when the tool bloat starts eating your context window. Describe your task and BioRouter handles the extension management.
 
-> **Note.** This extension is **enabled by default**. `crates/biorouter/src/agents/extension.rs` registers `extensionmanager` as a platform extension with `default_enabled: true`, and its test suite asserts this. The configuration walkthrough below is only needed if you previously disabled it, or want to confirm its state.
+> **Note.** This capability is **enabled by default**. Its internal registration still uses the legacy `PlatformExtensionDef` type; that storage name does not make it an installed extension. The configuration walkthrough below is only needed if you previously disabled it, or want to confirm its state.
 
 ## Configuration
 
@@ -24,7 +24,7 @@ You don't always need to manage extensions by hand. The Extension Manager lets B
    ◇  What would you like to configure?
    │  Toggle Extensions
    │
-   ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
+   ◆  Enable capabilities and extensions: (use "space" to toggle and "enter" to submit)
    │  ● extensionmanager
    └  Extension settings updated successfully
    ```
@@ -116,6 +116,6 @@ Would you like to work with any of these repositories?
 ## Related documentation
 
 - [Extensions and skills guide](../extensions-and-skills-guide.md) — installing, configuring and removing extensions yourself.
-- [Code Execution extension](code-execution.md) — the other lever for reducing context pressure, by batching tool calls instead of trimming the tool list.
+- [Code Execution capability](code-execution.md) — the other lever for reducing context pressure, by batching tool calls instead of trimming the tool list.
 - [Context engineering](../../agent-loop/context-engineering.md) — why the active tool count matters to the context window.
 - [Extension trait design](../../history/legacy-architecture/extension-trait-design.md) — historical design record for how extensions are modelled internally.

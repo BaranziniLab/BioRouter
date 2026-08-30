@@ -657,7 +657,7 @@ mod tests {
     #[test]
     fn extracts_legacy_inserted_phrases() {
         let refs = extract_resource_refs(
-            r#"Use the "literature-review" skill for this request, Use the "pubmed" extension for this request, Using the Knowledge extension, focus knowledge base "Soul" (kb_id: soul) for this request"#,
+            r#"Use the "literature-review" skill for this request, Use the "pubmed" extension for this request, Using the Knowledge capability, focus knowledge base "Soul" (kb_id: soul) for this request"#,
         );
 
         assert_eq!(refs.skills, vec!["literature-review"]);

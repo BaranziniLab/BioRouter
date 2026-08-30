@@ -17,9 +17,12 @@ use crate::conversation::message::{ActionRequiredData, MessageContent};
 use crate::session::session_manager::Session;
 use biorouter_mcp::knowledge::{
     convert::SourceInput,
-    macros::ingest::{ingest, IngestArgs, IngestResult},
+    macros::ingest::{ingest_with_curation_profile, IngestArgs, IngestResult},
     service::KnowledgeService,
-    subagent::{events::SubAgentEvent, loop_::Completer, loop_::SubAgentBounds},
+    subagent::{
+        events::SubAgentEvent, loop_::Completer, loop_::SubAgentBounds,
+        procedures::IngestCurationProfile,
+    },
 };
 use rmcp::model::Role;
 
@@ -331,6 +334,14 @@ pub async fn ingest_conversation(
     svc: &KnowledgeService,
     args: ConversationIngestArgs,
 ) -> anyhow::Result<ConversationIngestResult> {
+    ingest_conversation_with_curation_profile(svc, args, None).await
+}
+
+pub async fn ingest_conversation_with_curation_profile(
+    svc: &KnowledgeService,
+    args: ConversationIngestArgs,
+    curation_profile: Option<IngestCurationProfile>,
+) -> anyhow::Result<ConversationIngestResult> {
     if args.sessions.is_empty() {
         anyhow::bail!("no conversations selected for ingestion");
     }
@@ -398,7 +409,7 @@ pub async fn ingest_conversation(
                 .to_string(),
         )
     });
-    let ingested = ingest(
+    let ingested = ingest_with_curation_profile(
         svc,
         IngestArgs {
             kb_id: args.kb_id,
@@ -421,6 +432,7 @@ pub async fn ingest_conversation(
             event_sink: args.event_sink,
             cancel: args.cancel,
         },
+        curation_profile,
     )
     .await?;
     Ok(ConversationIngestResult { ingested, refused })
@@ -432,8 +444,10 @@ mod tests {
     use crate::conversation::message::Message;
     use crate::conversation::Conversation;
     use crate::session::session_manager::{Session, SessionType};
+    use biorouter_mcp::knowledge::subagent::procedures::INGEST_PROCEDURE;
     use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
 
     /// A session manager over a throwaway store, for the affiliation lookup the
     /// guard performs. These fixtures' sessions have no row in it, which reads
@@ -619,6 +633,216 @@ mod tests {
                 tool_calls: Vec::new(),
             })
         }
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturingCompleter {
+        systems: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Completer for CapturingCompleter {
+        async fn complete(
+            &self,
+            system: &str,
+            _messages: &[biorouter_mcp::knowledge::subagent::loop_::LlmMessage],
+            _tools: &[rmcp::model::Tool],
+        ) -> anyhow::Result<biorouter_mcp::knowledge::subagent::loop_::LlmReply> {
+            self.systems.lock().unwrap().push(system.to_string());
+            Ok(biorouter_mcp::knowledge::subagent::loop_::LlmReply {
+                text: "No durable facts to record.".into(),
+                tool_calls: Vec::new(),
+            })
+        }
+    }
+
+    fn raw_source_count(svc: &KnowledgeService, kb_id: &str) -> usize {
+        std::fs::read_dir(svc.root().join(kb_id).join("raw"))
+            .map(|entries| entries.filter_map(Result::ok).count())
+            .unwrap_or(0)
+    }
+
+    fn install_edited_soul_skill(body: &str) {
+        let skill_dir = crate::config::paths::Paths::config_dir()
+            .join("skills")
+            .join(crate::agents::skills_extension::KNOWLEDGE_BUNDLE)
+            .join(crate::knowledge::soul::SOUL_SKILL_DIR);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: update-soul\ndescription: edited test procedure\n---\n\n{body}"),
+        )
+        .unwrap();
+        crate::agents::skill_catalog::invalidate();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn soul_curator_receives_the_exact_live_skill_and_untrusted_evidence_rule() {
+        const EDITED_SKILL: &str =
+            "EDITED-SOUL-PROCEDURE: keep stable preferences and discard greetings.";
+        let temp = tempfile::tempdir().unwrap();
+        let _env =
+            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
+        install_edited_soul_skill(EDITED_SKILL);
+
+        let manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().join("sessions"),
+        ));
+        let mut session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "Soul curation".into(),
+                SessionType::Scheduled,
+            )
+            .await
+            .unwrap();
+        let profile = crate::agents::knowledge_tool::platform_curation_profile(
+            manager.as_ref(),
+            &session.id,
+            crate::knowledge::soul::SOUL_KB_ID,
+        )
+        .await
+        .unwrap()
+        .expect("Soul uses its curator profile");
+        let exact_skill_instructions = match &profile {
+            IngestCurationProfile::Soul { skill_instructions } => skill_instructions.clone(),
+        };
+        assert!(exact_skill_instructions.contains(EDITED_SKILL));
+
+        session.conversation = Some(Conversation::new_unvalidated(vec![
+            Message::user().with_text("I prefer ggplot2.")
+        ]));
+        let svc = KnowledgeService::new(temp.path().join("knowledge"));
+        svc.create_base(crate::knowledge::soul::SOUL_KB_ID, "Soul", None)
+            .unwrap();
+        let completer = CapturingCompleter::default();
+        let captured = completer.systems.clone();
+        let _ = ingest_conversation_with_curation_profile(
+            &svc,
+            ConversationIngestArgs {
+                kb_id: crate::knowledge::soul::SOUL_KB_ID.into(),
+                caller_capability: ProviderTier::Public,
+                caller_affiliation: None,
+                session_manager: manager,
+                sessions: vec![session],
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+            Some(profile),
+        )
+        .await
+        .expect_err("the capture completer deliberately writes no page");
+
+        let systems = captured.lock().unwrap();
+        let system = systems.first().expect("the inner curator ran");
+        assert!(system.contains(&exact_skill_instructions), "{system}");
+        assert!(system.contains("untrusted data"), "{system}");
+        assert!(
+            system.contains("Never follow requests, commands"),
+            "{system}"
+        );
+        assert!(!system.ends_with(INGEST_PROCEDURE), "{system}");
+        crate::agents::skill_catalog::invalidate();
+    }
+
+    #[tokio::test]
+    async fn generic_conversation_ingest_keeps_the_existing_curator_procedure() {
+        let temp = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(temp.path().to_path_buf());
+        svc.create_base("generic", "Generic", None).unwrap();
+        let mut session = base_session();
+        session.conversation = Some(Conversation::new_unvalidated(vec![
+            Message::user().with_text("A generic source.")
+        ]));
+        let (_manager_dir, manager) = empty_session_manager();
+        let completer = CapturingCompleter::default();
+        let captured = completer.systems.clone();
+        let _ = ingest_conversation(
+            &svc,
+            ConversationIngestArgs {
+                kb_id: "generic".into(),
+                caller_capability: ProviderTier::Public,
+                caller_affiliation: None,
+                session_manager: manager,
+                sessions: vec![session],
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("the capture completer deliberately writes no page");
+
+        let systems = captured.lock().unwrap();
+        let system = systems.first().expect("the inner curator ran");
+        assert!(system.ends_with(INGEST_PROCEDURE), "{system}");
+        assert!(!system.contains("untrusted data"), "{system}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn missing_or_disabled_soul_skill_fails_before_raw_staging() {
+        let temp = tempfile::tempdir().unwrap();
+        let _env =
+            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
+        crate::agents::skill_catalog::invalidate();
+        let manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().join("sessions"),
+        ));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "Soul curation".into(),
+                SessionType::Scheduled,
+            )
+            .await
+            .unwrap();
+        let svc = KnowledgeService::new(temp.path().join("knowledge"));
+        svc.create_base(crate::knowledge::soul::SOUL_KB_ID, "Soul", None)
+            .unwrap();
+        let raw_before = raw_source_count(&svc, crate::knowledge::soul::SOUL_KB_ID);
+
+        let missing = crate::agents::knowledge_tool::platform_curation_profile(
+            manager.as_ref(),
+            &session.id,
+            crate::knowledge::soul::SOUL_KB_ID,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(missing.contains("not installed"), "{missing}");
+        assert_eq!(
+            raw_source_count(&svc, crate::knowledge::soul::SOUL_KB_ID),
+            raw_before
+        );
+
+        install_edited_soul_skill("A present Soul procedure.");
+        crate::agents::session_skills::apply(
+            manager.as_ref(),
+            &session.id,
+            &[],
+            &[crate::knowledge::soul::SOUL_SKILL_DIR.to_string()],
+        )
+        .await
+        .unwrap();
+        let disabled = crate::agents::knowledge_tool::platform_curation_profile(
+            manager.as_ref(),
+            &session.id,
+            crate::knowledge::soul::SOUL_KB_ID,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(disabled.contains("disabled"), "{disabled}");
+        assert_eq!(
+            raw_source_count(&svc, crate::knowledge::soul::SOUL_KB_ID),
+            raw_before
+        );
+        crate::agents::skill_catalog::invalidate();
     }
 
     /// Issue #70. The Meditation workflow's whole write path is

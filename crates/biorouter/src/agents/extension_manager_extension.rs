@@ -1,7 +1,9 @@
 use crate::agents::extension::ExtensionConfig;
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
-use crate::config::{extension_entry_is_persisted, get_extension_entry_by_name, ExtensionEntry};
+use crate::config::{
+    extension_entry_is_persisted, get_all_extensions, get_extension_entry_by_name, ExtensionEntry,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use indoc::indoc;
@@ -14,7 +16,9 @@ use rmcp::model::{
 use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
@@ -58,16 +62,27 @@ pub struct ManageExtensionsParams {
 
 /// Install a marketplace extension (#117).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct InstallExtensionParams {
     /// The BAAM registry `id` of the extension to install, e.g.
     /// `playwright-agent`. Recorded as provenance so the privacy tier is
     /// re-derived from a stable id rather than from a renameable config name.
     pub registry_id: String,
-    /// The `download` URL the registry publishes for that entry. Must be https.
-    pub url: String,
     /// Enable the extension after installing it. Defaults to true.
     #[serde(default = "default_true")]
     pub enable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SearchMarketplaceExtensionsParams {
+    pub query: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteExtensionPackageParams {
+    pub registry_id: String,
 }
 
 fn default_true() -> bool {
@@ -92,12 +107,406 @@ pub const LIST_RESOURCES_TOOL_NAME: &str = "list_resources";
 pub const SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME: &str = "search_available_extensions";
 pub const MANAGE_EXTENSIONS_TOOL_NAME: &str = "manage_extensions";
 pub const INSTALL_EXTENSION_TOOL_NAME: &str = "install_extension";
+pub const BROWSE_MARKETPLACE_EXTENSIONS_TOOL_NAME: &str = "browse_marketplace_extensions";
+pub const SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME: &str = "search_marketplace_extensions";
+pub const DELETE_EXTENSION_PACKAGE_TOOL_NAME: &str = "delete_extension_package";
 pub const MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE: &str = "extensionmanager__manage_extensions";
+
+const MARKETPLACE_APPROVAL_TTL: Duration = Duration::from_secs(5 * 60);
 
 pub struct ExtensionManagerClient {
     info: InitializeResult,
     #[allow(dead_code)]
     context: PlatformExtensionContext,
+}
+
+#[derive(Clone, Copy)]
+enum MarketplaceMutation {
+    Install,
+    DeletePackage,
+}
+
+impl MarketplaceMutation {
+    fn tool_name(self) -> &'static str {
+        match self {
+            Self::Install => INSTALL_EXTENSION_TOOL_NAME,
+            Self::DeletePackage => DELETE_EXTENSION_PACKAGE_TOOL_NAME,
+        }
+    }
+
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+            Self::DeletePackage => "permanently delete",
+        }
+    }
+
+    fn risk(self) -> crate::permission::tool_risk::ToolRisk {
+        match self {
+            Self::Install => crate::permission::tool_risk::ToolRisk::Medium,
+            Self::DeletePackage => crate::permission::tool_risk::ToolRisk::High,
+        }
+    }
+}
+
+fn marketplace_descriptor_json(
+    descriptor: &crate::marketplace::MarketplaceExtensionDescriptor,
+) -> Value {
+    let affiliation = match &descriptor.affiliation {
+        crate::privacy::ExtensionAffiliation::Any => Value::String("any".to_owned()),
+        crate::privacy::ExtensionAffiliation::Institutions(ids) => Value::Array(
+            ids.iter()
+                .map(|id| Value::String(id.as_str().to_owned()))
+                .collect(),
+        ),
+    };
+    serde_json::json!({
+        "registryId": descriptor.registry_id,
+        "extensionName": descriptor.extension_name,
+        "name": descriptor.name,
+        "organization": descriptor.organization,
+        "version": descriptor.version,
+        "description": descriptor.description,
+        "tags": descriptor.tags,
+        "downloadUrl": descriptor.download_url,
+        "filename": descriptor.filename,
+        "license": descriptor.license,
+        "privacy": descriptor.privacy,
+        "affiliation": affiliation,
+    })
+}
+
+fn marketplace_approval_request(
+    mutation: MarketplaceMutation,
+    descriptor: &crate::marketplace::MarketplaceExtensionDescriptor,
+    package: Option<&ValidatedPackageInstall>,
+) -> crate::pending_user_action::UserActionRequest {
+    let mut arguments = marketplace_descriptor_json(descriptor)
+        .as_object()
+        .expect("marketplace descriptor is an object")
+        .clone();
+    arguments.insert(
+        "action".to_owned(),
+        Value::String(mutation.verb().to_owned()),
+    );
+    if let Some(package) = package {
+        arguments.insert(
+            "installedExtensionName".to_owned(),
+            Value::String(package.extension_name.clone()),
+        );
+        arguments.insert(
+            "installDirectory".to_owned(),
+            Value::String(package.install_dir.display().to_string()),
+        );
+    }
+    crate::pending_user_action::UserActionRequest::ToolApproval(
+        crate::pending_user_action::ToolApprovalRequest {
+            tool_name: mutation.tool_name().to_owned(),
+            arguments,
+            prompt: Some(format!(
+                "Allow Biorouter to {} {} {} from the trusted BAAM registry?",
+                mutation.verb(),
+                descriptor.name,
+                descriptor.version
+            )),
+            risk: Some(mutation.risk()),
+            preview: None,
+            requires_user_proof: true,
+        },
+    )
+}
+
+async fn await_marketplace_approval(
+    actions: &Arc<crate::pending_user_action::PendingUserActions>,
+    session_id: &str,
+    request: crate::pending_user_action::UserActionRequest,
+    ttl: Duration,
+    cancel: Option<&CancellationToken>,
+) -> Result<(), ExtensionManagerToolError> {
+    if session_id.is_empty() {
+        return Err(ExtensionManagerToolError::OperationFailed {
+            message: "Marketplace changes require a visible chat session for user approval"
+                .to_owned(),
+        });
+    }
+    let parked = actions.park(Some(session_id), None, request);
+    match parked.wait(ttl, cancel).await {
+        crate::pending_user_action::UserActionOutcome::Approved { .. } => Ok(()),
+        outcome => Err(ExtensionManagerToolError::OperationFailed {
+            message: format!(
+                "The marketplace change was not made because the approval request {}.",
+                outcome.refusal_detail()
+            ),
+        }),
+    }
+}
+
+async fn trusted_marketplace_extension(
+    registry_id: &str,
+    caller: crate::privacy::ProviderTier,
+) -> Result<crate::marketplace::MarketplaceExtensionDescriptor, ExtensionManagerToolError> {
+    let loaded = crate::marketplace::load_marketplace_catalog()
+        .await
+        .map_err(|error| ExtensionManagerToolError::OperationFailed {
+            message: error.to_string(),
+        })?;
+    resolve_marketplace_extension(&loaded.catalog, registry_id, caller)
+}
+
+fn resolve_marketplace_extension(
+    catalog: &crate::marketplace::MarketplaceCatalog,
+    registry_id: &str,
+    caller: crate::privacy::ProviderTier,
+) -> Result<crate::marketplace::MarketplaceExtensionDescriptor, ExtensionManagerToolError> {
+    catalog
+        .resolve_extension_for_install(registry_id, caller)
+        .cloned()
+        .map_err(|error| ExtensionManagerToolError::OperationFailed {
+            message: error.to_string(),
+        })
+}
+
+fn ensure_descriptor_unchanged(
+    approved: &crate::marketplace::MarketplaceExtensionDescriptor,
+    current: &crate::marketplace::MarketplaceExtensionDescriptor,
+) -> Result<(), ExtensionManagerToolError> {
+    if approved == current {
+        Ok(())
+    } else {
+        Err(ExtensionManagerToolError::OperationFailed {
+            message: format!(
+                "Marketplace entry `{}` changed after approval; nothing was changed. Review and approve the current entry instead.",
+                approved.registry_id
+            ),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ValidatedPackageInstall {
+    provenance: crate::privacy::provenance::MarketplaceInstallProvenance,
+    extension_name: String,
+    config: ExtensionConfig,
+    install_dir: PathBuf,
+    extensions_root: PathBuf,
+}
+
+fn validated_marketplace_package(
+    descriptor: &crate::marketplace::MarketplaceExtensionDescriptor,
+    candidates: Vec<crate::privacy::provenance::MarketplaceInstallProvenance>,
+) -> Result<ValidatedPackageInstall, ExtensionManagerToolError> {
+    validated_marketplace_package_at(
+        descriptor,
+        candidates,
+        crate::extension_install::brxt::extensions_root(),
+        get_all_extensions(),
+    )
+}
+
+fn validated_marketplace_package_at(
+    descriptor: &crate::marketplace::MarketplaceExtensionDescriptor,
+    candidates: Vec<crate::privacy::provenance::MarketplaceInstallProvenance>,
+    root: PathBuf,
+    configured: Vec<ExtensionEntry>,
+) -> Result<ValidatedPackageInstall, ExtensionManagerToolError> {
+    let [provenance] = candidates.as_slice() else {
+        return Err(ExtensionManagerToolError::OperationFailed {
+            message: match candidates.len() {
+                0 => format!(
+                    "No validated marketplace package is installed for `{}`",
+                    descriptor.registry_id
+                ),
+                count => format!(
+                    "Found {count} installed packages for `{}`; refusing an ambiguous deletion",
+                    descriptor.registry_id
+                ),
+            },
+        });
+    };
+    if provenance.registry_id != descriptor.registry_id {
+        return Err(ExtensionManagerToolError::OperationFailed {
+            message: "Marketplace provenance no longer matches the selected registry entry"
+                .to_owned(),
+        });
+    }
+
+    let source = url::Url::parse(&provenance.source_url).map_err(|_| {
+        ExtensionManagerToolError::OperationFailed {
+            message: "Marketplace install provenance has an invalid source URL".to_owned(),
+        }
+    })?;
+    if source.scheme() != "https"
+        || !source.username().is_empty()
+        || source.password().is_some()
+        || source.port().is_some()
+        || source.query().is_some()
+        || source.fragment().is_some()
+        || source.host_str() != descriptor.download_url.host_str()
+        || !source.path().ends_with(".brxt")
+    {
+        return Err(ExtensionManagerToolError::OperationFailed {
+            message: "Marketplace install provenance is not a trusted .brxt source".to_owned(),
+        });
+    }
+
+    let install_dir = PathBuf::from(&provenance.install_dir);
+    if !install_dir.is_absolute() {
+        return Err(ExtensionManagerToolError::OperationFailed {
+            message: "Marketplace install provenance does not name an absolute package directory"
+                .to_owned(),
+        });
+    }
+    let canonical_root = std::fs::canonicalize(&root).map_err(|error| {
+        ExtensionManagerToolError::OperationFailed {
+            message: format!("Could not validate the extensions directory: {error}"),
+        }
+    })?;
+    let canonical_install = std::fs::canonicalize(&install_dir).map_err(|error| {
+        ExtensionManagerToolError::OperationFailed {
+            message: format!("Could not validate the installed package: {error}"),
+        }
+    })?;
+    if !canonical_install.is_dir()
+        || canonical_install.parent() != Some(canonical_root.as_path())
+        || canonical_install
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(crate::config::extensions::name_to_key)
+            .as_deref()
+            != Some(provenance.config_key.as_str())
+    {
+        return Err(ExtensionManagerToolError::OperationFailed {
+            message: "Marketplace package is not one direct child of the extensions directory"
+                .to_owned(),
+        });
+    }
+
+    let entry = configured
+        .into_iter()
+        .find(|entry| entry.config.key() == provenance.config_key)
+        .ok_or_else(|| ExtensionManagerToolError::OperationFailed {
+            message: "Marketplace package no longer has a matching extension configuration"
+                .to_owned(),
+        })?;
+    let references_recorded_dir = match &entry.config {
+        ExtensionConfig::Stdio { args, .. } => args
+            .iter()
+            .any(|argument| argument == &provenance.install_dir),
+        _ => false,
+    };
+    if !references_recorded_dir {
+        return Err(ExtensionManagerToolError::OperationFailed {
+            message: "Marketplace package configuration does not reference its recorded directory"
+                .to_owned(),
+        });
+    }
+
+    Ok(ValidatedPackageInstall {
+        provenance: provenance.clone(),
+        extension_name: entry.config.name(),
+        config: entry.config,
+        install_dir: canonical_install,
+        extensions_root: canonical_root,
+    })
+}
+
+async fn detach_marketplace_package_from_session(
+    context: &PlatformExtensionContext,
+    package: &ValidatedPackageInstall,
+) -> Result<
+    (
+        Arc<crate::agents::extension_manager::ExtensionManager>,
+        bool,
+    ),
+    ExtensionManagerToolError,
+> {
+    let manager = context
+        .extension_manager
+        .as_ref()
+        .and_then(|weak| weak.upgrade())
+        .ok_or(ExtensionManagerToolError::ManagerUnavailable)?;
+    let was_attached = manager
+        .is_extension_enabled(&package.provenance.config_key)
+        .await;
+    if was_attached {
+        manager
+            .remove_extension(&package.extension_name)
+            .await
+            .map_err(|error| ExtensionManagerToolError::OperationFailed {
+                message: format!("Could not detach the package from this chat: {error}"),
+            })?;
+    }
+    Ok((manager, was_attached))
+}
+
+async fn restore_staged_marketplace_package(
+    manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
+    package: &ValidatedPackageInstall,
+    quarantine: &std::path::Path,
+    was_attached: bool,
+) -> bool {
+    let restored = std::fs::rename(quarantine, &package.install_dir).is_ok();
+    if was_attached {
+        let _ = manager.add_extension(package.config.clone()).await;
+    }
+    restored
+}
+
+fn provenance_removal_error(
+    result: std::io::Result<bool>,
+    restored: bool,
+) -> ExtensionManagerToolError {
+    let message = match result {
+        Ok(false) if restored => {
+            "Marketplace provenance changed before deletion; the staged package was restored"
+                .to_owned()
+        }
+        Ok(false) => "Marketplace provenance changed before deletion, and the staged package could not be restored"
+            .to_owned(),
+        Err(error) if restored => format!(
+            "Could not update marketplace provenance; the staged package was restored: {error}"
+        ),
+        Err(error) => format!(
+            "Could not update marketplace provenance, and the staged package could not be restored: {error}"
+        ),
+        Ok(true) => unreachable!("successful provenance removal has no error"),
+    };
+    ExtensionManagerToolError::OperationFailed { message }
+}
+
+async fn delete_staged_marketplace_package(
+    manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
+    package: &ValidatedPackageInstall,
+    was_attached: bool,
+) -> Result<(), ExtensionManagerToolError> {
+    let quarantine = package
+        .extensions_root
+        .join(format!(".delete-{}", uuid::Uuid::new_v4()));
+    if let Err(error) = std::fs::rename(&package.install_dir, &quarantine) {
+        if was_attached {
+            let _ = manager.add_extension(package.config.clone()).await;
+        }
+        return Err(ExtensionManagerToolError::OperationFailed {
+            message: format!("Could not stage the package for deletion: {error}"),
+        });
+    }
+
+    let provenance_result =
+        crate::privacy::provenance::remove_marketplace_install_provenance(&package.provenance);
+    if !matches!(&provenance_result, Ok(true)) {
+        let restored =
+            restore_staged_marketplace_package(manager, package, &quarantine, was_attached).await;
+        return Err(provenance_removal_error(provenance_result, restored));
+    }
+
+    crate::config::extensions::remove_extension(&package.provenance.config_key);
+    std::fs::remove_dir_all(&quarantine).map_err(|error| {
+        ExtensionManagerToolError::OperationFailed {
+            message: format!(
+                "The extension was detached and unregistered, but its quarantined package could not be removed: {error}"
+            ),
+        }
+    })
 }
 
 /// The `manage_extensions` enable door: ask the shared enable gate, then resolve
@@ -145,6 +554,14 @@ fn check_enable_allowed(
     extension_name: &str,
     cap: crate::privacy::CallCapability,
 ) -> Result<ExtensionConfig, ErrorData> {
+    if crate::agents::extension_manager::resolve_bundled_extension(extension_name).is_some() {
+        return Err(crate::agents::extension_manager::capability_management_error(extension_name));
+    }
+    if let Some(refusal) = entry.as_ref().and_then(|entry| {
+        crate::agents::extension_manager::capability_management_refusal(&entry.config)
+    }) {
+        return Err(refusal);
+    }
     if let Some(err) = crate::privacy::refusal::extension_enable_refusal(
         cap,
         extension_name,
@@ -197,19 +614,25 @@ impl ExtensionManagerClient {
                 Available tools:
                 - search_available_extensions: Find extensions available to enable/disable
                 - manage_extensions: Enable or disable extensions
-                - install_extension: Install a marketplace extension the user does not have yet
-                - list_resources: List resources from extensions
-                - read_resource: Read specific resources from extensions
+                - browse_marketplace_extensions: Browse trusted BAAM entries visible to this model
+                - search_marketplace_extensions: Search trusted BAAM entries
+                - install_extension: Install an exact trusted registry id after user approval
+                - delete_extension_package: Permanently delete a validated marketplace package after user approval
+                - list_resources/read_resource: Resource tools, when they are advertised for the current session
 
                 When you lack the tools needed to complete a task, use search_available_extensions first
                 to discover what extensions can help.
 
-                Use manage_extensions to enable or disable specific extensions by name.
-                Use install_extension when the extension is not installed at all. Never install
+                Use manage_extensions to enable or disable third-party extensions by name.
+                Built-in and platform capabilities are managed separately and this tool refuses them.
+                Use browse/search to obtain an exact registry id, then install_extension when the
+                extension is not installed at all. Never provide a download URL or install
                 one by running shell commands, and NEVER ask the user to type an API key,
                 password or token into the chat — install_extension opens Biorouter's own
-                dialog for that, and a credential in a chat message cannot configure anything.
-                Use list_resources and read_resource to work with extension data and resources.
+                approval and credential dialogs, and a credential in a chat message cannot configure anything.
+                delete_extension_package removes package files but deliberately preserves shared credentials.
+                Use list_resources and read_resource only when they appear in the current tool catalog;
+                they are omitted when no loaded extension supports resources.
             "#}.to_string()),
         };
 
@@ -245,6 +668,58 @@ impl ExtensionManagerClient {
         } else {
             Err(ExtensionManagerToolError::ManagerUnavailable)
         }
+    }
+
+    async fn handle_browse_marketplace_extensions(
+        &self,
+        cap: crate::privacy::CallCapability,
+    ) -> Result<Vec<Content>, ExtensionManagerToolError> {
+        self.marketplace_extensions(None, cap).await
+    }
+
+    async fn handle_search_marketplace_extensions(
+        &self,
+        arguments: Option<JsonObject>,
+        cap: crate::privacy::CallCapability,
+    ) -> Result<Vec<Content>, ExtensionManagerToolError> {
+        let arguments = arguments.ok_or(ExtensionManagerToolError::MissingParameter {
+            param_name: "arguments".to_owned(),
+        })?;
+        let params: SearchMarketplaceExtensionsParams =
+            serde_json::from_value(Value::Object(arguments))?;
+        self.marketplace_extensions(Some(&params.query), cap).await
+    }
+
+    async fn marketplace_extensions(
+        &self,
+        query: Option<&str>,
+        cap: crate::privacy::CallCapability,
+    ) -> Result<Vec<Content>, ExtensionManagerToolError> {
+        let loaded = crate::marketplace::load_marketplace_catalog()
+            .await
+            .map_err(|error| ExtensionManagerToolError::OperationFailed {
+                message: error.to_string(),
+            })?;
+        let entries = match query {
+            Some(query) => loaded.catalog.search_extensions(cap.tier(), query),
+            None => loaded.catalog.browse_extensions(cap.tier()),
+        };
+        let source = match loaded.source {
+            crate::marketplace::MarketplaceCatalogSource::Live => "live",
+            crate::marketplace::MarketplaceCatalogSource::LastGood => "lastGood",
+            crate::marketplace::MarketplaceCatalogSource::Embedded => "embedded",
+        };
+        let body = serde_json::json!({
+            "source": source,
+            "stale": loaded.is_stale(),
+            "extensions": entries
+                .into_iter()
+                .map(marketplace_descriptor_json)
+                .collect::<Vec<_>>(),
+        });
+        Ok(vec![Content::text(
+            serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_owned()),
+        )])
     }
 
     /// `cap` is the capability THIS tool call was admitted on, taken straight
@@ -310,22 +785,40 @@ impl ExtensionManagerClient {
         let params: InstallExtensionParams =
             serde_json::from_value(serde_json::Value::Object(arguments))?;
 
-        if !params.url.starts_with("https://") {
-            return Err(ExtensionManagerToolError::OperationFailed {
-                message: format!(
-                    "Refusing to download an extension over a non-https URL: {}",
-                    params.url
-                ),
-            });
-        }
+        // This preflight deliberately ignores the diagnostic master switch.
+        // Public model capability never authorizes a private marketplace entry.
+        let approved = trusted_marketplace_extension(&params.registry_id, cap.tier()).await?;
+        let approval = marketplace_approval_request(MarketplaceMutation::Install, &approved, None);
+        await_marketplace_approval(
+            crate::pending_user_action::PendingUserActions::global(),
+            &session_id,
+            approval,
+            MARKETPLACE_APPROVAL_TTL,
+            Some(&cancel),
+        )
+        .await?;
 
+        // Approval binds the exact daemon-owned descriptor, not merely its id.
+        // A registry update between the card and the click gets a new card.
+        let current = trusted_marketplace_extension(&params.registry_id, cap.tier()).await?;
+        ensure_descriptor_unchanged(&approved, &current)?;
+
+        let attach_refusal = crate::privacy::refusal::extension_enable_refusal(
+            cap,
+            &current.extension_name,
+            None,
+            false,
+        )
+        .map(|error| error.message.to_string());
         let mut transaction = ExtensionInstallTransaction::new(InstallSource::Marketplace {
-            registry_id: params.registry_id.clone(),
-            url: params.url.clone(),
+            registry_id: current.registry_id.clone(),
+            url: current.download_url.as_str().to_owned(),
         })
         .enabled(params.enable);
-        if let Some(weak) = &self.context.extension_manager {
-            transaction = transaction.attach_to(weak.clone());
+        if attach_refusal.is_none() {
+            if let Some(weak) = &self.context.extension_manager {
+                transaction = transaction.attach_to(weak.clone());
+            }
         }
 
         let report = transaction
@@ -338,38 +831,6 @@ impl ExtensionManagerClient {
                 Some(&cancel),
             )
             .await;
-
-        // Issue #56 Gate F1. Installing is the user's explicit request and
-        // writes only to disk; ATTACHING loads the server into this chat, which
-        // is the thing a public model may not do to a private extension. So the
-        // gate lands on the attach, not on the install — and when it refuses,
-        // the extension is still correctly installed for a session that may use
-        // it.
-        if matches!(report.state, InstallState::Attached) {
-            if let Some(name) = report.extension_name.as_deref() {
-                let entry = get_extension_entry_by_name(name);
-                if let Some(refusal) = crate::privacy::refusal::extension_enable_refusal(
-                    cap,
-                    name,
-                    entry.as_ref(),
-                    extension_entry_is_persisted(name),
-                ) {
-                    if let Some(manager) = self
-                        .context
-                        .extension_manager
-                        .as_ref()
-                        .and_then(|w| w.upgrade())
-                    {
-                        let _ = manager.remove_extension(name).await;
-                    }
-                    return Ok(vec![Content::text(format!(
-                        "{} is installed, but it was not attached to this chat: {}",
-                        report.display_name.as_deref().unwrap_or(name),
-                        refusal.message
-                    ))]);
-                }
-            }
-        }
 
         let json = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
         match &report.state {
@@ -387,8 +848,76 @@ impl ExtensionManagerClient {
             InstallState::Failed { reason } => Err(ExtensionManagerToolError::OperationFailed {
                 message: reason.clone(),
             }),
-            _ => Ok(vec![Content::text(json)]),
+            _ => Ok(vec![Content::text(match attach_refusal {
+                Some(refusal) if params.enable => format!(
+                    "{json}\n\nThe package is installed but was not attached to this chat: {refusal}"
+                ),
+                _ => json,
+            })]),
         }
+    }
+
+    async fn handle_delete_extension_package(
+        &self,
+        arguments: Option<JsonObject>,
+        session_id: String,
+        cap: crate::privacy::CallCapability,
+        cancel: CancellationToken,
+    ) -> Result<Vec<Content>, ExtensionManagerToolError> {
+        let arguments = arguments.ok_or(ExtensionManagerToolError::MissingParameter {
+            param_name: "arguments".to_owned(),
+        })?;
+        let params: DeleteExtensionPackageParams =
+            serde_json::from_value(Value::Object(arguments))?;
+
+        let approved_descriptor =
+            trusted_marketplace_extension(&params.registry_id, cap.tier()).await?;
+        let approved_package = validated_marketplace_package(
+            &approved_descriptor,
+            crate::privacy::provenance::marketplace_installs_for_registry_id(&params.registry_id),
+        )?;
+        let approval = marketplace_approval_request(
+            MarketplaceMutation::DeletePackage,
+            &approved_descriptor,
+            Some(&approved_package),
+        );
+        await_marketplace_approval(
+            crate::pending_user_action::PendingUserActions::global(),
+            &session_id,
+            approval,
+            MARKETPLACE_APPROVAL_TTL,
+            Some(&cancel),
+        )
+        .await?;
+
+        let current_descriptor =
+            trusted_marketplace_extension(&params.registry_id, cap.tier()).await?;
+        ensure_descriptor_unchanged(&approved_descriptor, &current_descriptor)?;
+        let current_package = validated_marketplace_package(
+            &current_descriptor,
+            crate::privacy::provenance::marketplace_installs_for_registry_id(&params.registry_id),
+        )?;
+        if current_package != approved_package {
+            return Err(ExtensionManagerToolError::OperationFailed {
+                message: "The installed package changed after approval; nothing was deleted"
+                    .to_owned(),
+            });
+        }
+
+        let (manager, was_attached) =
+            detach_marketplace_package_from_session(&self.context, &current_package).await?;
+        delete_staged_marketplace_package(&manager, &current_package, was_attached).await?;
+
+        let report = serde_json::json!({
+            "state": "deleted",
+            "registryId": current_descriptor.registry_id,
+            "extensionName": current_package.extension_name,
+            "detachedFromCurrentSession": was_attached,
+            "credentialsPreserved": true,
+        });
+        Ok(vec![Content::text(
+            serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_owned()),
+        )])
     }
 
     async fn manage_extensions_impl(
@@ -432,10 +961,14 @@ impl ExtensionManagerClient {
                 .remove_extension(&extension_name)
                 .await
                 .map(|_| {
-                    vec![Content::text(format!(
-                        "The extension '{}' has been disabled successfully",
-                        extension_name
-                    ))]
+                    vec![Content::text(
+                        serde_json::json!({
+                            "extensionName": extension_name,
+                            "sessionState": "detached",
+                            "persistentConfigurationChanged": false,
+                        })
+                        .to_string(),
+                    )]
                 })
                 .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None));
         }
@@ -454,10 +987,14 @@ impl ExtensionManagerClient {
             .add_extension(config)
             .await
             .map(|_| {
-                vec![Content::text(format!(
-                    "The extension '{}' has been installed successfully",
-                    extension_name
-                ))]
+                vec![Content::text(
+                    serde_json::json!({
+                        "extensionName": extension_name,
+                        "sessionState": "attached",
+                        "persistentConfigurationChanged": false,
+                    })
+                    .to_string(),
+                )]
             })
             .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))
     }
@@ -583,6 +1120,88 @@ impl ExtensionManagerClient {
             }),
         ];
 
+        tools.extend([
+            Tool::new(
+                BROWSE_MARKETPLACE_EXTENSIONS_TOOL_NAME.to_owned(),
+                "Browse BAAM marketplace extensions visible to this model. Returns trusted registry ids and install metadata; private entries are hidden from public models."
+                    .to_owned(),
+                Arc::new(
+                    serde_json::json!({
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {}
+                    })
+                    .as_object()
+                    .expect("Schema must be an object")
+                    .clone(),
+                ),
+            )
+            .annotate(ToolAnnotations {
+                title: Some("Browse BAAM marketplace".to_owned()),
+                read_only_hint: Some(true),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(true),
+                open_world_hint: Some(true),
+            }),
+            Tool::new(
+                SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME.to_owned(),
+                "Search trusted BAAM marketplace entries by id, name, organization, description, or tag. Private entries are hidden from public models."
+                    .to_owned(),
+                Arc::new(
+                    serde_json::to_value(schema_for!(SearchMarketplaceExtensionsParams))
+                        .expect("Failed to serialize schema")
+                        .as_object()
+                        .expect("Schema must be an object")
+                        .clone(),
+                ),
+            )
+            .annotate(ToolAnnotations {
+                title: Some("Search BAAM marketplace".to_owned()),
+                read_only_hint: Some(true),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(true),
+                open_world_hint: Some(true),
+            }),
+            Tool::new(
+                INSTALL_EXTENSION_TOOL_NAME.to_owned(),
+                "Install a BAAM extension by its exact trusted registry id. Biorouter resolves the download URL itself and requires the user's proof-backed approval before any package installation."
+                    .to_owned(),
+                Arc::new(
+                    serde_json::to_value(schema_for!(InstallExtensionParams))
+                        .expect("Failed to serialize schema")
+                        .as_object()
+                        .expect("Schema must be an object")
+                        .clone(),
+                ),
+            )
+            .annotate(ToolAnnotations {
+                title: Some("Install a BAAM extension".to_owned()),
+                read_only_hint: Some(false),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(false),
+                open_world_hint: Some(true),
+            }),
+            Tool::new(
+                DELETE_EXTENSION_PACKAGE_TOOL_NAME.to_owned(),
+                "Permanently delete one validated marketplace-installed .brxt package by exact registry id. Requires the user's proof-backed approval and preserves credentials."
+                    .to_owned(),
+                Arc::new(
+                    serde_json::to_value(schema_for!(DeleteExtensionPackageParams))
+                        .expect("Failed to serialize schema")
+                        .as_object()
+                        .expect("Schema must be an object")
+                        .clone(),
+                ),
+            )
+            .annotate(ToolAnnotations {
+                title: Some("Delete an installed BAAM package".to_owned()),
+                read_only_hint: Some(false),
+                destructive_hint: Some(true),
+                idempotent_hint: Some(false),
+                open_world_hint: Some(false),
+            }),
+        ]);
+
         // Only add resource tools if extension manager supports resources
         if let Some(weak_ref) = &self.context.extension_manager {
             if let Some(extension_manager) = weak_ref.upgrade() {
@@ -694,6 +1313,14 @@ impl McpClientTrait for ExtensionManagerClient {
                 self.handle_search_available_extensions(meta.capability)
                     .await
             }
+            BROWSE_MARKETPLACE_EXTENSIONS_TOOL_NAME => {
+                self.handle_browse_marketplace_extensions(meta.capability)
+                    .await
+            }
+            SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME => {
+                self.handle_search_marketplace_extensions(arguments, meta.capability)
+                    .await
+            }
             // Issue #56 Gate F1: enabling an extension SPAWNS its server, so it
             // carries the admitted capability for the same reason the two reads
             // below do.
@@ -706,6 +1333,15 @@ impl McpClientTrait for ExtensionManagerClient {
             // dialog nobody's chat renders.
             INSTALL_EXTENSION_TOOL_NAME => {
                 self.handle_install_extension(
+                    arguments,
+                    meta.session_id.clone(),
+                    meta.capability,
+                    _cancellation_token.clone(),
+                )
+                .await
+            }
+            DELETE_EXTENSION_PACKAGE_TOOL_NAME => {
+                self.handle_delete_extension_package(
                     arguments,
                     meta.session_id.clone(),
                     meta.capability,
@@ -786,15 +1422,326 @@ mod tests {
     fn entry(enabled: bool) -> ExtensionEntry {
         ExtensionEntry {
             enabled,
-            config: ExtensionConfig::Builtin {
-                name: "developer".to_string(),
-                display_name: Some("Developer".to_string()),
-                description: "shell and file tools".to_string(),
-                timeout: None,
-                bundled: Some(true),
-                available_tools: vec![],
+            config: ExtensionConfig::stdio(
+                "publicfixture",
+                "fixture-command",
+                "shell and file tools",
+                30_u64,
+            ),
+        }
+    }
+
+    fn marketplace_catalog() -> crate::marketplace::MarketplaceCatalog {
+        crate::marketplace::MarketplaceCatalog::from_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "version": 2,
+                "source": "https://biorouter.ucsf.edu/baam",
+                "institutions": { "ucsf": "UCSF" },
+                "extensions": [
+                    {
+                        "id": "manager-public-fixture",
+                        "name": "Manager Public Fixture",
+                        "organization": "Example",
+                        "version": "v1.0.0",
+                        "description": "Public fixture",
+                        "tags": ["fixture"],
+                        "github": "https://github.com/example/manager-public-fixture",
+                        "download": "https://github.com/example/manager-public-fixture/releases/download/v1.0.0/manager-public-fixture.brxt",
+                        "filename": "manager-public-fixture.brxt",
+                        "license": "Apache-2.0",
+                        "privacy": "public"
+                    },
+                    {
+                        "id": "manager-private-fixture",
+                        "name": "Manager Private Fixture",
+                        "organization": "Example",
+                        "version": "v1.0.0",
+                        "description": "Private fixture",
+                        "tags": ["fixture"],
+                        "github": "https://github.com/example/manager-private-fixture",
+                        "download": "https://github.com/example/manager-private-fixture/releases/download/v1.0.0/manager-private-fixture.brxt",
+                        "filename": "manager-private-fixture.brxt",
+                        "license": "Apache-2.0",
+                        "privacy": "private",
+                        "extension_name": "manager-private-fixture",
+                        "affiliation": ["ucsf"]
+                    }
+                ],
+                "skills": []
+            }))
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn marketplace_descriptor() -> crate::marketplace::MarketplaceExtensionDescriptor {
+        resolve_marketplace_extension(
+            &marketplace_catalog(),
+            "manager-public-fixture",
+            ProviderTier::Private,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn install_schema_accepts_only_a_registry_id_and_enable_flag() {
+        let schema = serde_json::to_value(schema_for!(InstallExtensionParams)).unwrap();
+        let properties = schema
+            .pointer("/properties")
+            .and_then(Value::as_object)
+            .expect("install schema properties");
+        assert!(properties.contains_key("registry_id"));
+        assert!(properties.contains_key("enable"));
+        assert!(!properties.contains_key("url"));
+        assert!(
+            serde_json::from_value::<InstallExtensionParams>(serde_json::json!({
+                "registry_id": "manager-public-fixture",
+                "url": "https://attacker.invalid/payload.brxt"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn public_to_private_install_preflight_is_absolute_before_mutation() {
+        let catalog = marketplace_catalog();
+        let public_with_master_switch_off = CallCapability::for_test(ProviderTier::Public, false);
+        let denied = resolve_marketplace_extension(
+            &catalog,
+            "manager-private-fixture",
+            public_with_master_switch_off.tier(),
+        )
+        .expect_err("the master switch must not authorize marketplace installation");
+        assert!(denied.to_string().contains("unavailable"));
+
+        assert!(resolve_marketplace_extension(
+            &catalog,
+            "manager-private-fixture",
+            ProviderTier::Private,
+        )
+        .is_ok());
+        assert!(resolve_marketplace_extension(
+            &catalog,
+            "manager-public-fixture",
+            ProviderTier::Public,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn marketplace_mutations_construct_proof_required_approval_cards() {
+        for mutation in [
+            MarketplaceMutation::Install,
+            MarketplaceMutation::DeletePackage,
+        ] {
+            let request = marketplace_approval_request(mutation, &marketplace_descriptor(), None);
+            let crate::pending_user_action::UserActionRequest::ToolApproval(request) = request
+            else {
+                panic!("marketplace mutation did not create an approval")
+            };
+            assert!(request.requires_user_proof);
+            assert_eq!(request.tool_name, mutation.tool_name());
+            assert_eq!(request.risk, Some(mutation.risk()));
+            assert!(request.arguments.contains_key("registryId"));
+            assert!(request.arguments.contains_key("downloadUrl"));
+        }
+    }
+
+    #[tokio::test]
+    async fn marketplace_approval_cancellation_and_timeout_stop_the_mutation() {
+        let descriptor = marketplace_descriptor();
+
+        let cancelled_actions = Arc::new(crate::pending_user_action::PendingUserActions::default());
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let cancelled = await_marketplace_approval(
+            &cancelled_actions,
+            "manager-cancel-fixture",
+            marketplace_approval_request(MarketplaceMutation::Install, &descriptor, None),
+            Duration::from_secs(5),
+            Some(&cancel),
+        )
+        .await
+        .unwrap_err();
+        assert!(cancelled.to_string().contains("cancelled"));
+
+        let timed_out_actions = Arc::new(crate::pending_user_action::PendingUserActions::default());
+        let timed_out = await_marketplace_approval(
+            &timed_out_actions,
+            "manager-timeout-fixture",
+            marketplace_approval_request(MarketplaceMutation::Install, &descriptor, None),
+            Duration::ZERO,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(timed_out.to_string().contains("expired"));
+    }
+
+    #[test]
+    fn descriptor_changes_invalidate_an_existing_approval() {
+        let approved = marketplace_descriptor();
+        let mut changed = approved.clone();
+        changed.version = "v2.0.0".to_owned();
+        changed.download_url =
+            url::Url::parse("https://github.com/example/v2/manager-public-fixture.brxt").unwrap();
+        assert!(ensure_descriptor_unchanged(&approved, &approved).is_ok());
+        assert!(ensure_descriptor_unchanged(&approved, &changed).is_err());
+    }
+
+    #[tokio::test]
+    async fn marketplace_install_and_delete_are_advertised_tools() {
+        let (_dir, _manager, client) = a_live_tool_client();
+        let names = client
+            .get_tools()
+            .await
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect::<Vec<_>>();
+        for expected in [
+            BROWSE_MARKETPLACE_EXTENSIONS_TOOL_NAME,
+            SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME,
+            INSTALL_EXTENSION_TOOL_NAME,
+            DELETE_EXTENSION_PACKAGE_TOOL_NAME,
+        ] {
+            assert!(names.iter().any(|name| name == expected), "{expected}");
+        }
+        for resource_tool in [LIST_RESOURCES_TOOL_NAME, READ_RESOURCE_TOOL_NAME] {
+            assert!(
+                !names.iter().any(|name| name == resource_tool),
+                "{resource_tool} must not be advertised without resource support"
+            );
+        }
+        let instructions = client
+            .get_info()
+            .and_then(|info| info.instructions.as_deref())
+            .expect("Extension Manager instructions");
+        assert!(instructions.contains("only when they appear in the current tool catalog"));
+        assert!(instructions.contains("omitted when no loaded extension supports resources"));
+    }
+
+    fn package_entry(name: &str, install_dir: &std::path::Path) -> ExtensionEntry {
+        ExtensionEntry {
+            enabled: true,
+            config: ExtensionConfig::Stdio {
+                name: name.to_owned(),
+                description: "marketplace package fixture".to_owned(),
+                cmd: "uv".to_owned(),
+                args: vec![
+                    "run".to_owned(),
+                    "--directory".to_owned(),
+                    install_dir.display().to_string(),
+                    "server.py".to_owned(),
+                ],
+                envs: crate::agents::extension::Envs::default(),
+                env_keys: vec!["SHARED_CREDENTIAL".to_owned()],
+                timeout: Some(300),
+                bundled: None,
+                available_tools: Vec::new(),
             },
         }
+    }
+
+    fn package_provenance(
+        registry_id: &str,
+        config_key: &str,
+        install_dir: &std::path::Path,
+    ) -> crate::privacy::provenance::MarketplaceInstallProvenance {
+        crate::privacy::provenance::MarketplaceInstallProvenance {
+            config_key: config_key.to_owned(),
+            registry_id: registry_id.to_owned(),
+            install_dir: install_dir.display().to_string(),
+            source_url: format!(
+                "https://github.com/example/{registry_id}/releases/download/v1.0.0/{registry_id}.brxt"
+            ),
+        }
+    }
+
+    #[test]
+    fn package_deletion_accepts_only_one_direct_validated_marketplace_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("extensions");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        let install_dir = root.join("ManagerPublicFixture");
+        std::fs::create_dir(&install_dir).unwrap();
+        let descriptor = marketplace_descriptor();
+        let provenance = package_provenance(
+            &descriptor.registry_id,
+            "managerpublicfixture",
+            &install_dir,
+        );
+
+        let validated = validated_marketplace_package_at(
+            &descriptor,
+            vec![provenance.clone()],
+            root.clone(),
+            vec![package_entry("ManagerPublicFixture", &install_dir)],
+        )
+        .unwrap();
+        assert_eq!(validated.install_dir, install_dir);
+        assert_eq!(validated.provenance, provenance);
+        assert!(matches!(
+            &validated.config,
+            ExtensionConfig::Stdio { env_keys, .. }
+                if env_keys.contains(&"SHARED_CREDENTIAL".to_owned())
+        ));
+
+        let ambiguous = validated_marketplace_package_at(
+            &descriptor,
+            vec![provenance.clone(), provenance],
+            root,
+            vec![package_entry("ManagerPublicFixture", &install_dir)],
+        )
+        .unwrap_err();
+        assert!(ambiguous.to_string().contains("ambiguous"));
+    }
+
+    #[test]
+    fn package_deletion_rejects_paths_outside_the_extensions_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("extensions");
+        let outside = temp.path().join("other-package");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        let outside = std::fs::canonicalize(outside).unwrap();
+        let descriptor = marketplace_descriptor();
+        let error = validated_marketplace_package_at(
+            &descriptor,
+            vec![package_provenance(
+                &descriptor.registry_id,
+                "other-package",
+                &outside,
+            )],
+            root,
+            vec![package_entry("other-package", &outside)],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("direct child"));
+        assert!(outside.is_dir(), "validation must not mutate the target");
+    }
+
+    #[test]
+    fn package_deletion_path_never_revokes_or_removes_credentials() {
+        let source = include_str!("extension_manager_extension.rs");
+        let delete_body = source
+            .split("async fn handle_delete_extension_package")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn manage_extensions_impl").next())
+            .expect("delete handler boundaries");
+        for forbidden in [
+            "revoke(",
+            "remove_secret",
+            "delete_secret",
+            "env_keys.clear",
+        ] {
+            assert!(
+                !delete_body.contains(forbidden),
+                "package deletion must preserve possibly shared credentials: {forbidden}"
+            );
+        }
+        assert!(delete_body.contains("credentialsPreserved"));
     }
 
     #[test]
@@ -809,8 +1756,13 @@ mod tests {
         // #42: `enabled: false` written into config.yaml must be a dependable
         // pin — the agent may not silently re-enable what the operator turned
         // off. `persisted: true` = the entry exists in the on-disk config.
-        let err = check_enable_allowed(Some(entry(false)), true, "developer", public_enforcing())
-            .unwrap_err();
+        let err = check_enable_allowed(
+            Some(entry(false)),
+            true,
+            "publicfixture",
+            public_enforcing(),
+        )
+        .unwrap_err();
         assert_eq!(err.code, ErrorCode::INVALID_REQUEST);
         assert!(err.message.contains("disabled"), "{}", err.message);
         assert!(
@@ -827,21 +1779,24 @@ mod tests {
 
     #[test]
     fn enable_of_default_off_injected_extension_is_allowed() {
-        // #42 provenance: an absent platform extension is injected into the
-        // extensions map with its default — a default-off one (chatrecall)
-        // carries `enabled: false` without any operator writing it. That is
-        // not an operator pin, so the agent enable flow must stay open.
-        let config =
-            check_enable_allowed(Some(entry(false)), false, "chatrecall", public_enforcing())
-                .expect("allowed");
-        assert_eq!(config.name(), "developer");
+        // An injected non-capability entry can carry `enabled: false` without
+        // an operator writing it. That is not an operator pin.
+        let config = check_enable_allowed(
+            Some(entry(false)),
+            false,
+            "publicfixture",
+            public_enforcing(),
+        )
+        .expect("allowed");
+        assert_eq!(config.name(), "publicfixture");
     }
 
     #[test]
     fn enable_of_config_enabled_extension_passes_the_config_through() {
-        let config = check_enable_allowed(Some(entry(true)), true, "developer", public_enforcing())
-            .expect("allowed");
-        assert_eq!(config.name(), "developer");
+        let config =
+            check_enable_allowed(Some(entry(true)), true, "publicfixture", public_enforcing())
+                .expect("allowed");
+        assert_eq!(config.name(), "publicfixture");
     }
 
     /// The same entry shape as [`entry`], but under an arbitrary name and
@@ -851,14 +1806,47 @@ mod tests {
     fn entry_for(name: &str) -> ExtensionEntry {
         ExtensionEntry {
             enabled: true,
-            config: ExtensionConfig::Builtin {
-                name: name.to_string(),
-                display_name: None,
-                description: "fixture".to_string(),
-                timeout: None,
-                bundled: Some(true),
-                available_tools: vec![],
+            config: ExtensionConfig::stdio(name, "fixture-command", "fixture", 30_u64),
+        }
+    }
+
+    fn capability_entries() -> [ExtensionEntry; 2] {
+        [
+            ExtensionEntry {
+                enabled: true,
+                config: ExtensionConfig::Builtin {
+                    name: "developer".to_owned(),
+                    display_name: Some("Developer".to_owned()),
+                    description: "built-in fixture".to_owned(),
+                    timeout: Some(30),
+                    bundled: Some(true),
+                    available_tools: Vec::new(),
+                },
             },
+            ExtensionEntry {
+                enabled: true,
+                config: ExtensionConfig::Platform {
+                    name: "Extension Manager".to_owned(),
+                    description: "platform fixture".to_owned(),
+                    bundled: Some(true),
+                    available_tools: Vec::new(),
+                },
+            },
+        ]
+    }
+
+    #[test]
+    fn builtin_and_platform_capabilities_cannot_be_enabled_as_extensions() {
+        for entry in capability_entries() {
+            let name = entry.config.name();
+            let error = check_enable_allowed(
+                Some(entry),
+                true,
+                &name,
+                CallCapability::for_test(ProviderTier::Private, true),
+            )
+            .expect_err("capabilities are managed outside Extension Manager");
+            assert!(error.message.contains("capability"), "{}", error.message);
         }
     }
 
@@ -888,9 +1876,9 @@ mod tests {
         )
         .expect("a private caller may enable it");
         check_enable_allowed(
-            Some(entry_for("developer")),
+            Some(entry_for("publicfixture")),
             false,
-            "developer",
+            "publicfixture",
             CallCapability::for_test(Public, true),
         )
         .expect("public extensions are unaffected");
@@ -943,7 +1931,7 @@ mod tests {
         let err = check_enable_allowed(
             Some(entry(false)),
             true,
-            "developer",
+            "publicfixture",
             CallCapability::for_test(Public, false),
         )
         .unwrap_err();
@@ -1095,9 +2083,13 @@ mod tests {
         // The operator pin is the other install-state answer, and it is behind
         // the same gate now. #42's refusal must still be what a PUBLIC extension
         // gets, or the reorder swallowed it.
-        let pinned =
-            check_enable_allowed(Some(entry(false)), true, "developer", public_enforcing())
-                .unwrap_err();
+        let pinned = check_enable_allowed(
+            Some(entry(false)),
+            true,
+            "publicfixture",
+            public_enforcing(),
+        )
+        .unwrap_err();
         assert!(pinned.message.contains("operator"), "{}", pinned.message);
         // …and a name that is public and absent still says so, which is what
         // keeps `enable_of_unknown_extension_is_not_found` a live assertion
@@ -1183,9 +2175,13 @@ mod tests {
         );
         // Same for a public caller and a PUBLIC extension — every case #42 was
         // written for.
-        let public_pin =
-            check_enable_allowed(Some(entry(false)), true, "developer", public_enforcing())
-                .unwrap_err();
+        let public_pin = check_enable_allowed(
+            Some(entry(false)),
+            true,
+            "publicfixture",
+            public_enforcing(),
+        )
+        .unwrap_err();
         assert!(
             public_pin.message.contains("operator"),
             "{}",
@@ -1205,7 +2201,8 @@ mod tests {
             ErrorCode::RESOURCE_NOT_FOUND,
             "a private caller is still told when a private extension is absent"
         );
-        let pinned = check_enable_allowed(Some(entry(false)), true, "developer", cap).unwrap_err();
+        let pinned =
+            check_enable_allowed(Some(entry(false)), true, "publicfixture", cap).unwrap_err();
         assert!(pinned.message.contains("operator"), "{}", pinned.message);
     }
 
@@ -1311,28 +2308,38 @@ mod tests {
             CallCapability::for_test(ProviderTier::Private, true),
         )
         .await;
-        assert!(allowed.contains("disabled successfully"), "{allowed}");
+        assert!(
+            allowed.contains(r#""sessionState":"detached""#),
+            "{allowed}"
+        );
 
-        // …and a public chat keeps every public extension it could disable
-        // before, or the gate is a blanket refusal wearing a tier's clothes.
-        //
-        // `developer` has to be really installed for this half to mean
-        // anything: the gate inherits `assert_extension_reachable`'s inverted
-        // unknown-name default, so an absent name refuses whatever its tier
-        // would have been, and a fixture that skipped the load would assert the
-        // oracle rather than the permit.
-        let target = crate::agents::extension_manager::resolve_bundled_extension("developer")
-            .expect("`developer` is a bundled extension");
-        em.add_extension(target.into_config("under test".to_string()))
-            .await
-            .expect("the developer builtin loads");
-        let public_ext = disable(
-            &client,
-            "developer",
-            CallCapability::for_test(ProviderTier::Public, true),
-        )
-        .await;
-        assert!(public_ext.contains("disabled successfully"), "{public_ext}");
+        assert!(
+            !em.is_extension_enabled("ucsfomopagent").await,
+            "the entitled call must have actually detached the extension"
+        );
+    }
+
+    #[tokio::test]
+    async fn builtin_and_platform_capabilities_cannot_be_disabled_as_extensions() {
+        let (_dir, em, client) = a_live_tool_client();
+        for entry in capability_entries() {
+            let name = entry.config.name();
+            em.add_extension(entry.config)
+                .await
+                .unwrap_or_else(|error| panic!("the {name} capability loads: {error}"));
+            let refusal = disable(
+                &client,
+                &name,
+                CallCapability::for_test(ProviderTier::Private, true),
+            )
+            .await;
+            assert!(refusal.contains("capability"), "{name}: {refusal}");
+            assert!(
+                em.is_extension_enabled(&crate::config::extensions::name_to_key(&name))
+                    .await,
+                "a rejected disable detached {name}"
+            );
+        }
     }
 
     /// DR-15's master opt-out reaches the disable gate through the capability.
@@ -1346,7 +2353,7 @@ mod tests {
         )
         .await;
         assert!(
-            text.contains("disabled successfully"),
+            text.contains(r#""sessionState":"detached""#),
             "with privacy tiers off nothing is refused: {text}"
         );
     }

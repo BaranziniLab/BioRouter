@@ -119,6 +119,7 @@
 //! [DR-23]: ../../../../docs/security/privacy-tiers-implementation-plan.md
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
@@ -172,6 +173,17 @@ pub struct ExtensionProvenance {
     /// RFC 3339 timestamp of the install that wrote this record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recorded_at: Option<String>,
+}
+
+/// The non-secret identity needed to validate deletion of one marketplace
+/// package. The config key and install directory are captured together so a
+/// caller can re-read and compare the same record after user approval.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketplaceInstallProvenance {
+    pub config_key: String,
+    pub registry_id: String,
+    pub install_dir: String,
+    pub source_url: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -239,6 +251,69 @@ pub fn registry_ids_for(keys: &[String], referenced_paths: &[String]) -> Vec<Str
     let store = cached_store_at(&provenance_path());
     collect_ids(store.extensions.iter(), keys, referenced_paths, &mut ids);
     ids
+}
+
+/// Installed marketplace packages carrying this exact trusted registry id.
+/// Missing install-directory or source-URL evidence is excluded: it is enough
+/// for privacy classification, but not enough to authorize package deletion.
+pub fn marketplace_installs_for_registry_id(
+    registry_id: &str,
+) -> Vec<MarketplaceInstallProvenance> {
+    marketplace_installs_in_store(&cached_store_at(&provenance_path()), registry_id)
+}
+
+fn marketplace_installs_in_store(
+    store: &Store,
+    registry_id: &str,
+) -> Vec<MarketplaceInstallProvenance> {
+    let mut installs = store
+        .extensions
+        .iter()
+        .filter_map(|(config_key, record)| {
+            if record.registry_id != registry_id {
+                return None;
+            }
+            Some(MarketplaceInstallProvenance {
+                config_key: config_key.clone(),
+                registry_id: record.registry_id.clone(),
+                install_dir: record.install_dir.clone()?,
+                source_url: record.source_url.clone()?,
+            })
+        })
+        .collect::<Vec<_>>();
+    installs.sort_by(|left, right| left.config_key.cmp(&right.config_key));
+    installs
+}
+
+/// Remove exactly the record revalidated after approval. A changed record is
+/// left intact so a stale approval cannot apply to a replacement install.
+pub fn remove_marketplace_install_provenance(
+    expected: &MarketplaceInstallProvenance,
+) -> std::io::Result<bool> {
+    remove_marketplace_install_provenance_at(&provenance_path(), expected)
+}
+
+fn remove_marketplace_install_provenance_at(
+    path: &Path,
+    expected: &MarketplaceInstallProvenance,
+) -> std::io::Result<bool> {
+    let mut store = read_store_at(path);
+    let matches = store
+        .extensions
+        .get(&expected.config_key)
+        .is_some_and(|record| {
+            record.registry_id == expected.registry_id
+                && record.install_dir.as_deref() == Some(expected.install_dir.as_str())
+                && record.source_url.as_deref() == Some(expected.source_url.as_str())
+        });
+    if !matches {
+        return Ok(false);
+    }
+    store.extensions.remove(&expected.config_key);
+    store.version = SCHEMA_VERSION;
+    write_store_at(path, &store)?;
+    invalidate_cache();
+    Ok(true)
 }
 
 fn collect_ids<'a>(
@@ -309,15 +384,25 @@ fn record_at(
     store
         .extensions
         .insert(name_to_key(config_name), provenance);
-    let body = serde_json::to_string_pretty(&store)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    // Write-then-rename, so a crash mid-write leaves the previous store intact
-    // rather than a truncated one. A truncated store reads as "no provenance",
-    // which is a downgrade for every renamed entry in it.
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, body)?;
-    std::fs::rename(&tmp, path)?;
+    write_store_at(path, &store)?;
     invalidate_cache();
+    Ok(())
+}
+
+fn write_store_at(path: &Path, store: &Store) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "provenance path has no parent",
+        )
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let body = serde_json::to_vec_pretty(store)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.write_all(&body)?;
+    tmp.as_file_mut().sync_all()?;
+    tmp.persist(path).map_err(|error| error.error)?;
     Ok(())
 }
 
@@ -499,6 +584,75 @@ mod tests {
             Some("https://example.invalid/cdwagent.brxt")
         );
         assert_eq!(record.bundle_sha256.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn marketplace_deletion_evidence_requires_an_exact_complete_record() {
+        let mut store = Store::default();
+        store.extensions.insert(
+            "complete".to_owned(),
+            ExtensionProvenance {
+                registry_id: "fixture-agent".to_owned(),
+                install_dir: Some("/tmp/extensions/FixtureAgent".to_owned()),
+                source_url: Some("https://github.com/example/fixture-agent.brxt".to_owned()),
+                bundle_sha256: None,
+                recorded_at: None,
+            },
+        );
+        store.extensions.insert(
+            "missing-url".to_owned(),
+            ExtensionProvenance {
+                registry_id: "fixture-agent".to_owned(),
+                install_dir: Some("/tmp/extensions/Other".to_owned()),
+                source_url: None,
+                bundle_sha256: None,
+                recorded_at: None,
+            },
+        );
+
+        assert_eq!(
+            marketplace_installs_in_store(&store, "fixture-agent"),
+            vec![MarketplaceInstallProvenance {
+                config_key: "complete".to_owned(),
+                registry_id: "fixture-agent".to_owned(),
+                install_dir: "/tmp/extensions/FixtureAgent".to_owned(),
+                source_url: "https://github.com/example/fixture-agent.brxt".to_owned(),
+            }]
+        );
+        assert!(marketplace_installs_in_store(&store, "FIXTURE-AGENT").is_empty());
+    }
+
+    #[test]
+    fn stale_marketplace_deletion_evidence_cannot_remove_a_replacement_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROVENANCE_FILE);
+        let expected = MarketplaceInstallProvenance {
+            config_key: "fixture".to_owned(),
+            registry_id: "fixture-agent".to_owned(),
+            install_dir: "/tmp/extensions/FixtureAgent".to_owned(),
+            source_url: "https://github.com/example/v1/fixture-agent.brxt".to_owned(),
+        };
+        record_at(
+            &path,
+            "fixture",
+            ExtensionProvenance {
+                registry_id: expected.registry_id.clone(),
+                install_dir: Some(expected.install_dir.clone()),
+                source_url: Some("https://github.com/example/v2/fixture-agent.brxt".to_owned()),
+                bundle_sha256: None,
+                recorded_at: None,
+            },
+        )
+        .unwrap();
+
+        assert!(!remove_marketplace_install_provenance_at(&path, &expected).unwrap());
+        assert!(read_store_at(&path).extensions.contains_key("fixture"));
+
+        let current = marketplace_installs_in_store(&read_store_at(&path), "fixture-agent")
+            .pop()
+            .unwrap();
+        assert!(remove_marketplace_install_provenance_at(&path, &current).unwrap());
+        assert!(read_store_at(&path).extensions.is_empty());
     }
 
     fn dir_record(install_dir: Option<&str>) -> ExtensionProvenance {

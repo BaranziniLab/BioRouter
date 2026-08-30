@@ -89,12 +89,6 @@ export const CAPABILITIES: CapabilityMeta[] = [
     defaultEnabled: false,
   },
   {
-    key: 'tutorial',
-    label: 'Tutorial',
-    description: 'Access interactive tutorials and step-by-step guides.',
-    defaultEnabled: false,
-  },
-  {
     /*
      * ⚠ Workspace is a capability, not an extension (#76).
      *

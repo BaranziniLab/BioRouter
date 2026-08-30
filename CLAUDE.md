@@ -180,15 +180,15 @@ The detailed manual steps and the reasoning behind each invariant follow.
 | `biorouter` | — | Core agent library: main agent loop, LLM providers, MCP extension manager, session/conversation state, workflow execution, scheduling |
 | `biorouter-server` | `biorouterd` | Axum REST API + WebSocket server; routes in `src/routes/`; OpenAPI spec generated via utoipa |
 | `biorouter-cli` | `biorouter` | Interactive CLI; subcommands in `src/commands/` |
-| `biorouter-mcp` | — | Built-in MCP servers (Developer, Computer Controller, Memory, Auto Visualiser, Tutorial, Knowledge, Agent Drafter, DataSQL, Files, Compute). Also hosts `active_work.rs`, which is *not* a server but the process-global registry of long-running work (background shell jobs + running subagents) that `GET /active_work` reads |
+| `biorouter-mcp` | — | Built-in MCP servers (Developer, Computer Controller, Memory, Auto Visualiser, Knowledge, Agent Drafter, DataSQL, Files, Compute). Also hosts `active_work.rs`, which is *not* a server but the process-global registry of long-running work (background shell jobs + running subagents) that `GET /active_work` reads |
 | `biorouter-sandbox` | — | Capability-scoped sandboxed execution (`docker.rs`, `seatbelt.rs`, `local.rs`, `environment.rs`, `shell_sandbox/`); a leaf crate with no engine deps |
 | `biorouter-acp` | — | Agent Communication Protocol for multi-agent orchestration |
 | `biorouter-bench` | — | Benchmarking harness |
 | `biorouter-test` | — | Integration tests |
 
-Only five of `biorouter-mcp`'s servers are spawnable as **subprocesses** via
+Only four of `biorouter-mcp`'s servers are spawnable as **subprocesses** via
 `biorouter mcp <name>` — `autovisualiser`, `computercontroller`, `developer`,
-`memory`, `tutorial` (the `McpCommand` enum in `mcp_server_runner.rs`).
+`memory` (the `McpCommand` enum in `mcp_server_runner.rs`).
 `agent_drafter` (as `appcontrol`), `datasql`, `files_server` and `compute_server`
 are injected **in-process** by `configure_agent` in `routes/apps.rs` via
 `add_inprocess_server`, and have no subprocess name; their absence from that enum
@@ -1017,9 +1017,9 @@ guides: [`docs/agent-loop/workspace-control.md`](docs/agent-loop/workspace-contr
 and the per-tool reference
 [`docs/agent-loop/workspace-control-tools.md`](docs/agent-loop/workspace-control-tools.md);
 delegation is covered by [`docs/agent-loop/subagents.md`](docs/agent-loop/subagents.md)
-and the extension itself by [`docs/extensions/built-in/workspace.md`](docs/extensions/built-in/workspace.md).
+and the capability itself by [`docs/extensions/built-in/workspace.md`](docs/extensions/built-in/workspace.md).
 
-- **The `workspace` platform extension** —
+- **The `workspace` capability** (represented internally by the legacy platform-extension type) —
   `crates/biorouter/src/agents/workspace_extension.rs`, registered
   `default_enabled: false`. Enabling it is an explicit user decision, not a
   default: its tools read and write conversations other than the one you are in.

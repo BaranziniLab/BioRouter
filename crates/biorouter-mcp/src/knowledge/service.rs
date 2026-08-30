@@ -492,8 +492,8 @@ pub enum PrimaryUpdate<'a> {
     Clear,
     /// Drop this scope's own pointer so it falls back to the machine-wide one.
     /// The mirror of [`KnowledgeService::clear_hidden_for_session`], and
-    /// distinct from [`PrimaryUpdate::Clear`]. At machine scope — where there
-    /// is nothing above to inherit — the two coincide.
+    /// distinct from [`PrimaryUpdate::Clear`]. At machine scope this restores
+    /// Biorouter's product default (`soul`); it does not mean explicit no-primary.
     Inherit,
     /// Pin this id. It must be a member of the *resulting* set.
     Set(&'a str),
@@ -510,7 +510,7 @@ pub enum PrimaryUpdate<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StoredPrimary {
     /// No file. This scope has expressed nothing, so a session falls back to
-    /// the machine-wide pointer.
+    /// the machine-wide pointer and the machine scope falls back to Soul.
     Inherit,
     /// A file holding one bare kb id.
     Pinned(String),
@@ -781,16 +781,16 @@ impl StoredPrimary {
     }
 }
 
-/// "No primary at this scope", spelled the way that scope can actually
-/// represent it. A session needs the blank-file override so it does not
-/// re-inherit; the machine has nothing above it, so removing the file is the
-/// identical state and leaves no debris behind for users who never used the
-/// feature.
-fn no_primary_for(session_id: Option<&str>) -> StoredPrimary {
-    match session_id {
-        Some(_) => StoredPrimary::NoPrimary,
-        None => StoredPrimary::Inherit,
-    }
+/// The shipped default when a scope has never expressed a primary choice.
+/// Kept here rather than importing Biorouter's Soul module because the MCP
+/// crate is below the application crate in the dependency graph.
+const DEFAULT_PRIMARY_KB_ID: &str = "soul";
+
+/// "No primary at this scope" is always an explicit blank-file choice. At
+/// machine scope an absent file now means "use the product default Soul", so
+/// removing the file would incorrectly undo a user's explicit Clear.
+fn no_primary_for(_session_id: Option<&str>) -> StoredPrimary {
+    StoredPrimary::NoPrimary
 }
 
 impl KnowledgeService {
@@ -3345,7 +3345,9 @@ impl KnowledgeService {
     }
 
     /// Read the persisted primary-KB id (set via the UI or `kb_set_active`).
-    /// Returns `Ok(None)` if no file exists or the file is empty.
+    /// Returns `Ok(None)` if no preference file exists or it is explicitly
+    /// blank. This is a raw persistence read; use [`Self::primary_for_session`]
+    /// for the effective primary, including the shipped Soul default.
     pub fn get_primary_persisted(&self) -> anyhow::Result<Option<String>> {
         self.get_primary_persisted_unlocked()
     }
@@ -3354,7 +3356,9 @@ impl KnowledgeService {
         self.get_primary_path_unlocked(&crate::knowledge::paths::primary_kb_path(self.root()))
     }
 
-    /// Persist the primary-KB id. Pass `None` to clear.
+    /// Persist the primary-KB id. Pass `None` to record an explicit durable
+    /// clear. Use `set_selection(None, None, PrimaryUpdate::Inherit)` to remove
+    /// that preference and restore the shipped Soul default.
     pub fn set_primary_persisted(&self, id: Option<&str>) -> anyhow::Result<()> {
         let _lock = self.lock_root()?;
         self.set_primary_persisted_unlocked(id)
@@ -3364,8 +3368,9 @@ impl KnowledgeService {
         let path = crate::knowledge::paths::primary_kb_path(self.root());
         let value = match id {
             Some(id) => StoredPrimary::Pinned(id.to_string()),
-            // Machine scope: nothing above to inherit, so "no file" and "blank
-            // file" are the same state. Prefer no file.
+            // A blank file is a real machine-level choice. An absent file now
+            // means "use Soul", so deleting it here would undo an explicit
+            // Clear on the next read.
             None => no_primary_for(None),
         };
         self.write_primary_file_unlocked(&path, &value)
@@ -3506,12 +3511,13 @@ impl KnowledgeService {
     /// This scope's **primary** knowledge base: the write target for KB-less
     /// mutating calls and the default subject for single-base reads.
     ///
-    /// Resolution is session file → machine file, and the result is returned
-    /// only while it names a member of [`Self::session_kb_ids`]. A non-member
-    /// yields `None` rather than promoting: promoting at read time would make
-    /// "no primary" unreachable and let a KB-less *write* silently land in a
-    /// base the user never ranked. Promotion happens once, at the moment the
-    /// set changes, in [`Self::repair_primary_unlocked`].
+    /// Resolution is session file → machine file → shipped Soul default, and
+    /// the result is returned only while it names a member of
+    /// [`Self::session_kb_ids`]. A non-member yields `None` rather than
+    /// promoting: promoting at read time would make explicit "no primary"
+    /// unreachable and let a KB-less *write* silently land in an arbitrary
+    /// base. Promotion happens once, at the moment the set changes, in
+    /// [`Self::repair_primary_unlocked`].
     ///
     /// Only an *absent* session file inherits. A session file that exists but
     /// is blank is an explicit "no primary here" and stops the fallback dead —
@@ -3542,8 +3548,8 @@ impl KnowledgeService {
     }
 
     /// Resolve a scope's *own* tri-state into the one it is actually **using**:
-    /// only an absent session file inherits, and only a session has anything
-    /// above it to inherit from.
+    /// an absent session file inherits from the machine scope, while an absent
+    /// machine preference inherits the shipped Soul product default.
     ///
     /// Split out of [`Self::stored_primary_unlocked`] because the repair path
     /// needs both halves — it decides against the pointer the scope is using
@@ -3553,11 +3559,15 @@ impl KnowledgeService {
         own: &StoredPrimary,
         session_id: Option<&str>,
     ) -> anyhow::Result<StoredPrimary> {
-        match (own, session_id) {
+        let resolved = match (own, session_id) {
             (StoredPrimary::Inherit, Some(_)) => self
                 .read_primary_file_unlocked(&crate::knowledge::paths::primary_kb_path(self.root())),
             _ => Ok(own.clone()),
-        }
+        }?;
+        Ok(match resolved {
+            StoredPrimary::Inherit => StoredPrimary::Pinned(DEFAULT_PRIMARY_KB_ID.to_string()),
+            settled => settled,
+        })
     }
 
     /// Every knowledge base installed on this machine, as ids, sorted — the
@@ -3615,8 +3625,8 @@ impl KnowledgeService {
     /// It still never *invents* a pointer, which is a different thing from
     /// moving one the user already had:
     ///
-    /// - the two "no id" states are returned untouched, so a scope that has
-    ///   never chosen a primary is never handed one;
+    /// - an explicit `NoPrimary` choice is returned untouched, so a user who
+    ///   cleared the primary is never silently handed one again;
     /// - a pointer at a base that no longer **exists** is *cleared*, never
     ///   promoted — deletion clears, hiding promotes.
     ///
@@ -3902,12 +3912,11 @@ impl KnowledgeService {
         // known-coherent here, and a re-read would be three more chances to
         // observe someone else's half-finished edit.
         let effective = match next_primary {
-            // Just written: this scope now defers upwards, so what governs is
-            // the machine pointer and not the one it held a moment ago.
-            Some(StoredPrimary::Inherit) if session_id.is_some() => self
-                .read_primary_file_unlocked(&crate::knowledge::paths::primary_kb_path(
-                    self.root(),
-                ))?,
+            // Just written: this scope now defers to the machine pointer, and an
+            // unset machine pointer resolves to the shipped Soul default.
+            Some(StoredPrimary::Inherit) => {
+                self.effective_primary_unlocked(&StoredPrimary::Inherit, session_id)?
+            }
             Some(settled) => settled,
             None => effective_primary,
         };
@@ -6966,7 +6975,7 @@ mod tests {
     fn inherit_lifts_the_no_primary_override_a_delete_installed() -> anyhow::Result<()> {
         let tmp = tempfile::TempDir::new()?;
         let svc = KnowledgeService::new(tmp.path().to_path_buf());
-        for id in ["alpha", "beta", "gamma"] {
+        for id in ["alpha", "beta", "gamma", DEFAULT_PRIMARY_KB_ID] {
             svc.create_base(id, id, None)?;
         }
         svc.set_primary_persisted(Some("alpha"))?;
@@ -6995,11 +7004,50 @@ mod tests {
             "inheriting means holding no pointer of its own"
         );
 
-        // At machine scope there is nothing above to inherit, so the two
-        // spellings coincide — and neither leaves debris behind.
+        // At machine scope Inherit restores the product default Soul. It is
+        // distinct from Clear and leaves no preference file behind.
         let sel = svc.set_selection(None, None, PrimaryUpdate::Inherit)?;
-        assert_eq!(sel.primary_kb, None);
+        assert_eq!(sel.primary_kb.as_deref(), Some(DEFAULT_PRIMARY_KB_ID));
         assert!(!crate::knowledge::paths::primary_kb_path(svc.root()).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn soul_is_the_default_until_the_user_explicitly_changes_or_clears_it() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base(DEFAULT_PRIMARY_KB_ID, "Soul", None)?;
+        svc.create_base("project", "Project", None)?;
+
+        let primary_path = crate::knowledge::paths::primary_kb_path(svc.root());
+        assert!(!primary_path.exists());
+        assert_eq!(
+            svc.primary_for_session(None)?.as_deref(),
+            Some(DEFAULT_PRIMARY_KB_ID)
+        );
+        assert_eq!(
+            svc.primary_for_session(Some("fresh-chat"))?.as_deref(),
+            Some(DEFAULT_PRIMARY_KB_ID)
+        );
+
+        svc.set_selection(None, None, PrimaryUpdate::Clear)?;
+        assert!(
+            primary_path.exists(),
+            "Clear must persist as a blank override"
+        );
+        assert_eq!(std::fs::read_to_string(&primary_path)?, "");
+        assert_eq!(svc.primary_for_session(None)?, None);
+        assert_eq!(svc.primary_for_session(Some("fresh-chat"))?, None);
+
+        svc.set_selection(None, None, PrimaryUpdate::Set("project"))?;
+        assert_eq!(svc.primary_for_session(None)?.as_deref(), Some("project"));
+
+        svc.set_selection(None, None, PrimaryUpdate::Inherit)?;
+        assert!(!primary_path.exists());
+        assert_eq!(
+            svc.primary_for_session(None)?.as_deref(),
+            Some(DEFAULT_PRIMARY_KB_ID)
+        );
         Ok(())
     }
 

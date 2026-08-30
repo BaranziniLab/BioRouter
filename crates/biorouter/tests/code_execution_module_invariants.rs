@@ -62,7 +62,6 @@ async fn manager_with_the_bundled_extensions() -> (Arc<ExtensionManager>, Vec<&'
         "memory",
         "knowledge",
         "agent_drafter",
-        "tutorial",
     ] {
         if manager
             .add_extension(ExtensionConfig::Builtin {

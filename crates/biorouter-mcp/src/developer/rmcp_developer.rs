@@ -482,7 +482,7 @@ impl ServerHandler for DeveloperServer {
 
         let base_instructions = match os {
             "windows" => formatdoc! {r#"
-                The developer extension gives you the capabilities to edit code files and run shell commands,
+                The Developer capability lets you edit files and run shell commands,
                 and can be used to solve a wide range of problems.
 
                 You can use the shell tool to run Windows commands (PowerShell or CMD).
@@ -490,15 +490,14 @@ impl ServerHandler for DeveloperServer {
 
                 Use the shell tool as needed to locate files or interact with the project.
 
-                This extension is the default, first-choice tool for everyday file and system work: use `shell`
+                This capability is the default, first-choice tool for everyday file and system work: use `shell`
                 to list, copy, move, delete, or find files and to run commands, and use `text_editor` to read
                 (`view`), create/overwrite (`write`), and edit (`str_replace`, `insert`) files. Prefer these
                 direct tools over routing a simple file or shell operation through a code-execution script or
-                another extension. Reach for those only when a task needs real computation, control flow, or a
+                another capability or extension. Reach for those only when a task needs real computation, control flow, or a
                 specialized capability.
 
-                Leverage `analyze` through `return_last_only=true` subagents for deep codebase understanding with lean context
-                - delegate analysis, retain summaries
+                Use `analyze` for delegated codebase understanding when it is in the effective tool roster; retain its summary.
 
                 Your windows/screen tools can be used for visual debugging. You should not use these tools unless
                 prompted to, but you can mention they are available if they are relevant.
@@ -515,22 +514,21 @@ impl ServerHandler for DeveloperServer {
                 let shell_info = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
 
                 formatdoc! {r#"
-                The developer extension gives you the capabilities to edit code files and run shell commands,
+                The Developer capability lets you edit files and run shell commands,
                 and can be used to solve a wide range of problems.
 
             You can use the shell tool to run any command that would work on the relevant operating system.
             Use the shell tool as needed to locate files or interact with the project.
 
-            This extension is the default, first-choice tool for everyday file and system work: use `shell`
+            This capability is the default, first-choice tool for everyday file and system work: use `shell`
             to list, copy, move, delete, or find files (`ls`, `cp`, `mv`, `rm`, `mkdir`, `rg`) and to run
             commands, and use `text_editor` to read (`view`), create/overwrite (`write`), and edit
             (`str_replace`, `insert`) files. Prefer these direct tools over routing a simple file or shell
-            operation through a code-execution script or another extension. Reach for those only when a task
+            operation through a code-execution script or another capability or extension. Reach for those only when a task
             needs real computation, control flow, or a specialized capability. When you just need a file's
             contents, use `text_editor` view rather than `cat`/`head` in shell.
 
-            Leverage `analyze` through `return_last_only=true` subagents for deep codebase understanding with lean context
-            - delegate analysis, retain summaries
+            Use `analyze` for delegated codebase understanding when it is in the effective tool roster; retain its summary.
 
             Your windows/screen tools can be used for visual debugging. You should not use these tools unless
             prompted to, but you can mention they are available if they are relevant.

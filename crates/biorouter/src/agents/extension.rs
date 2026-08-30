@@ -445,6 +445,20 @@ impl Default for ExtensionConfig {
 }
 
 impl ExtensionConfig {
+    /// Whether this entry is a Biorouter capability rather than an installed
+    /// third-party extension.
+    pub fn is_capability(&self) -> bool {
+        match self {
+            Self::Builtin { name, .. } => {
+                biorouter_mcp::BUILTIN_EXTENSIONS.contains_key(name_to_key(name).as_str())
+            }
+            Self::Platform { name, .. } => {
+                PLATFORM_EXTENSIONS.contains_key(name_to_key(name).as_str())
+            }
+            _ => false,
+        }
+    }
+
     /// A display/import projection that cannot carry resolved connector auth.
     /// Executable locators are omitted too: command arguments, endpoint URLs,
     /// inline code, frontend schemas, and instructions can all embed credentials
@@ -791,20 +805,72 @@ impl std::fmt::Display for ExtensionConfig {
     }
 }
 
-/// Information about the extension used for building prompts
+/// Model-facing classification for an attached MCP client.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionClassification {
+    /// A tool surface shipped as part of Biorouter.
+    Capability,
+    /// A user-installed or third-party connector.
+    Extension,
+}
+
+/// Information about an attached MCP client used for building prompts.
 #[derive(Clone, Debug, Serialize)]
 pub struct ExtensionInfo {
     pub name: String,
     pub instructions: String,
     pub has_resources: bool,
+    pub classification: ExtensionClassification,
+    /// False only for synthetic/offline prompt fixtures that have not been
+    /// joined to a live tool snapshot.
+    pub tool_roster_known: bool,
+    /// Effective tools owned by this entry before Code Execution's direct-tool
+    /// filter. This is the authoritative per-turn module surface.
+    pub available_tools: Vec<String>,
+    /// Subset exposed directly to the provider on this turn.
+    pub directly_callable_tools: Vec<String>,
+    /// True when the context budget shortened or removed this entry's prose.
+    /// The tool roster remains exact, but the model must be told that the
+    /// attached operating guidance is incomplete rather than treating silence
+    /// as a complete description of the capability.
+    pub instructions_degraded: bool,
 }
 
 impl ExtensionInfo {
     pub fn new(name: &str, instructions: &str, has_resources: bool) -> Self {
+        Self::classified(
+            name,
+            instructions,
+            has_resources,
+            ExtensionClassification::Extension,
+        )
+    }
+
+    pub fn capability(name: &str, instructions: &str, has_resources: bool) -> Self {
+        Self::classified(
+            name,
+            instructions,
+            has_resources,
+            ExtensionClassification::Capability,
+        )
+    }
+
+    pub fn classified(
+        name: &str,
+        instructions: &str,
+        has_resources: bool,
+        classification: ExtensionClassification,
+    ) -> Self {
         Self {
             name: name.to_string(),
             instructions: instructions.to_string(),
             has_resources,
+            classification,
+            tool_roster_known: false,
+            available_tools: Vec::new(),
+            directly_callable_tools: Vec::new(),
+            instructions_degraded: false,
         }
     }
 }
@@ -874,6 +940,32 @@ mod tests {
         assert!(PLATFORM_EXTENSIONS["skills"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["code_execution"].default_enabled);
         assert!(!PLATFORM_EXTENSIONS["chatrecall"].default_enabled);
+    }
+
+    #[test]
+    fn builtin_transport_is_not_itself_a_capability_classification() {
+        let capability = ExtensionConfig::Builtin {
+            name: "Developer".to_string(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        let connector = ExtensionConfig::Builtin {
+            name: "ucsfomopagent".to_string(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+
+        assert!(capability.is_capability());
+        assert!(
+            !connector.is_capability(),
+            "a bundled connector remains an extension even when its transport enum is Builtin"
+        );
     }
 
     #[test]

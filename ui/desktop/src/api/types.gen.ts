@@ -3314,13 +3314,12 @@ export type SetActiveBody = {
      */
     hidden_kbs?: Array<string> | null;
     /**
-     * Drop this session's own primary override so it follows the machine-wide
-     * default again — the way back from `clear_primary`, and the only way out
-     * of the explicit "no primary" that deleting a session's pinned base
-     * leaves behind. Mutually exclusive with `primary_kb` and `clear_primary`.
-     *
-     * At machine scope there is nothing above to inherit, so this coincides
-     * with `clear_primary`.
+     * Drop this scope's own primary preference. A session then follows the
+     * machine-wide choice; at machine scope this restores Biorouter's shipped
+     * Soul default. This is the way back from `clear_primary`, and the only
+     * way out of the explicit "no primary" that deleting a session's pinned
+     * base leaves behind. Mutually exclusive with `primary_kb` and
+     * `clear_primary`.
      */
     inherit_primary?: boolean;
     /**

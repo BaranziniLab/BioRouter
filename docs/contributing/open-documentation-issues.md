@@ -61,8 +61,8 @@ or change the code to honour the value.
 [Extensions and skills guide](../extensions/extensions-and-skills-guide.md) lists Computer
 Controller (line 22), Memory (23), Auto Visualiser (25) and Code Execution (46) as
 `Disabled`. **Verified:** `ui/desktop/src/components/settings/capabilities/capabilities.ts`
-sets `defaultEnabled: true` for ten capabilities and `false` for only two (chat recall and
-tutorial). Four pages under `built-in/` also walk readers through "enabling" an extension
+sets `defaultEnabled: true` for eleven capabilities and `false` only for chat recall.
+Four pages under `built-in/` also walk readers through "enabling" an extension
 that is already on. The cleanup added Note callouts rather than editing table rows.
 **Decision needed:** correct the four rows and drop the callouts.
 

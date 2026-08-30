@@ -5,6 +5,7 @@ import { ChevronRight, Lock, Check, X, AlertTriangle } from './icons/app-icons';
 import { confirmToolAction, ActionRequired } from '../api';
 import { Button } from './ui/button';
 import { ToolCallPreview, ToolRiskBadge } from './ToolCallPreview';
+import { userActionHeaders } from '../utils/userAction';
 
 const ALLOW_ONCE = 'allow_once';
 const ALWAYS_ALLOW = 'always_allow';
@@ -109,6 +110,7 @@ export default function ToolConfirmation({
 
     try {
       const response = await confirmToolAction({
+        headers: await userActionHeaders(),
         body: {
           sessionId: sessionId,
           id: toolConfirmationId,

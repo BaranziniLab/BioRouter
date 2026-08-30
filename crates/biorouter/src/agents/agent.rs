@@ -18,9 +18,9 @@ use crate::agents::budget::{BudgetAction, BudgetTracker, ReplyBudget};
 use crate::agents::effort::ReasoningEffort;
 use crate::agents::extension::{ExtensionConfig, ExtensionResult, ToolInfo};
 use crate::agents::extension_manager::{
-    get_parameter_names, normalize, resolve_bundled_extension, ExtensionManager,
+    get_parameter_names, normalize, resolve_bundled_extension, BundledExtensionTarget,
+    ExtensionManager,
 };
-use crate::agents::extension_manager_extension::MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE;
 use crate::agents::final_output_tool::{FINAL_OUTPUT_CONTINUATION_MESSAGE, FINAL_OUTPUT_TOOL_NAME};
 use crate::agents::platform_tools::{
     PLATFORM_INGEST_CONVERSATION_TOOL_NAME, PLATFORM_INGEST_SOURCE_TOOL_NAME,
@@ -120,6 +120,38 @@ const MAX_ZERO_PROGRESS_TRUNCATION_CONTINUATIONS: u32 = 3;
 /// Injected when auto-continuing a length-truncated turn, so the model resumes
 /// instead of the agent ending the turn on a half-finished response.
 const TRUNCATION_CONTINUATION_MESSAGE: &str = "Your previous response was cut off because it reached the output length limit (finish_reason=\"length\"). Continue exactly where you left off, and do not repeat what you already wrote.";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ToolCatalogMutation {
+    persist_extension_state: bool,
+}
+
+/// Model-facing catalog tools that can change the callable surface during the
+/// current turn. Read-only browse/search calls are deliberately absent.
+fn tool_catalog_mutation(tool_name: &str) -> Option<ToolCatalogMutation> {
+    let persist_extension_state = match tool_name {
+        "extensionmanager__manage_extensions"
+        | "extensionmanager__install_extension"
+        | "extensionmanager__delete_extension_package" => true,
+        "skills__installMarketplaceSkill"
+        | "skills__importSkillPackage"
+        | "skills__removeSkillPackage"
+        | "skills__hotLoadSkill"
+        | "skills__hotUnloadSkill" => false,
+        _ => return None,
+    };
+    Some(ToolCatalogMutation {
+        persist_extension_state,
+    })
+}
+
+fn should_offer_knowledge_platform_tools(
+    knowledge_enabled: bool,
+    extension_name: Option<&str>,
+) -> bool {
+    knowledge_enabled && (extension_name.is_none() || extension_name == Some("platform"))
+}
+
 fn canonicalize_signed_replay_suffix(messages: &[Message]) -> Conversation {
     let mut grouped = Vec::<Message>::new();
     for message in messages.iter().cloned() {
@@ -791,10 +823,18 @@ struct BridgedSubagentContext {
     working_dir: std::path::PathBuf,
 }
 
+struct EnabledCodingAgentBridgeTargets {
+    workspace: Option<BundledExtensionTarget>,
+    knowledge: Option<BundledExtensionTarget>,
+    skills: Option<BundledExtensionTarget>,
+    extension_manager: Option<BundledExtensionTarget>,
+}
+
 // Subscription-backed CLIs need a host-readable credential file. A generic or
 // custom extension can read that file on the daemon's behalf, bypassing the
-// child's native-tool isolation. Only these audited, path-bounded surfaces may
-// cross the chat bridge; expanding either list requires an isolation review.
+// child's native-tool isolation. Only these audited, path-bounded or
+// proof-backed surfaces may cross the chat bridge; expanding any list requires
+// an isolation review.
 const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__subagent",
     "workspace__workspace_read_conversation",
@@ -823,43 +863,76 @@ const CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS: &[&str] = &[
 
 const CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS: &[&str] = &[PLATFORM_INGEST_SOURCE_TOOL_NAME];
 
+const CODING_AGENT_BRIDGE_ALLOWED_SKILLS_TOOLS: &[&str] = &[
+    "skills__searchSkills",
+    "skills__listSkills",
+    "skills__loadSkill",
+    "skills__browseMarketplaceSkills",
+    "skills__searchMarketplaceSkills",
+    "skills__installMarketplaceSkill",
+    "skills__importSkillPackage",
+    "skills__removeSkillPackage",
+    "skills__hotLoadSkill",
+    "skills__hotUnloadSkill",
+];
+
+const CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS: &[&str] = &[
+    "extensionmanager__search_available_extensions",
+    "extensionmanager__manage_extensions",
+    "extensionmanager__browse_marketplace_extensions",
+    "extensionmanager__search_marketplace_extensions",
+    "extensionmanager__install_extension",
+    "extensionmanager__delete_extension_package",
+];
+
 pub(crate) fn coding_agent_bridge_allows_tool(
     tool_name: &str,
     trusted_workspace: bool,
     trusted_knowledge: bool,
+    trusted_skills: bool,
+    trusted_extension_manager: bool,
 ) -> bool {
     (trusted_workspace && CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&tool_name))
         || (trusted_knowledge && CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS.contains(&tool_name))
         || (trusted_knowledge && CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&tool_name))
+        || (trusted_skills && CODING_AGENT_BRIDGE_ALLOWED_SKILLS_TOOLS.contains(&tool_name))
+        || (trusted_extension_manager
+            && CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS.contains(&tool_name))
+}
+
+struct BridgedChildExtensionGrant<'a> {
+    trusted: bool,
+    target: Option<&'a crate::agents::extension_manager::BundledExtensionTarget>,
+    prefix: &'static str,
+    tools: &'static [&'static str],
 }
 
 fn coding_agent_bridge_child_extensions(
     extensions: Vec<ExtensionConfig>,
-    trusted_knowledge: bool,
-    knowledge_target: Option<&crate::agents::extension_manager::BundledExtensionTarget>,
+    grants: &[BridgedChildExtensionGrant<'_>],
 ) -> Vec<ExtensionConfig> {
-    if !trusted_knowledge {
-        return Vec::new();
-    }
-    let Some(target) = knowledge_target else {
-        return Vec::new();
-    };
-    let allowed_tools: Vec<String> = CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS
-        .iter()
-        .filter_map(|name| name.strip_prefix("knowledge__"))
-        .map(str::to_string)
-        .collect();
-
     extensions
         .into_iter()
         .filter_map(|mut extension| {
-            if !target.matches_config(&extension) {
-                return None;
-            }
+            let grant = grants.iter().find(|grant| {
+                grant.trusted
+                    && grant
+                        .target
+                        .is_some_and(|target| target.matches_config(&extension))
+            })?;
+            let allowed_tools = grant
+                .tools
+                .iter()
+                .filter_map(|name| name.strip_prefix(grant.prefix))
+                .map(str::to_string)
+                .collect::<Vec<_>>();
             match &mut extension {
                 ExtensionConfig::Builtin {
                     available_tools, ..
-                } => *available_tools = allowed_tools.clone(),
+                }
+                | ExtensionConfig::Platform {
+                    available_tools, ..
+                } => *available_tools = allowed_tools,
                 _ => return None,
             }
             Some(extension)
@@ -887,10 +960,33 @@ fn prepare_coding_agent_bridge_tool(tool: &Tool) -> Tool {
                  returns its session id. You MUST supervise it with workspace_watch and \
                  workspace_read_conversation until it finishes; the parent turn is not allowed \
                  to finish while the child runs. The user can open the child tab and steer or \
-                 stop it at any time."
+                 stop it at any time. The child can inherit only the audited Knowledge, Skills, \
+                 and Extension Manager capabilities that this chat currently has. It cannot \
+                 inherit Developer, Code Execution, arbitrary installed extensions, or its \
+                 vendor-native shell/editor. Do not retry with one of those names. For a skill \
+                 repository URL, use skills__importSkillPackage in this chat or delegate with \
+                 extensions:[\"skills\"]; raw shell access is neither needed nor available."
             )
             .into(),
         );
+        let mut schema = bridged.input_schema.as_ref().clone();
+        if let Some(Value::Object(properties)) = schema.get_mut("properties") {
+            if let Some(Value::Object(extensions)) = properties.get_mut("extensions") {
+                extensions.insert(
+                    "description".to_string(),
+                    Value::String(
+                        "OMIT this to give the child the audited Knowledge, Skills, and Extension \
+                         Manager subset that is currently enabled. Naming a subset can only \
+                         restrict that set. Developer, Code Execution, arbitrary installed \
+                         extensions, and vendor-native shell/editor tools cannot be added. For a \
+                         repository skill install, name only skills or use \
+                         skills__importSkillPackage directly in this chat."
+                            .to_string(),
+                    ),
+                );
+            }
+        }
+        bridged.input_schema = Arc::new(schema);
     }
     bridged
 }
@@ -1030,9 +1126,132 @@ struct ChatBridgeDispatch {
     subagent: Option<BridgedSubagentContext>,
     workspace_target: Option<crate::agents::extension_manager::BundledExtensionTarget>,
     knowledge_target: Option<crate::agents::extension_manager::BundledExtensionTarget>,
+    skills_target: Option<crate::agents::extension_manager::BundledExtensionTarget>,
+    extension_manager_target: Option<crate::agents::extension_manager::BundledExtensionTarget>,
 }
 
 impl ChatBridgeDispatch {
+    async fn require_enabled_target(
+        &self,
+        target: Option<&BundledExtensionTarget>,
+        capability_name: &str,
+    ) -> std::result::Result<(), String> {
+        let target =
+            target.ok_or_else(|| format!("The {capability_name} capability is not available"))?;
+        if self.extensions.is_bundled_target_enabled(target).await {
+            Ok(())
+        } else {
+            Err(format!(
+                "The {capability_name} capability is no longer enabled"
+            ))
+        }
+    }
+
+    async fn enforce_tool_access(
+        &self,
+        session_id: &str,
+        call: &CallToolRequestParams,
+    ) -> std::result::Result<(), String> {
+        let name = call.name.as_ref();
+        if CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&name) {
+            self.require_enabled_target(self.workspace_target.as_ref(), "Workspace Control")
+                .await?;
+            self.enforce_child_collector_scope(session_id, call).await
+        } else if CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS.contains(&name)
+            || CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&name)
+        {
+            self.require_enabled_target(self.knowledge_target.as_ref(), "Knowledge")
+                .await
+        } else if CODING_AGENT_BRIDGE_ALLOWED_SKILLS_TOOLS.contains(&name) {
+            self.require_enabled_target(self.skills_target.as_ref(), "Skills")
+                .await
+        } else if CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS.contains(&name) {
+            self.require_enabled_target(self.extension_manager_target.as_ref(), "Extension Manager")
+                .await
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn dispatch_subagent(
+        &self,
+        name: &str,
+        call: CallToolRequestParams,
+        cancel: CancellationToken,
+    ) -> std::result::Result<CallToolResult, String> {
+        let context = self
+            .subagent
+            .as_ref()
+            .ok_or_else(|| "Subagent delegation is not available in this session".to_string())?;
+        if !self
+            .extensions
+            .is_extension_enabled(Agent::SPAWN_EXTENSION)
+            .await
+            || !self
+                .extensions
+                .is_extension_tool_available(Agent::SPAWN_EXTENSION, SUBAGENT_TOOL_NAME)
+                .await
+        {
+            return Err("Tool 'subagent' is not available for extension 'workspace'".into());
+        }
+        let params = call
+            .arguments
+            .map(Value::Object)
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        handle_bridged_subagent_tool(
+            &context.agent_config,
+            params,
+            context.task_config.clone(),
+            context.sub_workflows.clone(),
+            context.working_dir.clone(),
+            Some(cancel),
+        )
+        .result
+        .await
+        .map_err(|error| format!("`{name}` failed: {error}"))
+    }
+
+    async fn dispatch_ingest_source(
+        &self,
+        session_id: &str,
+        call: CallToolRequestParams,
+        capability: crate::privacy::CallCapability,
+        cancel: CancellationToken,
+    ) -> std::result::Result<CallToolResult, String> {
+        let name = call.name.as_ref();
+        let session = self
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .map_err(|error| format!("`{name}` could not load its session: {error}"))?;
+        let arguments = call
+            .arguments
+            .map(Value::Object)
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        match crate::agents::knowledge_source_tool::handle_ingest_source_with_provider(
+            arguments,
+            &session,
+            Some(cancel),
+            capability,
+            Some(Arc::clone(&self.ingest_provider)),
+        )
+        .await
+        {
+            Ok(content) => Ok(CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+            Err(error) => Ok(CallToolResult {
+                content: vec![Content::text(error.message.to_string())],
+                structured_content: None,
+                is_error: Some(true),
+                meta: None,
+            }),
+        }
+    }
+
     async fn refuse_unless_direct_subagent_child(
         &self,
         parent_session_id: &str,
@@ -1099,96 +1318,14 @@ impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
         cancel: CancellationToken,
     ) -> std::result::Result<CallToolResult, String> {
         let name = call.name.to_string();
-        if CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&name.as_str()) {
-            let target = self.workspace_target.as_ref().ok_or_else(|| {
-                "The bundled Workspace Control extension is not available".to_string()
-            })?;
-            if !self.extensions.is_bundled_target_enabled(target).await {
-                return Err("The bundled Workspace Control extension is no longer enabled".into());
-            }
-            self.enforce_child_collector_scope(session_id, &call)
-                .await?;
-        } else if CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS.contains(&name.as_str()) {
-            let target = self
-                .knowledge_target
-                .as_ref()
-                .ok_or_else(|| "The bundled Knowledge extension is not available".to_string())?;
-            if !self.extensions.is_bundled_target_enabled(target).await {
-                return Err("The bundled Knowledge extension is no longer enabled".into());
-            }
-        } else if CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&name.as_str()) {
-            let target = self
-                .knowledge_target
-                .as_ref()
-                .ok_or_else(|| "The bundled Knowledge extension is not available".to_string())?;
-            if !self.extensions.is_bundled_target_enabled(target).await {
-                return Err("The bundled Knowledge extension is no longer enabled".into());
-            }
-        }
+        self.enforce_tool_access(session_id, &call).await?;
         if is_spawn_tool_call(&name) {
-            let context = self.subagent.as_ref().ok_or_else(|| {
-                "Subagent delegation is not available in this session".to_string()
-            })?;
-            if !self
-                .extensions
-                .is_extension_enabled(Agent::SPAWN_EXTENSION)
-                .await
-                || !self
-                    .extensions
-                    .is_extension_tool_available(Agent::SPAWN_EXTENSION, SUBAGENT_TOOL_NAME)
-                    .await
-            {
-                return Err("Tool 'subagent' is not available for extension 'workspace'".into());
-            }
-            let params = call
-                .arguments
-                .map(Value::Object)
-                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-            let result = handle_bridged_subagent_tool(
-                &context.agent_config,
-                params,
-                context.task_config.clone(),
-                context.sub_workflows.clone(),
-                context.working_dir.clone(),
-                Some(cancel),
-            );
-            return result
-                .result
-                .await
-                .map_err(|error| format!("`{name}` failed: {error}"));
+            return self.dispatch_subagent(&name, call, cancel).await;
         }
         if name == PLATFORM_INGEST_SOURCE_TOOL_NAME {
-            let session = self
-                .session_manager
-                .get_session(session_id, false)
-                .await
-                .map_err(|error| format!("`{name}` could not load its session: {error}"))?;
-            let arguments = call
-                .arguments
-                .map(Value::Object)
-                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-            return match crate::agents::knowledge_source_tool::handle_ingest_source_with_provider(
-                arguments,
-                &session,
-                Some(cancel),
-                capability,
-                Some(Arc::clone(&self.ingest_provider)),
-            )
-            .await
-            {
-                Ok(content) => Ok(CallToolResult {
-                    content,
-                    structured_content: None,
-                    is_error: Some(false),
-                    meta: None,
-                }),
-                Err(error) => Ok(CallToolResult {
-                    content: vec![Content::text(error.message.to_string())],
-                    structured_content: None,
-                    is_error: Some(true),
-                    meta: None,
-                }),
-            };
+            return self
+                .dispatch_ingest_source(session_id, call, capability, cancel)
+                .await;
         }
 
         coding_agent_bridge::BridgeToolDispatch::dispatch(
@@ -4453,8 +4590,8 @@ impl Agent {
     }
 
     /// Run the per-tool inspection gauntlet (inspectors → permission judge →
-    /// extension-enable tracking) and eagerly dispatch approved/denied tools,
-    /// returning the inspection results, permission verdict, enable-extension
+    /// catalog-mutation tracking) and eagerly dispatch approved/denied tools,
+    /// returning the inspection results, permission verdict, catalog-mutation
     /// request ids, and the pending tool futures.
     ///
     /// BR-19: `remaining_requests` is `&mut` because a PreToolUse hook may
@@ -4531,12 +4668,15 @@ impl Agent {
                 result
             });
 
-        // Track extension requests
-        let mut enable_extension_request_ids = vec![];
+        // A successful mutation has to refresh the same-turn tool roster and
+        // prompt before the model continues. Tracking the request id here lets
+        // the result funnel distinguish a completed mutation from a refusal or
+        // failed transaction without trusting model-facing result text.
+        let mut catalog_mutation_request_ids = vec![];
         for request in remaining_requests {
             if let Ok(tool_call) = &request.tool_call {
-                if tool_call.name == MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE {
-                    enable_extension_request_ids.push(request.id.clone());
+                if tool_catalog_mutation(&tool_call.name).is_some() {
+                    catalog_mutation_request_ids.push(request.id.clone());
                 }
             }
         }
@@ -4554,7 +4694,7 @@ impl Agent {
         Ok((
             inspection_results,
             permission_check_result,
-            enable_extension_request_ids,
+            catalog_mutation_request_ids,
             tool_futures,
         ))
     }
@@ -4567,20 +4707,24 @@ impl Agent {
         &self,
         request_id: String,
         output: ToolResult<CallToolResult>,
-        enable_extension_request_ids: &[String],
+        catalog_mutation_request_ids: &[String],
         request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
         request_to_tool_name: &HashMap<String, String>,
         request_to_original_tool_call: &HashMap<String, CallToolRequestParams>,
         request_to_executed_tool_call: &HashMap<String, CallToolRequestParams>,
         request_metadata: &HashMap<String, Option<ProviderMetadata>>,
-        all_install_successful: &mut bool,
+        catalog_changed: &mut bool,
+        extension_state_changed: &mut bool,
         post_tool_results: &mut Vec<(String, Option<Value>, Option<String>)>,
         tool_output_guardrail: crate::guardrails::tool_output::ToolOutputGuardrailMode,
         tool_error_taxonomy: crate::agents::tool_errors::ToolErrorTaxonomyConfig,
     ) {
         let _phase = super::phase_timing::Phase::start("agent.integrate_tool_result");
         let output = call_tool_result::validate(output);
-        let output_was_err = output.is_err();
+        let output_was_err = match &output {
+            Err(_) => true,
+            Ok(result) => result.is_error == Some(true),
+        };
         let execution_audit = if let (Some(original), Some(executed)) = (
             request_to_original_tool_call.get(&request_id),
             request_to_executed_tool_call.get(&request_id),
@@ -4648,8 +4792,14 @@ impl Agent {
             );
         }
 
-        if enable_extension_request_ids.contains(&request_id) && output_was_err {
-            *all_install_successful = false;
+        if catalog_mutation_request_ids.contains(&request_id) && !output_was_err {
+            if let Some(mutation) = request_to_tool_name
+                .get(&request_id)
+                .and_then(|name| tool_catalog_mutation(name))
+            {
+                *catalog_changed = true;
+                *extension_state_changed |= mutation.persist_extension_state;
+            }
         }
         {
             let (response_value, error_text) = match &output {
@@ -5562,11 +5712,18 @@ impl Agent {
     }
 
     pub async fn add_final_output_tool(&self, response: Response) {
-        let mut final_output_tool = self.final_output_tool.lock().await;
-        let created_final_output_tool = FinalOutputTool::new(response);
-        let final_output_system_prompt = created_final_output_tool.system_prompt();
-        *final_output_tool = Some(created_final_output_tool);
-        self.extend_system_prompt(final_output_system_prompt).await;
+        self.set_final_output_tool(Some(response)).await;
+    }
+
+    async fn set_final_output_tool(&self, response: Option<Response>) {
+        let created_final_output_tool = response.map(FinalOutputTool::new);
+        let final_output_system_prompt = created_final_output_tool
+            .as_ref()
+            .map(FinalOutputTool::system_prompt);
+        *self.final_output_tool.lock().await = created_final_output_tool;
+        let mut prompt_manager = self.prompt_manager.lock().await;
+        prompt_manager
+            .set_named_system_prompt_extra("workflow_final_output", final_output_system_prompt);
     }
 
     pub async fn add_sub_workflows(&self, sub_workflows_to_add: Vec<SubWorkflow>) {
@@ -5582,15 +5739,169 @@ impl Agent {
         response: Option<Response>,
         include_final_output: bool,
     ) {
-        if let Some(sub_workflows) = sub_workflows {
-            self.add_sub_workflows(sub_workflows).await;
+        let mut installed_sub_workflows = self.sub_workflows.lock().await;
+        installed_sub_workflows.clear();
+        for sub_workflow in sub_workflows.unwrap_or_default() {
+            installed_sub_workflows.insert(sub_workflow.name.clone(), sub_workflow);
         }
+        drop(installed_sub_workflows);
 
         if include_final_output {
-            if let Some(response) = response {
-                self.add_final_output_tool(response).await;
+            self.set_final_output_tool(response).await;
+        }
+    }
+
+    async fn enabled_coding_agent_bridge_target(
+        &self,
+        name: &str,
+    ) -> Option<BundledExtensionTarget> {
+        let target = resolve_bundled_extension(name)?;
+        self.extension_manager
+            .is_bundled_target_enabled(&target)
+            .await
+            .then_some(target)
+    }
+
+    async fn enabled_coding_agent_bridge_targets(&self) -> EnabledCodingAgentBridgeTargets {
+        EnabledCodingAgentBridgeTargets {
+            workspace: self
+                .enabled_coding_agent_bridge_target(Self::SPAWN_EXTENSION)
+                .await,
+            knowledge: self.enabled_coding_agent_bridge_target("knowledge").await,
+            skills: self
+                .enabled_coding_agent_bridge_target(crate::agents::skills_extension::EXTENSION_NAME)
+                .await,
+            extension_manager: self
+                .enabled_coding_agent_bridge_target(
+                    crate::agents::extension_manager_extension::EXTENSION_NAME,
+                )
+                .await,
+        }
+    }
+
+    async fn coding_agent_bridge_subagent_context(
+        &self,
+        iteration_provider: &Arc<dyn Provider>,
+        session: &Session,
+        targets: &EnabledCodingAgentBridgeTargets,
+    ) -> BridgedSubagentContext {
+        let extensions = coding_agent_bridge_child_extensions(
+            self.get_extension_configs().await,
+            &[
+                BridgedChildExtensionGrant {
+                    trusted: targets.knowledge.is_some(),
+                    target: targets.knowledge.as_ref(),
+                    prefix: "knowledge__",
+                    tools: CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS,
+                },
+                BridgedChildExtensionGrant {
+                    trusted: targets.skills.is_some(),
+                    target: targets.skills.as_ref(),
+                    prefix: "skills__",
+                    tools: CODING_AGENT_BRIDGE_ALLOWED_SKILLS_TOOLS,
+                },
+                BridgedChildExtensionGrant {
+                    trusted: targets.extension_manager.is_some(),
+                    target: targets.extension_manager.as_ref(),
+                    prefix: "extensionmanager__",
+                    tools: CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS,
+                },
+            ],
+        );
+        BridgedSubagentContext {
+            agent_config: self.config.clone(),
+            task_config: TaskConfig::new(
+                Arc::clone(iteration_provider),
+                &session.id,
+                &session.working_dir,
+                extensions,
+            ),
+            sub_workflows: self.sub_workflows.lock().await.clone(),
+            working_dir: session.working_dir.clone(),
+        }
+    }
+
+    async fn prepare_coding_agent_bridge_tools(
+        &self,
+        tools: &[Tool],
+        delegation_available: bool,
+        targets: &EnabledCodingAgentBridgeTargets,
+    ) -> Vec<Tool> {
+        // `tools` includes platform, frontend, and final-output tools dispatched
+        // outside `ExtensionManager`. Offering those over this bridge would
+        // advertise calls that can never resolve in its dispatch path.
+        let mut bridged = Vec::with_capacity(tools.len());
+        for tool in tools {
+            let name = tool.name.as_ref();
+            let dispatched_elsewhere = name
+                == crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME
+                || name == crate::agents::platform_tools::PLATFORM_INGEST_CONVERSATION_TOOL_NAME
+                || name == crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME
+                || name == crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
+                || self.is_frontend_tool(name).await;
+            if !dispatched_elsewhere
+                && coding_agent_bridge_allows_tool(
+                    name,
+                    delegation_available,
+                    targets.knowledge.is_some(),
+                    targets.skills.is_some(),
+                    targets.extension_manager.is_some(),
+                )
+            {
+                bridged.push(prepare_coding_agent_bridge_tool(tool));
             }
         }
+        bridged
+    }
+
+    fn chat_bridge_dispatch(
+        &self,
+        iteration_provider: &Arc<dyn Provider>,
+        subagent: Option<BridgedSubagentContext>,
+        targets: EnabledCodingAgentBridgeTargets,
+    ) -> ChatBridgeDispatch {
+        ChatBridgeDispatch {
+            extensions: Arc::clone(&self.extension_manager),
+            session_manager: Arc::clone(&self.config.session_manager),
+            ingest_provider: Arc::clone(iteration_provider),
+            subagent,
+            workspace_target: targets.workspace,
+            knowledge_target: targets.knowledge,
+            skills_target: targets.skills,
+            extension_manager_target: targets.extension_manager,
+        }
+    }
+
+    async fn create_coding_agent_bridge_lease(
+        &self,
+        session: &Session,
+        dispatch: ChatBridgeDispatch,
+        capability: crate::privacy::CallCapability,
+        bridged: Vec<Tool>,
+        conversation: &Conversation,
+        cancel_token: Option<CancellationToken>,
+    ) -> Option<coding_agent_bridge::BridgeLease> {
+        coding_agent_bridge::issue(coding_agent_bridge::BridgeGrant::new(
+            session.clone(),
+            self.config.biorouter_mode,
+            // #109: the bridge dispatches through a trait now, so a knowledge
+            // macro or scheduled workflow can bridge its own small tool surface.
+            Arc::new(dispatch),
+            Arc::clone(&self.tool_inspection_manager),
+            capability,
+            bridged,
+            conversation.clone(),
+            cancel_token,
+            // BR-19: only the hooks manager can return staged PreToolUse input
+            // replacements, so the bridge must share the agent's manager.
+            Arc::clone(&self.hooks_manager),
+            // The vault is configured before a turn; the grant carries that
+            // snapshot so bridged calls resolve encrypted placeholders too.
+            self.vault.lock().await.clone(),
+            // Bridge approvals must use the same risk grade and preview as the
+            // agent's direct dispatch path.
+            Arc::clone(&self.tool_risks),
+        ))
     }
 
     /// Establish this turn's tool bridge, when the bound provider is one that needs
@@ -5626,132 +5937,41 @@ impl Agent {
         tools: &[Tool],
         cancel_token: Option<CancellationToken>,
     ) -> Option<coding_agent_bridge::BridgeLease> {
-        // Asked of the bound INSTANCE, not of its name. `get_name()` on a
-        // `LeadWorkerProvider` returns the lead's name, so a name lookup here
-        // answered for the lead alone and a pair whose *worker* is a coding agent
-        // got no bridge — and the worker runs most of the turns, so the tool-less
-        // child was the ordinary case, not the corner one. `tier()` and
-        // `affiliation()` already had to be instance methods for exactly this, and
-        // `uses_tool_bridge` is the third override beside them.
+        // Ask the bound instance, not its name: a lead/worker composite can use
+        // the bridge only for one side of the pair.
         if !iteration_provider.uses_tool_bridge() {
             return None;
         }
 
-        // Sampled once, here, and carried in the grant. A bridged call is a call,
-        // and `CallCapability` exists so a call's privacy capability is fixed
-        // before it runs rather than re-read while it runs.
+        // Pin the turn's provider while sampling so bridged calls cannot observe
+        // a different privacy capability mid-call.
         let pinned_provider: SharedProvider =
             Arc::new(Mutex::new(Some(Arc::clone(iteration_provider))));
         let capability = crate::privacy::CallCapability::sample(&pinned_provider).await;
-
-        let workspace_target = resolve_bundled_extension(Self::SPAWN_EXTENSION);
-        let trusted_workspace = if let Some(target) = workspace_target.as_ref() {
-            self.extension_manager
-                .is_bundled_target_enabled(target)
-                .await
-        } else {
-            false
-        };
-        let knowledge_target = resolve_bundled_extension("knowledge");
-        let trusted_knowledge = if let Some(target) = knowledge_target.as_ref() {
-            self.extension_manager
-                .is_bundled_target_enabled(target)
-                .await
-        } else {
-            false
-        };
-
-        let delegation_available = coding_agent_bridge_can_delegate(tools, trusted_workspace);
+        let targets = self.enabled_coding_agent_bridge_targets().await;
+        let delegation_available =
+            coding_agent_bridge_can_delegate(tools, targets.workspace.is_some());
         let subagent = if delegation_available {
-            let extensions = coding_agent_bridge_child_extensions(
-                self.get_extension_configs().await,
-                trusted_knowledge,
-                knowledge_target.as_ref(),
-            );
-            Some(BridgedSubagentContext {
-                agent_config: self.config.clone(),
-                task_config: TaskConfig::new(
-                    Arc::clone(iteration_provider),
-                    &session.id,
-                    &session.working_dir,
-                    extensions,
-                ),
-                sub_workflows: self.sub_workflows.lock().await.clone(),
-                working_dir: session.working_dir.clone(),
-            })
+            Some(
+                self.coding_agent_bridge_subagent_context(iteration_provider, session, &targets)
+                    .await,
+            )
         } else {
             None
         };
-
-        // Advertise only what the bridge can actually execute.
-        //
-        // `tools` is not just the extension surface — `prepare_tools` deliberately
-        // includes the platform, frontend and final-output tools so the
-        // risk registry grades them. Those are dispatched by the branches at the
-        // top of `dispatch_tool_call`, NOT by the `ExtensionManager` the grant
-        // holds, so offering them over the bridge would advertise tools that then
-        // fail to resolve — the child would burn a turn calling something that was
-        // never going to work, and the failure would look like a broken tool
-        // rather than a missing one.
-        //
-        // Filtering here rather than in the grant because `is_frontend_tool` is
-        // per-agent state the grant has no access to.
-        let mut bridged = Vec::with_capacity(tools.len());
-        for tool in tools {
-            let name = tool.name.as_ref();
-            let dispatched_elsewhere = name
-                == crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME
-                || name == crate::agents::platform_tools::PLATFORM_INGEST_CONVERSATION_TOOL_NAME
-                || name == crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME
-                || name == crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
-                || self.is_frontend_tool(name).await;
-            if !dispatched_elsewhere
-                && coding_agent_bridge_allows_tool(name, delegation_available, trusted_knowledge)
-            {
-                bridged.push(prepare_coding_agent_bridge_tool(tool));
-            }
-        }
-
-        coding_agent_bridge::issue(coding_agent_bridge::BridgeGrant::new(
-            session.clone(),
-            self.config.biorouter_mode,
-            // #109: the bridge dispatches through a trait now, so a knowledge
-            // macro or a scheduled workflow can bridge its OWN small tool
-            // surface. A chat turn's surface is the session's extensions, which
-            // is what this named coercion says.
-            Arc::new(ChatBridgeDispatch {
-                extensions: Arc::clone(&self.extension_manager),
-                session_manager: Arc::clone(&self.config.session_manager),
-                ingest_provider: Arc::clone(iteration_provider),
-                subagent,
-                workspace_target: trusted_workspace.then_some(workspace_target).flatten(),
-                knowledge_target: trusted_knowledge.then_some(knowledge_target).flatten(),
-            }),
-            Arc::clone(&self.tool_inspection_manager),
+        let bridged = self
+            .prepare_coding_agent_bridge_tools(tools, delegation_available, &targets)
+            .await;
+        let dispatch = self.chat_bridge_dispatch(iteration_provider, subagent, targets);
+        self.create_coding_agent_bridge_lease(
+            session,
+            dispatch,
             capability,
             bridged,
-            conversation.clone(),
+            conversation,
             cancel_token,
-            // BR-19: the grant runs `HookInspector` like any other inspector, so
-            // the user's PreToolUse hooks fire for a bridged call — but a hook's
-            // `updated_input` is *staged inside this manager*, not returned from
-            // the inspection, and only the manager can hand it back. Without it
-            // the bridge ran the hooks and then dispatched the arguments they
-            // asked to replace.
-            Arc::clone(&self.hooks_manager),
-            // BRSDK encryption. A snapshot, like everything else in the grant:
-            // `set_vault` runs once when an app's agent is configured, long before
-            // any turn, so there is nothing a per-call re-read could observe. A
-            // grant without it dispatched the literal `{{vault:NAME}}` string,
-            // which is not an error anywhere — it is a valid string that goes out
-            // as a header and comes back 401.
-            self.vault.lock().await.clone(),
-            // #107: BR-63's risk grades. An approval card raised from the bridge
-            // must be the SAME card the agent's own path yields — same risk
-            // grade, same preview — or the user faces two dialogs for one
-            // decision with no way to tell which is which.
-            Arc::clone(&self.tool_risks),
-        ))
+        )
+        .await
     }
 
     /// Dispatch a single tool call to the appropriate client
@@ -6627,16 +6847,15 @@ impl Agent {
             prefixed_tools.push(platform_tools::manage_schedule_tool());
         }
 
-        // The conversation-ingestion tool is always available on the platform
-        // extension: it needs only the session store (always present) and the
-        // agent's provider, which is checked at call time.
-        if extension_name.is_none() || extension_name.as_deref() == Some("platform") {
+        // Ingestion belongs to the Knowledge capability. If the user disables
+        // Knowledge, these higher-level write paths disappear with its
+        // primitives instead of remaining as an unlabelled bypass.
+        let knowledge_enabled = self
+            .extension_manager
+            .is_extension_enabled("knowledge")
+            .await;
+        if should_offer_knowledge_platform_tools(knowledge_enabled, extension_name.as_deref()) {
             prefixed_tools.push(platform_tools::ingest_conversation_tool());
-            // Issue #108. Beside it, and on the same terms: the knowledge store
-            // is always present and the provider is checked at call time. It is
-            // NOT gated on the knowledge extension being loaded — the extension
-            // supplies primitives a model reaches for when this tool is absent,
-            // which is the exact failure this tool exists to end.
             prefixed_tools.push(platform_tools::ingest_source_tool());
         }
 
@@ -8509,7 +8728,7 @@ impl Agent {
                                     let (
                                         inspection_results,
                                         permission_check_result,
-                                        enable_extension_request_ids,
+                                        catalog_mutation_request_ids,
                                         mut tool_futures,
                                     ) = self.inspect_and_gate_tool_requests(
                                         &mut remaining_requests,
@@ -8583,7 +8802,8 @@ impl Agent {
                                         .collect::<Vec<_>>();
 
                                     let mut combined = stream::select_all(with_id);
-                                    let mut all_install_successful = true;
+                                    let mut catalog_changed = false;
+                                    let mut extension_state_changed = false;
                                     // (request_id, tool_response, error) captured for PostToolUse hooks
                                     let mut post_tool_results: Vec<(String, Option<Value>, Option<String>)> = Vec::new();
 
@@ -8646,13 +8866,14 @@ impl Agent {
                                                 self.integrate_tool_result(
                                                     request_id.clone(),
                                                     output,
-                                                    &enable_extension_request_ids,
+                                                    &catalog_mutation_request_ids,
                                                     &request_to_response_map,
                                                     &request_to_tool_name,
                                                     &request_to_original_tool_call,
                                                     &request_to_executed_tool_call,
                                                     &request_metadata,
-                                                    &mut all_install_successful,
+                                                    &mut catalog_changed,
+                                                    &mut extension_state_changed,
                                                     &mut post_tool_results,
                                                     tool_output_guardrail,
                                                     tool_error_taxonomy,
@@ -8797,10 +9018,12 @@ impl Agent {
                                         yield AgentEvent::Message(msg);
                                     }
 
-                                    if all_install_successful && !enable_extension_request_ids.is_empty() {
+                                    if extension_state_changed {
                                         if let Err(e) = self.save_extension_state(&session_config).await {
                                             warn!("Failed to save extension state after runtime changes: {}", e);
                                         }
+                                    }
+                                    if catalog_changed {
                                         tools_updated = true;
                                     }
                                 }
@@ -9666,6 +9889,13 @@ impl Agent {
         prompt_manager.add_system_prompt_extra(instruction);
     }
 
+    /// Set the desktop/workflow session context as one replaceable prompt
+    /// block. Re-applying a workflow must not leave old instructions active.
+    pub async fn set_session_context_prompt(&self, instruction: Option<String>) {
+        let mut prompt_manager = self.prompt_manager.lock().await;
+        prompt_manager.set_named_system_prompt_extra("session_context", instruction);
+    }
+
     pub async fn update_provider(
         &self,
         provider: Arc<dyn Provider>,
@@ -10131,7 +10361,21 @@ impl Agent {
             messages.len()
         );
 
-        let extensions_info = self.extension_manager.get_extensions_info().await;
+        let tools = self
+            .extension_manager
+            .get_prefixed_tools(None)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to get tools for workflow creation: {}", e);
+                e
+            })?;
+        let mut extensions_info = self.extension_manager.get_extensions_info().await;
+        crate::agents::reply_parts::add_core_platform_capability(&mut extensions_info, &tools);
+        crate::agents::reply_parts::attach_effective_tool_rosters(
+            &mut extensions_info,
+            &tools,
+            &tools,
+        );
         tracing::debug!("Retrieved {} extensions info", extensions_info.len());
 
         // Get model name from provider
@@ -10151,15 +10395,6 @@ impl Agent {
             .build();
 
         let workflow_prompt = prompt_manager.get_workflow_prompt().await;
-        let tools = self
-            .extension_manager
-            .get_prefixed_tools(None)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to get tools for workflow creation: {}", e);
-                e
-            })?;
-
         messages.push(Message::user().with_text(workflow_prompt));
 
         let (messages, issues) = fix_conversation(messages);
@@ -10359,6 +10594,59 @@ mod tests {
     use crate::workflow::Response;
 
     #[test]
+    fn same_turn_catalog_refresh_covers_every_mutating_manager_tool_only() {
+        for name in [
+            "extensionmanager__manage_extensions",
+            "extensionmanager__install_extension",
+            "extensionmanager__delete_extension_package",
+        ] {
+            assert_eq!(
+                tool_catalog_mutation(name),
+                Some(ToolCatalogMutation {
+                    persist_extension_state: true,
+                }),
+                "{name} must persist and refresh the extension roster"
+            );
+        }
+        for name in [
+            "skills__installMarketplaceSkill",
+            "skills__importSkillPackage",
+            "skills__removeSkillPackage",
+            "skills__hotLoadSkill",
+            "skills__hotUnloadSkill",
+        ] {
+            assert_eq!(
+                tool_catalog_mutation(name),
+                Some(ToolCatalogMutation {
+                    persist_extension_state: false,
+                }),
+                "{name} must refresh the live prompt without rewriting extensions"
+            );
+        }
+        for name in [
+            "extensionmanager__search_marketplace_extensions",
+            "skills__searchMarketplaceSkills",
+            "skills__loadSkill",
+        ] {
+            assert_eq!(tool_catalog_mutation(name), None, "{name} is read-only");
+        }
+    }
+
+    #[test]
+    fn platform_ingestion_tracks_the_knowledge_capability() {
+        assert!(should_offer_knowledge_platform_tools(true, None));
+        assert!(should_offer_knowledge_platform_tools(
+            true,
+            Some("platform")
+        ));
+        assert!(!should_offer_knowledge_platform_tools(false, None));
+        assert!(!should_offer_knowledge_platform_tools(
+            true,
+            Some("developer")
+        ));
+    }
+
+    #[test]
     fn compaction_notice_uses_user_facing_chat_terminology() {
         assert_eq!(
             COMPACTION_THINKING_TEXT,
@@ -10441,6 +10729,7 @@ mod tests {
             arguments: Some(object!({"command": "rewritten"})),
         };
         let mut install_ok = true;
+        let mut extension_state_changed = false;
         let mut post_results = Vec::new();
         agent
             .integrate_tool_result(
@@ -10457,6 +10746,7 @@ mod tests {
                 &HashMap::from([(request_id.clone(), executed)]),
                 &HashMap::from([(request_id.clone(), None)]),
                 &mut install_ok,
+                &mut extension_state_changed,
                 &mut post_results,
                 crate::guardrails::tool_output::ToolOutputGuardrailMode::Off,
                 crate::agents::tool_errors::ToolErrorTaxonomyConfig::default(),
@@ -10651,6 +10941,7 @@ mod tests {
                 prompt: None,
                 risk: None,
                 preview: None,
+                requires_user_proof: false,
             }),
         );
         let id = parked.id().to_string();
@@ -10704,6 +10995,7 @@ mod tests {
                 prompt: None,
                 risk: None,
                 preview: None,
+                requires_user_proof: false,
             }),
         );
         agent
@@ -11893,7 +12185,7 @@ mod tests {
     }
 
     #[test]
-    fn subscription_coding_agent_bridge_withholds_arbitrary_host_read_tools() {
+    fn subscription_coding_agent_bridge_withholds_arbitrary_host_tools_but_allows_managers() {
         for blocked in [
             "developer__shell",
             "developer__text_editor",
@@ -11908,9 +12200,11 @@ mod tests {
             "knowledge__kb_export",
             "knowledge__kb_import",
             "knowledge__kb_write_page",
+            "extensionmanager__read_resource",
+            "extensionmanager__list_resources",
         ] {
             assert!(
-                !coding_agent_bridge_allows_tool(blocked, true, true),
+                !coding_agent_bridge_allows_tool(blocked, true, true, true, true),
                 "{blocked}"
             );
         }
@@ -11919,37 +12213,77 @@ mod tests {
             "workspace__workspace_watch",
             "knowledge__kb_search",
             PLATFORM_INGEST_SOURCE_TOOL_NAME,
+            "skills__importSkillPackage",
+            "skills__hotLoadSkill",
+            "extensionmanager__install_extension",
+            "extensionmanager__manage_extensions",
         ] {
             assert!(
-                coding_agent_bridge_allows_tool(allowed, true, true),
+                coding_agent_bridge_allows_tool(allowed, true, true, true, true),
                 "{allowed}"
             );
         }
         assert!(!coding_agent_bridge_allows_tool(
             "workspace__subagent",
             false,
-            true
+            true,
+            true,
+            true,
         ));
         assert!(!coding_agent_bridge_allows_tool(
             "knowledge__kb_search",
             true,
-            false
+            false,
+            true,
+            true,
         ));
         assert!(!coding_agent_bridge_allows_tool(
             PLATFORM_INGEST_SOURCE_TOOL_NAME,
             true,
-            false
+            false,
+            true,
+            true,
+        ));
+        assert!(!coding_agent_bridge_allows_tool(
+            "skills__importSkillPackage",
+            true,
+            true,
+            false,
+            true,
+        ));
+        assert!(!coding_agent_bridge_allows_tool(
+            "extensionmanager__install_extension",
+            true,
+            true,
+            true,
+            false,
         ));
     }
 
     #[test]
-    fn coding_agent_children_persist_only_the_knowledge_tools_the_bridge_serves() {
-        let target = resolve_bundled_extension("knowledge").expect("bundled Knowledge target");
+    fn coding_agent_children_persist_only_the_audited_manager_tools_the_bridge_serves() {
+        let knowledge_target =
+            resolve_bundled_extension("knowledge").expect("bundled Knowledge target");
+        let skills_target = resolve_bundled_extension("skills").expect("bundled Skills target");
+        let manager_target = resolve_bundled_extension("Extension Manager")
+            .expect("bundled Extension Manager target");
         let knowledge = ExtensionConfig::Builtin {
             name: "knowledge".into(),
             description: "Knowledge".into(),
             display_name: None,
             timeout: None,
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        let skills = ExtensionConfig::Platform {
+            name: "skills".into(),
+            description: "Skills".into(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        let manager = ExtensionConfig::Platform {
+            name: "Extension Manager".into(),
+            description: "Extension Manager".into(),
             bundled: Some(true),
             available_tools: Vec::new(),
         };
@@ -11962,9 +12296,30 @@ mod tests {
             available_tools: Vec::new(),
         };
 
-        let grants =
-            coding_agent_bridge_child_extensions(vec![knowledge, developer], true, Some(&target));
-        assert_eq!(grants.len(), 1);
+        let grants = coding_agent_bridge_child_extensions(
+            vec![knowledge, skills, manager, developer],
+            &[
+                BridgedChildExtensionGrant {
+                    trusted: true,
+                    target: Some(&knowledge_target),
+                    prefix: "knowledge__",
+                    tools: CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS,
+                },
+                BridgedChildExtensionGrant {
+                    trusted: true,
+                    target: Some(&skills_target),
+                    prefix: "skills__",
+                    tools: CODING_AGENT_BRIDGE_ALLOWED_SKILLS_TOOLS,
+                },
+                BridgedChildExtensionGrant {
+                    trusted: true,
+                    target: Some(&manager_target),
+                    prefix: "extensionmanager__",
+                    tools: CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS,
+                },
+            ],
+        );
+        assert_eq!(grants.len(), 3);
         let ExtensionConfig::Builtin {
             name,
             available_tools,
@@ -11980,7 +12335,32 @@ mod tests {
             .collect();
         assert_eq!(available_tools, &expected);
         assert!(!available_tools.contains(&"kb_write_page".to_string()));
-        assert!(coding_agent_bridge_child_extensions(vec![], false, Some(&target)).is_empty());
+
+        let ExtensionConfig::Platform {
+            name,
+            available_tools,
+            ..
+        } = &grants[1]
+        else {
+            panic!("Skills must stay a platform capability")
+        };
+        assert_eq!(name, "skills");
+        assert!(available_tools.contains(&"importSkillPackage".to_string()));
+        assert!(!available_tools.iter().any(|name| name.contains("__")));
+
+        let ExtensionConfig::Platform {
+            name,
+            available_tools,
+            ..
+        } = &grants[2]
+        else {
+            panic!("Extension Manager must stay a platform capability")
+        };
+        assert_eq!(name, "Extension Manager");
+        assert!(available_tools.contains(&"install_extension".to_string()));
+        assert!(!available_tools.contains(&"read_resource".to_string()));
+
+        assert!(coding_agent_bridge_child_extensions(vec![], &[]).is_empty());
     }
 
     #[tokio::test]
@@ -12000,7 +12380,7 @@ mod tests {
         agent
             .add_extension(knowledge_target.into_config("Knowledge bridge regression".into()))
             .await
-            .expect("enable the trusted Knowledge extension");
+            .expect("enable the trusted Knowledge capability");
 
         let iteration_provider: Arc<dyn Provider> =
             Arc::new(BridgedChildProvider { name: "codex" });
@@ -12223,6 +12603,42 @@ mod tests {
         assert!(description.contains("MUST supervise it"));
         assert!(description.contains("parent turn is not allowed to finish"));
         assert!(description.contains("steer or stop it"));
+        assert!(description.contains("cannot inherit Developer"));
+        assert!(description.contains("skills__importSkillPackage"));
+    }
+
+    #[test]
+    fn destiny_style_repository_install_is_routed_to_the_audited_skills_manager() {
+        let mut spawn = crate::agents::subagent_tool::create_subagent_tool(&[]);
+        spawn.name = "workspace__subagent".into();
+        let attached = prepare_coding_agent_bridge_tool(&spawn);
+        let extension_help = attached
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|properties| properties.get("extensions"))
+            .and_then(Value::as_object)
+            .and_then(|extensions| extensions.get("description"))
+            .and_then(Value::as_str)
+            .expect("the bridged spawn schema explains its effective child roster");
+
+        assert!(extension_help.contains("Knowledge, Skills, and Extension Manager"));
+        assert!(extension_help.contains("cannot be added"));
+        assert!(extension_help.contains("skills__importSkillPackage"));
+        assert!(coding_agent_bridge_allows_tool(
+            "skills__importSkillPackage",
+            true,
+            true,
+            true,
+            true,
+        ));
+        assert!(!coding_agent_bridge_allows_tool(
+            "developer__shell",
+            true,
+            true,
+            true,
+            true,
+        ));
     }
 
     fn armed_structured_final_output(output: &str) -> Arc<Mutex<Option<FinalOutputTool>>> {

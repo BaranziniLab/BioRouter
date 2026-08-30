@@ -27,7 +27,9 @@ use biorouter::providers::create;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, Session, SessionManager, WorkingDirUpdate};
-use biorouter::workflow::{Workflow, WorkflowKnowledgeBases};
+use biorouter::workflow::Workflow;
+#[cfg(test)]
+use biorouter::workflow::WorkflowKnowledgeBases;
 use biorouter::workflow_deeplink;
 use biorouter::{
     agents::{
@@ -36,7 +38,7 @@ use biorouter::{
     },
     config::permission::PermissionLevel,
 };
-use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
+use biorouter_mcp::knowledge::service::KnowledgeService;
 // Issue #56 DR-16. Named through the LIB path, not `crate::auth`: `src/routes/`
 // is compiled into the `biorouterd` binary as well as the lib (see
 // `routes::secret_matches`), and the digest is a process-global that must have
@@ -407,18 +409,11 @@ pub struct StopAgentRequest {
 /// One rule still earns its keep: a `default` that was not listed in `visible`
 /// is unioned into the set, because the invariant requires the primary to be a
 /// member and the author plainly meant it.
+#[cfg(test)]
 pub(crate) fn plan_workflow_knowledge_selection(
     selection: &WorkflowKnowledgeBases,
 ) -> (Vec<String>, Option<String>) {
-    let mut visible: Vec<String> = selection.visible.clone();
-    if let Some(default) = selection.default.as_deref() {
-        if !visible.iter().any(|id| id == default) {
-            visible.push(default.to_string());
-        }
-    }
-    visible.sort();
-    visible.dedup();
-    (visible, selection.default.clone())
+    biorouter::workflow::runtime::plan_knowledge_selection(selection)
 }
 
 /// Install a workflow's declared selection into the session it just created.
@@ -435,26 +430,15 @@ fn apply_workflow_knowledge_selection(
     session_id: &str,
     workflow: &Workflow,
 ) -> Result<(), ErrorResponse> {
-    let Some(selection) = workflow.knowledge_bases.as_ref() else {
-        return Ok(());
-    };
-
-    let (visible, primary) = plan_workflow_knowledge_selection(selection);
-    let primary = match primary.as_deref() {
-        Some(id) => PrimaryUpdate::Set(id),
-        None => PrimaryUpdate::Clear,
-    };
-
-    svc.set_visible_kbs(Some(session_id), &visible, primary)
-        .map_err(|err| {
+    biorouter::workflow::runtime::apply_knowledge_selection(svc, session_id, workflow).map_err(
+        |err| {
             error!("Failed to apply workflow knowledge bases: {}", err);
             ErrorResponse {
                 message: format!("Failed to apply workflow knowledge bases: {}", err),
                 status: StatusCode::BAD_REQUEST,
             }
-        })?;
-
-    Ok(())
+        },
+    )
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -698,6 +682,21 @@ async fn start_agent(
         return Err(error);
     }
 
+    let prepared_workflow_prompt = if let Some(workflow) = original_workflow.as_ref() {
+        match biorouter::workflow::runtime::prepare_prompt(manager, &session.id, workflow).await {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                discard_failed_new_session(&state, &session.id).await;
+                return Err(ErrorResponse {
+                    message: error.to_string(),
+                    status: StatusCode::BAD_REQUEST,
+                });
+            }
+        }
+    } else {
+        None
+    };
+
     if let Some(workflow) = original_workflow.as_ref() {
         apply_workflow_knowledge_selection(&state.knowledge_service, &session.id, workflow)?;
     }
@@ -705,8 +704,11 @@ async fn start_agent(
     let workflow_extensions = original_workflow
         .as_ref()
         .and_then(|r| r.extensions.as_deref());
-    let extensions_to_use =
+    let mut extensions_to_use =
         resolve_extensions_for_new_session(workflow_extensions, extension_overrides);
+    if let Some(workflow) = original_workflow.as_ref() {
+        biorouter::workflow::runtime::ensure_required_extensions(workflow, &mut extensions_to_use);
+    }
     let mut extension_data = session.extension_data.clone();
     let extensions_state = EnabledExtensionsState::new(extensions_to_use);
     if let Err(e) = extensions_state.to_extension_data(&mut extension_data) {
@@ -726,7 +728,7 @@ async fn start_agent(
             })?;
     }
 
-    if let Some(workflow) = original_workflow {
+    if let Some(workflow) = original_workflow.clone() {
         manager
             .update(&session.id)
             .workflow(Some(workflow))
@@ -757,6 +759,7 @@ async fn start_agent(
     let session_for_spawn = session.clone();
     let state_for_spawn = state.clone();
     let session_id_for_task = session.id.clone();
+    let workflow_for_spawn = original_workflow;
     let task = tokio::spawn(async move {
         match state_for_spawn
             .get_agent(session_for_spawn.id.clone())
@@ -764,6 +767,23 @@ async fn start_agent(
         {
             Ok(agent) => {
                 let results = agent.load_extensions_from_session(&session_for_spawn).await;
+                let context: HashMap<&str, Value> = HashMap::new();
+                let desktop_prompt = render_global_file("desktop_prompt.md", &context)
+                    .expect("Prompt should render");
+                if let Some(workflow) = workflow_for_spawn.as_ref() {
+                    biorouter::workflow::runtime::apply_prepared_to_agent(
+                        agent.as_ref(),
+                        workflow,
+                        true,
+                        prepared_workflow_prompt.clone(),
+                    )
+                    .await;
+                    if prepared_workflow_prompt.is_none() {
+                        agent.set_session_context_prompt(Some(desktop_prompt)).await;
+                    }
+                } else {
+                    agent.set_session_context_prompt(Some(desktop_prompt)).await;
+                }
                 tracing::debug!(
                     "Background extension loading completed for session {}",
                     session_for_spawn.id
@@ -1048,7 +1068,14 @@ async fn update_from_session(
         .await
         {
             Ok(Some(workflow)) => {
-                if let Some(prompt) = apply_workflow_to_agent(&agent, &workflow, true).await {
+                if let Some(prompt) =
+                    apply_workflow_to_agent(&agent, &payload.session_id, &workflow, true)
+                        .await
+                        .map_err(|e| ErrorResponse {
+                            message: e.to_string(),
+                            status: StatusCode::BAD_REQUEST,
+                        })?
+                {
                     update_prompt = prompt;
                 }
             }
@@ -1063,7 +1090,7 @@ async fn update_from_session(
             }
         }
     }
-    agent.extend_system_prompt(update_prompt).await;
+    agent.set_session_context_prompt(Some(update_prompt)).await;
 
     Ok(StatusCode::OK)
 }
@@ -1992,7 +2019,13 @@ async fn restart_agent_internal(
         .await
         {
             Ok(Some(workflow)) => {
-                if let Some(prompt) = apply_workflow_to_agent(&agent, &workflow, true).await {
+                if let Some(prompt) = apply_workflow_to_agent(&agent, session_id, &workflow, true)
+                    .await
+                    .map_err(|e| ErrorResponse {
+                        message: e.to_string(),
+                        status: StatusCode::BAD_REQUEST,
+                    })?
+                {
                     update_prompt = prompt;
                 }
             }
@@ -2007,7 +2040,7 @@ async fn restart_agent_internal(
             }
         }
     }
-    agent.extend_system_prompt(update_prompt).await;
+    agent.set_session_context_prompt(Some(update_prompt)).await;
 
     Ok(extension_results)
 }

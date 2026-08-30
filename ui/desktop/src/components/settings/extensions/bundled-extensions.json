@@ -44,16 +44,6 @@
     "bundled": true
   },
   {
-    "id": "tutorial",
-    "name": "tutorial",
-    "display_name": "Tutorial",
-    "description": "Access interactive tutorials and step-by-step guides.",
-    "enabled": false,
-    "type": "builtin",
-    "env_keys": [],
-    "bundled": true
-  },
-  {
     "id": "knowledge",
     "name": "knowledge",
     "display_name": "Knowledge",

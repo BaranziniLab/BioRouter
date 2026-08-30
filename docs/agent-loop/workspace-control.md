@@ -6,7 +6,7 @@
 
 A BioRouter conversation is a session: its own agent, its own working directory, its own extensions, skills and knowledge bases, its own history, and — in the desktop app — its own tab. Workspace control is the set of tools that lets the agent operate on that layer instead of only inside one chat. The practical effect is that "run the alignment while I write the methods" stops meaning *you* open a second chat, paste the context in, and remember to come back to it.
 
-This page is the how-to. The per-tool reference — what each tool takes, the confirmation rules, how injected messages are labelled — is the [Workspace Control extension page](../extensions/built-in/workspace.md); the child-agent detail is [Subagents](subagents.md). Read this one when you have the app (or a terminal) open and want to lay work out.
+This page is the how-to. The per-tool reference — what each tool takes, the confirmation rules, how injected messages are labelled — is the [Workspace Control capability page](../extensions/built-in/workspace.md); the child-agent detail is [Subagents](subagents.md). Read this one when you have the app (or a terminal) open and want to lay work out.
 
 ## What it is for
 
@@ -289,7 +289,7 @@ Most of the time the answer is one of the deliberate behaviours above — announ
 ## Related documentation
 
 - [Session metadata contract](session-metadata-contract.md) — conversation ID, session kind, parent, and what makes something a subagent run.
-- [Workspace Control extension](../extensions/built-in/workspace.md) — the user-facing reference: the two tiers, what each tool asks you first, the always-confirm rule, and how injected messages are labelled forever.
+- [Workspace Control capability](../extensions/built-in/workspace.md) — the user-facing reference: the two tiers, what each tool asks you first, the always-confirm rule, and how injected messages are labelled forever.
 - [Workspace Control tool reference](workspace-control-tools.md) — the developer-facing contract for the same eight tools: exact arguments and defaults, every refusal string, the caps and clamps, and the cases where a tool reports success it did not earn.
 - [Subagents](subagents.md) — the glass-box tab in full, steering and stopping a child, and configuring one from a workflow file.
 - [Tool routing](tool-routing.md) — which tool the agent should reach for, and what separates workspace control from Chat Recall, Memory and the knowledge base.

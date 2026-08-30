@@ -1,16 +1,16 @@
-# Developer extension
+# Developer capability
 
-> **What this is.** Two things in one file: a walkthrough of the built-in Developer extension (enabling it, a worked project-setup example, its five tools), and a reference on constraining it with permission modes, tool permissions and `.biorouterignore`.
-> **Status:** Current. The extension and its `shell` / `text_editor` / `analyze` / `screen_capture` / `image_processor` tools ship in `crates/biorouter-mcp/src/developer`, and the permission modes described match `crates/biorouter/src/security`.
+> **What this is.** Two things in one file: a walkthrough of the built-in Developer capability (enabling it, a worked project-setup example, its five tools), and a reference on constraining it with permission modes, tool permissions and `.biorouterignore`.
+> **Status:** Current. The capability and its `shell` / `text_editor` / `analyze` / `screen_capture` / `image_processor` tools ship in `crates/biorouter-mcp/src/developer`, and the permission modes described match `crates/biorouter/src/security`.
 > **Audience:** end users, and anyone deciding how much autonomy to grant BioRouter.
 
-The Developer extension lets BioRouter automate developer-centric tasks: editing files, running shell commands, and setting up projects. It also provides enhanced code editing and codebase analysis tools. It is enabled by default when BioRouter is installed.
+The Developer capability lets BioRouter automate developer-centric tasks: editing files, running shell commands, and setting up projects. It also provides enhanced code editing and codebase analysis tools. It is enabled by default when BioRouter is installed.
 
-Because `shell` and `text_editor` can run any command and modify any accessible file with your user privileges, this page carries the most substantive security guidance of any extension page. If you only want to know how to rein BioRouter in, skip to [Configuring access controls](#configuring-access-controls).
+Because `shell` and `text_editor` can run any command and modify any accessible file with your user privileges, this page carries the most substantive security guidance of any capability page. If you only want to know how to rein BioRouter in, skip to [Configuring access controls](#configuring-access-controls).
 
 ## Configuration
 
-> **Note.** The Developer extension is already enabled by default when BioRouter is installed. The steps below are only needed to confirm or restore that state.
+> **Note.** The Developer capability is already enabled by default when BioRouter is installed. The steps below are only needed to confirm or restore that state.
 
 1. Run the `configure` command:
 
@@ -26,7 +26,7 @@ Because `shell` and `text_editor` can run any command and modify any accessible 
    ◇  What would you like to configure?
    │  Toggle Extensions
    │
-   ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
+   ◆  Enable capabilities and extensions: (use "space" to toggle and "enter" to submit)
    │  ● developer
    └  Extension settings updated successfully
    ```
@@ -41,7 +41,7 @@ To follow along, either open a new session in BioRouter Desktop, or start one fr
 biorouter session
 ```
 
-> **Note.** This transcript was produced with Anthropic's Claude 4 Sonnet. Any tool-capable model can drive the extension; the exact wording will differ by model.
+> **Note.** This transcript was produced with Anthropic's Claude 4 Sonnet. Any tool-capable model can drive the capability; the exact wording will differ by model.
 
 ### BioRouter prompt
 
@@ -136,13 +136,13 @@ Raise, lower or disable the budget with [`BIOROUTER_SHELL_FOREGROUND_TIMEOUT_SEC
 
 ## Configuring access controls
 
-By default, BioRouter can run system commands with your user privileges and edit any accessible file **without your approval**. This is because BioRouter runs in Autonomous permission mode by default and has access to the Developer extension's shell and file editing tools. While this configuration lets BioRouter work quickly and independently, there is potential for unexpected outcomes. Understanding the available access control features helps you configure BioRouter to match your comfort level and specific needs.
+By default, BioRouter can run system commands with your user privileges and edit any accessible file **without your approval**. This is because BioRouter runs in Autonomous permission mode by default and has access to the Developer capability's shell and file editing tools. While this configuration lets BioRouter work quickly and independently, there is potential for unexpected outcomes. Understanding the available access control features helps you configure BioRouter to match your comfort level and specific needs.
 
 > **Tip.** See the [Quick setup example](#quick-setup-example) below for ways to configure more control over BioRouter's behavior.
 
-### Developer extension tools
+### Developer capability tools
 
-The Developer extension provides these tools:
+The Developer capability provides these tools:
 
 | Tool | Description | Use Cases | Risk Level |
 |------|-------------|-----------|------------|
@@ -165,7 +165,7 @@ You can layer multiple controls to match your risk tolerance and workflow.
 | Smart Approval<br />CLI: `smart_approve` | AI decides what needs review | Balanced approach |
 | Chat Only<br />CLI: `chat` | Disable all tools | For maximum security and models that don't support tool-calling |
 
-**Tool permissions** let you set `Always allow`, `Ask before`, and `Never allow` permissions for individual extension tools when in Manual Approval or Smart Approval modes.
+**Tool permissions** let you set `Always allow`, `Ask before`, and `Never allow` permissions for individual capability or extension tools when in Manual Approval or Smart Approval modes.
 
 **`.biorouterignore` files** restrict which files and directories BioRouter can access (`.gitignore` files are the fallback).
 
@@ -202,6 +202,6 @@ As you become more comfortable with BioRouter's behavior, you can adjust these s
 
 - [Security guide](../../security/README.md) — the umbrella page for using BioRouter safely.
 - [Permission modes](../../security/permission-modes.md) — the full reference for approval modes and per-tool permissions.
-- [Computer Controller extension](computer-controller.md) — the other high-privilege built-in extension; it automates your desktop rather than your project, and the same access controls apply.
-- [Code Execution extension](code-execution.md) — Code Mode scripts import `shell` and `text_editor` from this extension, so they inherit its blast radius.
+- [Computer Controller capability](computer-controller.md) — the other high-privilege built-in capability; it automates your desktop rather than your project, and the same access controls apply.
+- [Code Execution capability](code-execution.md) — Code Mode scripts import `shell` and `text_editor` from this capability, so they inherit its blast radius.
 - [Configuration file reference](../../configuration/config-file-reference.md) — where `BIOROUTER_MODE` and other settings live in `config.yaml`.

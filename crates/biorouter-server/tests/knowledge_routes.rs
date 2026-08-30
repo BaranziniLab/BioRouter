@@ -1809,6 +1809,21 @@ async fn check_model_returns_502_for_unknown_provider() {
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
+async fn fresh_selection_reports_soul_as_the_default_primary_when_bootstrapped() {
+    let (_d, app) = build_test_router();
+    create_bases(&app, &["soul"]).await;
+
+    let machine = get_active(&app, None).await;
+    assert_eq!(machine["primary_kb"].as_str(), Some("soul"));
+    assert_eq!(machine["active_kb"].as_str(), Some("soul"));
+    assert_eq!(machine["kb_ids"], serde_json::json!(["soul"]));
+
+    let fresh_chat = get_active(&app, Some("fresh-chat")).await;
+    assert_eq!(fresh_chat["primary_kb"].as_str(), Some("soul"));
+    assert_eq!(fresh_chat["active_kb"].as_str(), Some("soul"));
+}
+
+#[tokio::test]
 async fn active_kb_roundtrip() {
     let (_d, app) = build_test_router();
 
@@ -2057,7 +2072,7 @@ async fn create_bases(app: &Router, ids: &[&str]) {
 #[tokio::test]
 async fn the_deprecated_alias_distinguishes_an_explicit_null_from_an_omission() {
     let (_d, app) = build_test_router();
-    create_bases(&app, &["alpha", "beta"]).await;
+    create_bases(&app, &["alpha", "beta", "soul"]).await;
 
     let set = post_active(&app, serde_json::json!({"kb_id": "alpha"})).await;
     assert_eq!(set.0, 200);
@@ -2089,7 +2104,7 @@ async fn the_deprecated_alias_distinguishes_an_explicit_null_from_an_omission() 
 #[tokio::test]
 async fn inherit_primary_lets_a_chat_follow_the_machine_default_again() {
     let (_d, app) = build_test_router();
-    create_bases(&app, &["alpha", "beta"]).await;
+    create_bases(&app, &["alpha", "beta", "soul"]).await;
     post_active(&app, serde_json::json!({"primary_kb": "alpha"})).await;
 
     let cleared = post_active(
@@ -2129,11 +2144,11 @@ async fn inherit_primary_lets_a_chat_follow_the_machine_default_again() {
         Some("beta")
     );
 
-    // At machine scope there is nothing above to inherit, so it coincides with
-    // clearing rather than erroring.
+    // At machine scope inherit removes the explicit preference and restores
+    // the shipped product default.
     let machine = post_active(&app, serde_json::json!({"inherit_primary": true})).await;
     assert_eq!(machine.0, 200);
-    assert!(machine.1["primary_kb"].is_null());
+    assert_eq!(machine.1["primary_kb"].as_str(), Some("soul"));
 }
 
 /// The three primary gestures are mutually exclusive: pin a base, hold none, or

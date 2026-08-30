@@ -44,7 +44,7 @@ Press `Cmd+Option+Shift+G` (macOS) or `Ctrl+Alt+Shift+G` (Windows/Linux) and sen
 
 ### Teach biorouter your preferences
 
-Help biorouter remember how you like to work by using [`.biorouterhints` and other context files](../agent-loop/context-engineering.md) or [skills](../extensions/built-in/skills.md) for permanent project preferences, and the [Memory extension](../extensions/built-in/memory.md) for things you want biorouter to dynamically recall later. Both can help save valuable context window space while keeping your preferences available.
+Help biorouter remember how you like to work by using [`.biorouterhints` and other context files](../agent-loop/context-engineering.md) or [skills](../extensions/built-in/skills.md) for permanent project preferences, and the [Memory capability](../extensions/built-in/memory.md) for things you want biorouter to dynamically recall later. Both can help save valuable context window space while keeping your preferences available.
 
 ### Turn off unnecessary extensions and tools
 
@@ -80,7 +80,7 @@ You can customize how much [supervision](../security/permission-modes.md) biorou
 
 ### Protect sensitive files
 
-biorouter is often eager to make changes. You can stop it from changing specific files by creating a `.biorouterignore` file, listing all the file paths you want it to avoid. See the [Developer extension](../extensions/built-in/developer.md) for how these access controls are applied.
+biorouter is often eager to make changes. You can stop it from changing specific files by creating a `.biorouterignore` file, listing all the file paths you want it to avoid. See the [Developer capability](../extensions/built-in/developer.md) for how these access controls are applied.
 
 ### Control which extensions biorouter can use
 

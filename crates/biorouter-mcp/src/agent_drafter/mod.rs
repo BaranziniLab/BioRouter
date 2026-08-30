@@ -1266,7 +1266,6 @@ pub(crate) const BUILTIN_EXTENSION_NAMES: &[&str] = &[
     "computercontroller",
     "autovisualiser",
     "memory",
-    "tutorial",
     "agent_drafter",
     "knowledge",
 ];
@@ -1725,7 +1724,7 @@ impl AgentDrafterServer {
             TypeScript front-ends wired to a real Biorouter agent. Think "Claude
             artifacts", but each app embeds a genuine Biorouter backend: when the
             user sends a message, Biorouter runs the full agent loop (the app's own
-            model, extensions, skills, knowledge base) and streams the answer back
+            model, enabled capabilities, installed extensions, skills, and knowledge base) and streams the answer back
             into the app. The GUI presents a clickable preview and the CLI prints
             a browser URL; apps are NOT shown in a chat iframe.
 
@@ -1733,6 +1732,13 @@ impl AgentDrafterServer {
             - "agentic" (default): a UI plus a live Biorouter agent + chat. Use this
               for assistants, dashboards that reason over results, search tools, etc.
             - "static": a plain interactive page with no agent.
+
+            CAPABILITY TERMINOLOGY. Biorouter-shipped tool surfaces are capabilities;
+            third-party or user-installed connectors are extensions. The app manifest's
+            legacy `agent.extensions` field can contain either kind for compatibility,
+            but that field name does not reclassify a built-in capability as an
+            extension. Call `list_platform_catalog` before configuration and preserve
+            the catalog's classification in user-facing explanations.
 
             Project layout (kept consistent):
             - `index.html`: the UI shell you author.

@@ -1,12 +1,12 @@
-# Code Execution extension
+# Code Execution capability
 
-> **What this is.** User guide to the built-in Code Execution extension, which backs Code Mode: instead of calling MCP tools one at a time, the model writes a short JavaScript program that batches many tool calls into a single execution.
-> **Status:** Current. The extension is enabled by default, so no manual setup is normally needed.
+> **What this is.** User guide to the built-in Code Execution capability, which backs Code Mode: instead of calling MCP tools one at a time, the model writes a short JavaScript program that batches many tool calls into a single execution.
+> **Status:** Current. The capability is enabled by default, so no manual setup is normally needed.
 > **Audience:** end users.
 
-In Code Mode the model discovers which tools your enabled extensions expose, then writes JavaScript that BioRouter runs in one execution. Because the intermediate tool results stay inside that one script rather than round-tripping through the conversation, Code Mode uses the context window far more efficiently when several extensions are enabled or a workflow needs many tool calls.
+In Code Mode the model discovers which tools the enabled capabilities and loaded extensions expose, then writes JavaScript that BioRouter runs in one execution. Because intermediate results stay inside that script rather than round-tripping through the conversation, Code Mode is more context-efficient for a genuine multi-tool workflow.
 
-> **Note.** This extension is **enabled by default**. `crates/biorouter/src/agents/extension.rs` registers `code_execution` as a platform extension with `default_enabled: true`, and its test suite asserts this. The configuration walkthrough below is only needed if you previously disabled it, or want to confirm its state.
+> **Note.** This capability is **enabled by default**. Its internal registration still uses the legacy `PlatformExtensionDef` type; that storage name does not make it an installed extension. The configuration walkthrough below is only needed if you previously disabled it, or want to confirm its state.
 
 ## Configuration
 
@@ -24,7 +24,7 @@ In Code Mode the model discovers which tools your enabled extensions expose, the
    ◇  What would you like to configure?
    │  Toggle Extensions
    │
-   ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
+   ◆  Enable capabilities and extensions: (use "space" to toggle and "enter" to submit)
    │  ● code_execution
    └  Extension settings updated successfully
    ```
@@ -33,13 +33,13 @@ In Code Mode the model discovers which tools your enabled extensions expose, the
 
 | Tool | Description |
 |------|-------------|
-| `execute_code` | Run one JavaScript program that batches multiple MCP tool calls into a single execution. This is the extension's primary tool. |
+| `execute_code` | Run one JavaScript program that batches multiple MCP tool calls into a single execution. This is the capability's primary tool. |
 | `search_modules` | Find a tool when the model does not know which module provides it. The result contains ready-to-use imports and signatures. |
 | `read_module` | Read the tool definitions for a module the model already knows — `"serverName"` lists every tool with its signature, `"serverName/toolName"` gives full detail for one tool. |
 
 ## What Code Mode code looks like
 
-Tools become importable functions, named by their extension. All calls are synchronous and return strings, and `record_result(value)` is how a script returns a value to the conversation.
+Tools become importable functions grouped by capability or extension module. All calls are synchronous and return strings, and `record_result(value)` is how a script returns a value to the conversation.
 
 ```javascript
 import { text_editor } from "developer";
@@ -75,7 +75,7 @@ The syntax rules are:
 ]
 ```
 
-> **Warning.** `execute_code` is annotated as destructive and non-idempotent, and it can reach every tool your enabled extensions expose — including `developer`'s `shell` and `text_editor`. It inherits the same blast radius as those tools, so the permission controls in the [Developer extension guide](developer.md) and [permission modes](../../security/permission-modes.md) apply to it too.
+> **Warning.** `execute_code` is annotated as destructive and non-idempotent, and it can reach every effective tool exposed by enabled capabilities and loaded extensions — including `developer`'s `shell` and `text_editor`. It inherits the same blast radius as those tools, so the permission controls in the [Developer capability guide](developer.md) and [permission modes](../../security/permission-modes.md) apply to it too.
 
 ## Example usage
 
@@ -109,7 +109,7 @@ The file has been saved to the root directory as `LOG.md`.
 
 ## Related documentation
 
-- [Developer extension](developer.md) — the `shell` and `text_editor` tools most Code Mode scripts import, and the access controls that constrain them.
-- [Extension Manager extension](extension-manager.md) — the other lever for keeping the active tool count and context usage down.
+- [Developer capability](developer.md) — the `shell` and `text_editor` tools most Code Mode scripts import, and the access controls that constrain them.
+- [Extension Manager capability](extension-manager.md) — the other lever for keeping the active tool count and context usage down.
 - [Context engineering](../../agent-loop/context-engineering.md) — the broader picture of how BioRouter manages its context window.
 - [Permission modes](../../security/permission-modes.md) — how to require approval before a script runs shell commands or edits files.

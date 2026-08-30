@@ -428,11 +428,11 @@ impl ComputerControllerServer {
                 - PowerShell for system automation and UI control
                 - Windows Management Instrumentation (WMI)
                 - Registry access and system settings
-              - Use the screenshot tool if needed to help with tasks
+              - If `screen_capture` is in this capability's effective roster, use it when visual confirmation is needed
 
             computer_control
               - System automation using PowerShell
-              - Consider the screenshot tool to work out what is on screen and what to do to help with the control task.
+              - If `screen_capture` is available, use it to inspect the current state before choosing the next control action.
             "#},
             "macos" => indoc! {r#"
             Here are some extra tools:
@@ -443,11 +443,11 @@ impl ComputerControllerServer {
               - macOS-specific features:
                 - AppleScript for system and UI control
                 - Integration with macOS apps and services
-              - Use the screenshot tool if needed to help with tasks
+              - If `screen_capture` is in this capability's effective roster, use it when visual confirmation is needed
 
             computer_control
               - System automation using AppleScript
-              - Consider the screenshot tool to work out what is on screen and what to do to help with the control task.
+              - If `screen_capture` is available, use it to inspect the current state before choosing the next control action.
 
             When you need to interact with websites or web applications, consider using the computer_control tool with AppleScript, which can automate Safari or other browsers to:
               - Open specific URLs
@@ -468,12 +468,12 @@ impl ComputerControllerServer {
                 - X11/Wayland window management
                 - D-Bus system services integration
                 - Desktop environment control
-              - Use the screenshot tool if needed to help with tasks
+              - If `screen_capture` is in this capability's effective roster, use it when visual confirmation is needed
 
             computer_control
               - System automation using shell commands and system tools
               - Desktop environment automation (GNOME, KDE, etc.)
-              - Consider the screenshot tool to work out what is on screen and what to do to help with the control task.
+              - If `screen_capture` is available, use it to inspect the current state before choosing the next control action.
 
             When you need to interact with websites or web applications, consider using tools like xdotool or wmctrl for:
               - Window management
@@ -486,17 +486,17 @@ impl ComputerControllerServer {
         let instructions = formatdoc! {r#"
             You are a helpful assistant to a power user who is not a professional developer, but you may use development tools to help assist them.
             The user may not know how to break down tasks, so you will need to ensure that you do, and run things in batches as needed.
-            The ComputerControllerExtension helps you with common tasks like web scraping,
-            data processing, and automation without requiring programming expertise.
+            The Computer Control capability helps with web retrieval, data processing,
+            and operating-system automation.
 
             You can use scripting as needed to work with text files of data, such as csvs, json, or text files etc.
-            Using the developer extension is allowed for more sophisticated tasks or instructed to (js or py can be helpful for more complex tasks if tools are available).
+            If the Developer capability is enabled and its effective roster includes the needed tool, it may be used for more sophisticated scripting tasks. Do not assume it is loaded.
 
             Accessing web sites, even apis, may be common (you can use scripting to do this) without troubling them too much (they won't know what limits are).
             Try to do your best to find ways to complete a task without too many questions or offering options unless it is really unclear, find a way if you can.
             You can also guide them steps if they can help out as you go along.
 
-            There is already a screenshot tool available you can use if needed to see what is on screen.
+            `screen_capture` may be available in this capability. Treat the effective roster in the system prompt as authoritative; never claim or call it when it is absent.
 
             ## How to operate the computer (read this before using computer_control)
 
@@ -525,12 +525,10 @@ impl ComputerControllerServer {
                stuck. Before clicking, identify the target element by name/role;
                if you cannot find it, list the available elements/windows rather
                than guessing where it is.
-            5. SCREENSHOTS ARE PER-DISPLAY. The machine may have more than one
-               monitor. The screen_capture tool reports the full list of connected
-               displays and which one is primary; the window you need may be on a
-               non-primary display, so target the correct display index instead of
-               assuming everything is on display 0. To capture a specific app, you
-               can also screen-capture by window title (a substring is enough).
+            5. WHEN `screen_capture` IS LISTED, remember that screenshots are
+               per-display. Its result lists connected displays and the primary;
+               target the correct display or a window-title substring rather than
+               assuming the window is on display 0.
             6. RECOVER FROM POPUPS AND HANGS. If a control action times out or
                hangs, or a search box / dialog / menu / autocomplete popup is open
                and not behaving as you expect, the UI is blocked. Press Escape to
@@ -573,7 +571,7 @@ impl ComputerControllerServer {
               - Manage your cached files
               - List, view, delete files
               - Clear all cached data
-            The extension automatically manages:
+            The capability automatically manages:
             - Cache directory: {cache_dir}
             - File organization and cleanup
             "#,

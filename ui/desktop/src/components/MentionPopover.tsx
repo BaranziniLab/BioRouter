@@ -41,7 +41,7 @@ const CLIENT_INSERT_COMMANDS: Record<
   { description: string; insert?: string; reference?: MentionReference }
 > = {
   knowledge: {
-    description: 'Use the Knowledge extension',
+    description: 'Use the Knowledge capability',
     reference: { kind: 'extension', value: 'knowledge', label: undefined },
   },
   diverge: {

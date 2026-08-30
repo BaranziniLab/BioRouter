@@ -18,9 +18,32 @@ describe('syncBundledExtensions', () => {
       computercontroller: true,
       autovisualiser: true,
       memory: true,
-      tutorial: false,
       knowledge: true,
       agent_drafter: true,
     });
+  });
+
+  it('drops a persisted Tutorial builtin during upgrade sync', async () => {
+    const existingExtensions = [
+      {
+        type: 'builtin' as const,
+        name: 'Tutorial',
+        description: 'Retired tutorial capability',
+        enabled: true,
+        bundled: true,
+      },
+    ];
+    const addExtension = vi.fn(
+      async (_name: string, _config: ExtensionConfig, _enabled: boolean) => undefined
+    );
+
+    await syncBundledExtensions(existingExtensions, addExtension);
+
+    expect(existingExtensions).toEqual([]);
+    expect(addExtension).not.toHaveBeenCalledWith(
+      'tutorial',
+      expect.anything(),
+      expect.anything()
+    );
   });
 });

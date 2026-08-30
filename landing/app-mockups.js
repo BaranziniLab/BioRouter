@@ -325,12 +325,11 @@
       '<span class="bw-btn soft">' + svg(I.ext) + 'Browse Extensions</span>' +
       '<span class="bw-btn soft">' + svg(I.plus) + 'Add Custom Extension</span></div></div>' +
       '<div class="bw-sectionrule"></div>' +
-      '<div class="bw-grp" style="margin:14px 0 2px"><i class="inst"></i>Built-in extensions (7)</div>' +
+      '<div class="bw-grp" style="margin:14px 0 2px"><i class="inst"></i>Built-in extensions (6)</div>' +
       erow('Developer', 'General development tools useful for software engineering.', true) +
       erow('Computer Controller', 'General computer control tools that don’t require you to be a developer or engineer.', true) +
       erow('Auto Visualiser', 'Data visualization and UI generation tools.', true) +
       erow('Memory', 'Teach Biorouter your preferences as you go.', true) +
-      erow('Tutorial', 'Access interactive tutorials and guides.', false) +
       erow('Knowledge', 'Personal, LLM-maintained knowledge bases backed by markdown folders and git history.', true) +
       erow('Agent Drafter', 'Build interactive artifacts and export them as standalone projects.', true) +
       '</div>';

@@ -54,6 +54,27 @@ pub fn convert_image(image: &ImageContent, image_format: &ImageFormat) -> Value 
 }
 
 pub fn filter_extensions_from_system_prompt(system: &str) -> String {
+    if let Some(tool_state_start) = system.find("# Current Tool State") {
+        let Some(tool_state) = system.get(tool_state_start..) else {
+            return system.to_string();
+        };
+        if let Some(next_section_pos) = tool_state.find("\n# Working on Tasks") {
+            let Some(before) = system.get(..tool_state_start) else {
+                return system.to_string();
+            };
+            let Some(after) = tool_state.get(next_section_pos..) else {
+                return system.to_string();
+            };
+            return format!("{}{}", before.trim_end(), after);
+        }
+        return system
+            .get(..tool_state_start)
+            .map(|before| before.trim_end().to_string())
+            .unwrap_or_else(|| system.to_string());
+    }
+
+    // Accept prompts generated before capabilities and extensions gained
+    // separate authoritative sections.
     let Some(extensions_start) = system.find("# Extensions") else {
         return system.to_string();
     };
@@ -827,6 +848,35 @@ pub fn json_escape_control_chars_in_string(s: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn filter_extensions_removes_the_complete_current_tool_state_slice() {
+        let prompt = "Base\n\n# Current Tool State\n\n# Enabled Capabilities\n\n## developer\n\ndev\n\n# Loaded Extensions\n\n## custom\n\next\n\n# Working on Tasks\n\nwork";
+        let filtered = filter_extensions_from_system_prompt(prompt);
+
+        assert_eq!(filtered, "Base\n# Working on Tasks\n\nwork");
+        assert!(!filtered.contains("developer"));
+        assert!(!filtered.contains("custom"));
+    }
+
+    #[test]
+    fn filter_extensions_preserves_unicode_around_the_tool_state_slice() {
+        let prompt = "Résumé 🧬\n\n# Current Tool State\n\n## developer\n\ndev\n\n# Working on Tasks\n\nMéditation";
+
+        assert_eq!(
+            filter_extensions_from_system_prompt(prompt),
+            "Résumé 🧬\n# Working on Tasks\n\nMéditation"
+        );
+    }
+
+    #[test]
+    fn filter_extensions_still_accepts_the_legacy_prompt_section() {
+        let prompt = "Base\n\n# Extensions\n\n## custom\n\next\n\n# Working on Tasks\n\nwork";
+        assert_eq!(
+            filter_extensions_from_system_prompt(prompt),
+            "Base\n# Working on Tasks\n\nwork"
+        );
+    }
 
     // BR-57: the log buffers its lines in memory and only touches the disk when
     // it is finished (inline here, since there is no tokio runtime; on the

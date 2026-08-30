@@ -622,115 +622,45 @@ impl Default for MemoryServer {
 ///
 /// Extracted from `new()` so a test can compose the *real* prompt rather than an
 /// empty base — otherwise "the prompt no longer says X" passes vacuously.
-#[allow(clippy::too_many_lines)]
 fn base_instructions() -> String {
     formatdoc! {r#"
-             This extension allows storage and retrieval of categorized information with tagging support. It's designed to help
-             manage important information across sessions in a systematic and organized manner.
-             Capabilities:
-             1. Store information in categories with optional tags for context-based retrieval.
-             2. Search memories by content or specific tags to find relevant information.
-             3. List all available memory categories for easy navigation.
-             4. Remove entire categories of memories when they are no longer needed.
-             When to call memory tools:
-             - These are examples where the assistant should proactively call the memory tool because the user is providing recurring preferences, project details, or workflow habits that they may expect to be remembered.
-             - Preferred Development Tools & Conventions
-             - User-specific data (e.g., name, preferences)
-             - Project-related configurations
-             - Workflow descriptions
-             - Other critical settings
-             Interaction Protocol:
-             When important information is identified, such as:
-             - User-specific data (e.g., name, preferences)
-             - Project-related configurations
-             - Workflow descriptions
-             - Other critical settings
-             The protocol is:
-             1. Identify the critical piece of information.
-             2. Ask the user if they'd like to store it for later reference.
-             3. Upon agreement:
-                - Suggest a relevant category like "personal" for user data or "development" for project preferences.
-                - Inquire about any specific tags they want to apply for easier lookup.
-                - Confirm the desired storage location:
-                  - Local storage (.biorouter/memory) for project-specific details. This is the default; prefer it.
-                  - Global storage (~/.config/biorouter/memory) for user-wide data. A global memory is readable by every Biorouter session on this machine, in every project, so only choose it when the user has asked for something that should follow them across projects, and say so when you store it.
-                - Use the remember_memory tool to store the information.
-                  - `remember_memory(category, data, tags, is_global)`
-             Keywords that trigger memory tools:
-             - "remember"
-             - "forget"
-             - "memory"
-             - "save"
-             - "save memory"
-             - "remove memory"
-             - "clear memory"
-             - "search memory"
-             - "find memory"
-             Suggest the user to use memory tools when:
-             - When the user mentions a keyword that triggers a memory tool
-             - When the user performs a routine task
-             - When the user executes a command and would benefit from remembering the exact command
-             Example Interaction for Storing Information:
-             User: "For this project, we use black for code formatting"
-             Assistant: "You've mentioned a development preference. Would you like to remember this for future conversations?
-             User: "Yes, please."
-             Assistant: "I'll store this in the 'development' category. Any specific tags to add? Suggestions: #formatting
-             #tools"
-             User: "Yes, use those tags."
-             Assistant: "Shall I store this locally for this project only, or globally for all projects?"
-             User: "Locally, please."
-             Assistant: *Stores the information under category="development", tags="formatting tools", scope="local"*
-             Another Example Interaction for Storing Information:
-             User: "Remember the gh command to view github comments"
-             Assistant: "Shall I store this locally for this project only, or globally for all projects?"
-             User: "Globally, please."
-             Assistant: *Stores the gh command under category="github", tags="comments", scope="global"*
-             Example Interaction suggesting memory tools:
-             User: "I'm using the gh command to view github comments"
-             Assistant: "You've mentioned a command. Would you like to remember this for future conversations?
-             User: "Yes, please."
-             Assistant: "I'll store this in the 'github' category. Any specific tags to add? Suggestions: #comments #gh"
-             Retrieving Memories:
-             To access stored information, utilize the memory retrieval protocols:
-             - **Search by Category**:
-               - Provides all memories within the specified context.
-               - Use: `retrieve_memories(category="development", is_global=False)`
-               - Note: If you want to retrieve all local memories, use `retrieve_memories(category="*", is_global=False)`
-               - Note: there is NO all-global equivalent. Reading the machine-wide store one category at a time is what lets the user see and approve each disclosure, so `category="*"` together with `is_global=True` is refused. Name the category: `retrieve_memories(category="<name>", is_global=True)`. The global category names are listed for you further down this prompt.
-               - Note: a global read is shown to the user for approval before it runs, and they may deny it. Do not fire speculative global reads to see what is there. Read a category only when the user's request actually calls for it, and say why you are reading it.
-               - Note: a local memory saved by a chat running on a PRIVATE (institutional or self-hosted) model is marked as such, is never placed in any session's system prompt, and is returned only to a chat that is itself on a private model. If a read withholds any, the result says how many. Repeat that to the user rather than presenting what you got as everything, and never guess at what was withheld.
-             - **Filter by Tags**:
-               - Enables targeted retrieval based on specific tags.
-               - Use: Provide tag filters to refine search.
-            To remove a memory, use the following protocol:
-            - **Remove by Category**:
-              - Removes all memories within the specified category.
-              - Use: `remove_memory_category(category="development", is_global=False)`
-              - Note: If you want to remove all local memories, use `remove_memory_category(category="*", is_global=False)`
-              - Note: If you want to remove all global memories, use `remove_memory_category(category="*", is_global=True)`. The user is asked to confirm first, because it wipes every global category on the machine and cannot be undone.
-            The Protocol is:
-             1. Confirm what kind of information the user seeks by category or keyword.
-             2. Suggest categories or relevant tags based on the user's request.
-             3. Use the retrieve function to access relevant memory entries.
-             4. Present a summary of findings, offering detailed exploration upon request.
-             Example Interaction for Retrieving Information:
-             User: "What configuration do we use for code formatting?"
-             Assistant: "Let me check the 'development' category for any related memories. Searching using #formatting tag."
-             Assistant: *Executes retrieval: `retrieve_memories(category="development", is_global=False)`*
-             Assistant: "We have 'black' configured for code formatting, specific to this project. Would you like further
-             details?"
-             Memory Overview:
-             - Categories can include a wide range of topics, structured to keep information grouped logically.
-             - Tags enable quick filtering and identification of specific entries.
-             Operational Guidelines:
-             - Always confirm with the user before saving information.
-             - Propose suitable categories and tag suggestions.
-             - Discuss storage scope thoroughly to align with user needs.
-             - Never save globally something the user has not asked to be remembered across projects. When in doubt, save locally: a local memory can be re-saved globally later, but a global one has already crossed into every other session.
-             - Every global read and every global write is put to the user for approval before it runs. That is deliberate: the machine-wide store is shared by every project on this computer. Prefer local memory, and when you do need a global one, say which category and why so the user has something to decide on.
-             - Global memory contents are not loaded into your context automatically; only the category names are. Retrieve a category before relying on what is in it.
-             - A local memory written from a private chat is not loaded into your context either, not even in that same chat. What you are shown is a count. Retrieve it before relying on it, tell the user when a read withheld entries, and never conclude that this project has no note on a subject from what is in your prompt.
-             - Acknowledge the user about what is stored and where, for transparency and ease of future retrieval.
+            The Memory capability stores durable notes in named categories.
+
+            Effective tools:
+            - `remember_memory(category, data, tags, is_global)` adds one note.
+            - `retrieve_memories(category, is_global)` reads a named category. The
+              exact local-only wildcard `category="*"` reads all project-local
+              categories.
+            - `remove_specific_memory(category, memory_content, is_global)` removes
+              one exact entry. Retrieve the category first and pass its body back
+              verbatim.
+            - `remove_memory_category(category, is_global)` removes one category;
+              `category="*"` clears that scope.
+
+            Scope and consent:
+            - Prefer project-local storage (`is_global=false`, under
+              `.biorouter/memory`). It stays with the working directory.
+            - Global storage (`is_global=true`) is machine-wide and shared by every
+              Biorouter session in every project. Use it only when the user explicitly
+              wants the note to follow them across projects. Every global read, write,
+              and delete requires user approval.
+            - There is no bulk global read. `retrieve_memories(category="*",
+              is_global=true)` is refused; read a relevant named global category only
+              after explaining why.
+            - Notes written by a private-model chat are never placed in a system
+              prompt and are returned only to a private-model chat. A result may state
+              that entries were withheld; repeat that limitation and never guess at
+              withheld content.
+
+            Behavior:
+            - When the user says to remember or forget something, act on that request.
+              Otherwise, for a genuinely durable preference, convention, workflow, or
+              critical setting, offer to remember it and wait for agreement before
+              writing.
+            - Do not claim tag or full-text search: retrieval is by category. Tags are
+              stored with notes but there is no tag-filter argument.
+            - State which scope was read, written, or changed. Never infer absence from
+              a partial or withheld result.
             "#}
 }
 
@@ -760,15 +690,28 @@ impl MemoryServer {
         Self::with_consent(GlobalMemoryConsent::Gated)
     }
 
-    fn with_consent(consent: GlobalMemoryConsent) -> Self {
-        let instructions = base_instructions();
+    /// The built-in server for a session whose working directory is already
+    /// known. Binding it explicitly prevents project memory from following the
+    /// daemon process's cwd when several projects share one daemon.
+    pub fn behind_consent_gate_in(working_dir: PathBuf) -> Self {
+        Self::with_consent_and_local_dir(
+            GlobalMemoryConsent::Gated,
+            working_dir.join(".biorouter").join("memory"),
+        )
+    }
 
-        // Check for .biorouter/memory in current directory
+    fn with_consent(consent: GlobalMemoryConsent) -> Self {
         let local_memory_dir = std::env::var("BIOROUTER_WORKING_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| std::env::current_dir().unwrap())
             .join(".biorouter")
             .join("memory");
+
+        Self::with_consent_and_local_dir(consent, local_memory_dir)
+    }
+
+    fn with_consent_and_local_dir(consent: GlobalMemoryConsent, local_memory_dir: PathBuf) -> Self {
+        let instructions = base_instructions();
 
         let global_memory_dir = global_memory_dir();
 
@@ -818,7 +761,7 @@ impl MemoryServer {
         }
     }
 
-    /// Assemble what this extension contributes to the agent's system prompt:
+    /// Assemble what this capability contributes to the agent's system prompt:
     /// the protocol above, plus whatever the two memory stores hold.
     ///
     /// **Local** memories are inlined. They live in
@@ -2495,6 +2438,17 @@ mod tests {
             GlobalMemoryConsent::Unavailable,
             "a server built with no stated consent path must fail closed"
         );
+    }
+
+    #[test]
+    fn the_agent_constructor_binds_local_memory_to_the_session_working_directory() {
+        let temp = tempdir().unwrap();
+        let server = MemoryServer::behind_consent_gate_in(temp.path().to_path_buf());
+        assert_eq!(
+            server.local_memory_dir,
+            temp.path().join(".biorouter").join("memory")
+        );
+        assert_eq!(server.consent, GlobalMemoryConsent::Gated);
     }
 
     fn result_text(result: &CallToolResult) -> String {

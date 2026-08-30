@@ -1626,16 +1626,16 @@ impl CodeExecutionClient {
             instructions: Some(indoc! {r#"
                 Use execute_code to CHAIN MULTIPLE DEPENDENT TOOL CALLS INTO ONE round-trip.
 
-                This extension exists to reduce round-trips when a task genuinely needs several
+                This capability exists to reduce round-trips when a task genuinely needs several
                 tool calls whose outputs feed each other, or real computation / control flow
                 (loops, conditionals, aggregation) over their results.
 
-                WHEN NOT TO USE THIS EXTENSION:
+                WHEN NOT TO USE THIS CAPABILITY:
                 - Do NOT use execute_code for basic file or system operations. Listing a directory,
                   reading or writing a single file, copying, moving, deleting, or finding files, and
-                  running a single command are simpler and clearer with the developer extension:
-                  call `developer/shell` (ls, cp, mv, rm, mkdir, rg) or `developer/text_editor`
-                  (view, write, str_replace) DIRECTLY, not wrapped in a JavaScript script.
+                  running a single command are simpler and clearer with the Developer capability
+                  when its effective roster includes `shell` or `text_editor`. Call the listed tool
+                  directly, not through JavaScript; if Developer is disabled, do not invent it.
                 - A single tool call is a single tool call. Only reach for execute_code once you
                   have two or more calls that must be chained, or logic to run between them.
 

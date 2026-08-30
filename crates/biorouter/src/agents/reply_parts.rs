@@ -26,6 +26,78 @@ const SUBAGENT_STEERING_INSTRUCTIONS: &str = "A human can send a new user messag
 use crate::session::session_manager::UsageLedgerEntry;
 use rmcp::model::Tool;
 
+fn attach_skill_inventory(
+    extensions_info: &mut [crate::agents::extension::ExtensionInfo],
+    inventory: &str,
+) -> bool {
+    let Some(skills) = extensions_info.iter_mut().find(|info| {
+        info.classification == crate::agents::extension::ExtensionClassification::Capability
+            && info.name.eq_ignore_ascii_case("skills")
+    }) else {
+        return false;
+    };
+    if !inventory.is_empty() {
+        skills.instructions.push_str("\n\n");
+        skills.instructions.push_str(inventory);
+    }
+    true
+}
+
+pub(super) fn attach_effective_tool_rosters(
+    extensions_info: &mut [crate::agents::extension::ExtensionInfo],
+    available_tools: &[Tool],
+    directly_callable_tools: &[Tool],
+) {
+    for info in extensions_info {
+        info.tool_roster_known = true;
+        let prefix = format!("{}__", info.name);
+        info.available_tools = available_tools
+            .iter()
+            .filter_map(|tool| tool.name.strip_prefix(&prefix).map(str::to_string))
+            .collect();
+        info.directly_callable_tools = directly_callable_tools
+            .iter()
+            .filter_map(|tool| tool.name.strip_prefix(&prefix).map(str::to_string))
+            .collect();
+        info.available_tools.sort();
+        info.directly_callable_tools.sort();
+
+        if info.classification == crate::agents::extension::ExtensionClassification::Capability
+            && info.name == crate::agents::workspace_extension::EXTENSION_NAME
+            && !info
+                .available_tools
+                .iter()
+                .any(|tool| tool == "workspace_open")
+        {
+            info.instructions = "Workspace delegation-only mode. Use only the exact effective roster above to spawn, inspect, steer, watch, or close work. Panel control, opening arbitrary conversations, and changing another conversation's tools are unavailable unless their tools are explicitly listed.".to_string();
+        }
+        if info.classification == crate::agents::extension::ExtensionClassification::Capability
+            && info.name == CODE_EXECUTION_EXTENSION
+            && !info
+                .available_tools
+                .iter()
+                .any(|tool| tool == "execute_code")
+        {
+            info.instructions = "Code Execution is restricted to the effective inspection tools above. Do not run code or hide other direct tools unless `execute_code` is present.".to_string();
+        }
+    }
+}
+
+pub(super) fn add_core_platform_capability(
+    extensions_info: &mut Vec<crate::agents::extension::ExtensionInfo>,
+    tools: &[Tool],
+) {
+    if tools.iter().any(|tool| tool.name.starts_with("platform__"))
+        && !extensions_info.iter().any(|info| info.name == "platform")
+    {
+        extensions_info.push(crate::agents::extension::ExtensionInfo::capability(
+            "platform",
+            "Core Biorouter operations supplied by the current application session. Use only the exact effective roster; knowledge ingestion appears here only while Knowledge is enabled.",
+            false,
+        ));
+    }
+}
+
 fn coerce_value(s: &str, schema: &Value) -> Value {
     let type_str = schema.get("type");
 
@@ -119,6 +191,13 @@ pub(crate) fn survives_code_execution_filter(tool_name: &str, code_exec_prefix: 
         || tool_name.starts_with("workspace__")
 }
 
+fn code_execution_mode_is_active(loaded: bool, tools: &[Tool]) -> bool {
+    loaded
+        && tools
+            .iter()
+            .any(|tool| tool.name == format!("{CODE_EXECUTION_EXTENSION}__execute_code"))
+}
+
 async fn toolshim_postprocess(
     response: Message,
     toolshim_tools: &[Tool],
@@ -146,11 +225,15 @@ impl Agent {
         for frontend_tool in frontend_tools.values() {
             tools.push(frontend_tool.tool.clone());
         }
+        drop(frontend_tools);
 
-        let code_execution_active = self
+        let code_execution_loaded = self
             .extension_manager
             .is_extension_enabled(CODE_EXECUTION_EXTENSION)
             .await;
+        let effective_tools = tools.clone();
+        let code_execution_active =
+            code_execution_mode_is_active(code_execution_loaded, &effective_tools);
         if code_execution_active {
             let code_exec_prefix = format!("{CODE_EXECUTION_EXTENSION}__");
             tools.retain(|tool| survives_code_execution_filter(&tool.name, &code_exec_prefix));
@@ -169,7 +252,21 @@ impl Agent {
         self.tool_risks.refresh_from_tools(&tools);
 
         // Prepare system prompt
-        let extensions_info = self.extension_manager.get_extensions_info().await;
+        let mut extensions_info = self.extension_manager.get_extensions_info().await;
+        add_core_platform_capability(&mut extensions_info, &effective_tools);
+        attach_effective_tool_rosters(&mut extensions_info, &effective_tools, &tools);
+        if extensions_info.iter().any(|info| {
+            info.classification == crate::agents::extension::ExtensionClassification::Capability
+                && info.name.eq_ignore_ascii_case("skills")
+                && !info.available_tools.is_empty()
+        }) {
+            let inventory = crate::agents::skills_extension::session_skill_inventory_instructions(
+                self.config.session_manager.as_ref(),
+                session_id,
+            )
+            .await?;
+            attach_skill_inventory(&mut extensions_info, &inventory);
+        }
 
         // Get model name from provider
         let provider = self.provider().await?;
@@ -553,7 +650,9 @@ mod tests {
     use crate::providers::base::{Provider, ProviderUsage, Usage};
     use crate::providers::errors::ProviderError;
     use async_trait::async_trait;
-    use rmcp::object;
+    use rmcp::{
+        handler::server::router::tool::ToolRouter, object, tool, tool_handler, tool_router,
+    };
 
     #[derive(Clone)]
     struct MockProvider {
@@ -586,6 +685,58 @@ mod tests {
                 ProviderUsage::new("mock".to_string(), Usage::default()),
             ))
         }
+    }
+
+    #[test]
+    fn live_skill_inventory_attaches_only_to_the_enabled_skills_capability() {
+        use crate::agents::extension::{ExtensionClassification, ExtensionInfo};
+
+        let mut enabled = vec![ExtensionInfo::capability("skills", "static", false)];
+        assert!(attach_skill_inventory(&mut enabled, "live generation 2"));
+        assert_eq!(enabled[0].instructions, "static\n\nlive generation 2");
+
+        let mut installed_extension = vec![ExtensionInfo::classified(
+            "skills",
+            "third party",
+            false,
+            ExtensionClassification::Extension,
+        )];
+        assert!(!attach_skill_inventory(
+            &mut installed_extension,
+            "must not attach"
+        ));
+        assert_eq!(installed_extension[0].instructions, "third party");
+    }
+
+    #[test]
+    fn effective_tool_rosters_distinguish_module_access_from_direct_calls() {
+        use crate::agents::extension::ExtensionInfo;
+
+        let mut entries = vec![ExtensionInfo::capability("developer", "guidance", false)];
+        let available = vec![
+            Tool::new("developer__shell", "shell", object!({"type": "object"})),
+            Tool::new(
+                "developer__text_editor",
+                "editor",
+                object!({"type": "object"}),
+            ),
+        ];
+        let direct = vec![available[0].clone()];
+
+        attach_effective_tool_rosters(&mut entries, &available, &direct);
+        assert_eq!(entries[0].available_tools, ["shell", "text_editor"]);
+        assert_eq!(entries[0].directly_callable_tools, ["shell"]);
+
+        let platform = vec![Tool::new(
+            "platform__ingest_conversation".to_string(),
+            "ingest".to_string(),
+            object!({"type": "object"}),
+        )];
+        add_core_platform_capability(&mut entries, &platform);
+        attach_effective_tool_rosters(&mut entries, &platform, &platform);
+        let core = entries.iter().find(|info| info.name == "platform").unwrap();
+        assert_eq!(core.available_tools, ["ingest_conversation"]);
+        assert_eq!(core.directly_callable_tools, ["ingest_conversation"]);
     }
 
     #[tokio::test]
@@ -710,6 +861,24 @@ mod tests {
         assert!(!survives_code_execution_filter("memory__remember", &prefix));
     }
 
+    #[test]
+    fn code_execution_presence_without_executor_does_not_hide_direct_tools() {
+        let inspection_only = vec![Tool::new(
+            "code_execution__read_module".to_string(),
+            "read".to_string(),
+            object!({ "type": "object", "properties": {} }),
+        )];
+        assert!(!code_execution_mode_is_active(true, &inspection_only));
+
+        let executor = vec![Tool::new(
+            "code_execution__execute_code".to_string(),
+            "execute".to_string(),
+            object!({ "type": "object", "properties": {} }),
+        )];
+        assert!(code_execution_mode_is_active(true, &executor));
+        assert!(!code_execution_mode_is_active(false, &executor));
+    }
+
     // ------------------------------------------------------------------
     // Issue #56 Gate F2: a private server's own INSTRUCTIONS.
     //
@@ -729,11 +898,34 @@ mod tests {
     /// instruction text the manager hands the prompt builder. Injected through
     /// the real admission point, so the tier under test is the one
     /// `classify_extension` resolves rather than one poked into the record.
-    struct InstructedServer;
+    #[derive(Clone)]
+    struct InstructedServer {
+        tool_router: ToolRouter<Self>,
+    }
 
+    #[tool_router(router = tool_router)]
+    impl InstructedServer {
+        fn new() -> Self {
+            Self {
+                tool_router: Self::tool_router(),
+            }
+        }
+
+        #[tool(description = "Private extension fixture tool")]
+        fn fixture_tool(&self) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+            Ok(rmcp::model::CallToolResult::success(vec![
+                rmcp::model::Content::text("ok"),
+            ]))
+        }
+    }
+
+    #[tool_handler(router = self.tool_router)]
     impl rmcp::ServerHandler for InstructedServer {
         fn get_info(&self) -> rmcp::model::ServerInfo {
             rmcp::model::ServerInfo {
+                capabilities: rmcp::model::ServerCapabilities::builder()
+                    .enable_tools()
+                    .build(),
                 instructions: Some(SENTINEL.to_string()),
                 ..Default::default()
             }
@@ -824,7 +1016,7 @@ mod tests {
             .unwrap();
         agent
             .extension_manager
-            .add_inprocess_server(PRIVATE_EXTENSION, InstructedServer)
+            .add_inprocess_server(PRIVATE_EXTENSION, InstructedServer::new())
             .await
             .expect("inject the private extension");
 

@@ -463,7 +463,7 @@ impl AutoVisualiserRouter {
         let _ = std::fs::create_dir_all(&cache_dir);
 
         let instructions = formatdoc! {r#"
-            This extension provides tools for automatic data visualization.
+            The Auto Visualiser capability provides tools for automatic data visualization.
             Use these tools when you are presenting data to the user which could be complemented by a visual expression.
             Choose the most appropriate chart type based on the data you have and can provide.
             Match the data format to the chart type you have chosen. The user may request a specific

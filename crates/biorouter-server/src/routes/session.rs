@@ -676,7 +676,13 @@ async fn update_session_user_workflow_values(
                     message: format!("Failed to get agent: {}", status),
                     status,
                 })?;
-            if let Some(prompt) = apply_workflow_to_agent(&agent, &workflow, false).await {
+            if let Some(prompt) = apply_workflow_to_agent(&agent, &session_id, &workflow, false)
+                .await
+                .map_err(|e| ErrorResponse {
+                    message: e.to_string(),
+                    status: StatusCode::BAD_REQUEST,
+                })?
+            {
                 agent.extend_system_prompt(prompt).await;
             }
             Ok(Json(UpdateSessionUserWorkflowValuesResponse { workflow }))

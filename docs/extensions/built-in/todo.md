@@ -1,12 +1,12 @@
-# Todo extension
+# Todo capability
 
-> **What this is.** User guide to the built-in Todo extension, which makes BioRouter break multi-step work into a tracked checklist and report progress as it goes.
-> **Status:** Current. The extension is enabled by default, so no manual setup is normally needed.
+> **What this is.** User guide to the built-in Todo capability, which makes BioRouter break multi-step work into a tracked checklist and report progress as it goes.
+> **Status:** Current. The capability is enabled by default, so no manual setup is normally needed.
 > **Audience:** end users.
 
-The Todo extension keeps BioRouter organized on long tasks. BioRouter reaches for it automatically when a task has two or more steps, touches multiple files or components, or has uncertain scope. At the start it creates a checklist, updates the checklist as it works, and verifies at the end that every item is done — so you can see where it is rather than waiting for a single opaque answer.
+The Todo capability keeps BioRouter organized on long tasks. BioRouter reaches for it automatically when a task has two or more steps, touches multiple files or components, or has uncertain scope. At the start it creates a checklist, updates the checklist as it works, and verifies at the end that every item is done — so you can see where it is rather than waiting for a single opaque answer.
 
-> **Note.** This extension is **enabled by default**. `crates/biorouter/src/agents/extension.rs` registers `todo` as a platform extension with `default_enabled: true`, matching the default-enabled list in the [installation guide](../../getting-started/installation.md). The configuration walkthrough below is only needed if you previously disabled it, or want to confirm its state.
+> **Note.** This capability is **enabled by default**. Its internal registration still uses the legacy `PlatformExtensionDef` type; that storage name does not make it an installed extension. The configuration walkthrough below is only needed if you previously disabled it, or want to confirm its state.
 
 ## Configuration
 
@@ -24,7 +24,7 @@ The Todo extension keeps BioRouter organized on long tasks. BioRouter reaches fo
    ◇  What would you like to configure?
    │  Toggle Extensions
    │
-   ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
+   ◆  Enable capabilities and extensions: (use "space" to toggle and "enter" to submit)
    │  ● todo
    └  Extension settings updated successfully
    ```
@@ -52,7 +52,7 @@ The `[~]` in-progress marker is what makes the checklist useful while a long tas
 
 ## Example usage
 
-In this example BioRouter fixes formatting inconsistencies across two documentation files, and uses the Todo extension to work through them systematically.
+In this example BioRouter fixes formatting inconsistencies across two documentation files, and uses the Todo capability to work through them systematically.
 
 > **Note.** This example is self-referential — it shows BioRouter editing BioRouter's own documentation, so its checklist items refer to an internal docs style guide ("reference pattern", "reference format") that you do not need to know. Read it for the *shape* of the checklist, not for its content. Note also that every item is already ticked `[x]`, because the transcript was captured after the task finished; during a real run you would see a mix of `[ ]`, `[~]` and `[x]`.
 
@@ -117,6 +117,6 @@ The documentation now follows a consistent pattern and provides a clear, organiz
 ## Related documentation
 
 - [Extensions and skills guide](../extensions-and-skills-guide.md) — how to enable, disable and configure extensions generally.
-- [Installation](../../getting-started/installation.md) — the list of extensions enabled out of the box.
+- [Installation](../../getting-started/installation.md) — the list of capabilities enabled out of the box.
 - [Subagents](../../agent-loop/subagents.md) — the other mechanism for structuring long, multi-step work.
 - [Context engineering](../../agent-loop/context-engineering.md) — how the checklist and living plan are re-injected into the model's context each turn.

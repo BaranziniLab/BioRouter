@@ -1,14 +1,14 @@
-# Skills extension
+# Skills capability
 
-> **What this is.** User guide to the built-in Skills extension: where skills are discovered from on disk, how to get more of them, and a worked GWAS-pipeline example showing a skill steering the agent.
-> **Status:** Current. Discovery from `.agents/skills/` and `~/.config/agents/skills/` is the shipped behaviour, and the extension is enabled by default.
+> **What this is.** User guide to the built-in Skills capability: where skills are discovered from on disk, how to get more of them, and a worked GWAS-pipeline example showing a skill steering the agent.
+> **Status:** Current. Discovery from `.agents/skills/` and `~/.config/agents/skills/` is the shipped behaviour, and the capability is enabled by default.
 > **Audience:** end users.
 
-The Skills extension loads *skills* — reusable sets of instructions that teach BioRouter how to perform a specific task or follow a particular workflow. BioRouter discovers skills at startup and applies them when they are relevant to your request, without you having to name them.
+The Skills capability loads *skills* — reusable sets of instructions that teach BioRouter how to perform a specific task or follow a particular workflow. BioRouter discovers skills at startup and applies them when they are relevant to your request, without you having to name them.
 
 Skills are read from `.agents/skills/` in your project directory and `~/.config/agents/skills/` globally. That layout is shared with other AI coding agents, so a skill you write is portable rather than BioRouter-specific.
 
-> **Note.** This extension is **enabled by default**. `crates/biorouter/src/agents/extension.rs` registers `skills` as a platform extension with `default_enabled: true`, matching the default-enabled list in the [installation guide](../../getting-started/installation.md). The configuration walkthrough below is only needed if you previously disabled it, or want to confirm its state.
+> **Note.** This capability is **enabled by default**. Its internal registration still uses the legacy `PlatformExtensionDef` type; that storage name does not make it an installed extension. The configuration walkthrough below is only needed if you previously disabled it, or want to confirm its state.
 
 ## Configuration
 
@@ -26,7 +26,7 @@ Skills are read from `.agents/skills/` in your project directory and `~/.config/
    ◇  What would you like to configure?
    │  Toggle Extensions
    │
-   ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
+   ◆  Enable capabilities and extensions: (use "space" to toggle and "enter" to submit)
    │  ● skills
    └  Extension settings updated successfully
    ```
@@ -107,5 +107,4 @@ The transcript ends there: the skill's whole purpose in this example is to stop 
 
 - [Extensions and skills guide](../extensions-and-skills-guide.md) — the same ground from the configuration side: installing skills, and where they are stored.
 - [Context engineering](../../agent-loop/context-engineering.md) — how skills are selected and injected into the model's context.
-- [Tutorial extension](tutorial.md) — the interactive walkthroughs, including one on creating skills.
-- [Installation](../../getting-started/installation.md) — the list of extensions enabled out of the box.
+- [Installation](../../getting-started/installation.md) — the list of capabilities enabled out of the box.

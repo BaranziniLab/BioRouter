@@ -3,14 +3,21 @@
  * something wants permission.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import ToolConfirmation from './ToolCallConfirmation';
 import type { ActionRequired, ToolPreview, ToolRisk } from '../api';
 
+const mocks = vi.hoisted(() => ({
+  confirmToolAction: vi.fn().mockResolvedValue({ error: null }),
+  userActionHeaders: vi.fn().mockResolvedValue({ 'X-User-Action': 'proof-of-user' }),
+}));
+
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>();
-  return { ...actual, confirmToolAction: vi.fn().mockResolvedValue({ error: null }) };
+  return { ...actual, confirmToolAction: mocks.confirmToolAction };
 });
+
+vi.mock('../utils/userAction', () => ({ userActionHeaders: mocks.userActionHeaders }));
 
 vi.mock('./settings/permission/PermissionModal', () => ({
   default: () => <div data-testid="permission-modal" />,
@@ -52,10 +59,22 @@ function renderCard(overrides: Parameters<typeof actionRequired>[0] = {}) {
 }
 
 beforeEach(() => {
-  nextId = 0;
+  mocks.confirmToolAction.mockClear();
+  mocks.userActionHeaders.mockClear();
 });
 
 describe('ToolCallConfirmation (BR-63)', () => {
+  it('carries proof of the user click when it answers an authorization card', async () => {
+    renderCard({ toolName: 'extensionmanager__install_extension' });
+    fireEvent.click(screen.getByRole('button', { name: 'Allow Once' }));
+
+    await waitFor(() =>
+      expect(mocks.confirmToolAction).toHaveBeenCalledWith(
+        expect.objectContaining({ headers: { 'X-User-Action': 'proof-of-user' } })
+      )
+    );
+  });
+
   it('names the tool instead of asking about "this tool"', () => {
     renderCard({ toolName: 'developer__text_editor' });
     expect(screen.getByText('Text Editor')).toBeInTheDocument();

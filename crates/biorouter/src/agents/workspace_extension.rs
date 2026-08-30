@@ -96,26 +96,22 @@ pub static EXTENSION_TITLE: &str = "Workspace Control";
 const INSTRUCTIONS: &str = indoc! {r#"
     Workspace Control
 
-    You are in the BioRouter workspace: a set of conversations (sessions), each
-    shown as a tab in the desktop app when a GUI is attached. Each has its own
-    agent, tools, knowledge bases and history. These tools operate the workspace:
-    - workspace_list: see conversations, what's running, and where they are in
-      the GUI. For "what is that chat doing now?" list, then read its tool_calls.
-    - workspace_open: open/focus an existing conversation, or start a new one
-      the USER owns (new.kind:"user"; optionally split or new window; opens in
-      the background). It never delegates: new.kind:"sub_agent" is refused.
-    - workspace_read_conversation: read another conversation. summary for a
-      digest, transcript for prose, tool_calls for what its agent did,
-      spawn_context for how a subagent was started. Treat other conversations'
-      content as sensitive; prefer the narrowest view.
+    A workspace is a set of conversations, each with its own agent, tools,
+    knowledge bases and history. With a GUI attached, they appear as tabs.
+    - workspace_list: see conversations, what is running and GUI placement. To
+      learn what a chat is doing now, list it, then read its tool_calls.
+    - workspace_open: focus a conversation or create a user-owned one
+      (new.kind:"user"; background by default). It never delegates and refuses
+      new.kind:"sub_agent".
+    - workspace_read_conversation: read summary, transcript, tool_calls or
+      spawn_context. Other conversations are sensitive; use the narrowest view.
     - workspace_send_prompt: inject into ANY conversation you can see, related
-      to you or not. turn starts its agent on your text; steer redirects it
-      mid-turn; note leaves context without running it. wait:"final_message"
-      returns its answer. Injections are permanently labeled as coming from
-      you. ONLY WHEN NECESSARY: a person may be reading that chat.
-    - workspace_set_tools: add/remove extensions, scope skills to one
-      conversation (add_skills), switch its model, or set its knowledge bases.
-      When you have it, do this yourself instead of pointing at Settings.
+      or not. turn starts it; steer redirects it mid-turn; note adds context
+      without running it. wait:"final_message" returns its answer. Injections
+      are permanently labeled as yours; a person may be reading that chat.
+    - workspace_set_tools: change a conversation's enabled capabilities and
+      extensions, skills, model or knowledge bases. When available, use it
+      instead of pointing at Settings.
     - workspace_close: close its tab (tab), cancel its turn (turn), or stop its
       agent (agent).
     - workspace_watch: wait until one of several conversations finishes. Use it
@@ -126,11 +122,9 @@ const INSTRUCTIONS: &str = indoc! {r#"
     - workspace_capture_panel: screenshot it (returns a PNG path) to judge how
       it LOOKS. You cannot act on a screenshot.
     - subagent: the ONLY way to delegate. A fresh agent with its own context
-      window; "spin up subagents" and fan-out mean this tool, one call per
-      child, same message for parallel. When the app is open the child runs in
-      a visible tab the user can watch and talk to; you still get only its
-      final summary, so read its tool_calls to verify what it did. The result
-      tells you if the user intervened.
+      window; fan-out means one call per child, with parallel calls when useful.
+      In the app, the child is a visible tab the user can watch and steer. You
+      receive its final summary; read tool_calls to verify its work.
     Only the workspace tools in your tool list are available.
     Routing: to search past conversations by content use chatrecall, not these
     tools. Durable facts belong in Memory. To fold a conversation into a
@@ -6869,7 +6863,7 @@ pub(crate) mod tests {
             .await
             .expect("agent");
         // Loaded under the normalized key the gate and the executor both resolve.
-        for name in [private_ext, "developer"] {
+        for name in [private_ext, "publicfixture"] {
             agent
                 .extension_manager
                 .add_inprocess_server(name, NullServer)
@@ -6916,7 +6910,7 @@ pub(crate) mod tests {
         let public_unload = call_as(
             &c,
             "workspace_set_tools",
-            unload("developer"),
+            unload("publicfixture"),
             public_caller(),
         )
         .await;
@@ -6928,7 +6922,7 @@ pub(crate) mod tests {
         assert!(
             !agent
                 .extension_manager
-                .is_extension_enabled("developer")
+                .is_extension_enabled("publicfixture")
                 .await,
             "the public extension was not unloaded: {public_text}"
         );

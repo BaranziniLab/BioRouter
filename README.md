@@ -38,7 +38,7 @@ Biorouter runs as a desktop app, a full-screen terminal CLI, or a headless REST/
 
 - **Model Context Protocol (MCP)** — connect Biorouter to biomedical databases, web tools, file systems, and APIs through pluggable extensions, and install third-party agents.
 - **Biomedical agents via the BAAM marketplace** ([biorouter.ucsf.edu/baam](https://biorouter.ucsf.edu/baam)) — including **SPOKEAgent** (the SPOKE biomedical knowledge graph), the **UCSF OMOP Agent** and **CDWAgent** (clinical/EHR/OMOP data and cohort building), plus a growing library of bioinformatics and clinical skills (ATAC-seq, ChIP-seq, alternative splicing, causal genomics, chemoinformatics, clinical biostatistics, and more).
-- **Built-in extensions** — on by default: Developer (shell, files, code execution), Computer Controller (web/computer automation), Auto Visualiser, Memory, Agent Drafter, and Knowledge. Off until you enable them in **Extensions**: Tutorial and Workspace Control.
+- **Built-in extensions** — on by default: Developer (shell, files, code execution), Computer Controller (web/computer automation), Auto Visualiser, Memory, Agent Drafter, and Knowledge.
 
 ### Personal, LLM-maintained knowledge bases
 
@@ -52,7 +52,7 @@ Turn structured data into self-contained, interactive HTML figures rendered inli
 
 ### Agent Drafter — apps the agent builds, then drives
 
-Ask for a tool and the agent builds a small **Biorouter app**: a TypeScript front-end wired to its own per-app agent. It doesn't just answer inside the app — it drives it, rendering panels, charts and graphs into the running page and asking you questions mid-task. A finished app can be exported as a directly runnable bundle. Agent Drafter is a built-in extension, on by default. See the [Apps SDK reference](docs/apps-sdk/sdk-reference.md).
+Ask for a tool and the agent builds a small **Biorouter app**: a TypeScript front-end wired to its own per-app agent. It doesn't just answer inside the app — it drives it, rendering panels, charts and graphs into the running page and asking you questions mid-task. A finished app can be exported as a directly runnable bundle. Agent Drafter is a built-in capability, on by default. See the [Apps SDK reference](docs/apps-sdk/sdk-reference.md).
 
 ### Run several chats at once
 

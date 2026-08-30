@@ -94,5 +94,5 @@ make the choice explicit and testable at the call site, and write down why here.
 ## Related documentation
 
 - [How an Auto Visualiser figure's libraries reach the renderer](artifact-cdn-assets.md) — the CSP and CDN-inlining mechanism behind whatever surface displays the figure.
-- [Auto Visualiser extension](../extensions/built-in/auto-visualiser.md) — the user-facing guide to the figures themselves.
+- [Auto Visualiser capability](../extensions/built-in/auto-visualiser.md) — the user-facing guide to the figures themselves.
 - [Renderer testing traps](renderer-testing-traps.md) — why a frontend test can pass while the code it covers is broken.

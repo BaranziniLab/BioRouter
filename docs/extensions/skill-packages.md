@@ -227,5 +227,5 @@ run:
 ## Related documentation
 
 - [The skill catalog](skill-catalog.md) — what happens after an install: discovery, enablement, and per-chat state
-- [Skills extension](built-in/skills.md) — the user-facing guide to skills
+- [Skills capability](built-in/skills.md) — the user-facing guide to skills
 - [Extensions, skills, and MCP agents](extensions-and-skills-guide.md) — the other things that can be installed

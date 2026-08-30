@@ -9,7 +9,6 @@ pub enum McpCommand {
     ComputerController,
     Developer,
     Memory,
-    Tutorial,
 }
 
 impl FromStr for McpCommand {
@@ -21,7 +20,6 @@ impl FromStr for McpCommand {
             "computercontroller" => Ok(McpCommand::ComputerController),
             "developer" => Ok(McpCommand::Developer),
             "memory" => Ok(McpCommand::Memory),
-            "tutorial" => Ok(McpCommand::Tutorial),
             _ => Err(format!("Invalid command: {}", s)),
         }
     }
@@ -34,7 +32,6 @@ impl McpCommand {
             McpCommand::ComputerController => "computercontroller",
             McpCommand::Developer => "developer",
             McpCommand::Memory => "memory",
-            McpCommand::Tutorial => "tutorial",
         }
     }
 }
@@ -50,4 +47,15 @@ where
     service.waiting().await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retired_tutorial_is_not_registered_or_runnable() {
+        assert!(McpCommand::from_str("tutorial").is_err());
+        assert!(!crate::BUILTIN_EXTENSIONS.contains_key("tutorial"));
+    }
 }

@@ -324,12 +324,10 @@ pub async fn handle_active(
 /// base the CLI hides from the agent can never be the primary.
 ///
 /// `session` is the one thing the CLI addresses that is not its own: everything
-/// else here is machine-wide (see the module header). It exists because
-/// `--inherit` only means something at session scope — a chat can hold an
-/// explicit "no primary" override that survives every other gesture, and
-/// deleting the base a chat had pinned *installs* one. Without a way to drop
-/// that override from outside the GUI, such a chat could never follow the
-/// machine-wide default again.
+/// else here is machine-wide (see the module header). A chat-level `--inherit`
+/// drops that chat's override so it follows the machine choice. At machine
+/// scope, `--inherit` removes the explicit preference and restores Biorouter's
+/// shipped Soul default.
 fn active_command(
     svc: &KnowledgeService,
     session: Option<&str>,
@@ -354,26 +352,32 @@ fn active_command(
     };
 
     if inherit {
-        let Some(session) = session else {
-            bail!(
-                "--inherit drops a chat's own primary so it follows the machine-wide one, so it \
-                 needs --session <id>. The machine-wide primary has nothing above it to inherit \
-                 Use --clear to unset it."
-            );
-        };
-        let selection = svc.set_selection(Some(session), None, PrimaryUpdate::Inherit)?;
+        let selection = svc.set_selection(session, None, PrimaryUpdate::Inherit)?;
         return Ok(match selection.primary_kb {
-            Some(id) => format!(
-                "  {} chat {} now follows the machine-wide primary knowledge base ({})",
-                style("✓").green(),
-                style(session).fg(ACCENT).bold(),
-                style(&id).fg(ACCENT).bold()
-            ),
-            None => format!(
-                "  {} chat {} now follows the machine-wide primary knowledge base (none is set)",
-                style("✓").green(),
-                style(session).fg(ACCENT).bold()
-            ),
+            Some(id) => match session {
+                Some(session) => format!(
+                    "  {} chat {} now follows the machine-wide primary knowledge base ({})",
+                    style("✓").green(),
+                    style(session).fg(ACCENT).bold(),
+                    style(&id).fg(ACCENT).bold()
+                ),
+                None => format!(
+                    "  {} machine-wide primary restored to the product default ({})",
+                    style("✓").green(),
+                    style(&id).fg(ACCENT).bold()
+                ),
+            },
+            None => match session {
+                Some(session) => format!(
+                    "  {} chat {} now follows the machine-wide primary knowledge base (none is set)",
+                    style("✓").green(),
+                    style(session).fg(ACCENT).bold()
+                ),
+                None => format!(
+                    "  {} product-default knowledge base is not installed",
+                    style("✓").green()
+                ),
+            },
         });
     }
 
@@ -1153,16 +1157,13 @@ mod tests {
             Some("beta")
         );
 
-        // The machine-wide scope has nothing above it to inherit, so asking is
-        // a clean error naming the gesture that does apply …
-        let err = active_command(&svc, None, None, false, true)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("--session") && err.contains("--clear"),
-            "got: {err}"
-        );
-        // … and the three gestures are mutually exclusive.
+        // Machine-level inherit means "return to the product default". This
+        // fixture intentionally has no Soul base, so the command reports that
+        // precisely rather than inventing another primary.
+        let out = active_command(&svc, None, None, false, true)?;
+        assert!(out.contains("product-default") && out.contains("not installed"));
+
+        // The three gestures remain mutually exclusive.
         let err = active_command(&svc, Some("s1"), Some("beta".to_string()), false, true)
             .unwrap_err()
             .to_string();
@@ -1171,8 +1172,7 @@ mod tests {
     }
 
     /// `--session` makes the machine-wide CLI able to address one chat's
-    /// pointer, which is what `--inherit` needs to mean anything. It must not
-    /// leak in either direction.
+    /// pointer. Scope-specific changes must not leak in either direction.
     #[test]
     fn a_session_scoped_primary_does_not_disturb_the_machine_one() -> anyhow::Result<()> {
         let (_tmp, svc) = svc();

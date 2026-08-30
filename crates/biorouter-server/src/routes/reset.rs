@@ -18,7 +18,7 @@ use biorouter::scheduler::get_default_scheduled_workflows_dir;
 use biorouter::workflow::local_workflows::get_workflow_library_dir;
 use biorouter::workflow::WORKFLOW_FILE_EXTENSIONS;
 use biorouter_mcp::agent_drafter::{default_root, store::ArtifactStore};
-use biorouter_mcp::knowledge::service::KnowledgeService;
+use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
 use biorouter_mcp::knowledge::types::KbFormat;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -122,6 +122,7 @@ fn reset_knowledge(service: &KnowledgeService, memory_root: &Path) -> Result<u64
         service.delete_base(&base.id)?;
     }
     service.create_base_in(SOUL_KB_ID, SOUL_KB_NAME, Some(SOUL_COLOR), KbFormat::Okf)?;
+    service.set_selection(None, None, PrimaryUpdate::Inherit)?;
     if memory_root.exists() {
         fs::remove_dir_all(memory_root)?;
     }
@@ -419,6 +420,10 @@ mod tests {
         let bases = service.list_bases().unwrap();
         assert_eq!(bases.len(), 1);
         assert_eq!(bases[0].id, SOUL_KB_ID);
+        assert_eq!(
+            service.primary_for_session(None).unwrap().as_deref(),
+            Some(SOUL_KB_ID)
+        );
         assert!(!memory.exists());
     }
 }

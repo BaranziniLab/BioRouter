@@ -56,8 +56,15 @@ fn default_principal_type() -> PrincipalType {
 )]
 pub async fn confirm_tool_action(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(request): Json<ConfirmToolActionRequest>,
 ) -> Result<Json<Value>, StatusCode> {
+    if biorouter::pending_user_action::PendingUserActions::global()
+        .requires_user_proof_in_session(&request.session_id, &request.id)
+        && !matches!(user_action_proof(&headers), UserActionProof::Proven)
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let permission = match request.action.as_str() {
         "always_allow" => Permission::AlwaysAllow,
         "allow_once" => Permission::AllowOnce,
@@ -382,11 +389,24 @@ mod tests {
         }
 
         fn post(action: &str, id: &str, session_id: &str) -> Request<Body> {
-            Request::builder()
+            post_with_user_action(action, id, session_id, None)
+        }
+
+        fn post_with_user_action(
+            action: &str,
+            id: &str,
+            session_id: &str,
+            user_action: Option<&str>,
+        ) -> Request<Body> {
+            let mut builder = Request::builder()
                 .uri("/action-required/tool-confirmation")
                 .method("POST")
                 .header("content-type", "application/json")
-                .header("x-secret-key", "test-secret")
+                .header("x-secret-key", "test-secret");
+            if let Some(proof) = user_action {
+                builder = builder.header("X-User-Action", proof);
+            }
+            builder
                 .body(Body::from(
                     serde_json::to_string(&ConfirmToolActionRequest {
                         id: id.to_string(),
@@ -407,6 +427,13 @@ mod tests {
         }
 
         fn parked_approval(session_id: &str) -> biorouter::pending_user_action::PendingUserAction {
+            parked_approval_requiring(session_id, false)
+        }
+
+        fn parked_approval_requiring(
+            session_id: &str,
+            requires_user_proof: bool,
+        ) -> biorouter::pending_user_action::PendingUserAction {
             use biorouter::pending_user_action::{
                 PendingUserActions, ToolApprovalRequest, UserActionRequest,
             };
@@ -420,6 +447,7 @@ mod tests {
                     prompt: None,
                     risk: None,
                     preview: None,
+                    requires_user_proof,
                 }),
             )
         }
@@ -453,6 +481,57 @@ mod tests {
 
             let response = app.oneshot(post("allow_once", &id, &owner)).await.unwrap();
             assert_eq!(body_json(response).await["status"], "delivered");
+            assert!(matches!(
+                parked.wait(std::time::Duration::from_secs(5), None).await,
+                UserActionOutcome::Approved { .. }
+            ));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn a_proof_required_authorization_cannot_be_answered_by_daemon_http_alone() {
+            use crate::routes::session::diverge_tests::{
+                install_test_user_action_key, TEST_USER_ACTION_KEY,
+            };
+            use biorouter::pending_user_action::{PendingUserActions, UserActionOutcome};
+
+            install_test_user_action_key();
+            let session = unique_session("proof-required");
+            let parked = parked_approval_requiring(&session, true);
+            let id = parked.id().to_string();
+            let app = routes(AppState::new().await.unwrap());
+
+            let no_proof = app
+                .clone()
+                .oneshot(post("allow_once", &id, &session))
+                .await
+                .unwrap();
+            assert_eq!(no_proof.status(), StatusCode::FORBIDDEN);
+            assert!(PendingUserActions::global().is_pending(&id));
+
+            let wrong_proof = app
+                .clone()
+                .oneshot(post_with_user_action(
+                    "allow_once",
+                    &id,
+                    &session,
+                    Some("not-the-user-key"),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(wrong_proof.status(), StatusCode::FORBIDDEN);
+            assert!(PendingUserActions::global().is_pending(&id));
+
+            let approved = app
+                .oneshot(post_with_user_action(
+                    "allow_once",
+                    &id,
+                    &session,
+                    Some(TEST_USER_ACTION_KEY),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(approved.status(), StatusCode::OK);
             assert!(matches!(
                 parked.wait(std::time::Duration::from_secs(5), None).await,
                 UserActionOutcome::Approved { .. }

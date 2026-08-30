@@ -12,7 +12,9 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::Agent;
-use crate::knowledge::conversation_ingest::{ingest_conversation, ConversationIngestArgs};
+use crate::knowledge::conversation_ingest::{
+    ingest_conversation_with_curation_profile, ConversationIngestArgs,
+};
 use crate::knowledge::ProviderCompleter;
 use crate::mcp_utils::ToolResult;
 use crate::model::ModelConfig;
@@ -21,6 +23,7 @@ use crate::session::session_manager::{Session, SessionType};
 use biorouter_mcp::knowledge::caller::KbCaller;
 use biorouter_mcp::knowledge::service::KnowledgeService;
 use biorouter_mcp::knowledge::subagent::loop_::{Completer, SubAgentBounds};
+use biorouter_mcp::knowledge::subagent::procedures::IngestCurationProfile;
 use biorouter_mcp::knowledge::types::ModelRef;
 
 impl Agent {
@@ -60,6 +63,10 @@ impl Agent {
         // Resolve target KB: explicit id → new-by-name → this session's primary.
         let kb_id = resolve_target_kb(&svc, &arguments, &session.id, &kb_caller(chat_capability))
             .map_err(invalid_params)?;
+        let curation_profile =
+            platform_curation_profile(self.config.session_manager.as_ref(), &session.id, &kb_id)
+                .await
+                .map_err(invalid_params)?;
 
         // Load the sessions (with messages).
         let mut sessions = Vec::new();
@@ -76,7 +83,7 @@ impl Agent {
             .conversation_ingest_completer(&svc, &kb_id, session, cancel.clone())
             .await?;
 
-        let result = ingest_conversation(
+        let result = ingest_conversation_with_curation_profile(
             &svc,
             ConversationIngestArgs {
                 kb_id: kb_id.clone(),
@@ -102,6 +109,7 @@ impl Agent {
                 event_sink: None,
                 cancel,
             },
+            curation_profile,
         )
         .await
         .map_err(internal)?;
@@ -167,6 +175,24 @@ impl Agent {
             affiliation,
         ))
     }
+}
+
+pub(crate) async fn platform_curation_profile(
+    session_manager: &crate::session::SessionManager,
+    session_id: &str,
+    kb_id: &str,
+) -> anyhow::Result<Option<IngestCurationProfile>> {
+    if kb_id != crate::knowledge::soul::SOUL_KB_ID {
+        return Ok(None);
+    }
+
+    let skill_instructions = crate::agents::skills_extension::workflow_skill_instructions(
+        session_manager,
+        session_id,
+        &[crate::knowledge::soul::SOUL_SKILL_DIR.to_string()],
+    )
+    .await?;
+    Ok(Some(IngestCurationProfile::Soul { skill_instructions }))
 }
 
 /// This chat's capability in the vocabulary the KB barrier owns — the ONE

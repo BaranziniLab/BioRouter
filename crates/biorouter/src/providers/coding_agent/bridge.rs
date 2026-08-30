@@ -607,6 +607,7 @@ impl BridgeGrant {
             preview: crate::conversation::tool_preview::ToolPreview::for_tool_call(
                 &call.name, &arguments,
             ),
+            requires_user_proof: false,
         });
 
         // Owned by the grant's nonce so the lease can release it, scoped to the

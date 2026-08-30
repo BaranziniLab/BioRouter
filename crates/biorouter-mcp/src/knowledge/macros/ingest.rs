@@ -11,7 +11,7 @@ use crate::knowledge::{
         events::{DoneReason, SubAgentEvent},
         kb_tools::{tool_specs, KbToolAccess, KbToolDispatch},
         loop_::{Completer, SubAgent, SubAgentBounds, SubAgentResult},
-        procedures::{ingest_procedure, system_prompt},
+        procedures::{ingest_curation_procedure, system_prompt, IngestCurationProfile},
     },
     types::{ChangeKind, KbFormat, SourceMeta},
     validate::{Diagnostics, Severity},
@@ -242,6 +242,14 @@ fn verify(
 }
 
 pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestResult> {
+    ingest_with_curation_profile(svc, args, None).await
+}
+
+pub async fn ingest_with_curation_profile(
+    svc: &KnowledgeService,
+    args: IngestArgs,
+    curation_profile: Option<IngestCurationProfile>,
+) -> Result<IngestResult> {
     let cancel = args.cancel.clone();
     let _lock = svc
         .lock_kb_cancellable(&args.kb_id, cancel.as_ref())
@@ -279,7 +287,8 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
             ));
         }
     };
-    let system = system_prompt(&schema, ingest_procedure(Some(format)));
+    let procedure = ingest_curation_procedure(Some(format), curation_profile.as_ref());
+    let system = system_prompt(&schema, procedure.as_ref());
 
     let dispatch = KbToolDispatch {
         svc: svc.clone(),

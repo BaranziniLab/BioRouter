@@ -82,6 +82,6 @@ in every case, so any future miss is a signal, not noise.
 
 ## Related documentation
 
-- [Auto Visualiser extension](../../../../../docs/extensions/built-in/auto-visualiser.md) — what the extension does and how a user enables it
+- [Auto Visualiser capability](../../../../../docs/extensions/built-in/auto-visualiser.md) — what the extension does and how a user enables it
 - [Auto Visualiser stress test](../../../../../docs/history/autovis-stress-test/README.md) — the 100-request campaign that hardened the composite report tool
 - [Documentation index](../../../../../docs/README.md) — the rest of the documentation tree

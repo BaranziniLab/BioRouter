@@ -10,9 +10,12 @@
 //! bundle so simple apps still work. The stripper is intentionally conservative;
 //! complex TypeScript should be built where esbuild is present.
 
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use crate::agent_drafter::store::{ArtifactKind, Manifest};
 
@@ -786,6 +789,8 @@ pub struct BuildReport {
 }
 
 static NPX_ESBUILD_LOCK: Mutex<()> = Mutex::new(());
+static NPX_ESBUILD_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
+const ESBUILD_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn lock_npx_esbuild(program: &str) -> Option<MutexGuard<'static, ()>> {
     let is_npx = Path::new(program)
@@ -827,7 +832,7 @@ fn find_esbuild() -> Option<(String, Vec<String>)> {
     if which("esbuild") {
         return Some(("esbuild".to_string(), vec![]));
     }
-    if which("npx") {
+    if !NPX_ESBUILD_UNAVAILABLE.load(AtomicOrdering::Acquire) && which("npx") {
         return Some(("npx".to_string(), vec!["--yes".into(), "esbuild".into()]));
     }
     None
@@ -922,7 +927,7 @@ pub fn build_app(project_dir: &Path) -> std::io::Result<BuildReport> {
             Err(e) => {
                 // esbuild could not be spawned; fall through to the stripper.
                 let mut report = fallback_bundle(project_dir, &out)?;
-                report.log = format!("esbuild spawn failed ({e}); used fallback.\n{}", report.log);
+                report.log = format!("esbuild unavailable ({e}); used fallback.\n{}", report.log);
                 return Ok(note(report));
             }
         }
@@ -948,6 +953,37 @@ fn run_esbuild(
     entry: &Path,
     out: &Path,
 ) -> std::io::Result<BuildReport> {
+    run_esbuild_with_timeout(program, lead, entry, out, ESBUILD_TIMEOUT)
+}
+
+fn terminate_esbuild(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as i32;
+        // The command is its own process-group leader, so this also reaps an
+        // `npx`-spawned compiler or package lifecycle child.
+        if unsafe { libc::kill(-pid, libc::SIGKILL) } != 0 {
+            let _ = child.kill();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn join_output(reader: std::thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
+    reader
+        .join()
+        .map_err(|_| io::Error::other("esbuild output reader panicked"))?
+}
+
+fn run_esbuild_with_timeout(
+    program: &str,
+    lead: &[String],
+    entry: &Path,
+    out: &Path,
+    timeout: Duration,
+) -> std::io::Result<BuildReport> {
     let npx_guard = lock_npx_esbuild(program);
     let mut cmd = Command::new(program);
     if npx_guard.is_some() {
@@ -963,15 +999,75 @@ fn run_esbuild(
     cmd.arg("--log-level=warning");
     // Last, so nothing set above can leave a daemon credential in the child.
     super::prepare_agent_drafter_child(&mut cmd);
-    let output = cmd.output()?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .expect("piped esbuild stdout must be available");
+    let mut stderr = child
+        .stderr
+        .take()
+        .expect("piped esbuild stderr must be available");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    });
+
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Ok(None) => {
+                terminate_esbuild(&mut child);
+                let _ = join_output(stdout_reader);
+                let _ = join_output(stderr_reader);
+                if npx_guard.is_some() {
+                    NPX_ESBUILD_UNAVAILABLE.store(true, AtomicOrdering::Release);
+                }
+                drop(npx_guard);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "esbuild exceeded its {} second limit",
+                        timeout.as_secs_f64()
+                    ),
+                ));
+            }
+            Err(error) => {
+                terminate_esbuild(&mut child);
+                let _ = join_output(stdout_reader);
+                let _ = join_output(stderr_reader);
+                drop(npx_guard);
+                return Err(error);
+            }
+        }
+    };
+    let stdout = join_output(stdout_reader)?;
+    let stderr = join_output(stderr_reader)?;
     drop(npx_guard);
     let log = format!(
         "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
     );
     Ok(BuildReport {
-        ok: output.status.success() && out.exists(),
+        ok: status.success() && out.exists(),
         used: "esbuild".into(),
         log,
     })
@@ -1530,6 +1626,51 @@ mod tests {
 
         assert_eq!(peak.load(Ordering::SeqCst), 1);
         assert!(lock_npx_esbuild("esbuild").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timed_out_esbuild_reaps_its_whole_process_group() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let shim = dir.path().join("esbuild-shim");
+        let descendant_pid = dir.path().join("descendant.pid");
+        std::fs::write(
+            &shim,
+            "#!/bin/sh\npidfile=\"$1\"\nsleep 30 &\necho \"$!\" > \"$pidfile\"\nwait\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&shim).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&shim, permissions).unwrap();
+
+        let entry = dir.path().join("main.ts");
+        let out = dir.path().join("app.js");
+        std::fs::write(&entry, "const ok = true;").unwrap();
+        let started = Instant::now();
+        let error = run_esbuild_with_timeout(
+            shim.to_str().unwrap(),
+            &[descendant_pid.to_string_lossy().into_owned()],
+            &entry,
+            &out,
+            Duration::from_millis(250),
+        )
+        .expect_err("the hung compiler must time out");
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let pid: i32 = std::fs::read_to_string(descendant_pid)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "the compiler's descendant survived the timeout"
+        );
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
     }
 
     #[test]

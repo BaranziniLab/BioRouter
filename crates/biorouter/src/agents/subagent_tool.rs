@@ -929,14 +929,28 @@ pub(crate) fn handle_bridged_subagent_tool(
 ) -> ToolCallResult {
     let unsupported = unsupported_bridged_extension_names(&params, &task_config.extensions);
     if !unsupported.is_empty() {
+        let mut available = task_config
+            .extensions
+            .iter()
+            .map(crate::agents::ExtensionConfig::name)
+            .collect::<Vec<_>>();
+        available.sort();
+        available.dedup();
+        let available = if available.is_empty() {
+            "none".to_string()
+        } else {
+            available.join(", ")
+        };
         return ToolCallResult::from(Err(ErrorData {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!(
-                "Subscription-backed coding-agent subagents cannot inherit extension(s): {}. \
-                 Nothing was started. Omit `extensions` to use the audited Knowledge search, \
-                 lint, and transactional source-ingestion tools, or run the task in the parent \
-                 session.",
-                unsupported.join(", ")
+                "Subscription-backed coding-agent subagents cannot inherit non-bridge \
+                 capability or extension(s): {}. Nothing was started. This child may inherit \
+                 only: {available}. Omit `extensions` to use that audited subset. For a skill \
+                 repository URL, call `skills__importSkillPackage` in the parent chat or \
+                 delegate with `extensions:[\"skills\"]`; do not retry with Developer, Code \
+                 Execution, or native shell/editor tools.",
+                unsupported.join(", "),
             )),
             data: None,
         }));
@@ -2073,17 +2087,25 @@ mod tests {
 
     #[test]
     fn a_bridged_spawn_refuses_extensions_the_child_cannot_receive() {
-        let available = vec![crate::agents::ExtensionConfig::Builtin {
-            name: "knowledge".into(),
-            description: "Knowledge".into(),
-            display_name: None,
-            timeout: None,
-            bundled: Some(true),
-            available_tools: vec!["kb_search".into(), "kb_lint".into()],
-        }];
+        let available = vec![
+            crate::agents::ExtensionConfig::Builtin {
+                name: "knowledge".into(),
+                description: "Knowledge".into(),
+                display_name: None,
+                timeout: None,
+                bundled: Some(true),
+                available_tools: vec!["kb_search".into(), "kb_lint".into()],
+            },
+            crate::agents::ExtensionConfig::Platform {
+                name: "skills".into(),
+                description: "Skills".into(),
+                bundled: Some(true),
+                available_tools: vec!["importSkillPackage".into()],
+            },
+        ];
         let unsupported = unsupported_bridged_extension_names(
             &serde_json::json!({
-                "extensions": ["Knowledge", "developer", "computercontroller"]
+                "extensions": ["Knowledge", "skills", "developer", "computercontroller"]
             }),
             &available,
         );

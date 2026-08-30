@@ -354,7 +354,7 @@ generate-openapi:
     @echo "Generating OpenAPI schema..."
     cargo run -p biorouter-server --bin generate_schema
     @echo "Generating frontend API..."
-    cd ui/desktop && npx @hey-api/openapi-ts
+    cd ui/desktop && npm run generate-api
 
 # make GUI with latest binary
 lint-ui:
