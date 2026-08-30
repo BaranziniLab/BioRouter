@@ -708,7 +708,7 @@ impl ChatRecallClient {
                 Search past chat, list recent sessions, or load session summaries. Use when it is clear user expects some memory or context.
 
                 search mode (query): Use multiple keywords/synonyms; any of them may match. Returns messages grouped by session, best match first, each message clipped to an excerpt. `limit` caps MESSAGES, not sessions, so a broad query can return few sessions — narrow it rather than raising the limit. `after_date`/`before_date` are exact instants, not days, so `before_date: '2025-10-15T00:00:00Z'` stops at midnight — pass '2025-10-15T23:59:59Z' to include that day.
-                recent mode (omit query and session_id): Lists user chat sessions newest-first with one latest message each; scheduled jobs and subagents are excluded. `limit` caps SESSIONS. Combine with `after_date` to discover chats active since a cursor without guessing their vocabulary.
+                recent mode (omit query and session_id): Lists user chat sessions newest-first with the latest user-authored message from each; scheduled jobs and subagents are excluded. `limit` caps SESSIONS. Combine with `after_date` to discover chats active since a cursor without guessing their vocabulary.
                 load mode (session_id): Returns the first and last few messages of one session, each clipped to a long excerpt.
                 Mutually exclusive: if both are given, session_id wins and query is ignored.
             "#}

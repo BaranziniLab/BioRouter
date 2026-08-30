@@ -269,7 +269,7 @@ impl<'a> ChatHistorySearch<'a> {
         Ok(results)
     }
 
-    /// One latest message from each recent session, newest session first.
+    /// One latest user-authored message from each recent session, newest first.
     ///
     /// Chat Recall's ordinary search cannot discover a chat whose vocabulary
     /// the caller does not already know. Meditation needs the opposite: list
@@ -293,7 +293,7 @@ impl<'a> ChatHistorySearch<'a> {
             INNER JOIN messages m ON m.id = (
                 SELECT recent.id
                 FROM messages recent
-                WHERE recent.session_id = s.id
+                WHERE recent.session_id = s.id AND recent.role = 'user'
                 ORDER BY COALESCE(
                     NULLIF(recent.created_timestamp, 0),
                     CAST(strftime('%s', recent.timestamp) AS INTEGER)
@@ -1147,6 +1147,26 @@ mod tests {
         )
         .await;
 
+        let later = sqlx::query_scalar::<_, i64>("SELECT MAX(created_timestamp) FROM messages")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+            + 60;
+        let assistant_content = serde_json::to_string(&vec![MessageContent::text(
+            "assistant-summary-without-user-preference",
+        )])
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO messages (session_id, role, content_json, created_timestamp, timestamp) \
+             VALUES ('s1', 'assistant', ?, ?, datetime(?, 'unixepoch'))",
+        )
+        .bind(assistant_content)
+        .bind(later)
+        .bind(later)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
         let public = search_with_limit(ProviderTier::Public, &db, "", 10).await;
         assert_eq!(public.results.len(), 2);
         let rendered = render_for_model(&public);
@@ -1156,6 +1176,12 @@ mod tests {
             "{rendered}"
         );
         assert!(!rendered.contains("secret-topic"), "{rendered}");
+        assert!(!rendered.contains("assistant-summary-without-user-preference"));
+        assert!(public
+            .results
+            .iter()
+            .flat_map(|result| &result.messages)
+            .all(|message| message.role == "user"));
 
         let private = search_with_limit(ProviderTier::Private, &db, "", 10).await;
         assert_eq!(private.results.len(), 3);
