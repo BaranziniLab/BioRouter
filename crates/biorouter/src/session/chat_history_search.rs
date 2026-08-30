@@ -278,6 +278,8 @@ impl<'a> ChatHistorySearch<'a> {
     /// Privacy and affiliation clauses stay in SQL, before `LIMIT`, exactly as
     /// they do for both keyword-search builders.
     async fn fetch_rows_recent(&self) -> Result<Vec<SqlQueryRow>> {
+        // Tool responses are persisted with role `user` too. Requiring a
+        // top-level text part keeps recent mode on actual authored prompts.
         let authored = "COALESCE(NULLIF(m.created_timestamp, 0), CAST(strftime('%s', m.timestamp) AS INTEGER))";
         let mut sql = format!(
             r#"
@@ -293,7 +295,19 @@ impl<'a> ChatHistorySearch<'a> {
             INNER JOIN messages m ON m.id = (
                 SELECT recent.id
                 FROM messages recent
-                WHERE recent.session_id = s.id AND recent.role = 'user'
+                WHERE recent.session_id = s.id
+                  AND recent.role = 'user'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM json_each(
+                          CASE
+                              WHEN json_valid(recent.content_json)
+                              THEN recent.content_json
+                              ELSE '[]'
+                          END
+                      ) part
+                      WHERE json_extract(part.value, '$.type') = 'text'
+                  )
                 ORDER BY COALESCE(
                     NULLIF(recent.created_timestamp, 0),
                     CAST(strftime('%s', recent.timestamp) AS INTEGER)
@@ -1167,6 +1181,18 @@ mod tests {
         .await
         .unwrap();
 
+        let tool_response_content = r#"[{"type":"toolResponse","id":"remember","toolResult":{"status":"success","value":{"content":[{"type":"text","text":"stored"}]}}}]"#;
+        sqlx::query(
+            "INSERT INTO messages (session_id, role, content_json, created_timestamp, timestamp) \
+             VALUES ('s1', 'user', ?, ?, datetime(?, 'unixepoch'))",
+        )
+        .bind(tool_response_content)
+        .bind(later + 60)
+        .bind(later + 60)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
         let public = search_with_limit(ProviderTier::Public, &db, "", 10).await;
         assert_eq!(public.results.len(), 2);
         let rendered = render_for_model(&public);
@@ -1177,6 +1203,8 @@ mod tests {
         );
         assert!(!rendered.contains("secret-topic"), "{rendered}");
         assert!(!rendered.contains("assistant-summary-without-user-preference"));
+        assert!(!rendered.contains("Tool Response"));
+        assert!(!rendered.contains("stored"));
         assert!(public
             .results
             .iter()

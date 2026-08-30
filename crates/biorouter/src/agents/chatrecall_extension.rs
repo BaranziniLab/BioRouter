@@ -1187,13 +1187,25 @@ mod tests {
             "todo-marker",
         )
         .await;
-        h.session_containing(
-            "Clinic wait-time dashboard",
-            "/tmp/clinic",
-            false,
-            "clinic-marker",
+        let clinic = h
+            .session_containing(
+                "Clinic wait-time dashboard",
+                "/tmp/clinic",
+                false,
+                "clinic-marker",
+            )
+            .await;
+        h.sm.add_message(
+            &clinic.id,
+            &ConvMessage::user().with_tool_response(
+                "remember",
+                Ok(CallToolResult::success(vec![Content::text(
+                    "tool-response-marker",
+                )])),
+            ),
         )
-        .await;
+        .await
+        .unwrap();
 
         let output = h
             .recent_via(CallCapability::for_test(ProviderTier::Public, true))
@@ -1203,6 +1215,8 @@ mod tests {
         assert!(text.contains("recent readable session"), "{text}");
         assert!(text.contains("Hash-prefixed Todo ID test"), "{text}");
         assert!(text.contains("Clinic wait-time dashboard"), "{text}");
+        assert!(text.contains("clinic-marker"), "{text}");
+        assert!(!text.contains("tool-response-marker"), "{text}");
         assert!(!text.contains("Private genome review"), "{text}");
         assert!(!text.contains("licensed-liftover-marker"), "{text}");
     }
