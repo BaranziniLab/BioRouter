@@ -243,6 +243,35 @@ impl CatalogEvents {
         revision
     }
 
+    /// Wake catalog consumers after a per-session attachment change is
+    /// durable. The machine-wide extension and skill inventory may be
+    /// unchanged, but chat-scoped pickers still need to refetch their enabled
+    /// state. This deliberately bypasses [`Self::publish`]'s empty-change
+    /// guard: the session id is the changed state.
+    pub fn publish_session_refresh(&self, session_id: impl Into<String>) -> u64 {
+        let revision = self.revision.fetch_add(1, Ordering::SeqCst) + 1;
+        let change = CatalogChanged {
+            revision,
+            reason: CatalogChangeReason::Update,
+            extensions: Vec::new(),
+            skills: Vec::new(),
+            session_id: Some(session_id.into()),
+        };
+        debug!("catalog revision {revision}: session attachment state changed");
+        {
+            let mut buffer = self.buffer();
+            buffer.changes.push(change);
+            if buffer.changes.len() > BUFFER {
+                let dropped = buffer.changes.remove(0);
+                buffer.oldest = dropped.revision + 1;
+            } else if buffer.oldest == 0 {
+                buffer.oldest = revision;
+            }
+        }
+        self.notify.notify_waiters();
+        revision
+    }
+
     /// Everything that happened after `since`.
     pub fn since(&self, since: u64) -> CatalogDelta {
         let revision = self.revision();
@@ -516,6 +545,21 @@ mod tests {
             before
         );
         assert_eq!(events.revision(), before);
+    }
+
+    #[test]
+    fn a_session_refresh_moves_the_revision_without_inventory_rows() {
+        let events = CatalogEvents::default();
+        let revision = events.publish_session_refresh("session-42");
+        assert_eq!(revision, 1);
+
+        let delta = events.since(0);
+        assert_eq!(delta.revision, 1);
+        assert_eq!(delta.changes.len(), 1);
+        let change = &delta.changes[0];
+        assert!(change.extensions.is_empty());
+        assert!(change.skills.is_empty());
+        assert_eq!(change.session_id.as_deref(), Some("session-42"));
     }
 
     #[test]

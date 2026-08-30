@@ -145,6 +145,39 @@ fn tool_catalog_mutation(tool_name: &str) -> Option<ToolCatalogMutation> {
     })
 }
 
+async fn persist_enabled_extensions_for_manager(
+    session_manager: &SessionManager,
+    extension_manager: &ExtensionManager,
+    session_id: &str,
+) -> Result<()> {
+    let session = session_manager.get_session(session_id, false).await?;
+    if session.session_type == SessionType::SubAgent {
+        return Err(anyhow!(
+            "subagent extension grants are immutable runtime-profile authority"
+        ));
+    }
+    let extensions_state =
+        EnabledExtensionsState::new(extension_manager.get_extension_configs().await);
+    let value = extensions_state
+        .to_value()
+        .map_err(|e| anyhow!("Extension state serialization failed: {}", e))?;
+
+    let written = session_manager
+        .update_extension_state(
+            session_id,
+            EnabledExtensionsState::EXTENSION_NAME,
+            EnabledExtensionsState::VERSION,
+            move |_| Ok(value),
+        )
+        .await?;
+    if written.is_none() {
+        return Err(anyhow!(
+            "cannot record extension state: no session {session_id}"
+        ));
+    }
+    Ok(())
+}
+
 fn should_offer_knowledge_platform_tools(
     knowledge_enabled: bool,
     extension_name: Option<&str>,
@@ -1405,6 +1438,24 @@ struct ChatBridgeDispatch {
 }
 
 impl ChatBridgeDispatch {
+    async fn record_successful_catalog_mutation(
+        &self,
+        session_id: &str,
+        mutation: ToolCatalogMutation,
+    ) -> std::result::Result<(), String> {
+        if mutation.persist_extension_state {
+            persist_enabled_extensions_for_manager(
+                self.session_manager.as_ref(),
+                self.extensions.as_ref(),
+                session_id,
+            )
+            .await
+            .map_err(|error| format!("Could not persist the updated extension roster: {error}"))?;
+        }
+        crate::catalog::CatalogEvents::global().publish_session_refresh(session_id);
+        Ok(())
+    }
+
     async fn enforce_tool_access(
         &self,
         session_id: &str,
@@ -1721,14 +1772,22 @@ impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
                 .await;
         }
 
-        coding_agent_bridge::BridgeToolDispatch::dispatch(
+        let mutation = tool_catalog_mutation(&name);
+        let result = coding_agent_bridge::BridgeToolDispatch::dispatch(
             self.extensions.as_ref(),
             session_id,
             call,
             capability,
             cancel,
         )
-        .await
+        .await?;
+        if result.is_error != Some(true) {
+            if let Some(mutation) = mutation {
+                self.record_successful_catalog_mutation(session_id, mutation)
+                    .await?;
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -6863,42 +6922,12 @@ impl Agent {
     /// on the other — and tool calls overlap by construction, so the window was
     /// reachable rather than theoretical.
     async fn write_enabled_extensions(&self, session_id: &str) -> Result<()> {
-        let session = self
-            .config
-            .session_manager
-            .get_session(session_id, false)
-            .await?;
-        if session.session_type == SessionType::SubAgent {
-            return Err(anyhow!(
-                "subagent extension grants are immutable runtime-profile authority"
-            ));
-        }
-        let extensions_state =
-            EnabledExtensionsState::new(self.persistable_extension_configs().await);
-        let value = extensions_state
-            .to_value()
-            .map_err(|e| anyhow!("Extension state serialization failed: {}", e))?;
-
-        let written = self
-            .config
-            .session_manager
-            .update_extension_state(
-                session_id,
-                EnabledExtensionsState::EXTENSION_NAME,
-                EnabledExtensionsState::VERSION,
-                move |_| Ok(value),
-            )
-            .await?;
-
-        // `update_extension_state` reports a missing session as `Ok(None)`
-        // rather than writing; the old `get_session` first line failed loudly
-        // in that case and callers log on `Err`, so keep it loud.
-        if written.is_none() {
-            return Err(anyhow!(
-                "cannot record extension state: no session {session_id}"
-            ));
-        }
-        Ok(())
+        persist_enabled_extensions_for_manager(
+            self.config.session_manager.as_ref(),
+            self.extension_manager.as_ref(),
+            session_id,
+        )
+        .await
     }
 
     /// Load extensions from session into the agent
@@ -9470,13 +9499,23 @@ impl Agent {
                                         yield AgentEvent::Message(msg);
                                     }
 
-                                    if extension_state_changed {
-                                        if let Err(e) = self.save_extension_state(&session_config).await {
-                                            warn!("Failed to save extension state after runtime changes: {}", e);
+                                    let catalog_state_is_durable = if extension_state_changed {
+                                        match self.save_extension_state(&session_config).await {
+                                            Ok(()) => true,
+                                            Err(e) => {
+                                                warn!("Failed to save extension state after runtime changes: {}", e);
+                                                false
+                                            }
                                         }
-                                    }
+                                    } else {
+                                        true
+                                    };
                                     if catalog_changed {
                                         tools_updated = true;
+                                        if catalog_state_is_durable {
+                                            crate::catalog::CatalogEvents::global()
+                                                .publish_session_refresh(&session_config.id);
+                                        }
                                     }
                                 }
 
@@ -12660,6 +12699,68 @@ mod tests {
                 None,
             )
             .await
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn bridged_catalog_mutation_persists_the_session_before_refreshing_consumers() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
+        let tools = agent.list_tools(&session_id, None).await;
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .await
+            .expect("Codex needs a bridge plan");
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .expect("read bridge session");
+        assert!(
+            EnabledExtensionsState::from_extension_data(&session.extension_data).is_none(),
+            "the regression requires a session the bridge has not persisted yet"
+        );
+        let dispatch = agent.chat_bridge_dispatch(&provider, None, &session, plan);
+        let events = crate::catalog::CatalogEvents::global();
+        let before = events.revision();
+
+        dispatch
+            .record_successful_catalog_mutation(
+                &session_id,
+                ToolCatalogMutation {
+                    persist_extension_state: true,
+                },
+            )
+            .await
+            .expect("a successful bridged manager mutation must be durable");
+
+        let persisted_session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .expect("read persisted bridge session");
+        let persisted =
+            EnabledExtensionsState::from_extension_data(&persisted_session.extension_data)
+                .expect("the bridge must write enabled_extensions.v0");
+        assert!(
+            persisted
+                .extensions
+                .iter()
+                .any(|extension| extension.name() == "todo"),
+            "the bridge must snapshot the same live manager used by the tool call"
+        );
+
+        let delta = events.since(before);
+        assert!(
+            delta.changes.iter().any(|change| {
+                change.session_id.as_deref() == Some(session_id.as_str())
+                    && change.extensions.is_empty()
+                    && change.skills.is_empty()
+            }),
+            "the GUI refresh must be emitted after the session write: {delta:?}"
+        );
     }
 
     #[test]
