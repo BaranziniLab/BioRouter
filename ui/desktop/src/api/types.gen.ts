@@ -7289,7 +7289,12 @@ export type GetSessionData = {
          */
         session_id: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * Omit conversation history when only session metadata is needed
+         */
+        metadata_only?: boolean | null;
+    };
     url: '/sessions/{session_id}';
 };
 

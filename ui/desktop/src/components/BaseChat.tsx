@@ -47,7 +47,9 @@ import { useToolCount } from './alerts/useToolCount';
 import { Button } from './ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
-import { AlignLeft, CodeAnalysis, Pipeline, Terminal } from './icons/app-icons';
+import { AlignLeft, Terminal } from './icons/app-icons';
+import { ChatSummary } from './ChatSummary';
+import { useSessionTodos } from '../hooks/useSessionTodos';
 import { createArtifactRenderRepairMessage, getTextContent } from '../types/message';
 import ParameterInputModal from './ParameterInputModal';
 import { substituteParameters } from '../utils/providerUtils';
@@ -859,35 +861,6 @@ function collectCodeDelta(messages: Message[]) {
   return { added, removed };
 }
 
-/**
- * A metric readout, per design.md §4.13: a 30/34 mono-light value over an
- * 11px caps label. It used to be a filled `rounded-md bg-background-medium/60`
- * tile with a 14px semibold sans value — four boxes nested inside an already
- * rounded popover, which is the "box inside a box" this pass exists to remove.
- * The fill goes; the number does the work. `children` lets a caller compose a
- * richer value (e.g. the +/- code diff) without duplicating this component.
- */
-function SummaryMetric({
-  label,
-  value,
-  children,
-}: {
-  label: string;
-  value?: string;
-  children?: React.ReactNode;
-}) {
-  return (
-    <div className="min-w-0 py-2">
-      <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-text-muted">
-        {label}
-      </div>
-      <div className="mt-0.5 truncate font-mono text-[30px] font-light leading-[34px] tracking-[-0.02em] text-text-default tabular-nums">
-        {children ?? value}
-      </div>
-    </div>
-  );
-}
-
 interface BaseChatProps {
   setChat: (chat: ChatType) => void;
   onMessageSubmit?: (message: string) => void;
@@ -1205,6 +1178,7 @@ function BaseChatContent({
     sessionId,
     onStreamFinish,
   });
+  const sessionTodos = useSessionTodos(sessionId, session, messages, reviewOpen);
 
   // BR-71 §4.5 — the glass-box header on a subagent's tab. Inert (and silent on
   // the wire) for an ordinary session.
@@ -1755,57 +1729,26 @@ function BaseChatContent({
           {/* Not "Chat summary" again: the popover's own first heading already
               says that, so a tooltip repeating it tells the user nothing they
               are not about to read. It names the contents instead. */}
-          <TooltipContent>Tool calls, tokens and artifacts so far</TooltipContent>
+          <TooltipContent>Progress, tool calls, tokens and artifacts</TooltipContent>
         </Tooltip>
-        <PopoverContent side="bottom" align="end" className="w-96 p-3">
-          <div className="space-y-3">
-            <div>
-              <div className="text-sm font-medium text-text-default">Chat summary</div>
-              <div className="text-xs text-text-muted">{session?.name || 'Current chat'}</div>
-            </div>
-            <div className="grid grid-cols-2 gap-x-4">
-              <SummaryMetric label="Tool calls" value={sessionToolCallCount.toLocaleString()} />
-              <SummaryMetric
-                label="Billed tokens"
-                value={
-                  totalSessionTokens === null ? 'N/A' : formatCompactNumber(totalSessionTokens)
-                }
-              />
-              <SummaryMetric label="Artifacts" value={sessionArtifacts.length.toLocaleString()} />
-              {/* Composed rather than copy-pasted: this used to duplicate
-                  SummaryMetric's markup, so the two diverged on every edit. */}
-              <SummaryMetric label="Code">
-                <span className="text-text-success">+{codeDelta.added.toLocaleString()}</span>{' '}
-                <span className="text-text-danger">-{codeDelta.removed.toLocaleString()}</span>
-              </SummaryMetric>
-            </div>
-            {/* `secondary`, not `outline`: a 1px box drawn around the quietest
-                actions was the heaviest line in the panel. design.md §4.1
-                already specifies a fill here — outline is only for a secondary
-                action on an already-tinted ground. */}
-            <div className="flex gap-2 border-t border-border-subtle pt-3">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                className="min-w-0 flex-1 justify-center gap-1.5"
-                onClick={handleWorkflowReviewAction}
-              >
-                <Pipeline className="shrink-0" />
-                <span className="whitespace-nowrap">{workflow ? 'Workflow' : 'Make workflow'}</span>
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                className="min-w-0 flex-1 justify-center gap-1.5"
-                onClick={handleDiagnosticsReviewAction}
-              >
-                <CodeAnalysis className="shrink-0" />
-                <span className="whitespace-nowrap">Diagnostics</span>
-              </Button>
-            </div>
-          </div>
+        <PopoverContent
+          side="bottom"
+          align="end"
+          className="w-[360px] max-w-[calc(100vw-2rem)] max-h-[var(--radix-popover-content-available-height)] overflow-y-auto p-3"
+        >
+          <ChatSummary
+            name={session?.name || 'Current chat'}
+            toolCalls={sessionToolCallCount.toLocaleString()}
+            billedTokens={
+              totalSessionTokens === null ? 'N/A' : formatCompactNumber(totalSessionTokens)
+            }
+            artifacts={sessionArtifacts.length.toLocaleString()}
+            codeDelta={codeDelta}
+            todos={sessionTodos}
+            hasWorkflow={!!workflow}
+            onWorkflow={handleWorkflowReviewAction}
+            onDiagnostics={handleDiagnosticsReviewAction}
+          />
         </PopoverContent>
       </Popover>
     </div>

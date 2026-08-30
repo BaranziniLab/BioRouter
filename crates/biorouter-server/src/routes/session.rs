@@ -404,11 +404,18 @@ async fn list_sidebar_sessions(
     }))
 }
 
+#[derive(Default, Deserialize)]
+struct SessionReadQuery {
+    #[serde(default)]
+    metadata_only: bool,
+}
+
 #[utoipa::path(
     get,
     path = "/sessions/{session_id}",
     params(
-        ("session_id" = String, Path, description = "Unique identifier for the session")
+        ("session_id" = String, Path, description = "Unique identifier for the session"),
+        ("metadata_only" = Option<bool>, Query, description = "Omit conversation history when only session metadata is needed")
     ),
     responses(
         (status = 200, description = "Session history retrieved successfully", body = Session),
@@ -428,6 +435,7 @@ async fn list_sidebar_sessions(
 async fn get_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    Query(query): Query<SessionReadQuery>,
     headers: axum::http::HeaderMap,
 ) -> Response {
     // Syntax only, and deliberately ahead of the gate: an id this rejects cannot
@@ -446,7 +454,11 @@ async fn get_session(
     {
         return refusal.into_response();
     }
-    let Ok(session) = state.session_manager().get_session(&session_id, true).await else {
+    let Ok(session) = state
+        .session_manager()
+        .get_session(&session_id, !query.metadata_only)
+        .await
+    else {
         return StatusCode::NOT_FOUND.into_response();
     };
 

@@ -4081,6 +4081,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "metadata_only",
+            "in": "query",
+            "description": "Omit conversation history when only session metadata is needed",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "nullable": true
+            }
           }
         ],
         "responses": {
