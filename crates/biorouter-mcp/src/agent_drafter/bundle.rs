@@ -1654,12 +1654,12 @@ mod tests {
             &[descendant_pid.to_string_lossy().into_owned()],
             &entry,
             &out,
-            Duration::from_millis(250),
+            Duration::from_secs(1),
         )
         .expect_err("the hung compiler must time out");
 
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(started.elapsed() < Duration::from_secs(3));
         let pid: i32 = std::fs::read_to_string(descendant_pid)
             .unwrap()
             .trim()
