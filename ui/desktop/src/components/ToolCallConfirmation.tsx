@@ -26,7 +26,7 @@ type ToolConfirmationData = Extract<ActionRequired['data'], { actionType: 'toolC
 
 /** `developer__text_editor` → `Text Editor`. */
 function friendlyToolName(toolName: string): string {
-  return toolIdentifierToTitleCase(toolName.substring(toolName.lastIndexOf('__') + 2));
+  return toolIdentifierToTitleCase(toolName.split('__').pop() ?? toolName);
 }
 
 interface ToolConfirmationProps {

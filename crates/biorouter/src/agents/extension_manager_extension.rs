@@ -1104,7 +1104,9 @@ impl ExtensionManagerClient {
                 exact availableTools or removedTools; call an available tool directly by that name,
                 and never call a removed tool unless the extension is attached again.
                 Use browse/search to obtain an exact registry id, then install_extension when the
-                extension is not installed at all. Never provide a download URL or install
+                extension is not installed at all. An install result with state attached also names
+                immediately callable availableTools; state installed means attach it before use.
+                Never provide a download URL or install
                 one by running shell commands, and NEVER ask the user to type an API key,
                 password or token into the chat — install_extension opens Biorouter's own
                 approval and credential dialogs, and a credential in a chat message cannot configure anything.
@@ -1293,6 +1295,71 @@ impl ExtensionManagerClient {
         result
     }
 
+    async fn install_report_json(
+        &self,
+        report: &crate::extension_install::InstallReport,
+        cap: crate::privacy::CallCapability,
+    ) -> String {
+        use crate::extension_install::InstallState;
+
+        let mut payload = serde_json::to_value(report).unwrap_or_else(|_| serde_json::json!({}));
+        let Some(fields) = payload.as_object_mut() else {
+            return "{}".to_owned();
+        };
+        match &report.state {
+            InstallState::Attached => {
+                let mut available_tools = Vec::new();
+                if let (Some(extension_name), Some(manager)) = (
+                    report.extension_name.as_deref(),
+                    self.context
+                        .extension_manager
+                        .as_ref()
+                        .and_then(|weak| weak.upgrade()),
+                ) {
+                    let extension_key = crate::config::extensions::name_to_key(extension_name);
+                    if let Ok(tools) = manager
+                        .get_prefixed_tools_for_extension_and_capability(&extension_key, cap)
+                        .await
+                    {
+                        available_tools = tools
+                            .into_iter()
+                            .map(|tool| tool.name.to_string())
+                            .collect();
+                        available_tools.sort();
+                    }
+                }
+                fields.insert(
+                    "availableTools".to_owned(),
+                    serde_json::json!(available_tools),
+                );
+                fields.insert(
+                    "toolAvailability".to_owned(),
+                    serde_json::json!("immediate"),
+                );
+                fields.insert(
+                    "guidance".to_owned(),
+                    serde_json::json!(
+                        "The availableTools are callable now in this turn. Use the exact tool name needed for the user's task."
+                    ),
+                );
+            }
+            InstallState::Installed => {
+                fields.insert(
+                    "toolAvailability".to_owned(),
+                    serde_json::json!("notAttached"),
+                );
+                fields.insert(
+                    "guidance".to_owned(),
+                    serde_json::json!(
+                        "The package is installed but its tools are not callable in this chat. Attach the extension before using them."
+                    ),
+                );
+            }
+            _ => {}
+        }
+        serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_owned())
+    }
+
     /// Install a marketplace extension, asking the *user* for any credentials.
     ///
     /// ⚠ **This tool exists so that the model never has to ask for a secret.**
@@ -1374,7 +1441,7 @@ impl ExtensionManagerClient {
             )
             .await;
 
-        let json = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
+        let json = self.install_report_json(&report, cap).await;
         match &report.state {
             InstallState::NeedsCredentials { .. } | InstallState::Cancelled => {
                 // Not an error: a person declined or could not be asked. Say so
@@ -1744,7 +1811,7 @@ impl ExtensionManagerClient {
             }),
             Tool::new(
                 INSTALL_EXTENSION_TOOL_NAME.to_owned(),
-                "Install a BAAM extension by its exact trusted registry id. Biorouter resolves the download URL itself and requires the user's proof-backed approval before any package installation."
+                "Install a BAAM extension by its exact trusted registry id. Biorouter resolves the download URL itself and requires the user's proof-backed approval. A result attached to this chat lists exact availableTools that are callable immediately; an installed-only result must be attached before use."
                     .to_owned(),
                 Arc::new(
                     serde_json::to_value(schema_for!(InstallExtensionParams))
@@ -2217,6 +2284,8 @@ mod tests {
             .expect("Extension Manager instructions");
         assert!(instructions.contains("only when they appear in the current tool catalog"));
         assert!(instructions.contains("omitted when no loaded extension supports resources"));
+        assert!(instructions.contains("immediately callable availableTools"));
+        assert!(instructions.contains("state installed means attach it before use"));
     }
 
     fn package_entry(name: &str, install_dir: &std::path::Path) -> ExtensionEntry {
@@ -3364,6 +3433,93 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("callable now in this turn"));
+    }
+
+    #[tokio::test]
+    async fn attached_install_result_names_every_tool_that_is_immediately_callable() {
+        let (_dir, em, client) = a_live_tool_client();
+        let context = PlatformExtensionContext {
+            extension_manager: Some(std::sync::Arc::downgrade(&em)),
+            session_manager: em.get_context().session_manager.clone(),
+        };
+        let config = ExtensionConfig::stdio(
+            "publicfixture",
+            "unused-fixture-command",
+            "ordinary public install fixture",
+            30_u64,
+        );
+        em.add_client(
+            config.key(),
+            config,
+            std::sync::Arc::new(
+                ExtensionManagerClient::new(context).expect("fixture client builds"),
+            ),
+            None,
+            None,
+        )
+        .await;
+        let report = crate::extension_install::InstallReport {
+            install_id: "install-fixture".to_owned(),
+            state: crate::extension_install::InstallState::Attached,
+            extension_name: Some("publicfixture".to_owned()),
+            display_name: Some("Public Fixture".to_owned()),
+            configured_keys: Vec::new(),
+            skills: Vec::new(),
+            enabled: true,
+        };
+        let cap = CallCapability::for_test(ProviderTier::Public, true);
+        let payload: serde_json::Value =
+            serde_json::from_str(&client.install_report_json(&report, cap).await).unwrap();
+        let reported = payload["availableTools"]
+            .as_array()
+            .expect("attached install reports an exact tool roster")
+            .iter()
+            .map(|name| name.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        let mut actual = em
+            .get_prefixed_tools_for_extension_and_capability("publicfixture", cap)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect::<Vec<_>>();
+        actual.sort();
+
+        assert_eq!(reported, actual);
+        assert!(!reported.is_empty(), "the fixture must expose real tools");
+        assert_eq!(payload["state"]["state"], "attached");
+        assert_eq!(payload["toolAvailability"], "immediate");
+    }
+
+    #[tokio::test]
+    async fn installed_but_unattached_report_does_not_claim_tools_are_callable() {
+        let (_dir, _em, client) = a_live_tool_client();
+        let report = crate::extension_install::InstallReport {
+            install_id: "install-fixture".to_owned(),
+            state: crate::extension_install::InstallState::Installed,
+            extension_name: Some("publicfixture".to_owned()),
+            display_name: Some("Public Fixture".to_owned()),
+            configured_keys: Vec::new(),
+            skills: Vec::new(),
+            enabled: false,
+        };
+        let payload: serde_json::Value = serde_json::from_str(
+            &client
+                .install_report_json(
+                    &report,
+                    CallCapability::for_test(ProviderTier::Public, true),
+                )
+                .await,
+        )
+        .unwrap();
+
+        assert_eq!(payload["state"]["state"], "installed");
+        assert_eq!(payload["toolAvailability"], "notAttached");
+        assert!(payload.get("availableTools").is_none());
+        assert!(payload["guidance"]
+            .as_str()
+            .unwrap()
+            .contains("Attach the extension"));
     }
 
     #[tokio::test]

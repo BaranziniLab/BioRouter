@@ -86,6 +86,12 @@ describe('ToolCallConfirmation (BR-63)', () => {
     expect(screen.getByText('Install Marketplace Skill')).toBeInTheDocument();
   });
 
+  it('keeps the first character of an unprefixed tool name', () => {
+    renderCard({ toolName: 'install_extension' });
+    expect(screen.getByText('Install Extension')).toBeInTheDocument();
+    expect(screen.queryByText('Nstall Extension')).not.toBeInTheDocument();
+  });
+
   it('shows the resolved shell command so a destructive one is visible before approval', () => {
     renderCard({
       toolName: 'developer__shell',
