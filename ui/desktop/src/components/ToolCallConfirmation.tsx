@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { toolIdentifierToTitleCase } from '../utils';
 import PermissionModal from './settings/permission/PermissionModal';
 import { ChevronRight, Lock, Check, X, AlertTriangle } from './icons/app-icons';
@@ -56,6 +56,9 @@ export default function ToolConfirmation({
   const [status, setStatus] = useState(storedState?.status ?? 'unknown');
   const [actionDisplay, setActionDisplay] = useState(storedState?.actionDisplay ?? '');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [confirmationError, setConfirmationError] = useState('');
+  const sendingRef = useRef(false);
 
   // Sync internal state with stored state and props
   useEffect(() => {
@@ -84,6 +87,10 @@ export default function ToolConfirmation({
   }, [isClicked, clicked, status, toolName, toolConfirmationId]);
 
   const handleButtonClick = async (newStatus: string) => {
+    if (sendingRef.current || clicked || isClicked || isCancelledMessage) return;
+    sendingRef.current = true;
+    setIsSending(true);
+    setConfirmationError('');
     let newActionDisplay;
 
     if (newStatus === ALWAYS_ALLOW) {
@@ -96,18 +103,6 @@ export default function ToolConfirmation({
       newActionDisplay = 'denied';
     }
 
-    // Update local state
-    setClicked(true);
-    setStatus(newStatus);
-    setActionDisplay(newActionDisplay);
-
-    // Store in global state for persistence across navigation
-    toolConfirmationState.set(toolConfirmationId, {
-      clicked: true,
-      status: newStatus,
-      actionDisplay: newActionDisplay,
-    });
-
     try {
       const response = await confirmToolAction({
         headers: await userActionHeaders(),
@@ -118,11 +113,37 @@ export default function ToolConfirmation({
           principalType: 'Tool',
         },
       });
-      if (response.error) {
-        console.error('Failed to confirm tool action:', response.error);
+      const acknowledgement = response.data;
+      const acknowledgedStatus =
+        acknowledgement && typeof acknowledgement === 'object' && 'status' in acknowledgement
+          ? acknowledgement.status
+          : undefined;
+      if (
+        response.error ||
+        (acknowledgedStatus !== 'delivered' &&
+          acknowledgedStatus !== 'already_resolved' &&
+          acknowledgedStatus !== 'unknown')
+      ) {
+        setConfirmationError('Could not confirm your decision. Try again.');
+        return;
       }
-    } catch (err) {
-      console.error('Error confirming tool action:', err);
+      const resolvedStatus =
+        acknowledgedStatus === 'delivered' ? newStatus : acknowledgedStatus;
+      if (acknowledgedStatus === 'already_resolved') newActionDisplay = 'already answered';
+      if (acknowledgedStatus === 'unknown') newActionDisplay = 'no longer available';
+      setClicked(true);
+      setStatus(resolvedStatus);
+      setActionDisplay(newActionDisplay);
+      toolConfirmationState.set(toolConfirmationId, {
+        clicked: true,
+        status: resolvedStatus,
+        actionDisplay: newActionDisplay,
+      });
+    } catch {
+      setConfirmationError('Could not confirm your decision. Try again.');
+    } finally {
+      sendingRef.current = false;
+      setIsSending(false);
     }
   };
 
@@ -158,7 +179,7 @@ export default function ToolConfirmation({
           // Resolved state — one consistent row inside the same card.
           <div className="flex items-center justify-between px-4 py-3">
             <div className="flex items-center gap-2 text-sm text-text-default">
-              {status === 'deny' ? (
+              {status === 'deny' || status === 'unknown' || status === 'already_resolved' ? (
                 <X className="h-4 w-4 shrink-0 text-text-muted" />
               ) : (
                 <Check className="h-4 w-4 shrink-0 text-text-muted" />
@@ -198,23 +219,42 @@ export default function ToolConfirmation({
             )}
 
             <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" variant="default" onClick={() => handleButtonClick(ALLOW_ONCE)}>
+              <Button
+                type="button"
+                size="sm"
+                variant="default"
+                disabled={isSending}
+                onClick={() => handleButtonClick(ALLOW_ONCE)}
+              >
                 Allow Once
               </Button>
               {/* Only offer "Always Allow" when there's no security finding. */}
               {!prompt && (
                 <Button
+                  type="button"
                   size="sm"
                   variant="secondary"
+                  disabled={isSending}
                   onClick={() => handleButtonClick(ALWAYS_ALLOW)}
                 >
                   Always Allow
                 </Button>
               )}
-              <Button size="sm" variant="outline" onClick={() => handleButtonClick(DENY)}>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={isSending}
+                onClick={() => handleButtonClick(DENY)}
+              >
                 Deny
               </Button>
             </div>
+            {confirmationError && (
+              <p role="alert" className="mt-2 text-sm text-text-warning">
+                {confirmationError}
+              </p>
+            )}
           </div>
         )}
       </div>

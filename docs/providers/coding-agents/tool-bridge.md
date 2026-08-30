@@ -117,6 +117,14 @@ step. Native mid-request catalog refresh is a future optimization, not a reason 
 bridge or widen an existing grant. User-driven changes made outside the manager during an active
 provider request still require separate live validation.
 
+That external-toggle gap is also visible in the source: the provider wake loop listens for
+output, cancellation, elicitation and steering, but not catalog changes. The GUI can update an
+agent's Extension Manager while the request still holds its original prompt and tools. Dispatch
+revalidates revoked tools, but that refusal is not a refreshed prompt. Closing this gap needs a
+coordinated, tool-safe refresh boundary; restarting from a bare catalog event could interrupt
+an admitted operation before its result is recorded. This remains a required runtime fix and
+live test, not a completed prompt-audit item.
+
 Regression coverage includes `mirrored_catalog`, `bridged_catalog_mutation`, the direct-provider
 catalog refresh test, and the Codex MCP-error flag test. Before declaring end-to-end success,
 run the self-test's dynamic-extension scenario in the isolated development app: start detached,
@@ -144,6 +152,15 @@ The installed `anti-ai-writing` skill was hot-loaded, read and applied to a synt
 decision memo, then hot-unloaded in the same user task. The memo correctly compared $4 versus
 $4.50 per daily minute saved and the $60 incremental cost for 10 extra daily minutes. The skill
 count fell from four to three after unload. Permanent package removal remains a separate check.
+
+A subsequent removal returned `status: removed`; the desktop displayed “allowed once” without
+the test operator clicking approval. The approval actor still needs confirmation, so that run
+does not prove the intended cancellation scenario. Its read-only follow-up did prove removal:
+installed-skill search returned zero matches, one exact `loadSkill` call failed with “Skill not
+found”, the picker showed “No skills found”, and neither the package directory nor its removal
+staging directory remained. Spoke stayed installed. The chat retained its inert
+`workspace_skills.v1.remove` entry for the uninstalled skill and its historical transcript; this
+is not a zero-residue purge of prior preferences or records.
 
 Codex's standard MCP result object is decoded as a complete `CallToolResult`, not serialized
 into a text block containing another result. This preserves content types, audience annotations,
@@ -185,7 +202,7 @@ A grant is a snapshot taken when the provider request starts, not a handle back 
 called from inside the agent's own stack and cannot hold a reference to it, and a grant that
 outlived its turn would be a capability with no owner. The snapshot carries the session, the
 permission mode, the extension manager, the inspection manager, the conversation, the already
-filtered tool set, the turn's privacy capability, **the turn's own cancellation token**, the
+filtered tool set, the turn's privacy capability, a request-scoped child of the turn's cancellation token, the
 session's hooks manager, and the app's secret vault when there is one. The last three are there
 because a bridged call is a tool call: without the token nothing the child started is reachable by
 Stop, without the hooks manager a `PreToolUse` rewrite cannot be collected, and without the vault a
@@ -200,7 +217,7 @@ Stop, without the hooks manager a `PreToolUse` rewrite cannot be collected, and 
 | `PreToolUse` hook rewrites | Applied and then **re-judged**. The hooks have already run inside the inspector pass, so their `updatedInput` is collected and applied, and every inspector except the hook one re-runs on the rewritten arguments — otherwise a hook would be a hole straight through the security and permission gates, which only ever saw what the child's model asked for. The rewrite is taken scoped to this call's own request id, because the staging buffer is per session and bridged calls run concurrently. |
 | Host file containment | The built-in policy and admitted extension configuration determine the surface. The Developer text editor enforces its bound working-directory jail; granting an ordinary extension is not an OS sandbox for that extension's process. There is no process-global Auto-mode relaxation for another route or session to inherit. |
 | `.biorouterignore`, vault, session working directory | Whatever BioRouter's dispatcher and inspectors already enforce, because BioRouter is the process executing the tool. A `{{vault:NAME}}` in the arguments is resolved on the leaf dispatch path, after the call has been judged and immediately before it runs — the same position the agent's own path uses, so the inspectors and the user's hooks never see the decrypted secret. |
-| Cancellation | The grant carries the turn's own token and hands it to `dispatch_tool_call`. Stop therefore reaches parking Workspace/Knowledge calls; delegated background children have their own visible session and cancellation route so they can survive one provider invocation while the parent continues supervising them. |
+| Cancellation | The grant passes its request-scoped child token to `dispatch_tool_call`. Both Stop and lease revocation therefore reach parking Workspace/Knowledge calls; delegated background children have their own visible session and cancellation route so they can survive one provider invocation while the parent continues supervising them. |
 
 ⚠ **The inspector pass is why this is not a thin proxy onto `ExtensionManager`.**
 `POST /agent/call_tool` *is* that thin proxy, and its own comment records the cost: it bypasses the
@@ -307,6 +324,30 @@ Every park mints its own uuid and its own `oneshot`. A decision for an id nobody
 dropped and reported as `Unknown`, never re-aimed at whichever call happens to be parked now. Both
 child CLIs issue parallel `tools/call`, so this is the ordinary case rather than a corner one — it
 is BR-62's property for the agent's own path, extended to this one.
+
+### Nested approvals end with their provider request
+
+Manager tools can park their own mandatory approval after the bridge's inspection pass. Those
+inner waits do not carry the bridge nonce, so cancelling only nonce-owned cards left them alive
+after the provider request ended. An issued bridge now owns a child of the user turn's
+cancellation token. Revoking its lease cancels that child, including nested waits and dispatched
+tools, without cancelling the parent turn or a successor request. A retained grant also refuses
+new calls after revocation, before inspection and again before dispatch.
+
+The nested-approval and request-isolation tests failed before this change. Coverage also checks
+that a retained grant cannot dispatch after lease drop, and the existing real-process
+cancellation test continues to exercise the dispatch wiring.
+
+### Approval labels require acknowledgement
+
+The desktop disables decision buttons while posting an answer and only records the requested
+decision after the server returns `delivered`. Network failures, missing acknowledgements and
+unavailable user-action proof leave the card retryable without storing an approval. Expired
+requests and decisions already answered on another surface show neutral terminal states, not
+the approval the current click attempted. Five acknowledgement regressions failed before the
+change; all 22 confirmation-card tests then passed, including duplicate-click, retry and
+navigation coverage. This fixes misleading presentation, not the unresolved attribution of
+the live package-removal approval described above.
 
 ### Secret-safe requests
 

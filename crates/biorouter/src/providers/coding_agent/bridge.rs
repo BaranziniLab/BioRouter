@@ -151,29 +151,10 @@ pub struct BridgeGrant {
     tools: Vec<Tool>,
     /// Conversation snapshot the inspectors read for context.
     conversation: Conversation,
-    /// **The turn's own** cancel token, not one made here.
-    ///
-    /// Every cancellation mechanism Biorouter has reaches a running tool through
-    /// the token the agent threads down from the turn: issue #72's nested-shell
-    /// kill, `AppState::cancel_turn`, and the `TurnGuard` that fires when a
-    /// websocket drops. `ExtensionManager::dispatch_tool_call` takes the token by
-    /// value and has no other way to learn that the turn is over, so a token
-    /// constructed at the call site is a token nobody holds and nobody will ever
-    /// cancel — the tool runs to completion whatever the user does.
-    ///
-    /// That failure is *worse* on this path than on the agent's own, not merely
-    /// equal to it. A bridged call is made by a child process running its own
-    /// loop: the user pressing stop tears down the turn and the child, but a
-    /// `developer__shell` the child had already started would keep running,
-    /// detached, with nothing left to report to. So the token is threaded in from
-    /// `Agent::issue_tool_bridge`, which is called from the reply loop where the
-    /// turn's token is in scope.
-    ///
-    /// `Option`, because the agent's own token is `Option<CancellationToken>` —
-    /// a turn driven by something that never cancels (a workflow step, a test)
-    /// genuinely has none. `unwrap_or_default()` at dispatch, exactly as
-    /// `Agent::dispatch_tool_call` does with the same value, so "no token" keeps
-    /// meaning "never cancelled" rather than becoming an error.
+    /// Inherits the user turn's cancellation. On issuance, the lease owns a
+    /// child token so ending one provider request also stops its tools and
+    /// nested approval waits without cancelling the task's next request.
+    /// Unissued test grants may have no token; every issued grant has one.
     cancel: Option<CancellationToken>,
     /// The session's hooks, so a PreToolUse rewrite this grant's own inspection
     /// pass produced can actually be collected.
@@ -421,11 +402,8 @@ impl BridgeGrant {
     /// every ToolInspector". A child agent's tool calls are model-initiated and
     /// must be inspected exactly like the parent model's.
     ///
-    /// A call the permission inspector routes to `needs_approval` is **refused**
-    /// rather than parked. The child is blocked on an HTTP response and there is
-    /// no channel through which a human could answer it, so waiting would stall
-    /// the turn until the timeout; refusing tells the child's model to ask the
-    /// user in words. Refusing is also the fail-safe direction.
+    /// A call routed to `needs_approval` parks on the session's trusted approval
+    /// card. Cancellation, lease revocation and the approval deadline release it.
     ///
     /// BR-19's PreToolUse **rewrite** is honoured here, and the sequence below is
     /// `Agent::inspect_and_gate_tool_requests`' sequence rather than a shortened
@@ -463,6 +441,7 @@ impl BridgeGrant {
         request_id: String,
         call: CallToolRequestParams,
     ) -> Result<CallToolResult, String> {
+        self.require_live_request()?;
         let name = call.name.to_string();
         if !self
             .tools
@@ -535,6 +514,7 @@ impl BridgeGrant {
             self.apply_vault(&mut call);
         }
 
+        self.require_live_request()?;
         self.dispatcher
             .dispatch(
                 &self.session.id,
@@ -543,6 +523,19 @@ impl BridgeGrant {
                 self.dispatch_cancel_token(),
             )
             .await
+    }
+
+    fn require_live_request(&self) -> Result<(), String> {
+        if self
+            .cancel
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(
+                "This coding-agent request ended; its tools are no longer available.".into(),
+            );
+        }
+        Ok(())
     }
 
     /// Put a `needs_approval` call to a person, and park until they answer.
@@ -878,6 +871,7 @@ pub fn base_url() -> Option<String> {
 pub struct BridgeLease {
     nonce: String,
     url: String,
+    cancel: CancellationToken,
 }
 
 impl BridgeLease {
@@ -892,6 +886,7 @@ impl Drop for BridgeLease {
         if let Ok(mut guard) = GRANTS.write() {
             guard.remove(&self.nonce);
         }
+        self.cancel.cancel();
         // #107: revoking the capability is not enough. A call parked on a human
         // is holding the child's HTTP request open, and the turn that would have
         // answered it is over — normally, by panic, or by an early return. Left
@@ -912,6 +907,12 @@ impl Drop for BridgeLease {
 /// to serve it.
 pub fn issue(mut grant: BridgeGrant) -> Option<BridgeLease> {
     let base = base_url()?;
+    let cancel = grant
+        .cancel
+        .as_ref()
+        .map(CancellationToken::child_token)
+        .unwrap_or_default();
+    grant.cancel = Some(cancel.clone());
     // 32 hex characters from a v4 uuid: unguessable, and the whole credential.
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let url = format!("{}/tool_bridge/{nonce}", base.trim_end_matches('/'));
@@ -921,7 +922,7 @@ pub fn issue(mut grant: BridgeGrant) -> Option<BridgeLease> {
     // parks when the turn ends.
     grant.nonce = nonce.clone();
     GRANTS.write().ok()?.insert(nonce.clone(), Arc::new(grant));
-    Some(BridgeLease { nonce, url })
+    Some(BridgeLease { nonce, url, cancel })
 }
 
 /// Look up a grant by the nonce in the request path.
@@ -1035,6 +1036,118 @@ mod tests {
             lookup(&nonce).is_none(),
             "the grant must not outlive its lease"
         );
+    }
+
+    #[tokio::test]
+    async fn lease_cancellation_is_scoped_to_one_provider_request() {
+        publish_base_url("http://127.0.0.1:65535");
+        let turn = CancellationToken::new();
+        let first = issue(grant_cancelled_by(Some(turn.clone()))).unwrap();
+        let second = issue(grant_cancelled_by(Some(turn.clone()))).unwrap();
+        let first_grant = lookup(first.url().rsplit('/').next().unwrap()).unwrap();
+        let second_grant = lookup(second.url().rsplit('/').next().unwrap()).unwrap();
+
+        drop(first);
+        assert!(first_grant.dispatch_cancel_token().is_cancelled());
+        assert!(
+            !turn.is_cancelled(),
+            "refresh must not cancel the user task"
+        );
+        assert!(!second_grant.dispatch_cancel_token().is_cancelled());
+        turn.cancel();
+        assert!(second_grant.dispatch_cancel_token().is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn a_retained_grant_cannot_start_a_call_after_its_lease_ends() {
+        publish_base_url("http://127.0.0.1:65535");
+        let recorder = Arc::new(RecordingBridgeDispatch::default());
+        let mut grant = dummy_grant();
+        grant.dispatcher = recorder.clone();
+        grant.inspections = Arc::new(inspections_with(&grant.hooks, false));
+        let lease = issue(grant).unwrap();
+        let retained = lookup(lease.url().rsplit('/').next().unwrap()).unwrap();
+        drop(lease);
+
+        let error = retained
+            .call(CallToolRequestParams {
+                name: "developer__shell".into(),
+                arguments: Some(serde_json::Map::new()),
+                meta: None,
+                task: None,
+            })
+            .await
+            .expect_err("an expired request must not dispatch");
+        assert!(error.contains("request ended"), "{error}");
+        assert!(recorder.calls.lock().unwrap().is_empty());
+    }
+
+    struct NestedApprovalDispatch;
+
+    #[async_trait::async_trait]
+    impl BridgeToolDispatch for NestedApprovalDispatch {
+        async fn dispatch(
+            &self,
+            session_id: &str,
+            call: CallToolRequestParams,
+            _capability: CallCapability,
+            cancel: CancellationToken,
+        ) -> Result<CallToolResult, String> {
+            let parked = PendingUserActions::global().park(
+                Some(session_id),
+                None,
+                UserActionRequest::ToolApproval(ToolApprovalRequest {
+                    tool_name: call.name.to_string(),
+                    arguments: call.arguments.unwrap_or_default(),
+                    prompt: Some("Approve synthetic package removal".into()),
+                    risk: None,
+                    preview: None,
+                    requires_user_proof: true,
+                }),
+            );
+            let outcome = parked.wait(Duration::from_secs(570), Some(&cancel)).await;
+            Err(outcome.refusal_detail().into())
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_a_lease_cancels_approvals_created_inside_manager_tools() {
+        publish_base_url("http://127.0.0.1:65535");
+        let session_id = format!("nested-approval-{}", uuid::Uuid::new_v4());
+        let mut grant = dummy_grant();
+        grant.session = session_named(&session_id);
+        grant.dispatcher = Arc::new(NestedApprovalDispatch);
+        grant.inspections = Arc::new(inspections_with(&grant.hooks, false));
+        grant.tools = vec![Tool::new(
+            "skills__removeSkillPackage",
+            "synthetic manager",
+            serde_json::Map::new(),
+        )];
+        let lease = issue(grant).unwrap();
+        let grant = lookup(lease.url().rsplit('/').next().unwrap()).unwrap();
+        let mut running = tokio::spawn(async move {
+            grant
+                .call(CallToolRequestParams {
+                    name: "skills__removeSkillPackage".into(),
+                    arguments: Some(serde_json::Map::new()),
+                    meta: None,
+                    task: None,
+                })
+                .await
+        });
+        let id = approval_card_id(&session_id).await;
+        drop(lease);
+        let ended = tokio::time::timeout(Duration::from_millis(250), &mut running).await;
+        if ended.is_err() {
+            running.abort();
+            let _ = running.await;
+        }
+        let refusal = ended
+            .expect("a nested approval must end with its bridge, not its TTL")
+            .expect("no panic")
+            .expect_err("no mutation was approved");
+        assert!(refusal.contains("cancelled"), "{refusal}");
+        assert!(!PendingUserActions::global().is_pending(&id));
     }
 
     /// The nonce is the credential, so it must be long, unguessable and unique per

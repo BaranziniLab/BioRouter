@@ -8,7 +8,7 @@ import ToolConfirmation from './ToolCallConfirmation';
 import type { ActionRequired, ToolPreview, ToolRisk } from '../api';
 
 const mocks = vi.hoisted(() => ({
-  confirmToolAction: vi.fn().mockResolvedValue({ error: null }),
+  confirmToolAction: vi.fn().mockResolvedValue({ data: { status: 'delivered' } }),
   userActionHeaders: vi.fn().mockResolvedValue({ 'X-User-Action': 'proof-of-user' }),
 }));
 
@@ -60,11 +60,109 @@ function renderCard(overrides: Parameters<typeof actionRequired>[0] = {}) {
 }
 
 beforeEach(() => {
-  mocks.confirmToolAction.mockClear();
-  mocks.userActionHeaders.mockClear();
+  mocks.confirmToolAction.mockReset().mockResolvedValue({ data: { status: 'delivered' } });
+  mocks.userActionHeaders.mockReset().mockResolvedValue({ 'X-User-Action': 'proof-of-user' });
 });
 
 describe('ToolCallConfirmation (BR-63)', () => {
+  it('waits for the server acknowledgement and prevents duplicate decisions', async () => {
+    let finish!: (value: unknown) => void;
+    mocks.confirmToolAction.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+    );
+    renderCard();
+    const allow = screen.getByRole('button', { name: 'Allow Once' });
+    fireEvent.click(allow);
+    await waitFor(() => expect(mocks.confirmToolAction).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/is allowed once/)).not.toBeInTheDocument();
+    expect(allow).toBeDisabled();
+    fireEvent.click(allow);
+    expect(mocks.confirmToolAction).toHaveBeenCalledTimes(1);
+    finish({ data: { status: 'delivered' } });
+    expect(await screen.findByText('Shell is allowed once')).toBeInTheDocument();
+  });
+
+  it.each([
+    ['HTTP failure', { error: { message: 'Forbidden' } }],
+    ['missing acknowledgement', { data: {} }],
+  ])('keeps a failed decision retryable after %s', async (_name, result) => {
+    mocks.confirmToolAction.mockResolvedValueOnce(result);
+    renderCard();
+    fireEvent.click(screen.getByRole('button', { name: 'Allow Once' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not confirm your decision. Try again.'
+    );
+    expect(screen.queryByText(/is allowed once/)).not.toBeInTheDocument();
+    const allow = screen.getByRole('button', { name: 'Allow Once' });
+    expect(allow).toBeEnabled();
+    fireEvent.click(allow);
+    expect(await screen.findByText('Shell is allowed once')).toBeInTheDocument();
+  });
+
+  it('does not claim approval when another surface answered first', async () => {
+    mocks.confirmToolAction.mockResolvedValueOnce({
+      data: { status: 'already_resolved', decision: 'denied' },
+    });
+    renderCard();
+    fireEvent.click(screen.getByRole('button', { name: 'Allow Once' }));
+    expect(await screen.findByText('Shell is already answered')).toBeInTheDocument();
+    expect(screen.queryByText(/is allowed once/)).not.toBeInTheDocument();
+  });
+
+  it('keeps a network failure retryable without persisting an approval', async () => {
+    mocks.confirmToolAction.mockRejectedValueOnce(new Error('Network unavailable'));
+    const content = actionRequired({});
+    const card = () => (
+      <ToolConfirmation
+        sessionId="s1"
+        isCancelledMessage={false}
+        isClicked={false}
+        actionRequiredContent={content}
+      />
+    );
+    const first = render(card());
+    fireEvent.click(screen.getByRole('button', { name: 'Allow Once' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not confirm your decision');
+    first.unmount();
+    render(card());
+    expect(screen.queryByText(/is allowed once/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Allow Once' }));
+    expect(await screen.findByText('Shell is allowed once')).toBeInTheDocument();
+  });
+
+  it('does not send a decision if proof of the user action cannot be obtained', async () => {
+    mocks.userActionHeaders.mockRejectedValueOnce(new Error('Proof unavailable'));
+    renderCard();
+    fireEvent.click(screen.getByRole('button', { name: 'Allow Once' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not confirm your decision');
+    expect(mocks.confirmToolAction).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Allow Once' })).toBeEnabled();
+  });
+
+  it.each([
+    ['Allow Once', 'allow_once', 'allowed once'],
+    ['Always Allow', 'always_allow', 'always allowed'],
+    ['Deny', 'deny', 'denied'],
+  ])('records the acknowledged %s decision', async (button, action, label) => {
+    renderCard();
+    fireEvent.click(screen.getByRole('button', { name: button }));
+    expect(await screen.findByText(`Shell is ${label}`)).toBeInTheDocument();
+    expect(mocks.confirmToolAction).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.objectContaining({ action }) })
+    );
+  });
+
+  it('shows an expired request as unavailable rather than approved', async () => {
+    mocks.confirmToolAction.mockResolvedValueOnce({ data: { status: 'unknown' } });
+    renderCard();
+    fireEvent.click(screen.getByRole('button', { name: 'Allow Once' }));
+    expect(await screen.findByText('Shell is no longer available')).toBeInTheDocument();
+    expect(screen.queryByText(/is allowed once/)).not.toBeInTheDocument();
+  });
+
   it('carries proof of the user click when it answers an authorization card', async () => {
     renderCard({ toolName: 'extensionmanager__install_extension' });
     fireEvent.click(screen.getByRole('button', { name: 'Allow Once' }));
