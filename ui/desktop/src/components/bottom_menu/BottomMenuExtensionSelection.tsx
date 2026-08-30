@@ -71,6 +71,7 @@ export const BottomMenuExtensionSelection = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [sessionExtensions, setSessionExtensions] = useState<ExtensionConfig[]>([]);
+  const [sessionExtensionsLoaded, setSessionExtensionsLoaded] = useState(false);
   const [hubUpdateTrigger, setHubUpdateTrigger] = useState(0);
   const [sessionOverrides, setSessionOverrides] = useState<Map<string, boolean>>(new Map());
   const [pendingExtensionNames, setPendingExtensionNames] = useState<Set<string>>(new Set());
@@ -110,12 +111,16 @@ export const BottomMenuExtensionSelection = ({
 
   useEffect(() => {
     sessionToggleChainsRef.current.clear();
+    setSessionExtensions([]);
+    setSessionExtensionsLoaded(false);
     setSessionOverrides(new Map());
     setPendingExtensionNames(new Set());
   }, [sessionId]);
 
   // Fetch session-specific extensions or use global defaults
   useEffect(() => {
+    let current = true;
+
     const fetchExtensions = async () => {
       if (!sessionId) {
         return;
@@ -126,8 +131,9 @@ export const BottomMenuExtensionSelection = ({
           path: { session_id: sessionId },
         });
 
-        if (response.data?.extensions) {
+        if (current && response.data?.extensions) {
           setSessionExtensions(response.data.extensions);
+          setSessionExtensionsLoaded(true);
         }
       } catch (error) {
         console.error('Failed to fetch session extensions:', error);
@@ -135,6 +141,10 @@ export const BottomMenuExtensionSelection = ({
     };
 
     fetchExtensions();
+
+    return () => {
+      current = false;
+    };
   }, [sessionId, isOpen, refreshTrigger]);
 
   const handleToggle = useCallback(
@@ -193,7 +203,10 @@ export const BottomMenuExtensionSelection = ({
         try {
           const response = await getSessionExtensions({ path: { session_id: sessionId } });
           if (sessionToggleChainsRef.current.get(name) !== operation) return;
-          if (response.data?.extensions) setSessionExtensions(response.data.extensions);
+          if (response.data?.extensions) {
+            setSessionExtensions(response.data.extensions);
+            setSessionExtensionsLoaded(true);
+          }
         } catch {
           toastService.error({
             title: 'Extension refresh error',
@@ -331,7 +344,7 @@ export const BottomMenuExtensionSelection = ({
     }
 
     const enabled = new Set(
-      sessionExtensions.length > 0
+      sessionExtensionsLoaded
         ? sessionExtensions.map((ext) => ext.name)
         : allExtensions.filter((ext) => ext.enabled).map((ext) => ext.name)
     );
@@ -342,7 +355,14 @@ export const BottomMenuExtensionSelection = ({
     return [...enabled].filter((name) => !isShippedCapability(name)).length;
     // hubUpdateTrigger re-reads the hub override map, which mutates in place.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allExtensions, sessionExtensions, sessionOverrides, isHubView, hubUpdateTrigger]);
+  }, [
+    allExtensions,
+    sessionExtensions,
+    sessionExtensionsLoaded,
+    sessionOverrides,
+    isHubView,
+    hubUpdateTrigger,
+  ]);
 
   const visibleEnabledCount = useMemo(
     () => toggleableExtensions.filter((ext) => ext.enabled).length,
@@ -397,7 +417,10 @@ export const BottomMenuExtensionSelection = ({
         )
       );
       const response = await getSessionExtensions({ path: { session_id: sessionId } });
-      if (response.data?.extensions) setSessionExtensions(response.data.extensions);
+      if (response.data?.extensions) {
+        setSessionExtensions(response.data.extensions);
+        setSessionExtensionsLoaded(true);
+      }
 
       toastService.success({
         title: 'Extensions updated',

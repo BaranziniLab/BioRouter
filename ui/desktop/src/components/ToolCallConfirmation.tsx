@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { snakeToTitleCase } from '../utils';
+import { toolIdentifierToTitleCase } from '../utils';
 import PermissionModal from './settings/permission/PermissionModal';
 import { ChevronRight, Lock, Check, X, AlertTriangle } from './icons/app-icons';
 import { confirmToolAction, ActionRequired } from '../api';
@@ -26,7 +26,7 @@ type ToolConfirmationData = Extract<ActionRequired['data'], { actionType: 'toolC
 
 /** `developer__text_editor` → `Text Editor`. */
 function friendlyToolName(toolName: string): string {
-  return snakeToTitleCase(toolName.substring(toolName.lastIndexOf('__') + 2));
+  return toolIdentifierToTitleCase(toolName.substring(toolName.lastIndexOf('__') + 2));
 }
 
 interface ToolConfirmationProps {

@@ -81,6 +81,11 @@ describe('ToolCallConfirmation (BR-63)', () => {
     expect(screen.getByText('Text Editor')).toBeInTheDocument();
   });
 
+  it('separates camel-case manager names in authorization cards', () => {
+    renderCard({ toolName: 'skills__installMarketplaceSkill' });
+    expect(screen.getByText('Install Marketplace Skill')).toBeInTheDocument();
+  });
+
   it('shows the resolved shell command so a destructive one is visible before approval', () => {
     renderCard({
       toolName: 'developer__shell',
@@ -170,11 +175,7 @@ describe('ToolCallConfirmation (BR-63)', () => {
   });
 
   it('shows every package in a destructive batch deletion before approval', () => {
-    const json = JSON.stringify(
-      { registryIds: ['spoke-agent', 'playwright-agent'] },
-      null,
-      2
-    );
+    const json = JSON.stringify({ registryIds: ['spoke-agent', 'playwright-agent'] }, null, 2);
     renderCard({
       toolName: 'extensionmanager__delete_extension_package',
       risk: 'high',

@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../../ui/dialog';
+import { toolIdentifierToTitleCase } from '../../../utils';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -32,11 +33,7 @@ function getFirstSentence(text: string): string {
 function getToolLabel(name: string): string {
   const nameParts = name.split('__');
   const toolName = nameParts[nameParts.length - 1] || name;
-  return toolName
-    .split(/[_-]/)
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
+  return toolIdentifierToTitleCase(toolName);
 }
 
 interface PermissionModalProps {

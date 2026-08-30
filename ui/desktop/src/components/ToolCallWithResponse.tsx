@@ -17,7 +17,7 @@ import {
   ToolResponseMessageContent,
   NotificationEvent,
 } from '../types/message';
-import { cn, snakeToTitleCase } from '../utils';
+import { cn, toolIdentifierToTitleCase } from '../utils';
 import { LoadingStatus } from './ui/Dot';
 import { ChevronRight, FlaskConical } from './icons/app-icons';
 import MCPUIResourceRenderer from './MCPUIResourceRenderer';
@@ -114,7 +114,7 @@ function recordOf(value: unknown): Record<string, unknown> | null {
 function normalizeToolGraph(value: unknown): ToolGraphNode[] {
   if (!Array.isArray(value)) return [];
 
-  return value.flatMap((candidate, index) => {
+  return value.flatMap((candidate) => {
     const node = recordOf(candidate);
     if (!node) return [];
 
@@ -127,10 +127,7 @@ function normalizeToolGraph(value: unknown): ToolGraphNode[] {
 
     return [
       {
-        tool:
-          typeof node.tool === 'string' && node.tool.trim()
-            ? node.tool
-            : `Unknown tool ${index + 1}`,
+        tool: typeof node.tool === 'string' && node.tool.trim() ? node.tool : 'Unspecified tool',
         description:
           typeof node.description === 'string' && node.description.trim()
             ? node.description
@@ -642,7 +639,7 @@ export type ToolCallSummaryInput = {
 
 const MAX_SUMMARY_VALUE_LENGTH = 96;
 
-const humanize = (value: string): string => snakeToTitleCase(value.replace(/[-.]/g, '_'));
+const humanize = toolIdentifierToTitleCase;
 
 const stringifySummaryValue = (value: unknown): string => {
   if (typeof value === 'string') return value;
@@ -730,10 +727,139 @@ const summarizeSearchQuery = (value: unknown): string | null => {
   return compactValue(value);
 };
 
+const namedArgument = (args: Record<string, unknown>, keys: string[]): string | null => {
+  const value = firstPresent(args, keys);
+  return value === undefined ? null : compactValue(value);
+};
+
+const namedEntity = (args: Record<string, unknown>, keys: string[]): string | null => {
+  const value = namedArgument(args, keys);
+  if (!value || /\s/.test(value)) return value;
+  return humanize(value.replace(/([a-z0-9])(agent|extension|skill)$/i, '$1_$2'));
+};
+
+const countNamedArguments = (args: Record<string, unknown>, key: string): number =>
+  Array.isArray(args[key]) ? args[key].length : 0;
+
+const summarizeTodoCall = (toolName: string, args: Record<string, unknown>): string | null => {
+  if (toolName === 'plan_write') return 'Updating the work plan';
+  if (toolName === 'todo_write') return 'Replacing the task list';
+  if (toolName === 'todo_add') {
+    const count = countNamedArguments(args, 'items');
+    return count > 0 ? `Adding ${count} task${count === 1 ? '' : 's'}` : 'Adding tasks';
+  }
+  if (toolName !== 'todo_update') return null;
+
+  const id = namedArgument(args, ['id']);
+  const task = id ? `task ${id.startsWith('#') ? id : `#${id}`}` : 'a task';
+  const status = namedArgument(args, ['status']);
+  if (status === 'completed') return `Marking ${task} complete`;
+  if (status === 'in_progress') return `Starting ${task}`;
+  if (status === 'pending') return `Returning ${task} to pending`;
+  if (namedArgument(args, ['text'])) return `Renaming ${task}`;
+  return `Updating ${task}`;
+};
+
+const summarizeExtensionManagerCall = (
+  toolName: string,
+  args: Record<string, unknown>
+): string | null => {
+  const extension = namedEntity(args, ['extension_name', 'registry_id']);
+
+  if (toolName === 'manage_extensions') {
+    const action = namedArgument(args, ['action']);
+    if (action === 'enable') return extension ? `Attaching ${extension}` : 'Attaching an extension';
+    if (action === 'disable')
+      return extension ? `Detaching ${extension}` : 'Detaching an extension';
+    return extension ? `Managing ${extension}` : 'Managing extensions';
+  }
+  if (toolName === 'install_extension') {
+    const label = extension ? `Installing ${extension}` : 'Installing an extension';
+    return args.enable === false ? `${label} without attaching it` : label;
+  }
+  if (toolName === 'delete_extension_package') {
+    const count = countNamedArguments(args, 'registry_ids');
+    if (extension) return `Removing extension package ${extension}`;
+    return count > 0
+      ? `Removing ${count} extension package${count === 1 ? '' : 's'}`
+      : 'Removing an extension package';
+  }
+  if (toolName === 'browse_marketplace_extensions') return 'Browsing available extensions';
+  if (toolName === 'search_marketplace_extensions') {
+    const query = namedArgument(args, ['query']);
+    return query ? `Searching extensions for ${query}` : 'Searching available extensions';
+  }
+  if (toolName === 'search_available_extensions')
+    return 'Listing extensions available to this chat';
+  return null;
+};
+
+const summarizeSkillsCall = (toolName: string, args: Record<string, unknown>): string | null => {
+  const skill = namedEntity(args, ['name', 'registry_id']);
+
+  if (toolName === 'hotLoadSkill')
+    return skill ? `Loading skill ${skill} into this chat` : 'Loading a skill into this chat';
+  if (toolName === 'hotUnloadSkill')
+    return skill ? `Unloading skill ${skill} from this chat` : 'Unloading a skill from this chat';
+  if (toolName === 'browseMarketplaceSkills') return 'Browsing available skills';
+  if (toolName === 'searchMarketplaceSkills') {
+    const query = namedArgument(args, ['query']);
+    return query ? `Searching skills for ${query}` : 'Searching available skills';
+  }
+  if (toolName === 'installMarketplaceSkill') {
+    const label = skill ? `skill ${skill}` : 'a skill';
+    return args.dry_run === true ? `Previewing installation of ${label}` : `Installing ${label}`;
+  }
+  if (toolName === 'importSkillPackage') {
+    const source = namedArgument(args, ['file_path', 'url']);
+    const label = source ? `skill package ${basename(source)}` : 'a skill package';
+    return args.dry_run === true ? `Previewing installation of ${label}` : `Installing ${label}`;
+  }
+  if (toolName === 'removeSkillPackage') {
+    const count = countNamedArguments(args, 'names');
+    if (skill) return `Removing skill package ${skill}`;
+    return count > 0
+      ? `Removing ${count} skill package${count === 1 ? '' : 's'}`
+      : 'Removing a skill package';
+  }
+  return null;
+};
+
+const summarizeBrowserTabs = (args: Record<string, unknown>): string => {
+  const action = namedArgument(args, ['action']);
+  if (action === 'list') return 'Listing browser tabs';
+  if (action === 'new') return 'Opening a new browser tab';
+  if (action === 'close') return 'Closing a browser tab';
+  if (action === 'select') return 'Selecting a browser tab';
+  return 'Managing browser tabs';
+};
+
+const summarizeSafeArguments = (args: Record<string, unknown>): string | null => {
+  const hidden = /(?:content|text|body|password|secret|token|credential|api[_-]?key)/i;
+  const parts = Object.entries(args)
+    .filter(
+      ([key, value]) => !hidden.test(key) && ['string', 'number', 'boolean'].includes(typeof value)
+    )
+    .slice(0, 2)
+    .map(([key, value]) => `${humanize(key)}: ${compactValue(value, 40)}`);
+  return parts.length > 0 ? parts.join(' · ') : null;
+};
+
+const withSafeArguments = (label: string, args: Record<string, unknown>): string => {
+  const details = summarizeSafeArguments(args);
+  return details ? `${label} · ${details}` : label;
+};
+
 export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
   const args = toolCall.arguments ?? {};
   const toolName = getToolName(toolCall.name);
   const displayName = humanize(toolName);
+  const toolWords = toolName
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[_-]/)
+    .filter(Boolean);
+  const hasToolWord = (...words: string[]) => words.some((word) => toolWords.includes(word));
   const target = firstPresent(args, [
     'path',
     'file',
@@ -743,10 +869,6 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
     'uri',
     'url',
     'ref_id',
-    'documentId',
-    'spreadsheetId',
-    'threadId',
-    'id',
   ]);
   const targetName = target ? basename(target) : null;
   const command = firstPresent(args, ['cmd', 'command', 'script']);
@@ -755,6 +877,21 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
   // Before the generic name-matching chain: a delegation must be identifiable
   // by its task, not by the fact that it is a delegation.
   if (toolName === 'subagent') return summarizeDelegation(args);
+
+  const todoSummary = toolCall.name.startsWith('todo__') ? summarizeTodoCall(toolName, args) : null;
+  if (todoSummary) return todoSummary;
+
+  const extensionManagerSummary = toolCall.name.startsWith('extensionmanager__')
+    ? summarizeExtensionManagerCall(toolName, args)
+    : null;
+  if (extensionManagerSummary) return extensionManagerSummary;
+
+  const skillsSummary = toolCall.name.startsWith('skills__')
+    ? summarizeSkillsCall(toolName, args)
+    : null;
+  if (skillsSummary) return skillsSummary;
+
+  if (toolName === 'browser_tabs') return summarizeBrowserTabs(args);
 
   // code_execution's module tools and the skills loader carry their targets
   // under argument names (`module_path`, `terms`, `name`) the generic chains
@@ -776,64 +913,93 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
     return skillName ? `Loading skill ${skillName}` : 'Loading a skill';
   }
 
-  if (toolName === 'text_editor' || toolName.includes('editor')) {
+  if (toolName === 'text_editor' || hasToolWord('editor')) {
     if (args.command === 'view' && targetName) return `Reading ${targetName}`;
     if (args.command === 'write' && targetName) return `Writing ${targetName}`;
     if (args.command === 'str_replace' && targetName) return `Editing ${targetName}`;
     if (targetName) return `Updating ${targetName}`;
   }
 
-  if (toolName === 'shell' || toolName === 'exec_command' || toolName.includes('command')) {
+  if (toolName === 'shell' || toolName === 'exec_command' || hasToolWord('command')) {
     return command ? `Running ${compactValue(command)}` : `Running a command`;
   }
 
   if (toolName === 'apply_patch') return `Applying a code patch`;
   if (toolName === 'view_image')
     return targetName ? `Inspecting ${targetName}` : `Inspecting an image`;
-  if (toolName.includes('screenshot')) return `Capturing a screenshot`;
+  if (hasToolWord('screenshot')) return `Capturing a screenshot`;
   if (toolName.includes('imagegen')) return `Generating an image`;
 
-  if (toolName.includes('read') || toolName.includes('open') || toolName.includes('fetch')) {
-    return targetName ? `Reading ${targetName}` : `${displayName}`;
+  if (hasToolWord('read')) {
+    return targetName
+      ? `Reading ${targetName}`
+      : withSafeArguments(`Reading ${displayName.replace(/^Read /, '')}`, args);
   }
 
-  if (toolName.includes('write') || toolName.includes('update') || toolName.includes('edit')) {
-    return targetName ? `Updating ${targetName}` : `${displayName}`;
+  if (hasToolWord('open')) {
+    const subject = displayName.replace(/^Open /, '').replace(/^In /, 'in ');
+    return targetName ? `Opening ${targetName}` : withSafeArguments(`Opening ${subject}`, args);
   }
 
-  if (toolName.includes('create')) {
-    return targetName ? `Creating ${targetName}` : `${displayName}`;
+  if (hasToolWord('fetch')) {
+    return targetName
+      ? `Fetching ${targetName}`
+      : withSafeArguments(`Fetching ${displayName.replace(/^Fetch /, '')}`, args);
   }
 
-  if (toolName.includes('delete') || toolName.includes('remove')) {
-    return targetName ? `Removing ${targetName}` : `${displayName}`;
+  if (hasToolWord('write', 'update', 'edit')) {
+    return targetName
+      ? `Updating ${targetName}`
+      : withSafeArguments(`Updating ${displayName.replace(/^(Write|Update|Edit) /, '')}`, args);
   }
 
-  if (toolName.includes('list')) {
-    return targetName ? `Listing ${targetName}` : `${displayName}`;
+  if (hasToolWord('create')) {
+    return targetName
+      ? `Creating ${targetName}`
+      : withSafeArguments(`Creating ${displayName.replace(/^Create /, '')}`, args);
   }
 
-  if (toolName.includes('search') || toolName.includes('query')) {
+  if (hasToolWord('delete', 'remove')) {
+    return targetName
+      ? `Removing ${targetName}`
+      : withSafeArguments(`Removing ${displayName.replace(/^(Delete|Remove) /, '')}`, args);
+  }
+
+  if (hasToolWord('list')) {
+    return targetName
+      ? `Listing ${targetName}`
+      : withSafeArguments(`Listing ${displayName.replace(/^List /, '')}`, args);
+  }
+
+  if (hasToolWord('search', 'query')) {
     const query = summarizeSearchQuery(
       firstPresent(args, ['q', 'query', 'search_query', 'image_query', 'pattern', 'name'])
     );
-    return query ? `Searching for ${query}` : `${displayName}`;
+    return query
+      ? `Searching for ${query}`
+      : withSafeArguments(`Searching ${displayName.replace(/^(Search|Query) /, '')}`, args);
   }
 
-  if (toolName.includes('download')) {
-    return targetName ? `Downloading ${targetName}` : `${displayName}`;
+  if (hasToolWord('download')) {
+    return targetName
+      ? `Downloading ${targetName}`
+      : withSafeArguments(`Downloading ${displayName.replace(/^Download /, '')}`, args);
   }
 
-  if (toolName.includes('send') || toolName.includes('post')) {
+  if (hasToolWord('send', 'post')) {
     return targetName ? `Sending to ${targetName}` : `${displayName}`;
   }
 
-  if (toolName === 'sheets_tool' || toolName.includes('sheet')) {
-    return operation ? `${humanize(compactValue(operation))} in a spreadsheet` : displayName;
+  if (toolName === 'sheets_tool' || hasToolWord('sheet', 'sheets', 'spreadsheet')) {
+    return operation
+      ? `${humanize(compactValue(operation))} in a spreadsheet`
+      : withSafeArguments(displayName, args);
   }
 
-  if (toolName === 'docs_tool' || toolName.includes('doc')) {
-    return operation ? `${humanize(compactValue(operation))} in a document` : displayName;
+  if (toolName === 'docs_tool' || hasToolWord('doc', 'docs', 'document', 'documents')) {
+    return operation
+      ? `${humanize(compactValue(operation))} in a document`
+      : withSafeArguments(displayName, args);
   }
 
   if (toolName === 'execute_code') {
@@ -847,10 +1013,8 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
 
   if (targetName) return `${displayName} for ${targetName}`;
 
-  const keys = Object.keys(args).filter((key) => !['content', 'text', 'body'].includes(key));
-  if (keys.length > 0) {
-    return `${displayName} with ${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '…' : ''}`;
-  }
+  const safeArguments = summarizeSafeArguments(args);
+  if (safeArguments) return `${displayName} · ${safeArguments}`;
 
   return displayName;
 }
@@ -1324,7 +1488,7 @@ function ExecutedCallsView({ calls, dropped }: { calls: ExecutedToolCall[]; drop
     >
       <div className={TOOL_INTERIOR_CLASS}>
         {calls.map((call, index) => (
-          <ExecutedCallRow key={index} call={call} index={index} />
+          <ExecutedCallRow key={index} call={call} />
         ))}
         {dropped > 0 && (
           <div className="py-1 text-supporting text-text-muted">
@@ -1357,8 +1521,9 @@ function ExecutedCallArguments({ args }: { args: Record<string, ToolCallArgument
   );
 }
 
-function ExecutedCallRow({ call, index }: { call: ExecutedToolCall; index: number }) {
+function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
   const parsedArgs = parsedCallArguments(call.args);
+  const summary = summarizeToolCall({ name: call.tool, arguments: parsedArgs ?? {} });
   return (
     <ToolCallExpandable
       label={
@@ -1369,9 +1534,7 @@ function ExecutedCallRow({ call, index }: { call: ExecutedToolCall; index: numbe
             className="mt-px"
           />
           <span className="min-w-0 flex-1 truncate text-text-muted">
-            <span className="text-text-default">
-              {index + 1}. {call.tool}
-            </span>
+            <span className="text-text-default">{summary}</span>
             {call.status === 'error' && ' · failed'}
           </span>
         </span>
@@ -1391,11 +1554,7 @@ function ExecutedCallRow({ call, index }: { call: ExecutedToolCall; index: numbe
         )}
         {call.error && (
           <div className="mt-2">
-            <NotificationContent
-              status="error"
-              title={`${call.tool} failed`}
-              message={call.error}
-            />
+            <NotificationContent status="error" title={`${summary} failed`} message={call.error} />
           </div>
         )}
       </div>

@@ -54,6 +54,23 @@ describe('PermissionModal', () => {
     expect(screen.queryByText('Loading tools…')).not.toBeInTheDocument();
   });
 
+  it('renders camel-case tool identifiers as readable words', async () => {
+    getTools.mockResolvedValue({
+      data: [
+        {
+          name: 'skills__installMarketplaceSkill',
+          description: 'Install a trusted skill',
+          parameters: [],
+          permission: 'ask_before',
+        },
+      ],
+    });
+
+    render(<PermissionModal extensionName="skills" onClose={vi.fn()} />);
+
+    expect(await screen.findByText('Install Marketplace Skill')).toBeInTheDocument();
+  });
+
   it('shows an actionable error state and can retry', async () => {
     getTools
       .mockResolvedValueOnce({ error: { message: 'failed' } })

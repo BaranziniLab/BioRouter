@@ -306,9 +306,7 @@ describe('BottomMenuExtensionSelection', () => {
     mocks.getSessionExtensions.mockResolvedValue({
       data: { extensions: [{ type: 'stdio', name: 'example' }] },
     } as never);
-    window.dispatchEvent(
-      new CustomEvent(CATALOG_CHANGED_EVENT, { detail: { revision: 1 } })
-    );
+    window.dispatchEvent(new CustomEvent(CATALOG_CHANGED_EVENT, { detail: { revision: 1 } }));
 
     await waitFor(
       () => expect(mocks.getSessionExtensions.mock.calls.length).toBeGreaterThan(callsBeforeChange),
@@ -318,6 +316,54 @@ describe('BottomMenuExtensionSelection', () => {
       path: { session_id: 'session-1' },
     });
     await waitFor(() => expect(example).toHaveAttribute('aria-checked', 'true'));
+    expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument();
+
+    const callsBeforeDetach = mocks.getSessionExtensions.mock.calls.length;
+    mocks.getSessionExtensions.mockResolvedValue({ data: { extensions: [] } } as never);
+    window.dispatchEvent(new CustomEvent(CATALOG_CHANGED_EVENT, { detail: { revision: 2 } }));
+
+    await waitFor(
+      () => expect(mocks.getSessionExtensions.mock.calls.length).toBeGreaterThan(callsBeforeDetach),
+      { timeout: 1_500 }
+    );
+    await waitFor(() => expect(example).toHaveAttribute('aria-checked', 'false'));
+    expect(screen.getByLabelText('Manage extensions (0 enabled)')).toBeInTheDocument();
+  });
+
+  it('does not let a late response from the previous chat replace the current count', async () => {
+    let resolvePrevious:
+      | ((value: { data: { extensions: Array<{ type: string; name: string }> } }) => void)
+      | undefined;
+    mocks.getSessionExtensions
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolvePrevious = resolve;
+          }) as never
+      )
+      .mockResolvedValue({
+        data: { extensions: [{ type: 'stdio', name: 'example' }] },
+      } as never);
+
+    const { rerender } = render(<BottomMenuExtensionSelection sessionId="previous-chat" />);
+    rerender(<BottomMenuExtensionSelection sessionId="current-chat" />);
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument()
+    );
+
+    await act(async () => {
+      resolvePrevious?.({
+        data: {
+          extensions: [
+            { type: 'stdio', name: 'spoke' },
+            { type: 'stdio', name: 'notetaker' },
+          ],
+        },
+      });
+      await Promise.resolve();
+    });
+
     expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument();
   });
 

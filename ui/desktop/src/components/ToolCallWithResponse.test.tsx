@@ -53,7 +53,85 @@ describe('summarizeToolCall', () => {
         name: 'ucsfomopagent__cohort_lookup',
         arguments: { cohort_id: 42, table: 'condition_occurrence' },
       })
-    ).toBe('Cohort Lookup with cohort_id, table');
+    ).toBe('Cohort Lookup · Cohort ID: 42 · Table: condition_occurrence');
+  });
+
+  it('describes todo lifecycle calls instead of presenting task ids as operations', () => {
+    expect(
+      summarizeToolCall({
+        name: 'todo__todo_update',
+        arguments: { id: '#1', status: 'completed' },
+      })
+    ).toBe('Marking task #1 complete');
+    expect(
+      summarizeToolCall({
+        name: 'todo__todo_update',
+        arguments: { id: '2', status: 'in_progress' },
+      })
+    ).toBe('Starting task #2');
+    expect(
+      summarizeToolCall({
+        name: 'todo__todo_update',
+        arguments: { id: '#3', status: 'pending' },
+      })
+    ).toBe('Returning task #3 to pending');
+    expect(
+      summarizeToolCall({ name: 'todo__todo_add', arguments: { items: ['Audit', 'Test'] } })
+    ).toBe('Adding 2 tasks');
+    expect(summarizeToolCall({ name: 'todo__plan_write', arguments: { plan: '...' } })).toBe(
+      'Updating the work plan'
+    );
+  });
+
+  it('names extension and skill lifecycle operations with their action and target', () => {
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__manage_extensions',
+        arguments: { action: 'enable', extension_name: 'Playwright Agent' },
+      })
+    ).toBe('Attaching Playwright Agent');
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__manage_extensions',
+        arguments: { action: 'disable', extension_name: 'Playwright Agent' },
+      })
+    ).toBe('Detaching Playwright Agent');
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__install_extension',
+        arguments: { registry_id: 'playwrightagent', enable: true },
+      })
+    ).toBe('Installing Playwright Agent');
+    expect(
+      summarizeToolCall({
+        name: 'skills__hotLoadSkill',
+        arguments: { name: 'Soul OKF ingestion' },
+      })
+    ).toBe('Loading skill Soul OKF ingestion into this chat');
+    expect(
+      summarizeToolCall({
+        name: 'skills__hotUnloadSkill',
+        arguments: { name: 'Soul OKF ingestion' },
+      })
+    ).toBe('Unloading skill Soul OKF ingestion from this chat');
+  });
+
+  it('describes browser-tab actions rather than listing an argument key', () => {
+    expect(
+      summarizeToolCall({ name: 'playwrightagent__browser_tabs', arguments: { action: 'list' } })
+    ).toBe('Listing browser tabs');
+    expect(
+      summarizeToolCall({ name: 'playwrightagent__browser_tabs', arguments: { action: 'new' } })
+    ).toBe('Opening a new browser tab');
+  });
+
+  it('never puts secret-like argument values in a collapsed generic label', () => {
+    expect(
+      summarizeToolCall({
+        name: 'thirdparty__authenticate',
+        arguments: { api_key: 'do-not-render', account: 'research' },
+      })
+    ).toBe('Authenticate · Account: research');
   });
 
   // #27 — module/skill tools carry their targets under argument names the
@@ -99,14 +177,14 @@ describe('summarizeToolCall', () => {
         name: 'otherext__read_module',
         arguments: { module_path: 'developer/shell' },
       })
-    ).toBe('Read Module');
+    ).toBe('Reading Module · Module Path: developer/shell');
 
     expect(
       summarizeToolCall({
         name: 'otherext__search_modules',
         arguments: { terms: ['fetch', 'http'] },
       })
-    ).toBe('Search Modules');
+    ).toBe('Searching Modules');
 
     expect(
       summarizeToolCall({
@@ -139,6 +217,36 @@ describe('summarizeToolCall', () => {
         },
       })
     ).toBe('Coordinating 3 tool steps');
+  });
+
+  it('matches action words rather than misleading substrings inside nouns', () => {
+    expect(
+      summarizeToolCall({
+        name: 'workspace__create_thread',
+        arguments: { threadId: 'thread-42' },
+      })
+    ).toBe('Creating Thread · Thread ID: thread-42');
+    expect(
+      summarizeToolCall({
+        name: 'data__spreadsheet_summary',
+        arguments: { spreadsheetId: 'sheet-7' },
+      })
+    ).toBe('Spreadsheet Summary · Spreadsheet ID: sheet-7');
+    expect(
+      summarizeToolCall({
+        name: 'clinical__doctor_lookup',
+        arguments: { id: 'doctor-3' },
+      })
+    ).toBe('Doctor Lookup · ID: doctor-3');
+  });
+
+  it('distinguishes reading, opening, and fetching actions', () => {
+    expect(
+      summarizeToolCall({ name: 'codex__open_in_codex', arguments: { operationId: 'op-3' } })
+    ).toBe('Opening in Codex · Operation ID: op-3');
+    expect(
+      summarizeToolCall({ name: 'network__fetch_profile', arguments: { id: 'person-7' } })
+    ).toBe('Fetching Profile · ID: person-7');
   });
 
   it('renders the friendly summary before raw details and reveals details on demand', () => {
@@ -535,16 +643,14 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
     fireEvent.click(screen.getByText('View executed calls (2)').closest('button') as HTMLElement);
 
-    expect(screen.getByText(/1\. developer__text_editor/)).toBeInTheDocument();
-    expect(screen.getByText(/2\. developer__shell/)).toBeInTheDocument();
-    expect(screen.getByText('2. developer__shell').parentElement?.textContent).toContain(
-      '· failed'
-    );
+    expect(screen.getByText('Reading manifest.json')).toBeInTheDocument();
+    expect(screen.getByText('Running lss /tmp').parentElement?.textContent).toContain('· failed');
+    expect(screen.queryByText(/\d+\. developer__/)).not.toBeInTheDocument();
 
     // Expanding the failing call reveals its exact args and its real error.
-    fireEvent.click(screen.getByText(/2\. developer__shell/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText('Running lss /tmp').closest('button') as HTMLElement);
     expect(screen.getByText('lss /tmp')).toBeInTheDocument();
-    expect(screen.getByText('developer__shell failed')).toBeInTheDocument();
+    expect(screen.getByText('Running lss /tmp failed')).toBeInTheDocument();
     expect(
       screen.getByText('Tool error from developer__shell: lss: command not found')
     ).toBeInTheDocument();
@@ -612,10 +718,12 @@ describe('ToolCallWithResponse executed-call transparency', () => {
 
     fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
     fireEvent.click(screen.getByText('View executed calls (1)').closest('button') as HTMLElement);
-    fireEvent.click(screen.getByText(/1\. developer__shell/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(/Running/).closest('button') as HTMLElement);
 
     // The literal markdown source is visible as text…
-    expect(screen.getByText(new RegExp('\\[click me\\]\\(https://evil'))).toBeInTheDocument();
+    expect(screen.getAllByText(new RegExp('\\[click me\\]\\(https://evil')).length).toBeGreaterThan(
+      0
+    );
     // …and was NOT interpreted: no link, no image request.
     expect(container.querySelector('a')).toBeNull();
     expect(container.querySelector('img')).toBeNull();
