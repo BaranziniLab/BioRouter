@@ -440,6 +440,13 @@ const REGISTRY: &[Guard] = &[
                        capability",
             },
             Site {
+                file: "crates/biorouter/src/marketplace.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "the live-registry anti-downgrade path, which raises a registry row to any \
+                       stricter built-in or previously learned extension authority",
+            },
+            Site {
                 file: "crates/biorouter/src/privacy/refusal.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
@@ -642,17 +649,13 @@ const REGISTRY: &[Guard] = &[
         sites: &[
             Site {
                 file: "crates/biorouter/src/agents/extension_manager_extension.rs",
-                counts: c(2, 0, 0),
+                counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
-                what: "TWO enable doors in one file. `check_enable_allowed`, i.e. \
-                       `extensionmanager__manage_extensions {action:\"enable\"}`, which is \
-                       the gate plus a not-found branch; and #117's install tool, which \
-                       gates the ATTACH rather than the install. The second is a door and \
-                       not a duplicate: installing writes bytes to disk and is not an \
-                       enable, so a refusal there must still leave the extension correctly \
-                       installed for a session that may legitimately use it. Gating the \
-                       install instead would have made the privacy answer decide whether \
-                       the download happened",
+                what: "#117's marketplace install tool, which gates the ATTACH rather than \
+                       the install. Installing writes bytes to disk and is not an enable, \
+                       so a refusal must still leave the package correctly installed. The \
+                       manager's ordinary enable door uses the stricter \
+                       `extension_manager_enable_refusal`, tracked in the next row",
             },
             Site {
                 file: "crates/biorouter/src/agents/workspace_extension.rs",
@@ -664,6 +667,21 @@ const REGISTRY: &[Guard] = &[
                        nothing",
             },
         ],
+    },
+    Guard {
+        ident: "extension_manager_enable_refusal",
+        defined_in: "crates/biorouter/src/privacy/refusal.rs",
+        decides: "whether Extension Manager may attach an extension: the shared enable rule \
+                  plus an absolute public-to-private boundary and the narrow proof-backed \
+                  override for a public extension's persisted operator pin",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter/src/agents/extension_manager_extension.rs",
+            counts: c(1, 0, 0),
+            kind: SiteKind::Guard,
+            what: "`check_enable_allowed_impl`, shared by the ordinary manager enable path \
+                   and its proof-backed retry after a user approval",
+        }],
     },
     Guard {
         ident: "tier_refuses",
