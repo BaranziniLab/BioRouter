@@ -1365,7 +1365,23 @@ fn emit_codex_tool_event(
             let declined = event.status.as_deref() == Some("declined");
             let failed = event.status.as_deref() == Some("failed");
             let bad_exit = event.exit_code.is_some_and(|code| code != 0);
-            let is_error = event.error.is_some() || failed || bad_exit || declined;
+            let tool_failed = event
+                .result
+                .as_ref()
+                .and_then(|result| result.get("isError"))
+                .and_then(Value::as_bool)
+                == Some(true);
+            let is_error = event.error.is_some() || failed || bad_exit || declined || tool_failed;
+
+            if event.error.is_none() && event.aggregated_output.is_none() && !declined {
+                if let Some(mut result) = event.result.as_ref().and_then(|value| {
+                    serde_json::from_value::<rmcp::model::CallToolResult>(value.clone()).ok()
+                }) {
+                    result.is_error = Some(is_error);
+                    let response = mirror::response_message_with_result(&event.id, result, exec);
+                    return tx.send(Ok((Some(response), None, None))).is_ok();
+                }
+            }
 
             let body = if let Some(error) = &event.error {
                 vec![rmcp::model::Content::text(error.clone())]
@@ -2838,6 +2854,77 @@ for line in sys.stdin:
             responses.iter().any(|r| r.id == "call_1" && !r.failed),
             "and it succeeded, so its card settles green"
         );
+    }
+
+    #[test]
+    fn completed_mcp_transport_preserves_the_tools_error_flag() {
+        let mut decoder = codex_stream::CodexDecoder::new();
+        let events = decoder.push(
+            "item/completed",
+            &json!({"item": {
+                "id":"failed-install", "type":"mcpToolCall", "server":"biorouter",
+                "tool":"extensionmanager__install_extension", "status":"completed",
+                "arguments":{}, "result":{"isError":true,
+                    "content":[{"type":"text","text":"Installation was refused"}]}
+            }}),
+        );
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        for event in events {
+            if let codex_stream::CodexEvent::Tool(event) = event {
+                assert!(emit_codex_tool_event(*event, &sender));
+            }
+        }
+        let mut messages = Vec::new();
+        while let Ok(Ok((Some(message), _, _))) = receiver.try_recv() {
+            messages.push(message);
+        }
+        let (_, settled) = tool_pairs(&messages);
+        assert_eq!(settled.len(), 1);
+        assert!(
+            settled[0].failed,
+            "an MCP tool error is not a successful catalog mutation"
+        );
+    }
+
+    #[test]
+    fn completed_mcp_transport_preserves_typed_content_and_result_metadata() {
+        let expected = json!({
+            "content": [
+                {"type":"text", "text":"{\"task\":{\"id\":\"1\",\"text\":\"Inspect Soul\"}}"},
+                {"type":"text", "text":"model-only context", "annotations":{"audience":["assistant"]}},
+                {"type":"image", "data":"cGl4ZWw=", "mimeType":"image/png"}
+            ],
+            "isError":false,
+            "structuredContent":{"task":{"id":"1","text":"Inspect Soul"}},
+            "_meta":{"biorouter/tool-calls":[{"tool":"todo__todo_update","status":"ok"}]}
+        });
+        let mut decoder = codex_stream::CodexDecoder::new();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        for event in decoder.push(
+            "item/completed",
+            &json!({"item": {
+                "id":"typed-result", "type":"mcpToolCall", "server":"biorouter",
+                "tool":"todo__todo_update", "status":"completed", "arguments":{},
+                "result":expected.clone()
+            }}),
+        ) {
+            if let codex_stream::CodexEvent::Tool(event) = event {
+                assert!(emit_codex_tool_event(*event, &sender));
+            }
+        }
+        let mut results = Vec::new();
+        while let Ok(Ok((Some(message), _, _))) = receiver.try_recv() {
+            for content in message.content {
+                if let MessageContent::ToolResponse(response) = content {
+                    assert_eq!(
+                        mirror::response_execution(&response),
+                        Some(mirror::Execution::Bridged)
+                    );
+                    results.push(serde_json::to_value(response.tool_result.unwrap()).unwrap());
+                }
+            }
+        }
+        assert_eq!(results, vec![expected]);
     }
 
     /// An unexpected built-in event is shown and marked `Child`. This should be

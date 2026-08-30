@@ -289,6 +289,24 @@ describe('BottomMenuExtensionSelection', () => {
     });
   });
 
+  it('excludes capabilities absent from the global catalog snapshot', async () => {
+    mocks.getSessionExtensions.mockResolvedValue({
+      data: {
+        extensions: [
+          { type: 'platform', name: 'todo' },
+          { type: 'builtin', name: 'developer' },
+          { type: 'platform', name: 'Workspace' },
+          { type: 'stdio', name: 'not-in-global-catalog' },
+        ],
+      },
+    } as never);
+    render(<BottomMenuExtensionSelection sessionId="catalog-still-loading" />);
+    await waitFor(() =>
+      expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument()
+    );
+    expect(screen.queryByLabelText('Manage extensions (4 enabled)')).not.toBeInTheDocument();
+  });
+
   it('refetches and refreshes this chat when the catalog changes', async () => {
     mocks.getSessionExtensions.mockResolvedValue({ data: { extensions: [] } } as never);
 

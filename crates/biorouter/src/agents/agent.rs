@@ -145,6 +145,44 @@ fn tool_catalog_mutation(tool_name: &str) -> Option<ToolCatalogMutation> {
     })
 }
 
+#[derive(Default)]
+struct MirroredCatalogRefresh {
+    pending: HashMap<String, bool>,
+    changed: bool,
+}
+
+impl MirroredCatalogRefresh {
+    fn started(&mut self, id: &str) {
+        self.pending.entry(id.to_owned()).or_insert(false);
+    }
+
+    fn observe(&mut self, message: &Message) -> bool {
+        for content in &message.content {
+            match content {
+                MessageContent::ToolRequest(request) => {
+                    let mutation =
+                        mirror::request_execution(request) == Some(mirror::Execution::Bridged)
+                            && request.tool_call.as_ref().is_ok_and(|call| {
+                                tool_catalog_mutation(call.name.as_ref()).is_some()
+                            });
+                    self.pending.insert(request.id.clone(), mutation);
+                }
+                MessageContent::ToolResponse(response) => {
+                    let mutation = self.pending.remove(&response.id).unwrap_or(false);
+                    self.changed |= mutation
+                        && mirror::response_execution(response) == Some(mirror::Execution::Bridged)
+                        && response
+                            .tool_result
+                            .as_ref()
+                            .is_ok_and(|result| result.is_error != Some(true));
+                }
+                _ => {}
+            }
+        }
+        self.changed && self.pending.is_empty()
+    }
+}
+
 async fn persist_enabled_extensions_for_manager(
     session_manager: &SessionManager,
     extension_manager: &ExtensionManager,
@@ -1453,6 +1491,7 @@ struct ChatBridgeDispatch {
     subagent: Option<BridgedSubagentContext>,
     working_dir: std::path::PathBuf,
     plan: CodingAgentBridgePlan,
+    catalog_changed: AtomicBool,
 }
 
 impl ChatBridgeDispatch {
@@ -1470,6 +1509,7 @@ impl ChatBridgeDispatch {
             .await
             .map_err(|error| format!("Could not persist the updated extension roster: {error}"))?;
         }
+        self.catalog_changed.store(true, Ordering::Release);
         crate::catalog::CatalogEvents::global().publish_session_refresh(session_id);
         Ok(())
     }
@@ -1479,6 +1519,13 @@ impl ChatBridgeDispatch {
         session_id: &str,
         call: &CallToolRequestParams,
     ) -> std::result::Result<(), String> {
+        if self.catalog_changed.load(Ordering::Acquire) {
+            return Err(
+                "The tool catalog changed. Biorouter is resuming this task with a refreshed \
+                tool catalog; no further calls may start on the previous bridge."
+                    .into(),
+            );
+        }
         let name = call.name.as_ref();
         if let Some(grant) = self.plan.target_for_tool(name) {
             if !self
@@ -6422,6 +6469,7 @@ impl Agent {
             subagent,
             working_dir: session.working_dir.clone(),
             plan,
+            catalog_changed: AtomicBool::new(false),
         }
     }
 
@@ -8929,7 +8977,7 @@ impl Agent {
                 // prompt, messages and tools and nothing else. This works because
                 // those providers are non-streaming, so the whole child turn happens
                 // inside the awaited call and therefore inside this scope.
-                let bridge_lease = self
+                let mut bridge_lease = self
                     .issue_tool_bridge(
                         &iteration_provider,
                         &session,
@@ -8967,6 +9015,8 @@ impl Agent {
                 let mut no_tools_called = true;
                 let mut messages_to_add = Conversation::default();
                 let mut tools_updated = false;
+                let mut mirrored_catalog = MirroredCatalogRefresh::default();
+                let mut did_restart_for_catalog_this_iteration = false;
                 let mut signed_replay_invalidated_this_iteration = false;
                 let mut did_recovery_compact_this_iteration = false;
                 let mut did_retry_reset_this_iteration = false;
@@ -9117,6 +9167,7 @@ impl Agent {
                             // call is structurally incapable of being executed.
                             // (Invariant §6.5.1.)
                             if let Some(pending) = pending {
+                                mirrored_catalog.started(&pending.id);
                                 yield AgentEvent::ToolCallPending(pending);
                                 continue;
                             }
@@ -9186,9 +9237,31 @@ impl Agent {
                                 // The predicate is deliberately "carries ANY
                                 // mirrored content"; see `coding_agent::mirror`.
                                 if mirror::contains_provider_executed(&response) {
+                                    let refresh_catalog = mirrored_catalog.observe(&response);
+                                    if refresh_catalog {
+                                        // Vendor MCP catalogs can stay frozen inside a turn.
+                                        // Settle every observed call before replacing the lease;
+                                        // completed mutations remain history, never requests.
+                                        drop(std::mem::replace(
+                                            &mut stream,
+                                            Box::pin(futures::stream::empty()),
+                                        ));
+                                        drop(bridge_lease.take());
+                                        tools_updated = true;
+                                        did_restart_for_catalog_this_iteration = true;
+                                    }
                                     yield AgentEvent::Message(response.clone());
                                     tokio::task::yield_now().await;
                                     messages_to_add.push(response);
+                                    if refresh_catalog {
+                                        messages_to_add.push(model_only_user_text_with_new_id(
+                                            "The tool and skill catalog has been refreshed after the \
+                                             completed operations above. Those operations already ran; \
+                                             do not repeat them. Continue the user's task with the \
+                                             current tools and capability instructions.",
+                                        ));
+                                        break;
+                                    }
                                     continue;
                                 }
 
@@ -9937,6 +10010,8 @@ impl Agent {
                 if pending_turn_abort.is_some() {
                     // The typed failure is emitted after this iteration's messages
                     // and usage have been persisted below.
+                } else if did_restart_for_catalog_this_iteration {
+                    // Resume only after the completed tool records become durable below.
                 } else if did_restart_for_steer_this_iteration {
                     // The stream was deliberately dropped at a safe boundary. Do
                     // not treat the missing finish reason as a natural stop: first
@@ -11365,6 +11440,289 @@ mod tests {
         assert!(!second
             .iter()
             .any(|name| name == "refreshfixture__capability_status"));
+    }
+
+    struct MirroredCatalogProvider {
+        calls: Arc<AtomicUsize>,
+        extensions: Arc<ExtensionManager>,
+        stream_dropped: Arc<AtomicBool>,
+    }
+
+    #[test]
+    fn mirrored_catalog_refresh_waits_for_parallel_calls_to_settle() {
+        let mut refresh = MirroredCatalogRefresh::default();
+        refresh.started("install");
+        refresh.started("query");
+        assert!(!refresh.observe(&mirror::request_message(
+            "install",
+            "extensionmanager__install_extension",
+            serde_json::json!({}),
+            mirror::Execution::Bridged,
+        )));
+        assert!(
+            !refresh.observe(&mirror::response_message(
+                "install",
+                vec![],
+                false,
+                mirror::Execution::Bridged,
+            )),
+            "do not abort an outstanding parallel operation"
+        );
+        assert!(!refresh.observe(&mirror::request_message(
+            "query",
+            "knowledge__kb_search",
+            serde_json::json!({}),
+            mirror::Execution::Bridged,
+        )));
+        assert!(refresh.observe(&mirror::response_message(
+            "query",
+            vec![],
+            false,
+            mirror::Execution::Bridged,
+        )));
+    }
+
+    #[test]
+    fn mirrored_catalog_refresh_ignores_failures_unmatched_results_and_native_calls() {
+        for (name, execution, failed) in [
+            (
+                "extensionmanager__install_extension",
+                mirror::Execution::Bridged,
+                true,
+            ),
+            (
+                "extensionmanager__install_extension",
+                mirror::Execution::Child,
+                false,
+            ),
+            ("install_extension", mirror::Execution::Bridged, false),
+            (
+                "extensionmanager__search_marketplace_extensions",
+                mirror::Execution::Bridged,
+                false,
+            ),
+        ] {
+            let mut refresh = MirroredCatalogRefresh::default();
+            assert!(!refresh.observe(&mirror::request_message(
+                "operation",
+                name,
+                serde_json::json!({}),
+                execution,
+            )));
+            assert!(
+                !refresh.observe(&mirror::response_message(
+                    "operation",
+                    vec![],
+                    failed,
+                    execution,
+                )),
+                "{name} / {execution:?} / failed={failed}"
+            );
+        }
+        assert!(
+            !MirroredCatalogRefresh::default().observe(&mirror::response_message(
+                "unknown",
+                vec![],
+                false,
+                mirror::Execution::Bridged,
+            ))
+        );
+    }
+
+    #[test]
+    fn mirrored_catalog_refresh_covers_extension_and_skill_removal() {
+        for name in [
+            "extensionmanager__manage_extensions",
+            "extensionmanager__delete_extension_package",
+            "skills__hotLoadSkill",
+            "skills__hotUnloadSkill",
+            "skills__removeSkillPackage",
+        ] {
+            let mut refresh = MirroredCatalogRefresh::default();
+            assert!(!refresh.observe(&mirror::request_message(
+                "change",
+                name,
+                serde_json::json!({}),
+                mirror::Execution::Bridged,
+            )));
+            assert!(
+                refresh.observe(&mirror::response_message(
+                    "change",
+                    vec![],
+                    false,
+                    mirror::Execution::Bridged,
+                )),
+                "{name}"
+            );
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for MirroredCatalogProvider {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::empty()
+        }
+
+        fn get_name(&self) -> &str {
+            "codex"
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("mirrored-catalog-test")
+        }
+
+        fn supports_streaming(&self) -> bool {
+            true
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, crate::providers::base::ProviderUsage), ProviderError> {
+            Err(ProviderError::NotImplemented("streaming fixture".into()))
+        }
+
+        async fn stream(
+            &self,
+            _system: &str,
+            messages: &[Message],
+            tools: &[Tool],
+        ) -> Result<crate::providers::base::MessageStream, ProviderError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                assert!(!tools
+                    .iter()
+                    .any(|tool| tool.name.starts_with("refreshfixture__")));
+                let fixture = ExtensionConfig::stdio(
+                    "refreshfixture",
+                    "unused-fixture-command",
+                    "public fixture",
+                    30_u64,
+                );
+                self.extensions
+                    .add_client(
+                        fixture.key(),
+                        fixture,
+                        Arc::new(BridgeFixtureClient),
+                        None,
+                        None,
+                    )
+                    .await;
+                let signal = StreamDropSignal(Arc::clone(&self.stream_dropped));
+                return Ok(Box::pin(async_stream::stream! {
+                    let _signal = signal;
+                    yield Ok((Some(mirror::request_message(
+                        "attach-fixture", "extensionmanager__install_extension",
+                        serde_json::json!({"registry_id":"refreshfixture","enable":true}),
+                        mirror::Execution::Bridged,
+                    )), None, None));
+                    yield Ok((Some(mirror::response_message(
+                        "attach-fixture", vec![Content::text("fixture attached")], false,
+                        mirror::Execution::Bridged,
+                    )), None, None));
+                    futures::future::pending::<()>().await;
+                }));
+            }
+            assert_eq!(call, 1, "a catalog refresh must not replay indefinitely");
+            assert!(self.stream_dropped.load(Ordering::SeqCst));
+            assert!(tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == "refreshfixture__capability_status"));
+            assert!(
+                messages
+                    .iter()
+                    .flat_map(|message| &message.content)
+                    .any(|content| {
+                        matches!(content, MessageContent::ToolResponse(response)
+                    if response.id == "attach-fixture" && response.tool_result.is_ok())
+                    }),
+                "the completed mutation must be present in the resumed context"
+            );
+            Ok(crate::providers::base::stream_from_single_message(
+                Message::assistant().with_text("continued with refreshed tools"),
+                crate::providers::base::ProviderUsage::new(
+                    "mirrored-catalog-test".into(),
+                    crate::providers::base::Usage::default(),
+                ),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn mirrored_catalog_mutation_restarts_with_new_tools_without_replaying_the_install() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let stream_dropped = Arc::new(AtomicBool::new(false));
+        agent
+            .update_provider(
+                Arc::new(MirroredCatalogProvider {
+                    calls: Arc::clone(&calls),
+                    extensions: Arc::clone(&agent.extension_manager),
+                    stream_dropped: Arc::clone(&stream_dropped),
+                }),
+                &session_id,
+            )
+            .await
+            .unwrap();
+        let stream = agent
+            .reply(
+                Message::user().with_text("bring in what you need and continue the task"),
+                SessionConfig {
+                    id: session_id.clone(),
+                    schedule_id: None,
+                    max_turns: Some(3),
+                    max_tool_calls: None,
+                    budget: None,
+                    retry_config: None,
+                    reasoning_effort: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::pin!(stream);
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while let Some(event) = stream.next().await {
+                event.unwrap();
+            }
+        })
+        .await
+        .expect("a frozen coding-agent stream must resume after the catalog changes");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, true)
+            .await
+            .unwrap();
+        let conversation = session.conversation.unwrap();
+        assert_eq!(
+            conversation
+                .messages()
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter(
+                    |content| matches!(content, MessageContent::ToolRequest(request)
+                if request.id == "attach-fixture")
+                )
+                .count(),
+            1
+        );
+        assert_eq!(
+            conversation
+                .messages()
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter(
+                    |content| matches!(content, MessageContent::ToolResponse(response)
+                if response.id == "attach-fixture")
+                )
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -13012,6 +13370,31 @@ mod tests {
             )
             .await
             .expect("a successful bridged manager mutation must be durable");
+
+        let next_call = CallToolRequestParams {
+            name: "todo__todo_write".into(),
+            arguments: Some(object!({"content":"- [ ] next"})),
+            meta: None,
+            task: None,
+        };
+        assert!(
+            dispatch
+                .enforce_tool_access(&session_id, &next_call)
+                .await
+                .unwrap_err()
+                .contains("refreshed tool catalog"),
+            "the obsolete bridge must stop admitting calls before the provider is restarted"
+        );
+        let refreshed_tools = agent.list_tools(&session_id, None).await;
+        let refreshed_plan = agent
+            .prepare_coding_agent_bridge_plan(&provider, &refreshed_tools)
+            .await
+            .unwrap();
+        agent
+            .chat_bridge_dispatch(&provider, None, &session, refreshed_plan)
+            .enforce_tool_access(&session_id, &next_call)
+            .await
+            .expect("a newly admitted bridge can continue the task");
 
         let persisted_session = agent
             .config

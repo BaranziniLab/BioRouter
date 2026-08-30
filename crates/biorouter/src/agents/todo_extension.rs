@@ -254,7 +254,11 @@ impl TodoClient {
         let message = self
             .with_state(session_id, move |state| {
                 if state.update_item(&id, status, text) {
-                    Ok(format!("Updated item #{id}"))
+                    Ok(serde_json::json!({
+                        "message": format!("Updated item #{id}"),
+                        "task": state.items.iter().find(|item| item.id == id),
+                    })
+                    .to_string())
                 } else {
                     Err(format!("No todo item with id #{id}"))
                 }
@@ -616,6 +620,10 @@ mod tests {
 
         assert_eq!(updated.is_error, Some(false), "{}", text(&updated));
         assert!(text(&updated).contains("Updated item #1"));
+        let result: serde_json::Value = serde_json::from_str(&text(&updated)).unwrap();
+        assert_eq!(result["task"]["id"], "1");
+        assert_eq!(result["task"]["text"], "verify displayed id");
+        assert_eq!(result["task"]["status"], "completed");
         let reinjected = client.get_moim(&session.id).await.unwrap();
         assert!(
             reinjected.contains("- [x] (#1) verify displayed id"),

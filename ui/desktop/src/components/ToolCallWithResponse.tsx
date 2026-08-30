@@ -741,7 +741,31 @@ const namedEntity = (args: Record<string, unknown>, keys: string[]): string | nu
 const countNamedArguments = (args: Record<string, unknown>, key: string): number =>
   Array.isArray(args[key]) ? args[key].length : 0;
 
-const summarizeTodoCall = (toolName: string, args: Record<string, unknown>): string | null => {
+const todoTaskTitle = (args: Record<string, unknown>, toolResult: unknown): string | null => {
+  const replacement = namedArgument(args, ['text']);
+  if (replacement) return replacement;
+  if (getToolResultError(toolResult)) return null;
+  const id = String(args.id ?? '').replace(/^#/, '');
+  for (const content of getToolResultContent(toolResult)) {
+    const item = recordOf(content);
+    if (item?.type !== 'text' || typeof item.text !== 'string') continue;
+    try {
+      const task = recordOf(recordOf(JSON.parse(item.text))?.task);
+      if (task?.id === id && typeof task.text === 'string' && task.text.trim()) {
+        return compactValue(task.text);
+      }
+    } catch {
+      // Older transcripts contain a plain-text acknowledgement, without task details.
+    }
+  }
+  return null;
+};
+
+const summarizeTodoCall = (
+  toolName: string,
+  args: Record<string, unknown>,
+  toolResult: unknown
+): string | null => {
   if (toolName === 'plan_write') return 'Updating the work plan';
   if (toolName === 'todo_write') return 'Replacing the task list';
   if (toolName === 'todo_add') {
@@ -751,7 +775,8 @@ const summarizeTodoCall = (toolName: string, args: Record<string, unknown>): str
   if (toolName !== 'todo_update') return null;
 
   const id = namedArgument(args, ['id']);
-  const task = id ? `task ${id.startsWith('#') ? id : `#${id}`}` : 'a task';
+  const title = todoTaskTitle(args, toolResult);
+  const task = title ? `“${title}”` : id ? `task ${id.startsWith('#') ? id : `#${id}`}` : 'a task';
   const status = namedArgument(args, ['status']);
   if (status === 'completed') return `Marking ${task} complete`;
   if (status === 'in_progress') return `Starting ${task}`;
@@ -850,7 +875,7 @@ const withSafeArguments = (label: string, args: Record<string, unknown>): string
   return details ? `${label} · ${details}` : label;
 };
 
-export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
+export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: unknown): string {
   const args = toolCall.arguments ?? {};
   const toolName = getToolName(toolCall.name);
   const displayName = humanize(toolName);
@@ -878,7 +903,9 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
   // by its task, not by the fact that it is a delegation.
   if (toolName === 'subagent') return summarizeDelegation(args);
 
-  const todoSummary = toolCall.name.startsWith('todo__') ? summarizeTodoCall(toolName, args) : null;
+  const todoSummary = toolCall.name.startsWith('todo__')
+    ? summarizeTodoCall(toolName, args, toolResult)
+    : null;
   if (todoSummary) return todoSummary;
 
   const extensionManagerSummary = toolCall.name.startsWith('extensionmanager__')
@@ -890,6 +917,22 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
     ? summarizeSkillsCall(toolName, args)
     : null;
   if (skillsSummary) return skillsSummary;
+
+  if (toolCall.name.startsWith('knowledge__')) {
+    const baseId = namedArgument(args, ['kb_id']);
+    const base = baseId === 'soul' ? 'Soul' : baseId;
+    if (toolName === 'kb_get_active') return 'Checking the primary knowledge base';
+    if (toolName === 'kb_list_bases') return 'Listing knowledge bases';
+    if (toolName === 'kb_list_pages')
+      return `Listing pages in ${base ?? 'the primary knowledge base'}`;
+    if (toolName === 'kb_read_page') {
+      return `Reading ${targetName ?? 'a knowledge page'}${base ? ` in ${base}` : ''}`;
+    }
+    if (toolName === 'kb_search') {
+      const query = namedArgument(args, ['query']);
+      return `Searching ${base ?? 'knowledge bases'}${query ? ` for ${query}` : ''}`;
+    }
+  }
 
   if (toolName === 'browser_tabs') return summarizeBrowserTabs(args);
 
@@ -1194,7 +1237,7 @@ function ToolCallView({
   };
 
   const toolCallStatus = getToolCallStatus(loadingStatus);
-  const toolSummary = summarizeToolCall(toolCall);
+  const toolSummary = summarizeToolCall(toolCall, toolResponse?.toolResult);
   const latestProgress = progressEntries[0]?.message;
   const latestLog = logs && logs.length > 0 ? logs[logs.length - 1] : undefined;
   const liveDetail =

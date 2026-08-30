@@ -116,6 +116,107 @@ describe('summarizeToolCall', () => {
     ).toBe('Unloading skill Soul OKF ingestion from this chat');
   });
 
+  it('names the actual todo task from its result rather than only its number', () => {
+    const call = { name: 'todo__todo_update', arguments: { id: '#2', status: 'completed' } };
+    const result = {
+      status: 'success',
+      value: {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              message: 'Updated item #2',
+              task: { id: '2', text: 'Verify browser access', status: 'completed' },
+            }),
+          },
+        ],
+      },
+    };
+    expect(summarizeToolCall(call, result)).toBe('Marking “Verify browser access” complete');
+    expect(
+      summarizeToolCall({ ...call, arguments: { id: '#3', status: 'completed' } }, result)
+    ).toBe('Marking task #3 complete');
+    expect(
+      summarizeToolCall(call, {
+        status: 'success',
+        value: { content: [{ type: 'text', text: 'Updated item #2' }] },
+      })
+    ).toBe('Marking task #2 complete');
+    expect(summarizeToolCall(call, { ...result, value: { ...result.value, isError: true } })).toBe(
+      'Marking task #2 complete'
+    );
+    expect(
+      summarizeToolCall({
+        name: 'todo__todo_update',
+        arguments: {
+          id: '#2',
+          text: 'Check database connectivity',
+        },
+      })
+    ).toBe('Renaming “Check database connectivity”');
+  });
+
+  it('renders the task title on a collapsed completed todo card', () => {
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        onOpenArtifact={noopOpenArtifact}
+        toolRequest={
+          {
+            type: 'toolRequest',
+            id: 'todo-title',
+            toolCall: {
+              status: 'success',
+              value: { name: 'todo__todo_update', arguments: { id: '1', status: 'in_progress' } },
+            },
+          } as ToolRequestMessageContent
+        }
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'todo-title',
+          toolResult: {
+            status: 'success',
+            value: {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    task: { id: '1', text: 'Audit extension permissions', status: 'in_progress' },
+                  }),
+                },
+              ],
+              isError: false,
+            },
+          },
+        }}
+      />
+    );
+    expect(screen.getByText(/Starting “Audit extension permissions”/)).toBeInTheDocument();
+    expect(screen.queryByText(/Updating #1/)).not.toBeInTheDocument();
+  });
+
+  it('names knowledge operations without internal KB abbreviations', () => {
+    expect(summarizeToolCall({ name: 'knowledge__kb_get_active' })).toBe(
+      'Checking the primary knowledge base'
+    );
+    expect(summarizeToolCall({ name: 'knowledge__kb_list_bases' })).toBe('Listing knowledge bases');
+    expect(
+      summarizeToolCall({ name: 'knowledge__kb_list_pages', arguments: { kb_id: 'soul' } })
+    ).toBe('Listing pages in Soul');
+    expect(
+      summarizeToolCall({
+        name: 'knowledge__kb_read_page',
+        arguments: {
+          kb_id: 'soul',
+          path: 'knowledge/index.md',
+        },
+      })
+    ).toBe('Reading index.md in Soul');
+    expect(
+      summarizeToolCall({ name: 'knowledge__kb_search', arguments: { query: 'browser checks' } })
+    ).toBe('Searching knowledge bases for browser checks');
+  });
+
   it('describes browser-tab actions rather than listing an argument key', () => {
     expect(
       summarizeToolCall({ name: 'playwrightagent__browser_tabs', arguments: { action: 'list' } })

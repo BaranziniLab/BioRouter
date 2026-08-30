@@ -327,13 +327,9 @@ export const BottomMenuExtensionSelection = ({
     // same predicate the menu already filters its own contents by, so the chip
     // and the list it labels can never disagree about what an extension is.
     //
-    // A session extension the config does not know about is counted rather than
-    // hidden: unknown means "not a shipped capability" here, and the safe
-    // direction for a count of the user's own things is to show it.
-    const isShippedCapability = (name: string) => {
-      const known = allExtensions.find((e) => e.name === name);
-      return known ? isCapabilityExtension(known) : false;
-    };
+    // Session data may arrive before the global catalog; capability identity
+    // must not depend on that fetch completing.
+    const isShippedCapability = (name: string) => isCapabilityExtension({ name });
 
     if (isHubView) {
       return allExtensions.filter(

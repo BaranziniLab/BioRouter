@@ -224,10 +224,20 @@ prompt: |
   3. Clear todos and verify clean state
 
   ### Dynamic Extension Management
-  1. Use platform__search_available_extensions to discover available extensions
-  2. Document all available extensions
-  3. Test enabling and disabling dynamic extensions (if any available)
-  4. Verify extension isolation between enabled extensions
+  1. Use `extensionmanager__search_available_extensions` to discover installed extensions.
+     Report built-in capabilities separately from installed third-party extensions.
+  2. In an isolated test profile, start with a public test extension detached. Ask for a concrete
+     task, such as checking browser tabs, without specifying the tool sequence. Attach or install
+     the needed public extension and invoke one of its tools during the same user request.
+  3. Detach the test extension before finishing. Verify its tools are no longer advertised or
+     callable. Repeat with a coding-agent provider: an install report alone is not a pass.
+  4. Verify completed manager operations are not replayed after the catalog refresh. Check that
+     parallel operations retain their results, and that failed installs remain marked as failures.
+  5. Check the extension popup and tool count during attach and detach. Require semantic activity
+     labels that name the action and target; todo updates should name the task when available.
+     Mark visual assertions NOT OBSERVABLE if running headless.
+  6. Verify private extensions remain absent from a public provider's tool catalog. Do not alter
+     the user's normal profile, credentials, or installed packages for these tests.
   
   Log results to: {{ workspace_dir }}/phase2_extensions.md
   {% endif %}
