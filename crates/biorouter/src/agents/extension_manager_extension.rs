@@ -659,6 +659,86 @@ async fn restore_detached_attachment(
     ExtensionManagerToolError::OperationFailed { message }
 }
 
+async fn remove_staged_marketplace_config(
+    manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
+    package: &ValidatedPackageInstall,
+    quarantine: &std::path::Path,
+    was_attached: bool,
+) -> Result<ExtensionEntry, ExtensionManagerToolError> {
+    let expected_entry = ExtensionEntry {
+        enabled: package.enabled,
+        config: package.config.clone(),
+    };
+    let config_removed = match crate::config::extensions::remove_extension_if_matches(
+        &package.provenance.config_key,
+        &expected_entry,
+    ) {
+        Ok(removed) => removed,
+        Err(error) => {
+            let restoration =
+                restore_staged_marketplace_package(manager, package, quarantine, was_attached)
+                    .await;
+            return Err(ExtensionManagerToolError::OperationFailed {
+                message: match restoration {
+                    Ok(()) => format!(
+                        "Could not update the extension configuration; the staged package was restored: {error}"
+                    ),
+                    Err(restoration) => format!(
+                        "Could not update the extension configuration: {error}; {restoration}"
+                    ),
+                },
+            });
+        }
+    };
+    if !config_removed {
+        let restoration =
+            restore_staged_marketplace_package(manager, package, quarantine, was_attached).await;
+        return Err(ExtensionManagerToolError::OperationFailed {
+            message: match restoration {
+                Ok(()) => "The extension configuration changed before deletion; the staged package was restored"
+                    .to_owned(),
+                Err(error) => {
+                    format!("The extension configuration changed before deletion; {error}")
+                }
+            },
+        });
+    }
+    Ok(expected_entry)
+}
+
+async fn remove_staged_marketplace_provenance(
+    manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
+    package: &ValidatedPackageInstall,
+    quarantine: &std::path::Path,
+    was_attached: bool,
+    expected_entry: ExtensionEntry,
+) -> Result<(), ExtensionManagerToolError> {
+    let provenance_result =
+        crate::privacy::provenance::remove_marketplace_install_provenance(&package.provenance);
+    if matches!(&provenance_result, Ok(true)) {
+        return Ok(());
+    }
+
+    let config_restored = crate::config::extensions::restore_extension_if_absent(expected_entry)
+        .map_err(|error| error.to_string())
+        .and_then(|restored| {
+            restored
+                .then_some(())
+                .ok_or_else(|| "a concurrent configuration replacement was preserved".to_owned())
+        });
+    let package_restored =
+        restore_staged_marketplace_package(manager, package, quarantine, was_attached).await;
+    let restoration = match (config_restored, package_restored) {
+        (Ok(()), Ok(())) => Ok(()),
+        (config, package) => Err(format!(
+            "rollback was incomplete (config: {}; package: {})",
+            config.err().unwrap_or_else(|| "restored".to_owned()),
+            package.err().unwrap_or_else(|| "restored".to_owned())
+        )),
+    };
+    Err(provenance_removal_error(provenance_result, restoration))
+}
+
 async fn delete_staged_marketplace_package(
     manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
     plan: &ValidatedMarketplaceDeletion,
@@ -709,68 +789,16 @@ async fn delete_staged_marketplace_package(
         });
     }
 
-    let expected_entry = ExtensionEntry {
-        enabled: package.enabled,
-        config: package.config.clone(),
-    };
-    let config_removed = match crate::config::extensions::remove_extension_if_matches(
-        &package.provenance.config_key,
-        &expected_entry,
-    ) {
-        Ok(removed) => removed,
-        Err(error) => {
-            let restoration =
-                restore_staged_marketplace_package(manager, package, &quarantine, was_attached)
-                    .await;
-            return Err(ExtensionManagerToolError::OperationFailed {
-                message: match restoration {
-                    Ok(()) => format!(
-                        "Could not update the extension configuration; the staged package was restored: {error}"
-                    ),
-                    Err(restoration) => format!(
-                        "Could not update the extension configuration: {error}; {restoration}"
-                    ),
-                },
-            });
-        }
-    };
-    if !config_removed {
-        let restoration =
-            restore_staged_marketplace_package(manager, package, &quarantine, was_attached).await;
-        return Err(ExtensionManagerToolError::OperationFailed {
-            message: match restoration {
-                Ok(()) => "The extension configuration changed before deletion; the staged package was restored"
-                    .to_owned(),
-                Err(error) => {
-                    format!("The extension configuration changed before deletion; {error}")
-                }
-            },
-        });
-    }
-
-    let provenance_result =
-        crate::privacy::provenance::remove_marketplace_install_provenance(&package.provenance);
-    if !matches!(&provenance_result, Ok(true)) {
-        let config_restored =
-            crate::config::extensions::restore_extension_if_absent(expected_entry)
-                .map_err(|error| error.to_string())
-                .and_then(|restored| {
-                    restored.then_some(()).ok_or_else(|| {
-                        "a concurrent configuration replacement was preserved".to_owned()
-                    })
-                });
-        let package_restored =
-            restore_staged_marketplace_package(manager, package, &quarantine, was_attached).await;
-        let restoration = match (config_restored, package_restored) {
-            (Ok(()), Ok(())) => Ok(()),
-            (config, package) => Err(format!(
-                "rollback was incomplete (config: {}; package: {})",
-                config.err().unwrap_or_else(|| "restored".to_owned()),
-                package.err().unwrap_or_else(|| "restored".to_owned())
-            )),
-        };
-        return Err(provenance_removal_error(provenance_result, restoration));
-    }
+    let expected_entry =
+        remove_staged_marketplace_config(manager, package, &quarantine, was_attached).await?;
+    remove_staged_marketplace_provenance(
+        manager,
+        package,
+        &quarantine,
+        was_attached,
+        expected_entry,
+    )
+    .await?;
 
     std::fs::remove_dir_all(&quarantine).map_err(|error| {
         ExtensionManagerToolError::OperationFailed {
@@ -809,6 +837,131 @@ fn untouched_deletion_result(
         "untouched": true,
         "credentialsPreserved": true,
     })
+}
+
+fn remaining_deletion_results(
+    plans: &[ValidatedMarketplaceDeletion],
+    status: &str,
+    reason: &str,
+) -> Vec<Value> {
+    plans
+        .iter()
+        .map(|plan| untouched_deletion_result(plan, status, reason))
+        .collect()
+}
+
+async fn delete_one_marketplace_package(
+    manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
+    plan: &ValidatedMarketplaceDeletion,
+    cancel: &CancellationToken,
+    caller: crate::privacy::ProviderTier,
+) -> (bool, Value) {
+    let result = match detach_marketplace_package_from_session(manager, &plan.package, cancel).await
+    {
+        Ok(was_attached) => {
+            match delete_staged_marketplace_package(manager, plan, was_attached, cancel, caller)
+                .await
+            {
+                Ok(()) => {
+                    return (
+                        true,
+                        serde_json::json!({
+                            "registryId": plan.descriptor.registry_id,
+                            "extensionName": plan.package.extension_name,
+                            "status": "deleted",
+                            "detachedFromCurrentSession": was_attached,
+                            "credentialsPreserved": true,
+                        }),
+                    );
+                }
+                Err(error) => error,
+            }
+        }
+        Err(error) => error,
+    };
+    (
+        false,
+        serde_json::json!({
+            "registryId": plan.descriptor.registry_id,
+            "extensionName": plan.package.extension_name,
+            "status": "error",
+            "error": result.to_string(),
+            "credentialsPreserved": true,
+        }),
+    )
+}
+
+async fn execute_marketplace_deletion_batch(
+    manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
+    plans: &[ValidatedMarketplaceDeletion],
+    cancel: &CancellationToken,
+    caller: crate::privacy::ProviderTier,
+) -> (bool, Vec<Value>) {
+    let mut all_deleted = true;
+    let mut results = Vec::with_capacity(plans.len());
+    for (index, plan) in plans.iter().enumerate() {
+        if cancel.is_cancelled() {
+            results.extend(remaining_deletion_results(
+                &plans[index..],
+                "cancelled",
+                "The deletion batch was cancelled before this package was changed",
+            ));
+            return (false, results);
+        }
+        if let Err(error) = revalidate_approved_marketplace_deletion(plan, caller).await {
+            results.extend(remaining_deletion_results(
+                &plans[index..],
+                "notDeleted",
+                &format!(
+                    "The approved batch changed before this package could be deleted: {error}"
+                ),
+            ));
+            return (false, results);
+        }
+        if cancel.is_cancelled() {
+            results.extend(remaining_deletion_results(
+                &plans[index..],
+                "cancelled",
+                "The deletion batch was cancelled before this package was changed",
+            ));
+            return (false, results);
+        }
+
+        let (deleted, result) = delete_one_marketplace_package(manager, plan, cancel, caller).await;
+        all_deleted &= deleted;
+        results.push(result);
+    }
+    (all_deleted, results)
+}
+
+fn marketplace_deletion_report(
+    registry_ids: Vec<String>,
+    results: Vec<Value>,
+    all_deleted: bool,
+) -> Value {
+    let mut report = serde_json::json!({
+        "state": if all_deleted { "deleted" } else { "partial" },
+        "registryIds": registry_ids,
+        "results": results,
+        "credentialsPreserved": true,
+    });
+    let single = report
+        .get("results")
+        .and_then(Value::as_array)
+        .filter(|results| results.len() == 1)
+        .and_then(|results| results.first())
+        .cloned();
+    if let (Some(report), Some(single)) = (
+        report.as_object_mut(),
+        single.as_ref().and_then(Value::as_object),
+    ) {
+        for key in ["registryId", "extensionName", "detachedFromCurrentSession"] {
+            if let Some(value) = single.get(key) {
+                report.insert(key.to_owned(), value.clone());
+            }
+        }
+    }
+    report
 }
 
 /// The `manage_extensions` enable door: ask the shared enable gate, then resolve
@@ -1285,113 +1438,9 @@ impl ExtensionManagerClient {
             .as_ref()
             .and_then(|weak| weak.upgrade())
             .ok_or(ExtensionManagerToolError::ManagerUnavailable)?;
-        let mut all_deleted = true;
-        let mut results = Vec::with_capacity(current.len());
-        for (index, plan) in current.iter().enumerate() {
-            if cancel.is_cancelled() {
-                all_deleted = false;
-                results.extend(current[index..].iter().map(|remaining| {
-                    untouched_deletion_result(
-                        remaining,
-                        "cancelled",
-                        "The deletion batch was cancelled before this package was changed",
-                    )
-                }));
-                break;
-            }
-            if let Err(error) = revalidate_approved_marketplace_deletion(plan, cap.tier()).await {
-                all_deleted = false;
-                results.extend(current[index..].iter().map(|remaining| {
-                    untouched_deletion_result(
-                        remaining,
-                        "notDeleted",
-                        &format!(
-                            "The approved batch changed before this package could be deleted: {error}"
-                        ),
-                    )
-                }));
-                break;
-            }
-            if cancel.is_cancelled() {
-                all_deleted = false;
-                results.extend(current[index..].iter().map(|remaining| {
-                    untouched_deletion_result(
-                        remaining,
-                        "cancelled",
-                        "The deletion batch was cancelled before this package was changed",
-                    )
-                }));
-                break;
-            }
-
-            let result =
-                match detach_marketplace_package_from_session(&manager, &plan.package, &cancel)
-                    .await
-                {
-                    Ok(was_attached) => {
-                        match delete_staged_marketplace_package(
-                            &manager,
-                            plan,
-                            was_attached,
-                            &cancel,
-                            cap.tier(),
-                        )
-                        .await
-                        {
-                            Ok(()) => serde_json::json!({
-                                "registryId": plan.descriptor.registry_id,
-                                "extensionName": plan.package.extension_name,
-                                "status": "deleted",
-                                "detachedFromCurrentSession": was_attached,
-                                "credentialsPreserved": true,
-                            }),
-                            Err(error) => {
-                                all_deleted = false;
-                                serde_json::json!({
-                                    "registryId": plan.descriptor.registry_id,
-                                    "extensionName": plan.package.extension_name,
-                                    "status": "error",
-                                    "error": error.to_string(),
-                                    "credentialsPreserved": true,
-                                })
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        all_deleted = false;
-                        serde_json::json!({
-                            "registryId": plan.descriptor.registry_id,
-                            "extensionName": plan.package.extension_name,
-                            "status": "error",
-                            "error": error.to_string(),
-                            "credentialsPreserved": true,
-                        })
-                    }
-                };
-            results.push(result);
-        }
-
-        let mut report = serde_json::json!({
-            "state": if all_deleted { "deleted" } else { "partial" },
-            "registryIds": registry_ids,
-            "results": results,
-            "credentialsPreserved": true,
-        });
-        if let Some(single) = report
-            .get("results")
-            .and_then(Value::as_array)
-            .filter(|results| results.len() == 1)
-            .and_then(|results| results.first())
-            .cloned()
-        {
-            if let (Some(report), Some(single)) = (report.as_object_mut(), single.as_object()) {
-                for key in ["registryId", "extensionName", "detachedFromCurrentSession"] {
-                    if let Some(value) = single.get(key) {
-                        report.insert(key.to_owned(), value.clone());
-                    }
-                }
-            }
-        }
+        let (all_deleted, results) =
+            execute_marketplace_deletion_batch(&manager, &current, &cancel, cap.tier()).await;
+        let report = marketplace_deletion_report(registry_ids, results, all_deleted);
         Ok(vec![Content::text(
             serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_owned()),
         )])
@@ -2355,11 +2404,17 @@ mod tests {
     #[test]
     fn package_deletion_path_never_revokes_or_removes_credentials() {
         let source = include_str!("extension_manager_extension.rs");
-        let delete_body = source
+        let delete_handler = source
             .split("async fn handle_delete_extension_package")
             .nth(1)
             .and_then(|tail| tail.split("async fn manage_extensions_impl").next())
             .expect("delete handler boundaries");
+        let delete_report = source
+            .split("fn marketplace_deletion_report")
+            .nth(1)
+            .and_then(|tail| tail.split("/// The `manage_extensions` enable door").next())
+            .expect("delete report boundaries");
+        let delete_body = format!("{delete_handler}\n{delete_report}");
         for forbidden in [
             "revoke(",
             "remove_secret",
