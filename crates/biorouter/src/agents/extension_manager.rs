@@ -1379,6 +1379,25 @@ impl ExtensionManager {
             .is_none_or(|e| e.config.is_tool_available(tool))
     }
 
+    /// Revalidate an ordinary extension grant captured for a coding-agent
+    /// bridge. Both the exact config and the tool allowance must still match;
+    /// replacing an extension under the same normalized key therefore revokes
+    /// the old turn's immutable grant before dispatch.
+    pub async fn is_extension_bridge_grant_current(
+        &self,
+        key: &str,
+        expected: &ExtensionConfig,
+        tool: &str,
+    ) -> bool {
+        self.extensions
+            .lock()
+            .await
+            .get(key)
+            .is_some_and(|extension| {
+                extension.config == *expected && extension.config.is_tool_available(tool)
+            })
+    }
+
     pub async fn is_bundled_target_enabled(&self, target: &BundledExtensionTarget) -> bool {
         self.extensions
             .lock()

@@ -865,10 +865,19 @@ struct CodingAgentBridgeTarget {
 }
 
 #[derive(Clone)]
+struct CodingAgentBridgeExtensionTarget {
+    name: String,
+    key: String,
+    config: ExtensionConfig,
+    tools: Vec<String>,
+}
+
+#[derive(Clone)]
 pub(super) struct CodingAgentBridgePlan {
     capability: crate::privacy::CallCapability,
     pub(super) tools: Vec<Tool>,
     targets: Vec<CodingAgentBridgeTarget>,
+    extension_targets: Vec<CodingAgentBridgeExtensionTarget>,
     pub(super) delegation_available: bool,
 }
 
@@ -879,6 +888,15 @@ impl CodingAgentBridgePlan {
                 || (target.target.key() == "knowledge"
                     && CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&tool_name))
         })
+    }
+
+    fn extension_target_for_tool(
+        &self,
+        tool_name: &str,
+    ) -> Option<&CodingAgentBridgeExtensionTarget> {
+        self.extension_targets
+            .iter()
+            .find(|target| target.tools.iter().any(|tool| tool == tool_name))
     }
 
     #[cfg(test)]
@@ -895,11 +913,11 @@ struct CodingAgentBridgePolicy {
     tools: &'static [&'static str],
 }
 
-// Subscription-backed CLIs need a host-readable credential file. A generic or
-// custom extension can read that file on the daemon's behalf, bypassing the
-// child's native-tool isolation. Only these audited, path-bounded or
-// proof-backed surfaces may cross the chat bridge; expanding any list requires
-// an isolation review.
+// Subscription-backed CLIs need a host-readable credential file. Built-in
+// capabilities therefore cross only through these audited, path-bounded or
+// proof-backed surfaces. Ordinary extensions use a separate, per-turn path:
+// they must already be attached to the session, pass Gate E for the pinned
+// capability, and retain the exact config and tool grant captured by the plan.
 const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__subagent",
     "workspace__workspace_read_conversation",
@@ -1462,38 +1480,58 @@ impl ChatBridgeDispatch {
         call: &CallToolRequestParams,
     ) -> std::result::Result<(), String> {
         let name = call.name.as_ref();
-        let grant = self
-            .plan
-            .target_for_tool(name)
-            .ok_or_else(|| format!("Tool '{name}' is not in this turn's coding-agent bridge"))?;
-        if !self
-            .extensions
-            .is_bundled_target_enabled(&grant.target)
-            .await
-        {
-            return Err(format!(
-                "The {} capability is no longer enabled",
-                grant.capability_name
-            ));
-        }
-        if !CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&name) {
-            let prefix = format!("{}__", grant.target.key());
+        if let Some(grant) = self.plan.target_for_tool(name) {
+            if !self
+                .extensions
+                .is_bundled_target_enabled(&grant.target)
+                .await
+            {
+                return Err(format!(
+                    "The {} capability is no longer enabled",
+                    grant.capability_name
+                ));
+            }
+            if !CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&name) {
+                let prefix = format!("{}__", grant.target.key());
+                let tool_name = name.strip_prefix(&prefix).ok_or_else(|| {
+                    format!(
+                        "Tool '{name}' no longer belongs to the {} capability",
+                        grant.capability_name
+                    )
+                })?;
+                if !self
+                    .extensions
+                    .is_bundled_target_tool_available(&grant.target, tool_name)
+                    .await
+                {
+                    return Err(format!(
+                        "Tool '{name}' is not available from the {} capability any longer",
+                        grant.capability_name
+                    ));
+                }
+            }
+        } else if let Some(grant) = self.plan.extension_target_for_tool(name) {
+            let prefix = format!("{}__", grant.key);
             let tool_name = name.strip_prefix(&prefix).ok_or_else(|| {
                 format!(
-                    "Tool '{name}' no longer belongs to the {} capability",
-                    grant.capability_name
+                    "Tool '{name}' no longer belongs to the {} extension",
+                    grant.name
                 )
             })?;
             if !self
                 .extensions
-                .is_bundled_target_tool_available(&grant.target, tool_name)
+                .is_extension_bridge_grant_current(&grant.key, &grant.config, tool_name)
                 .await
             {
                 return Err(format!(
-                    "Tool '{name}' is not available from the {} capability any longer",
-                    grant.capability_name
+                    "Tool '{name}' is not available from the {} extension any longer",
+                    grant.name
                 ));
             }
+        } else {
+            return Err(format!(
+                "Tool '{name}' is not in this turn's coding-agent bridge"
+            ));
         }
         enforce_bridged_text_editor_path(&self.working_dir, call)?;
         if CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&name) {
@@ -6226,6 +6264,36 @@ impl Agent {
         targets
     }
 
+    async fn enabled_coding_agent_bridge_extension_targets(
+        &self,
+        tools: &[Tool],
+    ) -> Vec<CodingAgentBridgeExtensionTarget> {
+        self.extension_manager
+            .get_extension_configs()
+            .await
+            .into_iter()
+            .filter(|config| {
+                resolve_bundled_extension(&config.name()).is_none()
+                    && !matches!(config, ExtensionConfig::Frontend { .. })
+            })
+            .filter_map(|config| {
+                let key = config.key();
+                let prefix = format!("{key}__");
+                let granted_tools = tools
+                    .iter()
+                    .filter(|tool| tool.name.starts_with(&prefix))
+                    .map(|tool| tool.name.to_string())
+                    .collect::<Vec<_>>();
+                (!granted_tools.is_empty()).then(|| CodingAgentBridgeExtensionTarget {
+                    name: config.name().to_string(),
+                    key,
+                    config,
+                    tools: granted_tools,
+                })
+            })
+            .collect()
+    }
+
     async fn coding_agent_bridge_subagent_context(
         &self,
         iteration_provider: &Arc<dyn Provider>,
@@ -6302,6 +6370,7 @@ impl Agent {
         tools: &[Tool],
         delegation_available: bool,
         targets: &[CodingAgentBridgeTarget],
+        extension_targets: &[CodingAgentBridgeExtensionTarget],
     ) -> Vec<Tool> {
         // `tools` includes platform, frontend, and final-output tools dispatched
         // outside `ExtensionManager`. Offering those over this bridge would
@@ -6319,10 +6388,16 @@ impl Agent {
                 target.tools.contains(&name)
                     || (target.target.key() == "knowledge"
                         && CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&name))
-            });
+            }) || extension_targets
+                .iter()
+                .any(|target| target.tools.iter().any(|tool| tool == name));
+            let policy_allows = coding_agent_bridge_policy_allows_tool(name)
+                || extension_targets
+                    .iter()
+                    .any(|target| target.tools.iter().any(|tool| tool == name));
             let delegation_tool = CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&name);
             if !dispatched_elsewhere
-                && coding_agent_bridge_policy_allows_tool(name)
+                && policy_allows
                 && target_enabled
                 && (!delegation_tool || delegation_available)
                 && seen.insert(name.to_string())
@@ -6368,16 +6443,21 @@ impl Agent {
             .any(|target| target.target.key() == Self::SPAWN_EXTENSION);
 
         let mut bridge_candidates = tools.to_vec();
-        match self
+        let registry_tools = match self
             .extension_manager
             .get_prefixed_tools_for_capability(capability)
             .await
         {
-            Ok(mut registry_tools) => bridge_candidates.append(&mut registry_tools),
+            Ok(registry_tools) => registry_tools,
             Err(error) => {
-                tracing::warn!("could not recover audited coding-agent capability tools: {error}")
+                tracing::warn!("could not recover audited coding-agent capability tools: {error}");
+                Vec::new()
             }
-        }
+        };
+        let extension_targets = self
+            .enabled_coding_agent_bridge_extension_targets(&registry_tools)
+            .await;
+        bridge_candidates.extend(registry_tools);
         if targets
             .iter()
             .any(|target| target.target.key() == "knowledge")
@@ -6387,12 +6467,18 @@ impl Agent {
         }
         let delegation_available = coding_agent_bridge_can_delegate(tools, workspace_enabled);
         let tools = self
-            .prepare_coding_agent_bridge_tools(&bridge_candidates, delegation_available, &targets)
+            .prepare_coding_agent_bridge_tools(
+                &bridge_candidates,
+                delegation_available,
+                &targets,
+                &extension_targets,
+            )
             .await;
         Some(CodingAgentBridgePlan {
             capability,
             tools,
             targets,
+            extension_targets,
             delegation_available,
         })
     }
@@ -12634,6 +12720,45 @@ mod tests {
         name: &'static str,
     }
 
+    struct BridgeFixtureClient;
+
+    #[async_trait::async_trait]
+    impl crate::agents::mcp_client::McpClientTrait for BridgeFixtureClient {
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancel_token: CancellationToken,
+        ) -> Result<rmcp::model::ListToolsResult, rmcp::ServiceError> {
+            Ok(rmcp::model::ListToolsResult {
+                tools: vec![bridge_test_tool("capability_status")],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            name: &str,
+            _arguments: Option<rmcp::model::JsonObject>,
+            _meta: crate::agents::mcp_client::McpMeta,
+            _cancel_token: CancellationToken,
+        ) -> Result<CallToolResult, rmcp::ServiceError> {
+            if name != "capability_status" {
+                return Err(rmcp::ServiceError::TransportClosed);
+            }
+            Ok(CallToolResult {
+                content: vec![Content::text("fixture extension is callable")],
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            })
+        }
+
+        fn get_info(&self) -> Option<&rmcp::model::InitializeResult> {
+            None
+        }
+    }
+
     #[async_trait::async_trait]
     impl Provider for BridgedChildProvider {
         fn metadata() -> crate::providers::base::ProviderMetadata {
@@ -12761,6 +12886,102 @@ mod tests {
             }),
             "the GUI refresh must be emitted after the session write: {delta:?}"
         );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn coding_agent_bridge_exposes_a_loaded_ordinary_extension_and_revalidates_it() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let config = ExtensionConfig::stdio(
+            "bridgefixture",
+            "unused-fixture-command",
+            "ordinary public extension bridge fixture",
+            30_u64,
+        );
+        agent
+            .extension_manager
+            .add_client(
+                config.key(),
+                config,
+                Arc::new(BridgeFixtureClient),
+                None,
+                None,
+            )
+            .await;
+        let private_config = ExtensionConfig::stdio(
+            "ucsfomopagent",
+            "unused-private-fixture-command",
+            "known private extension bridge fixture",
+            30_u64,
+        );
+        agent
+            .extension_manager
+            .add_client(
+                private_config.key(),
+                private_config,
+                Arc::new(BridgeFixtureClient),
+                None,
+                None,
+            )
+            .await;
+        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
+        let tools = agent.list_tools(&session_id, None).await;
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .await
+            .expect("Codex needs a bridge plan");
+        assert!(
+            plan.tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == "bridgefixture__capability_status"),
+            "an attached ordinary extension that passed Gate E must be callable over the bridge"
+        );
+        assert!(
+            plan.tools
+                .iter()
+                .all(|tool| !tool.name.starts_with("ucsfomopagent__")),
+            "a private extension must remain invisible to the public coding-agent bridge"
+        );
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .expect("read bridge session");
+        let dispatch = agent.chat_bridge_dispatch(&provider, None, &session, plan);
+        let call = || CallToolRequestParams {
+            name: "bridgefixture__capability_status".into(),
+            arguments: Some(object!({})),
+            meta: None,
+            task: None,
+        };
+
+        let result = coding_agent_bridge::BridgeToolDispatch::dispatch(
+            &dispatch,
+            &session_id,
+            call(),
+            crate::privacy::CallCapability::for_test_restricted(),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the ordinary extension tool must dispatch");
+        assert_eq!(result.is_error, Some(false));
+
+        agent
+            .extension_manager
+            .remove_extension("bridgefixture")
+            .await
+            .expect("revoke the extension after the immutable plan was issued");
+        let revoked = coding_agent_bridge::BridgeToolDispatch::dispatch(
+            &dispatch,
+            &session_id,
+            call(),
+            crate::privacy::CallCapability::for_test_restricted(),
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("a detached extension must revoke its old bridge grant");
+        assert!(revoked.contains("not available"), "{revoked}");
     }
 
     #[test]
