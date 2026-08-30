@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BottomMenuExtensionSelection } from './BottomMenuExtensionSelection';
+import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
 
 const mocks = vi.hoisted(() => ({
   overrides: new Map<string, boolean>(),
@@ -241,6 +242,9 @@ describe('BottomMenuExtensionSelection', () => {
     mocks.getSessionExtensions.mockReturnValue(new Promise(() => {}) as never);
 
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
 
     // Four extensions are enabled in the fixture. Two are capabilities
     // (autovisualiser, code_execution) and do not count; two are the user's own
@@ -279,7 +283,42 @@ describe('BottomMenuExtensionSelection', () => {
     await waitFor(() =>
       expect(screen.getByLabelText('Manage extensions (2 enabled)')).toBeInTheDocument()
     );
-    resolveEnable?.();
+    await act(async () => {
+      resolveEnable?.();
+      await Promise.resolve();
+    });
+  });
+
+  it('refetches and refreshes this chat when the catalog changes', async () => {
+    mocks.getSessionExtensions.mockResolvedValue({ data: { extensions: [] } } as never);
+
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
+      button: 0,
+      ctrlKey: false,
+    });
+
+    const example = await screen.findByRole('menuitemcheckbox', { name: 'example' });
+    expect(example).toHaveAttribute('aria-checked', 'false');
+    await waitFor(() => expect(mocks.getSessionExtensions).toHaveBeenCalledTimes(2));
+    const callsBeforeChange = mocks.getSessionExtensions.mock.calls.length;
+
+    mocks.getSessionExtensions.mockResolvedValue({
+      data: { extensions: [{ type: 'stdio', name: 'example' }] },
+    } as never);
+    window.dispatchEvent(
+      new CustomEvent(CATALOG_CHANGED_EVENT, { detail: { revision: 1 } })
+    );
+
+    await waitFor(
+      () => expect(mocks.getSessionExtensions.mock.calls.length).toBeGreaterThan(callsBeforeChange),
+      { timeout: 1_500 }
+    );
+    expect(mocks.getSessionExtensions).toHaveBeenLastCalledWith({
+      path: { session_id: 'session-1' },
+    });
+    await waitFor(() => expect(example).toHaveAttribute('aria-checked', 'true'));
+    expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument();
   });
 
   /**

@@ -136,6 +136,7 @@ use crate::config::paths::Paths;
 /// The two spellings must agree; `the_store_lives_in_the_config_dir_under_the_documented_name`
 /// pins this half and the TypeScript side names this constant in a comment.
 pub const PROVENANCE_FILE: &str = "extension-provenance.json";
+const MUTATIONS_DIR_SUFFIX: &str = ".d";
 
 /// The current on-disk schema version. A file written by a newer build is read
 /// **for the fields this build understands** rather than discarded: discarding
@@ -150,6 +151,11 @@ const SCHEMA_VERSION: u32 = 1;
 /// has them and an incident response would not: they are evidence, not inputs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtensionProvenance {
+    /// Unique identity of this install. New writers always set it so a delete
+    /// of an older package cannot match a concurrent reinstall of the same
+    /// version into the same directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_id: Option<String>,
     /// The BAAM registry `id` this extension was installed from — the stable
     /// identifier DR-23 keys on. Reduced with `name_to_key` before it is
     /// compared with the compiled snapshot, so either spelling the registry
@@ -178,9 +184,10 @@ pub struct ExtensionProvenance {
 /// The non-secret identity needed to validate deletion of one marketplace
 /// package. The config key and install directory are captured together so a
 /// caller can re-read and compare the same record after user approval.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarketplaceInstallProvenance {
     pub config_key: String,
+    pub install_id: Option<String>,
     pub registry_id: String,
     pub install_dir: String,
     pub source_url: String,
@@ -192,6 +199,24 @@ struct Store {
     version: u32,
     #[serde(default)]
     extensions: HashMap<String, ExtensionProvenance>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum ProvenanceMutation {
+    Upsert {
+        key: String,
+        record: ExtensionProvenance,
+    },
+    DeleteIfMatches {
+        expected: MarketplaceInstallProvenance,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CurrentPointer {
+    key: String,
+    install_id: String,
 }
 
 /// The store's path: `<config dir>/extension-provenance.json`.
@@ -275,6 +300,7 @@ fn marketplace_installs_in_store(
             }
             Some(MarketplaceInstallProvenance {
                 config_key: config_key.clone(),
+                install_id: record.install_id.clone(),
                 registry_id: record.registry_id.clone(),
                 install_dir: record.install_dir.clone()?,
                 source_url: record.source_url.clone()?,
@@ -297,23 +323,44 @@ fn remove_marketplace_install_provenance_at(
     path: &Path,
     expected: &MarketplaceInstallProvenance,
 ) -> std::io::Result<bool> {
-    let mut store = read_store_at(path);
+    remove_marketplace_install_provenance_at_with_hook(path, expected, || {})
+}
+
+fn remove_marketplace_install_provenance_at_with_hook<F>(
+    path: &Path,
+    expected: &MarketplaceInstallProvenance,
+    after_read: F,
+) -> std::io::Result<bool>
+where
+    F: FnOnce(),
+{
+    let store = read_store_at(path);
+    after_read();
     let matches = store
         .extensions
         .get(&expected.config_key)
-        .is_some_and(|record| {
-            record.registry_id == expected.registry_id
-                && record.install_dir.as_deref() == Some(expected.install_dir.as_str())
-                && record.source_url.as_deref() == Some(expected.source_url.as_str())
-        });
+        .is_some_and(|record| record_matches_install(record, expected));
     if !matches {
         return Ok(false);
     }
-    store.extensions.remove(&expected.config_key);
-    store.version = SCHEMA_VERSION;
-    write_store_at(path, &store)?;
+    append_mutation(
+        path,
+        &ProvenanceMutation::DeleteIfMatches {
+            expected: expected.clone(),
+        },
+    )?;
     invalidate_cache();
     Ok(true)
+}
+
+fn record_matches_install(
+    record: &ExtensionProvenance,
+    expected: &MarketplaceInstallProvenance,
+) -> bool {
+    record.install_id == expected.install_id
+        && record.registry_id == expected.registry_id
+        && record.install_dir.as_deref() == Some(expected.install_dir.as_str())
+        && record.source_url.as_deref() == Some(expected.source_url.as_str())
 }
 
 fn collect_ids<'a>(
@@ -354,19 +401,12 @@ fn looks_like_a_path(dir: &str) -> bool {
     dir.contains('/') || dir.contains('\\')
 }
 
-/// Record where `config_name` came from, merging into whatever is already on
-/// disk.
+/// Record where `config_name` came from as an immutable mutation plus an
+/// atomically replaced current-install pointer.
 ///
-/// ⚠ **No shipped Rust path calls this today, and that is the correct state,
-/// not an omission.** The registry id exists only where a marketplace install
-/// happens, which is the desktop's Electron main process — it writes this same
-/// file through `ui/desktop/src/utils/extensionProvenance.ts`. The CLI's
-/// `biorouter extension install` takes a local `.brxt` path, which carries no
-/// registry id at all, so it correctly records nothing and leaves the daemon on
-/// the config-name join. This exists as the Rust-side writer for the moment a
-/// Rust install path *does* learn a registry id (a headless marketplace
-/// install, a `--registry-id` flag), and it is what pins the on-disk format
-/// from the reading side.
+/// Both the audited manager install path and Electron marketplace installer
+/// call this contract. Local `.brxt` installs without a registry id correctly
+/// record nothing and retain the config-name privacy fallback.
 pub fn record(config_name: &str, provenance: ExtensionProvenance) -> std::io::Result<()> {
     record_at(&provenance_path(), config_name, provenance)
 }
@@ -374,35 +414,73 @@ pub fn record(config_name: &str, provenance: ExtensionProvenance) -> std::io::Re
 fn record_at(
     path: &Path,
     config_name: &str,
-    provenance: ExtensionProvenance,
+    mut provenance: ExtensionProvenance,
 ) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    if provenance.install_id.is_none() {
+        provenance.install_id = Some(uuid::Uuid::new_v4().to_string());
     }
-    let mut store = read_store_at(path);
-    store.version = SCHEMA_VERSION;
-    store
-        .extensions
-        .insert(name_to_key(config_name), provenance);
-    write_store_at(path, &store)?;
+    let key = name_to_key(config_name);
+    let install_id = provenance
+        .install_id
+        .clone()
+        .expect("record_at assigns an install id");
+    append_mutation(
+        path,
+        &ProvenanceMutation::Upsert {
+            key: key.clone(),
+            record: provenance,
+        },
+    )?;
+    write_current_pointer(path, &key, &install_id)?;
     invalidate_cache();
     Ok(())
 }
 
-fn write_store_at(path: &Path, store: &Store) -> std::io::Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "provenance path has no parent",
-        )
-    })?;
-    std::fs::create_dir_all(parent)?;
-    let body = serde_json::to_vec_pretty(store)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    tmp.write_all(&body)?;
-    tmp.as_file_mut().sync_all()?;
-    tmp.persist(path).map_err(|error| error.error)?;
+fn mutations_dir(path: &Path) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(MUTATIONS_DIR_SUFFIX);
+    PathBuf::from(value)
+}
+
+fn current_pointers_dir(path: &Path) -> PathBuf {
+    mutations_dir(path).join("current")
+}
+
+fn pointer_filename(key: &str) -> String {
+    key.as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn write_current_pointer(path: &Path, key: &str, install_id: &str) -> std::io::Result<()> {
+    let directory = current_pointers_dir(path);
+    std::fs::create_dir_all(&directory)?;
+    let pointer = CurrentPointer {
+        key: key.to_owned(),
+        install_id: install_id.to_owned(),
+    };
+    let body = serde_json::to_vec(&pointer)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let mut temp = tempfile::NamedTempFile::new_in(&directory)?;
+    temp.write_all(&body)?;
+    temp.as_file_mut().sync_all()?;
+    temp.persist(directory.join(pointer_filename(key)))
+        .map_err(|error| error.error)?;
+    Ok(())
+}
+
+fn append_mutation(path: &Path, mutation: &ProvenanceMutation) -> std::io::Result<()> {
+    let directory = mutations_dir(path);
+    std::fs::create_dir_all(&directory)?;
+    let body = serde_json::to_vec(mutation)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let mut temp = tempfile::NamedTempFile::new_in(&directory)?;
+    temp.write_all(&body)?;
+    temp.as_file_mut().sync_all()?;
+    let filename = format!("{}.json", uuid::Uuid::new_v4());
+    temp.persist(directory.join(filename))
+        .map_err(|error| error.error)?;
     Ok(())
 }
 
@@ -410,20 +488,89 @@ fn write_store_at(path: &Path, store: &Store) -> std::io::Result<()> {
 /// of the wrong shape — is an empty store. See [`registry_ids_for`] for why
 /// that is not a silent downgrade.
 fn read_store_at(path: &Path) -> Store {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return Store::default();
+    let mut store = match std::fs::read_to_string(path) {
+        Ok(raw) => match serde_json::from_str::<Store>(&raw) {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "extension provenance store is unreadable; falling back to the config-name join"
+                );
+                Store::default()
+            }
+        },
+        Err(_) => Store::default(),
     };
-    match serde_json::from_str::<Store>(&raw) {
-        Ok(store) => store,
-        Err(e) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %e,
-                "extension provenance store is unreadable; falling back to the config-name join"
-            );
-            Store::default()
+    apply_mutations(path, &mut store);
+    store
+}
+
+fn apply_mutations(path: &Path, store: &mut Store) {
+    let Ok(entries) = std::fs::read_dir(mutations_dir(path)) else {
+        return;
+    };
+    let mut paths = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    let mutations = paths
+        .into_iter()
+        .filter_map(|path| {
+            std::fs::read(&path)
+                .ok()
+                .and_then(|body| serde_json::from_slice::<ProvenanceMutation>(&body).ok())
+        })
+        .collect::<Vec<_>>();
+    let tombstones = mutations
+        .iter()
+        .filter_map(|mutation| match mutation {
+            ProvenanceMutation::DeleteIfMatches { expected } => Some(expected.clone()),
+            ProvenanceMutation::Upsert { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    store.extensions.retain(|key, record| {
+        !tombstones
+            .iter()
+            .any(|expected| expected.config_key == *key && record_matches_install(record, expected))
+    });
+    let records = mutations
+        .into_iter()
+        .filter_map(|mutation| match mutation {
+            ProvenanceMutation::Upsert { key, record } => record
+                .install_id
+                .clone()
+                .map(|install_id| (install_id, (key, record))),
+            ProvenanceMutation::DeleteIfMatches { .. } => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let Ok(pointers) = std::fs::read_dir(current_pointers_dir(path)) else {
+        store.version = SCHEMA_VERSION;
+        return;
+    };
+    for pointer in pointers.filter_map(Result::ok).filter_map(|entry| {
+        std::fs::read(entry.path())
+            .ok()
+            .and_then(|body| serde_json::from_slice::<CurrentPointer>(&body).ok())
+    }) {
+        let Some((key, record)) = records.get(&pointer.install_id) else {
+            continue;
+        };
+        if key != &pointer.key {
+            continue;
+        }
+        let deleted = tombstones.iter().any(|expected| {
+            expected.config_key == *key && record_matches_install(record, expected)
+        });
+        if !deleted {
+            store.extensions.insert(key.clone(), record.clone());
+        } else {
+            store.extensions.remove(key);
         }
     }
+    store.version = SCHEMA_VERSION;
 }
 
 /// Stat-keyed cache over [`read_store_at`].
@@ -433,7 +580,8 @@ fn read_store_at(path: &Path) -> Store {
 /// time. It is `stat`ed each time instead, and re-parsed only when the path,
 /// mtime or length changes; the `stat` is also what makes an install visible to
 /// an already-running daemon without a restart.
-type StatKey = (PathBuf, Option<(SystemTime, u64)>);
+type MutationStamp = (usize, Option<SystemTime>, u64);
+type StatKey = (PathBuf, Option<(SystemTime, u64)>, MutationStamp);
 type CachedStore = Mutex<Option<(StatKey, Arc<Store>)>>;
 
 fn cache() -> &'static CachedStore {
@@ -473,7 +621,7 @@ fn cached_store_at(path: &Path) -> Arc<Store> {
     let stamp = std::fs::metadata(path)
         .ok()
         .and_then(|m| m.modified().ok().map(|t| (t, m.len())));
-    let key: StatKey = (path.to_path_buf(), stamp);
+    let key: StatKey = (path.to_path_buf(), stamp, mutation_stamp(path));
     let mut guard = lock_cache();
     if let Some((cached_key, store)) = guard.as_ref() {
         if *cached_key == key {
@@ -483,6 +631,27 @@ fn cached_store_at(path: &Path) -> Arc<Store> {
     let store = Arc::new(read_store_at(path));
     *guard = Some((key, store.clone()));
     store
+}
+
+fn mutation_stamp(path: &Path) -> MutationStamp {
+    let Ok(entries) = std::fs::read_dir(mutations_dir(path)) else {
+        return (0, None, 0);
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.metadata().ok())
+        .fold((0, None, 0), |(count, latest, bytes), metadata| {
+            let modified = metadata.modified().ok();
+            (
+                count + 1,
+                match (latest, modified) {
+                    (Some(left), Some(right)) => Some(left.max(right)),
+                    (left, None) => left,
+                    (None, right) => right,
+                },
+                bytes + metadata.len(),
+            )
+        })
 }
 
 /// Additive test provenance, consulted by [`registry_ids_for`] ahead of the
@@ -534,6 +703,7 @@ pub(crate) fn insert_test_record_at(
     test_records().lock().unwrap().insert(
         name_to_key(config_name),
         ExtensionProvenance {
+            install_id: None,
             registry_id: registry_id.to_string(),
             install_dir: install_dir.map(str::to_string),
             source_url: None,
@@ -592,6 +762,7 @@ mod tests {
         store.extensions.insert(
             "complete".to_owned(),
             ExtensionProvenance {
+                install_id: None,
                 registry_id: "fixture-agent".to_owned(),
                 install_dir: Some("/tmp/extensions/FixtureAgent".to_owned()),
                 source_url: Some("https://github.com/example/fixture-agent.brxt".to_owned()),
@@ -602,6 +773,7 @@ mod tests {
         store.extensions.insert(
             "missing-url".to_owned(),
             ExtensionProvenance {
+                install_id: None,
                 registry_id: "fixture-agent".to_owned(),
                 install_dir: Some("/tmp/extensions/Other".to_owned()),
                 source_url: None,
@@ -614,6 +786,7 @@ mod tests {
             marketplace_installs_in_store(&store, "fixture-agent"),
             vec![MarketplaceInstallProvenance {
                 config_key: "complete".to_owned(),
+                install_id: None,
                 registry_id: "fixture-agent".to_owned(),
                 install_dir: "/tmp/extensions/FixtureAgent".to_owned(),
                 source_url: "https://github.com/example/fixture-agent.brxt".to_owned(),
@@ -628,6 +801,7 @@ mod tests {
         let path = dir.path().join(PROVENANCE_FILE);
         let expected = MarketplaceInstallProvenance {
             config_key: "fixture".to_owned(),
+            install_id: None,
             registry_id: "fixture-agent".to_owned(),
             install_dir: "/tmp/extensions/FixtureAgent".to_owned(),
             source_url: "https://github.com/example/v1/fixture-agent.brxt".to_owned(),
@@ -636,6 +810,7 @@ mod tests {
             &path,
             "fixture",
             ExtensionProvenance {
+                install_id: None,
                 registry_id: expected.registry_id.clone(),
                 install_dir: Some(expected.install_dir.clone()),
                 source_url: Some("https://github.com/example/v2/fixture-agent.brxt".to_owned()),
@@ -655,8 +830,85 @@ mod tests {
         assert!(read_store_at(&path).extensions.is_empty());
     }
 
+    #[test]
+    fn concurrent_reinstall_cannot_be_erased_by_a_stale_deletion_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROVENANCE_FILE);
+        let expected = MarketplaceInstallProvenance {
+            config_key: "fixture".to_owned(),
+            install_id: Some("old-install".to_owned()),
+            registry_id: "fixture-agent".to_owned(),
+            install_dir: "/tmp/extensions/FixtureAgent".to_owned(),
+            source_url: "https://github.com/example/v1/fixture-agent.brxt".to_owned(),
+        };
+        record_at(
+            &path,
+            "fixture",
+            ExtensionProvenance {
+                install_id: expected.install_id.clone(),
+                registry_id: expected.registry_id.clone(),
+                install_dir: Some(expected.install_dir.clone()),
+                source_url: Some(expected.source_url.clone()),
+                bundle_sha256: None,
+                recorded_at: None,
+            },
+        )
+        .unwrap();
+
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let removal_path = path.clone();
+        let removal_expected = expected.clone();
+        let remover = std::thread::spawn(move || {
+            remove_marketplace_install_provenance_at_with_hook(
+                &removal_path,
+                &removal_expected,
+                || {
+                    read_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                },
+            )
+            .unwrap()
+        });
+        read_rx.recv().unwrap();
+
+        let replacement_source = "https://github.com/example/v2/fixture-agent.brxt";
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            record_at(
+                &writer_path,
+                "fixture",
+                ExtensionProvenance {
+                    install_id: Some("replacement-install".to_owned()),
+                    registry_id: "fixture-agent".to_owned(),
+                    install_dir: Some("/tmp/extensions/FixtureAgent-v2".to_owned()),
+                    source_url: Some(replacement_source.to_owned()),
+                    bundle_sha256: Some("replacement-digest".to_owned()),
+                    recorded_at: None,
+                },
+            )
+        });
+        writer.join().unwrap().unwrap();
+
+        release_tx.send(()).unwrap();
+        assert!(remover.join().unwrap());
+
+        let store = read_store_at(&path);
+        let replacement = store.extensions.get("fixture").unwrap();
+        assert_eq!(
+            replacement.install_id.as_deref(),
+            Some("replacement-install")
+        );
+        assert_eq!(replacement.source_url.as_deref(), Some(replacement_source));
+        assert_eq!(
+            replacement.install_dir.as_deref(),
+            Some("/tmp/extensions/FixtureAgent-v2")
+        );
+    }
+
     fn dir_record(install_dir: Option<&str>) -> ExtensionProvenance {
         ExtensionProvenance {
+            install_id: None,
             registry_id: "cdwagent".to_string(),
             install_dir: install_dir.map(str::to_string),
             source_url: None,
@@ -816,6 +1068,7 @@ mod tests {
             &path,
             "CDWAgent",
             ExtensionProvenance {
+                install_id: None,
                 registry_id: "cdwagent".to_string(),
                 install_dir: Some("/home/r/.config/biorouter/extensions/CDWAgent".to_string()),
                 source_url: Some("https://example.invalid/cdwagent.brxt".to_string()),
@@ -828,6 +1081,7 @@ mod tests {
             &path,
             "My Renamed Connector",
             ExtensionProvenance {
+                install_id: None,
                 registry_id: "ucsfomopagent".to_string(),
                 install_dir: None,
                 source_url: None,

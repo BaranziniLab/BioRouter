@@ -725,13 +725,45 @@ pub fn extension_enable_refusal(
     entry: Option<&crate::config::ExtensionEntry>,
     persisted: bool,
 ) -> Option<ErrorData> {
+    extension_enable_refusal_inner(cap, extension, entry, persisted, false, false)
+}
+
+/// Extension Manager's stricter agent-controlled door. Public models may
+/// never spawn private extensions through it, even when diagnostic privacy
+/// enforcement is disabled. A proof-backed grant may override only a public
+/// extension's persisted operator pin.
+pub fn extension_manager_enable_refusal(
+    cap: super::CallCapability,
+    extension: &str,
+    entry: Option<&crate::config::ExtensionEntry>,
+    persisted: bool,
+    proof_backed_public_grant: bool,
+) -> Option<ErrorData> {
+    extension_enable_refusal_inner(
+        cap,
+        extension,
+        entry,
+        persisted,
+        true,
+        proof_backed_public_grant,
+    )
+}
+
+fn extension_enable_refusal_inner(
+    cap: super::CallCapability,
+    extension: &str,
+    entry: Option<&crate::config::ExtensionEntry>,
+    persisted: bool,
+    absolute_public_boundary: bool,
+    proof_backed_public_grant: bool,
+) -> Option<ErrorData> {
     // DR-15's master opt-out, read off the SAME sample as the tier so the two can
     // never be observed at different instants. With tiers switched off the caller
     // is treated as private, which silences the tier arm and nothing else — the
     // alternative, a second flag inside this predicate, is exactly the second read
     // `CallCapability` exists to prevent. (The affiliation arm reads the same
     // sample for itself, inside `cross_affiliation_warning`.)
-    let caller = if cap.enforced() {
+    let caller = if absolute_public_boundary || cap.enforced() {
         cap.tier()
     } else {
         ProviderTier::Private
@@ -776,7 +808,10 @@ pub fn extension_enable_refusal(
     // Turning privacy tiers off must not quietly hand the agent the power to
     // re-enable everything the operator disabled.
     if let Some(entry) = entry {
-        if !entry.enabled && persisted {
+        if !entry.enabled
+            && persisted
+            && !(proof_backed_public_grant && class.tier == ProviderTier::Public)
+        {
             return Some(ErrorData::new(
                 ErrorCode::INVALID_REQUEST,
                 format!(

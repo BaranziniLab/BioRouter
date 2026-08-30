@@ -862,7 +862,10 @@ const CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS: &[&str] = &[
     "knowledge__kb_get_active",
 ];
 
-const CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS: &[&str] = &[PLATFORM_INGEST_SOURCE_TOOL_NAME];
+const CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS: &[&str] = &[
+    PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
+    PLATFORM_INGEST_SOURCE_TOOL_NAME,
+];
 
 const CODING_AGENT_BRIDGE_ALLOWED_SKILLS_TOOLS: &[&str] = &[
     "skills__searchSkills",
@@ -1285,6 +1288,48 @@ impl ChatBridgeDispatch {
         }
     }
 
+    async fn dispatch_ingest_conversation(
+        &self,
+        session_id: &str,
+        call: CallToolRequestParams,
+        capability: crate::privacy::CallCapability,
+        cancel: CancellationToken,
+    ) -> std::result::Result<CallToolResult, String> {
+        let name = call.name.as_ref();
+        let session = self
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .map_err(|error| format!("`{name}` could not load its session: {error}"))?;
+        let arguments = call
+            .arguments
+            .map(Value::Object)
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        match crate::agents::knowledge_tool::handle_ingest_conversation_with_provider(
+            arguments,
+            &session,
+            Some(cancel),
+            capability,
+            Some(Arc::clone(&self.ingest_provider)),
+            Arc::clone(&self.session_manager),
+        )
+        .await
+        {
+            Ok(content) => Ok(CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+            Err(error) => Ok(CallToolResult {
+                content: vec![Content::text(error.message.to_string())],
+                structured_content: None,
+                is_error: Some(true),
+                meta: None,
+            }),
+        }
+    }
+
     async fn refuse_unless_direct_subagent_child(
         &self,
         parent_session_id: &str,
@@ -1424,6 +1469,11 @@ impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
         if name == PLATFORM_INGEST_SOURCE_TOOL_NAME {
             return self
                 .dispatch_ingest_source(session_id, call, capability, cancel)
+                .await;
+        }
+        if name == PLATFORM_INGEST_CONVERSATION_TOOL_NAME {
+            return self
+                .dispatch_ingest_conversation(session_id, call, capability, cancel)
                 .await;
         }
 
@@ -5935,7 +5985,6 @@ impl Agent {
             let name = tool.name.as_ref();
             let dispatched_elsewhere = name
                 == crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME
-                || name == crate::agents::platform_tools::PLATFORM_INGEST_CONVERSATION_TOOL_NAME
                 || name == crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME
                 || name == crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
                 || self.is_frontend_tool(name).await;
@@ -6083,6 +6132,7 @@ impl Agent {
             ),
         }
         if targets.knowledge.is_some() {
+            bridge_candidates.push(platform_tools::ingest_conversation_tool());
             bridge_candidates.push(platform_tools::ingest_source_tool());
         }
         let bridged = self
@@ -12341,6 +12391,7 @@ mod tests {
             "workspace__workspace_watch",
             "workspace__workspace_send_prompt",
             "knowledge__kb_search",
+            PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
             PLATFORM_INGEST_SOURCE_TOOL_NAME,
             "skills__importSkillPackage",
             "skills__hotLoadSkill",
@@ -12361,6 +12412,13 @@ mod tests {
         ));
         assert!(!coding_agent_bridge_allows_tool(
             "knowledge__kb_search",
+            true,
+            false,
+            true,
+            true,
+        ));
+        assert!(!coding_agent_bridge_allows_tool(
+            PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
             true,
             false,
             true,
@@ -12503,6 +12561,7 @@ mod tests {
             ("BIOROUTER_PATH_ROOT", Some(path_root_value.as_str())),
             ("BIOROUTER_KNOWLEDGE_TEST_MODE", Some("true")),
         ]);
+        crate::knowledge::soul::install_assets();
 
         let (agent, session_id) = agent_with_one_extension_for_tests().await;
         let knowledge_target = resolve_bundled_extension("knowledge").expect("bundled Knowledge");
@@ -12517,8 +12576,21 @@ mod tests {
             .update_provider(Arc::clone(&iteration_provider), &session_id)
             .await
             .expect("bind a coding-agent-shaped provider");
+        let soul_marker = "BRIDGED_MEDITATION_SOUL_MARKER_7331";
+        agent
+            .config
+            .session_manager
+            .add_message(
+                &session_id,
+                &Message::user().with_text(format!(
+                    "Remember this durable preference in Soul: {soul_marker}"
+                )),
+            )
+            .await
+            .expect("seed the source chat for Meditation");
         let tools = agent.list_tools(&session_id, None).await;
         for expected in [
+            PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
             PLATFORM_INGEST_SOURCE_TOOL_NAME,
             "knowledge__kb_search",
             "knowledge__kb_lint",
@@ -12553,6 +12625,13 @@ mod tests {
             grant
                 .tools()
                 .iter()
+                .any(|tool| tool.name.as_ref() == PLATFORM_INGEST_CONVERSATION_TOOL_NAME),
+            "Meditation's required conversation ingest must cross the bridge"
+        );
+        assert!(
+            grant
+                .tools()
+                .iter()
                 .any(|tool| tool.name.as_ref() == PLATFORM_INGEST_SOURCE_TOOL_NAME),
             "the audited transactional ingest macro must cross the bridge"
         );
@@ -12562,6 +12641,69 @@ mod tests {
                 .iter()
                 .any(|tool| tool.name.as_ref() == "knowledge__kb_write_page"),
             "raw Knowledge writes must remain outside the bridge"
+        );
+
+        let meditation = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            grant.call(CallToolRequestParams {
+                name: PLATFORM_INGEST_CONVERSATION_TOOL_NAME.into(),
+                arguments: Some(object!({
+                    "kb_id": crate::knowledge::soul::SOUL_KB_ID,
+                    "session_ids": [session_id.clone()],
+                    "focus": "durable user preferences"
+                })),
+                meta: None,
+                task: None,
+            }),
+        )
+        .await
+        .expect("offline bridged Meditation must finish within five seconds")
+        .expect("conversation ingestion must dispatch across the bridge");
+        assert_eq!(meditation.is_error, Some(false), "{meditation:?}");
+        let meditation_text = meditation
+            .content
+            .iter()
+            .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+            .collect::<String>();
+        assert!(meditation_text.contains("'soul'"), "{meditation_text}");
+
+        let soul_root = biorouter_mcp::knowledge::paths::kb_root(
+            biorouter_mcp::knowledge::service::KnowledgeService::new_default()
+                .expect("open isolated Soul")
+                .root(),
+            crate::knowledge::soul::SOUL_KB_ID,
+        );
+        let mut pending = vec![soul_root.join("knowledge")];
+        let mut soul_pages = Vec::new();
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(directory).expect("read Soul knowledge directory") {
+                let path = entry.expect("read Soul knowledge entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+                    soul_pages.push(path);
+                }
+            }
+        }
+        assert!(!soul_pages.is_empty(), "Meditation must write an OKF page");
+        let raw_root = soul_root.join("raw");
+        let mut pending = vec![raw_root];
+        let mut raw_contains_marker = false;
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(directory).expect("read Soul raw source directory") {
+                let path = entry.expect("read Soul raw source entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if std::fs::read_to_string(path)
+                    .is_ok_and(|contents| contents.contains(soul_marker))
+                {
+                    raw_contains_marker = true;
+                }
+            }
+        }
+        assert!(
+            raw_contains_marker,
+            "Meditation must ingest the exact bridged conversation marker"
         );
 
         let marker = "BRIDGE_KNOWLEDGE_REGRESSION_9417";

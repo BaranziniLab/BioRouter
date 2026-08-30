@@ -819,6 +819,7 @@ fn announce_install(
 /// cannot move without breaking the launch — so it is recorded alongside.
 fn record_provenance(name: &str, registry_id: &str, url: &str, install_dir: &std::path::Path) {
     let provenance = crate::privacy::provenance::ExtensionProvenance {
+        install_id: None,
         registry_id: registry_id.to_string(),
         install_dir: Some(install_dir.display().to_string()),
         source_url: Some(url.to_string()),

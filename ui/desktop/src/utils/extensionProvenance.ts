@@ -39,11 +39,13 @@ import * as crypto from 'crypto';
 
 /** Must equal `provenance::PROVENANCE_FILE` in the Rust crate. */
 export const PROVENANCE_FILE = 'extension-provenance.json';
+export const PROVENANCE_MUTATIONS_DIR = `${PROVENANCE_FILE}.d`;
 
 /** Must equal `provenance::SCHEMA_VERSION` in the Rust crate. */
 export const PROVENANCE_SCHEMA_VERSION = 1;
 
 export interface ProvenanceRecord {
+  install_id?: string;
   /** The BAAM registry `id` — the stable identifier the tier is keyed on. */
   registry_id: string;
   /**
@@ -140,15 +142,7 @@ export interface RecordProvenanceInput {
  */
 export function recordExtensionProvenance(input: RecordProvenanceInput): ProvenanceRecord | null {
   const configDir = input.configDir ?? biorouterConfigDir();
-  const storePath = path.join(configDir, PROVENANCE_FILE);
   try {
-    let existing: unknown = null;
-    try {
-      existing = JSON.parse(fsSync.readFileSync(storePath, 'utf8'));
-    } catch {
-      // Absent or unreadable — start fresh.
-    }
-
     let bundleSha256: string | undefined;
     if (input.bundlePath) {
       try {
@@ -162,6 +156,7 @@ export function recordExtensionProvenance(input: RecordProvenanceInput): Provena
     }
 
     const record: ProvenanceRecord = {
+      install_id: crypto.randomUUID(),
       registry_id: input.registryId,
       ...(input.installDir ? { install_dir: input.installDir } : {}),
       ...(input.sourceUrl ? { source_url: input.sourceUrl } : {}),
@@ -169,13 +164,24 @@ export function recordExtensionProvenance(input: RecordProvenanceInput): Provena
       recorded_at: (input.now ?? (() => new Date().toISOString()))(),
     };
 
-    const store = mergeProvenance(existing, nameToKey(input.extensionName), record);
-    fsSync.mkdirSync(configDir, { recursive: true });
-    // Write-then-rename: a crash mid-write must not leave a truncated store,
-    // which would read as "no provenance" for every entry in it.
-    const tmp = `${storePath}.tmp`;
-    fsSync.writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`);
-    fsSync.renameSync(tmp, storePath);
+    const mutationDir = path.join(configDir, PROVENANCE_MUTATIONS_DIR);
+    fsSync.mkdirSync(mutationDir, { recursive: true });
+    const key = nameToKey(input.extensionName);
+    const mutationId = record.install_id!;
+    const target = path.join(mutationDir, `${mutationId}.json`);
+    const tmp = path.join(mutationDir, `.${mutationId}.tmp`);
+    fsSync.writeFileSync(
+      tmp,
+      `${JSON.stringify({ op: 'upsert', key, record })}\n`
+    );
+    fsSync.renameSync(tmp, target);
+    const currentDir = path.join(mutationDir, 'current');
+    fsSync.mkdirSync(currentDir, { recursive: true });
+    const pointerName = Buffer.from(key, 'utf8').toString('hex');
+    const pointerTarget = path.join(currentDir, pointerName);
+    const pointerTmp = path.join(currentDir, `.${mutationId}.tmp`);
+    fsSync.writeFileSync(pointerTmp, `${JSON.stringify({ key, install_id: mutationId })}\n`);
+    fsSync.renameSync(pointerTmp, pointerTarget);
     return record;
   } catch {
     return null;

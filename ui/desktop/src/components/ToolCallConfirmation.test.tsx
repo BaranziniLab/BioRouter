@@ -30,6 +30,7 @@ function actionRequired(overrides: {
   prompt?: string | null;
   risk?: ToolRisk;
   preview?: ToolPreview;
+  arguments?: Record<string, unknown>;
 }): ActionRequired & { type: 'actionRequired' } {
   return {
     type: 'actionRequired',
@@ -39,7 +40,7 @@ function actionRequired(overrides: {
       // module-level map that would otherwise leak between tests.
       id: `confirm-${nextId++}`,
       toolName: overrides.toolName ?? 'developer__shell',
-      arguments: {},
+      arguments: overrides.arguments ?? {},
       prompt: overrides.prompt ?? null,
       risk: overrides.risk,
       preview: overrides.preview,
@@ -166,6 +167,24 @@ describe('ToolCallConfirmation (BR-63)', () => {
     });
 
     expect(screen.getByText(/MATCH \(n\) RETURN n/)).toBeInTheDocument();
+  });
+
+  it('shows every package in a destructive batch deletion before approval', () => {
+    const json = JSON.stringify(
+      { registryIds: ['spoke-agent', 'playwright-agent'] },
+      null,
+      2
+    );
+    renderCard({
+      toolName: 'extensionmanager__delete_extension_package',
+      risk: 'high',
+      arguments: { registryIds: ['spoke-agent', 'playwright-agent'] },
+      preview: { kind: 'arguments', json, truncated: false },
+    });
+
+    expect(screen.getByText(/spoke-agent/)).toBeInTheDocument();
+    expect(screen.getByText(/playwright-agent/)).toBeInTheDocument();
+    expect(screen.getByTestId('tool-risk-badge')).toHaveTextContent('Destructive');
   });
 
   it('degrades gracefully when the backend sent no risk or preview', () => {

@@ -2410,6 +2410,7 @@ impl ExtensionManager {
                         }
                     }
                 }
+                Err(crate::agents::mcp_client::Error::TransportClosed) => {}
                 Err(e) => {
                     warn!("Failed to list resources for {}: {:?}", extension_name, e);
                 }

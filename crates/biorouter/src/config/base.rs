@@ -834,6 +834,27 @@ impl Config {
         self.save_values(values)
     }
 
+    /// Atomically read, mutate, and persist one non-secret configuration value
+    /// with respect to every writer in this process.
+    pub(crate) fn update_param<T, R, F>(&self, key: &str, update: F) -> Result<R, ConfigError>
+    where
+        T: for<'de> Deserialize<'de> + Serialize + Default,
+        F: FnOnce(&mut T) -> R,
+    {
+        let _guard = self.guard.lock().unwrap();
+        let mut values = self.load()?;
+        let mut value = values
+            .get(key)
+            .cloned()
+            .map(serde_yaml::from_value::<T>)
+            .transpose()?
+            .unwrap_or_default();
+        let result = update(&mut value);
+        values.insert(serde_yaml::to_value(key)?, serde_yaml::to_value(value)?);
+        self.save_values(values)?;
+        Ok(result)
+    }
+
     /// Delete a configuration value in the config file.
     ///
     /// This will immediately write the value to the config file. The value

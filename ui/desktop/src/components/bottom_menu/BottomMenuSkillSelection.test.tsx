@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BottomMenuSkillSelection } from './BottomMenuSkillSelection';
 import type { CatalogBundle, CatalogSkill, CatalogView } from '../../api';
+import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
 
 const mocks = vi.hoisted(() => ({
   overrides: new Map<string, boolean>(),
@@ -297,6 +298,30 @@ describe('BottomMenuSkillSelection', () => {
     render(<BottomMenuSkillSelection sessionId={null} />);
     await openMenu();
     await waitFor(() => expect(mocks.refreshSkillCatalog).toHaveBeenCalled());
+  });
+
+  it('refetches and refreshes this chat when the catalog changes', async () => {
+    render(<BottomMenuSkillSelection sessionId="20260824_1" />);
+    await openMenu();
+    await waitFor(() => expect(mocks.refreshSkillCatalog).toHaveBeenCalled());
+    const callsBeforeChange = mocks.refreshSkillCatalog.mock.calls.length;
+
+    mocks.refreshSkillCatalog.mockResolvedValue({
+      data: view({ skills: [skill('example-skill'), skill('extension-arrived')] }),
+    });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(CATALOG_CHANGED_EVENT, { detail: { revision: 1 } }));
+    });
+
+    await waitFor(() =>
+      expect(mocks.refreshSkillCatalog.mock.calls.length).toBeGreaterThan(callsBeforeChange)
+    );
+    expect(mocks.refreshSkillCatalog).toHaveBeenLastCalledWith({
+      query: { session_id: '20260824_1' },
+      throwOnError: true,
+    });
+    expect(await screen.findByText('extension-arrived')).toBeInTheDocument();
+    expect(screen.getByLabelText('Manage skills (2 enabled)')).toBeInTheDocument();
   });
 
   // ------------------------------------------------------------------ bundles
