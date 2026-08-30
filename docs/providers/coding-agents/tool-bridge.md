@@ -129,6 +129,22 @@ The earlier failure in the same test chat had installed and detached without inv
 A separate read-only task identified Soul as the chat's primary base and listed its six pages;
 this checks that existing test chat, not every fresh-profile or ingestion scenario.
 
+A later isolated Spoke run completed marketplace approval, user-entered credential configuration,
+one live `get_spoke_schema`, one read-only `query_spoke` returning three Gene records, and detach.
+Its follow-up explicitly forbade reattachment: the model correctly reported the tools unavailable,
+made no additional Spoke call, and the popup showed Spoke off. The installed package was retained.
+That run also exposed four pointless name guesses before installation; an absent installed entry
+must route through discovery and approved installation, not spelling retries.
+The manager's schema, tool descriptions and not-found response now require the exact installed
+name from its inventory, distinguish that name from a marketplace registry id, and point missing
+entries toward approved installation. The recovery test failed before this wording change;
+private-extension admission still precedes the not-found branch.
+
+The installed `anti-ai-writing` skill was hot-loaded, read and applied to a synthetic scheduling
+decision memo, then hot-unloaded in the same user task. The memo correctly compared $4 versus
+$4.50 per daily minute saved and the $60 incremental cost for 10 extra daily minutes. The skill
+count fell from four to three after unload. Permanent package removal remains a separate check.
+
 Codex's standard MCP result object is decoded as a complete `CallToolResult`, not serialized
 into a text block containing another result. This preserves content types, audience annotations,
 structured data, error state and display metadata. To Do update results carry the updated task's
@@ -136,11 +152,22 @@ id, text and status so the activity row can name the work rather than only its n
 The subsequent live read-only checklist showed “Starting ‘Confirm the primary knowledge base’”
 and “Marking ‘Examine its page index read-only’ complete”, alongside “Listing pages in Soul”.
 Older saved results without the task payload retain the action-and-id fallback.
+Marketplace labels retain semantic versions, including prerelease and build suffixes:
+“Installing Spoke Agent v0.4.1” instead of “Installing Spokeagent 0 4 1”. Recognized compact
+agent names are expanded without splitting ordinary names such as “Reagent”. Both cases have
+fail-first regressions, and the Spoke version label was checked in the running desktop UI.
 The desktop extension count classifies capability names directly, without waiting for the global
 catalog; a session response arriving first must not temporarily inflate it with built-in tools.
 The separate total-tool count also refetches on catalog changes, cancels superseded queries,
 and clears when switching to a chat whose agent is not ready. Its regressions cover attach,
 detach, out-of-order responses, chat switching and listener cleanup; three failed before the fix.
+
+The checkpoint's full workspace test run completed with 6,909 passed, zero failed, 44 ignored,
+and the paid Anthropic provider test explicitly excluded. The full desktop run passed all 3,788
+tests across 369 files. After the follow-up exact-name guidance and word-boundary changes, all
+38 Extension Manager tests and 45 activity-card tests passed, as did desktop type checking.
+These counts are automated coverage, not a substitute for the remaining live lifecycle and
+mid-request UI-toggle checks above.
 
 For scripted Electron testing, keep `npm run start-gui` attached to a terminal. The non-interactive
 launcher exited before the application main process started during this validation; a terminal

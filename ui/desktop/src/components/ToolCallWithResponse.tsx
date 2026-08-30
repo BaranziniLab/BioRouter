@@ -735,7 +735,10 @@ const namedArgument = (args: Record<string, unknown>, keys: string[]): string | 
 const namedEntity = (args: Record<string, unknown>, keys: string[]): string | null => {
   const value = namedArgument(args, keys);
   if (!value || /\s/.test(value)) return value;
-  return humanize(value.replace(/([a-z0-9])(agent|extension|skill)$/i, '$1_$2'));
+  const versioned = value.match(/^(.+?)[-_]v?(\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?)$/);
+  const name = versioned?.[1] ?? value;
+  const label = humanize(name.replace(/^(spoke|playwright|codegraph|cdw|ucsfomop)agent$/i, '$1_agent'));
+  return versioned ? `${label} v${versioned[2]}` : label;
 };
 
 const countNamedArguments = (args: Record<string, unknown>, key: string): number =>

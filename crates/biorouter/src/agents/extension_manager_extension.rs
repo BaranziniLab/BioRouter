@@ -57,6 +57,7 @@ pub enum ManageExtensionAction {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ManageExtensionsParams {
     pub action: ManageExtensionAction,
+    /// Exact installed name returned by search_available_extensions, not a marketplace registry id.
     pub extension_name: String,
 }
 
@@ -1050,7 +1051,7 @@ fn check_enable_allowed_impl(
         return Err(ErrorData::new(
             ErrorCode::RESOURCE_NOT_FOUND,
             format!(
-                "Extension '{}' not found. Please check the extension name and try again.",
+                "Extension '{}' not found. Use the exact installed name from search_available_extensions; do not retry guessed names. If absent from that inventory, use search_marketplace_extensions, then install_extension with its registry id after user approval.",
                 extension_name
             ),
             None,
@@ -1087,7 +1088,7 @@ impl ExtensionManagerClient {
                 Use these tools to discover, enable, and disable extensions, as well as review resources.
 
                 Available tools:
-                - search_available_extensions: Find extensions available to enable/disable
+                - search_available_extensions: List installed extensions and their exact names
                 - manage_extensions: Enable or disable extensions
                 - browse_marketplace_extensions: Browse trusted BAAM entries visible to this model
                 - search_marketplace_extensions: Search trusted BAAM entries
@@ -1098,7 +1099,10 @@ impl ExtensionManagerClient {
                 When you lack the tools needed to complete a task, use search_available_extensions first
                 to discover what extensions can help.
 
-                Use manage_extensions to enable or disable third-party extensions by name.
+                Use manage_extensions with the exact installed name returned by
+                search_available_extensions, not a marketplace title or registry id. If absent,
+                use search_marketplace_extensions and install_extension; do not retry guessed names.
+                A bundled skill or package files alone do not mean an extension is configured.
                 Built-in and platform capabilities are managed separately and this tool refuses them.
                 A successful change applies immediately in the current turn. Its response names the
                 exact availableTools or removedTools; call an available tool directly by that name,
@@ -1722,10 +1726,7 @@ impl ExtensionManagerClient {
         let mut tools = vec![
             Tool::new(
                 SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME.to_string(),
-                "Searches for additional extensions available to help complete tasks.
-        Use this tool when you're unable to find a specific feature or functionality you need to complete your task, or when standard approaches aren't working.
-        These extensions might provide the exact tools needed to solve your problem.
-        If you find a relevant one, consider using your tools to enable it.".to_string(),
+                "List installed third-party extensions visible to this model, their exact names, and attachment state. Use the returned name with manage_extensions. For extensions absent from this inventory, search_marketplace_extensions finds packages available to install.".to_string(),
                 Arc::new(
                     serde_json::json!({
                         "type": "object",
@@ -1745,9 +1746,8 @@ impl ExtensionManagerClient {
             }),
             Tool::new(
                 MANAGE_EXTENSIONS_TOOL_NAME.to_string(),
-                "Tool to manage extensions and tools in biorouter context.
-            Enable or disable extensions to help complete tasks.
-            Enable or disable an extension by providing the extension name.
+                "Attach or detach an installed third-party extension in this chat.
+            Use the exact installed name from search_available_extensions, not a marketplace title or registry id.
             Changes apply immediately in the current turn. The result lists exact availableTools
             after attach or removedTools after detach; use or stop using those names accordingly.
             ".to_string(),
@@ -2824,6 +2824,28 @@ mod tests {
         let err = check_enable_allowed(None, false, "ghost", public_enforcing()).unwrap_err();
         assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
         assert!(err.message.contains("not found"), "{}", err.message);
+    }
+
+    #[test]
+    fn missing_extension_guidance_prevents_name_guessing_and_distinguishes_installation() {
+        let err = check_enable_allowed(None, false, "Spoke Agent", public_enforcing()).unwrap_err();
+        for instruction in [
+            "exact installed name",
+            "search_available_extensions",
+            "do not retry guessed names",
+            "search_marketplace_extensions",
+            "install_extension",
+        ] {
+            assert!(
+                err.message.contains(instruction),
+                "{instruction}: {}",
+                err.message
+            );
+        }
+        assert!(
+            !err.message.contains("spokeagent"),
+            "do not disclose or guess an installed alias"
+        );
     }
 
     #[test]

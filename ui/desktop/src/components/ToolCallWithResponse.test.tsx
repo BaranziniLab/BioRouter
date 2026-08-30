@@ -104,6 +104,24 @@ describe('summarizeToolCall', () => {
     ).toBe('Installing Playwright Agent');
     expect(
       summarizeToolCall({
+        name: 'extensionmanager__install_extension',
+        arguments: { registry_id: 'spokeagent-0.4.1', enable: true },
+      })
+    ).toBe('Installing Spoke Agent v0.4.1');
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__install_extension',
+        arguments: { registry_id: 'sample-agent-1.2.3-rc.1+build.2', enable: true },
+      })
+    ).toBe('Installing Sample Agent v1.2.3-rc.1+build.2');
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__install_extension',
+        arguments: { registry_id: 'reagent-1.0.0', enable: true },
+      })
+    ).toBe('Installing Reagent v1.0.0');
+    expect(
+      summarizeToolCall({
         name: 'skills__hotLoadSkill',
         arguments: { name: 'Soul OKF ingestion' },
       })
