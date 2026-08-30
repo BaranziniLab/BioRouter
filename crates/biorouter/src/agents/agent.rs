@@ -875,7 +875,9 @@ const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__workspace_watch",
 ];
 
-const CODING_AGENT_BRIDGE_ALLOWED_DEVELOPER_TOOLS: &[&str] = &["developer__text_editor"];
+// The editor currently validates workspace paths before reopening them by name.
+// Keep it off the credential-bearing bridge until its I/O is descriptor-relative.
+const CODING_AGENT_BRIDGE_ALLOWED_DEVELOPER_TOOLS: &[&str] = &[];
 
 const CODING_AGENT_BRIDGE_ALLOWED_AGENT_DRAFTER_TOOLS: &[&str] = &[
     "agent_drafter__build_app",
@@ -12664,6 +12666,7 @@ mod tests {
     fn subscription_coding_agent_bridge_withholds_arbitrary_host_tools_but_allows_managers() {
         for blocked in [
             "developer__shell",
+            "developer__text_editor",
             "developer__image_processor",
             "computercontroller__automation_script",
             "code_execution__execute_code",
@@ -12684,7 +12687,6 @@ mod tests {
             );
         }
         for allowed in [
-            "developer__text_editor",
             "agent_drafter__create_app",
             "autovisualiser__render_dashboard",
             "memory__retrieve_memories",

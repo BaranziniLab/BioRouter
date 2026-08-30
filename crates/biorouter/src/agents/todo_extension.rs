@@ -227,10 +227,13 @@ impl TodoClient {
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let args = arguments.as_ref().ok_or("Missing arguments")?;
-        let id = args
+        let displayed_id = args
             .get("id")
             .and_then(|v| v.as_str())
-            .ok_or("Missing required parameter: id")?
+            .ok_or("Missing required parameter: id")?;
+        let id = displayed_id
+            .strip_prefix('#')
+            .unwrap_or(displayed_id)
             .to_string();
 
         let status = match args.get("status").and_then(|v| v.as_str()) {
@@ -576,5 +579,47 @@ mod tests {
         .await;
         assert_eq!(invalid.is_error, Some(true));
         assert!(text(&invalid).contains("No todo item"));
+    }
+
+    #[tokio::test]
+    async fn todo_update_accepts_the_displayed_hash_prefixed_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SessionManager::new(temp.path().join("sessions")));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "todo displayed id".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let client = TodoClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: Arc::clone(&manager),
+        })
+        .unwrap();
+
+        call(
+            &client,
+            &session.id,
+            "todo_write",
+            serde_json::json!({"content": "- [ ] verify displayed id"}),
+        )
+        .await;
+        let updated = call(
+            &client,
+            &session.id,
+            "todo_update",
+            serde_json::json!({"id": "#1", "status": "completed"}),
+        )
+        .await;
+
+        assert_eq!(updated.is_error, Some(false), "{}", text(&updated));
+        assert!(text(&updated).contains("Updated item #1"));
+        let reinjected = client.get_moim(&session.id).await.unwrap();
+        assert!(
+            reinjected.contains("- [x] (#1) verify displayed id"),
+            "{reinjected}"
+        );
     }
 }
