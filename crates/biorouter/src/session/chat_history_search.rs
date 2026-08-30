@@ -241,7 +241,9 @@ impl<'a> ChatHistorySearch<'a> {
         // Prefer the FTS5 index (relevance-ranked via bm25) when it exists;
         // fall back to the legacy substring `LIKE` scan for an un-migrated DB
         // so recall never errors, it only degrades (BR-17).
-        let rows = if self.fts_available().await {
+        let rows = if self.query.trim().is_empty() {
+            self.fetch_rows_recent().await?
+        } else if self.fts_available().await {
             let match_expr = chat_fts::sanitize_fts_query(self.query);
             if match_expr.is_empty() {
                 return Ok(empty());
@@ -265,6 +267,76 @@ impl<'a> ChatHistorySearch<'a> {
             self.convert_to_results(session_messages, order, session_totals, rows_examined);
 
         Ok(results)
+    }
+
+    /// One latest message from each recent session, newest session first.
+    ///
+    /// Chat Recall's ordinary search cannot discover a chat whose vocabulary
+    /// the caller does not already know. Meditation needs the opposite: list
+    /// sessions after its successful-run cursor, then decide which are worth
+    /// reading. An empty query selects this bounded recent-session mode.
+    /// Privacy and affiliation clauses stay in SQL, before `LIMIT`, exactly as
+    /// they do for both keyword-search builders.
+    async fn fetch_rows_recent(&self) -> Result<Vec<SqlQueryRow>> {
+        let authored = "COALESCE(NULLIF(m.created_timestamp, 0), CAST(strftime('%s', m.timestamp) AS INTEGER))";
+        let mut sql = format!(
+            r#"
+            SELECT
+                s.id as session_id,
+                COALESCE(NULLIF(s.name, ''), NULLIF(s.description, ''), 'Untitled chat') as session_description,
+                s.working_dir as session_working_dir,
+                s.created_at as session_created_at,
+                m.role,
+                m.content_json,
+                {authored} as timestamp
+            FROM sessions s
+            INNER JOIN messages m ON m.id = (
+                SELECT recent.id
+                FROM messages recent
+                WHERE recent.session_id = s.id
+                ORDER BY COALESCE(
+                    NULLIF(recent.created_timestamp, 0),
+                    CAST(strftime('%s', recent.timestamp) AS INTEGER)
+                ) DESC, recent.id DESC
+                LIMIT 1
+            )
+            WHERE s.session_type = 'user'
+            "#
+        );
+
+        if self.exclude_session_id.is_some() {
+            sql.push_str(" AND s.id != ?");
+        }
+        if self.after_date.is_some() {
+            sql.push_str(&format!(" AND {authored} >= ?"));
+        }
+        if self.before_date.is_some() {
+            sql.push_str(&format!(" AND {authored} <= ?"));
+        }
+        if self.filters_private_sessions() {
+            sql.push_str(" AND s.privacy_tier = 'public'");
+        }
+        if let Some((clause, _)) = self.affiliation_clause() {
+            sql.push_str(&clause);
+        }
+        sql.push_str(&format!(" ORDER BY {authored} DESC LIMIT ?"));
+
+        let mut query_builder = sqlx::query_as::<_, SqlQueryRow>(&sql);
+        if let Some(exclude_id) = &self.exclude_session_id {
+            query_builder = query_builder.bind(exclude_id);
+        }
+        if let Some(after) = self.after_date {
+            query_builder = query_builder.bind(after.timestamp());
+        }
+        if let Some(before) = self.before_date {
+            query_builder = query_builder.bind(before.timestamp());
+        }
+        if let Some((_, Some(institution))) = self.affiliation_clause() {
+            query_builder = query_builder.bind(institution);
+        }
+        query_builder = query_builder.bind(self.limit as i64);
+
+        Ok(query_builder.fetch_all(self.pool).await?)
     }
 
     /// True when the FTS5 mirror table exists (migration arm 15, and re-created
@@ -908,7 +980,8 @@ mod tests {
             "CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', \
              description TEXT NOT NULL DEFAULT '', \
              working_dir TEXT NOT NULL DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, \
-             privacy_tier TEXT NOT NULL DEFAULT 'public')",
+             privacy_tier TEXT NOT NULL DEFAULT 'public', \
+             session_type TEXT NOT NULL DEFAULT 'user')",
         )
         .execute(&pool)
         .await
@@ -1060,6 +1133,84 @@ mod tests {
                 "{path:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn empty_query_lists_recent_sessions_without_guessing_their_vocabulary() {
+        let db = seeded(
+            QueryPath::Fts,
+            &[
+                private_chat_containing("secret-topic"),
+                public_chat_containing("hash-prefixed-todo"),
+                public_chat_containing("unrelated-clinic-dashboard"),
+            ],
+        )
+        .await;
+
+        let public = search_with_limit(ProviderTier::Public, &db, "", 10).await;
+        assert_eq!(public.results.len(), 2);
+        let rendered = render_for_model(&public);
+        assert!(rendered.contains("hash-prefixed-todo"), "{rendered}");
+        assert!(
+            rendered.contains("unrelated-clinic-dashboard"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("secret-topic"), "{rendered}");
+
+        let private = search_with_limit(ProviderTier::Private, &db, "", 10).await;
+        assert_eq!(private.results.len(), 3);
+        assert!(render_for_model(&private).contains("secret-topic"));
+
+        sqlx::query("UPDATE sessions SET session_type = 'scheduled' WHERE id = 's0'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let user_only = search_with_limit(ProviderTier::Private, &db, "", 10).await;
+        assert_eq!(user_only.results.len(), 2);
+        assert!(!render_for_model(&user_only).contains("secret-topic"));
+
+        let boundary = sqlx::query_scalar::<_, i64>(
+            "SELECT created_timestamp FROM messages WHERE session_id = 's1'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        let after = DateTime::<Utc>::from_timestamp(boundary, 0).unwrap();
+        let since_boundary = ChatHistorySearch::new(
+            &db.pool,
+            "",
+            Some(10),
+            Some(after),
+            None,
+            None,
+            SearchReach::tier_only(ProviderTier::Public),
+        )
+        .execute()
+        .await
+        .unwrap();
+        assert_eq!(since_boundary.results.len(), 1);
+        assert!(since_boundary.results[0].messages[0]
+            .content
+            .contains("hash-prefixed-todo"));
+    }
+
+    #[tokio::test]
+    async fn recent_session_limit_is_applied_after_the_privacy_filter() {
+        let db = seeded(
+            QueryPath::Fts,
+            &chain(
+                vec_of(10, private_chat_ranking_high("private")),
+                vec_of(3, public_chat_ranking_low("public")),
+            ),
+        )
+        .await;
+
+        let recent = search_with_limit(ProviderTier::Public, &db, "", 5).await;
+        assert_eq!(recent.results.len(), 3);
+        assert!(recent
+            .results
+            .iter()
+            .all(|result| result.messages[0].content.contains("public")));
     }
 
     #[tokio::test]

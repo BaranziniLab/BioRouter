@@ -18,23 +18,24 @@ pub static EXTENSION_NAME: &str = "Chat Recall";
 /// Parameters for the chatrecall tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ChatRecallParams {
-    /// Search keywords. Use multiple related terms/synonyms (e.g., 'database postgres sql'). Mutually exclusive with session_id.
+    /// Search keywords. Use multiple related terms/synonyms (e.g., 'database postgres sql').
+    /// Omit to list recent user chat sessions without guessing keywords. Mutually exclusive with session_id.
     #[serde(skip_serializing_if = "Option::is_none")]
     query: Option<String>,
     /// Session ID to load. Returns the first and last few messages, each clipped to a long
     /// excerpt. Takes precedence: if `query` is also given, it is ignored.
     #[serde(skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
-    /// Max MESSAGES to return (default 10, max 50) — not max sessions, so a broad query can
-    /// return few sessions. Search mode only. A non-positive value falls back to the default.
+    /// Max MESSAGES to return in search mode, or SESSIONS in recent mode (default 10, max 50).
+    /// A broad keyword query can return few sessions. A non-positive value falls back to the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     limit: Option<i64>,
     /// Inclusive lower bound, ISO 8601 (e.g. '2025-10-01T00:00:00Z'). An exact instant compared
-    /// against when the message was written. Search mode only.
+    /// against when the message was written. Search and recent modes only.
     #[serde(skip_serializing_if = "Option::is_none")]
     after_date: Option<String>,
     /// Inclusive upper bound, ISO 8601. An instant, not a day: use '2025-10-15T23:59:59Z' to
-    /// include the 15th. Search mode only.
+    /// include the 15th. Search and recent modes only.
     #[serde(skip_serializing_if = "Option::is_none")]
     before_date: Option<String>,
 }
@@ -482,12 +483,15 @@ impl ChatRecallClient {
                 Err(e) => Err(format!("Failed to load session: {}", e)),
             }
         } else {
-            // SEARCH MODE: Search across all sessions
+            // SEARCH/RECENT MODE: Search content, or list recent sessions when
+            // no query is supplied.
             let query = arguments
                 .get("query")
                 .and_then(|v| v.as_str())
-                .ok_or("Missing required parameter: query or session_id")?
+                .unwrap_or_default()
+                .trim()
                 .to_string();
+            let recent_mode = query.is_empty();
 
             let limit = arguments
                 .get("limit")
@@ -564,21 +568,30 @@ impl ChatRecallClient {
             {
                 Ok(results) => {
                     let formatted_results = if results.rows_examined == 0 {
-                        format!("No results found for query: '{}'", query)
+                        if recent_mode {
+                            "No recent sessions found in the requested time range".to_string()
+                        } else {
+                            format!("No results found for query: '{}'", query)
+                        }
                     } else if results.total_matches == 0 {
                         let capped = results.rows_examined >= limit;
+                        let subject = if recent_mode {
+                            "recent session row(s)".to_string()
+                        } else {
+                            format!("matching message row(s) for query: '{query}'")
+                        };
                         format!(
-                            "Found {}{} matching message row(s) for query: '{}', but none could be \
-                             rendered because the stored content was malformed or unsupported. \
-                             This is not evidence that the query had no matches; repair the \
-                             affected session data and retry.{}",
+                            "Found {}{} {subject}, but none could be rendered because the stored \
+                             content was malformed or unsupported. This is not evidence that no \
+                             qualifying session exists; repair the affected session data and \
+                             retry.{}",
                             if capped { "at least " } else { "" },
                             results.rows_examined,
-                            query,
                             if capped {
                                 format!(
-                                    " The {limit}-message limit was reached, so further \
-                                     unrenderable matches may exist."
+                                    " The {limit}-{} limit was reached, so further unrenderable \
+                                     matches may exist.",
+                                    if recent_mode { "session" } else { "message" }
                                 )
                             } else {
                                 String::new()
@@ -612,22 +625,37 @@ impl ChatRecallClient {
                                 results.unrenderable_matches
                             )
                         };
-                        let mut output = format!(
-                            "Found {}{} matching message(s) across {} readable session(s) for query: '{}'\n{}\n",
-                            if capped { "at least " } else { "" },
-                            results.rows_examined,
-                            results.results.len(),
-                            query,
-                            if capped {
+                        let disclosure = if capped {
+                            if recent_mode {
+                                format!(
+                                    "(the {limit}-session limit was reached, so older sessions \
+                                     may not be shown; raise `limit` if needed)\n{unreadable}"
+                                )
+                            } else {
                                 format!(
                                     "(the {limit}-message limit was reached, so there may be \
                                      further matches that are not shown; narrow the query or \
                                      raise `limit`)\n{unreadable}"
                                 )
-                            } else {
-                                unreadable
                             }
-                        );
+                        } else {
+                            unreadable
+                        };
+                        let mut output = if recent_mode {
+                            format!(
+                                "Found {}{} recent readable session(s)\n{disclosure}\n",
+                                if capped { "at least " } else { "" },
+                                results.results.len()
+                            )
+                        } else {
+                            format!(
+                                "Found {}{} matching message(s) across {} readable session(s) for query: '{}'\n{disclosure}\n",
+                                if capped { "at least " } else { "" },
+                                results.rows_examined,
+                                results.results.len(),
+                                query,
+                            )
+                        };
                         for (idx, result) in results.results.iter().enumerate() {
                             output.push_str(&format!(
                                 "{}. Session: {} (ID: {})\n   Working Dir: {}\n   Last Activity: {}\n   Showing {} of {} total message(s) in session:\n\n",
@@ -677,9 +705,10 @@ impl ChatRecallClient {
         vec![Tool::new(
             "chatrecall".to_string(),
             indoc! {r#"
-                Search past chat or load session summaries. Use when it is clear user expects some memory or context.
+                Search past chat, list recent sessions, or load session summaries. Use when it is clear user expects some memory or context.
 
                 search mode (query): Use multiple keywords/synonyms; any of them may match. Returns messages grouped by session, best match first, each message clipped to an excerpt. `limit` caps MESSAGES, not sessions, so a broad query can return few sessions — narrow it rather than raising the limit. `after_date`/`before_date` are exact instants, not days, so `before_date: '2025-10-15T00:00:00Z'` stops at midnight — pass '2025-10-15T23:59:59Z' to include that day.
+                recent mode (omit query and session_id): Lists user chat sessions newest-first with one latest message each; scheduled jobs and subagents are excluded. `limit` caps SESSIONS. Combine with `after_date` to discover chats active since a cursor without guessing their vocabulary.
                 load mode (session_id): Returns the first and last few messages of one session, each clipped to a long excerpt.
                 Mutually exclusive: if both are given, session_id wins and query is ignored.
             "#}
@@ -921,6 +950,12 @@ mod tests {
                 .await
         }
 
+        async fn recent_via(&self, cap: CallCapability) -> Result<Vec<Content>, String> {
+            self.client
+                .handle_chatrecall("caller-session", cap, Some(JsonObject::new()))
+                .await
+        }
+
         async fn load_via_public_capability_caller(
             &self,
             target: &str,
@@ -1133,6 +1168,43 @@ mod tests {
         );
         assert!(text.contains("is private"), "{text}");
         assert!(text.contains("/tmp/notes"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn recent_mode_discovers_sessions_without_guessing_their_vocabulary() {
+        let h = Harness::new().await;
+        h.session_containing(
+            "Private genome review",
+            "/data/private",
+            true,
+            "licensed-liftover-marker",
+        )
+        .await;
+        h.session_containing(
+            "Hash-prefixed Todo ID test",
+            "/tmp/todo",
+            false,
+            "todo-marker",
+        )
+        .await;
+        h.session_containing(
+            "Clinic wait-time dashboard",
+            "/tmp/clinic",
+            false,
+            "clinic-marker",
+        )
+        .await;
+
+        let output = h
+            .recent_via(CallCapability::for_test(ProviderTier::Public, true))
+            .await
+            .unwrap();
+        let text = &output[0].as_text().unwrap().text;
+        assert!(text.contains("recent readable session"), "{text}");
+        assert!(text.contains("Hash-prefixed Todo ID test"), "{text}");
+        assert!(text.contains("Clinic wait-time dashboard"), "{text}");
+        assert!(!text.contains("Private genome review"), "{text}");
+        assert!(!text.contains("licensed-liftover-marker"), "{text}");
     }
 
     /// The sample the call was ADMITTED on is the sample the gate reads — even

@@ -56,8 +56,10 @@ pub const MEDITATION_CRON: &str = "0 0 3 * * *";
 pub const SOUL_COLOR: &str = "#9c6b3f";
 
 const SOUL_RECONCILE_LOCK: &str = ".soul-reconcile.lock";
-const PREVIOUS_MEDITATION_WORKFLOW_SHA256: &[&str] =
-    &["142edbf98aca3e521649ddec05ed156ab16936303cc42cbe8cce1bc79c630772"];
+const PREVIOUS_MEDITATION_WORKFLOW_SHA256: &[&str] = &[
+    "142edbf98aca3e521649ddec05ed156ab16936303cc42cbe8cce1bc79c630772",
+    "a0558805057ffae5257fa805b73253a1b615300bec563a0126f4a23884f9884c",
+];
 const SOUL_OKF_SCHEMA: &str = include_str!("../../../biorouter-mcp/src/knowledge/schema_okf.md");
 const SOUL_LOG: &str = "# Log\n\n";
 const SOUL_GITIGNORE: &str =
@@ -809,7 +811,7 @@ fn upgrade_existing_meditation_workflow(
 /// default provider/model (no `settings` override), loads the update-soul
 /// skill, focuses on the Soul KB, and instructs the agent to digest recent
 /// user interactions into durable, personalised knowledge.
-pub const MEDITATION_WORKFLOW_YAML: &str = r#"version: 1.0.1
+pub const MEDITATION_WORKFLOW_YAML: &str = r#"version: 1.0.2
 title: Meditation
 description: >-
   Review the user's recent Biorouter sessions and save what matters about them
@@ -825,13 +827,14 @@ instructions: |-
   personalised knowledge about THE USER, not a summary of every chat.
 
   Procedure:
-  1. Find the user's recent REAL chat sessions with the `chatrecall` tool.
-     Start with one broad search call over the supplied recent date range; make
-     at most one follow-up search only when the first result is truncated or
-     genuinely ambiguous. Do not fan out over synonymous queries. Skip
-     scheduled-job sessions (names starting with "Scheduled job:"), especially
-     this very session. Select at most three real sessions, prioritising the
-     most recent high-signal work over greetings or routine follow-ups.
+  1. Find the user's recent REAL chat sessions with exactly one `chatrecall`
+     recent-mode call: omit both `query` and `session_id`, pass the supplied
+     `after_date` cursor, and set `limit` to 10. This lists recent sessions
+     without guessing vocabulary; do not substitute a keyword or synonym
+     search. Skip scheduled-job sessions (names starting with "Scheduled job:"),
+     especially this very session. Select at most three real sessions,
+     prioritising the most recent high-signal work over greetings or routine
+     follow-ups.
   2. Call `platform__ingest_conversation` with EXPLICIT `session_ids` for the
      most relevant recent session(s), targeting the `soul` knowledge base.
      Never omit `session_ids`: omitting it defaults to the current scheduled
@@ -959,7 +962,7 @@ mod tests {
         let wf: Workflow = serde_yaml::from_str(MEDITATION_WORKFLOW_YAML)
             .expect("Meditation workflow YAML must deserialize");
         assert_eq!(wf.title, "Meditation");
-        assert_eq!(wf.version, "1.0.1");
+        assert_eq!(wf.version, "1.0.2");
         let kbs = wf.knowledge_bases.expect("knowledge_bases present");
         assert_eq!(kbs.default.as_deref(), Some("soul"));
         assert!(kbs.visible.iter().any(|k| k == "soul"));
@@ -975,10 +978,8 @@ mod tests {
         let wf: Workflow = serde_yaml::from_str(MEDITATION_WORKFLOW_YAML)
             .expect("Meditation workflow YAML must deserialize");
         let instructions = wf.instructions.expect("Meditation instructions");
-        assert!(
-            instructions.contains("one broad search call"),
-            "{instructions}"
-        );
+        assert!(instructions.contains("exactly one"), "{instructions}");
+        assert!(instructions.contains("omit both `query`"), "{instructions}");
         assert!(instructions.contains("at most three"), "{instructions}");
         assert!(
             wf.extensions
