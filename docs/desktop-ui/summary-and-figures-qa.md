@@ -365,3 +365,37 @@ registry generation and privacy-registry checks
 had no diff. The exact edited identity assertion then passed as one MCP test
 (`/tmp/biorouter-final-mermaid-assertion-tests.log`); the filtered core target
 ran zero tests and is not additional core evidence.
+
+### Remaining ingestion runtime guarantees
+
+A read-only follow-up at `879ca4c1` confirmed that the successful Meditation run
+does not establish a whole-operation timeout or streamed chat-ingest progress.
+`knowledge/macros/ingest.rs` acquires locks, refreshes and stages input before
+the bounded model loop, then settles/verifies afterward. Refresh still awaits
+blocking work without an overall deadline. Both chat ingest helpers pass
+`event_sink: None`; the bridge waits for the complete response. Its advisory
+600-second task budget is not an enforced dispatch deadline, and transport can
+wait 31 minutes.
+
+These are larger follow-ups, alongside safe active-request catalog refresh.
+Implementing a timeout by dropping the outer future could leave blocking work
+or staged changes unsettled; the design needs cancellation, draining and cleanup
+coverage. User triage was requested before expanding that runtime work. No
+bounded-total-latency or streaming-progress guarantee is claimed here.
+
+### Full server validation
+
+The first server run passed 547 library tests and failed one stale source-order
+assertion looking for the former `get_session(&session_id, true)` call. The route
+now supports metadata-only reads, and source inspection confirmed the privacy
+gate still precedes both modes. The runtime private metadata/history regression
+also passed. Sol updated the assertion to locate the first session read
+independently of its history argument, retaining the gate-before-read check,
+and corrected the history-only explanatory comment.
+
+The full rerun passed **1,219 tests with zero failures** across library, binary
+and integration targets (`/tmp/biorouter-final-server-tests-rerun.log`). Ten
+opt-in real Claude/Codex tests remained ignored because they require signed-in
+CLIs and spend provider quota; zero-test targets and ignored cases are not
+additional coverage. The subsequent complete repository gate rerun also passed
+(`/tmp/biorouter-post-server-repository-gates.log`, exit zero).

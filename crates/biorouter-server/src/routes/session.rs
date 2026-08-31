@@ -444,10 +444,9 @@ async fn get_session(
     if !is_valid_session_id(&session_id) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    // Issue #56 Task 58 / #47. Before the transcript read — this route's whole
-    // output is the conversation, so a gate placed after it would have already
-    // loaded what it is refusing. `session_id` is a request parameter, not a
-    // credential; see `routes::session_reach`.
+    // Issue #56 Task 58 / #47. Both metadata and history disclose session content,
+    // so authorization must precede either read. `session_id` is a request
+    // parameter, not a credential; see `routes::session_reach`.
     if let Err(refusal) =
         crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
             .await

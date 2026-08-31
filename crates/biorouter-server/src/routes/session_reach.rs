@@ -818,8 +818,8 @@ mod tests {
                 session_rs,
                 "async fn get_session(",
                 "session_reach(",
-                "get_session(&session_id, true)",
-                "the transcript read",
+                ".get_session(&session_id,",
+                "the session read, with or without conversation history",
             ),
             (
                 session_rs,
