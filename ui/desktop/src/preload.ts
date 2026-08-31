@@ -70,6 +70,7 @@ interface SaveDataUrlResponse {
 type EmbeddedBrowserState = {
   url: string;
   title: string;
+  managedApp?: boolean;
   sourceRevision: string;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -345,7 +346,10 @@ type ElectronAPI = {
     ) => Promise<void>;
     setVisible: (viewId: string, visible: boolean) => Promise<void>;
     navigate: (viewId: string, url: string) => Promise<boolean>;
-    control: (viewId: string, action: 'back' | 'forward' | 'reload' | 'stop') => Promise<boolean>;
+    control: (
+      viewId: string,
+      action: 'back' | 'forward' | 'reload' | 'stop' | 'reload-if-idle'
+    ) => Promise<boolean>;
     destroy: (viewId: string) => Promise<void>;
     readText: (
       viewId: string,
@@ -714,7 +718,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('embedded-browser:set-visible', { viewId, visible }),
     navigate: (viewId: string, url: string) =>
       ipcRenderer.invoke('embedded-browser:navigate', { viewId, url }),
-    control: (viewId: string, action: 'back' | 'forward' | 'reload' | 'stop') =>
+    control: (viewId: string, action: 'back' | 'forward' | 'reload' | 'stop' | 'reload-if-idle') =>
       ipcRenderer.invoke('embedded-browser:control', { viewId, action }),
     destroy: (viewId: string) => ipcRenderer.invoke('embedded-browser:destroy', { viewId }),
     readText: (viewId: string, maxChars: number) =>

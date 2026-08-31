@@ -14,6 +14,7 @@ import { useTheme, useThemeFamily } from '../../contexts/ThemeContext';
 import { CODE_FONT_FAMILY, codeThemesByFamily } from '../../styles/codeTheme';
 import { cn } from '../../utils';
 import { injectArtifactBrowserCsp } from '../../utils/artifactSecurity';
+import { withPreviewActivityTracking } from '../../utils/previewActivity';
 import { sendArtifactAnnotation } from '../../utils/annotationChannel';
 import { describeUnsupportedFormat } from '../../utils/formatSupport';
 import { isImageExtension } from '../../utils/imageFormats';
@@ -155,6 +156,7 @@ interface ArtifactViewerProps {
    * conversation that is not running.
    */
   sessionId?: string;
+  refreshRevision?: number;
   className?: string;
   style?: CSSProperties;
 }
@@ -320,6 +322,7 @@ export default function ArtifactViewer({
   onLiveBrowserShareChange,
   onFilePreviewRevisionChange,
   sessionId,
+  refreshRevision = 0,
   className,
   style,
 }: ArtifactViewerProps) {
@@ -331,6 +334,16 @@ export default function ArtifactViewer({
   );
   const [preview, setPreview] = useState<PreviewState>({ kind: 'loading' });
   const [previewSourceKey, setPreviewSourceKey] = useState<string | null>(null);
+  const previewRef = useRef(preview);
+  previewRef.current = preview;
+  const loadedScopeRef = useRef('');
+  const refreshTrackerRef = useRef({ scope: '', revision: refreshRevision });
+  const [fileRefresh, setFileRefresh] = useState({ scope: '', revision: 0 });
+  const [updateReady, setUpdateReady] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const deferredRefreshRef = useRef(false);
+  const htmlDirtyRef = useRef(false);
+  const manualRefreshRef = useRef(false);
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
   const lastRenderErrorKeyRef = useRef<string | null>(null);
@@ -347,6 +360,8 @@ export default function ArtifactViewer({
    */
   const [browsingUrls, setBrowsingUrls] = useState<ReadonlySet<string>>(() => new Set());
   const [isAnnotating, setIsAnnotating] = useState(false);
+  const interactionRef = useRef({ isAnnotating, isResizing });
+  interactionRef.current = { isAnnotating, isResizing };
   const [liveBrowserViewId, setLiveBrowserViewId] = useState<string | null>(null);
   const liveBrowserViewIdRef = useRef(liveBrowserViewId);
   const handleLiveBrowserViewChange = useCallback((viewId: string | null) => {
@@ -732,13 +747,93 @@ export default function ArtifactViewer({
     dispatchTabAction({ type: 'open', artifact, newTabId: nextArtifactTabId() });
   }, [artifact]);
 
+  const refreshScope = JSON.stringify([sessionId, activeSourceKey]);
+  const fileRefreshRevision = fileRefresh.scope === refreshScope ? fileRefresh.revision : 0;
+
+  useEffect(() => {
+    const tracker = refreshTrackerRef.current;
+    if (tracker.scope !== refreshScope) {
+      refreshTrackerRef.current = { scope: refreshScope, revision: refreshRevision };
+      setUpdateReady(false);
+      setRefreshFailed(false);
+      deferredRefreshRef.current = false;
+      htmlDirtyRef.current = false;
+      return;
+    }
+    if (
+      activeArtifact?.kind !== 'file' ||
+      (tracker.revision === refreshRevision && !deferredRefreshRef.current)
+    )
+      return;
+    const focused = document.activeElement;
+    const editing =
+      focused instanceof HTMLElement &&
+      previewBodyRef.current?.contains(focused) &&
+      (focused.matches('input, textarea, select, iframe, [role="textbox"]') ||
+        focused.isContentEditable);
+    if (isAnnotating || isResizing || editing || htmlDirtyRef.current) {
+      setUpdateReady(true);
+      return;
+    }
+    tracker.revision = refreshRevision;
+    deferredRefreshRef.current = false;
+    setUpdateReady(false);
+    setFileRefresh((previous) => ({ scope: refreshScope, revision: previous.revision + 1 }));
+  }, [activeArtifact?.kind, isAnnotating, isResizing, refreshRevision, refreshScope]);
+
   useEffect(() => {
     let cancelled = false;
+    const manualRefresh = manualRefreshRef.current;
+    manualRefreshRef.current = false;
+    const previous = previewRef.current;
+    const retainPrevious =
+      loadedScopeRef.current === refreshScope && previous.kind === 'file' && previous.preview.found;
+
+    const publishFile = (response: ArtifactFilePreview) => {
+      if (cancelled) return;
+      const focused = document.activeElement;
+      const editing =
+        focused instanceof HTMLElement &&
+        previewBodyRef.current?.contains(focused) &&
+        (focused.matches('input, textarea, select, iframe, [role="textbox"]') ||
+          focused.isContentEditable);
+      if (
+        retainPrevious &&
+        (interactionRef.current.isAnnotating ||
+          interactionRef.current.isResizing ||
+          editing ||
+          (htmlDirtyRef.current && !manualRefresh))
+      ) {
+        deferredRefreshRef.current = true;
+        setUpdateReady(true);
+        return;
+      }
+      if (!response.found && retainPrevious) {
+        setRefreshFailed(true);
+        return;
+      }
+      setRefreshFailed(false);
+      if (
+        retainPrevious &&
+        previous.kind === 'file' &&
+        'revision' in response &&
+        response.revision &&
+        'revision' in previous.preview &&
+        response.revision === previous.preview.revision &&
+        (response.kind !== 'html' ||
+          (previous.preview.kind === 'html' &&
+            response.preparedHtml === previous.preview.preparedHtml))
+      )
+        return;
+      loadedScopeRef.current = refreshScope;
+      htmlDirtyRef.current = false;
+      setPreview({ kind: 'file', preview: response });
+    };
 
     async function loadPreview() {
       if (!activeArtifact || !activeSourceKey) return;
       setPreviewSourceKey(activeSourceKey);
-      setPreview({ kind: 'loading' });
+      if (!retainPrevious) setPreview({ kind: 'loading' });
 
       if (activeArtifact.kind === 'html') {
         try {
@@ -782,18 +877,24 @@ export default function ArtifactViewer({
             });
             preparedHtml = prepared.html;
           } catch {
+            if (retainPrevious) {
+              if (!cancelled) setRefreshFailed(true);
+              return;
+            }
             // Preparation failed; fall back to the raw HTML for the Preview.
           }
-          if (!cancelled) setPreview({ kind: 'file', preview: { ...response, preparedHtml } });
+          publishFile({ ...response, preparedHtml });
           return;
         }
-        setPreview({ kind: 'file', preview: response });
+        publishFile(response);
       } catch (error) {
         if (!cancelled) {
-          setPreview({
-            kind: 'error',
-            message: error instanceof Error ? error.message : 'Could not open artifact.',
-          });
+          if (retainPrevious) setRefreshFailed(true);
+          else
+            setPreview({
+              kind: 'error',
+              message: error instanceof Error ? error.message : 'Could not open artifact.',
+            });
         }
       }
     }
@@ -802,7 +903,25 @@ export default function ArtifactViewer({
     return () => {
       cancelled = true;
     };
-  }, [activeArtifact, activeSourceKey]);
+  }, [activeArtifact, activeSourceKey, fileRefreshRevision, refreshScope]);
+
+  useEffect(() => {
+    if (activeArtifact?.kind !== 'file') return;
+    const trackDirty = (event: MessageEvent) => {
+      if (event.data?.type !== 'biorouter-artifact-dirty') return;
+      const frames = previewBodyRef.current?.querySelectorAll(
+        'iframe[name="biorouter-artifact-preview"]'
+      );
+      if (
+        frames &&
+        [...frames].some((frame) => (frame as HTMLIFrameElement).contentWindow === event.source)
+      ) {
+        htmlDirtyRef.current = true;
+      }
+    };
+    window.addEventListener('message', trackDirty);
+    return () => window.removeEventListener('message', trackDirty);
+  }, [activeArtifact?.kind, refreshScope]);
 
   useEffect(() => {
     const revision =
@@ -1074,6 +1193,30 @@ export default function ArtifactViewer({
             </DropdownMenuContent>
           </DropdownMenu>
         )}
+        {(updateReady || refreshFailed) && activeArtifact.kind === 'file' && (
+          <button
+            type="button"
+            disabled={isAnnotating || isResizing}
+            title={
+              refreshFailed
+                ? 'Could not read the update. The previous version is still displayed.'
+                : 'Refresh after finishing your interaction.'
+            }
+            onClick={() => {
+              refreshTrackerRef.current.revision = refreshRevision;
+              deferredRefreshRef.current = false;
+              manualRefreshRef.current = true;
+              setUpdateReady(false);
+              setFileRefresh((previous) => ({
+                scope: refreshScope,
+                revision: previous.revision + 1,
+              }));
+            }}
+            className="shrink-0 rounded-element px-2 py-1 text-supporting text-text-muted hover:bg-overlay-hover"
+          >
+            {refreshFailed ? 'Retry update' : 'Update ready'}
+          </button>
+        )}
         {sessionId && (
           // Annotation is available on EVERY preview kind, not just one. Codex
           // shipped commenting in its browser but not its document pane, and
@@ -1159,6 +1302,7 @@ export default function ArtifactViewer({
           onLiveBrowserShareChange={onLiveBrowserShareChange}
           isAnnotating={isAnnotating}
           annotationSnapshotDataUrl={annotationSnapshot?.dataUrl ?? null}
+          refreshRevision={refreshRevision}
         />
       </div>
     </aside>
@@ -1209,6 +1353,7 @@ function ArtifactPreviewBody({
   onLiveBrowserShareChange,
   isAnnotating = false,
   annotationSnapshotDataUrl = null,
+  refreshRevision = 0,
 }: {
   preview: PreviewState;
   artifact: ArtifactSource;
@@ -1223,6 +1368,7 @@ function ArtifactPreviewBody({
   onLiveBrowserShareChange?: (share: LiveBrowserShare | null) => void;
   isAnnotating?: boolean;
   annotationSnapshotDataUrl?: string | null;
+  refreshRevision?: number;
 }) {
   if (preview.kind === 'loading') {
     return (
@@ -1268,6 +1414,7 @@ function ArtifactPreviewBody({
         <WebPagePreview
           key={preview.url}
           url={preview.url}
+          refreshRevision={refreshRevision}
           // The native view has no shared z-index with the DOM, so it has to be
           // hidden while the resize shield is up or it paints straight over it.
           isSuspended={isResizing || isAnnotating}
@@ -1406,6 +1553,7 @@ function ArtifactPreviewBody({
         file={file}
         resolvedTheme={resolvedTheme}
         onOpenArtifact={onOpenArtifactInTab}
+        sourceLine={artifact.kind === 'file' ? artifact.line : undefined}
       />
     );
   }
@@ -1861,53 +2009,83 @@ function CodeBlock({
   text,
   language,
   resolvedTheme,
+  sourceLine,
 }: {
   text: string;
   language: string;
   resolvedTheme: 'light' | 'dark';
+  sourceLine?: number;
 }) {
   const lineCount = countLines(text);
   const codeStyle = codeThemesByFamily[useThemeFamily()][resolvedTheme];
+  const codeRef = useRef<HTMLDivElement>(null);
+  const selectedLine =
+    typeof sourceLine === 'number' &&
+    Number.isSafeInteger(sourceLine) &&
+    sourceLine > 0 &&
+    sourceLine <= lineCount &&
+    lineCount <= MAX_LINE_NUMBERED_LINES
+      ? sourceLine
+      : undefined;
+  useEffect(() => {
+    if (selectedLine) {
+      codeRef.current
+        ?.querySelector(`[data-source-line="${selectedLine}"]`)
+        ?.scrollIntoView?.({ block: 'center' });
+    }
+  }, [selectedLine, text]);
   return (
-    <SyntaxHighlighter
-      style={codeStyle}
-      language={language}
-      PreTag="div"
-      showLineNumbers={lineCount > 1 && lineCount <= MAX_LINE_NUMBERED_LINES}
-      lineNumberStyle={{
-        minWidth: '2.6em',
-        paddingRight: '1.1em',
-        textAlign: 'right',
-        opacity: 0.35,
-        userSelect: 'none',
-        // ⚠ Corrections, not decoration. `react-syntax-highlighter` seeds the
-        // gutter span from the theme's `comment` style, and ours is italic
-        // (`codeTheme.ts`), so the line numbers leaned. Nothing reset it, so the
-        // lean was inherited rather than chosen.
-        fontStyle: 'normal',
-        // A gutter is the one place where digit alignment is the whole job.
-        fontVariantNumeric: 'tabular-nums',
-      }}
-      // No `wrapLongLines`: combined with `showLineNumbers` the highlighter makes
-      // every line `display: flex` (highlight.js:106), which turns each token into
-      // a flex item and shreds the line across the panel's width. Long lines scroll
-      // horizontally instead, which is what a code viewer should do anyway — and it
-      // keeps indentation honest.
-      customStyle={{
-        margin: 0,
-        padding: '14px 16px',
-        minHeight: '100%',
-        background: 'transparent',
-      }}
-      codeTagProps={{
-        style: {
-          fontFamily: CODE_FONT,
-          whiteSpace: 'pre',
-        },
-      }}
-    >
-      {stripTrailingNewline(text)}
-    </SyntaxHighlighter>
+    <div ref={codeRef} className="min-h-full">
+      <SyntaxHighlighter
+        style={codeStyle}
+        language={language}
+        PreTag="div"
+        showLineNumbers={lineCount > 1 && lineCount <= MAX_LINE_NUMBERED_LINES}
+        wrapLines={selectedLine !== undefined}
+        lineProps={(lineNumber) => ({
+          'data-source-line': lineNumber,
+          ...(lineNumber === selectedLine
+            ? {
+                'aria-current': 'location' as const,
+                style: { background: 'var(--background-medium)' },
+              }
+            : {}),
+        })}
+        lineNumberStyle={{
+          minWidth: '2.6em',
+          paddingRight: '1.1em',
+          textAlign: 'right',
+          opacity: 0.35,
+          userSelect: 'none',
+          // ⚠ Corrections, not decoration. `react-syntax-highlighter` seeds the
+          // gutter span from the theme's `comment` style, and ours is italic
+          // (`codeTheme.ts`), so the line numbers leaned. Nothing reset it, so the
+          // lean was inherited rather than chosen.
+          fontStyle: 'normal',
+          // A gutter is the one place where digit alignment is the whole job.
+          fontVariantNumeric: 'tabular-nums',
+        }}
+        // No `wrapLongLines`: combined with `showLineNumbers` the highlighter makes
+        // every line `display: flex` (highlight.js:106), which turns each token into
+        // a flex item and shreds the line across the panel's width. Long lines scroll
+        // horizontally instead, which is what a code viewer should do anyway — and it
+        // keeps indentation honest.
+        customStyle={{
+          margin: 0,
+          padding: '14px 16px',
+          minHeight: '100%',
+          background: 'transparent',
+        }}
+        codeTagProps={{
+          style: {
+            fontFamily: CODE_FONT,
+            whiteSpace: 'pre',
+          },
+        }}
+      >
+        {stripTrailingNewline(text)}
+      </SyntaxHighlighter>
+    </div>
   );
 }
 
@@ -1949,16 +2127,21 @@ function TextFilePreview({
   file,
   resolvedTheme,
   onOpenArtifact,
+  sourceLine,
 }: {
   file: Extract<ArtifactFilePreview, { kind: 'text' | 'html' }>;
   resolvedTheme: 'light' | 'dark';
   onOpenArtifact?: (artifact: ArtifactSource) => void;
+  sourceLine?: number;
 }) {
   const markdown = isMarkdownPath(file.path);
   const delimited = isDelimitedPath(file.path);
   const html = file.kind === 'html';
   const renderable = markdown || delimited || html;
-  const [showRaw, setShowRaw] = useState(false);
+  const [showRaw, setShowRaw] = useState(sourceLine !== undefined);
+  useEffect(() => {
+    if (sourceLine !== undefined) setShowRaw(true);
+  }, [sourceLine]);
 
   const lineCount = useMemo(() => countLines(file.text), [file.text]);
   const showingCode = showRaw || !renderable;
@@ -1968,6 +2151,7 @@ function TextFilePreview({
       text={file.text}
       language={languageFromPath(file.path, file.mimeType)}
       resolvedTheme={resolvedTheme}
+      sourceLine={sourceLine}
     />
   );
 
@@ -2029,6 +2213,15 @@ function TextFilePreview({
           `comment` at 4.14:1, under AA. Only the code view switches ground; the
           markdown and preview branches keep the panel's own surface. */}
       <div className={cn('min-h-0 flex-1 overflow-auto', showingCode && 'bg-background-code')}>
+        {showingCode &&
+          sourceLine !== undefined &&
+          (sourceLine > lineCount || lineCount > MAX_LINE_NUMBERED_LINES) && (
+            <p role="status" className="px-4 py-2 text-supporting text-text-muted">
+              {sourceLine > lineCount
+                ? 'The requested source line is outside this file.'
+                : 'Source-line highlighting is unavailable for this large file.'}
+            </p>
+          )}
         {showingCode ? (
           code
         ) : markdown ? (
@@ -2049,7 +2242,9 @@ function TextFilePreview({
             name="biorouter-artifact-preview"
             aria-label={file.title}
             srcDoc={injectArtifactBrowserCsp(
-              withHostTheme(file.preparedHtml ?? file.text, resolvedTheme)
+              withPreviewActivityTracking(
+                withHostTheme(file.preparedHtml ?? file.text, resolvedTheme)
+              )
             )}
             sandbox="allow-scripts allow-downloads"
             className="h-full w-full bg-white"

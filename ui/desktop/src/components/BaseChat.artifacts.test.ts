@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { Message } from '../api';
 import {
   collectArtifactsFromMessages,
@@ -48,6 +49,53 @@ const hiddenToolResponse = (id: string, html: string): Message => ({
 });
 
 describe('collectArtifactsFromMessages', () => {
+  it('file-link reliability: does not substitute the launch cwd for an unloaded session', () => {
+    const source = readFileSync(`${process.cwd()}/src/components/BaseChat.tsx`, 'utf8');
+    expect(source).not.toMatch(
+      /const\s+sessionWorkingDir\s*=\s*session\?\.working_dir\s*\|\|\s*getInitialWorkingDir\(\)/
+    );
+  });
+
+  it.each([
+    ['/tmp/source.rs#L2', '/tmp/source.rs', 'source.rs'],
+    ['/tmp/source.rs:2', '/tmp/source.rs', 'source.rs'],
+    ['See /tmp/source.rs#L2.', '/tmp/source.rs', 'source.rs'],
+    ['See /tmp/source.rs%23L42.', '/tmp/source.rs#L42', 'source.rs#L42'],
+    ['/tmp/Study%20%231/report.md', '/tmp/Study #1/report.md', 'report.md'],
+    ['[report](</tmp/Study %231/report.md>)', '/tmp/Study #1/report.md', 'report.md'],
+    ['`/tmp/source.rs%23L42`', '/tmp/source.rs#L42', 'source.rs#L42'],
+  ])(
+    'file-link reliability: auto-artifact collection shares the click path for %s',
+    (text, path, title) => {
+      expect(
+        collectArtifactsFromMessages([visibleMessage([{ type: 'text', text }])], '/work')
+      ).toEqual([{ kind: 'file', path, title }]);
+    }
+  );
+
+  it('file-link reliability: does not auto-open a guessed root for later shorthand', () => {
+    const messages = [
+      visibleMessage([{ type: 'text', text: 'Created `/work/run/results/report.md`.' }]),
+      visibleMessage([{ type: 'text', text: '[Report](report.md)' }]),
+    ];
+    expect(collectArtifactsFromMessages(messages, '/work')).toEqual([
+      { kind: 'file', path: '/work/run/results/report.md', title: 'report.md' },
+    ]);
+  });
+
+  it('file-link reliability: does not auto-open malformed source locators', () => {
+    expect(
+      collectArtifactsFromMessages(
+        [
+          visibleMessage([
+            { type: 'text', text: 'See /tmp/source.rs:42:7 and /tmp/source.rs#L42:7.' },
+          ]),
+        ],
+        '/work'
+      )
+    ).toEqual([]);
+  });
+
   it('collects artifacts from tool responses paired with visible assistant tool requests', () => {
     const messages: Message[] = [
       visibleMessage([

@@ -20,18 +20,22 @@ import { wrapHTMLInCodeBlock } from '../utils/htmlSecurity';
 import { normalizeExternalHttpUrl } from '../utils/externalUrl';
 import type { ArtifactFilePreview, ArtifactSource } from './artifacts/artifactTypes';
 import {
-  basenameFromPath,
   imageSourceForPreview,
   looksLikePreviewableFile,
-  pathFromArtifactHref,
-  resolveArtifactPath,
   resolveMarkdownImageSource,
 } from './artifacts/artifactUtils';
+import {
+  isLocalFileReference,
+  localFileBasename,
+  resolveFileLink,
+  type KnownFilePaths,
+} from './artifacts/artifactFileLinks';
 
 interface CodeProps extends React.ClassAttributes<HTMLElement>, React.HTMLAttributes<HTMLElement> {
   inline?: boolean;
   onOpenArtifact?: (artifact: ArtifactSource) => void;
   workingDir?: string;
+  knownFilePaths?: KnownFilePaths;
 }
 
 interface MarkdownContentProps {
@@ -39,6 +43,7 @@ interface MarkdownContentProps {
   className?: string;
   onOpenArtifact?: (artifact: ArtifactSource) => void;
   workingDir?: string;
+  knownFilePaths?: KnownFilePaths;
 }
 
 // Memoized CodeBlock component to prevent re-rendering when props haven't changed
@@ -140,26 +145,10 @@ const LOOPBACK_URL_RE =
   /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?(?:[/?#]|$)/i;
 
 function artifactAwareUrlTransform(value: string) {
-  if (
-    (/^file:\/\//i.test(value) || /^[a-z]:[\\/]/i.test(value) || value.startsWith('\\\\')) &&
-    looksLikePreviewableFile(value)
-  ) {
+  if (isLocalFileReference(value) && looksLikePreviewableFile(value)) {
     return value;
   }
   return defaultUrlTransform(value);
-}
-
-function pathFromMarkdownArtifactValue(value: string): string {
-  const path = pathFromArtifactHref(value);
-  // `pathFromArtifactHref` already decodes a file URL's pathname exactly once.
-  // Plain Markdown paths do not pass through URL parsing, so decode those here.
-  // Keeping the branches separate prevents `%252e%252e` from becoming `..`.
-  if (/^file:\/\//i.test(value)) return path;
-  try {
-    return decodeURIComponent(path);
-  } catch {
-    return path;
-  }
 }
 
 function previewableExternalUrl(href: string): string | null {
@@ -172,7 +161,8 @@ function previewableExternalUrl(href: string): string | null {
 
 function artifactSourceFromMarkdownValue(
   value: string,
-  workingDir?: string
+  workingDir?: string,
+  knownFilePaths?: KnownFilePaths
 ): ArtifactSource | null {
   const candidate = value.trim();
   if (!candidate || candidate.includes('\n') || candidate.includes('\r')) return null;
@@ -180,9 +170,14 @@ function artifactSourceFromMarkdownValue(
     return { kind: 'externalUrl', title: candidate, url: candidate };
   }
   if (!looksLikePreviewableFile(candidate)) return null;
-  const rawPath = pathFromMarkdownArtifactValue(candidate);
-  const path = resolveArtifactPath(rawPath, workingDir) ?? rawPath;
-  return { kind: 'file', title: basenameFromPath(path), path };
+  const resolved = resolveFileLink(candidate, workingDir, knownFilePaths);
+  if (resolved.kind === 'unresolved') return null;
+  return {
+    kind: 'file',
+    title: localFileBasename(resolved.path),
+    path: resolved.path,
+    ...(resolved.line ? { line: resolved.line } : {}),
+  };
 }
 
 // The ONE link treatment in this renderer (design spec "The markdown layer,
@@ -350,12 +345,22 @@ function openExternalLink(event: React.MouseEvent<HTMLAnchorElement>, href: stri
 
 const MarkdownCode = memo(
   React.forwardRef(function MarkdownCode(
-    { inline, className, children, onOpenArtifact, workingDir, ...props }: CodeProps,
+    {
+      inline,
+      className,
+      children,
+      onOpenArtifact,
+      workingDir,
+      knownFilePaths,
+      ...props
+    }: CodeProps,
     ref: React.Ref<HTMLElement>
   ) {
     const match = /language-(\w+)/.exec(className || '');
     const text = String(children);
-    const artifact = !match ? artifactSourceFromMarkdownValue(text, workingDir) : null;
+    const artifact = !match
+      ? artifactSourceFromMarkdownValue(text, workingDir, knownFilePaths)
+      : null;
     return !inline && match ? (
       <CodeBlock language={match[1]}>{text.replace(/\n$/, '')}</CodeBlock>
     ) : artifact && onOpenArtifact ? (
@@ -378,12 +383,13 @@ const MarkdownCode = memo(
 // ReactMarkdown renders them as plain text. Keep the match narrow: an absolute,
 // home-relative, or multi-segment relative path with a filename extension.
 const FILE_PATH_RE =
-  /(?<![\w:/\\@.])((?:file:\/\/|~\/|\/|[A-Za-z]:[\\/]|(?:[\w.\-+@%]+[\\/])+)[\w.\-+@%/\\]*\.[A-Za-z0-9]{1,12})(?![\w/\\])/g;
+  /(?<![^\s(\[{])((?:file:\/\/|~\/|\/|[A-Za-z]:[\\/]|(?:[\p{L}\p{N}\p{M}.\-+@%]+[\\/])+)[^\s)\]}\x60"'<>]*\.[A-Za-z0-9]{1,12}(?::\d+|#L\d+|%[^\s)\]}\x60"'<>.,!?;]*)?)(?=$|[\s)\]},;]|[.!?](?=$|[\s)\]},;]))/gu;
 
 function linkifyFilePaths(
   children: React.ReactNode,
   onOpenArtifact?: (artifact: ArtifactSource) => void,
-  workingDir?: string
+  workingDir?: string,
+  knownFilePaths?: KnownFilePaths
 ): React.ReactNode {
   if (!onOpenArtifact) return children;
   return React.Children.map(children, (child) => {
@@ -395,7 +401,7 @@ function linkifyFilePaths(
     while ((match = FILE_PATH_RE.exec(child)) !== null) {
       const filePath = match[1];
       if (match.index > last) out.push(child.slice(last, match.index));
-      const artifact = artifactSourceFromMarkdownValue(filePath, workingDir);
+      const artifact = artifactSourceFromMarkdownValue(filePath, workingDir, knownFilePaths);
       if (!artifact) {
         out.push(filePath);
         last = match.index + filePath.length;
@@ -418,10 +424,12 @@ const MarkdownParagraph = ({
   children,
   onOpenArtifact,
   workingDir,
+  knownFilePaths,
   ...props
 }: React.HTMLAttributes<globalThis.HTMLParagraphElement> & {
   onOpenArtifact?: (artifact: ArtifactSource) => void;
   workingDir?: string;
+  knownFilePaths?: KnownFilePaths;
 }) => {
   const childArray = React.Children.toArray(children);
   const meaningfulChildren = childArray.filter(
@@ -448,7 +456,7 @@ const MarkdownParagraph = ({
   if (isDisplayMath) {
     return <p {...props}>{children}</p>;
   }
-  return <p {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir)}</p>;
+  return <p {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}</p>;
 };
 
 const MarkdownContent = memo(function MarkdownContent({
@@ -456,6 +464,7 @@ const MarkdownContent = memo(function MarkdownContent({
   className = '',
   onOpenArtifact,
   workingDir,
+  knownFilePaths,
 }: MarkdownContentProps) {
   const [processedContent, setProcessedContent] = useState(content);
 
@@ -513,20 +522,23 @@ const MarkdownContent = memo(function MarkdownContent({
         components={{
           a: ({ href, children, node: _node, ...props }) => {
             if (!href) return <>{children}</>;
-            const artifactPath =
-              href && looksLikePreviewableFile(href) ? pathFromMarkdownArtifactValue(href) : null;
-            if (artifactPath) {
+            if (isLocalFileReference(href)) {
               // A link to a sibling/local file. If there is a panel to open it in,
               // preview it there; otherwise render it as styled, inert text with a
               // tooltip rather than an <a> that would dead-navigate the renderer.
-              if (onOpenArtifact) {
-                const resolvedPath = resolveArtifactPath(artifactPath, workingDir) ?? artifactPath;
+              const resolved = resolveFileLink(href, workingDir, knownFilePaths);
+              if (
+                onOpenArtifact &&
+                looksLikePreviewableFile(href) &&
+                resolved.kind === 'resolved'
+              ) {
                 return (
                   <ArtifactLinkButton
                     artifact={{
                       kind: 'file',
-                      title: basenameFromPath(resolvedPath),
-                      path: resolvedPath,
+                      title: localFileBasename(resolved.path),
+                      path: resolved.path,
+                      ...(resolved.line ? { line: resolved.line } : {}),
                     }}
                     onOpenArtifact={onOpenArtifact}
                   >
@@ -537,7 +549,7 @@ const MarkdownContent = memo(function MarkdownContent({
               return (
                 <span
                   className="cursor-default font-medium text-text-muted underline decoration-dotted decoration-text-muted/40 underline-offset-2"
-                  title={artifactPath}
+                  title={resolved.kind === 'unresolved' ? resolved.reason : resolved.path}
                 >
                   {children}
                 </span>
@@ -577,19 +589,35 @@ const MarkdownContent = memo(function MarkdownContent({
             />
           ),
           code: ({ node: _node, ...props }) => (
-            <MarkdownCode {...props} onOpenArtifact={onOpenArtifact} workingDir={workingDir} />
+            <MarkdownCode
+              {...props}
+              onOpenArtifact={onOpenArtifact}
+              workingDir={workingDir}
+              knownFilePaths={knownFilePaths}
+            />
           ),
           p: ({ node: _node, ...props }) => (
-            <MarkdownParagraph {...props} onOpenArtifact={onOpenArtifact} workingDir={workingDir} />
+            <MarkdownParagraph
+              {...props}
+              onOpenArtifact={onOpenArtifact}
+              workingDir={workingDir}
+              knownFilePaths={knownFilePaths}
+            />
           ),
           li: ({ children, node: _node, ...props }) => (
-            <li {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir)}</li>
+            <li {...props}>
+              {linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}
+            </li>
           ),
           td: ({ children, node: _node, ...props }) => (
-            <td {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir)}</td>
+            <td {...props}>
+              {linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}
+            </td>
           ),
           th: ({ children, node: _node, ...props }) => (
-            <th {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir)}</th>
+            <th {...props}>
+              {linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}
+            </th>
           ),
         }}
       >

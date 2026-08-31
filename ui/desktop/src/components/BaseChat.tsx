@@ -34,6 +34,7 @@ import { useIsMobile } from '../hooks/use-mobile';
 import { useSidebar } from './ui/sidebar';
 import { cn } from '../utils';
 import { useChatStream } from '../hooks/useChatStream';
+import { useArtifactLiveRefresh } from '../hooks/useArtifactLiveRefresh';
 import { isRunningState } from '../hooks/chatStreamStore';
 import { useNavigation } from '../hooks/useNavigation';
 import { WorkflowHeader } from './WorkflowHeader';
@@ -83,10 +84,8 @@ import {
   artifactSourceFromResource,
   basenameFromPath,
   fileArtifactPathsFromToolCall,
-  looksLikePreviewableFile,
-  pathFromArtifactHref,
-  resolveArtifactPath,
 } from './artifacts/artifactUtils';
+import { referencedFilePaths } from './artifacts/artifactFileProvenance';
 import type {
   CallToolResponse,
   Content,
@@ -116,9 +115,9 @@ const HEADER_ACTION_BUTTON_CLASS =
 // adding a format cannot leave prose discovery behind. The non-image half stays
 // a literal: it is a deliberately closed list, not a mirror of another set.
 const PREVIEWABLE_TEXT_ARTIFACT_RE = new RegExp(
-  String.raw`(?<![\w:/\\@])(?:file://|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|/|\\\\)[^\s)\]}\x60"'<>]+\.(?:` +
+  String.raw`(?<![^\s(\[{])(?:file://|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|/|\\\\)[^\s)\]}\x60"'<>]+\.(?:` +
     `html?|${imageExtensionAlternation()}|` +
-    String.raw`pdf|docx|xlsx|pptx|ipynb|sql|md|qmd|rmd|txt|log|json|csv|tsv|ya?ml|toml|xml|css|ts|tsx|js|jsx|py|r|rs|go|java|c|cpp|h|hpp)(?:[?#][^\s)\]}\x60"'<>]*)?(?![\w./\\])`,
+    String.raw`pdf|docx|xlsx|pptx|ipynb|sql|md|qmd|rmd|txt|log|json|csv|tsv|ya?ml|toml|xml|css|ts|tsx|js|jsx|py|r|rs|go|java|c|cpp|h|hpp)(?::\d+|#L\d+|%[^\s)\]}\x60"'<>.,!?;]*)?(?=$|[\s)\]},;]|[.!?](?=$|[\s)\]},;]))`,
   'gi'
 );
 
@@ -391,26 +390,11 @@ function artifactKey(artifact: ArtifactSource) {
 }
 
 function collectTextArtifacts(text: string, workingDir?: string): ArtifactSource[] {
-  const artifacts: ArtifactSource[] = [];
-  for (const match of text.matchAll(PREVIEWABLE_TEXT_ARTIFACT_RE)) {
-    const href = match[0];
-    if (!looksLikePreviewableFile(href)) continue;
-    const rawPath = pathFromArtifactHref(href);
-    // DROP a relative path we cannot anchor, exactly as the tool-call collector
-    // does — never fall back to the raw relative string. A `./output` kept as-is
-    // reaches the main process, which resolves it against the ELECTRON process's
-    // own cwd, not the session's — so the panel would preview whatever folder of
-    // that name happens to sit at the app's launch directory. An absolute / `~`
-    // path resolves to itself and is kept.
-    const path = resolveArtifactPath(rawPath, workingDir);
-    if (!path) continue;
-    artifacts.push({
-      kind: 'file',
-      title: basenameFromPath(path),
-      path,
-    });
-  }
-  return artifacts;
+  return referencedFilePaths(text, workingDir, PREVIEWABLE_TEXT_ARTIFACT_RE).map((path) => ({
+    kind: 'file',
+    title: basenameFromPath(path),
+    path,
+  }));
 }
 
 function toolCallOf(content: {
@@ -1462,7 +1446,14 @@ function BaseChatContent({
   // Gated on agentReady: tools do not exist until the extensions do, and this
   // hook has no other reason to refetch.
   const toolCount = useToolCount(sessionId, agentReady);
-  const sessionWorkingDir = session?.working_dir || getInitialWorkingDir();
+  const sessionWorkingDir = session && session.id === sessionId ? session.working_dir : undefined;
+  const artifactRefreshRevision = useArtifactLiveRefresh(
+    sessionId,
+    messages,
+    presentedArtifact,
+    sessionWorkingDir,
+    session?.id === sessionId
+  );
   // Feed the terminal-dock seam declared at the top of this component. Assigned
   // on every render; only ever READ at the instant the dock opens.
   sessionWorkingDirRef.current = sessionWorkingDir;
@@ -2270,6 +2261,7 @@ function BaseChatContent({
               onRenderError={handleArtifactRenderError}
               onLiveBrowserShareChange={setLiveBrowserShare}
               onFilePreviewRevisionChange={setFilePreviewRevision}
+              refreshRevision={artifactRefreshRevision}
               // Chat-only, for the same reason as onRenderError above: it is
               // what enables the annotate control, and a saved transcript has
               // no running conversation to attach a region to.

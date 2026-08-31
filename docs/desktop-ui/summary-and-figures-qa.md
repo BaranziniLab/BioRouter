@@ -495,3 +495,86 @@ The approved managed-app preview fix also has an executed fail-first assertion:
 the managed URL incorrectly reused the public remote-browser session
 (`/tmp/biorouter-managed-preview-red.log`). Independent security review and real
 Electron transport/lifecycle tests remain required before claiming isolation.
+
+### Artifact and stream-boundary follow-up (August 30, 2026)
+
+The user subsequently accepted Chromium's remaining DNS behavior for public-facing
+artifacts and declined a separate isolation process. This changes the artifact
+acceptance criterion, not daemon credentials, private-file authorization, or the
+external-page network policy. Do not describe the preview as having no external
+network activity: TURN hostname resolution and DNS prefetch can bypass the pinned
+app proxy. The revised probe characterizes that limitation with independent
+positive controls while still requiring TCP destination and app-route denial.
+
+The final focused managed-preview run passed 198 tests across eight files
+(`/tmp/biorouter-managed-preview-focused-final.log`). The actual Electron probe
+passed eight checks (`/tmp/biorouter-managed-preview-electron-final.log`): app and
+bundle loading without credentials; daemon/cross-app/other-listener/service-worker
+denial; IndexedDB persistence across reload; TCP/TURNS denial; DNS characterization;
+and backend revocation. This is real isolated Electron execution, not yet the
+rebuilt application's Luna GUI acceptance.
+
+File-link reliability now passes all 81 selected cases and all 306 tests in the
+six-file focused run (`/tmp/biorouter-file-links-full-focused-final.log`). The
+broader run initially caught an old typography fixture lacking a session working
+directory; the fixture now supplies one without weakening the resolver contract.
+Qualified relative paths use the actual session directory; only unambiguous
+earlier same-session provenance resolves bare filenames. Ambiguity stays inert.
+Same-path artifact/app live-refresh tests independently reproduced two failures
+(`/tmp/biorouter-artifact-realtime-red.log`); implementation is in progress.
+
+The provider matrix was also expanded beyond fallback use: Versa GPT and Claude,
+plus Codex and Claude Code, must be exercised with meaningful build/database
+tasks. The observed Versa GPT deployment is `gpt-5.5-2026-04-24`; a requested
+GPT-5.6 deployment must be verified rather than inferred from the public model
+catalog. Strong-model agents implement/review; Luna executes tests and drives UI.
+
+Versa Claude Opus 4.8 session `20260831_12` built and tested a synthetic SQLite
+comparator, but had three unclosed streamed tool blocks: one checklist call and
+two file-editor calls. Existing metadata-only logs cannot establish whether the
+JSON itself was malformed. The warning previously conflated missing block closure
+with truncated arguments. The model recovered to produce real files and eight
+unit tests, but attempted a nonexistent checklist namespace and later misstated
+which option saved the most time. Neither successful file creation nor its final
+report proves checklist or answer-quality acceptance.
+
+Executed GPT decoder baseline: eight cases, seven failures and one positive
+control (`/tmp/biorouter-openai-stream-red.log`). Confirmed failures include lost
+pending calls at `[DONE]`, dispatch at unconfirmed EOF/length boundaries,
+non-object JSON panic, valid no-space SSE fields ignored, and usage-only events
+prematurely closing argument assembly. Two Bedrock classification regressions
+also failed as expected (`/tmp/biorouter-bedrock-stream-red.log`). At the real
+agent-loop boundary, all three unsigned retry-feedback cases failed while the
+signed-abort control passed (`/tmp/biorouter-malformed-recovery-red.log`). Surgical
+corrections and independent review are underway; these red runs are not green
+validation. The diagnostic wire probe uses synthetic input and metadata-only
+reports, never executes generated tools, and must pass offline framing controls
+before its observations are used to attribute a transport/SDK/provider cause.
+
+The decoder/recovery fixes are now checkpointed locally in `eab580ca`. Final
+focused results: ten OpenAI boundary tests, two Bedrock classification tests,
+four agent-loop recovery tests, 40 existing OpenAI unit tests, and 54 existing
+Bedrock unit tests all passed. Independent review caught a post-`[DONE]` polling
+edge in the first patch; a terminal latch and poison-tail/pending-tail regressions
+close it. An initial compile failure from a missing macro import and tracing's
+`Value` name shadowing was corrected before these green results. These focused
+results do not replace the full repository gates or rebuilt desktop acceptance.
+
+Nine offline wire-probe controls passed before live capture. Two identical
+medium SQLite-generation requests to Versa Claude Opus 4.8 returned HTTP 200/H2
+and clean EOF at complete, CRC-valid event-frame boundaries, but with missing
+tool-block stop, message-stop, and usage events. The first stopped after 20 tool
+argument bytes at 10.940 seconds; the second after 71 bytes at 43.525 seconds.
+Both argument strings were incomplete JSON. Replaying each exact response body
+through the SDK produced identical events, indices, and argument lengths.
+A short checklist request completed: 478 argument bytes, `tool_use` stop reason,
+524 input and 286 output tokens, 32.628 seconds. All requests used the same
+64,000-token configured inference ceiling. No returned diagnostic tool executed.
+
+This evidence places the missing completion in the received HTTPS body, not the
+local SDK's index handling or BioRouter's JSON assembly. It does not distinguish
+the UCSF gateway from upstream Bedrock/model delivery. The differing cutoff
+times and successful longer/larger checklist response do not support a simple
+uniform timeout or response-byte ceiling. The HTTP/1.1 differential and Versa GPT
+checks remain separate follow-up evidence; do not call a successfully captured
+incomplete stream a successful generated tool call.

@@ -214,8 +214,10 @@ Prefer the simplest tool that does the job; reach for a specialized capability o
   (e.g., [linked text](https://example.com)) or angle-bracket autolinks (e.g., <http://example.com/>).
 - Use backticks for file, directory, function, and class names. When referencing a specific line, use the
   `file_path:line_number` pattern so the user can navigate to it.
-- When mentioning a file you created or edited, especially inside a subdirectory, print its absolute path (or a
-  `~/`-relative one), never a bare relative path, so the reference stays resolvable (e.g. by the file previewer)
-  regardless of the directory it is read from.
+- When referencing a file you created or edited, use its verified absolute path on every turn, including
+  follow-ups. For links, use `[report.csv](/absolute/path/report.csv)`: the label may be short, but do not replace
+  the target with just a filename or guess a missing directory. Keep the path from the successful file operation.
+  Use angle brackets around targets containing spaces, and percent-encode literal `#` as `%23` and `:` as `%3A`.
+  A source line belongs after the path, for example `[source.rs](/absolute/path/source.rs:42)`.
 - For code examples, use fenced code blocks with a language identifier (e.g., ` ```python `) to enable syntax
   highlighting.

@@ -120,7 +120,7 @@ describe('the embedded session is hardened, not inherited', () => {
 
   it('never loads initial or address-bar authentication URLs without native confirmation', () => {
     const initialLoad = source.slice(
-      source.indexOf('void prepareEmbeddedNetwork(embedded).then'),
+      source.indexOf('const networkReady = managed?.ready ?? prepareEmbeddedNetwork(embedded)'),
       source.indexOf('return readState(entry)')
     );
     expect(initialLoad).toContain('isAuthenticationNavigation(initialUrl)');

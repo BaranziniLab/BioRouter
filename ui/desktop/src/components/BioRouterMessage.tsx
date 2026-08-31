@@ -25,6 +25,7 @@ import { ChevronRight } from './icons/app-icons';
 import { cn } from '../utils';
 import { identifyConsecutiveToolCalls, shouldHideTimestamp } from '../utils/toolCallChaining';
 import type { ArtifactSource } from './artifacts/artifactTypes';
+import { filePathLookupBeforeMessage } from './artifacts/artifactFileProvenance';
 
 interface BioRouterMessageProps {
   sessionId: string;
@@ -113,6 +114,10 @@ export default function BioRouterMessage({
   // Use the index passed by the parent list when available (O(1)); only fall
   // back to the O(n) scan when rendered standalone.
   const messageIndex = messageIndexProp ?? messages.findIndex((msg) => msg.id === message.id);
+  const knownFilePaths = useMemo(
+    () => filePathLookupBeforeMessage(messages, messageIndex, sessionId, workingDir),
+    [messages, messageIndex, sessionId, workingDir]
+  );
   const toolConfirmationContent = getToolConfirmationContent(message);
   const elicitationContent = getElicitationContent(message);
   const secretRequestContent = getSecretRequestContent(message);
@@ -192,6 +197,7 @@ export default function BioRouterMessage({
                 content={displayText}
                 onOpenArtifact={onOpenArtifact}
                 workingDir={workingDir}
+                knownFilePaths={knownFilePaths}
               />
             </div>
 

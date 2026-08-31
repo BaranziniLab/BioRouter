@@ -263,6 +263,204 @@ console.log('Hello, World!');
       expect(screen.queryByRole('link', { name: 'analysis.sql' })).not.toBeInTheDocument();
     });
 
+    it.each([
+      '[Report](reports/summary.md)',
+      'Open `reports/summary.md`.',
+      'Open reports/summary.md.',
+    ])('file-link reliability: refuses an unanchored relative file: %s', async (content) => {
+      const onOpenArtifact = vi.fn();
+      render(<MarkdownContent content={content} onOpenArtifact={onOpenArtifact} />);
+
+      await waitFor(() => expect(screen.getByText(/Report|reports\/summary\.md/)).toBeVisible());
+      expect(screen.queryByRole('button')).not.toBeInTheDocument();
+      expect(screen.queryByRole('link')).not.toBeInTheDocument();
+      expect(onOpenArtifact).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      '../private/report.md',
+      'reports/../../private/report.md',
+      '%2e%2e/private/report.md',
+    ])(
+      'file-link reliability: preserves relative-path refusal through Markdown: %s',
+      async (target) => {
+        const onOpenArtifact = vi.fn();
+        render(
+          <MarkdownContent
+            content={`[Report](${target})`}
+            workingDir="/work/session"
+            onOpenArtifact={onOpenArtifact}
+          />
+        );
+
+        expect(await screen.findByText('Report')).toBeVisible();
+        expect(screen.queryByRole('button', { name: 'Report' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('link', { name: 'Report' })).not.toBeInTheDocument();
+        expect(onOpenArtifact).not.toHaveBeenCalled();
+      }
+    );
+
+    it.each(['/work/source.rs:42', '/work/source.rs#L42'])(
+      'file-link reliability: separates the source location from file I/O: %s',
+      async (target) => {
+        const onOpenArtifact = vi.fn();
+        render(<MarkdownContent content={`[Source](${target})`} onOpenArtifact={onOpenArtifact} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Source' }));
+        expect(onOpenArtifact).toHaveBeenCalledWith(
+          expect.objectContaining({
+            kind: 'file',
+            title: 'source.rs',
+            path: '/work/source.rs',
+            line: 42,
+          })
+        );
+      }
+    );
+
+    it.each([
+      [[], '/work/source.rs'],
+      [['/earlier/output/source.rs'], '/earlier/output/source.rs'],
+    ] as const)(
+      'file-link reliability: preserves a bare filename source line through URL filtering: %s',
+      async (knownFilePaths, path) => {
+        const onOpenArtifact = vi.fn();
+        render(
+          <MarkdownContent
+            content="[Source](source.rs:42)"
+            workingDir="/work"
+            knownFilePaths={knownFilePaths}
+            onOpenArtifact={onOpenArtifact}
+          />
+        );
+        fireEvent.click(await screen.findByRole('button', { name: 'Source' }));
+        expect(onOpenArtifact).toHaveBeenCalledWith({
+          kind: 'file',
+          title: 'source.rs',
+          path,
+          line: 42,
+        });
+      }
+    );
+
+    it.each(['See /work/Δ/source.rs:42.', 'See /work/Δ/source.rs#L42.'])(
+      'file-link reliability: preserves the full Unicode path and location in prose: %s',
+      async (content) => {
+        const onOpenArtifact = vi.fn();
+        render(<MarkdownContent content={content} onOpenArtifact={onOpenArtifact} />);
+        fireEvent.click(await screen.findByRole('button'));
+        expect(onOpenArtifact).toHaveBeenCalledWith({
+          kind: 'file',
+          title: 'source.rs',
+          path: '/work/Δ/source.rs',
+          line: 42,
+        });
+      }
+    );
+
+    it('file-link reliability: never linkifies a root suffix after unsupported path characters', async () => {
+      const onOpenArtifact = vi.fn();
+      render(
+        <MarkdownContent
+          content={'See /work/odd"directory/report.md'}
+          workingDir="/work"
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+      expect(await screen.findByText(/directory\/report.md/)).toBeVisible();
+      expect(screen.queryByRole('button', { name: '/report.md' })).not.toBeInTheDocument();
+      expect(onOpenArtifact).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['See /work/source.rs%23L42.', '/work/source.rs#L42'],
+      ['[Literal](results/source.rs%23L42)', '/work/results/source.rs#L42'],
+      ['[Literal](source.rs%3A42)', '/elsewhere/source.rs:42'],
+      ['[Literal](results/source.rs%2523L42)', '/work/results/source.rs%23L42'],
+    ])(
+      'file-link reliability: resolves encoded literal names without source reinterpretation: %s',
+      async (content, path) => {
+        const onOpenArtifact = vi.fn();
+        render(
+          <MarkdownContent
+            content={content}
+            workingDir="/work"
+            knownFilePaths={['/elsewhere/source.rs:42']}
+            onOpenArtifact={onOpenArtifact}
+          />
+        );
+        fireEvent.click(await screen.findByRole('button'));
+        expect(onOpenArtifact).toHaveBeenCalledWith({
+          kind: 'file',
+          title: path.split('/').pop(),
+          path,
+        });
+      }
+    );
+
+    it.each([
+      '/tmp/source.rs:0',
+      '/tmp/source.rs:9007199254740992',
+      '/tmp/source.rs:42:7',
+      '/tmp/source.rs#L42:7',
+      '/tmp/source.rs%00',
+      'source.rs:0',
+    ])(
+      'file-link reliability: malformed local targets stay inert instead of opening externally: %s',
+      async (target) => {
+        const onOpenArtifact = vi.fn();
+        const electron = installElectronMock();
+        render(<MarkdownContent content={`[Source](${target})`} onOpenArtifact={onOpenArtifact} />);
+        expect(await screen.findByText('Source')).toBeVisible();
+        expect(screen.queryByRole('button', { name: 'Source' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('link', { name: 'Source' })).not.toBeInTheDocument();
+        expect(electron.openExternal).not.toHaveBeenCalled();
+        expect(onOpenArtifact).not.toHaveBeenCalled();
+      }
+    );
+
+    it.each([
+      '/work/Study%20%231/%CE%94%20results.csv',
+      'file:///work/Study%20%231/%CE%94%20results.csv',
+      '</work/Study %231/Δ results.csv>',
+    ])(
+      'file-link reliability: preserves encoded hashes, Unicode and spaces: %s',
+      async (target) => {
+        const onOpenArtifact = vi.fn();
+        render(
+          <MarkdownContent content={`[Results](${target})`} onOpenArtifact={onOpenArtifact} />
+        );
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Results' }));
+        expect(onOpenArtifact).toHaveBeenCalledWith({
+          kind: 'file',
+          title: 'Δ results.csv',
+          path: '/work/Study #1/Δ results.csv',
+        });
+      }
+    );
+
+    it.each([
+      ['/work/source.rs%3A42', 'source.rs:42'],
+      ['/work/source.rs%23L42', 'source.rs#L42'],
+      ['file:///work/source.rs%23L42', 'source.rs#L42'],
+    ])(
+      'file-link reliability: preserves percent-encoded literal source-location characters: %s',
+      async (target, name) => {
+        const onOpenArtifact = vi.fn();
+        render(
+          <MarkdownContent content={`[Literal name](${target})`} onOpenArtifact={onOpenArtifact} />
+        );
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Literal name' }));
+        expect(onOpenArtifact).toHaveBeenCalledWith({
+          kind: 'file',
+          title: name,
+          path: `/work/${name}`,
+        });
+      }
+    );
+
     it('decodes markdown URL escapes before opening a local file with spaces', async () => {
       const onOpenArtifact = vi.fn();
       const content = '[Preview PowerPoint](/private/tmp/BioOKF%20Presentation.pptx)';
@@ -326,7 +524,7 @@ console.log('Hello, World!');
 
       expect(onOpenArtifact).toHaveBeenCalledWith({
         kind: 'file',
-        title: 'BioOKF Presentation.pptx',
+        title: 'BioOKF%20Presentation.pptx',
         path: '/private/tmp/%2e%2e/BioOKF%20Presentation.pptx',
       });
     });
@@ -748,7 +946,11 @@ Another very long URL: https://www.example.com/very/long/path/with/many/segments
     it('uses one inline-code size across the code element and the artifact button', async () => {
       const onOpenArtifact = vi.fn();
       render(
-        <MarkdownContent content="Open `dist/index.html` now." onOpenArtifact={onOpenArtifact} />
+        <MarkdownContent
+          content="Open `dist/index.html` now."
+          workingDir="/Users/wgu/Desktop/weather-website"
+          onOpenArtifact={onOpenArtifact}
+        />
       );
 
       const button = await screen.findByRole('button', { name: 'dist/index.html' });

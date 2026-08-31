@@ -146,6 +146,8 @@ import {
   type EmbeddedBrowserBounds,
 } from './utils/embeddedBrowser';
 import { heicToPng } from './utils/heicConvert';
+import { bindManagedAppPreviewBackend } from './utils/managedAppPreviewBackend';
+import type { ManagedAppPreviewBackend } from './utils/managedAppPreviewPolicy';
 import { IMAGE_BLOB_URL_THRESHOLD_BYTES, IMAGE_MIME_TYPES } from './utils/imageFormats';
 import { recordExtensionProvenance } from './utils/extensionProvenance';
 import { fetchRegistryWithLastGood } from './utils/registryCache';
@@ -1135,6 +1137,7 @@ let appConfig = {
 
 const windowMap = new Map<number, BrowserWindow>();
 const biorouterdClients = new Map<number, Client>();
+const managedAppPreviewBackends = new Map<number, ManagedAppPreviewBackend>();
 
 const trackArtifactPreviewFrames = (contents: Electron.WebContents) => {
   const frameIds = new Set<string>();
@@ -1357,6 +1360,8 @@ const createChat = async (
     })
   );
   biorouterdClients.set(mainWindow.id, biorouterdClient);
+  const managedPreviewBackend = bindManagedAppPreviewBackend(biorouterdResult, mainWindow);
+  if (managedPreviewBackend) managedAppPreviewBackends.set(mainWindow.id, managedPreviewBackend);
   // With a shared daemon the backend is app-lifetime (killed only in
   // startBiorouterd's own `will-quit` sweep), so windows must NOT ref-count it —
   // closing one window must not tear the daemon out from under the others. The
@@ -1664,6 +1669,7 @@ const createChat = async (
   // Handle window closure
   mainWindow.on('closed', () => {
     windowMap.delete(windowId);
+    managedAppPreviewBackends.delete(windowId);
     windowWorkingDirs.delete(windowId);
     // A closed window stops being a merge target on the very next pointermove
     // (design §6), and cannot be left holding a caret nobody will clear.
@@ -3119,11 +3125,17 @@ ipcMain.handle(
 ipcMain.handle('embedded-browser:create', (event, payload: { viewId: string; url: string }) => {
   const window = BrowserWindow.fromWebContents(event.sender);
   if (!window || typeof payload?.viewId !== 'string') return null;
-  return createEmbeddedBrowser(window, payload.viewId, payload.url, (state) => {
-    if (!event.sender.isDestroyed()) {
-      event.sender.send('embedded-browser:state', { viewId: payload.viewId, state });
-    }
-  });
+  return createEmbeddedBrowser(
+    window,
+    payload.viewId,
+    payload.url,
+    (state) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('embedded-browser:state', { viewId: payload.viewId, state });
+      }
+    },
+    managedAppPreviewBackends.get(window.id)
+  );
 });
 
 ipcMain.handle(
@@ -3149,7 +3161,10 @@ ipcMain.handle('embedded-browser:navigate', (event, payload: { viewId: string; u
 
 ipcMain.handle(
   'embedded-browser:control',
-  (event, payload: { viewId: string; action: 'back' | 'forward' | 'reload' | 'stop' }) => {
+  (
+    event,
+    payload: { viewId: string; action: 'back' | 'forward' | 'reload' | 'stop' | 'reload-if-idle' }
+  ) => {
     const window = BrowserWindow.fromWebContents(event.sender);
     return window ? controlEmbeddedBrowser(window, payload.viewId, payload.action) : false;
   }
@@ -5626,8 +5641,7 @@ async function appMain() {
     ) {
       return null;
     }
-    const title =
-      typeof value.title === 'string' ? sanitizeUntrustedLabel(value.title) : undefined;
+    const title = typeof value.title === 'string' ? sanitizeUntrustedLabel(value.title) : undefined;
     const finiteDimension = (dimension: unknown) =>
       typeof dimension === 'number' && Number.isFinite(dimension) ? dimension : undefined;
     return {

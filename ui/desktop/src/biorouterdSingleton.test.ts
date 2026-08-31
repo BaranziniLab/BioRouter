@@ -4,6 +4,7 @@ import { getSharedBackend, resetSharedBackend, isSharedDaemonEnabled } from './b
 
 const fakeResult = (baseUrl: string): BiorouterdResult => ({
   baseUrl,
+  managed: true,
   workingDir: '/home/tester',
   // A ChildProcess stand-in — the singleton never touches it.
   process: { kill: () => {} } as unknown as BiorouterdResult['process'],

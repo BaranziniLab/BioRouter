@@ -12,6 +12,13 @@ import { isAllowedEmbeddedRequestUrl, isAuthenticationNavigation } from './embed
 import { startEmbeddedBrowserProxy, stopEmbeddedBrowserProxy } from './embeddedBrowserProxy';
 import { validateExternalBrowserTarget } from './externalBrowserNavigation';
 import { isNavigableEmbeddedUrl } from './permissionPolicy';
+import {
+  isManagedAppNavigation,
+  managedAppPreviewScope,
+  type ManagedAppPreviewBackend,
+} from './managedAppPreviewPolicy';
+import { managedAppSession, type ManagedAppPreviewSession } from './managedAppPreviewSession';
+import { PREVIEW_ACTIVITY_IDLE, PREVIEW_ACTIVITY_INSTALL } from './previewActivity';
 
 /**
  * A real, interactive browser inside the artifact panel.
@@ -50,6 +57,7 @@ export type EmbeddedBrowserBounds = { x: number; y: number; width: number; heigh
 export type EmbeddedBrowserState = {
   url: string;
   title: string;
+  managedApp?: boolean;
   /** Changes whenever the top-level document or SPA route commits. */
   sourceRevision: string;
   canGoBack: boolean;
@@ -65,6 +73,8 @@ type Entry = {
   bounds: EmbeddedBrowserBounds;
   revision: number;
   requestAuthenticationConfirmation: (url: string) => void;
+  managed?: ManagedAppPreviewSession;
+  releaseManagedView?: () => void;
 };
 
 const views = new Map<string, Entry>();
@@ -244,6 +254,7 @@ function readState(entry: Entry, error: string | null = null): EmbeddedBrowserSt
   return {
     url: contents.getURL().slice(0, MAX_PAGE_URL_CHARS),
     title: contents.getTitle().slice(0, MAX_PAGE_TITLE_CHARS),
+    managedApp: Boolean(entry.managed),
     sourceRevision: sourceRevision(entry),
     canGoBack: contents.navigationHistory.canGoBack(),
     canGoForward: contents.navigationHistory.canGoForward(),
@@ -256,12 +267,15 @@ export function createEmbeddedBrowser(
   window: BrowserWindow,
   viewId: string,
   initialUrl: string,
-  onState: (state: EmbeddedBrowserState) => void
+  onState: (state: EmbeddedBrowserState) => void,
+  backend?: ManagedAppPreviewBackend
 ): EmbeddedBrowserState | null {
-  if (!isNavigableEmbeddedUrl(initialUrl)) return null;
+  if (window.isDestroyed() || !isNavigableEmbeddedUrl(initialUrl)) return null;
   destroyEmbeddedBrowser(window, viewId);
 
-  const embedded = embeddedSession();
+  const scope = managedAppPreviewScope(initialUrl, backend);
+  const managed = scope ? managedAppSession(window, scope) : undefined;
+  const embedded = managed?.session ?? embeddedSession();
   const view = new WebContentsView({
     webPreferences: {
       session: embedded,
@@ -314,9 +328,12 @@ export function createEmbeddedBrowser(
     bounds,
     revision: 0,
     requestAuthenticationConfirmation,
+    managed,
   };
 
-  const push = (error: string | null = null) => onState(readState(entry, error));
+  const push = (error: string | null = null) => {
+    if (!contents.isDestroyed()) onState(readState(entry, error));
+  };
 
   // Remote pages never get to create native dialogs. The toolbar's explicit
   // Open action remains the user-gesture path for leaving the embedded view.
@@ -327,12 +344,17 @@ export function createEmbeddedBrowser(
   });
 
   const guardNavigation = (event: Electron.Event, url: string) => {
+    if (managed && (!managed.isActive() || !isManagedAppNavigation(managed.scope, url))) {
+      event.preventDefault();
+      push('This preview can only navigate within this app.');
+      return;
+    }
     if (!isNavigableEmbeddedUrl(url)) {
       log.warn('[EmbeddedBrowser] blocked navigation to a non-http(s) url');
       event.preventDefault();
       return;
     }
-    if (isAuthenticationNavigation(url)) {
+    if (!managed && isAuthenticationNavigation(url)) {
       event.preventDefault();
       push('Sign-in navigation was blocked. Use Open in browser to continue securely.');
     }
@@ -341,6 +363,12 @@ export function createEmbeddedBrowser(
   contents.on('will-redirect', guardNavigation);
 
   contents.on('did-start-loading', () => push());
+  if (managed) {
+    contents.on('dom-ready', () => {
+      if (!contents.isDestroyed())
+        void contents.executeJavaScript(PREVIEW_ACTIVITY_INSTALL).catch(() => {});
+    });
+  }
   contents.on('did-stop-loading', () => push());
   contents.on('did-navigate', () => {
     entry.revision += 1;
@@ -368,17 +396,28 @@ export function createEmbeddedBrowser(
   view.setVisible(false);
 
   views.set(viewKey(window, viewId), entry);
-  void prepareEmbeddedNetwork(embedded).then(
+  if (managed) {
+    entry.releaseManagedView = managed.onRevoke(() => {
+      push('The app backend stopped. Reopen the app after the backend restarts.');
+      destroyEmbeddedBrowser(window, viewId);
+    });
+  }
+  const networkReady = managed?.ready ?? prepareEmbeddedNetwork(embedded);
+  void networkReady.then(
     () => {
       if (entryFor(window, viewId) === entry && !contents.isDestroyed()) {
-        if (isAuthenticationNavigation(initialUrl)) {
+        if (!managed && isAuthenticationNavigation(initialUrl)) {
           entry.requestAuthenticationConfirmation(initialUrl);
         } else {
           void contents.loadURL(initialUrl);
         }
       }
     },
-    () => push('The secure browser network could not be started.')
+    () => {
+      if (entryFor(window, viewId) === entry && !contents.isDestroyed()) {
+        push('The secure browser network could not be started.');
+      }
+    }
   );
   return readState(entry);
 }
@@ -424,7 +463,13 @@ export function navigateEmbeddedBrowser(
 ): boolean {
   const entry = entryFor(window, viewId);
   if (!entry || !isNavigableEmbeddedUrl(url)) return false;
-  if (isAuthenticationNavigation(url)) {
+  if (
+    entry.managed &&
+    (!entry.managed.isActive() || !isManagedAppNavigation(entry.managed.scope, url))
+  ) {
+    return false;
+  }
+  if (!entry.managed && isAuthenticationNavigation(url)) {
     entry.requestAuthenticationConfirmation(url);
     return true;
   }
@@ -435,10 +480,11 @@ export function navigateEmbeddedBrowser(
 export function controlEmbeddedBrowser(
   window: BrowserWindow,
   viewId: string,
-  action: 'back' | 'forward' | 'reload' | 'stop'
-): boolean {
+  action: 'back' | 'forward' | 'reload' | 'stop' | 'reload-if-idle'
+): boolean | Promise<boolean> {
   const entry = entryFor(window, viewId);
-  if (!entry) return false;
+  if (!entry || entry.view.webContents.isDestroyed()) return false;
+  if (action === 'reload-if-idle') return reloadManagedAppIfIdle(window, viewId, entry);
   const contents = entry.view.webContents;
   if (action === 'back' && contents.navigationHistory.canGoBack()) {
     contents.navigationHistory.goBack();
@@ -450,6 +496,46 @@ export function controlEmbeddedBrowser(
     contents.stop();
   }
   return true;
+}
+
+async function reloadManagedAppIfIdle(
+  window: BrowserWindow,
+  viewId: string,
+  entry: Entry
+): Promise<boolean> {
+  const contents = entry.view.webContents;
+  if (!entry.managed || !entry.managed.isActive() || !entry.visible || contents.isLoading())
+    return false;
+  const revision = sourceRevision(entry);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Only a boolean crosses back. Never inspect input values or accept script
+    // from the renderer. A focused nested frame is conservatively considered busy.
+    const idle = await Promise.race([
+      contents.executeJavaScript(PREVIEW_ACTIVITY_IDLE),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), 1000);
+      }),
+    ]);
+    if (
+      idle !== true ||
+      window.isDestroyed() ||
+      entryFor(window, viewId) !== entry ||
+      contents.isDestroyed() ||
+      contents.isLoading() ||
+      !entry.visible ||
+      sourceRevision(entry) !== revision ||
+      !entry.managed.isActive() ||
+      !isManagedAppNavigation(entry.managed.scope, contents.getURL())
+    )
+      return false;
+    contents.reload();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function embeddedBrowserState(
@@ -540,11 +626,12 @@ export async function clearEmbeddedBrowserData(
 ): Promise<boolean> {
   const entry = entryFor(window, viewId);
   if (!entry) return false;
+  const targetSession = entry.view.webContents.session;
   if (allOrigins) {
-    await embeddedSession().clearStorageData();
+    await targetSession.clearStorageData();
   } else {
     const origin = new URL(entry.view.webContents.getURL()).origin;
-    await embeddedSession().clearStorageData({ origin });
+    await targetSession.clearStorageData({ origin });
   }
   return true;
 }
@@ -554,6 +641,7 @@ export function destroyEmbeddedBrowser(window: BrowserWindow, viewId: string): v
   const entry = views.get(key);
   if (!entry) return;
   views.delete(key);
+  entry.releaseManagedView?.();
   try {
     entry.window.contentView.removeChildView(entry.view);
   } catch {
@@ -567,6 +655,7 @@ export function destroyEmbeddedBrowsersForWindow(window: BrowserWindow): void {
   for (const [key, entry] of [...views.entries()]) {
     if (entry.window !== window) continue;
     views.delete(key);
+    entry.releaseManagedView?.();
     try {
       window.contentView.removeChildView(entry.view);
     } catch {

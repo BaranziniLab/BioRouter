@@ -17,6 +17,8 @@ export type ArtifactSource =
       kind: 'file';
       title: string;
       path: string;
+      /** One-based source location, never part of the file-read IPC path. */
+      line?: number;
     }
   | {
       kind: 'mcpResource';

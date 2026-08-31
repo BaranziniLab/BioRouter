@@ -577,6 +577,82 @@ describe('fileArtifactPathsFromToolCall — shell', () => {
       '/home/ada/project/two.csv',
     ]);
   });
+
+  it('file-link reliability: anchors output after a success-guarded literal cd', () => {
+    expect(shell('cd reports && python summarize.py > summary.csv')).toEqual([
+      '/home/ada/project/reports/summary.csv',
+    ]);
+    expect(shell('cd "/tmp/Other Study" && echo done > summary.md')).toEqual([
+      '/tmp/Other Study/summary.md',
+    ]);
+  });
+
+  it.each([
+    ['/tmp/run', '/tmp/run/report.md'],
+    ['runs/one', '/home/ada/project/runs/one/report.md'],
+  ])(
+    'file-link reliability: honors the actual shell working_directory argument: %s',
+    (directory, path) => {
+      expect(
+        fileArtifactPathsFromToolCall(
+          'developer__shell',
+          {
+            command: 'echo x > report.md',
+            working_directory: directory,
+          },
+          WORKING_DIR
+        )
+      ).toEqual([path]);
+    }
+  );
+
+  it('file-link reliability: carries a literal wrapped shell working_directory into output discovery', () => {
+    expect(
+      fileArtifactPathsFromToolCall(
+        'code_execution__execute_code',
+        {
+          code: 'await developer.shell({ command: "echo x > report.md", working_directory: "/tmp/run" });',
+        },
+        WORKING_DIR
+      )
+    ).toEqual(['/tmp/run/report.md']);
+  });
+
+  it.each([
+    'cd "$OUTPUT_DIR" && echo done > summary.md',
+    'cd reports; echo done > summary.md',
+    'if check; then cd reports; fi; echo done > summary.md',
+    '(cd reports && echo done > summary.md)',
+  ])('file-link reliability: refuses an ambiguous shell cwd: %s', (command) => {
+    expect(shell(command)).toEqual([]);
+  });
+
+  it('file-link reliability: preserves absolute output despite an unresolved shell cwd', () => {
+    expect(shell('cd "$OUTPUT_DIR" && echo done > /tmp/summary.md')).toEqual(['/tmp/summary.md']);
+  });
+
+  it('file-link reliability: keeps sequential literal cd scopes distinct', () => {
+    expect(shell('cd a && echo x > first.md && cd b && echo y > second.md')).toEqual([
+      '/home/ada/project/a/first.md',
+      '/home/ada/project/a/b/second.md',
+    ]);
+  });
+
+  it('file-link reliability: does not interpret quoted command text as shell execution', () => {
+    expect(shell('echo "cd a" > out.md')).toEqual(['/home/ada/project/out.md']);
+    expect(shell("printf 'echo > /elsewhere/report.md'")).toEqual([]);
+  });
+
+  it.each([
+    'cd - && echo x > report.md',
+    'cd ~other && echo x > report.md',
+    'cd reports[12] && echo x > report.md',
+    "cd '~/reports' && echo x > report.md",
+    'echo x > report[12].md',
+    'echo x > report\\ name.md',
+  ])('file-link reliability: refuses nonliteral shell pathname semantics: %s', (command) => {
+    expect(shell(command)).toEqual([]);
+  });
 });
 
 describe('fileArtifactPathsFromToolCall — code_execution wrapper', () => {

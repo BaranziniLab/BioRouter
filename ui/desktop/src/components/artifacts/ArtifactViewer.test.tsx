@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { AppTooltipLayer } from '../ui/AppTooltipLayer';
+import MarkdownContent from '../MarkdownContent';
 import ArtifactViewer, { safeTiffDimensions } from './ArtifactViewer';
 import type { ArtifactSource } from './artifactTypes';
 import { artifactSourceFromResource, titleFromResourceUri } from './artifactUtils';
@@ -708,6 +709,165 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       expect(screen.getByText(/select/)).toBeInTheDocument();
     });
   });
+
+  it('file-link reliability: reads the file path and follows changing source locations', async () => {
+    installElectronMock();
+    vi.mocked(window.electron.readArtifactFile).mockResolvedValue({
+      kind: 'text',
+      title: 'source.rs',
+      path: '/tmp/source.rs',
+      mimeType: 'text/plain',
+      text: '// first sentinel\nlet second_sentinel = 2;\nlet third_sentinel = 3;',
+      size: 69,
+      found: true,
+    });
+    function Harness() {
+      const [artifact, setArtifact] = useState<ArtifactSource | null>(null);
+      return (
+        <>
+          <MarkdownContent
+            content="[Second line](/tmp/source.rs:2) [Third line](/tmp/source.rs#L3)"
+            onOpenArtifact={setArtifact}
+          />
+          {artifact && (
+            <ArtifactViewer artifact={artifact} onClose={vi.fn()} onOpenArtifact={setArtifact} />
+          )}
+        </>
+      );
+    }
+
+    const { container } = render(
+      <ThemeProvider>
+        <Harness />
+      </ThemeProvider>
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Second line' }));
+
+    await waitFor(() => {
+      expect(window.electron.readArtifactFile).toHaveBeenCalledWith('/tmp/source.rs');
+      const selectedLine = container.querySelector(
+        '[data-source-line="2"][aria-current="location"]'
+      );
+      expect(selectedLine).toHaveTextContent('second_sentinel');
+    });
+    expect(
+      vi
+        .mocked(window.electron.readArtifactFile)
+        .mock.calls.every(([path]) => path === '/tmp/source.rs')
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Third line' }));
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-source-line="3"][aria-current="location"]')
+      ).toHaveTextContent('third_sentinel');
+      expect(
+        container.querySelector('[data-source-line="2"][aria-current="location"]')
+      ).not.toBeInTheDocument();
+    });
+    expect(
+      vi
+        .mocked(window.electron.readArtifactFile)
+        .mock.calls.every(([path]) => path === '/tmp/source.rs')
+    ).toBe(true);
+  });
+
+  it.each(['md', 'csv', 'html'])(
+    'file-link reliability: selects source lines after a formatted %s preview',
+    async (extension) => {
+      installElectronMock();
+      const path = `/tmp/report.${extension}`;
+      vi.mocked(window.electron.readArtifactFile).mockResolvedValue({
+        kind: extension === 'html' ? 'html' : 'text',
+        title: `report.${extension}`,
+        path,
+        mimeType: 'text/plain',
+        text: 'first_sentinel\nsecond_sentinel',
+        size: 30,
+        found: true,
+      });
+      function Harness() {
+        const [artifact, setArtifact] = useState<ArtifactSource | null>(null);
+        return (
+          <>
+            <MarkdownContent
+              content={`[Normal](${path}) [Line](${path}:2)`}
+              onOpenArtifact={setArtifact}
+            />
+            {artifact && (
+              <ArtifactViewer artifact={artifact} onClose={vi.fn()} onOpenArtifact={setArtifact} />
+            )}
+          </>
+        );
+      }
+      const { container } = render(
+        <ThemeProvider>
+          <Harness />
+        </ThemeProvider>
+      );
+      fireEvent.click(await screen.findByRole('button', { name: 'Normal' }));
+      await waitFor(() => expect(window.electron.readArtifactFile).toHaveBeenCalledWith(path));
+      fireEvent.click(screen.getByRole('button', { name: 'Line' }));
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Raw' })).toHaveAttribute('aria-pressed', 'true');
+        expect(
+          container.querySelector('[data-source-line="2"][aria-current="location"]')
+        ).toHaveTextContent('second_sentinel');
+      });
+      expect(container.querySelector('iframe')).not.toBeInTheDocument();
+      expect(
+        vi
+          .mocked(window.electron.readArtifactFile)
+          .mock.calls.every(([readPath]) => readPath === path)
+      ).toBe(true);
+    }
+  );
+
+  it.each([
+    ['/tmp/source.rs%23L42', '/tmp/source.rs#L42'],
+    ['/tmp/source.rs%2523L42', '/tmp/source.rs%23L42'],
+  ])(
+    'file-link reliability: keeps encoded filename identity through the reader: %s',
+    async (target, path) => {
+      installElectronMock();
+      vi.mocked(window.electron.readArtifactFile).mockResolvedValue({
+        kind: 'text',
+        title: path.split('/').pop()!,
+        path,
+        mimeType: 'text/plain',
+        text: 'literal filename sentinel',
+        size: 25,
+        found: true,
+      });
+      function Harness() {
+        const [artifact, setArtifact] = useState<ArtifactSource | null>(null);
+        return (
+          <>
+            <MarkdownContent content={`[Literal](${target})`} onOpenArtifact={setArtifact} />
+            {artifact && (
+              <ArtifactViewer artifact={artifact} onClose={vi.fn()} onOpenArtifact={setArtifact} />
+            )}
+          </>
+        );
+      }
+      const { container } = render(
+        <ThemeProvider>
+          <Harness />
+        </ThemeProvider>
+      );
+      fireEvent.click(await screen.findByRole('button', { name: 'Literal' }));
+      await waitFor(() => expect(window.electron.readArtifactFile).toHaveBeenCalledWith(path));
+      expect(await screen.findByText('literal filename sentinel')).toBeVisible();
+      expect(
+        container.querySelector('[data-source-line][aria-current="location"]')
+      ).not.toBeInTheDocument();
+      expect(
+        vi
+          .mocked(window.electron.readArtifactFile)
+          .mock.calls.every(([readPath]) => readPath === path)
+      ).toBe(true);
+    }
+  );
 
   // #36 — a moved/deleted file renders a friendly centered empty-state, never
   // the raw Node errno string the main process used to forward verbatim.
