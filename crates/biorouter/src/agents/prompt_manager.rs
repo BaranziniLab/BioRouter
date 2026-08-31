@@ -799,13 +799,18 @@ mod tests {
             p.contains("file_path:line_number"),
             "missing code-reference citation convention"
         );
-        // #44: with the session working dir immutable, printed file references
-        // must be absolute (or ~-relative) so the artifact previewer can
-        // always resolve them — a bare relative path only resolves against
-        // whatever directory happens to be current when it is read.
         assert!(
-            p.contains("never a bare relative path"),
-            "missing absolute-path rule for printed file references (#44)"
+            p.contains("use its verified absolute path on every turn, including"),
+            "missing persistent absolute-path rule for file references (#44)"
+        );
+        assert!(
+            p.contains("the label may be short, but do not replace")
+                && p.contains("the target with just a filename or guess a missing directory"),
+            "missing distinction between file link labels and verified targets"
+        );
+        assert!(
+            p.contains("[source.rs](/absolute/path/source.rs:42)"),
+            "missing absolute source-line link convention"
         );
         // Tool-routing discipline. Generic guidance renders in every mode;
         // capability-specific guidance must render only while that capability

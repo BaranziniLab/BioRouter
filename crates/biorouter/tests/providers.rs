@@ -1,3 +1,6 @@
+//! Live provider calls require an exact named test with `--ignored --exact`.
+//! Configured credentials alone never opt an ordinary regression run into network calls.
+
 use anyhow::Result;
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::providers::anthropic::ANTHROPIC_DEFAULT_MODEL;
@@ -503,12 +506,55 @@ async fn test_provider(
     }
 }
 
+#[test]
+fn live_provider_tests_require_explicit_opt_in() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--list", "--ignored"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let output = String::from_utf8(output.stdout).unwrap();
+    let ignored: Vec<_> = output
+        .lines()
+        .filter_map(|line| line.strip_suffix(": test"))
+        .collect();
+    for name in [
+        "test_openai_provider",
+        "test_azure_provider",
+        "test_bedrock_provider_long_term_credentials",
+        "test_bedrock_provider_aws_profile_credentials",
+        "test_bedrock_provider_sonnet_5",
+        "test_versa_bedrock_provider",
+        "test_versa_bedrock_provider_sonnet_4_6",
+        "test_databricks_provider",
+        "test_ollama_provider",
+        "test_anthropic_provider",
+        "test_openrouter_provider",
+        "test_google_provider",
+        "test_snowflake_provider",
+        "test_sagemaker_tgi_provider",
+        "test_litellm_provider",
+        "test_xai_provider",
+        "test_zai_provider",
+        "test_xiaomi_mimo_provider",
+    ] {
+        assert!(
+            ignored.contains(&name),
+            "live test must require opt-in: {name}"
+        );
+    }
+    assert!(!ignored.contains(&"every_registry_key_used_by_this_suite_resolves"));
+    assert!(!ignored.contains(&"live_provider_tests_require_explicit_opt_in"));
+}
+
 #[tokio::test]
+#[ignore = "live OpenAI call; run an exact named test with --ignored --exact"]
 async fn test_openai_provider() -> Result<()> {
     test_provider("openai", OPEN_AI_DEFAULT_MODEL, &["OPENAI_API_KEY"], None).await
 }
 
 #[tokio::test]
+#[ignore = "live Azure call; run an exact named test with --ignored --exact"]
 async fn test_azure_provider() -> Result<()> {
     test_provider(
         "azure_openai",
@@ -533,7 +579,7 @@ async fn test_azure_provider() -> Result<()> {
 // green while calling nothing at all — a missing credential returned `Ok`, and
 // so did an "Unknown provider" from a registry key that never existed.
 //
-//     cargo test -p biorouter --test providers -- --ignored bedrock
+//     cargo test -p biorouter --test providers test_versa_bedrock_provider -- --ignored --exact --test-threads=1
 // ===========================================================================
 
 /// How a live test establishes that a credential is actually available.
@@ -836,6 +882,7 @@ async fn test_versa_bedrock_provider_sonnet_4_6() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "live Databricks call; run an exact named test with --ignored --exact"]
 async fn test_databricks_provider() -> Result<()> {
     test_provider(
         "databricks",
@@ -847,11 +894,13 @@ async fn test_databricks_provider() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "live Ollama call; run an exact named test with --ignored --exact"]
 async fn test_ollama_provider() -> Result<()> {
     test_provider("ollama", OLLAMA_DEFAULT_MODEL, &["OLLAMA_HOST"], None).await
 }
 
 #[tokio::test]
+#[ignore = "live Anthropic call; run an exact named test with --ignored --exact"]
 async fn test_anthropic_provider() -> Result<()> {
     test_provider(
         "anthropic",
@@ -863,6 +912,7 @@ async fn test_anthropic_provider() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "live OpenRouter call; run an exact named test with --ignored --exact"]
 async fn test_openrouter_provider() -> Result<()> {
     test_provider(
         "openrouter",
@@ -874,11 +924,13 @@ async fn test_openrouter_provider() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "live Google call; run an exact named test with --ignored --exact"]
 async fn test_google_provider() -> Result<()> {
     test_provider("google", GOOGLE_DEFAULT_MODEL, &["GOOGLE_API_KEY"], None).await
 }
 
 #[tokio::test]
+#[ignore = "live Snowflake call; run an exact named test with --ignored --exact"]
 async fn test_snowflake_provider() -> Result<()> {
     test_provider(
         "snowflake",
@@ -890,6 +942,7 @@ async fn test_snowflake_provider() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "live SageMaker call; run an exact named test with --ignored --exact"]
 async fn test_sagemaker_tgi_provider() -> Result<()> {
     test_provider(
         "sagemaker_tgi",
@@ -901,6 +954,7 @@ async fn test_sagemaker_tgi_provider() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "live LiteLLM call; run an exact named test with --ignored --exact"]
 async fn test_litellm_provider() -> Result<()> {
     if std::env::var("LITELLM_HOST").is_err() {
         println!("LITELLM_HOST not set, skipping test");
@@ -917,16 +971,19 @@ async fn test_litellm_provider() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "live xAI call; run an exact named test with --ignored --exact"]
 async fn test_xai_provider() -> Result<()> {
     test_provider("xai", XAI_DEFAULT_MODEL, &["XAI_API_KEY"], None).await
 }
 
 #[tokio::test]
+#[ignore = "live Zai call; run an exact named test with --ignored --exact"]
 async fn test_zai_provider() -> Result<()> {
     test_provider("zai", ZAI_DEFAULT_MODEL, &["ZAI_API_KEY"], None).await
 }
 
 #[tokio::test]
+#[ignore = "live Xiaomi MiMo call; run an exact named test with --ignored --exact"]
 async fn test_xiaomi_mimo_provider() -> Result<()> {
     test_provider(
         "xiaomi_mimo",

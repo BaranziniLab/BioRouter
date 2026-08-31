@@ -657,7 +657,7 @@ function shellRedirectPaths(command: string, workingDir?: string): string[] {
       const candidate = match[1] ?? match[2] ?? match[3];
       const isQuoted = match[1] !== undefined || match[2] !== undefined;
       if (!candidate || (match[2] === undefined && /[$`]/.test(candidate))) continue;
-      if (!isQuoted && /[*?\[\]\\]/.test(candidate)) continue;
+      if (!isQuoted && /[*?[\]\\]/.test(candidate)) continue;
       if (candidate.startsWith('~') && (isQuoted || !candidate.startsWith('~/'))) continue;
       const resolved = resolveArtifactPath(candidate, cwd);
       if (resolved && isPreviewableArtifactPath(resolved)) paths.push(resolved);
@@ -673,7 +673,7 @@ function shellRedirectPaths(command: string, workingDir?: string): string[] {
         directory &&
         !directory.startsWith('-') &&
         !directory.includes('\\') &&
-        (quotedDirectory || !/[*?\[\]]/.test(directory)) &&
+        (quotedDirectory || !/[*?[\]]/.test(directory)) &&
         (!directory.startsWith('~') || (!quotedDirectory && directory.startsWith('~/')));
       cwd =
         !ambiguousScope && segment.followedByAnd && directory && literalDirectory

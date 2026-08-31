@@ -383,7 +383,7 @@ const MarkdownCode = memo(
 // ReactMarkdown renders them as plain text. Keep the match narrow: an absolute,
 // home-relative, or multi-segment relative path with a filename extension.
 const FILE_PATH_RE =
-  /(?<![^\s(\[{])((?:file:\/\/|~\/|\/|[A-Za-z]:[\\/]|(?:[\p{L}\p{N}\p{M}.\-+@%]+[\\/])+)[^\s)\]}\x60"'<>]*\.[A-Za-z0-9]{1,12}(?::\d+|#L\d+|%[^\s)\]}\x60"'<>.,!?;]*)?)(?=$|[\s)\]},;]|[.!?](?=$|[\s)\]},;]))/gu;
+  /(?<![^\s([{])((?:file:\/\/|~\/|\/|[A-Za-z]:[\\/]|(?:[\p{L}\p{N}\p{M}.\-+@%]+[\\/])+)[^\s)\]}\x60"'<>]*\.[A-Za-z0-9]{1,12}(?::\d+|#L\d+|%[^\s)\]}\x60"'<>.,!?;]*)?)(?=$|[\s)\]},;]|[.!?](?=$|[\s)\]},;]))/gu;
 
 function linkifyFilePaths(
   children: React.ReactNode,

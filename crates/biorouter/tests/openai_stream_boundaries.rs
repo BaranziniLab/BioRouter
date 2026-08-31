@@ -139,7 +139,7 @@ async fn completed_fragmented_call_retains_usage_and_exact_arguments() -> anyhow
     let usage = items
         .iter()
         .filter_map(|(_, usage, _)| usage.as_ref())
-        .last()
+        .next_back()
         .unwrap();
     assert_eq!(usage.finish_reason.as_deref(), Some("tool_calls"));
     assert_eq!(usage.usage.total_tokens, Some(20));

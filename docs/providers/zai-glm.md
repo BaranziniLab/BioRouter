@@ -86,7 +86,7 @@ Asserts the first key is `ZAI_API_KEY`, required and secret.
 Needs a funded key.
 
 ```bash
-ZAI_API_KEY=<key> cargo test -p biorouter --test providers test_zai_provider -- --nocapture
+ZAI_API_KEY=<key> cargo test -p biorouter --test providers test_zai_provider -- --ignored --exact --nocapture
 ```
 
 Exercises factory → `ZaiProvider::from_env` → live HTTP.

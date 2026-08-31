@@ -335,6 +335,15 @@ earlier successful Skills-importer dry-run does not establish approval-dependent
 installation or permanent-removal/residue coverage. Those remain distinct from
 the separate live skill hot-load/use/hot-unload evidence.
 
+A later metadata-only recheck of the same archive confirmed the exact target
+repository as `https://github.com/Broccolito/destiny-skill` (also referenced with
+the `.git` suffix). Its three tool requests were a subagent call without an
+explicit extension list, a workspace watch, and a second subagent call requesting
+`extensions: ["developer"]`; the second spawn returned `isError: true`.
+The retry must exercise that exact repository through the audited Skills manager,
+not substitute another installed skill or repeat the unsupported child grant.
+The archive configuration and credential contents were not displayed or changed.
+
 A no-window probe of this worktree's Electron runtime confirmed that the launch
 flag resolves `app.getPath('userData')` to
 `/private/tmp/biorouter-goal-gui.gsVSPC/state/desktop`. The first comparison used
@@ -713,3 +722,154 @@ rebuild paths, private/public logging contrast, a formatter that must never run,
 and exact original errors and retry counts. Independent Sol review found no
 actionable issue. The normal Versa GPT probe inherits these transport/logging
 fixes; live useful-task and full-repository validation still follow separately.
+
+The first resumed full core/MCP command stopped at the core library with 3,303
+passes, four failures and one ignored test
+(`/tmp/biorouter-post-hardening-core-mcp.log`). Three snapshots differed only in
+the intended persistent absolute-file-link guidance. The fourth test still
+asserted the replaced wording. All three diffs were reviewed before updating
+expectations; the behavior test now requires verified absolute paths on every
+turn, distinct short labels versus full targets, and an absolute source-line
+example. The production prompt was not relaxed. MCP and integration binaries
+had not yet run when Cargo stopped; the focused and full reruns follow separately.
+
+The focused prompt-manager rerun passed all 24 tests
+(`/tmp/biorouter-prompt-manager-green.log`). Independent Sol review confirmed
+that only the expected snapshot paragraph and assertions changed. The full
+core/MCP rerun remains a separate gate.
+
+That rerun passed the 3,307 core library tests (one ignored), then stopped in
+the legacy `providers` integration target: 13 passed, one failed, five ignored
+(`/tmp/biorouter-post-hardening-core-mcp-rerun.log`). The failure was a real
+Anthropic HTTP 400 insufficient-credit response, not evidence of a local
+provider regression. The target loads `.env` and previously ran thirteen
+network/provider tests whenever credentials were present; only five Bedrock
+tests were explicitly ignored. Cargo's `--offline` prevents dependency network
+access, not test-body API calls. No further live-provider retry was attempted.
+This exposed a test-isolation defect: ordinary regression runs must not infer
+authorization for billed calls from configured credentials. The narrow follow-up
+marks live tests opt-in while retaining registry and deterministic checks, with
+a harness-metadata regression that never executes a provider call. Useful Versa,
+Codex and Claude Code acceptance remains required independently of this gate.
+
+The metadata guard failed before the fix on the ordinary OpenAI test
+(`/tmp/biorouter-live-provider-optin-red.log`), without executing an API call.
+After all eighteen live cases were marked opt-in, execution review refused the
+unfiltered target before process creation because of its earlier live behavior.
+That command was not retried. Exact safer invocations passed the metadata guard
+and registry check independently (one test each, nineteen filtered):
+`/tmp/biorouter-live-provider-optin-green-exact.log` and
+`/tmp/biorouter-provider-registry-green-exact.log`. Independent Sol review found
+no actionable issue. Further aggregate validation explicitly excludes all
+eighteen live test names as well as retaining their ignored attributes; none of
+those excluded cases counts as a passing API test.
+
+The explicitly filtered aggregate was accepted and completed **3,695 core unit
+and integration tests across 67 targets**, with seventeen ignored and the
+eighteen live provider cases filtered out. It then passed **1,565 MCP library
+tests** (seven ignored), but stopped at the generated Mermaid CDN fixture
+contract (`/tmp/biorouter-post-hardening-core-mcp-offline-final.log`). Core
+documentation tests and remaining MCP integrations had not run at that point.
+
+The fixture diff was reviewed before replacement: it lacked the already
+implemented academic palette, readability helpers and current Mermaid layout.
+The corrected fixture's embedded runtime exactly matches `_common.js`; its HTML
+matches `mermaid_template.html` after expected substitutions. Independent Sol
+review confirmed unchanged CDN URL/tag and strict Mermaid security. Only the
+generated fixture changed, not production rendering code. The contract and
+real-browser replay must pass before the remaining full MCP/server/gate runs.
+
+The corrected CDN contract passed its single test
+(`/tmp/biorouter-autovis-cdn-contract-green.log`). Both real Chromium replay
+checks also passed in 7.07 seconds (`/tmp/biorouter-autovis-cdn-browser-green.log`):
+the current figure renders after vendored-library inlining, while the unreachable
+ESM-import negative control produces an error instead of a diagram. The browser
+run did not need a CDN request or a user-app session.
+
+The full MCP rerun passed **1,635 tests**, with eleven ignored and no failures
+(`/tmp/biorouter-post-hardening-mcp-final.log`). Its documentation-test phase had
+zero cases, not additional executed coverage. The separate core documentation
+run passed two cases, with two ignored
+(`/tmp/biorouter-post-hardening-core-doc.log`). Server tests and repository gates
+remain the next serial stages.
+
+The full server suite subsequently passed **1,219 tests**, with ten ignored and
+no failures (`/tmp/biorouter-post-hardening-server.log`). Its documentation phase
+contained zero cases. The required `just check-everything` run follows separately;
+the test totals alone do not establish lint, schema or repository-gate success.
+
+The first repository-gate attempt stopped on Clippy's double-ended-iterator
+lint in the new OpenAI stream regression. Replacing `.last()` with `.next_back()`
+preserves its last-usage selection; the focused suite passed all ten tests
+(`/tmp/biorouter-openai-stream-clippy-green.log`). The next gate attempt passed
+Rust formatting, all Clippy/baseline/TLS checks and UI typechecking, then reported
+five ESLint errors in file-link handling. Four were unnecessary bracket escapes;
+the fifth was a forbidden control-character regex. The replacement scans code
+units for exactly C0 and DEL, preserving all three rejection sites. No lint
+suppression or relaxed path boundary was introduced.
+
+Independent Sol review found no semantic or security drift. Luna's focused
+Markdown, artifact extraction, provenance and file-link suites passed **229
+tests across four files**, including all thirty-three prohibited characters in
+literal and percent-encoded form, plus allowed boundary/Unicode characters
+(`/tmp/biorouter-file-links-lint-green.log`). The full UI and repository-gate
+reruns remain separately required.
+
+The final UI rerun passed **4,095 tests across 383 files** in 214.80 seconds
+(`/tmp/biorouter-post-hardening-full-ui-final.log`). Before live self-testing,
+read-only preflight found the old fixed-ID dashboard app still present. The
+workflow previously instructed deletion before creation, even with cleanup
+disabled. Four new template regressions failed on that behavior and absent
+ID parameterization (`/tmp/biorouter-selftest-isolation-red.log`), without
+executing providers or touching apps.
+
+The workflow now accepts separate dashboard/preview IDs, stops each phase on
+a collision and renders app cleanup instructions only when enabled, limited
+to apps created by that run. Independent review also caught cleanup wording
+in the separate system-instruction field; the regression now checks both
+rendered instructions and prompt. The old test app remains untouched. This
+is workflow-level preservation guidance, not a new filesystem transaction
+guarantee; live execution still prechecks exact paths and uses fresh IDs.
+
+All four workflow-isolation regressions passed after the patch
+(`/tmp/biorouter-selftest-isolation-green.log`). Independent Sol review found
+no remaining actionable issue in the workflow/test changes. No prior app was
+deleted or overwritten during this deterministic validation.
+
+The complete repository gate then passed with exit zero
+(`/tmp/biorouter-post-hardening-repository-gates-final.log`): Rust formatting,
+Clippy/baselines/TLS checks, UI type/lint/theme/token checks, all 332 contrast
+assertions, generated OpenAPI consistency, version/brand/cross-compile checks,
+and registry/privacy/docs consistency. The registry and privacy checker tests
+passed 54 and 21 cases respectively. This closes the current automated gate,
+not rebuilt-app or live-provider acceptance. CLI/daemon rebuild and useful
+Luna-driven application scenarios remain required before release.
+
+### Destiny shared-package compatibility: separate triage
+
+A read-only audit of the exact public repository at
+[`a27eb801c7d46691b8d45541dbced90c6e89f573`](https://github.com/Broccolito/destiny-skill/commit/a27eb801c7d46691b8d45541dbced90c6e89f573)
+confirmed an additional clean-install problem. The current bundle planner keeps
+only each skill directory's descendants and flattens `skills/<member>` to
+`<member>`. Destiny's root `scripts/` and `references/` are omitted, and documented
+`../../references/` paths no longer resolve within its package. Its standalone
+MBTI text skill does not exercise this failure; an existing external Destiny
+installation could also mask it. A text-only success must not be reported as
+computational-workflow compatibility.
+
+Preserving the archive layout alone is insufficient. Discovery currently allows
+two levels; the catalog derives package ownership from a skill's immediate
+parent; exported component-directory metadata is not fully consumed on import;
+and load output does not identify a shared package root. A coherent correction
+needs bounded component discovery, explicit package-root ownership, round-trip
+metadata and runtime path context together. This is separately awaiting user
+triage, not silently included in the API hardening approval.
+
+The third-party installer is not a safe shortcut for this acceptance test: it
+can install into the system Python environment, fetch unpinned engines and run
+preflight, and its removal path does not establish ownership before deleting
+fixed locations. The repository's vendor engines are separately provisioned,
+not files the importer merely dropped. No installer, dependency fetch, global
+symlink, package removal or third-party script executed during this audit. Any
+later test must use exact package identity, preserve approval/archive boundaries,
+and distinguish shared-asset import correctness from dependency availability.

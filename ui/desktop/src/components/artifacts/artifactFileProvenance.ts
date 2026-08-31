@@ -42,7 +42,7 @@ export function referencedFilePaths(
     return '';
   });
   const plainPath =
-    /(?<![^\s(\[{])(?:file:\/\/|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|\/|\\\\)[^\s)\]}\x60"'<>]+\.[a-z\d]{1,12}(?::\d+|#L\d+|%[^\s)\]}\x60"'<>.,!?;]*)?(?=$|[\s)\]},;]|[.!?](?=$|[\s)\]},;]))/gi;
+    /(?<![^\s([{])(?:file:\/\/|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|\/|\\\\)[^\s)\]}\x60"'<>]+\.[a-z\d]{1,12}(?::\d+|#L\d+|%[^\s)\]}\x60"'<>.,!?;]*)?(?=$|[\s)\]},;]|[.!?](?=$|[\s)\]},;]))/gi;
   for (const match of prose.matchAll(plainPathPattern ?? plainPath)) add(match[0]);
   return [...paths];
 }

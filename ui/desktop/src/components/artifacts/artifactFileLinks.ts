@@ -1,5 +1,12 @@
 const WINDOWS_ABSOLUTE = /^(?:[a-z]:[\\/]|\\\\)/i;
-const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
+
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
 
 export type FileLinkLocation = { path: string; line?: number };
 export type KnownFilePaths = readonly string[] | ((basename: string) => readonly string[]);
@@ -27,7 +34,7 @@ export function isLocalFileReference(value: string): boolean {
 /** Link syntax is parsed before decoding, so `%23L42` remains a filename. */
 export function parseFileLink(value: string): FileLinkLocation | null {
   let rawPath = value.trim();
-  if (!rawPath || CONTROL_CHARACTER.test(rawPath)) return null;
+  if (!rawPath || hasControlCharacter(rawPath)) return null;
   let rawLine: string | undefined;
 
   if (/^file:\/\//i.test(rawPath)) {
@@ -61,7 +68,7 @@ export function parseFileLink(value: string): FileLinkLocation | null {
   } catch {
     // A literal percent sign is a valid filesystem character.
   }
-  if (!path || CONTROL_CHARACTER.test(path)) return null;
+  if (!path || hasControlCharacter(path)) return null;
   if (rawLine) {
     const line = Number(rawLine);
     if (!Number.isSafeInteger(line) || line < 1) return null;
@@ -72,7 +79,7 @@ export function parseFileLink(value: string): FileLinkLocation | null {
 
 /** Resolve filesystem text, not URL syntax. Absolute identities are untouched. */
 export function resolveLocalFilePath(path: string, workingDir?: string): string | null {
-  if (!path || CONTROL_CHARACTER.test(path)) return null;
+  if (!path || hasControlCharacter(path)) return null;
   if (isAbsoluteFilePath(path)) return path;
   if (!workingDir || !isAbsoluteFilePath(workingDir)) return null;
   const parts: string[] = [];
