@@ -1615,7 +1615,8 @@ export type LintReport = {
     /**
      * Link targets written in source pages that name no page under
      * `knowledge/` — again over all four grammars, so a typed base's `edges:`
-     * citations are read.
+     * citations are read. Existing, confined raw evidence files are not missing
+     * concept pages, even though the graph represents them as external nodes.
      */
     missing_concept_pages: Array<string>;
     /**

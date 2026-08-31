@@ -8708,7 +8708,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Link targets written in source pages that name no page under\n`knowledge/` — again over all four grammars, so a typed base's `edges:`\ncitations are read."
+            "description": "Link targets written in source pages that name no page under\n`knowledge/` — again over all four grammars, so a typed base's `edges:`\ncitations are read. Existing, confined raw evidence files are not missing\nconcept pages, even though the graph represents them as external nodes."
           },
           "orphans": {
             "type": "array",
