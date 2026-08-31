@@ -3,6 +3,7 @@
 //! loop; a counter-only unit test cannot catch a tool iteration resetting the
 //! budget or a hidden continuation leaking onto SSE as a Message frame.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -14,17 +15,21 @@ use biorouter::agents::turn_abort::TurnAbortCode;
 use biorouter::agents::types::{RetryConfig, SuccessCheck};
 use biorouter::agents::{Agent, AgentConfig, AgentEvent, SessionConfig};
 use biorouter::config::permission::PermissionManager;
-use biorouter::config::BioRouterMode;
+use biorouter::config::{with_config_overrides, BioRouterMode};
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::model::ModelConfig;
+use biorouter::privacy::affiliation::ModelAffiliation;
+use biorouter::privacy::ProviderTier;
 use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
-use biorouter::providers::errors::ProviderError;
+use biorouter::providers::errors::{ProviderError, ProviderErrorKind};
+use biorouter::providers::utils::map_http_error_to_provider_error;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::SessionManager;
 use futures::StreamExt;
 use rmcp::model::{CallToolRequestParams, ErrorCode, ErrorData, Tool};
 use rmcp::object;
 use tempfile::TempDir;
+use tracing::instrument::WithSubscriber;
 
 const CONTINUATION: &str = "Your previous response was cut off because it reached the output length limit (finish_reason=\"length\"). Continue exactly where you left off, and do not repeat what you already wrote.";
 
@@ -523,6 +528,289 @@ fn message_contains_text(message: &Message, expected: &str) -> bool {
         .content
         .iter()
         .any(|content| matches!(content, MessageContent::Text(text) if text.text == expected))
+}
+
+#[derive(Clone, Default)]
+struct PrivateProviderLogCapture(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for PrivateProviderLogCapture {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+struct PrivateErrorProvider {
+    calls: AtomicUsize,
+    recover: bool,
+    sentinel: &'static str,
+}
+
+#[async_trait]
+impl Provider for PrivateErrorProvider {
+    async fn complete(
+        &self,
+        _system_prompt: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            let (status, message) = if self.recover {
+                (
+                    reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                    format!("Synthetic upstream unavailable: {}", self.sentinel),
+                )
+            } else {
+                (
+                    reqwest::StatusCode::BAD_REQUEST,
+                    format!("Invalid 'tools': array too long. {}", self.sentinel),
+                )
+            };
+            return Err(map_http_error_to_provider_error(
+                status,
+                Some(serde_json::json!({"error": {"message": message}})),
+            ));
+        }
+        let mut usage = ProviderUsage::new(
+            "mock-model".to_string(),
+            Usage::new(Some(10), Some(5), Some(15)),
+        );
+        usage.finish_reason = Some("stop".to_string());
+        Ok((
+            Message::assistant().with_text("Synthetic provider recovered."),
+            usage,
+        ))
+    }
+
+    async fn complete_with_model(
+        &self,
+        _model_config: &ModelConfig,
+        system_prompt: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        self.complete(system_prompt, messages, tools).await
+    }
+
+    fn get_model_config(&self) -> ModelConfig {
+        ModelConfig::new_or_fail("mock-model")
+    }
+
+    fn metadata() -> ProviderMetadata {
+        ProviderMetadata {
+            name: "private-provider-error-logging-mock".to_string(),
+            tier: ProviderTier::Private,
+            ..AlternatingStormProvider::metadata()
+        }
+    }
+
+    fn get_name(&self) -> &str {
+        "private-provider-error-logging-mock"
+    }
+
+    fn tier(&self) -> ProviderTier {
+        ProviderTier::Private
+    }
+
+    fn affiliation(&self) -> Option<ModelAffiliation> {
+        Some(ModelAffiliation::Local)
+    }
+}
+
+#[derive(Default)]
+struct PrivateProviderReplyObservation {
+    visible_text: Vec<String>,
+    aborts: Vec<(TurnAbortCode, String)>,
+    history_replacements: usize,
+    tool_messages: usize,
+}
+
+async fn observe_private_provider_error(
+    provider: Arc<PrivateErrorProvider>,
+) -> (PrivateProviderReplyObservation, String) {
+    let capture = PrivateProviderLogCapture::default();
+    let writer = capture.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_target(true)
+        .with_level(true)
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(move || writer.clone())
+        .finish();
+    let overrides = HashMap::from([
+        (
+            "BIOROUTER_MISTAKE_STREAK_DETECTION".to_string(),
+            "true".to_string(),
+        ),
+        (
+            "BIOROUTER_PROVIDER_ERROR_RETRIES".to_string(),
+            "1".to_string(),
+        ),
+    ]);
+    let observation = with_config_overrides(
+        overrides,
+        async {
+            let (agent, _sessions, session_id, _work, _data, _permissions) =
+                test_agent(provider).await;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let stream = agent
+                    .reply(
+                        Message::user().with_text("Complete this synthetic local provider check."),
+                        SessionConfig {
+                            id: session_id,
+                            schedule_id: None,
+                            max_turns: Some(4),
+                            max_tool_calls: None,
+                            budget: None,
+                            retry_config: None,
+                            reasoning_effort: None,
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                tokio::pin!(stream);
+                let mut observation = PrivateProviderReplyObservation::default();
+                while let Some(event) = stream.next().await {
+                    match event.unwrap() {
+                        AgentEvent::Message(message) => {
+                            for content in &message.content {
+                                if matches!(
+                                    content,
+                                    MessageContent::ToolRequest(_)
+                                        | MessageContent::ToolResponse(_)
+                                ) {
+                                    observation.tool_messages += 1;
+                                }
+                                if message.is_user_visible() {
+                                    match content {
+                                        MessageContent::Text(text) => {
+                                            observation.visible_text.push(text.text.clone())
+                                        }
+                                        MessageContent::SystemNotification(notification) => {
+                                            observation.visible_text.push(notification.msg.clone())
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        AgentEvent::TurnAborted { code, message } => {
+                            observation.aborts.push((code, message))
+                        }
+                        AgentEvent::HistoryReplaced(_) => observation.history_replacements += 1,
+                        _ => {}
+                    }
+                }
+                observation
+            })
+            .await
+            .expect("synthetic provider reply should settle without network or tools")
+        }
+        .with_subscriber(subscriber),
+    )
+    .await;
+    let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    (observation, logs)
+}
+
+fn has_agent_log_level(logs: &str, level: &str) -> bool {
+    logs.lines()
+        .any(|line| line.contains(level) && line.contains("biorouter::agents::agent:"))
+}
+
+#[tokio::test]
+async fn private_provider_error_logging_invalid_request_stops_without_diagnostic_payload() {
+    const SENTINEL: &str = "PRIVATE_UPSTREAM_INVALID_TOOLS_7e54b3";
+    let provider = Arc::new(PrivateErrorProvider {
+        calls: AtomicUsize::new(0),
+        recover: false,
+        sentinel: SENTINEL,
+    });
+    assert_eq!(provider.tier(), ProviderTier::Private);
+    let (observation, logs) = observe_private_provider_error(provider.clone()).await;
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(observation.history_replacements, 0);
+    assert_eq!(observation.tool_messages, 0);
+    assert_eq!(observation.aborts.len(), 1);
+    assert_eq!(
+        observation.aborts[0].0,
+        TurnAbortCode::ProviderFailure {
+            kind: ProviderErrorKind::InvalidRequest,
+        }
+    );
+    assert!(observation.aborts[0].1.contains(SENTINEL));
+    assert!(observation
+        .visible_text
+        .iter()
+        .any(|text| { text.contains("Ran into this error:") && text.contains(SENTINEL) }));
+    assert!(!observation
+        .visible_text
+        .iter()
+        .any(|text| text.contains("Retrying (")));
+    assert!(
+        has_agent_log_level(&logs, "ERROR"),
+        "the real Agent error diagnostic must be captured"
+    );
+    assert!(
+        !logs.contains(SENTINEL),
+        "private upstream error leaked into diagnostic tracing"
+    );
+    assert!(logs.lines().any(|line| {
+        has_agent_log_level(line, "ERROR") && line.contains("error_type=\"request\"")
+    }));
+}
+
+#[tokio::test]
+async fn private_provider_error_logging_retry_keeps_details_out_of_diagnostics() {
+    const SENTINEL: &str = "PRIVATE_UPSTREAM_TRANSIENT_95f02c";
+    let provider = Arc::new(PrivateErrorProvider {
+        calls: AtomicUsize::new(0),
+        recover: true,
+        sentinel: SENTINEL,
+    });
+    assert_eq!(provider.tier(), ProviderTier::Private);
+    let (observation, logs) = observe_private_provider_error(provider.clone()).await;
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(observation.history_replacements, 0);
+    assert_eq!(observation.tool_messages, 0);
+    assert!(observation.aborts.is_empty());
+    assert!(observation
+        .visible_text
+        .iter()
+        .any(|text| { text.contains("Retrying (1/1)") && text.contains(SENTINEL) }));
+    assert!(observation
+        .visible_text
+        .iter()
+        .any(|text| text == "Synthetic provider recovered."));
+    assert!(
+        has_agent_log_level(&logs, "ERROR"),
+        "the real Agent error diagnostic must be captured"
+    );
+    assert!(
+        has_agent_log_level(&logs, "WARN"),
+        "the real Agent retry diagnostic must be captured"
+    );
+    assert!(
+        !logs.contains(SENTINEL),
+        "private upstream error leaked into diagnostic tracing"
+    );
+    assert!(logs.lines().any(|line| {
+        has_agent_log_level(line, "ERROR") && line.contains("error_type=\"server\"")
+    }));
+    assert!(logs.lines().any(|line| {
+        has_agent_log_level(line, "WARN")
+            && line.contains("error_type=\"server\"")
+            && line.contains("attempt=1")
+            && line.contains("limit=1")
+    }));
 }
 
 #[tokio::test]

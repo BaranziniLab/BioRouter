@@ -9937,7 +9937,10 @@ impl Agent {
                             }
                         }
                         Err(ref provider_err) => {
-                            error!("Error: {}", provider_err);
+                            error!(
+                                error_type = provider_err.telemetry_type(),
+                                "Provider call failed"
+                            );
                             // BR-66: a non-context provider error used to end the turn
                             // outright, handing the user a "please retry" string for a
                             // blip the agent could have absorbed itself. Give a
@@ -9948,7 +9951,10 @@ impl Agent {
                             match mistakes.observe_provider_error(&mistake_config, provider_err) {
                                 crate::agents::mistakes::ProviderErrorAction::Recover { notice, attempt, limit } => {
                                     warn!(
-                                        "Provider call failed ({provider_err}); retrying with a hint ({attempt}/{limit})"
+                                        error_type = provider_err.telemetry_type(),
+                                        attempt,
+                                        limit,
+                                        "Provider call failed; retrying with a hint"
                                     );
                                     // BR-67: retries are a loop-safety decision too —
                                     // the error text itself never enters the trace.

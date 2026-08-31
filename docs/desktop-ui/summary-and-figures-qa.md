@@ -1420,3 +1420,39 @@ A separate caller-path review is checking raw provider-error logging in
 `Agent::reply`; the classifier tests establish mapper-level metadata protection,
 not a claim that every downstream log sink is protected. No live acceptance,
 production rebuild, push or release is implied by these gate results.
+
+### Agent diagnostic error logging: actual-loop regression
+
+Caller review confirmed two additional diagnostic leaks in `Agent::reply`: the
+generic provider-error log and its retry warning formatted the entire upstream
+error. `ProviderError` displays its original details, and the server's tracing
+layers have no payload redactor. The corrected HTTP400 classification reaches
+this generic branch, so mapper-only redaction was not sufficient.
+
+Only those two log statements changed: static messages, enum-derived
+`telemetry_type`, and numeric retry attempt/limit fields. Streamed chat details,
+typed aborts, model-visible recovery hints, retry limits and control flow remain
+unchanged. This is a bounded correction, not a claim that every diagnostic sink
+has undergone a new global audit.
+
+Two new tests drive the actual `Agent::reply` loop with a private synthetic
+provider and task-local configuration. A shared-mapper tool-array HTTP400 stops
+after one call, with an `InvalidRequest` abort and no compaction/tool frames;
+a transient HTTP503 retries once, then succeeds after two calls. Both preserve
+the synthetic error marker in user-visible chat details. Captured actual Agent
+ERROR/WARN events provide positive controls, so an empty trace cannot pass.
+
+Luna's fail-first run failed both tests specifically on diagnostic marker
+leakage, after the behavior and UI-detail assertions had passed. After the
+two-statement correction, both tests passed and required safe diagnostic fields;
+the complete nine-test recovery harness also passed, covering signed reasoning,
+malformed signed tools and bounded output recovery. Independent Sol review was
+clean. No live API call, model registration or requested tool execution occurs
+in the two new tests. The final repository-gate rerun remains separate from
+these focused/integration receipts. That subsequent `just check-everything`
+rerun passed in full. The red, green, nine-test integration and final gate logs
+were independently SHA-256 verified against their retained originals in
+WD-BLACK's `agent-error-logging-validation.tar.gz`, SHA-256
+`e3c909b8515984935cb92ef259c22dc4675332df45345c493a9e2a182b2457cb`.
+Production CLI/daemon hashes remain unchanged at `2ae49597`; no fresh live
+provider acceptance, rebuild, push or release occurred.
