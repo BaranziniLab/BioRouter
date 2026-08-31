@@ -11,6 +11,7 @@ activities:
   - Analyze code structure and parsing capabilities
   - Test extension discovery and management
   - Validate Auto Visualiser and JavaScript-executed artifact handoff
+  - Verify session-anchored file links and live updates without losing preview edits
   - Build, lint, and execute an Apps SDK v2 reference app
   - Create and orchestrate subagents for meta-testing
   - Validate live steering, detached supervision, close-tab survival, and provider restoration
@@ -98,6 +99,8 @@ instructions: |
   - Render one Auto Visualiser chart through `execute_code`
   - Create and launch one fixed-id static Agent Drafter app through `execute_code`
   - Verify both previews survive the nested tool call and the app launch returns its `/apps/<id>/` path
+  - Change an already-open report and app; verify same-tab updates and preserved user edits
+  - Check absolute and later shorthand report links against the actual session directory
   - Delete only the fixed-id self-test preview app during cleanup
   
   ### Phase 3: Subagent Testing (Meta-Recursion)
@@ -273,7 +276,7 @@ prompt: |
 
   1. Call `list_apps`. If that exact self-test id remains from an interrupted run, delete only it.
   2. Call `create_app` with that id, kind `agentic`, archetype `dashboard`, a concise title and description, and a system prompt that updates dashboard metrics through the declared action.
-  3. Call `read_app` and verify the resolved manifest has the dashboard state schema, `set_metric` action, and `refresh_requested` signal.
+  3. Call `read_app` and verify the resolved manifest has the dashboard state schema, `set_metric` action, `refresh_requested` signal, and nonblank `surface.state_initial` metric labels. Missing measurements must be explicitly unavailable, not invented zero values. Keep declared initial state as the source of first-load values; do not add duplicate imperative initialization to work around the smoke harness.
   4. Call `build_app`; require a successful bundle.
   5. Call `lint_app`; require zero ERROR findings.
   6. Call `smoke_app`; require the real-browser harness to execute successfully. A missing browser or skipped execution is a failure, not a pass.
@@ -289,8 +292,11 @@ prompt: |
   1. In one `execute_code` script, import an Auto Visualiser chart tool, render a small bar chart, and record its textual result. The outer call must also emit a user-facing HTML resource block for the client.
   2. In one `execute_code` script, import Agent Drafter's `create_app` and `launch_app`, create a static app with id `biorouter-self-test-preview`, launch it, and record the launch result.
   3. Require the nested Agent Drafter call to return its preview resource and launch metadata containing exactly `/apps/biorouter-self-test-preview/`. Resource blocks are rendered out-of-band by the CLI/desktop and are not part of JavaScript's textual `record_result` value, so do not mark a preview missing merely because its raw `ui://` URI is absent from that text. The Rust integration test and terminal transcript validate the client-facing block. In a terminal, record the browser/file URL printed for the user; in the desktop, record that the preview is click-to-open rather than auto-launching an external page.
-  4. Record setup, JavaScript, result metadata, preview URI, and validation outcome in {{ workspace_dir }}/phase2c_previews.md.
-  5. If `cleanup_after` is `true`, call `delete_app` for exactly `biorouter-self-test-preview` after recording the result.
+  4. Create a small fictional queue-option report at {{ workspace_dir }}/preview-links/reports/summary.md. Resolve and verify its absolute path, then include a clickable link to that exact file in the response. In a later response, refer to the same unique `summary.md`; verify that the desktop opens the same file. A qualified relative link must instead resolve from the actual session working directory. An ambiguous basename must not silently open a different file.
+  5. With the report open, update a numeric value using the same byte width and recompute its comparison. Require the existing preview to update after the successful write, without opening another tab. Update the existing self-test app's visible title through the current tool schema and include a small editable notes field for the next check, rebuilding if necessary; require its existing managed preview to update at the same URL.
+  6. In the desktop, type an unsaved form value and blur the field before another app update. Require an explicit Update ready action, with the typed value intact. Annotation, resize, and active or reconnecting app work must also defer automatic reload. Explicit refresh must retain app IndexedDB state. External websites must not reload because a local tool finished. Do not broaden network or private-file permissions to pass these checks.
+  7. Record setup, exact verified file links, successful write/build results, preview URI, and validation outcome in {{ workspace_dir }}/phase2c_previews.md. If desktop interaction is unavailable, record click navigation, same-tab visual updates, and edit preservation as NOT OBSERVABLE, never PASS; source-file existence is not GUI evidence.
+  8. If `cleanup_after` is `true`, call `delete_app` for exactly `biorouter-self-test-preview` after recording the result.
   {% endif %}
   
   {% if test_phases == "all" or "subagents" in test_phases %}

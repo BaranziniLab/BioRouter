@@ -578,3 +578,99 @@ times and successful longer/larger checklist response do not support a simple
 uniform timeout or response-byte ceiling. The HTTP/1.1 differential and Versa GPT
 checks remain separate follow-up evidence; do not call a successfully captured
 incomplete stream a successful generated tool call.
+
+### Current-source preview and provider validation checkpoint
+
+The realtime preview implementation is checkpointed locally in `2ebedfb0`.
+The final focused run passed 191 tests across nine files and TypeScript checking
+passed (`/tmp/biorouter-artifact-realtime-focused-final2.log` and
+`/tmp/biorouter-artifact-realtime-typecheck-final2.log`). The expanded real Electron
+probe passed 11 checks (`/tmp/biorouter-artifact-realtime-electron.log`), including
+same-view source updates, dirty values retained after blur, explicit refresh with
+IndexedDB persistence, and pending/connecting SDK work deferring refresh. Updates
+occur at successful tool boundaries; arbitrary external filesystem watching is
+not implemented. External websites never auto-refresh because a local tool ran.
+
+The full UI run then passed 4,054 of 4,056 tests across 382 files
+(`/tmp/biorouter-post-preview-full-ui.log`). Both failures were in the old thinking
+disclosure fixture, which omitted required message metadata through an unsafe
+type cast. The fixture now supplies real visibility metadata and no longer uses
+the cast. No production contract was relaxed; the full rerun is still required.
+The materially lighter, single-file follow-up passed both corrected tests in
+1.65 seconds (`/tmp/biorouter-thinking-fixture-only.log`). This does not replace
+the denied full-suite rerun.
+
+The updated `biorouter-self-test.yaml` passed template validation with the
+already-built CLI (`/tmp/biorouter-selftest-template-validate.log`) in a fresh
+isolated profile. This only validates YAML and the workflow template; no model
+or self-test phase executed, and it is not rebuilt-binary acceptance.
+
+The wire probe now passes all 15 offline controls
+(`/tmp/biorouter-versa-wire-controls-final.log`). A shorter 10–15-line SQLite
+editor request completed on the same Claude Opus 4.8 model, editor schema, path,
+and inference ceiling: HTTP 200/H2, 20,041 CRC-valid event bytes, 519 argument
+bytes forming an object, closed tool block, `tool_use` message stop, and usage
+678 input / 415 output tokens in 13.420 seconds
+(`/tmp/biorouter-versa-wire-python-short.json`). This rules out a universal editor
+schema rejection, but does not identify the gateway/upstream cause of the two
+larger-request failures. The HTTP/1.1 version of the larger request returned
+HTTP 500 after 35.638 seconds; it is not a justified production workaround.
+
+The real Versa Azure provider/decoder probe reported `gpt-5.6` unavailable
+(`/tmp/biorouter-versa-gpt56-todo.json`); an exact alternative deployment name
+remains a user input, not a model-catalog assumption. Verified deployment
+`gpt-5.5-2026-04-24` completed both cases: a 314-byte checklist call in 9.164
+seconds and a 15,068-byte SQLite editor call in 41.965 seconds, each with object
+arguments, `tool_calls` finish reason, and terminal usage
+(`/tmp/biorouter-versa-gpt55-todo.json`,
+`/tmp/biorouter-versa-gpt55-python.json`). These probes never execute their tools;
+they establish stream completion, not correctness of generated applications.
+
+Independent review found two pre-existing risks in the GPT probe's normal
+provider path: the shared HTTP client can follow cross-origin redirects with a
+custom API-key header, and upstream error text reaches ordinary request/tracing
+logs before the probe's safe summary projection. There is no evidence here of
+an actual redirect or credential disclosure, but the probe cannot promise a
+metadata-only side effect on error. Further live GPT probes are paused pending
+the scoped hardening decision. These API concerns are separate from the accepted
+artifact DNS limitation; neither is silently treated as resolved.
+
+The production CLI/daemon still require rebuilding from these commits. Final
+repository gates, rebuilt-app Luna interaction, useful Codex/Claude Code tasks,
+and accepted running-child steering remain distinct acceptance items. No remote
+push, merge, or release is claimed by this checkpoint.
+
+At 20:51 PDT the next full UI rerun was rejected by execution auto-review before
+process creation because only 127 GiB remained free, below the repository's
+200 GiB resource threshold. No rerun or workaround was attempted. The read-only
+resource snapshot showed 62.65% CPU idle, load 11.22, 40% memory free, 6.49 GiB
+swap in use, and no thermal warning. Further heavy validation needs recovered
+resources or explicit informed user approval; no unrelated files were removed.
+
+### Remaining acceptance requirements at `2ebedfb0`
+
+- External capability toggles during a provider request still revoke dispatch
+  without refreshing its prompt/tool snapshot. Manager-driven refresh is covered;
+  the external-event path needs the separately triaged safe refresh boundary.
+- The actual skill removal succeeded, but its approval actor is not established.
+  A metadata-only read of isolated session `20260830_25` confirms the successful
+  `skills__removeSkillPackage` receipt at 22:57:45 UTC and failed later reload,
+  not who approved it. Permanent Spoke removal and attributable approve/cancel
+  checks remain required. Do not delete credentials or historical records merely
+  to manufacture zero residue.
+- The exact Destiny repository/bundle path still needs approved real
+  install, load/use, removal and failed-reload checks; its importer dry-run and
+  the separate skill lifecycle are not substitutes.
+- Meaningful Codex and Claude Code tasks, accepted steering of a still-running
+  child, subsequent child work, and parent collection remain required. Use the
+  child's actual audited Knowledge/Skills/Extension Manager tools; parent
+  Agent Drafter support does not grant a child native shell/editor access.
+- Current-source dashboard initialization, decoder recovery, file navigation and
+  live preview behavior still need rebuilt-app Luna verification. Recorded
+  successful Soul ingestion and Meditation (including pending/completion UI)
+  remain valid evidence; they are not reopened simply because another check is
+  pending. Explicit useful live receipts for Memory and Computer Controller are
+  still missing from this QA record.
+- Full repository gates and a green full UI rerun remain required. Remote source
+  synchronization is separately awaiting clearance of the denied push. No merge
+  or release is authorized by partial validation.
