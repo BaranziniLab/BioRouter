@@ -260,6 +260,7 @@ Example:
         description = r#"Render a bubble chart encoding three variables (x, y, and bubble size r).
 
 - datasets (required): [{label, data: [{x, y, r, label?}], color?}]
+- Coordinates must be finite; r is a finite non-negative radius in pixels. Zero-radius observations remain in the data table without a visible marker.
 - title, xAxisLabel, yAxisLabel (optional)
 
 Example:
@@ -275,6 +276,26 @@ Example:
         }
         if d.datasets.iter().all(|ds| ds.data.is_empty()) {
             return Err(invalid("Bubble chart requires at least one point."));
+        }
+        check_limit(d.datasets.len(), MAX_LABELS, "datasets")?;
+        check_limit(
+            d.datasets.iter().map(|dataset| dataset.data.len()).sum(),
+            MAX_VALUES,
+            "points",
+        )?;
+        if d.datasets
+            .iter()
+            .flat_map(|dataset| &dataset.data)
+            .any(|point| {
+                !point.x.is_finite()
+                    || !point.y.is_finite()
+                    || !point.r.is_finite()
+                    || point.r < 0.0
+            })
+        {
+            return Err(invalid(
+                "Bubble coordinates must be finite and radii finite and non-negative.",
+            ));
         }
         let data_json = js_value(d)?;
         render(
@@ -295,6 +316,7 @@ Example:
 - labels (required): x-axis categories
 - datasets (required): [{label, data: [numbers], color?}]
 - stacked (optional, default false)
+- Observations must be finite. Signed values and straight segments are preserved.
 - title, xAxisLabel, yAxisLabel (optional)
 
 Example:
@@ -311,6 +333,13 @@ Example:
         if d.datasets.is_empty() {
             return Err(invalid("Area chart requires at least one dataset."));
         }
+        check_limit(d.labels.len(), MAX_LABELS, "labels")?;
+        check_limit(d.datasets.len(), MAX_LABELS, "datasets")?;
+        check_limit(
+            d.datasets.iter().map(|dataset| dataset.data.len()).sum(),
+            MAX_VALUES,
+            "observations",
+        )?;
         for ds in &d.datasets {
             if ds.data.len() != d.labels.len() {
                 return Err(invalid(format!(
@@ -320,6 +349,13 @@ Example:
                     d.labels.len()
                 )));
             }
+        }
+        if d.datasets
+            .iter()
+            .flat_map(|dataset| &dataset.data)
+            .any(|value| !value.is_finite())
+        {
+            return Err(invalid("Area chart observations must be finite numbers."));
         }
         let data_json = js_value(d)?;
         render(
@@ -377,6 +413,7 @@ Example:
 - points (required): [{label?, log2fc, negLog10P}]
 - fcThreshold (default 1.0): |log2FC| significance cutoff
 - pThreshold (default 1.301 ≈ p<0.05): -log10(p) cutoff
+- All observations must be finite; negative-log p-values and thresholds must be non-negative. Supply already-transformed values; the renderer does not adjust p-values.
 - title (optional)
 
 Points are coloured up/down/non-significant against the thresholds.
@@ -393,6 +430,18 @@ Example:
             return Err(invalid("Volcano plot requires at least one point."));
         }
         check_limit(d.points.len(), MAX_VALUES, "points")?;
+        if [d.fc_threshold, d.p_threshold]
+            .into_iter()
+            .flatten()
+            .any(|value| !value.is_finite() || value < 0.0)
+            || d.points.iter().any(|point| {
+                !point.log2fc.is_finite()
+                    || !point.neg_log10_p.is_finite()
+                    || point.neg_log10_p < 0.0
+            })
+        {
+            return Err(invalid("Volcano observations must be finite; thresholds and negative-log p-values must be non-negative."));
+        }
         let data_json = js_value(d)?;
         render(
             "ui://volcano/chart",
@@ -411,6 +460,7 @@ Example:
 
 - points (required): [{chrom, pos, negLog10P, label?}]
 - significanceLine (default 7.301 ≈ 5e-8): genome-wide significance threshold
+- Positions, negative-log p-values and the threshold must be finite and non-negative.
 - title (optional)
 
 Points are grouped and coloured by chromosome along a cumulative x-axis.
@@ -427,6 +477,17 @@ Example:
             return Err(invalid("Manhattan plot requires at least one point."));
         }
         check_limit(d.points.len(), MAX_VALUES, "points")?;
+        if d.significance_line
+            .is_some_and(|value| !value.is_finite() || value < 0.0)
+            || d.points.iter().any(|point| {
+                !point.pos.is_finite()
+                    || point.pos < 0.0
+                    || !point.neg_log10_p.is_finite()
+                    || point.neg_log10_p < 0.0
+            })
+        {
+            return Err(invalid("Manhattan positions, negative-log p-values and significance thresholds must be finite and non-negative."));
+        }
         let data_json = js_value(d)?;
         render(
             "ui://manhattan/chart",

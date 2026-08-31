@@ -240,6 +240,12 @@ prompt: |
   decorative gradient banner or generic subtitle. Check the real artifact at narrow and wide
   panel sizes, including a long Unicode label: no overlap or horizontal page overflow. Inspect
   the data alternative and legend controls. Mark visual checks NOT OBSERVABLE in the CLI.
+  Include an out-of-range gauge, close-valued histogram bins, a mixed empty/nonempty boxplot,
+  and a zero-radius bubble. Verify exact observations remain in the data alternatives, and
+  any clipping, missing values, omitted labels or precision-limited bins are explained.
+  Resize repeatedly; a plotted chart with a render-error banner is a failure. For diagrams,
+  inspect the readable source alternative and verify distinct typed IDs remain distinct.
+  A dashboard expand/collapse control must update its visible action and accessible state.
 
   ### Dynamic Extension Management
   1. Use `extensionmanager__search_available_extensions` to discover installed extensions.
@@ -291,26 +297,32 @@ prompt: |
   ## 🤖 PHASE 3: Subagent Meta-Testing
   
   ### Basic Subagent Test
-  Use the `subagent` tool with instructions to create a simple task:
-  ```
-  subagent(instructions: "Create a file called subagent_test.txt with 'Hello from subagent'")
-  ```
+  Give a child this deliberately outcome-oriented request, using the current tool schema:
+  "Put together a useful comparison of these fictional queue options. Make something I can
+  run again when the numbers change, and show me how you checked it."
+  Supply Option A ($120/month, 30 minutes/day) and B ($180/month, 40 minutes/day), with
+  exactly 30 days per month. Confine all files and any SQLite database to
+  {{ workspace_dir }}/subagents/basic/. Grant only the tools needed for that work.
+  Require a runnable comparator, input fixture, and executed verification, not a verbatim
+  response or a file that only contains a marker. Check the incremental cost is $0.20 per
+  additional minute saved. Judge whether the chosen implementation reasonably meets the request.
   
   ### Parallel Subagent Test
   {% if parallel_tests == "true" %}
   Create 3 subagent calls simultaneously (parallel execution):
-  1. Count files in current directory
-  2. Get current timestamp
-  3. Create a test file
+  1. Build and query a local SQLite fixture in {{ workspace_dir }}/subagents/database/.
+  2. Build a readable HTML comparison in {{ workspace_dir }}/subagents/report/.
+  3. Independently verify the arithmetic in {{ workspace_dir }}/subagents/verification/.
+  Use the same fictional inputs, separate output directories, and no real user databases.
   
   Make all three `subagent` tool calls at once to execute them in parallel.
   {% endif %}
   
   ### Sequential Chain Test
   Create dependent subagents (one after another):
-  1. First: Create a Python file
-  2. Second: Analyze the created file
-  3. Third: Run the Python file
+  1. First: Build the comparator and its fixture in {{ workspace_dir }}/subagents/chain/.
+  2. Second: Review it and add a test for changed inputs without rewriting the implementation.
+  3. Third: Run the tests and report actual results, including any concrete defect found.
   
   ### Recursive Depth Test (if test_depth == "deep")
   {% if test_depth == "deep" %}
@@ -323,21 +335,28 @@ prompt: |
   Test with `summary: false` to get full conversation history.
 
   ### Live Steering, Supervision, and Close-Tab Survival
-  1. Start a child whose task waits for a follow-up before it finishes. Require its first visible
-     output to contain `SELFTEST_CHILD_READY` and keep the turn running.
+  1. Start a child asynchronously to build a tested queue-option comparator in
+     {{ workspace_dir }}/subagents/steering/. Require its first visible progress checkpoint
+     to contain `SELFTEST_CHILD_READY` while the implementation is still in progress.
+     Do not block the parent waiting for completion before trying to steer.
   2. Call `workspace_list`; require that child to report `running: true` and record its exact
      provider, model, and enabled extensions.
-  3. Call `workspace_send_prompt` with `mode: "steer"` and tell the running child to finish with
-     the exact marker `SELFTEST_STEERED_OK`. Do not start a replacement child.
+  3. Call `workspace_send_prompt` with `mode: "steer"` and tell the running child to
+     add Option C ($150/month, 45 minutes/day), assess whether any option is dominated, and
+     include `SELFTEST_STEERED_OK` in its verification report. Do not start a replacement child.
   4. Call `workspace_watch` with a short timeout first. If it reports the child still running,
      record that as a successful nonterminal observation, then call it again; a watch timeout is
      not a turn failure.
-  5. Require the child's final answer to contain `SELFTEST_STEERED_OK`, and verify its provider,
+  5. Require the child's final answer to contain `SELFTEST_STEERED_OK`, and independently run
+     its comparator/tests to verify C is present and B is identified as dominated by C.
+     A marker without the requested implementation is not a pass. Verify its provider,
      model, and delegated extensions are unchanged.
-  6. Start a second child that waits before returning `SELFTEST_TAB_SURVIVED`. Call
+  6. Start a second child to build and execute a data-validation report in
+     {{ workspace_dir }}/subagents/tab-survival/, including `SELFTEST_TAB_SURVIVED` on success. Call
      `workspace_close` with `scope: "tab"` while it is running, then call `workspace_watch`.
      Require the turn to continue and finish. Reopen the same session with `workspace_open`; do
-     not spawn a replacement. Verify the transcript contains `SELFTEST_TAB_SURVIVED`.
+     not spawn a replacement. Verify the transcript contains `SELFTEST_TAB_SURVIVED` and the
+     validation report exists with evidence of an executed check.
   7. During both live turns, record whether the selected child tab shows the existing breathing
      activity dot and whether its composer shows the existing moving rim. If this workflow is
      running headless, record those two visual assertions as NOT OBSERVABLE, never PASS.

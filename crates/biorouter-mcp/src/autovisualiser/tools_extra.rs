@@ -9,17 +9,88 @@
 // flows through `render_mermaid_source`, which escapes + renders safely.
 // ===========================================================================
 
-/// Sanitize a string into a safe Mermaid node id (alphanumeric + underscore).
+/// Encode identities without merging punctuation, whitespace, or Unicode.
 fn mermaid_id(raw: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut id = String::with_capacity(3 + raw.len() * 2);
+    id.push_str("br_");
+    for byte in raw.bytes() {
+        id.push(HEX[(byte >> 4) as usize] as char);
+        id.push(HEX[(byte & 15) as usize] as char);
+    }
+    id
+}
+
+// ER attribute types and names are display tokens, not referenced node identities.
+fn mermaid_visible_token(raw: &str) -> String {
     let mut s: String = raw
         .trim()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if s.is_empty() || s.chars().next().is_some_and(|c| c.is_ascii_digit()) {
         s.insert(0, 'n');
     }
     s
+}
+
+fn mermaid_gantt_start(
+    raw: &str,
+    ids: &std::collections::HashSet<&str>,
+) -> Result<String, ErrorData> {
+    let start = raw.trim_start();
+    let Some(after) = start
+        .strip_prefix("after")
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+    else {
+        return Ok(raw.trim().to_string());
+    };
+    // Remove the grammar separator only: leading/trailing whitespace can belong to an ID.
+    let mut characters = after.chars();
+    let _ = characters.next();
+    let payload = characters.as_str();
+    if ids.contains(payload) {
+        return Ok(format!("after {}", mermaid_id(payload)));
+    }
+    let payload = payload.trim();
+    if ids.contains(payload) {
+        return Ok(format!("after {}", mermaid_id(payload)));
+    }
+    let dependencies: Vec<&str> = payload.split_whitespace().collect();
+    if dependencies.is_empty() || dependencies.iter().any(|id| !ids.contains(id)) {
+        return Err(invalid(
+            "Gantt dependency must reference a known explicit task ID.",
+        ));
+    }
+    let ambiguous = ids
+        .iter()
+        .filter(|id| id.chars().any(char::is_whitespace))
+        .any(|id| {
+            !id.is_empty()
+                && payload.match_indices(*id).any(|(offset, found)| {
+                    let (before, matched_and_after) = payload.split_at(offset);
+                    let (_, after) = matched_and_after.split_at(found.len());
+                    (before.is_empty() || before.ends_with(char::is_whitespace))
+                        && (after.is_empty() || after.starts_with(char::is_whitespace))
+                })
+        });
+    if ambiguous {
+        return Err(invalid("Gantt dependency is ambiguous between task IDs containing spaces and multiple IDs; use unambiguous explicit IDs."));
+    }
+    Ok(format!(
+        "after {}",
+        dependencies
+            .into_iter()
+            .map(mermaid_id)
+            .collect::<Vec<_>>()
+            .join(" ")
+    ))
 }
 
 /// Escape a label for use inside a Mermaid quoted string (`"…"`).
@@ -467,16 +538,35 @@ Example:
         for n in &d.nodes {
             let id = mermaid_id(&n.id);
             let label = n.label.as_deref().unwrap_or(&n.id);
-            body.push_str(&format!("    {id}{}\n", shape_wrap(n.shape.as_deref(), label)));
+            body.push_str(&format!(
+                "    {id}{}\n",
+                shape_wrap(n.shape.as_deref(), label)
+            ));
+        }
+        let mut declared: std::collections::HashSet<&str> =
+            d.nodes.iter().map(|node| node.id.as_str()).collect();
+        for raw in d
+            .edges
+            .iter()
+            .flat_map(|edge| [edge.from.as_str(), edge.to.as_str()])
+        {
+            if declared.insert(raw) {
+                body.push_str(&format!(
+                    "    {}{}\n",
+                    mermaid_id(raw),
+                    shape_wrap(None, raw)
+                ));
+            }
         }
         for e in &d.edges {
             let from = mermaid_id(&e.from);
             let to = mermaid_id(&e.to);
             let arrow = edge_arrow(e.style.as_deref());
             match e.label.as_deref().filter(|s| !s.trim().is_empty()) {
-                Some(l) => {
-                    body.push_str(&format!("    {from} {arrow}|\"{}\"| {to}\n", mermaid_label(l)))
-                }
+                Some(l) => body.push_str(&format!(
+                    "    {from} {arrow}|\"{}\"| {to}\n",
+                    mermaid_label(l)
+                )),
                 None => body.push_str(&format!("    {from} {arrow} {to}\n")),
             }
         }
@@ -505,8 +595,17 @@ Example:
             return Err(invalid("Gantt chart requires at least one section."));
         }
         let fmt = d.date_format.as_deref().unwrap_or("YYYY-MM-DD");
+        let mut ids = std::collections::HashSet::new();
+        for task in d.sections.iter().flat_map(|section| &section.tasks) {
+            if let Some(id) = task.id.as_deref() {
+                if !ids.insert(id) {
+                    return Err(invalid("Gantt explicit task IDs must be unique."));
+                }
+            }
+        }
         let mut body = String::from("gantt\n");
         body.push_str(&format!("    dateFormat {fmt}\n"));
+        let mut task_index = 0;
         for section in &d.sections {
             body.push_str(&format!("    section {}\n", mermaid_label(&section.name)));
             for task in &section.tasks {
@@ -514,11 +613,15 @@ Example:
                 if let Some(s) = task.status.as_deref().filter(|s| !s.trim().is_empty()) {
                     meta.push(s.trim().to_lowercase());
                 }
-                if let Some(id) = task.id.as_deref().filter(|s| !s.trim().is_empty()) {
-                    meta.push(mermaid_id(id));
-                }
+                meta.push(
+                    task.id
+                        .as_deref()
+                        .map(mermaid_id)
+                        .unwrap_or_else(|| format!("br_auto_{task_index}")),
+                );
+                task_index += 1;
                 if let Some(start) = task.start.as_deref().filter(|s| !s.trim().is_empty()) {
-                    meta.push(start.trim().to_string());
+                    meta.push(mermaid_gantt_start(start, &ids)?);
                 }
                 if let Some(dur) = task.duration.as_deref().filter(|s| !s.trim().is_empty()) {
                     meta.push(dur.trim().to_string());
@@ -667,21 +770,37 @@ Example:
         let mut body = String::from("erDiagram\n");
         for e in &d.entities {
             let name = mermaid_id(&e.name);
-            if e.attributes.is_empty() {
-                body.push_str(&format!("    {name}\n"));
-            } else {
+            body.push_str(&format!("    {name}[\"{}\"]\n", mermaid_label(&e.name)));
+            if !e.attributes.is_empty() {
                 body.push_str(&format!("    {name} {{\n"));
                 for a in &e.attributes {
-                    let ty = mermaid_id(a.type_.as_deref().unwrap_or("string"));
-                    let an = mermaid_id(&a.name);
+                    let ty = mermaid_visible_token(a.type_.as_deref().unwrap_or("string"));
+                    let an = mermaid_visible_token(&a.name);
                     match a.key.as_deref().filter(|s| !s.trim().is_empty()) {
-                        Some(k) => {
-                            body.push_str(&format!("        {ty} {an} {}\n", k.trim().to_uppercase()))
-                        }
+                        Some(k) => body
+                            .push_str(&format!("        {ty} {an} {}\n", k.trim().to_uppercase())),
                         None => body.push_str(&format!("        {ty} {an}\n")),
                     }
                 }
                 body.push_str("    }\n");
+            }
+        }
+        let mut declared: std::collections::HashSet<&str> = d
+            .entities
+            .iter()
+            .map(|entity| entity.name.as_str())
+            .collect();
+        for raw in d
+            .relationships
+            .iter()
+            .flat_map(|relation| [relation.from.as_str(), relation.to.as_str()])
+        {
+            if declared.insert(raw) {
+                body.push_str(&format!(
+                    "    {}[\"{}\"]\n",
+                    mermaid_id(raw),
+                    mermaid_label(raw)
+                ));
             }
         }
         for r in &d.relationships {
@@ -722,6 +841,20 @@ Example:
             return Err(invalid("State diagram requires at least one transition."));
         }
         let mut body = String::from("stateDiagram-v2\n");
+        let mut declared = std::collections::HashSet::new();
+        for raw in d
+            .transitions
+            .iter()
+            .flat_map(|transition| [transition.from.as_str(), transition.to.as_str()])
+        {
+            if raw.trim() != "[*]" && declared.insert(raw) {
+                body.push_str(&format!(
+                    "    state \"{}\" as {}\n",
+                    mermaid_label(raw),
+                    mermaid_id(raw)
+                ));
+            }
+        }
         for t in &d.transitions {
             match t.label.as_deref().filter(|s| !s.trim().is_empty()) {
                 Some(l) => body.push_str(&format!(
@@ -763,9 +896,11 @@ Example:
         let mut body = String::from("classDiagram\n");
         for c in &d.classes {
             let name = mermaid_id(&c.name);
-            if c.attributes.is_empty() && c.methods.is_empty() {
-                body.push_str(&format!("    class {name}\n"));
-            } else {
+            body.push_str(&format!(
+                "    class {name}[\"{}\"]\n",
+                mermaid_label(&c.name)
+            ));
+            if !c.attributes.is_empty() || !c.methods.is_empty() {
                 body.push_str(&format!("    class {name} {{\n"));
                 for a in &c.attributes {
                     body.push_str(&format!("        {}\n", mermaid_label(a)));
@@ -774,6 +909,21 @@ Example:
                     body.push_str(&format!("        {}\n", mermaid_label(m)));
                 }
                 body.push_str("    }\n");
+            }
+        }
+        let mut declared: std::collections::HashSet<&str> =
+            d.classes.iter().map(|class| class.name.as_str()).collect();
+        for raw in d
+            .relationships
+            .iter()
+            .flat_map(|relation| [relation.from.as_str(), relation.to.as_str()])
+        {
+            if declared.insert(raw) {
+                body.push_str(&format!(
+                    "    class {}[\"{}\"]\n",
+                    mermaid_id(raw),
+                    mermaid_label(raw)
+                ));
             }
         }
         for r in &d.relationships {

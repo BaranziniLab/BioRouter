@@ -225,6 +225,9 @@ if (process.argv.includes('--browser')) {
             subtitleHidden: document.querySelector('#chartSubtitle').hidden,
             theme: window.BioRouterViz.theme,
             escaped: typeof window.__escaped === 'undefined',
+            alerts: [...document.querySelectorAll('[role="alert"]')].map(
+              (element) => element.textContent
+            ),
             yTitleWidth: (() => {
               chart.ctx.font =
                 chart.options.scales.y.title.font.size + 'px ' + window.Chart.defaults.font.family;
@@ -242,6 +245,7 @@ if (process.argv.includes('--browser')) {
         });
         check(`real Chart.js ${fixture.name}/${fixture.theme} ${width}px layout`, () => {
           assert.deepEqual(errors, []);
+          assert.deepEqual(metrics.alerts, [], 'no visible rendering error cards');
           assert.ok(metrics.scrollWidth <= width + 1, JSON.stringify(metrics));
           assert.ok(metrics.plotWidth >= 100 && metrics.plotHeight >= 180, JSON.stringify(metrics));
           assert.ok(metrics.tickSize >= 14);

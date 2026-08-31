@@ -19,18 +19,18 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  .report { max-width: 1180px; margin: 0 auto; padding: 0 24px 72px; }
+  .report { max-width: 1180px; margin: 0 auto; padding: 0 clamp(12px, 2.5vw, 28px) 40px; overflow-wrap: anywhere; }
 
   /* ---- Masthead ---------------------------------------------------- */
-  .masthead { padding: 44px 0 26px; border-bottom: 1px solid var(--border, #e5e7eb); }
+  .masthead { padding: 24px 0 20px; border-bottom: 1px solid var(--border, #e5e7eb); }
   .eyebrow {
-    font-size: 11px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase;
-    color: var(--muted, #6b7280); margin-bottom: 12px;
+    font-size: 14px; font-weight: 400;
+    color: var(--muted, #6b7280); margin-bottom: 8px;
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   }
   .eyebrow .dot { width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: 0.5; }
-  h1.report-title { margin: 0; font-size: 30px; line-height: 1.22; font-weight: 650; letter-spacing: -0.018em; }
-  .report-subtitle { margin: 10px 0 0; font-size: 17px; color: var(--muted, #6b7280); font-weight: 400; }
+  h1.report-title { margin: 0; font-size: clamp(20px, 2vw, 24px); line-height: 1.3; font-weight: 600; }
+  .report-subtitle { margin: 8px 0 0; font-size: 15px; color: var(--muted, #6b7280); font-weight: 400; }
   .report-summary { margin-top: 20px; max-width: 76ch; }
   .report-summary p { margin: 0 0 10px; }
   .report-summary p:last-child { margin-bottom: 0; }
@@ -39,10 +39,10 @@
   /* ---- Contents ---------------------------------------------------- */
   .toc { margin: 26px 0 0; padding: 16px 18px; border: 1px solid var(--border, #e5e7eb); border-radius: 10px; background: var(--surface, #fff); }
   .toc-heading { font-size: 11px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted, #6b7280); margin-bottom: 10px; }
-  .toc ol { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 2px 20px; }
+  .toc ol { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 2px 20px; }
   .toc li { display: flex; align-items: baseline; gap: 9px; padding: 3px 0; min-width: 0; }
   .toc .fignum { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted, #6b7280); min-width: 2.4em; }
-  .toc a { color: inherit; text-decoration: none; border-bottom: 1px solid transparent; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .toc a { color: inherit; text-decoration: none; border-bottom: 1px solid transparent; min-width: 0; }
   .toc a:hover { border-bottom-color: var(--muted, #6b7280); }
 
   /* ---- Sections ---------------------------------------------------- */
@@ -66,10 +66,9 @@
     margin: 0; min-width: 0;
     background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
-    border-radius: 12px;
+    border-radius: 6px;
     overflow: hidden;
     display: flex; flex-direction: column;
-    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.045);
     scroll-margin-top: 16px;
   }
   figure.panel.span-full { grid-column: 1 / -1; }
@@ -138,8 +137,11 @@
     font-size: 0.88em; padding: 0.12em 0.36em; border-radius: 4px;
     background: rgba(127, 127, 127, 0.14);
   }
-  a { color: #4f7cff; text-decoration: none; }
+  a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
   a:hover { text-decoration: underline; }
+  button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+  .toc-heading, .toc .fignum, .panel-label, .panel-caption, .panel-notes summary, .notes-body, .panel-error, .panel-error .err-detail, .report-footer { font-size: 14px; }
+  .toc-heading, .panel-label { text-transform: none; letter-spacing: normal; }
 
   @media print {
     .toc, .panel-actions { display: none; }
@@ -152,7 +154,7 @@
 <main class="report">
   <header class="masthead">
     <div class="eyebrow">
-      <span>Auto Visualiser report</span>
+      <span>Figures</span>
       <span class="dot"></span>
       <span id="figure-count"></span>
     </div>
@@ -261,7 +263,7 @@
       'padding:14px 18px 0!important;text-align:left!important;}' +
       '.header h1{font-size:14px!important;font-weight:600!important;margin:0!important;' +
       'letter-spacing:0!important;}' +
-      '.header p{font-size:12.5px!important;opacity:.72!important;margin:4px 0 0!important;}' +
+      '.header p{font-size:14px!important;opacity:.85!important;margin:4px 0 0!important;}' +
       (hideOwnTitle ? '.header{display:none!important;}' : '') +
       '</style>\n';
   }
@@ -376,13 +378,16 @@
       var expandBtn = document.createElement('button');
       expandBtn.type = 'button';
       expandBtn.className = 'icon-btn';
-      expandBtn.innerHTML = ICON_EXPAND;
-      expandBtn.title = 'Expand figure to full width';
-      expandBtn.setAttribute('aria-label', 'Expand figure to full width');
+      function updateExpandControl(full) {
+        expandBtn.innerHTML = full ? ICON_COLLAPSE : ICON_EXPAND;
+        expandBtn.title = full ? 'Collapse figure to half width' : 'Expand figure to full width';
+        expandBtn.setAttribute('aria-label', expandBtn.title);
+        expandBtn.setAttribute('aria-expanded', String(full));
+      }
+      updateExpandControl(fig.classList.contains('span-full'));
       expandBtn.addEventListener('click', function () {
         var full = fig.classList.toggle('span-full');
-        expandBtn.innerHTML = full ? ICON_COLLAPSE : ICON_EXPAND;
-        expandBtn.title = full ? 'Collapse figure' : 'Expand figure to full width';
+        updateExpandControl(full);
         // Layout width changed: let the figure re-measure itself.
         window.setTimeout(function () {
           try { frame.contentWindow.dispatchEvent(new Event('resize')); } catch (e) { /* cross-doc */ }
@@ -412,7 +417,7 @@
         var frame = document.createElement('iframe');
         frame.setAttribute('title', panel.title || 'Figure ' + num);
         frame.setAttribute('loading', 'lazy');
-        frame.setAttribute('scrolling', 'no');
+        frame.setAttribute('scrolling', 'auto');
         frame.style.height = initialHeight + 'px';
 
         var skeleton = document.createElement('div');

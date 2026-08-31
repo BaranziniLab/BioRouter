@@ -7,64 +7,106 @@
     {{ASSETS}}
     <script>{{COMMON}}</script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
-        .container { max-width: 1100px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; }
-        .header { padding: 24px 30px 0; text-align: center; }
-        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
-        .chart-wrap { padding: 24px 30px 30px; position: relative; height: 460px; }
+        .chart-wrap { position: relative; height: clamp(340px, 55vw, 480px); }
     </style>
 </head>
 <body>
     <div class="viz-root">
         <div class="container">
             <div class="header"><h1 id="title">Histogram</h1></div>
-            <div class="chart-wrap"><canvas id="chart"></canvas></div>
+            <p class="figure-description" id="binDescription"></p>
+            <div class="chart-wrap" id="chartHost"><canvas id="chart" role="img" aria-label="Histogram; exact bin boundaries and counts follow in the data table"></canvas></div>
         </div>
     </div>
+    <details class="figure-data">
+        <summary>View figure data</summary>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Figure data"><table id="figureData"></table></div>
+    </details>
     <script>
         const histData = {{HISTOGRAM_DATA}};
         BioRouterViz.autoResize();
         BioRouterViz.guard(function () {
-            BioRouterViz.applyPageTheme();
+            BioRouterViz.applyScientificStyles();
             BioRouterViz.applyChartDefaults();
             if (histData.title) document.getElementById('title').textContent = histData.title;
 
             const vals = histData.values.slice().filter(function (v) { return typeof v === 'number' && isFinite(v); });
             if (!vals.length) throw new Error('No finite values to plot.');
-            const min = Math.min.apply(null, vals);
-            const max = Math.max.apply(null, vals);
+            const min = vals.reduce((a, b) => Math.min(a, b), Infinity);
+            const max = vals.reduce((a, b) => Math.max(a, b), -Infinity);
             let bins = histData.bins && histData.bins > 0
                 ? Math.floor(histData.bins)
                 : Math.max(1, Math.ceil(Math.log2(vals.length) + 1)); // Sturges
-            bins = Math.min(bins, 200);
-            const width = (max - min) || 1;
-            const step = width / bins;
+            bins = Math.max(1, Math.min(bins, 200));
+            if (min === max) bins = 1;
+            const requestedBins = bins;
+            const width = max - min;
+            let edges = Array.from({ length: bins + 1 }, (_, i) => {
+                if (i === 0) return min;
+                if (i === bins) return max;
+                const fraction = i / bins;
+                return Number.isFinite(width) ? min + width * fraction : min * (1 - fraction) + max * fraction;
+            });
+            if (min !== max) edges = edges.filter((edge, i) => i === 0 || edge > edges[i - 1]);
+            bins = edges.length - 1;
             const counts = new Array(bins).fill(0);
             vals.forEach(function (v) {
-                let idx = Math.floor((v - min) / step);
-                if (idx >= bins) idx = bins - 1;
-                if (idx < 0) idx = 0;
-                counts[idx]++;
+                let low = 0;
+                let high = bins;
+                while (low < high) {
+                    const middle = Math.floor((low + high) / 2);
+                    if (v >= edges[middle + 1]) low = middle + 1;
+                    else high = middle;
+                }
+                counts[Math.min(low, bins - 1)]++;
             });
-            const labels = counts.map(function (_, i) {
-                const lo = min + i * step;
-                const hi = lo + step;
-                return lo.toFixed(2) + '–' + hi.toFixed(2);
-            });
+            const edgeLabels = BioRouterViz.formatScaleValues(edges);
+            const labels = counts.map((_, i) => min === max ? String(min) : edgeLabels[i] + '–' + edgeLabels[i + 1]);
+            const binNote = min === max
+                ? 'All ' + vals.length + ' observations have the same value: ' + min + '.'
+                : vals.length + ' observations. Bins include the lower boundary and exclude the upper boundary, except the last bin includes both.' +
+                    (bins < requestedBins ? ' Numeric precision limits the distinct boundaries to ' + bins + ' bins.' : '');
+            document.getElementById('binDescription').textContent = binNote;
             const color = histData.color || BioRouterViz.palette[0];
 
-            new Chart(document.getElementById('chart').getContext('2d'), {
+            const chartHost = document.getElementById('chartHost');
+            const context = document.getElementById('chart').getContext('2d');
+            function layoutTitles() {
+                context.save();
+                context.font = '14px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+                const measure = (text) => context.measureText(text).width;
+                const x = BioRouterViz.wrapLabel(histData.xAxisLabel || '', Math.max(80, chartHost.clientWidth - 130), measure);
+                const y = BioRouterViz.wrapLabel(histData.yAxisLabel || 'Count', 260, measure);
+                context.restore();
+                chartHost.style.height = Math.max(340, Math.min(480, chartHost.clientWidth * 0.55)) + x.length * 19 + 'px';
+                return { x, y };
+            }
+            const titles = layoutTitles();
+            const chart = new Chart(context, {
                 type: 'bar',
                 data: { labels: labels, datasets: [{ label: histData.yAxisLabel || 'Count', data: counts, backgroundColor: color, borderWidth: 0 }] },
                 options: {
                     responsive: true, maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
+                    plugins: { legend: { display: false }, tooltip: { callbacks: {
+                        title: function (items) { return BioRouterViz.wrapChartTooltip(items[0].label, items[0].chart); },
+                        label: function (item) { return BioRouterViz.wrapChartTooltip(item.dataset.label + ': ' + item.formattedValue, item.chart); }
+                    } } },
                     scales: {
-                        x: { title: { display: !!histData.xAxisLabel, text: histData.xAxisLabel }, grid: { display: false }, ticks: { maxRotation: 60, minRotation: 0 } },
-                        y: { beginAtZero: true, title: { display: true, text: histData.yAxisLabel || 'Count' }, grid: { color: BioRouterViz.colors.grid } }
+                        x: { title: { display: !!histData.xAxisLabel, text: titles.x }, grid: { display: false }, ticks: { maxRotation: 60, minRotation: 0 } },
+                        y: { beginAtZero: true, title: { display: true, text: titles.y }, grid: { color: BioRouterViz.colors.grid } }
                     }
                 }
             });
+            BioRouterViz.observeChartWidth(chartHost, () => {
+                    const titles = layoutTitles();
+                    chart.options.scales.x.title.text = titles.x;
+                    chart.options.scales.y.title.text = titles.y;
+                    chart.resize();
+                    chart.update('none');
+            });
+            BioRouterViz.renderFigureData(document.getElementById('figureData'), ['Bin', 'Lower boundary', 'Upper boundary', 'Count'],
+                counts.map((count, i) => [i + 1, edges[i], edges[i + 1], count]),
+                (histData.xAxisLabel ? histData.xAxisLabel + '. ' : '') + binNote);
             BioRouterViz.reportSize();
         });
     </script>

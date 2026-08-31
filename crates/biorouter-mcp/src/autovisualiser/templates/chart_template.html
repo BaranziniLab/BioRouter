@@ -57,7 +57,6 @@
         const categorical = chartType !== 'scatter' && !chartData.datasets.some((dataset) => dataset.data.some((value) => value && typeof value === 'object'));
         const colors = BioRouterViz.colors;
         let chart;
-        let previousWidth = 0;
 
         function layout() {
             const width = chartHost.clientWidth;
@@ -189,20 +188,15 @@
                 subtitle.hidden = false;
             }
             const metrics = layout();
-            previousWidth = chartHost.clientWidth;
             const datasets = processDatasets();
             renderLegend(datasets);
             renderTable();
             chart = new Chart(context, { type: chartType, data: { labels: chartData.labels || [], datasets }, options: chartOptions(metrics) });
-            if (typeof ResizeObserver !== 'undefined') {
-                new ResizeObserver(() => {
-                    if (chartHost.clientWidth === previousWidth) return;
-                    previousWidth = chartHost.clientWidth;
+            BioRouterViz.observeChartWidth(chartHost, () => {
                     chart.options = chartOptions(layout());
                     chart.resize();
                     chart.update('none');
-                }).observe(chartHost);
-            }
+            });
             BioRouterViz.autoResize();
         });
     </script>

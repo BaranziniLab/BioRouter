@@ -7,37 +7,40 @@
     {{ASSETS}}
     <script>{{COMMON}}</script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
-        .container { max-width: 1000px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; }
-        .header { padding: 24px 30px 0; text-align: center; }
-        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
-        .chart-wrap { padding: 24px 30px 30px; position: relative; height: 520px; }
+        .chart-wrap { position: relative; height: 480px; }
     </style>
 </head>
 <body>
     <div class="viz-root">
         <div class="container">
             <div class="header"><h1 id="title">Volcano Plot</h1></div>
-            <div class="chart-wrap"><canvas id="chart"></canvas></div>
+            <p class="figure-description" id="thresholdDescription"></p>
+            <div class="figure-scroll" tabindex="0" role="region" aria-label="Volcano plot"><div class="chart-wrap"><canvas id="chart" role="img" aria-label="Volcano plot; exact values and threshold classes follow in the figure data"></canvas></div></div>
+            <div class="figure-legend" id="legend" aria-label="Threshold classifications"></div>
         </div>
     </div>
+    <details class="figure-data"><summary>View figure data</summary><div class="table-scroll" tabindex="0" role="region" aria-label="Figure data"><table id="figureData"></table></div></details>
     <script>
         const volcanoData = {{VOLCANO_DATA}};
         BioRouterViz.autoResize();
         BioRouterViz.guard(function () {
-            BioRouterViz.applyPageTheme();
+            BioRouterViz.applyScientificStyles();
             BioRouterViz.applyChartDefaults();
             if (volcanoData.title) document.getElementById('title').textContent = volcanoData.title;
 
             const fcThr = (typeof volcanoData.fcThreshold === 'number') ? volcanoData.fcThreshold : 1.0;
             const pThr = (typeof volcanoData.pThreshold === 'number') ? volcanoData.pThreshold : 1.301;
-            const UP = '#e74c3c', DOWN = '#3498db', NS = BioRouterViz.dark ? '#6b7280' : '#b9c0cc';
+            const UP = BioRouterViz.palette[2], DOWN = BioRouterViz.palette[0], NS = BioRouterViz.colors.muted;
+            const thresholdNote = 'Thresholds: |log₂ fold-change| ≥ ' + fcThr + ' and −log₁₀(p) ≥ ' + pThr + '. Dashed lines mark these limits.';
+            document.getElementById('thresholdDescription').textContent = thresholdNote;
 
             const pts = volcanoData.points.map(function (p) {
                 let cls = NS;
-                if (p.negLog10P >= pThr && p.log2fc >= fcThr) cls = UP;
-                else if (p.negLog10P >= pThr && p.log2fc <= -fcThr) cls = DOWN;
-                return { x: p.log2fc, y: p.negLog10P, _label: p.label, _c: cls };
+                let category = 'Thresholds not met';
+                let shape = 'circle';
+                if (p.negLog10P >= pThr && p.log2fc >= fcThr) { cls = UP; category = 'Positive threshold met'; shape = 'triangle'; }
+                else if (p.negLog10P >= pThr && p.log2fc <= -fcThr) { cls = DOWN; category = 'Negative threshold met'; shape = 'rectRot'; }
+                return { x: p.log2fc, y: p.negLog10P, _label: p.label, _c: cls, _category: category, _shape: shape };
             });
 
             const thresholdLines = {
@@ -45,6 +48,7 @@
                 afterDraw: function (chart) {
                     const ctx = chart.ctx, xs = chart.scales.x, ys = chart.scales.y;
                     ctx.save();
+                    ctx.beginPath(); ctx.rect(xs.left, ys.top, xs.right - xs.left, ys.bottom - ys.top); ctx.clip();
                     ctx.strokeStyle = BioRouterViz.colors.muted;
                     ctx.setLineDash([5, 4]);
                     ctx.lineWidth = 1;
@@ -65,6 +69,7 @@
                     data: pts,
                     pointBackgroundColor: pts.map(function (p) { return p._c; }),
                     pointBorderColor: pts.map(function (p) { return p._c; }),
+                    pointStyle: pts.map(function (p) { return p._shape; }),
                     pointRadius: 4, pointHoverRadius: 6
                 }] },
                 options: {
@@ -73,16 +78,21 @@
                         legend: { display: false },
                         tooltip: { callbacks: { label: function (ctx) {
                             const p = ctx.raw;
-                            return (p._label ? p._label + ' — ' : '') + 'log2FC=' + p.x + ', -log10p=' + p.y;
+                            return BioRouterViz.wrapChartTooltip((p._label ? p._label + ' — ' : '') + 'log2FC=' + p.x + ', -log10p=' + p.y + '. ' + p._category, ctx.chart);
                         } } }
                     },
                     scales: {
-                        x: { title: { display: true, text: 'log2 fold-change' }, grid: { color: BioRouterViz.colors.grid } },
-                        y: { title: { display: true, text: '-log10(p)' }, beginAtZero: true, grid: { color: BioRouterViz.colors.grid } }
+                        x: { title: { display: true, text: 'log₂ fold-change' }, suggestedMin: -fcThr, suggestedMax: fcThr, grid: { color: BioRouterViz.colors.grid } },
+                        y: { title: { display: true, text: '−log₁₀(p)' }, suggestedMax: pThr, beginAtZero: true, grid: { color: BioRouterViz.colors.grid } }
                     }
                 },
                 plugins: [thresholdLines]
             });
+            BioRouterViz.renderFigureLegend(document.getElementById('legend'), [
+                { label: '▲ Positive threshold met', color: UP }, { label: '◆ Negative threshold met', color: DOWN }, { label: '● Thresholds not met', color: NS }
+            ]);
+            BioRouterViz.renderFigureData(document.getElementById('figureData'), ['Feature', 'log₂ fold-change', '−log₁₀(p)', 'Classification'],
+                pts.map((point) => [point._label || '—', point.x, point.y, point._category]), thresholdNote);
             BioRouterViz.reportSize();
         });
     </script>

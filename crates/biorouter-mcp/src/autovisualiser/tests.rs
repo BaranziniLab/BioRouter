@@ -664,3 +664,5 @@ async fn standalone_figure_ignores_cdn_env_flag() {
 
 include!("tests_extra.rs");
 include!("tests_dashboard.rs");
+include!("tests_distributions.rs");
+include!("tests_cartesian.rs");

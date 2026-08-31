@@ -467,32 +467,34 @@ Each panel names any other Auto Visualiser tool and passes exactly the arguments
 
 Example:
 {
-  "title": "Tumour vs normal: differential expression",
-  "subtitle": "RNA-seq, n=48",
-  "summary": "412 genes pass FDR < 0.05. **MYC** and **CDK4** dominate the up-regulated set.",
+  "title": "Synthetic workflow comparison",
+  "subtitle": "Illustrative observations, not research findings",
+  "summary": "Workflow B costs 20 units more per month and saves 15 more minutes per run than workflow A in this synthetic example.",
   "sections": [
     {
-      "title": "Genome-wide signal",
-      "description": "Effect size against significance across all 18,204 tested genes.",
+      "title": "Cost and time, shown on separate scales",
+      "description": "Two supplied observations per quantity; no statistical inference.",
       "panels": [
         {
-          "title": "Volcano plot",
-          "caption": "Points above the dashed line pass FDR < 0.05.",
-          "notes": "Wald test, Benjamini-Hochberg correction.",
-          "figure": {"tool": "render_volcano", "params": {"data": {"points": []}}}
+          "title": "Monthly cost",
+          "caption": "A costs 100 units per month; B costs 120.",
+          "notes": "Synthetic inputs supplied only to demonstrate the report format.",
+          "figure": {"tool": "show_chart", "params": {"data": {"type": "bar", "labels": ["A", "B"], "yAxisLabel": "Cost (units/month)", "datasets": [{"label": "Monthly cost", "data": [100, 120]}]}}}
         },
         {
-          "title": "Top-gene expression",
+          "title": "Time saved per run",
           "width": "half",
-          "figure": {"tool": "show_chart", "params": {"data": {"type": "bar", "datasets": []}}}
+          "caption": "A saves 15 minutes per run; B saves 30.",
+          "figure": {"tool": "show_chart", "params": {"data": {"type": "bar", "labels": ["A", "B"], "yAxisLabel": "Time saved (minutes/run)", "datasets": [{"label": "Time saved", "data": [15, 30]}]}}}
         }
       ]
     }
   ],
-  "footer": "Counts from GENCODE v44."
+  "footer": "Replace these illustrative values with the user's actual observations."
 }
 
 Panel width is `full` (default) or `half` (two per row). Use `sections` for grouped reports, or the flat `panels` shorthand for a simple one.
+Prefer full width for dense diagrams, long labels, or several series. Large diagrams retain readable text and can scroll. Captions and summaries must describe supplied values; do not invent sample sizes, provenance, statistical significance or findings.
 
 Set `theme` to `light` or `dark` if the user asks for a specific background; the default `auto` follows the app's own light/dark setting.
 

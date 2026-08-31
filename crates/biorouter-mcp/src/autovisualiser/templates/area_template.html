@@ -7,60 +7,82 @@
     {{ASSETS}}
     <script>{{COMMON}}</script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
-        .container { max-width: 1100px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; }
-        .header { padding: 24px 30px 0; text-align: center; }
-        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
-        .chart-wrap { padding: 24px 30px 30px; position: relative; height: 460px; }
+        .chart-wrap { position: relative; height: 480px; }
     </style>
 </head>
 <body>
     <div class="viz-root">
         <div class="container">
             <div class="header"><h1 id="title">Area Chart</h1></div>
-            <div class="chart-wrap"><canvas id="chart"></canvas></div>
+            <div class="figure-scroll" tabindex="0" role="region" aria-label="Area chart"><div class="chart-wrap" id="chartHost"><canvas id="chart" role="img" aria-label="Area chart; exact observations follow in the figure data"></canvas></div></div>
+            <div class="figure-legend" id="legend" aria-label="Toggle chart series"></div>
         </div>
     </div>
+    <details class="figure-data"><summary>View figure data</summary><div class="table-scroll" tabindex="0" role="region" aria-label="Figure data"><table id="figureData"></table></div></details>
     <script>
         const areaData = {{AREA_DATA}};
         BioRouterViz.autoResize();
         BioRouterViz.guard(function () {
-            BioRouterViz.applyPageTheme();
+            BioRouterViz.applyScientificStyles();
             BioRouterViz.applyChartDefaults();
             if (areaData.title) document.getElementById('title').textContent = areaData.title;
 
             const stacked = !!areaData.stacked;
-            function hexToRgba(c, a) {
-                if (typeof c !== 'string' || c[0] !== '#') return c;
-                const n = parseInt(c.slice(1), 16);
-                return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
-            }
             const datasets = areaData.datasets.map(function (ds, i) {
                 const color = ds.color || BioRouterViz.palette[i % BioRouterViz.palette.length];
+                const fillColor = Chart.helpers.color(color);
                 return {
                     label: ds.label,
                     data: ds.data,
                     borderColor: color,
-                    backgroundColor: hexToRgba(color, 0.35),
+                    backgroundColor: fillColor.valid ? fillColor.alpha(fillColor.rgb.a * 0.35).rgbString() : color,
                     fill: true,
-                    tension: 0.3,
+                    tension: 0,
                     pointRadius: 2
                 };
             });
 
-            new Chart(document.getElementById('chart').getContext('2d'), {
+            const context = document.getElementById('chart').getContext('2d');
+            const chartHost = document.getElementById('chartHost');
+            function layout() {
+                const xTitle = BioRouterViz.wrapChartAxisLabel(areaData.xAxisLabel || '', Math.max(80, chartHost.clientWidth - 130), context);
+                const yTitle = BioRouterViz.wrapChartAxisLabel(areaData.yAxisLabel || '', 300, context);
+                const ticks = Math.max(2, Math.min(areaData.labels.length, Math.floor((chartHost.clientWidth - 80) / 100)));
+                const labelWidth = Math.max(42, Math.min(140, (chartHost.clientWidth - 90) / ticks - 16));
+                const labels = areaData.labels.map((label) => BioRouterViz.wrapChartAxisLabel(label, labelWidth, context));
+                chartHost.style.height = 420 + Math.max(...labels.map((label) => label.length)) * 19 + xTitle.length * 19 + 'px';
+                return { xTitle, yTitle, labels, ticks };
+            }
+            let metrics = layout();
+            const chart = new Chart(context, {
                 type: 'line',
                 data: { labels: areaData.labels, datasets: datasets },
                 options: {
                     responsive: true, maintainAspectRatio: false,
                     interaction: { intersect: false, mode: 'index' },
-                    plugins: { legend: { position: 'top' } },
+                    plugins: { legend: { display: false }, tooltip: { callbacks: {
+                        title: (items) => items.length ? BioRouterViz.wrapChartTooltip(items[0].label, items[0].chart) : [],
+                        label: (item) => BioRouterViz.wrapChartTooltip(item.dataset.label + ': ' + item.formattedValue, item.chart)
+                    } } },
                     scales: {
-                        x: { stacked: stacked, title: { display: !!areaData.xAxisLabel, text: areaData.xAxisLabel }, grid: { color: BioRouterViz.colors.grid } },
-                        y: { stacked: stacked, beginAtZero: true, title: { display: !!areaData.yAxisLabel, text: areaData.yAxisLabel }, grid: { color: BioRouterViz.colors.grid } }
+                        x: { stacked: stacked, title: { display: !!areaData.xAxisLabel, text: metrics.xTitle }, grid: { display: false }, ticks: { maxRotation: 0, maxTicksLimit: metrics.ticks, callback: (value) => metrics.labels[value] } },
+                        y: { stacked: stacked, beginAtZero: true, title: { display: !!areaData.yAxisLabel, text: metrics.yTitle }, grid: { color: BioRouterViz.colors.grid } }
                     }
                 }
             });
+            BioRouterViz.observeChartWidth(chartHost, () => {
+                    metrics = layout();
+                    chart.options.scales.x.title.text = metrics.xTitle;
+                    chart.options.scales.y.title.text = metrics.yTitle;
+                    chart.options.scales.x.ticks.maxTicksLimit = metrics.ticks;
+                    chart.resize(); chart.update('none');
+            });
+            BioRouterViz.renderChartLegend(document.getElementById('legend'), chart);
+            function* rows() {
+                for (const dataset of areaData.datasets) for (let i = 0; i < areaData.labels.length; i++) yield [dataset.label, areaData.labels[i], dataset.data[i]];
+            }
+            BioRouterViz.renderFigureData(document.getElementById('figureData'), ['Series', areaData.xAxisLabel || 'Observation', areaData.yAxisLabel || 'Value'], rows(),
+                stacked ? 'Stacked observations; positive and negative values retain their signs.' : 'Observed values connected by straight segments.', areaData.datasets.length * areaData.labels.length);
             BioRouterViz.reportSize();
         });
     </script>

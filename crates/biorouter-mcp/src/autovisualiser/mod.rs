@@ -484,6 +484,10 @@ impl AutoVisualiserRouter {
             charts at zero, and do not smooth measured line data unless scientifically justified.
             The default chart colors and layout already follow this style; avoid overriding them
             for decoration. Do not claim visual verification unless you actually inspected the figure.
+            Large diagrams retain their natural text size in a scrollable viewport; prefer a
+            full-width dashboard panel rather than compressing their labels. The diagram source
+            remains available for inspection, including when syntax fails to render. Preserve
+            explicit semantic colors and accurate node identities, relationships and ordering.
 
             ## Combining figures: read this first
             **If your answer needs more than one figure, call `render_dashboard` once instead of

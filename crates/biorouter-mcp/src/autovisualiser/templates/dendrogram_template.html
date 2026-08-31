@@ -6,34 +6,30 @@
     <title>Dendrogram</title>
     {{ASSETS}}
     <script>{{COMMON}}</script>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: auto; }
-        .header { padding: 20px 30px 0; text-align: center; }
-        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
-        #chart { display: block; margin: 10px auto; }
-        .link { fill: none; stroke: var(--muted); stroke-opacity: 0.7; }
-        text { fill: var(--text); font-size: 12px; }
-    </style>
+    <style>.link{fill:none;stroke:var(--muted);stroke-width:1.5px;}</style>
 </head>
 <body>
     <div class="viz-root">
         <div class="container">
             <div class="header"><h1 id="title">Dendrogram</h1></div>
-            <svg id="chart"></svg>
+            <div class="figure-scroll" tabindex="0" role="region" aria-label="Scientific figure"><svg id="chart" role="img" aria-label="Scientific figure; exact values follow in the data table"></svg></div>
         </div>
     </div>
+    <details class="figure-data">
+        <summary>View figure data</summary>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Figure data"><table id="figureData"></table></div>
+    </details>
     <script>
         const dendrogramData = {{DENDROGRAM_DATA}};
         BioRouterViz.autoResize();
         BioRouterViz.guard(function () {
-            BioRouterViz.applyPageTheme();
+            BioRouterViz.applyScientificStyles();
             document.getElementById('title').textContent = dendrogramData.name || 'Dendrogram';
 
             const root = d3.hierarchy(dendrogramData);
             const leaves = root.leaves().length;
-            const height = Math.max(220, leaves * 24 + 60);
-            const margin = { top: 20, right: 160, bottom: 20, left: 30 };
+            const height = Math.max(220, leaves * 28 + 60);
+            const margin = { top: 20, right: 280, bottom: 20, left: 30 };
             const innerW = 760;
             const width = margin.left + innerW + margin.right;
             const svg = d3.select('#chart').attr('width', width).attr('height', height + margin.top + margin.bottom);
@@ -58,7 +54,14 @@
                 .attr('dy', 3)
                 .attr('x', function (d) { return d.children ? -8 : 8; })
                 .attr('text-anchor', function (d) { return d.children ? 'end' : 'start'; })
-                .text(function (d) { return d.data.name; });
+                .each(function (d) {
+                    BioRouterViz.fitSvgLabel(this, d.depth ? d.data.name : '', d.children ? Math.min(220, d.y + margin.left - 20) : margin.right - 20);
+                });
+
+            BioRouterViz.hideOverlappingSvgLabels(svg.node(), 'text');
+            BioRouterViz.renderFigureData(document.getElementById('figureData'), ['Leaf', 'Hierarchy path', 'Supplied value'],
+                root.leaves().map((leaf) => [leaf.data.name, leaf.ancestors().reverse().map((node) => node.data.name).join(' / '), leaf.data.value]),
+                'The hierarchy is preserved; branch lengths are a layout, not measured distances.');
 
             BioRouterViz.reportSize();
         });

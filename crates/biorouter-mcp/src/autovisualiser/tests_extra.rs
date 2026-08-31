@@ -32,6 +32,9 @@ macro_rules! err_render {
     }};
 }
 
+include!("tests_hierarchies.rs");
+include!("tests_mermaid_dashboard.rs");
+
 #[tokio::test]
 async fn specialized_figures_keep_academic_shells_and_complete_escaped_labels() {
     let label = "Δοκιμή 東京🧬 <img src=x onerror=alert(1)> </script>";
@@ -68,6 +71,99 @@ async fn specialized_figures_keep_academic_shells_and_complete_escaped_labels() 
         assert!(!html.contains("font-size: 2.5em"));
     }
     assert!(decode_html(&results[0]).contains("#556677"));
+}
+
+#[tokio::test]
+async fn scientific_figures_keep_readable_data_and_escaped_labels() {
+    let label = "Δοκιμή 東京🧬 <img src=x onerror=alert(1)> </script>";
+    let results = [
+        ok_render!(render_network, RenderNetworkParams, "ui://network/graph", {
+            "data":{"title":label,"nodes":[{"id":"a","label":label}],"links":[]}
+        }),
+        ok_render!(render_kaplan_meier, RenderKaplanMeierParams, "ui://kaplanmeier/chart", {
+            "data":{"title":label,"groups":[{"label":label,"color":"#556677","points":[{"time":0,"survival":1},{"time":1,"survival":0.5,"censored":true}]}]}
+        }),
+        ok_render!(render_dendrogram, RenderDendrogramParams, "ui://dendrogram/chart", {
+            "data":{"name":label,"children":[{"name":label,"value":1}]}
+        }),
+        ok_render!(render_heatmap, RenderHeatmapParams, "ui://heatmap/chart", {
+            "data":{"title":label,"xLabels":[label],"yLabels":[label],"values":[[0]]}
+        }),
+        ok_render!(render_calendar_heatmap, RenderCalendarParams, "ui://calendar/heatmap", {
+            "data":{"title":label,"values":[{"date":"2024-02-29","value":0}]}
+        }),
+        ok_render!(render_forest, RenderForestParams, "ui://forest/chart", {
+            "data":{"title":label,"rows":[{"label":label,"estimate":1,"lower":0.5,"upper":2,"weight":3}]}
+        }),
+        ok_render!(render_choropleth, RenderChoroplethParams, "ui://choropleth/map", {
+            "data":{"title":label,"valueProperty":"score","nameProperty":"name","geojson":{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":label,"score":0},"geometry":{"type":"Polygon","coordinates":[[[0,0],[0,1],[1,1],[1,0],[0,0]]]}}]}}
+        }),
+    ];
+    for result in &results {
+        let html = decode_html(result);
+        assert!(html.contains("BioRouterViz.applyScientificStyles()"));
+        assert!(html.contains("BioRouterViz.renderFigureData"));
+        assert!(html.contains("id=\"figureData\""));
+        assert!(html.contains("tabindex=\"0\" role=\"region\""));
+        assert!(html.contains("Δοκιμή 東京🧬 \\u003cimg"));
+        assert!(!html.contains(label));
+        assert!(!html.contains("font-size: 2.5em"));
+    }
+    assert!(decode_html(&results[1]).contains("#556677"));
+}
+
+#[tokio::test]
+async fn calendar_rejects_invalid_dates_and_unbounded_sparse_ranges() {
+    let router = AutoVisualiserRouter::new();
+    for date in [
+        "2026-02-30",
+        "2026-2-03",
+        "not-a-date",
+        "-0001-01-01",
+        "+10000-01-01",
+    ] {
+        let params: RenderCalendarParams = serde_json::from_value(serde_json::json!({
+            "data":{"values":[{"date":date,"value":0}]}
+        }))
+        .unwrap();
+        let error = router
+            .render_calendar_heatmap(Parameters(params))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("Invalid calendar date"));
+    }
+    let start = chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+    for span in [3660, 3661] {
+        let end = (start + chrono::Duration::days(span - 1)).to_string();
+        let params: RenderCalendarParams = serde_json::from_value(serde_json::json!({
+            "data":{"values":[{"date":start.to_string(),"value":0},{"date":end,"value":1}]}
+        }))
+        .unwrap();
+        let result = router.render_calendar_heatmap(Parameters(params)).await;
+        if span == 3660 {
+            assert_resource_result(&result.unwrap(), "ui://calendar/heatmap");
+        } else {
+            assert!(result.unwrap_err().message.contains("3,660 days"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn forest_rejects_invalid_weights_and_preserves_observed_zero() {
+    let router = AutoVisualiserRouter::new();
+    for weight in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut params: RenderForestParams = serde_json::from_value(serde_json::json!({
+            "data":{"rows":[{"label":"Synthetic","estimate":1,"lower":0.5,"upper":2}]}
+        }))
+        .unwrap();
+        params.data.rows[0].weight = Some(weight);
+        let error = router.render_forest(Parameters(params)).await.unwrap_err();
+        assert!(error.message.contains("finite and non-negative"));
+    }
+    let result = ok_render!(render_forest, RenderForestParams, "ui://forest/chart", {
+        "data":{"logScale":true,"referenceLine":1,"rows":[{"label":"Zero weight","estimate":1,"lower":0.5,"upper":2,"weight":0}]}
+    });
+    assert!(decode_html(&result).contains("\"weight\":0.0"));
 }
 
 // ===========================================================================
