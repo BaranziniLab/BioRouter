@@ -1221,6 +1221,87 @@ saved unchanged in the isolated QA profile. It then showed Configured and
 model `claude-opus-5`, without API-key entry, sign-in or new permission. Actual
 provider execution and child steering remain separate acceptance requirements.
 
+### Claude Code child: accepted injection, incomplete acceptance
+
+The distinct Claude Code provider (`claude-opus-5`) ran parent session
+`20260831_19` and child `20260831_20` in the isolated workspace. An initial
+delegation failed with `No such tool available: workspace__subagent`; a
+subsequent call successfully requested Skills and Extension Manager. The
+parent read spawn context and queued the held-back steer on `agent-turn-2`.
+The child UI visibly showed that correction as a separate workspace injection.
+This establishes receipt, not complete application of the correction.
+
+The child appeared to remain Thinking without visible tool progress while
+180-second and 300-second watches expired. Luna stopped only that test child
+through the normal UI; the parent collected its history and reported
+cancelled/incomplete. Both owned Claude processes subsequently exited. No
+authentication, billing or permission changes were needed.
+
+Later expanded history directly showed seven catalog calls: searches for CSV
+cleaning, plotting, writing guidance and browser automation; browsing with
+limit 10 and offset zero; then searches for data and writing. Successful live
+results were visible. An eighth quality-control search was mentioned only in
+the parent's narrative. Therefore the earlier "no work" assessment was wrong:
+the live view did not expose work later present in collected history. A stall
+or vendor-stream cause is not established by the live view alone.
+
+The parent reported an effective Skills-only grant and ten callable tools,
+but Luna did not independently read the complete inventory or the full 8.3 KB
+initial context. Only the two catalog tool names above were directly verified.
+The parent also reported mean 21 from two observed values, missing values as
+gaps, browser-query leakage and a "two per need" interpretation. Without
+independently checked child ordering/output, these are not proof of full
+steering compliance or absence of the correction from the complete initial
+system prompt. No clean completion or fully applied steering pass is claimed.
+
+Source review found a concrete prompt naming mismatch: both coding providers'
+shared notice lists bare BioRouter tool IDs as directly callable, while their
+MCP server namespace is `mcp__biorouter__`. That is a plausible cause of the
+first failure, not raw-wire attribution. The exact-name regression failed
+before the shared notice was corrected to list existing MCP-qualified names
+and explain their relationship to internal IDs. It then passed, as did 126
+coding-agent, 36 Claude Code and 37 Codex module tests (199 unique module
+cases; the focused test is included in that count). No live API calls occurred.
+The notice changes no dispatcher aliases, grants, display names or steering
+counter. An additional assertion using the actual dropped lease URL also
+passed in `/tmp/biorouter-vendor-tool-names-revoked-green.log`.
+Logs: `/tmp/biorouter-vendor-tool-names-{red,green,bridge,providers}.log`.
+
+A further screenshot showed an already-open `anti-ai-writing` file
+preview denied as `/anti-ai-writing`, despite no reported click opening it.
+Its origin is unestablished; it is a follow-up artifact-discovery issue, not a
+successful file-link test. Do not infer a permissions defect or relax the
+reader's path guard from this screenshot.
+
+### Child capability identity correction
+
+Source inspection found a distinct selection bug: bridged-spawn validation
+accepted normalized capability names, but subsequent narrowing compared raw
+names exactly. The platform registry stores `Extension Manager`; asking for
+its key `extensionmanager` therefore validated successfully and then discarded
+that config. A fail-first test using the real bundled registry reproduced
+Skills-only retention. This can explain that live observation, but the exact
+live config was not independently inspected, so attribution remains qualified.
+
+All four added identity regressions failed before the correction. Selection now
+uses the extension manager's existing identity pipeline: normalize the
+lowercased, whitespace-stripped key, rather than normalize the raw name. That
+ordering matters for Unicode: `İ` and `_` have distinct manager keys and must
+not be merged. Hyphen and underscore keys also remain distinct. Original
+configs, provenance and tool allowlists are retained unchanged; selection only
+filters existing grants, with the same privacy/affiliation filtering afterward.
+
+The tests cover canonical/display spellings, case/spacing, omitted and empty
+selections, unrelated names, duplicates, restrictive tool lists, Unicode/key
+collisions, and an alias-selected private capability surviving narrowing before
+being removed by the privacy filter. All four then passed, followed by all 75
+subagent-tool module tests; independent review found no actionable issue.
+Formatting completed. Receipts: `/tmp/biorouter-child-capability-keys-red.log`,
+`/tmp/biorouter-child-capability-keys-green.log`, and
+`/tmp/biorouter-child-capability-keys-module.log`. No live API calls occurred.
+The full final repository gates, production rebuild and live acceptance of
+these backend corrections remain pending; no current-binary pass is claimed.
+
 ### Destiny shared-package compatibility: separate triage
 
 A read-only audit of the exact public repository at

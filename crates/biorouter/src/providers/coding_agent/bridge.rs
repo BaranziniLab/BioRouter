@@ -2226,15 +2226,30 @@ mod tests {
     #[tokio::test]
     async fn the_notice_names_the_tools_the_grant_really_advertises() {
         publish_base_url("http://127.0.0.1:65535");
-        let lease = issue(dummy_grant()).expect("a base URL is published");
+        let mut grant = dummy_grant();
+        grant.tools.extend(
+            ["workspace__subagent", "workspace__workspace_send_prompt"]
+                .into_iter()
+                .map(|name| Tool::new(name, "test tool", serde_json::Map::new())),
+        );
+        let lease = issue(grant).expect("a base URL is published");
 
         let named = advertised_tool_names(lease.url());
         assert!(!named.is_empty(), "the grant advertises tools: {named:?}");
 
         let notice = crate::providers::coding_agent::native_tools_notice(Some(lease.url()));
         for tool in &named {
-            assert!(notice.contains(tool), "notice omits {tool}: {notice}");
+            assert!(
+                notice.contains(&format!("`mcp__biorouter__{tool}`")),
+                "notice omits the vendor-qualified callable name for {tool}: {notice}"
+            );
+            assert!(
+                !notice.contains(&format!("`{tool}`")),
+                "notice advertises a bare internal name as callable: {notice}"
+            );
         }
+        assert!(!notice.contains("mcp__biorouter__knowledge__"));
+        assert_eq!(advertised_tool_names(lease.url()), named);
         assert!(
             notice.contains("spawn_agent"),
             "no warning off the vendor tool: {notice}"
@@ -2246,7 +2261,9 @@ mod tests {
 
         // ⚠ And once the lease drops the grant is revoked, so there is nothing
         // to name — a stale URL must not produce a confident list.
+        let revoked_url = lease.url().to_string();
         drop(lease);
+        assert!(crate::providers::coding_agent::native_tools_notice(Some(&revoked_url)).is_empty());
         assert!(crate::providers::coding_agent::native_tools_notice(Some(
             "http://127.0.0.1:65535/tool_bridge/gone"
         ))

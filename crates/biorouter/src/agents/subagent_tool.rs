@@ -966,6 +966,10 @@ pub(crate) fn handle_bridged_subagent_tool(
     )
 }
 
+fn extension_request_key(name: &str) -> String {
+    crate::agents::extension_manager::normalize(&crate::config::extensions::name_to_key(name))
+}
+
 fn unsupported_bridged_extension_names(
     params: &Value,
     available: &[crate::agents::ExtensionConfig],
@@ -975,12 +979,12 @@ fn unsupported_bridged_extension_names(
     };
     let available: std::collections::HashSet<String> = available
         .iter()
-        .map(|extension| crate::agents::extension_manager::normalize(&extension.name()))
+        .map(|extension| crate::agents::extension_manager::normalize(&extension.key()))
         .collect();
     requested
         .iter()
         .filter_map(Value::as_str)
-        .filter(|name| !available.contains(&crate::agents::extension_manager::normalize(name)))
+        .filter(|name| !available.contains(&extension_request_key(name)))
         .map(str::to_string)
         .collect()
 }
@@ -1901,13 +1905,15 @@ async fn apply_provider_override_and_composite_fork(
 
 fn narrow_child_extensions_by_name(task_config: &mut TaskConfig, params: &SubagentParams) {
     if let Some(extension_names) = &params.extensions {
-        if extension_names.is_empty() {
-            task_config.extensions = Vec::new();
-        } else {
-            task_config
-                .extensions
-                .retain(|ext| extension_names.contains(&ext.name()));
-        }
+        let requested = extension_names
+            .iter()
+            .map(|name| extension_request_key(name))
+            .collect::<std::collections::HashSet<_>>();
+        task_config.extensions.retain(|extension| {
+            requested.contains(&crate::agents::extension_manager::normalize(
+                &extension.key(),
+            ))
+        });
     }
 }
 
@@ -2116,6 +2122,103 @@ mod tests {
         )
         .is_empty());
         assert!(unsupported_bridged_extension_names(&serde_json::json!({}), &available).is_empty());
+    }
+
+    #[test]
+    fn child_name_narrowing_retains_validated_bundled_capability_keys() {
+        let extensions = ["skills", "extensionmanager"]
+            .into_iter()
+            .map(|name| {
+                crate::agents::extension_manager::resolve_bundled_extension(name)
+                    .unwrap()
+                    .into_config(String::new())
+            })
+            .collect::<Vec<_>>();
+        let request = serde_json::json!({"extensions": ["skills", "extensionmanager"]});
+        assert!(unsupported_bridged_extension_names(&request, &extensions).is_empty());
+        let mut task = parent_task_config(ProviderTier::Public, extensions.clone());
+        narrow_child_extensions_by_name(&mut task, &serde_json::from_value(request).unwrap());
+        assert_eq!(task.extensions, extensions);
+    }
+
+    #[test]
+    fn child_name_narrowing_preserves_selection_boundaries_and_tool_restrictions() {
+        let mut knowledge = builtin_extension("knowledge");
+        if let crate::agents::ExtensionConfig::Builtin {
+            available_tools, ..
+        } = &mut knowledge
+        {
+            *available_tools = vec!["kb_search".into()];
+        }
+        for (request, expected) in [
+            (serde_json::json!({}), vec![knowledge.clone()]),
+            (serde_json::json!({"extensions": []}), vec![]),
+            (serde_json::json!({"extensions": ["unknown"]}), vec![]),
+            (
+                serde_json::json!({"extensions": ["knowledge"]}),
+                vec![knowledge.clone()],
+            ),
+            (
+                serde_json::json!({"extensions": ["knowledge", "KNOWLEDGE"]}),
+                vec![knowledge.clone()],
+            ),
+            (
+                serde_json::json!({"extensions": [" KNOWLEDGE "]}),
+                vec![knowledge.clone()],
+            ),
+        ] {
+            let mut task = parent_task_config(ProviderTier::Public, vec![knowledge.clone()]);
+            narrow_child_extensions_by_name(
+                &mut task,
+                &serde_json::from_value(request.clone()).unwrap(),
+            );
+            assert_eq!(task.extensions, expected, "request: {request}");
+        }
+    }
+
+    #[test]
+    fn child_name_narrowing_uses_manager_keys_without_merging_unicode_names() {
+        let dotted_i = builtin_extension("İ");
+        let underscore = builtin_extension("_");
+        let request = serde_json::json!({"extensions": ["i_"]});
+        assert!(unsupported_bridged_extension_names(&request, &[dotted_i.clone()]).is_empty());
+        assert_eq!(
+            unsupported_bridged_extension_names(&request, &[underscore.clone()]),
+            ["i_"]
+        );
+        let hyphen = builtin_extension("a-b");
+        let underlined = builtin_extension("a_b");
+        let extensions = vec![
+            dotted_i.clone(),
+            underscore.clone(),
+            hyphen.clone(),
+            underlined.clone(),
+        ];
+        for (name, expected) in [
+            ("i_", dotted_i),
+            ("_", underscore),
+            ("a-b", hyphen),
+            ("a_b", underlined),
+        ] {
+            let mut task = parent_task_config(ProviderTier::Public, extensions.clone());
+            let request = serde_json::json!({"extensions": [name]});
+            narrow_child_extensions_by_name(&mut task, &serde_json::from_value(request).unwrap());
+            assert_eq!(task.extensions, vec![expected]);
+        }
+    }
+
+    #[test]
+    fn child_name_narrowing_does_not_bypass_the_private_extension_filter() {
+        let mut task = parent_task_config(
+            ProviderTier::Public,
+            vec![builtin_extension("ucsfomopagent")],
+        );
+        let request = serde_json::json!({"extensions": ["UCSFOMOPAGENT"]});
+        narrow_child_extensions_by_name(&mut task, &serde_json::from_value(request).unwrap());
+        assert_eq!(task.extensions.len(), 1);
+        filter_child_extensions(&mut task, ProviderTier::Public, true);
+        assert!(task.extensions.is_empty());
+        assert_eq!(task.dropped_private_extensions, ["ucsfomopagent"]);
     }
 
     // --- the pending queue ------------------------------------------------
