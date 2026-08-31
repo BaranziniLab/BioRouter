@@ -350,7 +350,7 @@ impl Provider for VersaAzureProvider {
             })
             .await
             .inspect_err(|e| {
-                let _ = log.error(e);
+                let _ = log.provider_error(e);
             })?;
 
         let message = response_to_message(&response)?;
@@ -388,7 +388,7 @@ impl Provider for VersaAzureProvider {
             })
             .await
             .inspect_err(|e| {
-                let _ = log.error(e);
+                let _ = log.provider_error(e);
             })?;
 
         stream_openai_compat(response, log)

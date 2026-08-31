@@ -181,10 +181,9 @@ pub fn map_http_error_to_provider_error(
 
     if !status.is_success() {
         tracing::warn!(
-            "Provider request failed with status: {}. Payload: {:?}. Returning error: {:?}",
-            status,
-            payload,
-            error
+            status = status.as_u16(),
+            error_type = error.telemetry_type(),
+            "Provider request failed"
         );
     }
 
@@ -305,7 +304,7 @@ fn parse_google_retry_delay(payload: &Value) -> Option<Duration> {
 /// Handle response from Google Gemini API-compatible endpoints.
 ///
 /// Processes HTTP responses, handling specific statuses and parsing the payload
-/// for error messages. Logs the response payload for debugging purposes.
+/// for error messages. Diagnostics retain only the response status.
 ///
 /// ### References
 /// - Error Codes: https://ai.google.dev/gemini-api/docs/troubleshooting?lang=python
@@ -338,9 +337,7 @@ pub async fn handle_response_google_compat(response: Response) -> Result<Value, 
                     }
                 }
             }
-            tracing::debug!(
-                "{}", format!("Provider request failed with status: {}. Payload: {:?}", final_status, payload)
-            );
+            tracing::debug!(status = final_status.as_u16(), "Provider request failed");
             Err(ProviderError::RequestFailed(format!("Request failed with status: {}. Message: {}", final_status, error_msg)))
         }
         StatusCode::TOO_MANY_REQUESTS => {
@@ -354,9 +351,7 @@ pub async fn handle_response_google_compat(response: Response) -> Result<Value, 
             format_server_error_message(final_status, payload.as_ref()),
         )),
         _ => {
-            tracing::debug!(
-                "{}", format!("Provider request failed with status: {}. Payload: {:?}", final_status, payload)
-            );
+            tracing::debug!(status = final_status.as_u16(), "Provider request failed");
             Err(ProviderError::RequestFailed(format!("Request failed with status: {}", final_status)))
         }
     }
@@ -521,7 +516,7 @@ pub enum PayloadPolicy {
     /// The prompt, the response and every streamed chunk are written verbatim.
     Full,
     /// Only metadata: the model config, the session, timings, token usage and
-    /// error text. No prompt, no completion, no tool arguments.
+    /// redacted errors. No prompt, completion, tool arguments, or upstream error text.
     MetadataOnly,
 }
 
@@ -673,9 +668,23 @@ impl RequestLog {
     where
         E: Display,
     {
+        if self.policy.is_metadata_only() {
+            return self.write_json(&json!({"error": "[redacted]", "error_redacted": true}));
+        }
         self.write_json(&serde_json::json!({
             "error": format!("{}", error),
         }))
+    }
+
+    pub fn provider_error(&mut self, error: &ProviderError) -> Result<()> {
+        if self.policy.is_metadata_only() {
+            return self.write_json(&json!({
+                "error": "[redacted]",
+                "error_redacted": true,
+                "error_type": error.telemetry_type(),
+            }));
+        }
+        self.error(error)
     }
 
     pub fn write<Payload>(&mut self, data: &Payload, usage: Option<&Usage>) -> Result<()>
@@ -932,6 +941,169 @@ mod tests {
     }
 
     #[test]
+    fn private_error_logging_redacts_upstream_echoes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = test_log(dir.path(), PayloadPolicy::MetadataOnly, json!({}));
+        log.error(ProviderError::RequestFailed(
+            "SYNTHETIC_SECRET_SENTINEL and echoed tool arguments".into(),
+        ))
+        .unwrap();
+        log.finish().unwrap();
+
+        let contents = std::fs::read_to_string(dir.path().join("llm_request.0.jsonl")).unwrap();
+        assert!(!contents.contains("SYNTHETIC_SECRET_SENTINEL"));
+        assert!(!contents.contains("echoed tool arguments"));
+        assert!(contents.contains("\"error_redacted\":true"));
+    }
+
+    #[test]
+    fn private_error_logging_never_formats_display() {
+        struct NeverFormat;
+        impl Display for NeverFormat {
+            fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                panic!("private upstream errors must not be formatted");
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = test_log(dir.path(), PayloadPolicy::MetadataOnly, json!({}));
+        log.error(NeverFormat).unwrap();
+        log.finish().unwrap();
+    }
+
+    #[test]
+    fn private_error_logging_preserves_only_trusted_provider_class() {
+        let error = ProviderError::RequestFailed("429 SYNTHETIC_SECRET_SENTINEL".into());
+        for policy in [PayloadPolicy::MetadataOnly, PayloadPolicy::Full] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut log = test_log(dir.path(), policy, json!({}));
+            log.provider_error(&error).unwrap();
+            log.finish().unwrap();
+            let contents = std::fs::read_to_string(dir.path().join("llm_request.0.jsonl")).unwrap();
+            if policy.is_metadata_only() {
+                assert!(!contents.contains("SYNTHETIC_SECRET_SENTINEL"));
+                assert!(!contents.contains("429"));
+                assert!(contents.contains("\"error_type\":\"request\""));
+                assert!(contents.contains("\"error_redacted\":true"));
+            } else {
+                assert!(contents.contains("429 SYNTHETIC_SECRET_SENTINEL"));
+                assert!(!contents.contains("error_redacted"));
+            }
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct ErrorLogCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for ErrorLogCapture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn error_log_subscriber(capture: ErrorLogCapture) -> impl tracing::Subscriber + Send + Sync {
+        tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || capture.clone())
+            .finish()
+    }
+
+    #[test]
+    fn private_error_logging_http_trace_excludes_response_payload() {
+        let capture = ErrorLogCapture::default();
+        let subscriber = error_log_subscriber(capture.clone());
+        let error = tracing::subscriber::with_default(subscriber, || {
+            map_http_error_to_provider_error(
+                StatusCode::BAD_REQUEST,
+                Some(json!({"error":{"message":"SYNTHETIC_SECRET_SENTINEL"}})),
+            )
+        });
+
+        assert!(error.to_string().contains("SYNTHETIC_SECRET_SENTINEL"));
+        let trace = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            trace.contains("400"),
+            "the control warning must be captured"
+        );
+        assert!(!trace.contains("SYNTHETIC_SECRET_SENTINEL"));
+    }
+
+    #[tokio::test]
+    async fn private_error_logging_retry_traces_exclude_upstream_echoes() {
+        use crate::providers::retry::{retry_operation, ProviderRetry, RetryConfig};
+        use tracing::instrument::WithSubscriber;
+
+        struct RetryOnce;
+        impl ProviderRetry for RetryOnce {
+            fn retry_config(&self) -> RetryConfig {
+                RetryConfig::new(1, 0, 1.0, 0)
+            }
+        }
+
+        let capture = ErrorLogCapture::default();
+        let subscriber = error_log_subscriber(capture.clone());
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let operation = || {
+            attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async {
+                Err::<(), _>(ProviderError::ServerError(
+                    "SYNTHETIC_SECRET_SENTINEL".into(),
+                ))
+            }
+        };
+        async {
+            let error = retry_operation(&RetryConfig::new(1, 0, 1.0, 0), operation)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, ProviderError::ServerError(text) if text == "SYNTHETIC_SECRET_SENTINEL"));
+            assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+            let error = RetryOnce.with_retry(operation).await.unwrap_err();
+            assert!(matches!(error, ProviderError::ServerError(text) if text == "SYNTHETIC_SECRET_SENTINEL"));
+            assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 4);
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        let trace = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(trace.matches("Request failed").count(), 2);
+        assert!(!trace.contains("SYNTHETIC_SECRET_SENTINEL"));
+    }
+
+    #[tokio::test]
+    async fn private_error_logging_google_traces_exclude_response_payload() {
+        use tracing::instrument::WithSubscriber;
+
+        let capture = ErrorLogCapture::default();
+        let subscriber = error_log_subscriber(capture.clone());
+        async {
+            for status in [400, 422] {
+                let response = axum::http::Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(json!({"error":{"message":"SYNTHETIC_SECRET_SENTINEL"}}).to_string())
+                    .unwrap();
+                handle_response_google_compat(reqwest::Response::from(response))
+                    .await
+                    .unwrap_err();
+            }
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        let trace = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(trace.contains("400"));
+        assert!(trace.contains("422"));
+        assert!(!trace.contains("SYNTHETIC_SECRET_SENTINEL"));
+    }
+
+    #[test]
     fn payload_policy_follows_the_provider_tier() {
         assert_eq!(
             PayloadPolicy::for_tier(ProviderTier::Private),
@@ -943,8 +1115,8 @@ mod tests {
         );
     }
 
-    /// The fix. A private-tier exchange leaves model, timings, tokens and error
-    /// text on disk and **no transcript** — asserted on the bytes that reach the
+    /// A private-tier exchange leaves model, timings, tokens and a redacted error
+    /// on disk and **no transcript** — asserted on the bytes that reach the
     /// file, not on the policy value that produced them.
     #[test]
     fn a_private_tier_log_writes_no_prompt_and_no_completion() {
@@ -1000,7 +1172,8 @@ mod tests {
         assert!(contents.contains("gpt-4o"), "model name is metadata");
         assert!(contents.contains("\"elapsed_ms\""));
         assert!(contents.contains("\"redacted_response_chunks\":2"));
-        assert!(contents.contains("\"error\":\"upstream 429\""));
+        assert!(!contents.contains("upstream 429"));
+        assert!(contents.contains("\"error_redacted\":true"));
     }
 
     /// The other half of the same gate: Public keeps the debug log useful.

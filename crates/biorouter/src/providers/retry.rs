@@ -144,10 +144,10 @@ where
                 if should_retry(&error) && attempts < effective_max_retries(&error, config) {
                     attempts += 1;
                     tracing::warn!(
-                        "Request failed, retrying ({}/{}): {:?}",
-                        attempts,
-                        effective_max_retries(&error, config),
-                        error
+                        attempt = attempts,
+                        max_retries = effective_max_retries(&error, config),
+                        error_type = error.telemetry_type(),
+                        "Request failed, retrying"
                     );
 
                     let delay = match &error {
@@ -190,10 +190,10 @@ pub trait ProviderRetry {
                     if should_retry(&error) && attempts < effective_max_retries(&error, &config) {
                         attempts += 1;
                         tracing::warn!(
-                            "Request failed, retrying ({}/{}): {:?}",
-                            attempts,
-                            effective_max_retries(&error, &config),
-                            error
+                            attempt = attempts,
+                            max_retries = effective_max_retries(&error, &config),
+                            error_type = error.telemetry_type(),
+                            "Request failed, retrying"
                         );
 
                         let delay = match &error {

@@ -674,3 +674,42 @@ resources or explicit informed user approval; no unrelated files were removed.
 - Full repository gates and a green full UI rerun remain required. Remote source
   synchronization is separately awaiting clearance of the denied push. No merge
   or release is authorized by partial validation.
+
+### Approved API hardening and resumed validation
+
+The user explicitly approved API redirect/private-log hardening and serial
+validation below the 200 GiB disk threshold. The resumed snapshot showed 122 GiB
+free disk, 64.22% CPU idle, 39% memory free, 11.37 GiB swap, and no thermal
+warning. Keep one validation job active; this approval does not clear the denied
+GitHub push or unrelated larger-scope changes.
+
+The complete desktop suite passed **4,056 tests across 382 files** in 212.18
+seconds (`/tmp/biorouter-post-preview-full-ui-approved.log`). This supersedes
+the prior fixture-failure checkpoint without claiming rebuilt-app acceptance.
+
+Executed fail-first tests confirmed five private-log failures and five of ten
+API-boundary failures (`/tmp/biorouter-private-error-logging-red.log`,
+`/tmp/biorouter-api-redirect-red.log`). All four cross-port 307/308 cases sent a
+request to the second loopback listener, and the transport DEBUG log exposed
+the synthetic prompt. Same-origin preservation and redirect-limit controls
+passed. Private errors were formatted/logged; HTTP and retry trace paths also
+exposed the synthetic sentinel. No real credential was used in these tests.
+
+The correction pins every API redirect to the original scheme, hostname and
+effective port, preserves the ten-hop limit, and survives client rebuilding.
+Private request logs branch before formatting upstream errors and retain only a
+redaction marker plus an optional trusted enum classification. Shared HTTP,
+Google-compatible and retry traces retain status/count/class metadata, not raw
+payloads. The redundant transport prompt log is removed. Returned provider
+errors and retry budgets are unchanged; deliberate public/full request logging
+remains available. Existing historical log files are not rewritten or deleted.
+
+Luna's green runs passed **32 logging utility tests, two origin-policy tests,
+and 13 real HTTP integration tests** (`/tmp/biorouter-private-error-logging-green.log`,
+`/tmp/biorouter-api-origin-green.log`, `/tmp/biorouter-api-redirect-green.log`).
+Coverage includes 301/302/303 as well as 307/308, zero requests reaching denied
+destinations, scheme downgrade/hostname/effective-port cases, constructor and
+rebuild paths, private/public logging contrast, a formatter that must never run,
+and exact original errors and retry counts. Independent Sol review found no
+actionable issue. The normal Versa GPT probe inherits these transport/logging
+fixes; live useful-task and full-repository validation still follow separately.
