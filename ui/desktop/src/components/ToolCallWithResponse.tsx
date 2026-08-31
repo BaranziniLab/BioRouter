@@ -62,7 +62,12 @@ type ExecutedToolCall = {
   /** The real error text for a failed call. */
   error?: string;
   resultBytes?: number;
+  todoTask?: { id: string; title: string };
 };
+
+const MAX_EXECUTED_ARGUMENT_BYTES = 2048 + 3; // Backend cap plus a UTF-8 ellipsis.
+const MAX_EXECUTED_TASK_ID_BYTES = 64;
+const MAX_EXECUTED_TASK_TITLE_BYTES = 512;
 
 type ResultMeta = UiMeta & {
   'biorouter/tool-calls'?: unknown;
@@ -138,6 +143,43 @@ function normalizeToolGraph(value: unknown): ToolGraphNode[] {
   });
 }
 
+function isBoundedMetadataText(value: unknown, maxBytes: number): value is string {
+  if (typeof value !== 'string' || !value.length || value.length > maxBytes) return false;
+  let bytes = 0;
+  for (const character of value) {
+    const point = character.codePointAt(0) ?? 0;
+    if (point >= 0xd800 && point <= 0xdfff) return false;
+    bytes += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+    if (bytes > maxBytes) return false;
+  }
+  return true;
+}
+
+function normalizeExecutedTodoTask(record: Record<string, unknown>): ExecutedToolCall['todoTask'] {
+  if (
+    record.tool !== 'todo__todo_update' ||
+    record.status !== 'ok' ||
+    !isBoundedMetadataText(record.args, MAX_EXECUTED_ARGUMENT_BYTES)
+  ) {
+    return undefined;
+  }
+  const args = parsedCallArguments(record.args);
+  const task = recordOf(record.todo_task);
+  if (!args || Array.isArray(args) || typeof args.id !== 'string' || !task || Array.isArray(task)) {
+    return undefined;
+  }
+  const id = args.id.replace(/^#/, '');
+  if (
+    !isBoundedMetadataText(id, MAX_EXECUTED_TASK_ID_BYTES) ||
+    task.id !== id ||
+    !isBoundedMetadataText(task.title, MAX_EXECUTED_TASK_TITLE_BYTES) ||
+    !task.title.trim()
+  ) {
+    return undefined;
+  }
+  return { id, title: task.title };
+}
+
 /**
  * Executed sub-call telemetry from the result meta (#28). The meta is untyped
  * wire data, so anything malformed is dropped rather than crashing the card.
@@ -154,6 +196,7 @@ function normalizeExecutedCalls(value: unknown): ExecutedToolCall[] {
         status: record.status === 'error' ? 'error' : 'ok',
         error: typeof record.error === 'string' && record.error.trim() ? record.error : undefined,
         resultBytes: typeof record.result_bytes === 'number' ? record.result_bytes : undefined,
+        todoTask: normalizeExecutedTodoTask(record),
       },
     ];
   });
@@ -786,10 +829,18 @@ const todoTaskTitle = (args: Record<string, unknown>, toolResult: unknown): stri
   return null;
 };
 
+const compactExecutedTaskTitle = (title: string): string => {
+  const characters = Array.from(title.replace(/\s+/g, ' ').trim());
+  if (characters.length <= MAX_SUMMARY_VALUE_LENGTH) return characters.join('');
+  const keep = Math.floor((MAX_SUMMARY_VALUE_LENGTH - 1) / 2);
+  return `${characters.slice(0, keep).join('')}…${characters.slice(-keep).join('')}`;
+};
+
 const summarizeTodoCall = (
   toolName: string,
   args: Record<string, unknown>,
-  toolResult: unknown
+  toolResult: unknown,
+  executedTitle?: string
 ): string | null => {
   if (toolName === 'plan_write') return 'Updating the work plan';
   if (toolName === 'todo_write') return 'Replacing the task list';
@@ -800,7 +851,7 @@ const summarizeTodoCall = (
   if (toolName !== 'todo_update') return null;
 
   const id = namedArgument(args, ['id']);
-  const title = todoTaskTitle(args, toolResult);
+  const title = executedTitle ?? todoTaskTitle(args, toolResult);
   const task = title ? `“${title}”` : id ? `task ${id.startsWith('#') ? id : `#${id}`}` : 'a task';
   const status = namedArgument(args, ['status']);
   if (status === 'completed') return `Marking ${task} complete`;
@@ -1588,7 +1639,16 @@ function ExecutedCallArguments({ args }: { args: Record<string, ToolCallArgument
 
 function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
   const parsedArgs = parsedCallArguments(call.args);
-  const summary = summarizeToolCall({ name: call.tool, arguments: parsedArgs ?? {} });
+  const taskSummary = call.todoTask
+    ? summarizeTodoCall(
+        'todo_update',
+        parsedArgs ?? {},
+        undefined,
+        compactExecutedTaskTitle(call.todoTask.title)
+      )
+    : null;
+  const summary =
+    taskSummary ?? summarizeToolCall({ name: call.tool, arguments: parsedArgs ?? {} });
   return (
     <ToolCallExpandable
       label={

@@ -1005,6 +1005,140 @@ describe('ToolCallWithResponse executed-call transparency', () => {
   });
 });
 
+describe('ToolCallWithResponse nested todo metadata', () => {
+  const planTitle = 'Planned title is not execution evidence';
+  const request: ToolRequestMessageContent = {
+    type: 'toolRequest',
+    id: 'nested-todo',
+    toolCall: {
+      status: 'success',
+      value: {
+        name: 'code_execution__execute_code',
+        arguments: {
+          tool_graph: [{ tool: 'todo/todo_update', description: planTitle, depends_on: [] }],
+          code: 'record_result("constant final result");',
+        },
+      },
+    },
+  };
+
+  const renderNestedCalls = (calls: Record<string, unknown>[], outerFailed = false) => {
+    const rendered = render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={request}
+        toolResponse={
+          {
+            type: 'toolResponse',
+            id: 'nested-todo',
+            toolResult: {
+              status: 'success',
+              value: {
+                isError: outerFailed,
+                content: [
+                  { type: 'text', text: outerFailed ? 'Later call failed' : 'Result: done' },
+                ],
+                _meta: { 'biorouter/tool-calls': calls },
+              },
+            },
+          } as never
+        }
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    fireEvent.click(screen.getByText(new RegExp(planTitle)).closest('button') as HTMLElement);
+    fireEvent.click(
+      screen.getByText(`View executed calls (${calls.length})`).closest('button') as HTMLElement
+    );
+    return rendered;
+  };
+
+  const record = {
+    tool: 'todo__todo_update',
+    args: JSON.stringify({ id: '#1', status: 'completed' }),
+    status: 'ok',
+    result_bytes: 100,
+    todo_task: { id: '1', title: 'Verify actual nested task 🧬' },
+  };
+
+  it.each([
+    { status: 'in_progress', expected: 'Starting “Verify actual nested task 🧬”' },
+    { status: 'completed', expected: 'Marking “Verify actual nested task 🧬” complete' },
+    { status: 'pending', expected: 'Returning “Verify actual nested task 🧬” to pending' },
+  ])('names a successful $status row from the matching task metadata', ({ status, expected }) => {
+    renderNestedCalls([{ ...record, args: JSON.stringify({ id: '#1', status }) }]);
+    expect(screen.getByText(expected)).toBeInTheDocument();
+    expect(
+      screen.queryByText(new RegExp(`(?:Starting|Marking|Returning) “${planTitle}”`))
+    ).toBeNull();
+  });
+
+  it('keeps an earlier successful task title when a later call fails the outer step', () => {
+    renderNestedCalls([record], true);
+    expect(screen.getByText('Marking “Verify actual nested task 🧬” complete')).toBeInTheDocument();
+  });
+
+  it.each([
+    { label: 'legacy missing metadata', patch: { todo_task: undefined } },
+    { label: 'mismatched task id', patch: { todo_task: { id: '2', title: 'UNVERIFIED_TITLE' } } },
+    { label: 'numeric task id', patch: { todo_task: { id: 1, title: 'UNVERIFIED_TITLE' } } },
+    {
+      label: 'nonstring title',
+      patch: { todo_task: { id: '1', title: { text: 'UNVERIFIED_TITLE' } } },
+    },
+    { label: 'empty title', patch: { todo_task: { id: '1', title: '   ' } } },
+    { label: 'oversized title', patch: { todo_task: { id: '1', title: 'x'.repeat(513) } } },
+    { label: 'failed record', patch: { status: 'error', error: 'Update rejected' } },
+    { label: 'unknown record status', patch: { status: 'pending' } },
+    { label: 'missing record status', patch: { status: undefined } },
+    {
+      label: 'numeric request id',
+      patch: { args: JSON.stringify({ id: 1, status: 'completed' }) },
+    },
+  ])('falls back to the task number for $label', ({ patch }) => {
+    renderNestedCalls([{ ...record, ...patch }]);
+    expect(screen.getByText('Marking task #1 complete')).toBeInTheDocument();
+    expect(screen.queryByText(/Marking “/)).toBeNull();
+    expect(screen.queryByText(/UNVERIFIED_TITLE/)).toBeNull();
+  });
+
+  it('does not infer a title from the declared graph when recorded arguments are truncated', () => {
+    renderNestedCalls([{ ...record, args: '{"id":"1"' }]);
+    expect(screen.getByText('Updating a task')).toBeInTheDocument();
+    expect(screen.queryByText('Updating “Verify actual nested task 🧬”')).toBeNull();
+    expect(screen.queryByText(`Updating “${planTitle}”`)).toBeNull();
+  });
+
+  it('does not apply Todo metadata to a different tool', () => {
+    renderNestedCalls([
+      { ...record, tool: 'todo__todo_add', args: JSON.stringify({ items: ['One'] }) },
+    ]);
+    expect(screen.getByText('Adding 1 task')).toBeInTheDocument();
+    expect(screen.queryByText(/Verify actual nested task/)).toBeNull();
+  });
+
+  it('renders a task title as text, never links, images, or HTML', () => {
+    const title = '[link](https://evil.invalid) ![pixel](https://evil.invalid/x) <img src=x>';
+    const { container } = renderNestedCalls([{ ...record, todo_task: { id: '1', title } }]);
+    expect(screen.getByText(`Marking “${title}” complete`)).toBeInTheDocument();
+    expect(container.querySelector('a')).toBeNull();
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('shortens Unicode titles without creating lone surrogate code units', () => {
+    renderNestedCalls([{ ...record, todo_task: { id: '1', title: '🧬'.repeat(110) } }]);
+    const label = screen.getByText(/^Marking “/).textContent ?? '';
+    expect(Array.from(label).length).toBeLessThanOrEqual(115);
+    expect(label).toContain('…');
+    expect(
+      Array.from(label).some((character) => {
+        const code = character.charCodeAt(0);
+        return character.length === 1 && code >= 0xd800 && code <= 0xdfff;
+      })
+    ).toBe(false);
+  });
+});
+
 describe('ToolCallWithResponse status derivation', () => {
   const pendingToolRequest: ToolRequestMessageContent = {
     type: 'toolRequest',

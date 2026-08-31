@@ -1017,6 +1017,141 @@ gate then passed, followed by a full MCP rerun on that exact final code:
 `/tmp/biorouter-post-realtime-final-mcp.log`. No additional production-default
 CLI/daemon rebuild, remote push, merge or release occurred.
 
+The changes were checkpointed locally as
+`ec4b6b43244f03c578ba21ab43acdec426fb1e9c`. Luna then verified real same-app
+auto-refresh through Versa Azure `gpt-5.5-2026-04-24` in session `20260831_13`.
+Before the model update, a managed-preview Reload preserved A=90, B=45, C=20
+and D=15 with totals 135/20/15/-15. The same window, daemon and exact app URL
+were retained. A bounded request added a capacity explanation while preserving
+the storage key, load/save behavior and row data. Actual read/update/build/lint/
+smoke receipts completed; build produced `dist/app.js`, lint retained its one
+style advisory and smoke passed. Without preview interaction or manual refresh,
+the selected live tab gained **Only ready work uses this budget.** and retained
+all rows, totals and **Over capacity by 15 min**. The screenshot is
+`Electron Screenshot 2026-08-31 at 11.27.59 AM.jpeg` in the Sky capture directory.
+This establishes idle same-app refresh and focus preservation; dirty-form
+deferral is checked below. It does not explain the older unattributed
+loss or validate the not-yet-rebuilt backend lint change.
+
+Dirty-form deferral also passed through a second real model update. Luna changed
+A to 95 minutes without reloading; the live app showed 140/20/15/-20 and the
+updated `ready / 95m` badge. During another same-app read/update/build/lint/smoke
+sequence, the existing caption and edited rows remained visible and the preview
+showed **Update ready**. Only after Luna selected that visible control did the
+new caption, **Only ready work counts toward this budget.**, appear. All rows,
+totals and the 20-minute over-capacity state survived. Build produced
+`dist/app.js`; lint retained only the style advisory; smoke passed with six
+frames and no findings. Pending/applied screenshots are timestamped 11:30:19
+and 11:30:27 on August 31 in the Sky capture directory. The primary agent
+visually reviewed both screenshots. No provider, source or security settings
+were changed during this GUI check.
+
+That screenshot exposed a remaining nested-call naming gap: individual executed
+todo updates still show task numbers. Top-level todo cards already use exact
+task titles from successful results, but nested execution telemetry omits that
+result field. A narrow title-propagation review is in progress; planned graph
+labels must not be guessed onto actual execution records, and assistant-only
+result content must not be exposed as user-visible labels.
+
+Fail-first execution confirmed this gap: three of seven core cases and six of
+eighteen UI cases failed because the projected task title was absent; all
+negative controls passed. The correction adds only optional `todo_task`
+presentation metadata to successful nested `todo__todo_update` records. It
+matches string request/result IDs, projects only User/untagged text content,
+caps cumulative result-text projection input at 16 KiB, bounds IDs to 64 bytes
+and titles to 512 UTF-8-safe bytes including any ellipsis, and charges the
+existing total metadata budget. Request arguments retain their existing
+dispatch limit. No external tool schema, authorization, model-facing content,
+structured-result projection or later state lookup changed.
+
+The UI separately requires explicit successful status, exact tool identity,
+valid bounded arguments and matching task ID, and renders the title as plain
+text with code-point-safe shortening. Legacy, failed and malformed records keep
+their fallback. Independent review found no actionable issue. All eight final
+core cases, including the added aggregate-budget control, and all eighteen UI
+cases now pass. Logs are `/tmp/biorouter-nested-todo-{core,ui}-{red,green}.log`.
+Broad regression validation passed: core unit/integration tests 3,707 passed
+and 17 ignored, core doctests two passed and two ignored, MCP unit/integration
+tests 1,650 passed and 11 ignored, and the full UI suite 4,170 passed across 385
+files. The initial 100-test CodeExecution-only invocation in the combined log
+is excluded from those full-suite counts. All eighteen live-provider cases
+were explicitly excluded from the offline Rust invocation; these results do
+not substitute for live provider acceptance. Logs are
+`/tmp/biorouter-post-todo-full-core.log` and
+`/tmp/biorouter-post-todo-full-ui.log`. The subsequent serial
+`just check-everything` passed with exit zero: formatting, both Clippy passes,
+UI lint/typecheck/themes/332 contrast assertions/token mirrors, OpenAPI
+generation and freshness, version/brand/cross-drift, 54 registry-generator
+tests and 21 privacy-documentation tests plus both consistency checks.
+The receipt is `/tmp/biorouter-post-todo-repository-gates.log`.
+The live daemon predates this field, so live nested-title acceptance remains
+pending an approved rebuild. Existing CLI/daemon SHA-256 values still match the
+earlier production build; the schema-generator run is not a daemon rebuild.
+
+### Codex public-catalog delegation: useful work, steering timing missed
+
+A fresh public Codex chat configured as `gpt-5.6-sol` completed a bounded
+fictional greenhouse-toolkit task in the synthetic workspace. Parent session
+`20260831_16` spawned child `20260831_17` (`sub_1`). The child actually called
+Skills marketplace search, including CSV and browser queries, and returned
+`ggplot-visualization` and `data-visualization` as skills with Apache-2.0
+licenses. It reported eight catalog calls in total; unsupported categories
+were not invented. No Extension Manager catalog operation was exposed, and no
+package was installed, enabled or loaded. The parent collected summary,
+tool-call and transcript evidence before synthesizing its result. The visible
+receipts did not identify `live`, `lastGood` or `embedded` catalog provenance,
+so freshness is not claimed.
+
+Live steering remains **not exercised successfully**. The initial prompt had
+no later CSV-only correction. Visible ordering was initial prompt at 11:32,
+delegation, reads/watch waits of eight and twenty seconds, then a steer refusal
+because the child had no turn in flight. A later ten-second watch/read and the
+parent synthesis completed by 11:35. The first usable catalog result was only
+visible after child completion; the correction was never delivered. This is
+a missed timing window, not proof that a running-child steer works or evidence
+of an incorrect acceptance by the harness. Screenshot:
+`Electron Screenshot 2026-08-31 at 11.35.21 AM.jpeg` in the Sky capture directory.
+Claude Code and an accepted, applied running-child steer remain outstanding.
+
+A subsequent source review found a distinct progress-observability gap.
+Mirrored coding-agent tool messages are yielded to the child event stream but
+accumulated in `messages_to_add` in `agent.rs`; normal persistence occurs after
+the provider iteration. `workspace_read_conversation` reads the stored session
+conversation, not that in-flight buffer. The subagent event tee can therefore
+show a completed tool result in the child UI before the parent can read it.
+Catalog-refresh/restart paths can flush earlier, so this is not universally
+terminal-only behavior. It does explain why a parent waiting for a readable
+result may miss a short vendor turn, without claiming that it was the sole
+cause of the observed timing miss.
+
+Repairing that gap needs a reviewed runtime visibility/durability design and
+separate triage; it is not part of the presentation-metadata correction. A
+held-back parent instruction sent immediately after verifying the child's
+initial spawn context can separately test accepted/applied early steering.
+Such a test must not be reported as progress-reactive supervision, and must
+prove the correction was absent from the initial child instructions and
+rendered system prompt.
+
+The narrowed proposal is an explicit live-progress read backed by a bounded,
+logical-turn-scoped Agent snapshot of user-visible mirrored tool records. It
+would preserve existing durable history, completion receipts and collection
+semantics, with the existing privacy/direct-child checks plus storage-owner
+matching before a non-initializing lookup. Per-event persistence is not
+necessary: naively inserting tool records early would reorder buffered prose,
+and reinserting growing same-ID text can duplicate messages rather than update
+them. The proposed test uses a read-only catalog tool followed by a keyed
+provider barrier, proving parent visibility and accepted/applied steering
+before completion while durable history remains unchanged. A mutating catalog
+fixture would be invalid because its refresh path can already flush early.
+Cancellation, stale-generation, cross-store, Unicode-budget and collection
+controls are required. No such repair has been implemented or approved.
+
+`workspace_watch` is not persistence-only: it observes live lifecycle and
+retained terminal events, but intentionally ignores intermediate Agent events.
+An explicit progress-read view alone would not make watch wake on progress,
+eliminate polling/LLM latency, or guarantee steering before a short child ends.
+Those limits must remain explicit in subsequent acceptance.
+
 Completed build/gate/UI/isolation/file-link logs were preserved in
 `/Volumes/WD_BLACK/BioRouter-QA-20260831.WTDrer/validated-build-and-test-receipts.tar.gz`.
 Every archived member was compared by SHA-256 with its source; the archive and
@@ -1031,6 +1166,23 @@ Each archived member's SHA-256 matched its retained original. This second
 archive includes the final MCP/repository-gate runs, full/focused UI checks,
 typecheck, checked-slice, static-focus, nested-refresh, semantic-label and vault
 receipts. It does not copy the running QA profile or generated app data.
+
+Six completed nested-title red/green/full-suite logs were subsequently archived
+as `nested-todo-validation.tar.gz` in that directory (SHA-256
+`406dcb19fef481eb762650fb23e1d5019cfb7b9bdea16135c44a84159a5d3cf5`).
+Every member matched its retained source by SHA-256. The current repository
+gate log was still running and is not included in this archive.
+
+Resource cleanup was separate from validation: the session-owned QA app was
+closed, and the inactive worktree incremental cache was archived on WD_BLACK,
+verified file-by-file, rechecked against the current source, flushed to disk,
+and only then removed. The observed immediate free-space increase was 43.52
+GiB, leaving 173.08 GiB available; this is not the cache's larger apparent size.
+Recovery instructions and verification are retained in
+`/Volumes/WD_BLACK/BioRouter-cache-backup-20260831.O1LZDU/RECOVERY.md`.
+Source files and existing binaries remain untouched. Memory later returned to
+normal, but root did not stop the previously dominant security extension and
+does not attribute that recovery to cache deletion.
 
 ### Destiny shared-package compatibility: separate triage
 

@@ -54,6 +54,9 @@ const MAX_TOOL_CALL_RECORD_TEXT_BYTES: usize = 2048;
 /// Byte cap for a recorded tool NAME — names are wire data from the script,
 /// so they need a bound of their own (real prefixed names are well under it).
 const MAX_TOOL_CALL_RECORD_NAME_BYTES: usize = 256;
+const MAX_TODO_TASK_TITLE_BYTES: usize = 512;
+const MAX_TODO_TASK_ID_BYTES: usize = 64;
+const MAX_TODO_TASK_INPUT_BYTES: usize = 16 * 1024;
 /// TOTAL serialized-byte budget for the whole `biorouter/tool-calls` array
 /// (Codex review of #28): the record-count and per-field caps alone still let
 /// 64 worst-case failure records reach ~¼ MB of meta, which persists in every
@@ -1192,6 +1195,64 @@ pub struct CodeExecutionClient {
     context: PlatformExtensionContext,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct TodoTaskRecord {
+    id: String,
+    title: String,
+}
+
+fn todo_task_from_result(
+    tool_name: &str,
+    arguments: &str,
+    result: &CallToolResult,
+) -> Option<TodoTaskRecord> {
+    if tool_name != "todo__todo_update" || result.is_error.unwrap_or(false) {
+        return None;
+    }
+    let arguments: Value = serde_json::from_str(arguments).ok()?;
+    let requested_id = arguments.get("id")?.as_str()?;
+    let id = requested_id.strip_prefix('#').unwrap_or(requested_id);
+    if id.is_empty() || id.len() > MAX_TODO_TASK_ID_BYTES {
+        return None;
+    }
+    let mut remaining = MAX_TODO_TASK_INPUT_BYTES;
+    for content in result.content.iter().filter(|content| {
+        content
+            .audience()
+            .is_none_or(|audience| audience.contains(&Role::User))
+    }) {
+        let RawContent::Text(text) = &content.raw else {
+            continue;
+        };
+        remaining = remaining.checked_sub(text.text.len())?;
+        let Ok(value) = serde_json::from_str::<Value>(&text.text) else {
+            continue;
+        };
+        let Some(task) = value.get("task").and_then(Value::as_object) else {
+            continue;
+        };
+        if task.get("id").and_then(Value::as_str) != Some(id) {
+            continue;
+        }
+        let Some(title) = task.get("text").and_then(Value::as_str) else {
+            continue;
+        };
+        if title.trim().is_empty() {
+            continue;
+        }
+        let title = if title.len() <= MAX_TODO_TASK_TITLE_BYTES {
+            title.to_string()
+        } else {
+            truncate_record_text(title, MAX_TODO_TASK_TITLE_BYTES - '…'.len_utf8())
+        };
+        return Some(TodoTaskRecord {
+            id: id.to_string(),
+            title,
+        });
+    }
+    None
+}
+
 /// Truncate `text` to at most `max_bytes` bytes on a char boundary, marking
 /// the cut with an ellipsis. Records are UI telemetry, so a lossy-but-bounded
 /// copy beats an exact-but-unbounded one.
@@ -1230,6 +1291,9 @@ struct ToolCallRecord {
     /// Size of the result handed back to the script on success.
     #[serde(skip_serializing_if = "Option::is_none")]
     result_bytes: Option<usize>,
+    /// Presentation-only projection of a matching, user-visible Todo result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    todo_task: Option<TodoTaskRecord>,
 }
 
 impl ToolCallRecord {
@@ -1240,6 +1304,7 @@ impl ToolCallRecord {
             status: "ok",
             error: None,
             result_bytes: Some(result_bytes),
+            todo_task: None,
         }
     }
 
@@ -1262,6 +1327,7 @@ impl ToolCallRecord {
             status: "error",
             error: Some(error),
             result_bytes: None,
+            todo_task: None,
         }
     }
 
@@ -2052,12 +2118,9 @@ impl CodeExecutionClient {
 
     /// Dispatch one sub-call and report how it went.
     ///
-    /// Returns the script-facing result plus the two telemetry facts the caller
-    /// records. Telemetry may only carry USER-audience error text (Codex review
-    /// of #28): the script-facing strings here are built from assistant-audience
-    /// content, so `user_error` is the sole verbatim text a record may keep, and
-    /// `failure_kind` names the failure class for the sanitized placeholder when
-    /// the tool produced none.
+    /// Returns the script-facing result separately from user-visible telemetry.
+    /// Error text and the optional Todo title come only from User-audience or
+    /// untagged content, never from the assistant-facing value sent to the script.
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_sub_call(
         session_id: &str,
@@ -2067,11 +2130,17 @@ impl CodeExecutionClient {
         extension_manager: Option<&std::sync::Weak<crate::agents::ExtensionManager>>,
         collected_artifacts: &Arc<Mutex<CollectedArtifacts>>,
         cancellation_token: &CancellationToken,
-    ) -> (Result<String, String>, &'static str, Option<String>) {
+    ) -> (
+        Result<String, String>,
+        &'static str,
+        Option<String>,
+        Option<TodoTaskRecord>,
+    ) {
         let Some(manager) = extension_manager.and_then(std::sync::Weak::upgrade) else {
             return (
                 Err("Extension manager not available".to_string()),
                 "unavailable",
+                None,
                 None,
             );
         };
@@ -2090,17 +2159,23 @@ impl CodeExecutionClient {
                     let (value, kind, user) =
                         Self::completed_sub_call_outcome(tool_name, &result, collected_artifacts)
                             .await;
-                    (value, kind, user)
+                    let todo_task = value
+                        .as_ref()
+                        .ok()
+                        .and_then(|_| todo_task_from_result(tool_name, arguments, &result));
+                    (value, kind, user, todo_task)
                 }
                 Err(e) => (
                     Err(format!("Tool error from {tool_name}: {}", e.message)),
                     "tool_failure",
+                    None,
                     None,
                 ),
             },
             Err(e) => (
                 Err(format!("Dispatch error from {tool_name}: {e}")),
                 "dispatch_error",
+                None,
                 None,
             ),
         }
@@ -2228,7 +2303,7 @@ impl CodeExecutionClient {
                 .await;
                 continue;
             }
-            let (result, mut failure_kind, user_error) = Self::dispatch_sub_call(
+            let (result, mut failure_kind, user_error, todo_task) = Self::dispatch_sub_call(
                 &session_id,
                 cap,
                 &tool_name,
@@ -2257,7 +2332,11 @@ impl CodeExecutionClient {
             // `ToolCallRecord::failed`.
             {
                 let record = match &result {
-                    Ok(value) => ToolCallRecord::ok(&tool_name, &arguments, value.len()),
+                    Ok(value) => {
+                        let mut record = ToolCallRecord::ok(&tool_name, &arguments, value.len());
+                        record.todo_task = todo_task;
+                        record
+                    }
                     Err(_) => ToolCallRecord::failed(
                         &tool_name,
                         &arguments,
@@ -3131,6 +3210,363 @@ mod tests {
             record.error
         );
         assert!(record.result_bytes.is_none());
+    }
+
+    struct TodoMetadataResultClient(CallToolResult);
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for TodoMetadataResultClient {
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancel_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            Ok(ListToolsResult {
+                tools: Vec::new(),
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<JsonObject>,
+            _meta: McpMeta,
+            _cancel_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            Ok(self.0.clone())
+        }
+
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+    }
+
+    fn todo_metadata_content(id: &str, title: &str) -> Content {
+        Content::text(
+            serde_json::json!({
+                "message": format!("Updated item #{id}"),
+                "task": { "id": id, "text": title, "status": "completed" },
+            })
+            .to_string(),
+        )
+    }
+
+    async fn recorded_todo_metadata_call(
+        tool_name: &str,
+        arguments: Value,
+        result: CallToolResult,
+    ) -> (Value, Result<String, String>) {
+        let temp = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = session_manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "nested todo metadata".into(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let manager = Arc::new(crate::agents::ExtensionManager::new(
+            Arc::new(Mutex::new(None)),
+            session_manager,
+        ));
+        let extension_name = tool_name.split_once("__").unwrap().0;
+        manager
+            .add_client(
+                extension_name.to_string(),
+                crate::agents::extension::ExtensionConfig::Platform {
+                    name: "todo".into(),
+                    description: "Synthetic todo result fixture".into(),
+                    bundled: Some(true),
+                    available_tools: Vec::new(),
+                },
+                Arc::new(TodoMetadataResultClient(result)),
+                None,
+                None,
+            )
+            .await;
+        let collected = Arc::new(Mutex::new(CollectedArtifacts::default()));
+        let (call_tx, call_rx) = mpsc::unbounded_channel();
+        let handler = tokio::spawn(CodeExecutionClient::run_tool_handler(
+            session.id,
+            crate::privacy::CallCapability::for_test_restricted(),
+            call_rx,
+            Some(Arc::downgrade(&manager)),
+            Arc::clone(&collected),
+            CancellationToken::new(),
+        ));
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        call_tx
+            .send((tool_name.to_string(), arguments.to_string(), response_tx))
+            .unwrap();
+        drop(call_tx);
+        let script_result = tokio::time::timeout(std::time::Duration::from_secs(5), response_rx)
+            .await
+            .expect("nested result must complete")
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handler)
+            .await
+            .expect("nested handler must drain")
+            .unwrap();
+        let collected = collected.lock().await;
+        assert_eq!(collected.tool_calls.len(), 1);
+        (
+            serde_json::to_value(&collected.tool_calls[0]).unwrap(),
+            script_result,
+        )
+    }
+
+    #[tokio::test]
+    async fn nested_todo_metadata_records_real_updates_without_adding_model_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = session_manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "real nested todo metadata".into(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let manager = Arc::new(crate::agents::ExtensionManager::new(
+            Arc::new(Mutex::new(None)),
+            Arc::clone(&session_manager),
+        ));
+        manager
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "todo".into(),
+                description: "Todo".into(),
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let client = CodeExecutionClient::new(PlatformExtensionContext {
+            extension_manager: Some(Arc::downgrade(&manager)),
+            session_manager,
+        })
+        .unwrap();
+        let result = client
+            .handle_execute_code(
+                &session.id,
+                crate::privacy::CallCapability::for_test_restricted(),
+                Some(
+                    serde_json::json!({
+                        "code": r##"
+                            import { todo_write, todo_update } from "todo";
+                            todo_write({ content: "- [ ] Verify nested title 🧬" });
+                            todo_update({ id: "#1", status: "in_progress" });
+                            todo_update({ id: "1", status: "completed" });
+                            record_result("constant final result");
+                        "##,
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false));
+        let content = serde_json::to_string(&result.content).unwrap();
+        assert!(content.contains("constant final result"));
+        assert!(!content.contains("Verify nested title"));
+        let calls = result.meta.unwrap().0[TOOL_CALLS_META_KEY]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(calls.len(), 3);
+        assert!(calls[0].get("todo_task").is_none());
+        for call in &calls[1..] {
+            assert_eq!(call["status"], "ok");
+            assert_eq!(
+                call["todo_task"],
+                serde_json::json!({ "id": "1", "title": "Verify nested title 🧬" })
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_todo_metadata_uses_only_matching_user_visible_result_text() {
+        for audience in [
+            None,
+            Some(vec![Role::User]),
+            Some(vec![Role::User, Role::Assistant]),
+        ] {
+            let mut content = todo_metadata_content("7", "Verified user title 🧬");
+            if let Some(audience) = audience {
+                content = content.with_audience(audience);
+            }
+            let result = CallToolResult::success(vec![
+                todo_metadata_content("7", "ASSISTANT_ONLY_TITLE")
+                    .with_audience(vec![Role::Assistant]),
+                content,
+            ]);
+            let (record, script_result) = recorded_todo_metadata_call(
+                "todo__todo_update",
+                serde_json::json!({ "id": "#7", "status": "completed" }),
+                result,
+            )
+            .await;
+            assert!(script_result.is_ok());
+            assert_eq!(
+                record["todo_task"],
+                serde_json::json!({ "id": "7", "title": "Verified user title 🧬" })
+            );
+            assert!(!record.to_string().contains("ASSISTANT_ONLY_TITLE"));
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_todo_metadata_omits_failed_hidden_malformed_and_mismatched_results() {
+        let mut structured_only = CallToolResult::success(Vec::new());
+        structured_only.structured_content = Some(serde_json::json!({
+            "task": { "id": "7", "text": "STRUCTURED_ONLY_TITLE" },
+        }));
+        for result in [
+            CallToolResult::error(vec![todo_metadata_content("7", "FAILED_TITLE")]),
+            CallToolResult::success(vec![todo_metadata_content("8", "WRONG_ID_TITLE")]),
+            CallToolResult::success(vec![todo_metadata_content("7", "ASSISTANT_ONLY_TITLE")
+                .with_audience(vec![Role::Assistant])]),
+            CallToolResult::success(vec![
+                todo_metadata_content("7", "EMPTY_AUDIENCE_TITLE").with_audience(Vec::new())
+            ]),
+            CallToolResult::success(vec![Content::text("Updated item #7")]),
+            CallToolResult::success(vec![Content::text(r#"{"task":{"id":"7""#)]),
+            CallToolResult::success(vec![Content::text(
+                r#"{"task":{"id":7,"text":"NUMERIC_ID"}}"#,
+            )]),
+            CallToolResult::success(vec![todo_metadata_content("7", "   ")]),
+            structured_only,
+        ] {
+            let expected_error = result.is_error.unwrap_or(false);
+            let (record, script_result) = recorded_todo_metadata_call(
+                "todo__todo_update",
+                serde_json::json!({ "id": "7", "status": "completed" }),
+                result,
+            )
+            .await;
+            assert_eq!(script_result.is_err(), expected_error);
+            assert!(record.get("todo_task").is_none(), "{record}");
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_todo_metadata_requires_exact_name_and_string_request_id() {
+        for (name, arguments) in [
+            ("todo__todo_add", serde_json::json!({ "id": "7" })),
+            ("custom__todo_update", serde_json::json!({ "id": "7" })),
+            ("todo__todo_update", serde_json::json!({ "id": 7 })),
+            ("todo__todo_update", serde_json::json!({})),
+            ("todo__todo_update", serde_json::json!({ "id": "##7" })),
+        ] {
+            let (record, script_result) = recorded_todo_metadata_call(
+                name,
+                arguments,
+                CallToolResult::success(vec![todo_metadata_content("7", "UNVERIFIED_TITLE")]),
+            )
+            .await;
+            assert!(script_result.is_ok(), "{script_result:?}");
+            assert!(record.get("todo_task").is_none(), "{record}");
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_todo_metadata_bounds_unicode_title_without_splitting_characters() {
+        let title = "审🧬".repeat(200);
+        let (record, script_result) = recorded_todo_metadata_call(
+            "todo__todo_update",
+            serde_json::json!({ "id": "7", "status": "completed" }),
+            CallToolResult::success(vec![todo_metadata_content("7", &title)]),
+        )
+        .await;
+        assert!(script_result.is_ok());
+        assert_eq!(record["todo_task"]["id"], "7");
+        let projected = record["todo_task"]["title"].as_str().unwrap();
+        assert!(projected.len() <= 512, "{} bytes", projected.len());
+        assert!(!projected.is_empty());
+        assert!(projected.ends_with('…'));
+        assert!(title.starts_with(projected.strip_suffix('…').unwrap()));
+        assert!(!projected.contains('\u{fffd}'));
+    }
+
+    #[tokio::test]
+    async fn nested_todo_metadata_rejects_oversized_projection_inputs_and_ids() {
+        let long_id = "7".repeat(65);
+        let oversized = serde_json::json!({
+            "task": { "id": "7", "text": "OVERSIZED_INPUT_TITLE" },
+            "padding": "x".repeat(16 * 1024),
+        });
+        for (id, content) in [
+            (
+                long_id.as_str(),
+                todo_metadata_content(&long_id, "OVERSIZED_ID_TITLE"),
+            ),
+            ("7", Content::text(oversized.to_string())),
+        ] {
+            let (record, script_result) = recorded_todo_metadata_call(
+                "todo__todo_update",
+                serde_json::json!({ "id": id }),
+                CallToolResult::success(vec![content]),
+            )
+            .await;
+            assert!(script_result.is_ok());
+            assert!(record.get("todo_task").is_none(), "{record}");
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_todo_metadata_never_survives_a_result_size_failure() {
+        let result = CallToolResult::success(vec![
+            todo_metadata_content("7", "SIZE_FAILURE_TITLE").with_audience(vec![Role::User]),
+            Content::text("x".repeat(MAX_JS_TOOL_RESULT_BYTES + 1))
+                .with_audience(vec![Role::Assistant]),
+        ]);
+        let (record, script_result) = recorded_todo_metadata_call(
+            "todo__todo_update",
+            serde_json::json!({ "id": "7", "status": "completed" }),
+            result,
+        )
+        .await;
+        assert!(script_result.is_err());
+        assert_eq!(record["status"], "error");
+        assert!(record.get("todo_task").is_none(), "{record}");
+    }
+
+    #[test]
+    fn nested_todo_metadata_is_charged_to_the_total_record_budget() {
+        let mut record = ToolCallRecord::ok(
+            "todo__todo_update",
+            &serde_json::json!({ "id": "7", "padding": "x".repeat(2048) }).to_string(),
+            1024,
+        );
+        let without_task = record.serialized_bytes();
+        record.todo_task = Some(TodoTaskRecord {
+            id: "7".into(),
+            title: "x".repeat(512),
+        });
+        assert!(record.serialized_bytes() >= without_task + 512);
+
+        let mut collected = CollectedArtifacts::default();
+        for _ in 0..MAX_TOOL_CALL_RECORDS {
+            collected.push_tool_call(record.clone());
+        }
+        assert!(collected.dropped_tool_calls > 0);
+        assert_eq!(
+            collected.tool_calls.len() + collected.dropped_tool_calls,
+            MAX_TOOL_CALL_RECORDS
+        );
+        assert!(
+            serde_json::to_string(&collected.tool_calls).unwrap().len()
+                <= MAX_TOOL_CALL_META_TOTAL_BYTES
+        );
     }
 
     #[test]
@@ -4251,7 +4687,7 @@ mod gate_c_bridge_tests {
         let weak = Arc::downgrade(&manager);
         let artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
 
-        let (result, kind, _user) = CodeExecutionClient::dispatch_sub_call(
+        let (result, kind, _user, _todo_task) = CodeExecutionClient::dispatch_sub_call(
             "gate-c",
             crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true),
             "ucsfomopagent__data_sources",
@@ -4288,7 +4724,7 @@ mod gate_c_bridge_tests {
         let weak = Arc::downgrade(&manager);
         let artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
 
-        let (result, kind, _user) = CodeExecutionClient::dispatch_sub_call(
+        let (result, kind, _user, _todo_task) = CodeExecutionClient::dispatch_sub_call(
             "gate-c",
             crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true),
             "ucsfomopagent__data_sources",
