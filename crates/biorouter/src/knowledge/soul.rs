@@ -528,9 +528,15 @@ fn normalize_soul_under_locks(soul_root: &Path) -> anyhow::Result<()> {
         changed = true;
     }
 
-    let dirty = !git2::Repository::open(soul_root)?
-        .statuses(None)?
-        .is_empty();
+    // The derived cache is rebuilt below; a refresh is not recovered knowledge.
+    let mut status_options = git2::StatusOptions::new();
+    status_options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true);
+    let dirty = git2::Repository::open(soul_root)?
+        .statuses(Some(&mut status_options))?
+        .iter()
+        .any(|entry| entry.path() != Some(".biorouter-knowledge/graph-cache.json"));
     if changed || dirty {
         repo.commit_all(
             ChangeKind::Manual,
@@ -1367,6 +1373,45 @@ mod tests {
             std::fs::read_to_string(bio.path().join(SOUL_KB_ID).join("schema.md")).unwrap(),
             SOUL_OKF_SCHEMA
         );
+    }
+
+    #[test]
+    fn startup_does_not_record_graph_cache_refresh_as_soul_recovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base_in(SOUL_KB_ID, SOUL_KB_NAME, None, KbFormat::Okf)
+            .unwrap();
+        let soul_root = tmp.path().join(SOUL_KB_ID);
+        let repo = git2::Repository::open(&soul_root).unwrap();
+        let before = repo.head().unwrap().target().unwrap();
+        std::fs::write(
+            soul_root.join(".biorouter-knowledge/graph-cache.json"),
+            "{\"stale_cache_fixture\": true}\n",
+        )
+        .unwrap();
+
+        for _ in 0..2 {
+            assert_eq!(
+                reconcile_soul_kb(&svc).unwrap(),
+                ReconcileOutcome::default()
+            );
+            assert_eq!(repo.head().unwrap().target().unwrap(), before);
+            assert!(!std::fs::read_to_string(
+                soul_root.join(".biorouter-knowledge/graph-cache.json")
+            )
+            .unwrap()
+            .contains("stale_cache_fixture"));
+        }
+
+        let page = soul_root.join("knowledge/note/recovered.md");
+        let content = "---\ntype: Note\nidentifier: Recovered fixture\n---\nKeep this page.\n";
+        std::fs::write(&page, content).unwrap();
+        reconcile_soul_kb(&svc).unwrap();
+        let recovered = repo.head().unwrap().target().unwrap();
+        assert_ne!(recovered, before);
+        assert_eq!(std::fs::read_to_string(page).unwrap(), content);
+        reconcile_soul_kb(&svc).unwrap();
+        assert_eq!(repo.head().unwrap().target().unwrap(), recovered);
     }
 
     #[test]

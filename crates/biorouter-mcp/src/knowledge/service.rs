@@ -4198,6 +4198,21 @@ mod tests {
     }
 
     #[test]
+    fn shipped_schema_workflows_match_available_knowledge_tools() {
+        for (name, schema) in [
+            ("okf", SCHEMA_OKF),
+            ("biookf", SCHEMA_BIOOKF),
+            ("legacy", include_str!("schema_default.md")),
+        ] {
+            assert!(schema.contains("`kb_lint` is read-only"), "{name}");
+            for unavailable in ["`kb_ingest_source`", "`kb_query`", "`autofix=true`"] {
+                assert!(!schema.contains(unavailable), "{name}: {unavailable}");
+            }
+            assert!(schema.contains("only when the user asks to save"), "{name}");
+        }
+    }
+
+    #[test]
     fn service_rejects_and_cleans_up_a_legacy_archive() {
         let (dir, svc) = svc();
         svc.create_base("legacy", "Legacy", None).unwrap();

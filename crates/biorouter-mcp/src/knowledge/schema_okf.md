@@ -132,7 +132,7 @@ Append through `kb_append_log`, which maintains this shape for you.
 
 ## Ingest workflow
 
-When `kb_ingest_source` is called:
+For a source already staged by the ingestion pipeline:
 
 1. Read `raw/<source-id>/source.md` and `meta.yaml`.
 2. Decide what concepts the source touches, and what `type` each one is.
@@ -155,24 +155,28 @@ claim to a flat assertion — cite it.
 
 ## Query workflow
 
-When `kb_query` is called:
+To answer a knowledge question:
 
-1. Search the knowledge folder for pages matching the question.
-2. Read the most relevant pages.
+1. Use `kb_search` to find pages matching the question.
+2. Read the most relevant pages with `kb_read_page`.
 3. Answer, citing pages as markdown links.
-4. If `file_as_page=true`, write the answer to `knowledge/note/<slug>.md` and
-   append a log entry of kind `query`.
+4. Write an answer page only when the user asks to save it. Validate the draft
+   with `kb_validate_page`, write it to `knowledge/note/<slug>.md` with
+   `kb_write_page`, update `index.md`, and append a `query` log entry.
 
 ## Lint workflow
 
-When `kb_lint` is called:
+`kb_lint` is read-only. It reports:
 
 1. Pages with no `type`, or with no inbound links.
 2. Links whose target page does not exist.
 3. Concepts mentioned in source pages but with no page of their own.
 4. Footnotes with no matching `sources[]` entry.
-5. Return a report. If `autofix=true`, fix the easy ones and append a `lint`
-   log entry.
+5. Return the diagnostics without changing pages or appending a log entry.
+
+If the user requests repairs, validate and write each repair separately, then
+run `kb_lint` again. Automated repair is available through the Knowledge panel
+or `biorouter kb lint --fix`, not as a parameter on `kb_lint`.
 
 ## Tone
 
