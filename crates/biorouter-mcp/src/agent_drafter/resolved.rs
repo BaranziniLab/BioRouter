@@ -64,17 +64,18 @@ pub fn resolved_view(m: &Manifest) -> Value {
         }),
     );
 
-    // Surface: always present, with all four keys, so the model can see the
-    // shape it must fill in rather than inferring it from a serde error.
-    obj.insert(
-        "surface".to_string(),
-        json!({
-            "state_schema": m.surface.state_schema,
-            "actions": m.surface.actions,
-            "signals": m.surface.signals,
-            "components": m.surface.components,
-        }),
-    );
+    // Fill omitted defaults without discarding fields from the real serialization.
+    if let Some(surface) = obj
+        .entry("surface")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+    {
+        surface.entry("state_schema").or_insert(Value::Null);
+        surface.entry("state_initial").or_insert(Value::Null);
+        for key in ["actions", "signals", "components"] {
+            surface.entry(key).or_insert_with(|| json!([]));
+        }
+    }
 
     // Agent: show the deny-by-default grants explicitly, plus the tokens the
     // client will actually be told about.
@@ -175,16 +176,39 @@ mod tests {
         assert_eq!(resolved["theme"]["pack"], DEFAULT_THEME_PACK);
     }
 
-    /// The surface is the skeleton the model must edit; all four keys are present
+    /// The surface is the skeleton the model must edit; all fields are present
     /// even when nothing is declared.
     #[test]
     fn resolved_view_always_carries_the_full_surface_shape() {
         let resolved = resolved_view(&v1_manifest());
         let surface = &resolved["surface"];
-        for key in ["state_schema", "actions", "signals", "components"] {
+        for key in [
+            "state_schema",
+            "state_initial",
+            "actions",
+            "signals",
+            "components",
+        ] {
             assert!(surface.get(key).is_some(), "surface.{key} missing");
         }
         assert_eq!(surface["actions"], json!([]));
+    }
+
+    #[test]
+    fn resolved_view_preserves_initial_state_when_used_as_an_editable_manifest() {
+        let mut manifest = v1_manifest();
+        manifest.surface.state_schema = Some(json!({"type": "object"}));
+        manifest.surface.state_initial = Some(json!({
+            "metrics": {"cohorts": {"value": 0, "delta": "Not loaded"}},
+            "ready": false
+        }));
+        let serialized_surface = serde_json::to_value(&manifest.surface).unwrap();
+        let resolved = resolved_view(&manifest);
+        for (key, value) in serialized_surface.as_object().unwrap() {
+            assert_eq!(resolved["surface"][key], *value, "surface.{key} changed");
+        }
+        let edited: Manifest = serde_json::from_value(resolved).unwrap();
+        assert_eq!(edited.surface.state_initial, manifest.surface.state_initial);
     }
 
     /// An unknown pack on disk must read back as what the renderer will actually

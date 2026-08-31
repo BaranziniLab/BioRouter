@@ -441,3 +441,57 @@ both states; read-only schedule inspection confirmed `currently_running: false`,
 no error and `last_run: 2026-08-31T02:16:23.603801Z`. No manual schedule or
 knowledge-store repair was made. The development app was then quit normally
 after completion, not interrupted mid-run.
+
+### Versa-first live validation and first-load regressions
+
+The user configured Versa in the isolated profile and requested Azure/OpenAI
+first, plus Versa Claude coverage; subscription CLIs are fallbacks only if Versa
+does not work. A safe endpoint check confirmed HTTPS UCSF gateway hosts without
+printing or copying credentials. The installed user's profile remains untouched.
+
+Versa Azure `gpt-5.5-2026-04-24`, session `20260831_11`, executed the real Apps SDK
+workflow using the production CLI at `34bf62bd`. Developer shell/file/analysis,
+Code Execution orchestration, app creation/build/lint, and real-browser smoke
+all executed. The model's final report said 15/15 after repairing the synthetic
+app, but that is not a blanket product acceptance result. Inspection found:
+
+- The dashboard starter declares an empty metrics object while binding six
+  visible values. Initial labels are now explicit unavailable-data labels, not
+  fabricated numeric measurements.
+- The resolved manifest projection dropped `surface.state_initial`, even when
+  present on disk. This made authoring/read-back misleading and could discard
+  initial state on an editable-manifest round trip. The projection now fills
+  omitted defaults without replacing serialized surface fields.
+- The smoke harness injected app identity and endpoint but omitted the manifest
+  initial state. It therefore continued reporting blank values after the model
+  correctly supplied initial state. The model worked around that with duplicate
+  app-side initialization. The harness now follows the served app's initial
+  state contract; a rebuilt repeat must succeed without that workaround.
+
+Actual fail-first MCP run: 250 passed, three intended assertion failures, two
+ignored (`/tmp/biorouter-dashboard-state-red.log`). After the changes: 253 passed,
+zero failed, two ignored (`/tmp/biorouter-dashboard-state-green.log`). The separate
+executing browser regression first failed to paint declared zero/false/string
+values while correctly rejecting absent initial values. All five final smoke
+tests pass, including script-like strings and malformed manifests
+(`/tmp/biorouter-smoke-initial-state-green.log`). Missing browsers and skipped
+execution are not accepted as passes.
+
+The original live workflow also demonstrated several avoidable single-call
+Code Execution wrappers and repeated repair/report turns. These are recorded
+as efficiency observations, not provider outages. Its reports are under
+`/tmp/biorouter-final-workflow.1CjILG/workspace`; its model-written success claim
+must be read alongside the independent findings above. This was CLI/browser
+smoke evidence, not a Luna visual acceptance of the embedded preview.
+
+The newly requested file-link harness has an executed fail-first baseline:
+33 selected cases, 25 failing and eight baseline safety passes. Coverage includes
+later-turn shorthand, same-session provenance, ambiguous names, session loading,
+shell working directories, encoded filename identity, and source-line preview
+handoff (`/tmp/biorouter-file-links-red.log`). Implementation and green validation
+are in progress; earlier UI-suite counts do not cover these new changes.
+
+The approved managed-app preview fix also has an executed fail-first assertion:
+the managed URL incorrectly reused the public remote-browser session
+(`/tmp/biorouter-managed-preview-red.log`). Independent security review and real
+Electron transport/lifecycle tests remain required before claiming isolation.

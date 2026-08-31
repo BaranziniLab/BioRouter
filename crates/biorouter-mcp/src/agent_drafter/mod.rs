@@ -395,7 +395,13 @@ fn explorer_surface() -> SurfaceDecl {
 
 fn dashboard_surface() -> SurfaceDecl {
     SurfaceDecl {
-        state_initial: Some(serde_json::json!({ "metrics": {} })),
+        state_initial: Some(serde_json::json!({
+            "metrics": {
+                "cohorts": { "value": "—", "delta": "Not loaded" },
+                "samples": { "value": "—", "delta": "Not loaded" },
+                "alerts": { "value": "—", "delta": "Not loaded" }
+            }
+        })),
         state_schema: Some(serde_json::json!({
             "type": "object",
             "properties": { "metrics": { "type": "object" } }
@@ -4418,6 +4424,35 @@ br.run("hello", "#missing");
     }
 
     // ── Archetype starters (Apps SDK v2, Pillar 6) ─────────────────────────────
+
+    #[tokio::test]
+    async fn dashboard_starter_has_initial_values_for_every_visible_metric_binding() {
+        let (_d, s) = server();
+        let mut params = create("Dashboard initial state", None);
+        params.id = Some("dashboard-initial-state".into());
+        params.archetype = Some("dashboard".into());
+        s.create_app_inner(params, None, &KbCaller::restricted())
+            .await
+            .unwrap();
+
+        let manifest = s.store().load_manifest("dashboard-initial-state").unwrap();
+        let initial = manifest.surface.state_initial.unwrap();
+        let index = s
+            .store()
+            .read_file("dashboard-initial-state", "index.html")
+            .unwrap();
+        let mut bindings = 0;
+        for suffix in index.split("data-br-bind=\"").skip(1) {
+            let (pointer, _) = suffix.split_once('"').unwrap();
+            let value = initial.pointer(pointer).and_then(serde_json::Value::as_str);
+            assert!(
+                value.is_some_and(|text| !text.trim().is_empty()),
+                "first-load binding {pointer} needs an explicit unavailable-data label"
+            );
+            bindings += 1;
+        }
+        assert_eq!(bindings, 6);
+    }
 
     /// The killer test: creating an app for every archetype seeds the matching
     /// starter and the seeded project lints with **no ERROR-level findings**.
