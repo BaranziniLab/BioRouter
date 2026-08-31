@@ -169,7 +169,7 @@ export interface ArtifactRenderError {
 }
 
 type HtmlPreview = { kind: 'html'; html: string };
-type ExternalPreview = { kind: 'externalUrl'; url: string };
+type ExternalPreview = { kind: 'externalUrl'; url: string; managedApp: boolean };
 type FilePreview = { kind: 'file'; preview: ArtifactFilePreview };
 type McpPreview = { kind: 'mcpResource' };
 type LoadingPreview = { kind: 'loading' };
@@ -848,7 +848,16 @@ export default function ArtifactViewer({
       }
 
       if (activeArtifact.kind === 'externalUrl') {
-        setPreview({ kind: 'externalUrl', url: activeArtifact.url });
+        let managedApp = false;
+        try {
+          managedApp =
+            (await window.electron.embeddedBrowser.isManagedAppUrl?.(activeArtifact.url)) === true;
+        } catch {
+          managedApp = false;
+        }
+        if (!cancelled) {
+          setPreview({ kind: 'externalUrl', url: activeArtifact.url, managedApp });
+        }
         return;
       }
 
@@ -1401,7 +1410,10 @@ function ArtifactPreviewBody({
   }
 
   if (preview.kind === 'externalUrl') {
-    // Live pages open **only** on a deliberate click, never automatically.
+    // Ordinary live pages open **only** on a deliberate click. The sole
+    // automatic case is a main-process-approved app served by this window's
+    // active BioRouter daemon; WebPagePreview creation independently rechecks
+    // that same scope before granting its managed-app request policy.
     //
     // This card is the whole boundary between "the user browsed somewhere" and
     // "something else navigated the user's app". An MCP resource link with an
@@ -1409,11 +1421,12 @@ function ArtifactPreviewBody({
     // auto-open; if that path rendered a live view directly, any extension
     // could make an arbitrary site load and execute here. One click is cheap
     // for the user and structurally impossible for the agent.
-    if (isBrowsingUrl) {
+    if (preview.managedApp || isBrowsingUrl) {
       return (
         <WebPagePreview
           key={preview.url}
           url={preview.url}
+          requireManagedApp={preview.managedApp}
           refreshRevision={refreshRevision}
           // The native view has no shared z-index with the DOM, so it has to be
           // hidden while the resize shield is up or it paints straight over it.

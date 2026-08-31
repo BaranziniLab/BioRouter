@@ -339,7 +339,12 @@ type ElectronAPI = {
     containment?: { x: number; y: number; width: number; height: number };
   }) => Promise<{ path: string; width: number; height: number } | null>;
   embeddedBrowser: {
-    create: (viewId: string, url: string) => Promise<EmbeddedBrowserState | null>;
+    isManagedAppUrl: (url: string) => Promise<boolean>;
+    create: (
+      viewId: string,
+      url: string,
+      managedOnly?: boolean
+    ) => Promise<EmbeddedBrowserState | null>;
     setBounds: (
       viewId: string,
       bounds: { x: number; y: number; width: number; height: number }
@@ -710,8 +715,10 @@ const electronAPI: ElectronAPI = {
     containment?: { x: number; y: number; width: number; height: number };
   }) => ipcRenderer.invoke('capture-region', payload),
   embeddedBrowser: {
-    create: (viewId: string, url: string) =>
-      ipcRenderer.invoke('embedded-browser:create', { viewId, url }),
+    isManagedAppUrl: (url: string) =>
+      ipcRenderer.invoke('embedded-browser:is-managed-app-url', { url }),
+    create: (viewId: string, url: string, managedOnly?: boolean) =>
+      ipcRenderer.invoke('embedded-browser:create', { viewId, url, managedOnly }),
     setBounds: (viewId: string, bounds: { x: number; y: number; width: number; height: number }) =>
       ipcRenderer.invoke('embedded-browser:set-bounds', { viewId, bounds }),
     setVisible: (viewId: string, visible: boolean) =>

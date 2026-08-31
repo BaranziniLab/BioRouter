@@ -264,6 +264,23 @@ describe('managed app preview handoff', () => {
     );
   });
 
+  it('does not fall back to an unmanaged view when managed-only creation loses provenance', () => {
+    const context = backend();
+    lifetimes[lifetimes.length - 1]?.abort();
+
+    const state = createEmbeddedBrowser(
+      owner,
+      'revoked-preview',
+      `${context.baseUrl}/apps/queue-workbench/`,
+      vi.fn(),
+      context,
+      true
+    );
+
+    expect(state).toBeNull();
+    expect(electron.views).toHaveLength(0);
+  });
+
   it('retains app storage for reopen but isolates apps, owners, and backend generations', async () => {
     const context = backend();
     const url = `${context.baseUrl}/apps/queue-workbench/`;

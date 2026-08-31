@@ -47,6 +47,7 @@ function installElectronMock() {
       // the right URL, at the right moment. The pixels are verified in a real
       // Electron run, not here.
       embeddedBrowser: {
+        isManagedAppUrl: vi.fn(async () => false),
         create: vi.fn(async (_viewId: string, url: string) => ({
           url,
           title: '',
@@ -168,6 +169,68 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(screen.queryByTestId('embedded-browser-slot')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /open in default browser/i }));
     expect(window.electron.openExternal).toHaveBeenCalledWith('https://example.test/report.html');
+  });
+
+  it('opens a main-approved managed app without labeling it as an external page', async () => {
+    installElectronMock();
+    let approve!: (managed: boolean) => void;
+    vi.mocked(window.electron.embeddedBrowser.isManagedAppUrl).mockReturnValue(
+      new Promise((resolve) => {
+        approve = resolve;
+      })
+    );
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{
+            kind: 'externalUrl',
+            title: 'Queue Workbench',
+            url: 'http://127.0.0.1:64005/apps/queue-workbench/',
+          }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByText('Loading')).toBeInTheDocument();
+    expect(screen.queryByText('External page')).not.toBeInTheDocument();
+    expect(window.electron.embeddedBrowser.create).not.toHaveBeenCalled();
+
+    await act(async () => approve(true));
+    expect(await screen.findByTestId('embedded-browser-slot')).toBeInTheDocument();
+    expect(screen.queryByText('External page')).not.toBeInTheDocument();
+    expect(window.electron.embeddedBrowser.create).toHaveBeenCalledWith(
+      expect.any(String),
+      'http://127.0.0.1:64005/apps/queue-workbench/',
+      true
+    );
+  });
+
+  it('fails closed to the external-page confirmation when managed-app approval fails', async () => {
+    installElectronMock();
+    vi.mocked(window.electron.embeddedBrowser.isManagedAppUrl).mockRejectedValue(
+      new Error('main unavailable')
+    );
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{
+            kind: 'externalUrl',
+            title: 'Unverified local page',
+            url: 'http://127.0.0.1:64005/apps/unverified/',
+          }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByText('External page')).toBeInTheDocument();
+    expect(screen.getByTestId('artifact-open-here')).toBeInTheDocument();
+    expect(window.electron.embeddedBrowser.create).not.toHaveBeenCalled();
   });
 
   // PP-03. This click is the entire boundary between "the user browsed

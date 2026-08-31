@@ -147,7 +147,10 @@ import {
 } from './utils/embeddedBrowser';
 import { heicToPng } from './utils/heicConvert';
 import { bindManagedAppPreviewBackend } from './utils/managedAppPreviewBackend';
-import type { ManagedAppPreviewBackend } from './utils/managedAppPreviewPolicy';
+import {
+  managedAppPreviewScope,
+  type ManagedAppPreviewBackend,
+} from './utils/managedAppPreviewPolicy';
 import { IMAGE_BLOB_URL_THRESHOLD_BYTES, IMAGE_MIME_TYPES } from './utils/imageFormats';
 import { recordExtensionProvenance } from './utils/extensionProvenance';
 import { fetchRegistryWithLastGood } from './utils/registryCache';
@@ -3122,21 +3125,36 @@ ipcMain.handle(
 // Every handler resolves the owning window from the *event sender*. The main
 // registry keys renderer view ids by that owner, so an identical React id in a
 // second window cannot drive, read, capture, or destroy the first window's view.
-ipcMain.handle('embedded-browser:create', (event, payload: { viewId: string; url: string }) => {
+ipcMain.handle('embedded-browser:is-managed-app-url', (event, payload: { url: string }) => {
   const window = BrowserWindow.fromWebContents(event.sender);
-  if (!window || typeof payload?.viewId !== 'string') return null;
-  return createEmbeddedBrowser(
-    window,
-    payload.viewId,
-    payload.url,
-    (state) => {
-      if (!event.sender.isDestroyed()) {
-        event.sender.send('embedded-browser:state', { viewId: payload.viewId, state });
-      }
-    },
-    managedAppPreviewBackends.get(window.id)
-  );
+  if (!window || typeof payload?.url !== 'string') return false;
+  return Boolean(managedAppPreviewScope(payload.url, managedAppPreviewBackends.get(window.id)));
 });
+
+ipcMain.handle(
+  'embedded-browser:create',
+  (event, payload: { viewId: string; url: string; managedOnly?: boolean }) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (
+      !window ||
+      typeof payload?.viewId !== 'string' ||
+      (payload.managedOnly !== undefined && typeof payload.managedOnly !== 'boolean')
+    )
+      return null;
+    return createEmbeddedBrowser(
+      window,
+      payload.viewId,
+      payload.url,
+      (state) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('embedded-browser:state', { viewId: payload.viewId, state });
+        }
+      },
+      managedAppPreviewBackends.get(window.id),
+      payload.managedOnly === true
+    );
+  }
+);
 
 ipcMain.handle(
   'embedded-browser:set-bounds',

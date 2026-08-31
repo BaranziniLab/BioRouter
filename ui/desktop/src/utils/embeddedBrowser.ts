@@ -268,12 +268,14 @@ export function createEmbeddedBrowser(
   viewId: string,
   initialUrl: string,
   onState: (state: EmbeddedBrowserState) => void,
-  backend?: ManagedAppPreviewBackend
+  backend?: ManagedAppPreviewBackend,
+  managedOnly = false
 ): EmbeddedBrowserState | null {
   if (window.isDestroyed() || !isNavigableEmbeddedUrl(initialUrl)) return null;
+  const scope = managedAppPreviewScope(initialUrl, backend);
+  if (managedOnly && !scope) return null;
   destroyEmbeddedBrowser(window, viewId);
 
-  const scope = managedAppPreviewScope(initialUrl, backend);
   const managed = scope ? managedAppSession(window, scope) : undefined;
   const embedded = managed?.session ?? embeddedSession();
   const view = new WebContentsView({

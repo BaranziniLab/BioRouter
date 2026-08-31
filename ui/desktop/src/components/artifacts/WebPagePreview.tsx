@@ -48,6 +48,7 @@ export type LiveBrowserShare = {
  */
 export default function WebPagePreview({
   url,
+  requireManagedApp = false,
   isSuspended = false,
   snapshotDataUrl,
   onOpenExternal,
@@ -56,6 +57,8 @@ export default function WebPagePreview({
   refreshRevision = 0,
 }: {
   url: string;
+  /** Fail closed if this URL is no longer owned by the active BioRouter daemon. */
+  requireManagedApp?: boolean;
   /** Hide the native view because something must paint above it. */
   isSuspended?: boolean;
   /** A compositor snapshot shown while the native view is hidden for annotation. */
@@ -103,7 +106,10 @@ export default function WebPagePreview({
       if (payload.viewId === viewId && !disposed) setState(payload.state);
     });
 
-    void browser.create(viewId, url).then((initial) => {
+    const creation = requireManagedApp
+      ? browser.create(viewId, url, true)
+      : browser.create(viewId, url);
+    void creation.then((initial) => {
       if (disposed) return;
       if (!initial) {
         setUnavailable(true);
@@ -121,7 +127,7 @@ export default function WebPagePreview({
       onAgentShareChange?.(null);
       void browser.destroy(viewId);
     };
-  }, [browser, onAgentShareChange, onViewIdChange, url, viewId]);
+  }, [browser, onAgentShareChange, onViewIdChange, requireManagedApp, url, viewId]);
 
   useEffect(() => {
     const current = refreshRef.current;
