@@ -297,7 +297,7 @@ Example:
         render(
             "ui://network/graph",
             "network",
-            "Network graph rendered inline for the user.",
+            "Network graph created for the artifact panel.",
             include_str!("templates/network_template.html"),
             &[Asset::D3],
             &[("{{NETWORK_DATA}}", &data_json)],
@@ -347,7 +347,7 @@ Example:
         render(
             "ui://heatmap/chart",
             "heatmap",
-            "Heatmap rendered inline for the user.",
+            "Heatmap created for the artifact panel.",
             include_str!("templates/heatmap_template.html"),
             &[Asset::D3],
             &[("{{HEATMAP_DATA}}", &data_json)],
@@ -378,7 +378,7 @@ Example:
         render(
             "ui://sunburst/chart",
             "sunburst",
-            "Sunburst rendered inline for the user.",
+            "Sunburst created for the artifact panel.",
             include_str!("templates/sunburst_template.html"),
             &[Asset::D3],
             &[("{{SUNBURST_DATA}}", &data_json)],
@@ -409,7 +409,7 @@ Example:
         render(
             "ui://dendrogram/chart",
             "dendrogram",
-            "Dendrogram rendered inline for the user.",
+            "Dendrogram created for the artifact panel.",
             include_str!("templates/dendrogram_template.html"),
             &[Asset::D3],
             &[("{{DENDROGRAM_DATA}}", &data_json)],
@@ -440,7 +440,7 @@ Example:
         render(
             "ui://calendar/heatmap",
             "calendar",
-            "Calendar heatmap rendered inline for the user.",
+            "Calendar heatmap created for the artifact panel.",
             include_str!("templates/calendar_template.html"),
             &[Asset::D3],
             &[("{{CALENDAR_DATA}}", &data_json)],
@@ -473,7 +473,7 @@ Example:
         render(
             "ui://boxplot/chart",
             "boxplot",
-            "Box plot rendered inline for the user.",
+            "Box plot created for the artifact panel.",
             include_str!("templates/boxplot_template.html"),
             &[Asset::D3],
             &[("{{BOXPLOT_DATA}}", &data_json)],
@@ -504,7 +504,7 @@ Example:
         render(
             "ui://wordcloud/chart",
             "wordcloud",
-            "Word cloud rendered inline for the user.",
+            "Word cloud created for the artifact panel.",
             include_str!("templates/wordcloud_template.html"),
             &[Asset::D3],
             &[("{{WORDCLOUD_DATA}}", &data_json)],
@@ -538,7 +538,7 @@ Example:
         render(
             "ui://kaplanmeier/chart",
             "kaplan_meier",
-            "Kaplan–Meier plot rendered inline for the user.",
+            "Kaplan–Meier plot created for the artifact panel.",
             include_str!("templates/kaplan_meier_template.html"),
             &[Asset::D3],
             &[("{{KM_DATA}}", &data_json)],
@@ -585,7 +585,7 @@ Example:
         render(
             "ui://forest/chart",
             "forest",
-            "Forest plot rendered inline for the user.",
+            "Forest plot created for the artifact panel.",
             include_str!("templates/forest_template.html"),
             &[Asset::D3],
             &[("{{FOREST_DATA}}", &data_json)],

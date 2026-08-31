@@ -19,6 +19,7 @@ const WIDTH_HALF: &str = "half";
 
 /// Guard rails. Generous — a report beyond this is unreadable anyway.
 const MAX_PANELS: usize = 24;
+const MAX_RECEIPT_FAILURES: usize = 8;
 const MAX_PROSE_LEN: usize = 8_000;
 
 /// Which figure to render in a panel, and with what arguments.
@@ -495,7 +496,7 @@ Panel width is `full` (default) or `half` (two per row). Use `sections` for grou
 
 Set `theme` to `light` or `dark` if the user asks for a specific background; the default `auto` follows the app's own light/dark setting.
 
-Call this ONCE per report: the report appears in the side panel the moment the call returns, so you do not need a second call to display, finalise or confirm it. Call it again only if the user asks to change the report, or to re-render figures that failed."#
+Call this ONCE per report: the result contains the complete artifact for the side panel. Do not call it again merely to display, finalise or confirm it. Inspect the existing artifact to verify rendering; generation alone is not visual verification. Call it again only to change the report or correct figures that failed."#
     )]
     pub async fn render_dashboard(
         &self,
@@ -562,6 +563,7 @@ Call this ONCE per report: the report appears in the side panel the moment the c
         let mut asset_store = String::new();
         let mut stored_assets: Vec<Asset> = Vec::new();
         let mut failures: Vec<String> = Vec::new();
+        let mut failure_receipts = Vec::new();
         let mut json_sections = Vec::with_capacity(sections.len());
         let mut panel_index = 0usize;
         let mut figure_number = 0usize;
@@ -624,6 +626,15 @@ Call this ONCE per report: the report appears in the side panel the moment the c
                     }
                     None => {
                         let message = built.error.unwrap_or_else(|| "unknown error".to_string());
+                        if failure_receipts.len() < MAX_RECEIPT_FAILURES {
+                            failure_receipts.push(json!({
+                                "figure": figure_number,
+                                "tool": panel.figure.tool.chars().take(64).collect::<String>(),
+                                "error": message.chars().take(128).collect::<String>(),
+                                "detailsTruncated": panel.figure.tool.chars().nth(64).is_some()
+                                    || message.chars().nth(128).is_some(),
+                            }));
+                        }
                         failures.push(format!(
                             "Figure {figure_number} ({}): {message}",
                             panel.title.as_deref().unwrap_or(&panel.figure.tool)
@@ -689,20 +700,18 @@ Call this ONCE per report: the report appears in the side panel the moment the c
 
         let rendered = total_panels - failures.len();
         let mut label = format!(
-            "Combined report '{}' rendered inline for the user with {rendered} figure{}.",
+            "Combined report '{}' created for the artifact panel with {rendered} figure{}.",
             p.title,
             if rendered == 1 { "" } else { "s" }
         );
         if failures.is_empty() {
-            // The report is done and already on screen. Say so plainly, and disclaim
-            // the "finalise/confirm" motivation the model invents, so it does not
-            // re-issue an identical render_dashboard call to "finalise" it (an
-            // observed ~20% duplicate-call rate that just burns tokens and drops a
-            // second, redundant card into the chat).
+            // Discourage duplicate generation without claiming that the client
+            // has rendered or visually verified the HTML this function returns.
             label.push_str(
-                " The report is complete and already displayed in the side panel, so you do \
+                " The report is complete and ready for the artifact panel, so you do \
                  not need to call render_dashboard again to display, finalise or confirm it. \
-                 Call it again only if the user asks to change the report.",
+                 Inspect the existing artifact to verify rendering. Call this tool again \
+                 only to change the report or correct a rendering failure.",
             );
         } else {
             // render_dashboard is stateless and re-renders the WHOLE report, so tell
@@ -719,6 +728,23 @@ Call this ONCE per report: the report appears in the side panel the moment the c
 
         let uri = format!("ui://dashboard/{}", slugify(&p.title));
         let mut result = common::finish(&uri, "dashboard", &label, html);
+        // Keep recovery outside user-controlled titles and bounded error text.
+        // Clients preferring structured content must still see partial failures.
+        result.structured_content = Some(json!({
+            "status": if failures.is_empty() { "created" } else { "created_with_errors" },
+            "uri": uri,
+            "mimeType": "text/html",
+            "summary": format!("Report artifact created with {rendered} figures; {} failed.", failures.len()),
+            "figuresCreated": rendered,
+            "figuresFailed": failures.len(),
+            "failuresOmitted": failures.len().saturating_sub(failure_receipts.len()),
+            "failures": failure_receipts,
+            "recovery": if failures.is_empty() {
+                "Inspect the existing artifact to verify rendering; do not regenerate it merely to display or confirm it."
+            } else {
+                "Inspect all error cards in the existing artifact. Re-send the whole report with failed panels corrected, retaining successful panels."
+            },
+        }));
 
         // Reports are pages, not figures: ask for a reading-pane frame.
         if let Some(content) = result.content.first_mut() {

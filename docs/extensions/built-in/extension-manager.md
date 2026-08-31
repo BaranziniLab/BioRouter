@@ -52,9 +52,11 @@ The result is a more focused session where BioRouter has exactly the tools it ne
 
 | Tool | Description | Use Case |
 |------|-------------|----------|
-| `search_available_extensions` | Discover extensions that can be enabled or disabled | Finding the right extension for a task |
+| `search_available_extensions` | List installed third-party extensions and exact names | Finding what is already installed |
+| `browse_marketplace_extensions` / `search_marketplace_extensions` | Browse or search trusted BAAM entries visible to this model | Finding a package to install |
 | `manage_extensions` | Enable or disable an extension by name | Loading/unloading extensions dynamically |
 | `install_extension` | Install a BAAM marketplace extension end to end | The extension is not installed at all |
+| `delete_extension_package` | Delete one or up to 50 validated marketplace packages after approval | Permanent removal; shared credentials are retained |
 | `list_resources` | List resources from extensions (if supported) | Discovering available data sources |
 | `read_resource` | Read specific resource content (if supported) | Accessing extension-provided data |
 
@@ -66,7 +68,16 @@ The result is a more focused session where BioRouter has exactly the tools it ne
 
 **The agent never sees a credential.** If the extension needs an API key, passcode or token, the install pauses and BioRouter opens its own dialog; the agent learns only which key *names* were configured. It must never ask for a value in chat — a credential in a chat message cannot configure anything and exposes it to every model that reads the transcript. The full design is in [Installing an extension, and where its credentials go](../installing-an-extension.md).
 
-Privacy Gate F1 applies to the **attach**, not the install: a public-model chat may install a private connector at the user's request and will not be able to use it in that chat.
+An agent using a public model cannot install or attach a private extension through
+this manager, even when the diagnostic privacy toggle is off. Marketplace
+eligibility is checked before approval or download. A private model can manage
+public or private extensions subject to the normal approval and reach checks;
+users can configure extensions directly in the app.
+
+If an installed public extension was deliberately disabled, the manager can ask
+for explicit approval to attach its unchanged configuration to this chat. That
+approval does not authorize a private extension or override a later configuration
+change. Built-in capabilities are managed separately in Settings → Chat → Capabilities.
 
 ## Malware scanning when an extension is enabled
 

@@ -32,6 +32,44 @@ macro_rules! err_render {
     }};
 }
 
+#[tokio::test]
+async fn specialized_figures_keep_academic_shells_and_complete_escaped_labels() {
+    let label = "Δοκιμή 東京🧬 <img src=x onerror=alert(1)> </script>";
+    let results = [
+        ok_render!(render_map, RenderMapParams, "ui://map/visualization", {
+            "data": {"title":label,"markers":[{"lat":37.7,"lng":-122.4,"name":label,"color":"#556677","value":0}]}
+        }),
+        ok_render!(render_chord, RenderChordParams, "ui://chord/diagram", {
+            "data": {"labels":[label,"Comparison"],"matrix":[[0,10],[5,0]]}
+        }),
+        ok_render!(render_donut, RenderDonutParams, "ui://donut/chart", {
+            "data": {"title":label,"data":[{"label":label,"value":10}]}
+        }),
+        ok_render!(render_radar, RenderRadarParams, "ui://radar/chart", {
+            "data": {"labels":[label,"Comparison","Control"],"datasets":[{"label":label,"data":[10,20,30]}]}
+        }),
+        ok_render!(render_sankey, RenderSankeyParams, "ui://sankey/diagram", {
+            "data": {"nodes":[{"name":label},{"name":"Comparison"}],"links":[{"source":label,"target":"Comparison","value":10}]}
+        }),
+        ok_render!(render_treemap, RenderTreemapParams, "ui://treemap/visualization", {
+            "data": {"name":label,"children":[{"name":label,"value":10},{"name":"Comparison","value":20}]}
+        }),
+    ];
+    for result in &results {
+        let html = decode_html(result);
+        assert!(html.contains("BioRouterViz.applyPageTheme()"));
+        assert!(html.contains("BioRouterViz.palette"));
+        assert!(html.contains("id=\"figureData\""));
+        assert!(html.contains("cell.textContent = String(value"));
+        assert!(html.contains("overflow-wrap: anywhere"));
+        assert!(html.contains("Δοκιμή 東京🧬 \\u003cimg"));
+        assert!(!html.contains(label));
+        assert!(!html.contains("d3.scaleOrdinal(d3.schemeCategory10)"));
+        assert!(!html.contains("font-size: 2.5em"));
+    }
+    assert!(decode_html(&results[0]).contains("#556677"));
+}
+
 // ===========================================================================
 // Diagrams (Mermaid wrappers)
 // ===========================================================================

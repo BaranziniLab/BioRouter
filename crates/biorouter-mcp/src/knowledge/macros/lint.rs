@@ -24,7 +24,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::{
     collections::{HashMap, HashSet},
-    path::Path,
+    path::{Component, Path, PathBuf},
 };
 
 // ---------------------------------------------------------------------------
@@ -82,7 +82,8 @@ pub struct LintReport {
     pub stale_sources: Vec<String>,
     /// Link targets written in source pages that name no page under
     /// `knowledge/` — again over all four grammars, so a typed base's `edges:`
-    /// citations are read.
+    /// citations are read. Existing, confined raw evidence files are not missing
+    /// concept pages, even though the graph represents them as external nodes.
     pub missing_concept_pages: Vec<String>,
     /// Everything above, plus the format layers, as one typed list: a stable
     /// rule id, a severity, the page or edge it is about, and a message.
@@ -214,7 +215,10 @@ pub(crate) fn scan_with_cancellation(
     let mut missing_concept_pages: Vec<String> = Vec::new();
     for (src_path, target) in &links.unresolved {
         super::ensure_not_cancelled(cancel, "scanning unresolved lint links")?;
-        if sources.is_source_page(src_path) && !missing_concept_pages.contains(target) {
+        if sources.is_source_page(src_path)
+            && !missing_concept_pages.contains(target)
+            && !is_existing_raw_evidence(kb_root, src_path, target)
+        {
             missing_concept_pages.push(target.clone());
         }
     }
@@ -245,6 +249,35 @@ pub(crate) fn scan_with_cancellation(
     );
     super::ensure_not_cancelled(cancel, "finishing the lint scan")?;
     Ok(report)
+}
+
+fn is_existing_raw_evidence(kb_root: &Path, source: &str, target: &str) -> bool {
+    let target = target.split('#').next().unwrap_or(target);
+    let rooted = target.strip_prefix('/').unwrap_or(target);
+    let candidate = if rooted.starts_with("raw/") {
+        PathBuf::from(rooted)
+    } else {
+        Path::new(source)
+            .parent()
+            .unwrap_or(Path::new(""))
+            .join(target)
+    };
+    let mut logical = PathBuf::new();
+    for component in candidate.components() {
+        match component {
+            Component::Normal(part) => logical.push(part),
+            Component::CurDir => {}
+            Component::ParentDir if logical.pop() => {}
+            _ => return false,
+        }
+    }
+    if !logical.starts_with("raw") {
+        return false;
+    }
+    logical.to_str().is_some_and(|logical| {
+        crate::knowledge::store::resolve_readable_path(kb_root, logical)
+            .is_ok_and(|path| path.is_file())
+    })
 }
 
 /// The four deterministic lists, restated as typed diagnostics.
@@ -1983,6 +2016,61 @@ mod tests {
     // source directory is the SINGULAR `knowledge/source/` while the fallback
     // matched the pre-OKF plural. A format the fix does not exercise is a format
     // the fix does not cover.
+
+    #[test]
+    fn existing_raw_evidence_links_are_not_missing_concept_pages() {
+        let (_dir, svc) = svc_in(KbFormat::Okf);
+        let kb = svc.root().join("k");
+        std::fs::create_dir_all(kb.join("raw/evidence")).unwrap();
+        std::fs::write(kb.join("raw/evidence/source.md"), "Synthetic raw evidence").unwrap();
+        write(
+            &kb,
+            "knowledge/source/evidence.md",
+            "---\ntype: Source\nidentifier: Evidence\n---\n\n\
+             [Relative evidence](../../raw/evidence/source.md)\n\
+             [Root evidence](/raw/evidence/source.md)\n\
+             [Bundle evidence](raw/evidence/source.md)\n\
+             [Evidence section](../../raw/evidence/source.md#section)\n\
+             [Missing evidence](../../raw/evidence/missing.md)\n\
+             [Missing concept](/knowledge/method/missing.md)\n",
+        );
+        assert_eq!(
+            scan(&kb).unwrap().missing_concept_pages,
+            vec![
+                "../../raw/evidence/missing.md".to_string(),
+                "/knowledge/method/missing.md".to_string(),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_evidence_warnings_remain_for_symlinks_and_bundle_escape() {
+        let (_dir, svc) = svc_in(KbFormat::Okf);
+        let kb = svc.root().join("k");
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("source.md"), "Outside evidence").unwrap();
+        std::fs::create_dir_all(kb.join("raw/evidence")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("source.md"),
+            kb.join("raw/evidence/external.md"),
+        )
+        .unwrap();
+        write(
+            &kb,
+            "knowledge/source/evidence.md",
+            "---\ntype: Source\nidentifier: Evidence\n---\n\n\
+             [Symlink](../../raw/evidence/external.md)\n\
+             [Escape](../../raw/../../../source.md)\n",
+        );
+        assert_eq!(
+            scan(&kb).unwrap().missing_concept_pages,
+            vec![
+                "../../raw/../../../source.md".to_string(),
+                "../../raw/evidence/external.md".to_string(),
+            ]
+        );
+    }
 
     /// An OKF source page, stating its provenance the way `schema_okf.md`'s page
     /// contract does: a `sources:` list whose `resource` points into `raw/`.

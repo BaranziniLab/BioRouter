@@ -247,7 +247,7 @@ Example:
         render(
             "ui://histogram/chart",
             "histogram",
-            "Histogram rendered inline for the user.",
+            "Histogram created for the artifact panel.",
             include_str!("templates/histogram_template.html"),
             &[Asset::ChartJs],
             &[("{{HISTOGRAM_DATA}}", &data_json)],
@@ -280,7 +280,7 @@ Example:
         render(
             "ui://bubble/chart",
             "bubble",
-            "Bubble chart rendered inline for the user.",
+            "Bubble chart created for the artifact panel.",
             include_str!("templates/bubble_template.html"),
             &[Asset::ChartJs],
             &[("{{BUBBLE_DATA}}", &data_json)],
@@ -325,7 +325,7 @@ Example:
         render(
             "ui://area/chart",
             "area",
-            "Area chart rendered inline for the user.",
+            "Area chart created for the artifact panel.",
             include_str!("templates/area_template.html"),
             &[Asset::ChartJs],
             &[("{{AREA_DATA}}", &data_json)],
@@ -362,7 +362,7 @@ Example:
         render(
             "ui://gauge/chart",
             "gauge",
-            "Gauge rendered inline for the user.",
+            "Gauge created for the artifact panel.",
             include_str!("templates/gauge_template.html"),
             &[Asset::ChartJs],
             &[("{{GAUGE_DATA}}", &data_json)],
@@ -397,7 +397,7 @@ Example:
         render(
             "ui://volcano/chart",
             "volcano",
-            "Volcano plot rendered inline for the user.",
+            "Volcano plot created for the artifact panel.",
             include_str!("templates/volcano_template.html"),
             &[Asset::ChartJs],
             &[("{{VOLCANO_DATA}}", &data_json)],
@@ -431,7 +431,7 @@ Example:
         render(
             "ui://manhattan/chart",
             "manhattan",
-            "Manhattan plot rendered inline for the user.",
+            "Manhattan plot created for the artifact panel.",
             include_str!("templates/manhattan_template.html"),
             &[Asset::ChartJs],
             &[("{{MANHATTAN_DATA}}", &data_json)],

@@ -143,8 +143,9 @@ instructions: |
   - Generate recommendations
   
   ## Success Criteria
-  - Phase success: ≥80% tests pass
-  - Suite success: All phases complete, critical features work
+  - Phase success: Every required scenario passes; report optional skips separately
+  - Suite success: All selected phases complete with no unresolved required failures
+  - Unavailable or unobservable checks are not passes and leave the relevant release gate open
   - Each test logs: setup → execute → validate → result → cleanup
 
 extensions:
@@ -218,10 +219,27 @@ prompt: |
   {% if test_phases == "all" or "extensions" in test_phases %}
   ## 🔧 PHASE 2: Extension System Testing
   
-  ### Todo Extension Testing (Built-in)
-  1. Create initial todos and verify they persist
-  2. Update todos and confirm changes are retained
-  3. Clear todos and verify clean state
+  ### To Do Capability and Chat Summary
+  1. Create three synthetic tasks: compare queue options, verify arithmetic, and present the result.
+     Use fictional Option A ($120/month, 30 minutes/day saved) and Option B ($180/month,
+     40 minutes/day saved). Verify $4 versus $4.50 per daily minute saved, and $60 incremental
+     monthly cost for 10 additional daily minutes. Do not present these as clinical evidence.
+  2. Update individual tasks through pending, in_progress, and completed. Reopen one completed
+     task, rename it, and verify the persisted list reflects both changes accurately.
+  3. In the desktop, keep Chat summary open during an update. Require compact label/value
+     typography, a connected task list in checklist order, explicit statuses, and a completion
+     count that decreases when work reopens. Switch to an empty chat: no previous task may leak
+     into it. Plan-only state must not display a checklist. Mark these assertions NOT OBSERVABLE
+     when running from the CLI; tool success alone is not visual evidence.
+  4. Replace and clear only this synthetic checklist, with any required user confirmation.
+     Verify removed items disappear and the progress section is absent when no tasks remain.
+
+  ### Academic Figure Presentation
+  Render the fictional comparison with Auto Visualiser. Require an informative title and axis
+  units, neutral backgrounds, restrained distinguishable series, large readable labels, and no
+  decorative gradient banner or generic subtitle. Check the real artifact at narrow and wide
+  panel sizes, including a long Unicode label: no overlap or horizontal page overflow. Inspect
+  the data alternative and legend controls. Mark visual checks NOT OBSERVABLE in the CLI.
 
   ### Dynamic Extension Management
   1. Use `extensionmanager__search_available_extensions` to discover installed extensions.

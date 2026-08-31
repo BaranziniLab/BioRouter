@@ -2469,6 +2469,7 @@ impl ExtensionManager {
             let extensions = self.extensions.lock().await;
             extensions
                 .iter()
+                .filter(|(_, ext)| ext.supports_resources())
                 .map(|(name, ext)| (name.clone(), ext.get_client()))
                 .collect()
         };
@@ -6803,6 +6804,50 @@ mod tests {
         }
 
         (dir, em, private, public)
+    }
+
+    #[tokio::test]
+    async fn ui_resource_sweep_only_contacts_reachable_resource_servers() {
+        let (_dir, em, private, public) =
+            siblings_fixture(crate::privacy::ProviderTier::Public, true).await;
+        let resources = em.get_ui_resources().await.unwrap();
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].0, "developer");
+        assert!(resources[0].1.uri.starts_with("ui://"));
+        assert_eq!(public.contacted(), 1);
+        assert_eq!(private.contacted(), 0);
+
+        em.extensions
+            .lock()
+            .await
+            .get_mut("developer")
+            .unwrap()
+            .server_info
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .resources = None;
+        assert!(em.get_ui_resources().await.unwrap().is_empty());
+        assert_eq!(
+            public.contacted(),
+            1,
+            "tools-only servers receive no resources RPC"
+        );
+        assert_eq!(private.contacted(), 0);
+
+        em.extensions
+            .lock()
+            .await
+            .get_mut("developer")
+            .unwrap()
+            .server_info = None;
+        assert!(em.get_ui_resources().await.unwrap().is_empty());
+        assert_eq!(
+            public.contacted(),
+            1,
+            "unknown capabilities receive no resources RPC"
+        );
+        assert_eq!(private.contacted(), 0);
     }
 
     /// Every non-dispatch entry point that reaches an MCP server, by the name of

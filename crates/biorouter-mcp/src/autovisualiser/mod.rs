@@ -469,6 +469,22 @@ impl AutoVisualiserRouter {
             Match the data format to the chart type you have chosen. The user may request a specific
             chart, or you can pick the most appropriate one and shape the data to fit it.
 
+            ## Figure design
+            Use a clean, minimal academic figure by default: neutral background, restrained
+            categorical colors, readable app-style typography, and only data-bearing decoration.
+            Do not request a gradient banner, decorative emoji, generic subtitle such as
+            "Interactive data visualization", or vivid rainbow colors unless the user asks.
+            Write an informative title, label axes with quantities and units, and name every
+            series. Use the subtitle only for meaningful context, source, sample size or uncertainty;
+            never invent these. Keep unrelated units in separate panels rather than one shared scale.
+            Prefer direct labels, distinct markers or line styles so color is not the only cue.
+            Use the largest legible text that fits without overlap. Wrap long labels, reduce tick
+            density, or choose a larger panel rather than shrinking text. Check narrow and wide
+            artifact widths, including long Unicode labels. Preserve meaningful ordering, start bar
+            charts at zero, and do not smooth measured line data unless scientifically justified.
+            The default chart colors and layout already follow this style; avoid overriding them
+            for decoration. Do not claim visual verification unless you actually inspected the figure.
+
             ## Combining figures: read this first
             **If your answer needs more than one figure, call `render_dashboard` once instead of
             calling several `render_*` tools.** Each `render_*` call produces a separate artifact
@@ -596,7 +612,7 @@ Example:
         render(
             "ui://sankey/diagram",
             "sankey",
-            "Sankey diagram rendered inline for the user.",
+            "Sankey diagram created for the artifact panel.",
             include_str!("templates/sankey_template.html"),
             &[Asset::D3, Asset::D3Sankey],
             &[("{{SANKEY_DATA}}", &data_json)],
@@ -647,7 +663,7 @@ Example:
         render(
             "ui://radar/chart",
             "radar",
-            "Radar chart rendered inline for the user.",
+            "Radar chart created for the artifact panel.",
             include_str!("templates/radar_template.html"),
             &[Asset::ChartJs],
             &[("{{RADAR_DATA}}", &data_json)],
@@ -699,7 +715,7 @@ Example multiple charts:
         render(
             "ui://donut/chart",
             "donut",
-            "Donut/pie chart rendered inline for the user.",
+            "Donut/pie chart created for the artifact panel.",
             include_str!("templates/donut_template.html"),
             &[Asset::ChartJs],
             &[("{{CHARTS_DATA}}", &data_json)],
@@ -745,7 +761,7 @@ Example:
         render(
             "ui://treemap/visualization",
             "treemap",
-            "Treemap rendered inline for the user.",
+            "Treemap created for the artifact panel.",
             include_str!("templates/treemap_template.html"),
             &[Asset::D3],
             &[("{{TREEMAP_DATA}}", &data_json)],
@@ -801,7 +817,7 @@ Example:
         render(
             "ui://chord/diagram",
             "chord",
-            "Chord diagram rendered inline for the user.",
+            "Chord diagram created for the artifact panel.",
             include_str!("templates/chord_template.html"),
             &[Asset::D3],
             &[("{{CHORD_DATA}}", &data_json)],
@@ -856,7 +872,7 @@ Example:
         render(
             "ui://map/visualization",
             "map",
-            "Map rendered inline for the user.",
+            "Map created for the artifact panel.",
             include_str!("templates/map_template.html"),
             &[Asset::Leaflet],
             &[("{{MAP_DATA}}", &data_json)],
@@ -893,6 +909,9 @@ graph TD;
 
 Required: type ('line', 'scatter', or 'bar'), datasets array
 Optional: labels, title, subtitle, xAxisLabel, yAxisLabel
+Use an informative title, quantity-and-unit axis labels and meaningful series names.
+The default is a minimal academic figure with readable text and restrained colors.
+Keep different units in separate figures; omit a subtitle if it adds no evidence or context.
 
 Example:
 {
@@ -915,7 +934,7 @@ Example:
         render(
             &uri,
             "chart",
-            "Chart rendered inline for the user.",
+            "Chart created for the artifact panel.",
             include_str!("templates/chart_template.html"),
             &[Asset::ChartJs],
             &[("{{CHART_DATA}}", &data_json)],
@@ -945,7 +964,7 @@ Example:
         render(
             "ui://mermaid/diagram",
             "mermaid",
-            "Diagram rendered inline for the user.",
+            "Diagram created for the artifact panel.",
             include_str!("templates/mermaid_template.html"),
             &[Asset::Mermaid],
             &[

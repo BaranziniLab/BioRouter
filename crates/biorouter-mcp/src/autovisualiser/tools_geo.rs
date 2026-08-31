@@ -77,7 +77,7 @@ Provide GeoJSON you have already obtained (e.g. read from a file or fetched). Ex
         render(
             "ui://choropleth/map",
             "choropleth",
-            "Choropleth map rendered inline for the user.",
+            "Choropleth map created for the artifact panel.",
             include_str!("templates/choropleth_template.html"),
             &[Asset::Leaflet],
             &[("{{CHOROPLETH_DATA}}", &data_json)],

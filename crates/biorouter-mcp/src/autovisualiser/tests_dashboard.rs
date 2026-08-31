@@ -308,7 +308,9 @@ async fn test_dashboard_combines_multiple_figures() {
     if let RawContent::Text(text) = &*result.content[1] {
         assert!(text.text.contains("2 figures"));
         assert!(text.text.contains("The report is complete"));
-        assert!(text.text.contains("already displayed"));
+        assert!(text.text.contains("ready for the artifact panel"));
+        assert!(text.text.contains("Inspect the existing artifact"));
+        assert!(!text.text.contains("already displayed"));
         assert!(text.text.contains("finalise or confirm"));
     } else {
         panic!("expected an assistant-audience text note");
@@ -578,6 +580,84 @@ async fn test_rejects_too_many_panels() {
         .await
         .unwrap_err();
     assert!(err.message.contains("dashboard panels"));
+}
+
+#[tokio::test]
+async fn partial_dashboard_receipt_preserves_failure_guidance_after_a_long_title() {
+    let router = AutoVisualiserRouter::new();
+    let result = router
+        .render_dashboard(params_from(json!({
+            "title": "Δ".repeat(2_000),
+            "panels": [
+                {"title": "Good", "figure": bar_chart_figure()},
+                {"title": "Long panel title ".repeat(100), "figure": {
+                    "tool": "show_chart", "params": {"data": {"type":"bar", "datasets":[]}}
+                }}
+            ]
+        })))
+        .await
+        .unwrap();
+    let receipt = result.structured_content.as_ref().unwrap();
+    assert_eq!(receipt["status"], "created_with_errors");
+    assert_eq!(receipt["figuresCreated"], 1);
+    assert_eq!(receipt["figuresFailed"], 1);
+    assert_eq!(receipt["failures"][0]["figure"], 2);
+    assert_eq!(receipt["failures"][0]["tool"], "show_chart");
+    assert!(receipt["failures"][0]["error"].as_str().unwrap().contains("at least one dataset"));
+    assert!(receipt["recovery"].as_str().unwrap().contains("whole report"));
+    assert!(serde_json::to_string(receipt).unwrap().len() < 3_000);
+    assert_eq!(panel_documents(&dashboard_html(&result)).len(), 1);
+}
+
+#[tokio::test]
+async fn dashboard_receipt_keeps_guidance_for_a_successful_long_title() {
+    let result = AutoVisualiserRouter::new()
+        .render_dashboard(params_from(json!({
+            "title": "Δ".repeat(2_000),
+            "panels": [{"figure": bar_chart_figure()}]
+        })))
+        .await
+        .unwrap();
+    let receipt = result.structured_content.as_ref().unwrap();
+    assert_eq!(receipt["status"], "created");
+    assert_eq!(receipt["figuresCreated"], 1);
+    assert_eq!(receipt["figuresFailed"], 0);
+    assert_eq!(receipt["failuresOmitted"], 0);
+    assert_eq!(receipt["failures"], json!([]));
+    assert!(receipt["recovery"].as_str().unwrap().contains("Inspect the existing artifact"));
+    assert!(serde_json::to_string(receipt).unwrap().len() < 1_000);
+}
+
+#[tokio::test]
+async fn partial_dashboard_receipt_bounds_errors_and_numbers_them_across_sections() {
+    let bad_panels: Vec<_> = (1..MAX_PANELS).map(|_| json!({
+        "figure": {"tool": "unknown_🧬".repeat(200), "params": {}}
+    })).collect();
+    let result = AutoVisualiserRouter::new()
+        .render_dashboard(params_from(json!({
+            "title": "Partial",
+            "sections": [
+                {"title": "Good", "panels": [{"figure": bar_chart_figure()}]},
+                {"title": "Failures", "panels": bad_panels}
+            ]
+        })))
+        .await
+        .unwrap();
+    let receipt = result.structured_content.as_ref().unwrap();
+    assert_eq!(receipt["status"], "created_with_errors");
+    assert_eq!(receipt["figuresCreated"], 1);
+    assert_eq!(receipt["figuresFailed"], 23);
+    assert_eq!(receipt["failuresOmitted"], 15);
+    let errors = receipt["failures"].as_array().unwrap();
+    assert_eq!(errors.len(), 8);
+    for (index, error) in errors.iter().enumerate() {
+        assert_eq!(error["figure"], index + 2);
+        assert!(error["tool"].as_str().unwrap().chars().count() <= 64);
+        assert!(error["error"].as_str().unwrap().chars().count() <= 128);
+        assert_eq!(error["detailsTruncated"], true);
+    }
+    assert!(serde_json::to_string(receipt).unwrap().len() < 12_000);
+    assert_eq!(panel_documents(&dashboard_html(&result)).len(), 1);
 }
 
 #[tokio::test]

@@ -115,9 +115,17 @@ Already-configured keys are listed **by name** and never read back to pre-fill a
 
 ### From a chat
 
-The agent calls `install_extension` with the BAAM registry id and download URL. It never shells out, never sees a credential, and is told in its own tool description that a value in a chat message cannot configure anything and would expose it.
+The agent calls `install_extension` with an exact trusted BAAM registry id.
+BioRouter resolves the download URL itself, validates the model's eligibility and
+asks for approval of that exact package descriptor. It never accepts an
+agent-supplied download URL or shells out to install. Credentials are entered in
+BioRouter's own dialog; the agent receives key names and status, never values.
 
-Privacy Gate F1 lands on the **attach**, not on the install: installing is the user's explicit request and writes to disk, while attaching loads the server into this chat, which is what a public model may not do to a private extension. A refused attach still leaves the extension correctly installed for a session that may use it.
+A public-model chat cannot install a private connector through this tool: it is
+refused before approval or download, independently of the diagnostic privacy
+toggle. Attach performs its own reach checks as well. For otherwise authorized
+installs, an attach failure is reported separately from installation; an
+installed-only result is not evidence that the extension's tools are callable.
 
 ---
 
