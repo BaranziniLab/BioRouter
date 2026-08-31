@@ -30,6 +30,7 @@ const renderMessages = (messages: Message[]) =>
   render(
     <SessionMessages
       messages={messages}
+      sessionId="reference-session"
       isLoading={false}
       error={null}
       onRetry={vi.fn()}

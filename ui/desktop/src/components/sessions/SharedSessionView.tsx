@@ -101,6 +101,7 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
 
           <SessionMessages
             messages={session?.messages || []}
+            sessionId={session ? `shared:${session.share_token}` : 'shared:loading'}
             isLoading={isLoading}
             error={error}
             onRetry={onRetry}

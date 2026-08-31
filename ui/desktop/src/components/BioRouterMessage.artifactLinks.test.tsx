@@ -17,7 +17,8 @@ function messageView(
   messages: Message[],
   onOpenArtifact: (artifact: ArtifactSource) => void,
   workingDir: string | null = '/work',
-  sessionId = 'link-session'
+  sessionId = 'link-session',
+  isStreaming = false
 ) {
   return (
     <BioRouterMessage
@@ -28,11 +29,22 @@ function messageView(
       append={vi.fn()}
       workingDir={workingDir ?? undefined}
       onOpenArtifact={onOpenArtifact}
+      isStreaming={isStreaming}
     />
   );
 }
 
 describe('BioRouterMessage artifact links', () => {
+  it('file-link reliability: leaves prose paths inert while this assistant message streams', async () => {
+    const onOpenArtifact = vi.fn();
+    const message = assistantText('streaming', 'Writing `/tmp/report.js`');
+    render(messageView(message, [message], onOpenArtifact, '/work', 'link-session', true));
+
+    expect(await screen.findByText('/tmp/report.js')).toBeVisible();
+    expect(screen.queryByRole('button', { name: '/tmp/report.js' })).not.toBeInTheDocument();
+    expect(onOpenArtifact).not.toHaveBeenCalled();
+  });
+
   it('opens the generated inline-code file from an assistant message', async () => {
     const onOpenArtifact = vi.fn();
     const message: Message = {

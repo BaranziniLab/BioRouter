@@ -195,7 +195,7 @@ export default function BioRouterMessage({
             <div ref={contentRef} className="w-full">
               <MarkdownContent
                 content={displayText}
-                onOpenArtifact={onOpenArtifact}
+                onOpenArtifact={isStreaming ? undefined : onOpenArtifact}
                 workingDir={workingDir}
                 knownFilePaths={knownFilePaths}
               />

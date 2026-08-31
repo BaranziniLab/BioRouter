@@ -83,6 +83,81 @@ describe('collectArtifactsFromMessages', () => {
     ]);
   });
 
+  it('file-link reliability: waits for streaming prose to stabilize before opening its final path once', () => {
+    const fileKeys = (artifacts: ReturnType<typeof collectArtifactsFromMessages>) =>
+      artifacts.map((artifact) => {
+        if (artifact.kind !== 'file') throw new Error('expected a file artifact');
+        return `file:${artifact.path}`;
+      });
+    const streaming = visibleMessage([{ type: 'text', text: 'Created `/tmp/report.js`' }]);
+    const partialArtifacts = collectArtifactsFromMessages([streaming], '/work', 0);
+    expect(partialArtifacts).toEqual([]);
+    expect(
+      decideArtifactAutoOpen({
+        scanDone: true,
+        knownKeys: new Set(),
+        reportedMessageCount: 1,
+        loadedMessageCount: 1,
+        artifactKeys: fileKeys(partialArtifacts),
+      })
+    ).toEqual({ action: 'none' });
+
+    streaming.content = [{ type: 'text', text: 'Created `/tmp/report.json`' }];
+    expect(collectArtifactsFromMessages([streaming], '/work', 0)).toEqual([]);
+
+    const stableArtifacts = collectArtifactsFromMessages([streaming], '/work');
+    expect(stableArtifacts).toEqual([
+      { kind: 'file', path: '/tmp/report.json', title: 'report.json' },
+    ]);
+    const artifactKeys = fileKeys(stableArtifacts);
+    const firstDecision = decideArtifactAutoOpen({
+      scanDone: true,
+      knownKeys: new Set(),
+      reportedMessageCount: 1,
+      loadedMessageCount: 1,
+      artifactKeys,
+    });
+    expect(firstDecision.action).toBe('open');
+    if (firstDecision.action !== 'open') throw new Error('unreachable');
+    expect(
+      decideArtifactAutoOpen({
+        scanDone: true,
+        knownKeys: firstDecision.knownKeys,
+        reportedMessageCount: 1,
+        loadedMessageCount: 1,
+        artifactKeys,
+      })
+    ).toEqual({ action: 'none' });
+  });
+
+  it('file-link reliability: keeps successful structured artifacts available mid-stream', () => {
+    const request = visibleMessage([
+      { type: 'text', text: 'Writing `/tmp/report.js`' },
+      {
+        type: 'toolRequest',
+        id: 'stream-write',
+        toolCall: {
+          status: 'success',
+          value: {
+            name: 'developer__text_editor',
+            arguments: { command: 'write', path: '/tmp/report.json' },
+          },
+        },
+      },
+    ]);
+    const response = hiddenToolResponse('stream-write', '<p>not a file resource</p>');
+    const artifacts = collectArtifactsFromMessages([request, response], '/work', 0);
+    expect(artifacts).toContainEqual({
+      kind: 'file',
+      path: '/tmp/report.json',
+      title: 'report.json',
+    });
+    expect(artifacts).toContainEqual(
+      expect.objectContaining({ kind: 'html', sourceUri: 'ui://chart.html' })
+    );
+    expect(artifacts).not.toContainEqual(expect.objectContaining({ path: '/tmp/report.js' }));
+  });
+
   it('file-link reliability: does not auto-open malformed source locators', () => {
     expect(
       collectArtifactsFromMessages(

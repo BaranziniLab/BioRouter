@@ -496,7 +496,8 @@ function disambiguateFileArtifactTitles(artifacts: ArtifactSource[]): ArtifactSo
 
 export function collectArtifactsFromMessages(
   messages: Message[],
-  workingDir?: string
+  workingDir?: string,
+  streamingTextMessageIndex?: number
 ): ArtifactSource[] {
   const artifacts: ArtifactSource[] = [];
   const seen = new Set<string>();
@@ -509,10 +510,12 @@ export function collectArtifactsFromMessages(
     artifacts.push(artifact);
   };
 
-  for (const message of messages) {
+  for (const [messageIndex, message] of messages.entries()) {
     if (message.role !== 'assistant' || message.metadata?.userVisible === false) continue;
-    for (const artifact of collectTextArtifacts(getTextContent(message), workingDir)) {
-      addArtifact(artifact);
+    if (messageIndex !== streamingTextMessageIndex) {
+      for (const artifact of collectTextArtifacts(getTextContent(message), workingDir)) {
+        addArtifact(artifact);
+      }
     }
     for (const content of message.content) {
       if (content.type !== 'toolRequest') continue;
@@ -1471,9 +1474,15 @@ function BaseChatContent({
   // on every render; only ever READ at the instant the dock opens.
   sessionWorkingDirRef.current = sessionWorkingDir;
   // The working dir anchors relative paths a tool call names (`results/plot.png`).
+  const streamingTextMessageIndex =
+    chatState !== ChatState.Idle &&
+    chatState !== ChatState.LoadingConversation &&
+    messages[messages.length - 1]?.role === 'assistant'
+      ? messages.length - 1
+      : undefined;
   const sessionArtifacts = useMemo(
-    () => collectArtifactsFromMessages(messages, sessionWorkingDir),
-    [messages, sessionWorkingDir]
+    () => collectArtifactsFromMessages(messages, sessionWorkingDir, streamingTextMessageIndex),
+    [messages, sessionWorkingDir, streamingTextMessageIndex]
   );
   const sessionToolCallCount = useMemo(() => countToolRequests(messages), [messages]);
   const codeDelta = useMemo(() => collectCodeDelta(messages), [messages]);
