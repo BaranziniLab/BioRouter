@@ -2181,9 +2181,12 @@ mod tests {
         let dotted_i = builtin_extension("İ");
         let underscore = builtin_extension("_");
         let request = serde_json::json!({"extensions": ["i_"]});
-        assert!(unsupported_bridged_extension_names(&request, &[dotted_i.clone()]).is_empty());
+        assert!(
+            unsupported_bridged_extension_names(&request, std::slice::from_ref(&dotted_i))
+                .is_empty()
+        );
         assert_eq!(
-            unsupported_bridged_extension_names(&request, &[underscore.clone()]),
+            unsupported_bridged_extension_names(&request, std::slice::from_ref(&underscore)),
             ["i_"]
         );
         let hyphen = builtin_extension("a-b");

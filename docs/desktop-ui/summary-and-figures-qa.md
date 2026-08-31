@@ -1330,3 +1330,93 @@ not files the importer merely dropped. No installer, dependency fetch, global
 symlink, package removal or third-party script executed during this audit. Any
 later test must use exact package identity, preserve approval/archive boundaries,
 and distinguish shared-asset import correctness from dependency availability.
+
+### Workspace Memory and direct Computer Controller acceptance
+
+Using Versa API Azure's actual `gpt-5.5-2026-04-24` deployment and the isolated
+synthetic workspace, Luna observed successful executed `memory/remember_memory`
+and `memory/retrieve_memories` calls for only category `qa-capacity-ec4b6b43`,
+with `is_global: false`. The remember result explicitly identified local private
+chat storage, excluded from public-model/system-prompt use. A fresh chat
+retrieved the fictional capacity rule and correctly calculated 25 remaining
+minutes from 100 capacity and 75 ready work, excluding 20 blocked and 15 done.
+This is actual tool-use evidence, not just a graph-planning label or promise.
+No real user preference, unrelated category or global memory was requested.
+
+The separate direct Computer Controller attempt did not reach a tool call.
+In fresh session `20260831_23` (`Queue report automation`), disabling only Code
+Execution while retaining the other capabilities produced a generic context
+limit notice after compaction. GUI diagnostics exposed no original provider
+status, code, parameter or error message. Code Execution was restored ON and
+the app left idle. CSV validation, report creation, same-byte preview refresh,
+basename-link recovery and last-good-report preservation remain unexecuted.
+
+A read-only source audit found that the shared HTTP400 mapper classifies
+generic phrases such as `too long`, `exceeds` and `max_tokens` as context
+overflow. Tool-array, description or parameter validation errors can therefore
+enter futile conversation compaction. Disabling Code Execution exposes all
+direct tool schemas, making a tool-schema rejection plausible here; the actual
+live cause is not proven. Neither the endpoint context limit nor the catalog
+selection should be changed on that hypothesis alone.
+
+The three screenshots (1:23:59 PM, 1:18:31 PM and 1:23:30 PM on 2026-08-31)
+were copied to WD-BLACK as `memory-and-direct-tool-observations.tar.gz`, SHA-256
+`648507467ef5905b656e9942c595e0728a52bea508d64adac4da362260971b52`.
+Each archive member independently matched its retained original. The first
+shows the expanded remember result; the second is a collapsed retrieval/result
+capture (Luna separately expanded its arguments); the third shows the failure.
+Production binaries still correspond to `2ae49597`, not subsequent source
+changes. This does not establish GPT-5.6 coverage or current-backend acceptance.
+
+### HTTP400 context classification: fail-first correction
+
+The shared mapper now recognizes exact string `context_length_exceeded` codes
+or specific context-overflow wording from actual message strings. Generic
+tool-array/description length errors and output-parameter validation errors
+remain `RequestFailed`, retaining their actionable original message. Serialized
+fallback payloads remain available as displayed error details but cannot serve
+as context signals through malformed fields. Existing nested/top-level message
+precedence, non-400 status handling and metadata-only logging are unchanged.
+Tool selection, provider model limits, agent compaction and permissions were not
+changed. Wording remains a heuristic for providers without a structured code.
+
+Luna executed the complete fail-first sequence, not only a post-fix test:
+
+- Initial seven tests/28 synthetic cases: five failed, two passed. The errors
+  reproduced through both streaming-status and blocking-response HTTP wrappers.
+- Initial fix: eight tests/30 cases passed, including an additional negative
+  context-mention control.
+- Independent review found the malformed-payload fallback edge. The expanded
+  suite failed one of ten tests, identifying ten mismatches in a sixteen-case
+  malformed-payload table; exact-code-without-message controls still passed.
+- Final correction: ten tests/50 cases passed; the full utilities module passed
+  42 tests; the full core library passed 3,329 tests with one ignored. The focused
+  tests are included in those larger totals, not additional unique passes.
+
+Independent Sol re-review closed the fallback finding with no remaining
+actionable issue. These are offline/fake-HTTP tests, not a claim that the live
+Versa request's original error is now known or that its task succeeded. Final
+repository gates, a new production CLI/daemon rebuild and current-binary live
+acceptance remain separate requirements.
+
+Six completed logs were archived as `http-context-classifier-validation.tar.gz`
+on WD-BLACK, SHA-256
+`5fa3d81fabde7925d704a4a102071929bbded3ed728c89cd3bd2a009c97778ee`.
+Every member was independently SHA-256 matched to its retained original.
+
+The subsequent repository gate initially stopped on two test-only Clippy
+single-element-slice clones in `subagent_tool.rs`. Replacing them with
+`std::slice::from_ref` preserved the asserted inputs and runtime behavior;
+independent review was clean, all 75 subagent-module tests passed, and the full
+`just check-everything` rerun passed. The 3,329 core-library passes above precede
+this test-only cleanup; no runtime change followed that library run.
+The three gate/cleanup receipts are backed up as
+`http-context-repository-gates.tar.gz`, SHA-256
+`0a365ba5cf22e195a24fd718f60da989ca00c9f974bdde391481f700b46b9fba`,
+with every member independently matched against its retained original.
+
+The production CLI/daemon hashes were rechecked and remain those of `2ae49597`.
+A separate caller-path review is checking raw provider-error logging in
+`Agent::reply`; the classifier tests establish mapper-level metadata protection,
+not a claim that every downstream log sink is protected. No live acceptance,
+production rebuild, push or release is implied by these gate results.
