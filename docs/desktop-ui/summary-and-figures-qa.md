@@ -399,3 +399,45 @@ opt-in real Claude/Codex tests remained ignored because they require signed-in
 CLIs and spend provider quota; zero-test targets and ignored cases are not
 additional coverage. The subsequent complete repository gate rerun also passed
 (`/tmp/biorouter-post-server-repository-gates.log`, exit zero).
+
+### Final production-default desktop checkpoint
+
+The production-default daemon and CLI built successfully from `502930f5` in
+4m54s. The daemon SHA-256 was
+`b55d66a4298ebbe091f72e7facce95e285b8e9192c9821840d9267369f5636f3`.
+Actual Electron arguments, renderer working-directory metadata, profile files,
+and daemon open-file paths confirmed isolation under the test profile and
+`/tmp/biorouter-final-live.cqHHQg`. No installed-user profile was used.
+
+Luna's natural SQLite/comparator request in parent `20260831_4` successfully
+spawned child `20260831_5`, but the child correctly reported that its actual
+tools could neither create the project nor execute tests. Its grants were the
+audited Knowledge, Skills and Extension Manager subset. Developer, Code
+Execution, Computer Controller and native host tools are intentionally absent
+from this subscription bridge; configured enablement is not callable access.
+No SQLite fixture, comparator or executed tests were produced. The attempted
+live steer targeted the same child but arrived after it stopped, returning
+`target child has no turn in flight; live steering cannot be delivered`.
+Spawn is proven; useful executable delegation is blocked on this provider, and
+this terminal-child attempt does not prove live steering. Four blocked checklist
+items correctly remained pending, and the failed activity was named
+`Workspace Send Prompt`. The parent reported the blocker without fabricating
+work. No daemon warning, error or resource-method-not-found line appeared.
+
+The unnecessary spawn despite an unavailable execution surface exposed a
+planning-guidance weakness. A new focused prompt-contract regression failed
+before the wording correction (`/tmp/biorouter-child-preflight-red.log`). The
+full green rerun passed 3,299 core and 1,563 MCP tests with zero failures
+(`/tmp/biorouter-child-preflight-full-green.log`); all repository gates passed
+again (`/tmp/biorouter-child-preflight-repository-gates.log`). The nine exported
+Mermaid fixtures still match the previously browser-verified hashes. A supported
+follow-on live scenario remains a separate acceptance check.
+Do not weaken the credential boundary to make the SQLite scenario pass.
+
+Manual Meditation in `20260831_6` completed from 19:13:56 to 19:16:23 PDT.
+Luna observed the accessible pending message and disabled run button, followed
+by completion and a re-enabled button. Parent screenshot inspection confirmed
+both states; read-only schedule inspection confirmed `currently_running: false`,
+no error and `last_run: 2026-08-31T02:16:23.603801Z`. No manual schedule or
+knowledge-store repair was made. The development app was then quit normally
+after completion, not interrupted mid-run.

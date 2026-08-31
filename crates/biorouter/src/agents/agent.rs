@@ -1298,7 +1298,16 @@ fn prepare_coding_agent_bridge_tool(tool: &Tool) -> Tool {
                  inherit Developer, Code Execution, arbitrary installed extensions, or its \
                  vendor-native shell/editor. Do not retry with one of those names. For a skill \
                  repository URL, use skills__importSkillPackage in this chat or delegate with \
-                 extensions:[\"skills\"]; raw shell access is neither needed nor available."
+                 extensions:[\"skills\"]; raw shell access is neither needed nor available.\n\n\
+                 Before spawning, match the requested outcome to the actual callable child tools: \
+                 configured/enabled is not callable, and the parent's broader tools are not inherited. \
+                 Do not delegate SQLite/database creation, file creation, shell commands, or \
+                 build/test execution without corresponding child tools. A child may instead review \
+                 a specification or calculate expected results; label that reasoning-only, not \
+                 executed or verified. For an app-building task, if Agent Drafter is callable here, \
+                 build directly in this parent rather than delegating to a child without that grant. Otherwise \
+                 explain the limitation and ask for a supported alternative or provider before \
+                 starting a child. Do not silently substitute analysis for a requested executable result."
             )
             .into(),
         );
@@ -1310,7 +1319,9 @@ fn prepare_coding_agent_bridge_tool(tool: &Tool) -> Tool {
                     Value::String(
                         "OMIT this to give the child the audited Knowledge, Skills, and Extension \
                          Manager subset that is currently enabled. Naming a subset can only \
-                         restrict that set. Developer, Code Execution, arbitrary installed \
+                         restrict that set: configured/enabled is not callable, and listing a \
+                         capability here does not grant it. Check the requested work against the \
+                         child's callable subset before spawning. Developer, Code Execution, arbitrary installed \
                          extensions, and vendor-native shell/editor tools cannot be added. For a \
                          repository skill install, name only skills or use \
                          skills__importSkillPackage directly in this chat."
@@ -14569,6 +14580,41 @@ mod tests {
             "skills__importSkillPackage"
         ));
         assert!(!coding_agent_bridge_policy_allows_tool("developer__shell"));
+    }
+
+    #[test]
+    fn coding_agent_parent_preflights_executable_work_against_child_grants() {
+        let mut spawn = crate::agents::subagent_tool::create_subagent_tool(&[]);
+        spawn.name = "workspace__subagent".into();
+        let attached = prepare_coding_agent_bridge_tool(&spawn);
+        let description = attached.description.as_deref().unwrap();
+        for required in [
+            "Before spawning",
+            "actual callable child tools",
+            "SQLite",
+            "file creation",
+            "build/test execution",
+            "Agent Drafter",
+            "reasoning-only",
+        ] {
+            assert!(
+                description.contains(required),
+                "missing delegation preflight guidance: {required}"
+            );
+        }
+        let extension_help = attached.input_schema["properties"]["extensions"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(extension_help.contains("configured/enabled is not callable"));
+        assert!(extension_help.contains("does not grant"));
+        for forbidden in [
+            "developer__shell",
+            "developer__text_editor",
+            "code_execution__execute_code",
+            "computercontroller__computer_control",
+        ] {
+            assert!(!coding_agent_bridge_policy_allows_tool(forbidden));
+        }
     }
 
     #[tokio::test]
