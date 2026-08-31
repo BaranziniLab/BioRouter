@@ -358,6 +358,25 @@ console.log('Hello, World!');
       }
     );
 
+    it.each([
+      [String.raw`C:\Users\Ada\Project\report.csv`, 'report.csv'],
+      [String.raw`\\server\share\reports\summary.md`, 'summary.md'],
+    ])(
+      'file-link reliability: opens a plain-prose Windows path exactly: %s',
+      async (path, title) => {
+        const onOpenArtifact = vi.fn();
+        // Markdown uses `\\` to render one literal backslash, so preserve both UNC
+        // introducer slashes in the prose that reaches the component override.
+        const markdownPath = path.startsWith('\\\\') ? `\\\\${path}` : path;
+        render(
+          <MarkdownContent content={`Open ${markdownPath}.`} onOpenArtifact={onOpenArtifact} />
+        );
+
+        fireEvent.click(await screen.findByRole('button', { name: path }));
+        expect(onOpenArtifact).toHaveBeenCalledWith({ kind: 'file', title, path });
+      }
+    );
+
     it('file-link reliability: never linkifies a root suffix after unsupported path characters', async () => {
       const onOpenArtifact = vi.fn();
       render(
