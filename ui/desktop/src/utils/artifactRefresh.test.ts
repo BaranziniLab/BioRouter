@@ -85,16 +85,63 @@ describe('successful artifact invalidation hints', () => {
     expect(artifactRefreshEvents(foreign, 'a')).toEqual([]);
     expect(artifactRefreshEvents([...exchange('w'), ...exchange('w')], 'a')).toHaveLength(1);
   });
-  it('treats opaque successful execution as a check of the active file, not invented path evidence', () => {
-    const [event] = artifactRefreshEvents(
-      exchange('w', 'code_execution__execute_code', {
-        code: 'if (false) write_file("/tmp/never.txt")',
-      }),
-      'a'
-    );
-    expect(event.paths).toEqual([]);
-    expect(refreshEventMatches(event, 'file:/tmp/result.txt')).toBe(true);
-    expect(refreshEventMatches(event, 'app:qa')).toBe(false);
+  it.each([
+    ['code_execution__execute_code', { code: 'if (false) write_file("/tmp/never.txt")' }],
+    [
+      'computercontroller__automation_script',
+      { language: 'shell', script: 'if false; then printf unused > /tmp/never.txt; fi' },
+    ],
+    [
+      'automation_script',
+      { language: 'ruby', script: 'File.write("/tmp/never.txt", "unused") if false' },
+    ],
+  ])(
+    'treats successful opaque %s as an active-file check, not invented path evidence',
+    (name, args) => {
+      const events = artifactRefreshEvents(exchange('w', name, args), 'a');
+      expect(events).toEqual([{ id: 'w', paths: [], checkActiveFile: true }]);
+      expect(refreshEventMatches(events[0], 'file:/tmp/result.txt')).toBe(true);
+      expect(refreshEventMatches(events[0], 'app:qa')).toBe(false);
+    }
+  );
+  it.each([{ isError: true }, { is_error: true }])(
+    'does not refresh after a failed automation script: %j',
+    (error) => {
+      expect(
+        artifactRefreshEvents(
+          exchange(
+            'failed-script',
+            'computercontroller__automation_script',
+            { language: 'shell', script: 'exit 1' },
+            { content: [], ...error }
+          ),
+          'a'
+        )
+      ).toEqual([]);
+    }
+  );
+  it('keeps direct automation completion hints local, deduplicated and completion-only', () => {
+    const completed = exchange('script', 'computercontroller__automation_script', {
+      language: 'shell',
+      script: 'printf updated > /tmp/result.txt',
+    });
+    const pending = structuredClone(completed);
+    pending[0].content.pop();
+    expect(artifactRefreshEvents(pending, 'a')).toEqual([]);
+    const failedTransport = structuredClone(completed);
+    (failedTransport[0].content[1] as { toolResult: unknown }).toolResult = {
+      status: 'error',
+      error: 'synthetic failure',
+    };
+    expect(artifactRefreshEvents(failedTransport, 'a')).toEqual([]);
+    const foreign = structuredClone(completed);
+    foreign[0].metadata.provenance = { fromSessionId: 'other' } as NonNullable<
+      Message['metadata']['provenance']
+    >;
+    expect(artifactRefreshEvents(foreign, 'a')).toEqual([]);
+    expect(artifactRefreshEvents([...completed, ...completed], 'a')).toEqual([
+      { id: 'script', paths: [], checkActiveFile: true },
+    ]);
   });
   it('refreshes the matching built app, not unrelated apps or unbundled source edits', () => {
     const [build] = artifactRefreshEvents(

@@ -1184,6 +1184,43 @@ Source files and existing binaries remain untouched. Memory later returned to
 normal, but root did not stop the previously dominant security extension and
 does not attribute that recovery to cache deletion.
 
+### Direct Computer Controller file refresh
+
+The direct `computercontroller__automation_script` path was missing from the
+UI's successful opaque-execution refresh hints. Three fail-first assertions
+reproduced the omission (11 passed, three failed). The one-line correction
+adds `automation_script` to the existing active-file check, without inventing
+an output path, opening a new preview, refreshing an app, or changing file
+access permissions. Failed, pending, foreign-session and duplicate responses
+retain their existing filtering. Both canonical and bare tool names are covered.
+
+Luna then ran 51 focused collector/nested/hook tests and the full desktop suite:
+4,175 tests across 385 files passed. UI lint, TypeScript, theme, token and 332
+contrast checks passed; independent review found no actionable issue. Receipts:
+`/tmp/biorouter-direct-automation-refresh-red.log`,
+`/tmp/biorouter-direct-automation-refresh-green.log`,
+`/tmp/biorouter-post-automation-full-ui.log`, and
+`/tmp/biorouter-post-automation-ui-lint.log`.
+
+These are automated UI results, not live direct-automation acceptance. The
+full repository gates passed at `22249b7a` immediately before this correction;
+they have not yet been rerun for it. No Rust source or production binary changed.
+Live validation must use the actual direct tool, not a Code Execution wrapper
+that could mask the missing path. Same-byte refresh and later basename links
+must be verified against a report in a nested workspace directory.
+
+### Provider selection correction
+
+An attempted Claude Code GUI test mistakenly selected direct Anthropic
+`claude-sonnet-4-6`. It failed immediately with insufficient API credit, before
+any child or tool work. This is a tester provider-selection error, not a failed
+Claude Code delegation test. There was no retry or billing change. The main
+model picker listed configured providers only; Claude Code was found through
+the separate provider setup UI. Its non-secret command default `claude` was
+saved unchanged in the isolated QA profile. It then showed Configured and
+model `claude-opus-5`, without API-key entry, sign-in or new permission. Actual
+provider execution and child steering remain separate acceptance requirements.
+
 ### Destiny shared-package compatibility: separate triage
 
 A read-only audit of the exact public repository at
