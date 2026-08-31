@@ -877,6 +877,7 @@ export function artifactSourceFromResource(
       kind: 'html',
       title,
       html,
+      sourceUri: resource.uri,
       preferredWidth,
       preferredHeight,
     };

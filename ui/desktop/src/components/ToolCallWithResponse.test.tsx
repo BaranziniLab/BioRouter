@@ -323,7 +323,7 @@ describe('summarizeToolCall', () => {
     expect(summarizeToolCall({ name: 'skills__loadSkill', arguments: {} })).toBe('Loading a skill');
   });
 
-  it('summarizes multi-step tool graphs as coordinated work', () => {
+  it('names the work in multi-step tool graphs instead of a step count', () => {
     expect(
       summarizeToolCall({
         name: 'multi_tool_use__execute_code',
@@ -335,7 +335,71 @@ describe('summarizeToolCall', () => {
           ],
         },
       })
-    ).toBe('Coordinating 3 tool steps');
+    ).toBe('Read the manifest → Patch the UI');
+  });
+
+  it('uses tool identities when graph descriptions are numbered placeholders', () => {
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__execute_code',
+        arguments: {
+          tool_graph: [
+            { tool: 'agent_drafter/build_app', description: 'Step #1' },
+            { tool: 'agent_drafter/smoke_app', description: 'Updating #2' },
+          ],
+        },
+      })
+    ).toBe('Agent Drafter Build App → Agent Drafter Smoke App');
+  });
+
+  it('does not repeat identical action descriptions in a coordinated label', () => {
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__execute_code',
+        arguments: {
+          tool_graph: [
+            { tool: 'files/read', description: 'Read queue data' },
+            { tool: 'files/read', description: 'Read queue data' },
+          ],
+        },
+      })
+    ).toBe('Read queue data');
+  });
+
+  it.each([undefined, '', 'No description was provided.', 'Tool call number 1', 'Update #2'])(
+    'names a single action when its description is %s',
+    (description) => {
+      expect(
+        summarizeToolCall({
+          name: 'code_execution__execute_code',
+          arguments: { tool_graph: [{ tool: 'files/read', description }] },
+        })
+      ).toBe('Files Read');
+    }
+  );
+
+  it('ignores malformed graph nodes and falls back for an empty graph', () => {
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__execute_code',
+        arguments: { tool_graph: [null, false, 1] },
+      })
+    ).toBe('Executing code');
+  });
+
+  it('bounds coordinated labels without breaking Unicode characters', () => {
+    const label = summarizeToolCall({
+      name: 'code_execution__execute_code',
+      arguments: {
+        tool_graph: [
+          { tool: 'read', description: `Read ${'🧬'.repeat(100)}` },
+          { tool: 'write', description: `Save ${'🧬'.repeat(100)}` },
+        ],
+      },
+    });
+    expect(label.startsWith('Read ')).toBe(true);
+    expect(Array.from(label).length).toBeLessThanOrEqual(96);
+    expect(() => encodeURIComponent(label)).not.toThrow();
   });
 
   it('matches action words rather than misleading substrings inside nouns', () => {
@@ -759,7 +823,9 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     );
 
     // Expand the step row, then the executed-calls section.
-    fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
+    fireEvent.click(
+      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+    );
     fireEvent.click(screen.getByText('View executed calls (2)').closest('button') as HTMLElement);
 
     expect(screen.getByText('Reading manifest.json')).toBeInTheDocument();
@@ -788,7 +854,9 @@ describe('ToolCallWithResponse executed-call transparency', () => {
       />
     );
 
-    fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
+    fireEvent.click(
+      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+    );
     const codeToggle = screen.getByText('View generated code').closest('button') as HTMLElement;
     fireEvent.click(codeToggle);
 
@@ -835,7 +903,9 @@ describe('ToolCallWithResponse executed-call transparency', () => {
       />
     );
 
-    fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
+    fireEvent.click(
+      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+    );
     fireEvent.click(screen.getByText('View executed calls (1)').closest('button') as HTMLElement);
     fireEvent.click(screen.getByText(/Running/).closest('button') as HTMLElement);
 
@@ -876,7 +946,9 @@ describe('ToolCallWithResponse executed-call transparency', () => {
       />
     );
 
-    fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
+    fireEvent.click(
+      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+    );
     fireEvent.click(screen.getByText('View executed calls (1)').closest('button') as HTMLElement);
 
     expect(screen.getByText(/and 3 more calls not recorded/)).toBeInTheDocument();

@@ -5,6 +5,8 @@ export type ArtifactSource =
       kind: 'html';
       title: string;
       html: string;
+      /** Resource identity for presentation hints, never navigation or read authority. */
+      sourceUri?: string;
       preferredWidth?: number;
       preferredHeight?: number;
     }

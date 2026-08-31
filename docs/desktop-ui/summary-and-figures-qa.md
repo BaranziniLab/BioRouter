@@ -845,6 +845,193 @@ passed 54 and 21 cases respectively. This closes the current automated gate,
 not rebuilt-app or live-provider acceptance. CLI/daemon rebuild and useful
 Luna-driven application scenarios remain required before release.
 
+### Rebuilt runtime and current acceptance boundaries
+
+After explicit approval for one serial low-disk production-default build,
+the CLI and daemon rebuilt successfully in 3m52s from clean source
+`2ae495971d0fc65acd685629cc0edf7b2c1dd979`
+(`/tmp/biorouter-post-hardening-production-build.log`). Independently verified
+SHA-256 values are:
+
+- CLI: `19615a05a0b336bd959400ce0a74d1abe827c0c5ea5641efa9092e199879f7b9`
+- Daemon: `9cfbb6811d0e88fbf0389ffc153ff77d729144d6aa4e20d2b5d8b7174f996ea0`
+
+The older launch command was refused because it enabled a remote-debugging
+port. Source inspection confirmed those flags only append the debugging switch,
+not authentication. A materially safer normal development launch with both
+`ENABLE_PLAYWRIGHT` and `PLAYWRIGHT_CDP_PORT` unset succeeded. The actual
+Electron arguments identify the isolated QA user-data path and task directory;
+its child daemon uses the verified worktree executable, loopback listener and
+isolated session database/logs. No debugger/CDP interaction or OS authentication
+bypass occurred; the installed Biorouter application was untouched.
+
+The current CLI workflow rendered successfully in
+`/tmp/biorouter-selftest-apps-preview.biANv0`, with evidence at
+`/tmp/biorouter-selftest-render.log`. Both new exact app IDs were absent under
+normal-file and symlink checks; the old fixed-ID app remained intact. Execution
+was then refused before any provider request because the payload includes
+repository-authored workflow text. That payload was not retried or submitted
+through another interface. Actual CLI workflow acceptance remains open pending
+specific transmission approval.
+
+The independent GUI lane instead uses a fresh empty workspace and only an
+explicit fictional queue dataset, excluding repository files, private profiles,
+credentials and earlier conversations. This can establish useful GUI behavior
+but does not replace the unexecuted repository-backed workflow requirement.
+
+### Synthetic queue acceptance and semantic coordination labels
+
+The rebuilt GUI completed a fictional queue task through Versa Azure
+`gpt-5.5-2026-04-24`, session `20260831_13`, in
+`/private/tmp/biorouter-synthetic-gui.z67RJq`. The generated app
+`queue-workbench-fictional-20260831-1026` produced real build, lint and browser
+smoke passes; lint retained one advisory about a custom style block. Its first
+load showed the correct ready/blocked/done/remaining totals: 75/20/15/45.
+Changing A from 30 to 80 minutes produced 125 ready and zero remaining; moving
+B from ready to done produced 80/20/60/40. The Ready filter showed only A,
+and managed-preview reload preserved A=80 and B=done.
+
+This is not evidence for declarative `surface.state_initial`: the app uses
+imperative initialization and hard-coded first-render values. The app's minute
+badge also stayed stale after an edit, despite correct aggregate totals. A
+plain-language model follow-up and another interaction test are required;
+editing this test app directly from the development agent would not establish
+model repair capability.
+
+Three early failed calls were inspected rather than hidden by final success.
+One todo call omitted required `content`; the MCP schema and Code Execution
+projection agree, so no schema repair is justified. Two launch refusals cited
+missing visible progress. Source audit found `autoChat: false` was classified
+as enabled solely because the source contained `autoChat`. A dummy status
+element is not a functional repair. Four new lint regressions reproduced that
+false positive (four additional controls passed), recorded in
+`/tmp/biorouter-autochat-progress-red.log`; the narrow lint correction and its
+regression validation are tracked separately.
+
+The same GUI task exposed another naming gap: a collapsed multi-tool row said
+"Coordinating 8 tool steps" although its graph already contained action
+descriptions. Four new UI regressions failed on the count-only label. The
+summary now uses the first and last distinct action descriptions; missing or
+numbered placeholders fall back to readable tool identities. Labels are
+bounded without splitting Unicode code points. Expanded planned graphs,
+actual execution telemetry, failures and unrecorded-call counts are unchanged.
+All 54 focused tests, TypeScript checking and scoped ESLint passed; independent
+Sol review found no actionable issue. Logs are
+`/tmp/biorouter-semantic-graph-label-{red,green,typecheck,eslint}.log`.
+
+The plain-language repair follow-up completed the actual update/build/lint/
+smoke/launch path. Expanded receipts showed `dist/app.js`, the existing style
+advisory, and a real smoke pass with six frames and no findings. Luna initially
+opened the intentionally static `about:srcdoc` artifact; its banner correctly
+said to launch the app. The Applications catalog's Launch action opens the
+default external browser by design. Clicking the chat's observed app URL and
+then **Open here** restored the managed live preview; neither the snapshot nor
+Electron remaining on the catalog is evidence of a navigation defect.
+
+Luna then verified the updated app: A=90 ready, B=45 ready, C=20 blocked and
+D=15 done produced 135/20/15/-15, an explicit **Over capacity by 15 min** label,
+and an immediately updated `ready / 90m` row badge. Both Reload and closing
+only the live tab then reopening the identical
+`http://127.0.0.1:53103/apps/queue-workbench-fictional-20260831-1026/` URL preserved
+those edits. Screenshots are timestamped 10:45:40 and 10:47:13 on August 31 in
+the Sky capture directory. The prior A=80/B=done values were absent on the first
+reopen after the update; that earlier loss remains unattributed, not repaired
+or disproven by the subsequent reload/close-reopen passes. The first stepper
+edit also briefly showed zero before the repeated edit took effect.
+
+A subsequent read-only audit found no current-source build reset: the app's
+fixed storage key and valid-row initialization preserve these values, and its
+input handlers save synchronously. The managed preview partition does have an
+explicit lifetime: it is reused for the same window/backend/app, retained when
+only a preview tab closes, and cleared when its owner closes or backend is
+revoked. Neither that contract nor the current source proves which event caused
+the earlier loss. The discriminating live follow-up must verify saved rows by
+reloading before a cosmetic same-app build, retain the identical window/daemon/
+URL throughout, then check both the new content and saved rows without a manual
+post-build refresh. Dirty-form deferral is a separate expected state, not an
+idle auto-refresh failure.
+
+The progress-lint correction now passes all thirteen focused regressions
+(`/tmp/biorouter-autochat-progress-green.log`). It uses the existing JavaScript
+parser to distinguish actual literal object-property settings, preserves
+comment byte offsets/Unicode and string/template calls, and treats dynamic,
+spread, computed or duplicate settings conservatively. Independent review
+caught an overriding-property loophole before validation; its regression and
+correction are included. This remains static source analysis, not a runtime
+dataflow guarantee. Full MCP regression validation is separate, and the newly
+corrected backend has not yet been rebuilt into production-default binaries.
+
+Review of the real multi-tool app workflow found one further frontend gap:
+successful nested Drafter builds are recorded in execution metadata, but
+artifact refresh only examined top-level tool names. Nine new failing cases
+reproduced the gap; the corrected refresh and hook suites passed all 37 cases
+(`/tmp/biorouter-nested-app-refresh-{red,green}.log`). Refresh hints now also
+accept actual successful nested Drafter update/build/configure records, with
+valid JSON arguments, under the existing successful-parent and provenance
+gates. Planned graphs and response prose cannot stand in for executed calls;
+hints grant no navigation or file-read authority. A separate suspected
+selected-tab mismatch was ruled out after following the existing synchronous
+mouse/keyboard/close callbacks, so no new tab-state mechanism was added.
+
+A distinct source-confirmed focus issue remains under validation: a rebuilt
+app's changed static HTML card was treated as a new artifact and could replace
+the selected live preview. HTML artifacts now retain their actual source URI;
+the auto-open effect banks the new card but preserves the current live preview
+when its app ID exactly matches that URI. Different apps and unrelated artifacts
+retain normal behavior. Two focused regressions failed before the change
+(`/tmp/biorouter-live-app-focus-red.log`). The final 16-case suite uses real
+base64 card fixtures and executes the extracted production effect, rather than
+duplicating its decision. All 16 focused cases now pass
+(`/tmp/biorouter-live-app-focus-green.log`). Independent code review found no
+actionable issue; live GUI focus/refresh acceptance is still pending.
+
+The subsequent full MCP run exposed an unrelated probabilistic vault-test
+assertion: encrypted random bytes were required never to contain a two-byte
+plaintext substring. A valid nonce or ciphertext can contain that substring
+by chance. Only test code changed: authenticated round trips and ciphertext
+length now check the contract, and a deterministic nonce fixture demonstrates
+why substring absence is not a valid encryption test. Production cryptography
+and storage are unchanged. All eight vault tests passed
+(`/tmp/biorouter-vault-test-repair-green.log`). The completed full MCP log reports
+1,650 passed, zero failed and eleven ignored
+(`/tmp/biorouter-post-guidance-vault-mcp.log`).
+
+The final frozen UI changes also passed the 117-test refresh/activity/tool-label
+suite, TypeScript checking and the complete UI suite: 385 files, 4,152 tests,
+207.74 seconds. Evidence is in `/tmp/biorouter-post-label-focused-ui.log`,
+`/tmp/biorouter-post-label-typecheck.log` and
+`/tmp/biorouter-post-label-full-ui.log`. Repository gates and actual GUI
+auto-refresh/focus acceptance remain separate checks. The already rebuilt
+daemon predates the subsequent Rust lint/prompt change; these UI results do not
+claim rebuilt-backend acceptance for it.
+
+The repository gate caught three direct string slices in the new parser. They
+now use checked access; valid parser ranges behave identically and invalid
+ranges conservatively retain unknown/ambiguous classification. Independent
+review found no policy weakening. All thirteen parser regressions and the
+instruction-contract test passed again. The complete `just check-everything`
+gate then passed, followed by a full MCP rerun on that exact final code:
+1,650 passed, zero failed, eleven ignored. Final receipts are
+`/tmp/biorouter-checked-slices-tests.log`,
+`/tmp/biorouter-post-realtime-repository-gates-final.log` and
+`/tmp/biorouter-post-realtime-final-mcp.log`. No additional production-default
+CLI/daemon rebuild, remote push, merge or release occurred.
+
+Completed build/gate/UI/isolation/file-link logs were preserved in
+`/Volumes/WD_BLACK/BioRouter-QA-20260831.WTDrer/validated-build-and-test-receipts.tar.gz`.
+Every archived member was compared by SHA-256 with its source; the archive and
+member hashes are recorded in the neighboring `VERIFICATION.md`. All original
+logs remain in place. No credentials, QA profile, conversations or active build
+caches were copied, and nothing was deleted or claimed as reclaimed disk space.
+
+The ten completed follow-up receipts are also preserved in the same directory
+as `realtime-followup-validation.tar.gz` (SHA-256
+`fabc978d4b4796d3b84bc9c063b380053fa1910daa954b19792a70d5ce0d9f42`).
+Each archived member's SHA-256 matched its retained original. This second
+archive includes the final MCP/repository-gate runs, full/focused UI checks,
+typecheck, checked-slice, static-focus, nested-refresh, semantic-label and vault
+receipts. It does not copy the running QA profile or generated app data.
+
 ### Destiny shared-package compatibility: separate triage
 
 A read-only audit of the exact public repository at

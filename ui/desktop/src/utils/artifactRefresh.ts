@@ -15,6 +15,20 @@ function record(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function refreshedAppId(
+  name: string,
+  args: Record<string, unknown> | undefined
+): string | undefined {
+  if (!['build_app', 'update_app', 'configure_app'].includes(name)) return undefined;
+  const visibleUpdate =
+    name !== 'update_app' ||
+    args?.path == null ||
+    args.path === 'index.html' ||
+    args.path === 'manifest.json' ||
+    (typeof args.path === 'string' && /^(?:dist|assets)\//.test(args.path));
+  return visibleUpdate && typeof args?.id === 'string' ? args.id : undefined;
+}
+
 /** A refresh hint, never permission to open a new file or navigate a new URL. */
 export function artifactRefreshEvents(
   messages: readonly Message[],
@@ -48,17 +62,39 @@ export function artifactRefreshEvents(
       // only: command text is not evidence that a guessed output path was written.
       if (['shell', 'bash', 'execute_code', 'run_code'].includes(name)) {
         events.set(content.id, { id: content.id, paths: [], checkActiveFile: true });
+        if (name === 'execute_code' || name === 'run_code') {
+          const executedCalls = record(result._meta)?.['biorouter/tool-calls'];
+          if (Array.isArray(executedCalls)) {
+            for (const value of executedCalls) {
+              const nested = record(value);
+              if (
+                nested?.status !== 'ok' ||
+                typeof nested.tool !== 'string' ||
+                !/^agent_drafter__(?:build_app|update_app|configure_app)$/.test(nested.tool) ||
+                typeof nested.args !== 'string'
+              )
+                continue;
+              let nestedArgs: Record<string, unknown> | undefined;
+              try {
+                nestedArgs = record(JSON.parse(nested.args));
+              } catch {
+                // Executed-call telemetry is bounded and can contain truncated JSON.
+                continue;
+              }
+              const appId = refreshedAppId(baseToolName(nested.tool), nestedArgs);
+              if (appId !== undefined) {
+                const id = JSON.stringify(['nested-app', content.id, appId]);
+                events.set(id, { id, paths: [], appId });
+              }
+            }
+          }
+        }
         continue;
       }
       if (name === 'build_app' || name === 'update_app' || name === 'configure_app') {
-        const visibleUpdate =
-          name !== 'update_app' ||
-          args?.path == null ||
-          args.path === 'index.html' ||
-          args.path === 'manifest.json' ||
-          (typeof args.path === 'string' && /^(?:dist|assets)\//.test(args.path));
-        if (visibleUpdate && typeof args?.id === 'string') {
-          events.set(content.id, { id: content.id, paths: [], appId: args.id });
+        const appId = refreshedAppId(name, args);
+        if (appId !== undefined) {
+          events.set(content.id, { id: content.id, paths: [], appId });
         }
         continue;
       }

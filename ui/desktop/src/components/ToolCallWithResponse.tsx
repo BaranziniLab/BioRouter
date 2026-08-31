@@ -655,6 +655,26 @@ const compactValue = (value: unknown, maxLength = MAX_SUMMARY_VALUE_LENGTH): str
   return `${text.slice(0, keep)}…${text.slice(-keep)}`;
 };
 
+const summarizeToolGraph = (graph: ToolGraphNode[]): string => {
+  const descriptions = graph.map(({ tool, description }) => {
+    const text = description.replace(/\s+/g, ' ').trim();
+    const placeholder =
+      text === 'No description was provided.' ||
+      /^(?:tool(?: call)?|step|update|updating|task|operation)\s*(?:(?:number|no\.?)\s*)?#?\s*\d+[.!]?$/i.test(
+        text
+      );
+    return placeholder ? humanize(tool.replace(/[/\\]/g, '_')).replace(/\s+/g, ' ').trim() : text;
+  });
+  const actions = [...new Set(descriptions)];
+  const shorten = (text: string, limit: number): string => {
+    const characters = Array.from(text);
+    return characters.length <= limit ? text : `${characters.slice(0, limit - 1).join('')}…`;
+  };
+  if (actions.length === 1) return shorten(actions[0], MAX_SUMMARY_VALUE_LENGTH);
+  const actionLimit = Math.floor((MAX_SUMMARY_VALUE_LENGTH - 3) / 2);
+  return `${shorten(actions[0], actionLimit)} → ${shorten(actions[actions.length - 1], actionLimit)}`;
+};
+
 const basename = (value: unknown): string => {
   const text = compactValue(value);
   const parts = text.split(/[\\/]/).filter(Boolean);
@@ -737,7 +757,9 @@ const namedEntity = (args: Record<string, unknown>, keys: string[]): string | nu
   if (!value || /\s/.test(value)) return value;
   const versioned = value.match(/^(.+?)[-_]v?(\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?)$/);
   const name = versioned?.[1] ?? value;
-  const label = humanize(name.replace(/^(spoke|playwright|codegraph|cdw|ucsfomop)agent$/i, '$1_agent'));
+  const label = humanize(
+    name.replace(/^(spoke|playwright|codegraph|cdw|ucsfomop)agent$/i, '$1_agent')
+  );
   return versioned ? `${label} v${versioned[2]}` : label;
 };
 
@@ -1050,10 +1072,7 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: u
 
   if (toolName === 'execute_code') {
     const toolGraph = normalizeToolGraph(args.tool_graph);
-    if (toolGraph.length > 0) {
-      if (toolGraph.length === 1) return compactValue(toolGraph[0].description);
-      return `Coordinating ${toolGraph.length} tool steps`;
-    }
+    if (toolGraph.length > 0) return summarizeToolGraph(toolGraph);
     return `Executing code`;
   }
 

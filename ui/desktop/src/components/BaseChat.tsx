@@ -18,6 +18,7 @@ import { deriveWorkingDirLocked } from './bottom_menu/DirSwitcher';
 import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
 import { useFileDrop } from '../hooks/useFileDrop';
 import { selectBilledTokens } from '../utils/billedTokens';
+import { artifactRefreshTarget } from '../utils/artifactRefresh';
 import { imageExtensionAlternation } from '../utils/imageFormats';
 import { useArtifactPanelAccess } from './artifacts/useArtifactPanelAccess';
 import { mostCompleteBilledTokens } from '../utils/usageAccounting';
@@ -190,6 +191,18 @@ export function decideArtifactAutoOpen(params: {
 
   if (openIndex < 0) return { action: 'none' };
   return { action: 'open', openIndex, knownKeys: nextKnown };
+}
+
+export function keepCurrentLiveAppPreview(
+  current: ArtifactSource | null,
+  candidate: ArtifactSource
+): boolean {
+  const target = artifactRefreshTarget(current);
+  return (
+    candidate.kind === 'html' &&
+    target?.startsWith('app:') === true &&
+    candidate.sourceUri === `ui://agent-drafter/${target.slice(4)}`
+  );
 }
 
 /**
@@ -1491,10 +1504,14 @@ function BaseChatContent({
         return;
       case 'open':
         knownArtifactKeysRef.current = decision.knownKeys;
+        // A rebuild's static receipt must not displace the same app's live preview.
+        if (keepCurrentLiveAppPreview(presentedArtifact, sessionArtifacts[decision.openIndex])) {
+          return;
+        }
         handleOpenArtifact(sessionArtifacts[decision.openIndex]);
         return;
     }
-  }, [handleOpenArtifact, messages.length, session, sessionArtifacts]);
+  }, [handleOpenArtifact, messages.length, presentedArtifact, session, sessionArtifacts]);
 
   // Listen for scroll-to-bottom requests (e.g. from MCP UI prompt actions).
   // Dispatched by MCPUIResourceRenderer / McpAppRenderer, both of which render

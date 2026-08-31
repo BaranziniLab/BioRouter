@@ -34,6 +34,70 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe('coalesced session-local artifact refresh', () => {
+  it('refreshes a matching app after actual nested build telemetry, once per execution', () => {
+    const app: ArtifactSource = {
+      kind: 'externalUrl',
+      title: 'QA app',
+      url: 'http://127.0.0.1:64005/apps/qa/',
+    };
+    const build = (id: string, appId = 'qa'): Message[] =>
+      [
+        {
+          role: 'assistant',
+          created: 0,
+          metadata: { agentVisible: true, userVisible: true },
+          content: [
+            {
+              type: 'toolRequest',
+              id,
+              toolCall: {
+                status: 'success',
+                value: {
+                  name: 'code_execution__execute_code',
+                  arguments: { code: 'await agent_drafter.build_app(...)' },
+                },
+              },
+            },
+            {
+              type: 'toolResponse',
+              id,
+              toolResult: {
+                status: 'success',
+                value: {
+                  content: [],
+                  _meta: {
+                    'biorouter/tool-calls': [
+                      {
+                        tool: 'agent_drafter__build_app',
+                        args: JSON.stringify({ id: appId }),
+                        status: 'ok',
+                        result_bytes: 80,
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ] as Message[];
+    const { result, rerender } = renderHook(
+      ({ messages, sessionId }) => useArtifactLiveRefresh(sessionId, messages, app, '/tmp', true),
+      { initialProps: { messages: [] as Message[], sessionId: 'a' } }
+    );
+    rerender({ messages: build('first'), sessionId: 'a' });
+    advance();
+    expect(result.current).toBe(1);
+    rerender({ messages: [...build('first'), ...build('unrelated', 'other')], sessionId: 'a' });
+    advance();
+    expect(result.current).toBe(1);
+    rerender({ messages: [...build('first'), ...build('second')], sessionId: 'a' });
+    advance();
+    expect(result.current).toBe(2);
+    rerender({ messages: [...build('first'), ...build('second')], sessionId: 'b' });
+    advance();
+    expect(result.current).toBe(0);
+  });
   it('does not scan history without a target or before session hydration', () => {
     const collect = vi.spyOn(refreshCollector, 'artifactRefreshEvents');
     try {

@@ -183,11 +183,29 @@ mod tests {
     #[test]
     fn seal_open_roundtrip() {
         let key = generate_key();
-        let blob = seal(b"NCBI_API_KEY=abc123", &key).unwrap();
-        // Ciphertext is not the plaintext.
-        assert!(!blob.windows(3).any(|w| w == b"abc"));
+        let plaintext = b"NCBI_API_KEY=abc123";
+        let blob = seal(plaintext, &key).unwrap();
+        assert_eq!(blob.len(), NONCE_LEN + plaintext.len() + 16);
         let back = open(&blob, &key).unwrap();
-        assert_eq!(back, b"NCBI_API_KEY=abc123");
+        assert_eq!(back, plaintext);
+    }
+
+    #[test]
+    fn valid_encrypted_blob_can_contain_short_plaintext_fragments() {
+        let key = [7u8; KEY_LEN];
+        let mut nonce = [0u8; NONCE_LEN];
+        nonce[..5].copy_from_slice(b"xyabc");
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce), b"sk-xyabc".as_slice())
+            .unwrap();
+        let mut blob = nonce.to_vec();
+        blob.extend_from_slice(&ciphertext);
+
+        // A public random nonce may contain these bytes without exposing the secret.
+        assert!(blob.windows(2).any(|bytes| bytes == b"xy"));
+        assert!(blob.windows(3).any(|bytes| bytes == b"abc"));
+        assert_eq!(open(&blob, &key).unwrap(), b"sk-xyabc");
     }
 
     #[test]
@@ -214,14 +232,15 @@ mod tests {
     #[test]
     fn vault_put_get_roundtrip_on_disk() {
         let dir = tempfile::tempdir().unwrap();
-        let v = Vault::new(dir.path(), generate_key());
+        let key = generate_key();
+        let v = Vault::new(dir.path(), key);
         assert!(!v.contains("OPENAI_KEY"));
         v.put("OPENAI_KEY", "sk-xyz").unwrap();
         assert!(v.contains("OPENAI_KEY"));
         assert_eq!(v.get("OPENAI_KEY").unwrap(), "sk-xyz");
-        // On-disk file must not contain the plaintext.
         let raw = std::fs::read(dir.path().join(".vault/OPENAI_KEY.enc")).unwrap();
-        assert!(!raw.windows(2).any(|w| w == b"xy"));
+        assert_eq!(raw.len(), NONCE_LEN + b"sk-xyz".len() + 16);
+        assert_eq!(open(&raw, &key).unwrap(), b"sk-xyz");
     }
 
     #[test]

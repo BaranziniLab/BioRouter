@@ -2039,16 +2039,21 @@ impl AgentDrafterServer {
 
             BUILD HARNESS / guardrails: `build_app` (and `lint_app`) run a
             validation harness on whatever you generate and report findings. It
-            enforces three things, and any ERRORs must be fixed before `launch_app`/`export_app`:
-            1. Backend wiring: `src/main.ts` imports from "./sdk" and calls the
-               agent (`br.run`/`br.prompt`/`br.ask`) or enables autoChat.
+            enforces five guardrails; fix any ERRORs before `launch_app`/`export_app`:
+            1. SDK wiring: agentic apps import from "./sdk" in `src/main.ts`.
+               Call `br.run`/`br.prompt`/`br.ask` or enable autoChat when the task
+               needs agent work. Intentional local-only controls with
+               `autoChat: false` may omit agent calls.
             2. Self-contained: no external `<script>`/`<link>`/CDN in index.html
                and no non-local imports in `src/main.ts` (so exports run offline).
             3. On-theme and user-directed: uses `br-*` classes/CSS variables for
                portability, while following the user's specified design.
-            4. Observable: long-running agent work exposes a visible progress
-               surface (`br.run`, `[data-br-chat]`, `br-run-status`, or
-               `mountTimeline`) so users can debug step-by-step execution.
+            4. Observable: actual long-running agent work must expose a visible
+               progress surface (`br.run`, `[data-br-chat]`, `br-run-status`, or
+               `mountTimeline`). Wire the surface to real run events so users can
+               debug step-by-step execution. Never add empty or dummy progress
+               elements just to satisfy lint. Local-only controls need no
+               agent-progress surface.
             5. Surface integrity (SDK v2, fail-closed): every `actions.register` /
                `components.register` name must be declared in `manifest.surface`
                and vice-versa; emitted signal names must be declared;
@@ -3175,6 +3180,34 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let s = AgentDrafterServer::with_root(dir.path().to_path_buf());
         (dir, s)
+    }
+
+    #[test]
+    fn instructions_distinguish_local_controls_from_observable_agent_work() {
+        let (_dir, server) = server();
+        let instructions = server
+            .get_info()
+            .instructions
+            .expect("Agent Drafter must advertise authoring instructions");
+        let normalized = instructions
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let (_, harness) = normalized
+            .split_once("BUILD HARNESS / guardrails:")
+            .expect("authoring instructions must include the harness contract");
+        for requirement in [
+            "enforces five guardrails",
+            "SDK wiring: agentic apps import from \"./sdk\" in `src/main.ts`",
+            "Intentional local-only controls with `autoChat: false` may omit agent calls",
+            "actual long-running agent work must expose a visible progress surface",
+            "Wire the surface to real run events",
+            "Never add empty or dummy progress elements just to satisfy lint",
+            "Local-only controls need no agent-progress surface",
+        ] {
+            assert!(harness.contains(requirement), "missing: {requirement}");
+        }
+        assert!(!harness.contains("enforces three things"));
     }
 
     fn text_of(result: &CallToolResult) -> String {
