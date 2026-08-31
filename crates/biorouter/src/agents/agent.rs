@@ -2492,6 +2492,31 @@ fn unsigned_turn_assistant_rows(
     (thinking_row, tool_rows)
 }
 
+fn append_unsigned_tool_failure_feedback(
+    messages: &mut Conversation,
+    frontend_requests: &[ToolRequest],
+    remaining_requests: &[ToolRequest],
+) {
+    for request in frontend_requests.iter().chain(remaining_requests) {
+        let Err(error) = &request.tool_call else {
+            continue;
+        };
+        // Provider diagnostics can contain raw arguments and secrets. Only the
+        // decoder's classification may influence the model-visible repair text.
+        let failure_kind = error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("biorouterToolCallFailure"))
+            .and_then(Value::as_str);
+        let feedback = match failure_kind {
+            Some("invalid_arguments") => "A tool call was not executed because its arguments were invalid. Emit a new tool call with valid JSON object arguments.",
+            Some("incomplete_stream") => "A tool call was not executed because its response stream did not complete. Emit a new, complete tool call; do not assume the earlier call ran.",
+            _ => "A tool call could not be accepted and was not executed. Emit a new tool call with complete, valid JSON object arguments.",
+        };
+        messages.push(model_only_user_text_with_new_id(feedback));
+    }
+}
+
 /// Append the model-only rows this tool batch staged: BR-47's post-edit syntax
 /// diagnostics (placed right after the tool responses for the edits they
 /// describe), the Pre/PostToolUse hook context, and the BR-29/30/31 loop-guard
@@ -9775,6 +9800,11 @@ impl Agent {
                                         }
                                         messages_to_add.push(final_response);
                                     }
+                                    append_unsigned_tool_failure_feedback(
+                                        &mut messages_to_add,
+                                        &frontend_requests,
+                                        &remaining_requests,
+                                    );
                                 }
 
                                 // The model-only rows this batch staged; see

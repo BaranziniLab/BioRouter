@@ -18,7 +18,7 @@ use rmcp::model::{
     object, CallToolRequestParams, Content, ErrorCode, ErrorData, RawContent, ResourceContents,
     Role, Tool,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::super::base::{tool_call_batching_enabled, Usage};
 use super::super::errors::ProviderError;
@@ -1417,7 +1417,7 @@ impl BedrockStreamDecoder {
             Ok(Value::Object(Default::default()))
         } else {
             serde_json::from_str::<Value>(&input)
-                .map_err(|e| format!("Could not parse tool arguments: {e}: {input}"))
+                .map_err(|e| format!("Could not parse tool arguments: {e}"))
         };
 
         match parsed {
@@ -1433,17 +1433,21 @@ impl BedrockStreamDecoder {
                     meta: None,
                 }),
             ),
-            Ok(value) => MessageContent::tool_request(
+            Ok(_) => MessageContent::tool_request(
                 tool_use_id,
                 Err(ErrorData::new(
                     ErrorCode::INVALID_PARAMS,
-                    format!("Tool arguments were not a JSON object: {value}"),
-                    None,
+                    "Tool arguments were not a JSON object; the call was not executed.",
+                    Some(json!({"biorouterToolCallFailure":"invalid_arguments"})),
                 )),
             ),
             Err(message) => MessageContent::tool_request(
                 tool_use_id,
-                Err(ErrorData::new(ErrorCode::INVALID_PARAMS, message, None)),
+                Err(ErrorData::new(
+                    ErrorCode::INVALID_PARAMS,
+                    message,
+                    Some(json!({"biorouterToolCallFailure":"invalid_arguments"})),
+                )),
             ),
         }
     }
@@ -1451,7 +1455,7 @@ impl BedrockStreamDecoder {
     /// Flush state after the event stream ends.
     ///
     /// Any tool block still open never received its `contentBlockStop`, so its
-    /// arguments are truncated. It is surfaced as a **failed** tool request —
+    /// completion is unconfirmed even if its JSON parses. It is a failed request —
     /// never as a callable one — so the turn reports the truncation instead of
     /// silently dropping it (or, far worse, executing half a command).
     pub fn finish(&mut self) -> Vec<BedrockStreamItem> {
@@ -1473,19 +1477,22 @@ impl BedrockStreamDecoder {
             tracing::warn!(
                 index,
                 tool = %acc.name,
+                argument_bytes = acc.input.len(),
+                arguments_are_json_object = serde_json::from_str::<serde_json::Value>(&acc.input)
+                    .is_ok_and(|value| value.is_object()),
                 "Bedrock stream ended before tool_use block completed; \
-                 surfacing it as a failed tool call rather than executing truncated arguments"
+                 surfacing it as a failed tool call because completion was not confirmed"
             );
             let content = MessageContent::tool_request(
                 acc.tool_use_id,
                 Err(ErrorData::new(
                     ErrorCode::INTERNAL_ERROR,
                     format!(
-                        "The Bedrock response stream ended before the arguments for `{}` \
-                             were complete, so the call was not made. Please retry.",
+                        "The Bedrock response stream ended before completion of the tool block for `{}` \
+                             was confirmed, so the call was not made. Please retry.",
                         acc.name
                     ),
-                    None,
+                    Some(json!({"biorouterToolCallFailure":"incomplete_stream"})),
                 )),
             );
             (Some(self.assistant_message(content)), None)
@@ -2193,7 +2200,7 @@ mod bedrock_stream_tests {
             .as_ref()
             .expect_err("a truncated tool call must never be a callable request");
         assert!(
-            error.contains("ended before the arguments"),
+            error.contains("ended before completion of the tool block"),
             "error should explain the truncation: {error}"
         );
         assert!(

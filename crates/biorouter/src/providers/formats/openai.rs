@@ -625,7 +625,7 @@ fn ensure_valid_json_schema(schema: &mut Value) {
 }
 
 fn strip_data_prefix(line: &str) -> Option<&str> {
-    line.strip_prefix("data: ").map(|s| s.trim())
+    line.strip_prefix("data:").map(|s| s.trim())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -656,11 +656,12 @@ where
         let mut last_finish_reason: Option<String> = None;
 
         'outer: while let Some(response) = stream.next().await {
-            if response.as_ref().is_ok_and(|s| s == "data: [DONE]") {
-                break 'outer;
-            }
             let response_str = response?;
             let line = strip_data_prefix(&response_str);
+
+            if line == Some("[DONE]") {
+                break 'outer;
+            }
 
             if line.is_none() || line.is_some_and(|l| l.is_empty()) {
                 continue
@@ -699,6 +700,8 @@ where
                 let mut tool_call_data: std::collections::HashMap<i32, (String, String, String)> = std::collections::HashMap::new();
                 let mut tool_usage = usage;
                 let mut tool_model = chunk.model.clone();
+                let mut tool_finish_reason = chunk.choices[0].finish_reason.clone();
+                let mut terminal_seen = false;
 
                 // Per-index throttle state for pending-tool-call notifications:
                 // (last emit instant, arg length at last emit).
@@ -727,17 +730,21 @@ where
                     yield (None, None, Some(announcement));
                 }
 
-                let is_complete = chunk.choices[0].finish_reason == Some("tool_calls".to_string());
+                let is_complete = tool_finish_reason.is_some();
 
                 if !is_complete {
                     let mut done = false;
                     while !done {
                         if let Some(response_chunk) = stream.next().await {
-                            if response_chunk.as_ref().is_ok_and(|s| s == "data: [DONE]") {
-                                break 'outer;
-                            }
                             let response_str = response_chunk?;
                             if let Some(line) = strip_data_prefix(&response_str) {
+                                if line == "[DONE]" {
+                                    terminal_seen = true;
+                                    break;
+                                }
+                                if line.is_empty() {
+                                    continue;
+                                }
                                 let tool_chunk: StreamingChunk = serde_json::from_str(line)
                                     .map_err(|e| anyhow!("Failed to parse streaming chunk: {}: {:?}", e, &line))?;
 
@@ -753,6 +760,7 @@ where
                                     }
                                     if let Some(reason) = &tool_chunk.choices[0].finish_reason {
                                         last_finish_reason = Some(reason.clone());
+                                        tool_finish_reason = Some(reason.clone());
                                     }
                                     if let Some(delta_tool_calls) = &tool_chunk.choices[0].delta.tool_calls {
                                         for delta_call in delta_tool_calls {
@@ -789,8 +797,6 @@ where
                                     if tool_chunk.choices[0].finish_reason.is_some() {
                                         done = true;
                                     }
-                                } else {
-                                    done = true;
                                 }
 
                                 if let (Some(raw_usage), Some(model)) =
@@ -839,14 +845,42 @@ where
                 let mut contents = Vec::new();
                 let mut sorted_indices: Vec<_> = tool_call_data.keys().cloned().collect();
                 sorted_indices.sort();
+                if let Some(usage) = &mut tool_usage {
+                    usage.finish_reason = tool_finish_reason.clone();
+                }
 
                 for index in sorted_indices {
                     if let Some((id, function_name, arguments)) = tool_call_data.get(&index) {
-                        let parsed = if arguments.is_empty() {
+                        // Parseable JSON alone does not establish completion: a
+                        // gateway can end the body before the model finishes.
+                        let parsed: Result<Value, ErrorData> = if !matches!(
+                            tool_finish_reason.as_deref(),
+                            Some("tool_calls" | "stop" | "function_call")
+                        ) {
+                            Err(ErrorData::new(
+                                ErrorCode::INTERNAL_ERROR,
+                                "Tool-call stream completion was not confirmed; the call was not executed. Emit a new, complete tool call.",
+                                Some(json!({"biorouterToolCallFailure":"incomplete_stream"})),
+                            ))
+                        } else if arguments.trim().is_empty() {
                             Ok(json!({}))
                         } else {
-                            serde_json::from_str::<Value>(arguments)
-                        };
+                            serde_json::from_str::<Value>(arguments).map_err(|error| ErrorData::new(
+                                ErrorCode::INVALID_PARAMS,
+                                format!("Could not interpret tool use parameters for id {id}: {error}"),
+                                Some(json!({"biorouterToolCallFailure":"invalid_arguments"})),
+                            ))
+                        }.and_then(|value| {
+                            if value.is_object() {
+                                Ok(value)
+                            } else {
+                                Err(ErrorData::new(
+                                    ErrorCode::INVALID_PARAMS,
+                                    "Tool arguments must be a JSON object; the call was not executed.",
+                                    Some(json!({"biorouterToolCallFailure":"invalid_arguments"})),
+                                ))
+                            }
+                        });
 
                         let content = match parsed {
                             Ok(params) => {
@@ -861,15 +895,7 @@ where
                                     metadata.as_ref(),
                                 )
                             },
-                            Err(e) => {
-                                let error = ErrorData {
-                                    code: ErrorCode::INVALID_PARAMS,
-                                    message: Cow::from(format!(
-                                        "Could not interpret tool use parameters for id {}: {}",
-                                        id, e
-                                    )),
-                                    data: None,
-                                };
+                            Err(error) => {
                                 MessageContent::tool_request_with_metadata(id.clone(), Err(error), metadata.as_ref())
                             }
                         };
@@ -892,7 +918,10 @@ where
                     Some(msg),
                     tool_usage,
                     None,
-                )
+                );
+                if terminal_seen {
+                    break 'outer;
+                }
             } else if chunk.choices[0].delta.content.is_some() {
                 let text = chunk.choices[0].delta.content.as_ref().unwrap();
                 let mut msg = Message::new(
