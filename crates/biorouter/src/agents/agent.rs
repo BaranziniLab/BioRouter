@@ -974,6 +974,11 @@ const CODING_AGENT_BRIDGE_ALLOWED_AGENT_DRAFTER_TOOLS: &[&str] = &[
     "agent_drafter__build_app",
     "agent_drafter__configure_app",
     "agent_drafter__create_app",
+    // ⚠ The retired names ride along with the merged ones. They still
+    // dispatch (see agent_drafter's RETIRED_TOOL_NAMES), and the bridge gates a
+    // coding-agent child by EXACT name — dropping them would turn a working
+    // alias into a refusal the child cannot diagnose.
+    "agent_drafter__declare_app",
     "agent_drafter__declare_profiles",
     "agent_drafter__declare_surface",
     "agent_drafter__delete_app",

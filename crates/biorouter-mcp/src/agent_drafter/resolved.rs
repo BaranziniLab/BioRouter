@@ -118,6 +118,10 @@ pub enum ManifestView {
     Resolved,
     /// The bytes as serialized on disk.
     Raw,
+    /// The preview card the USER sees, rather than JSON for the model.
+    /// Absorbed from the retired `preview_app`, whose whole body was
+    /// load_manifest + card_result.
+    Card,
 }
 
 impl ManifestView {
@@ -127,8 +131,9 @@ impl ManifestView {
         match s.map(str::trim) {
             None | Some("") | Some("resolved") => Ok(Self::Resolved),
             Some("raw") => Ok(Self::Raw),
+            Some("card") => Ok(Self::Card),
             Some(other) => Err(format!(
-                "unknown view '{other}': expected \"resolved\" (default) or \"raw\""
+                "unknown view '{other}': expected \"resolved\" (default), \"raw\" or \"card\""
             )),
         }
     }

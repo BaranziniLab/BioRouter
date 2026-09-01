@@ -37,23 +37,23 @@ async fn agent_drafter_serves_tools_over_mcp() {
         "create_app",
         "configure_app",
         "update_app",
+        // Absorbs `lint_app` as `check_only: true`.
         "build_app",
-        "lint_app",
         "launch_app",
         "list_apps",
+        // Absorbs `preview_app` as `view: "card"`.
         "read_app",
-        "preview_app",
         "export_app",
         "delete_app",
         // Wave 1: the model can finally ask what this install actually has,
         // instead of inventing a knowledge-base or skill id to express a need.
         "list_platform_catalog",
         // Wave 2: typed declaration, so the contract can be stated in one call
-        // instead of guessed at through whole-manifest rewrites.
-        "declare_surface",
-        "declare_profiles",
-        "set_theme",
-        "set_routes",
+        // instead of guessed at through whole-manifest rewrites — and, since the
+        // consolidation, in ONE tool rather than five. `declare_app` absorbs
+        // declare_surface, set_theme, declare_profiles, set_routes and
+        // set_app_size as optional regions.
+        "declare_app",
         // Wave 6: the executing check. Lint that RUNS the app — the only thing that
         // can catch a control which fires and delivers no turn.
         "smoke_app",
@@ -61,6 +61,26 @@ async fn agent_drafter_serves_tools_over_mcp() {
         assert!(
             names.iter().any(|n| n == expected),
             "missing tool '{expected}'; advertised: {names:?}"
+        );
+    }
+
+    // ⚠ And the retired names are NOT advertised. They still dispatch — a
+    // stored grant, a persisted transcript and biorouter-self-test.yaml all
+    // replay them — but re-advertising one would put a second tool on the
+    // surface for a job another tool already does, which is what the
+    // consolidation exists to stop.
+    for retired in [
+        "declare_surface",
+        "set_theme",
+        "declare_profiles",
+        "set_routes",
+        "set_app_size",
+        "lint_app",
+        "preview_app",
+    ] {
+        assert!(
+            !names.iter().any(|n| n == retired),
+            "'{retired}' is advertised again; advertised: {names:?}"
         );
     }
 

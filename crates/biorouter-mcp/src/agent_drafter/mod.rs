@@ -38,7 +38,7 @@ use rmcp::{
     },
     schemars::JsonSchema,
     service::RequestContext,
-    tool, tool_handler, tool_router, RoleServer, ServerHandler,
+    tool, tool_router, RoleServer, ServerHandler,
 };
 use serde::{de::DeserializeOwned, Deserialize};
 use std::path::{Path, PathBuf};
@@ -727,6 +727,77 @@ pub struct ProfileParam {
     /// Bound on this worker's tool-calling loop.
     #[serde(default)]
     pub max_turns: Option<u32>,
+}
+
+/// Arguments for `build_app`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct BuildAppParams {
+    /// App id.
+    pub id: String,
+    /// `true` runs the guardrail harness alone and skips the bundler. Use it to
+    /// re-check findings without paying for a rebuild; the report is the same
+    /// one a successful build prints.
+    #[serde(default)]
+    pub check_only: Option<bool>,
+}
+
+/// Preferred preview-card size. `SetAppSizeParams` minus the id, so the nested
+/// shape and the retired flat one cannot drift apart.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct AppSizeParam {
+    /// Preferred width in CSS px (omit to fill).
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Preferred height in CSS px (omit for auto).
+    #[serde(default)]
+    pub height: Option<u32>,
+}
+
+/// Every typed manifest region, in ONE call.
+///
+/// `declare_surface`, `set_theme`, `declare_profiles`, `set_routes` and
+/// `set_app_size` were five spellings of one job — load the manifest, assign ONE
+/// region, save, touch — and two of them (`set_routes`, `declare_profiles`) wrote
+/// two fields of the SAME struct. A model had to know five names to fill in five
+/// slots of one document, and declaring a surface plus a theme plus profiles
+/// cost three round-trips and three save cycles.
+///
+/// ⚠ **A FLAT bag of independent optionals, never a tagged union.**
+/// `providers/formats/google.rs` accepts only a small set of schema keys and
+/// silently strips `oneOf`/`const`, so a discriminated merge would reach Gemini
+/// with no usable parameters at all; Code Execution cannot render one into a
+/// module signature either. Here the discriminator is simply which field is
+/// present, and each field keeps the exact typed schema its own tool had.
+///
+/// An omitted region is LEFT ALONE. That is the semantic the five separate tools
+/// got for free — each had no other field to clear — and the one a single tool
+/// has to mean deliberately.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct DeclareAppParams {
+    /// App id.
+    pub id: String,
+    /// The app's CONTRACT: state schema, the actions the agent may call, the
+    /// signals the app sends, and any custom components.
+    #[serde(default)]
+    pub surface: Option<declare::SurfaceParam>,
+    /// Theme pack, plus optional accent and token overrides. Always replaces.
+    #[serde(default)]
+    pub theme: Option<declare::ThemeParam>,
+    /// Worker agent profiles for multi-agent work, reached with
+    /// `consult(agent: "<key>")`.
+    #[serde(default)]
+    pub agents: Option<Vec<ProfileParam>>,
+    /// Named model routes a `call` may select per invocation. Always replaces.
+    #[serde(default)]
+    pub routes: Option<Vec<declare::RouteParam>>,
+    /// Preferred preview-card size in CSS px. Always replaces.
+    #[serde(default)]
+    pub size: Option<AppSizeParam>,
+    /// `true` upserts `surface` and `agents` by name/key, leaving the rest of
+    /// each alone; `false` (default) replaces them. `theme`, `routes` and `size`
+    /// always replace — they have no per-item identity to merge on.
+    #[serde(default)]
+    pub merge: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1929,8 +2000,9 @@ impl AgentDrafterServer {
             5. `launch_app` to open it in the browser (returns the URL).
             6. `export_app` for a standalone runnable project.
 
-            Use `list_apps`, `read_app`, and `preview_app` to inspect existing apps:
-            you can query and modify any previously-built app.
+            Use `list_apps` and `read_app` to inspect existing apps — `read_app` with
+            `view: "card"` renders the preview the user sees. You can query and modify
+            any previously-built app.
 
             KNOW YOUR ENVIRONMENT BEFORE YOU CONFIGURE IT. Call
             `list_platform_catalog` before naming any knowledge base, skill, or
@@ -2037,8 +2109,9 @@ impl AgentDrafterServer {
             explicit resolved-set the model re-asks the same top item forever and
             the loop never advances, so spell this out in the prompt.
 
-            BUILD HARNESS / guardrails: `build_app` (and `lint_app`) run a
-            validation harness on whatever you generate and report findings. It
+            BUILD HARNESS / guardrails: `build_app` runs a validation harness on
+            whatever you generate and reports findings; `build_app` with
+            `check_only: true` runs the harness alone, without rebundling. It
             enforces five guardrails; fix any ERRORs before `launch_app`/`export_app`:
             1. SDK wiring: agentic apps import from "./sdk" in `src/main.ts`.
                Call `br.run`/`br.prompt`/`br.ask` or enable autoChat when the task
@@ -2316,6 +2389,29 @@ impl AgentDrafterServer {
         // check as `configure_app`, and renders the same list.
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        // ⚠ **The largest duplicate surface in this capability, closed at the
+        // tool boundary.** A whole-manifest write through here can set
+        // `surface`, `theme`, `agent.orchestration.agents`, `agent.orchestration
+        // .routes` and `width`/`height` in one call — structurally duplicating
+        // `declare_app` and `configure_app`, the typed writers that were added
+        // to REPLACE it. `declare_surface`'s own description already said "do
+        // NOT rewrite manifest.json"; nothing enforced it.
+        //
+        // Refused HERE rather than in `update_app_inner` on purpose. The inner
+        // branch does real work — it restores the server-owned fields and
+        // re-runs `validate::check_all` — and a test drives it directly to hold
+        // that logic. Refusing at the tool keeps that coverage while removing
+        // the door the MODEL can walk through.
+        if params.0.path.as_deref().map(str::trim) == Some("manifest.json") {
+            return Err(err(
+                ErrorCode::INVALID_PARAMS,
+                "Do not rewrite manifest.json. Use `declare_app` for surface, theme, agents, \
+                 routes and size, and `configure_app` for the agent's model, prompt, extensions, \
+                 skills and capabilities. Both validate what they write; a raw manifest rewrite \
+                 can silently drop a field."
+                    .to_string(),
+            ));
+        }
         self.update_app_inner(params.0, &Self::caller(&context))
             .await
     }
@@ -2420,12 +2516,12 @@ impl AgentDrafterServer {
         }
         store.touch(&p.id).map_err(internal)?;
 
-        if path == "manifest.json" {
-            Ok(CallToolResult::success(vec![Content::text(format!(
-                "Updated manifest.json in '{}'.",
-                p.id
-            ))]))
-        } else if path == manifest.entry {
+        // ⚠ There used to be an `if path == "manifest.json"` arm here. It was
+        // dead: the dedicated whole-manifest branch above returns
+        // unconditionally, so control never reached this point with that path.
+        // Dead code sitting under a live duplicate is how a duplicate survives
+        // a reading — it looks like the branch that handles the case.
+        if path == manifest.entry {
             self.card_result(&manifest, &format!("Updated {path} in '{}'.", p.id))
         } else {
             let hint = if path.starts_with("src/") {
@@ -2446,12 +2542,19 @@ impl AgentDrafterServer {
     )]
     pub async fn build_app(
         &self,
-        params: Parameters<AppIdParams>,
+        params: Parameters<BuildAppParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
         let store = self.store();
         if !store.exists(&p.id) {
             return Err(err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)));
+        }
+        // ⚠ BEFORE `rebuild_and_stamp`, not after. `build_app` only lints once
+        // `report.ok`, and an app that fails to compile is exactly the app
+        // anyone wants to lint — so folding `lint_app` in behind the bundler
+        // would have deleted the only case it was reached for.
+        if p.check_only.unwrap_or(false) {
+            return self.lint_app(Parameters(AppIdParams { id: p.id })).await;
         }
         let store2 = store.clone();
         let id2 = p.id.clone();
@@ -2599,6 +2702,97 @@ impl AgentDrafterServer {
         let mut result = CallToolResult::success(content);
         result.meta = Some(rmcp::model::Meta(meta));
         Ok(result)
+    }
+
+    /// One call for every typed manifest region.
+    ///
+    /// Composes the five inherent writers rather than reimplementing them, so
+    /// each region's validation, its result text and its side effects are
+    /// byte-for-byte what the retired tool did — including
+    /// `declare_profiles`'s catalog check (issue #56 CP5, which is why this
+    /// takes a `RequestContext`) and `set_app_size`'s preview card.
+    ///
+    /// ⚠ **Applied region by region, not atomically** — each writer loads,
+    /// assigns, saves and touches on its own. That is exactly what five
+    /// separate calls did, so a mid-sequence failure leaves the same state it
+    /// always would; what changes is that the caller now learns about it in one
+    /// result instead of noticing the fourth call never happened. The order is
+    /// fixed and the first failure stops the rest, so a partial result is a
+    /// prefix, never a scatter.
+    #[tool(
+        name = "declare_app",
+        description = "Declare an app's typed manifest regions in one call: `surface` (its contract — state schema, actions, signals, components), `theme`, `agents` (worker profiles), `routes` (named model routes) and `size`. Pass only the regions you are setting; an omitted region is left alone. `merge: true` upserts `surface` and `agents` by name/key instead of replacing them. Do NOT rewrite manifest.json to do any of this."
+    )]
+    pub async fn declare_app(
+        &self,
+        params: Parameters<DeclareAppParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let mut applied: Vec<String> = Vec::new();
+        // `size` is applied LAST so its preview card reflects every other region
+        // set in the same call.
+        if let Some(surface) = p.surface {
+            self.declare_surface(Parameters(DeclareSurfaceParams {
+                id: p.id.clone(),
+                surface,
+                merge: p.merge,
+            }))
+            .await?;
+            applied.push("surface".to_string());
+        }
+        if let Some(theme) = p.theme {
+            self.set_theme(Parameters(SetThemeParams {
+                id: p.id.clone(),
+                theme,
+            }))
+            .await?;
+            applied.push("theme".to_string());
+        }
+        if let Some(agents) = p.agents {
+            self.declare_profiles(
+                Parameters(DeclareProfilesParams {
+                    id: p.id.clone(),
+                    agents,
+                    merge: p.merge,
+                }),
+                context,
+            )
+            .await?;
+            applied.push("agents".to_string());
+        }
+        if let Some(routes) = p.routes {
+            self.set_routes(Parameters(SetRoutesParams {
+                id: p.id.clone(),
+                routes,
+            }))
+            .await?;
+            applied.push("routes".to_string());
+        }
+        if let Some(size) = p.size {
+            applied.push("size".to_string());
+            // Returns the preview card, which is the most useful thing to hand
+            // back when a size was set.
+            return self
+                .set_app_size(Parameters(SetAppSizeParams {
+                    id: p.id,
+                    width: size.width,
+                    height: size.height,
+                }))
+                .await;
+        }
+        if applied.is_empty() {
+            return Err(err(
+                ErrorCode::INVALID_PARAMS,
+                "declare_app needs at least one region: surface, theme, agents, routes or size."
+                    .to_string(),
+            ));
+        }
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{} now declares: {}",
+            p.id,
+            applied.join(", ")
+        ))]))
     }
 
     #[tool(
@@ -2903,6 +3097,15 @@ impl AgentDrafterServer {
                 let value = match view {
                     resolved::ManifestView::Resolved => resolved::resolved_view(&m),
                     resolved::ManifestView::Raw => serde_json::to_value(&m).map_err(internal)?,
+                    // Absorbed from the retired `preview_app`. It returns the
+                    // ui:// card for the USER rather than JSON for the model —
+                    // which is not new for this capability: create_app,
+                    // configure_app, update_app, set_app_size and build_app all
+                    // already return that card beside their text. `preview_app`
+                    // was simply the one whose ONLY job was the card.
+                    resolved::ManifestView::Card => {
+                        return self.card_result(&m, &format!("Preview of '{}'.", p.id))
+                    }
                 };
                 let json = serde_json::to_string_pretty(&value).map_err(internal)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -3088,8 +3291,56 @@ impl AgentDrafterServer {
     }
 }
 
-#[tool_handler(router = self.tool_router)]
+/// Registered so the name keeps dispatching, but never advertised.
+///
+/// Each of these is now a REGION or a MODE of a tool that already existed:
+/// the five typed writers are `declare_app`'s optional fields, `lint_app` is
+/// `build_app { check_only: true }`, and `preview_app` is
+/// `read_app { view: "card" }`. Dropping the route as well as the declaration
+/// would turn a stored `always allow` grant, a persisted transcript's retry and
+/// `biorouter-self-test.yaml`'s named steps into unknown-tool errors none of
+/// them can act on — so the route stays and only the advertisement goes.
+const RETIRED_TOOL_NAMES: &[&str] = &[
+    "declare_surface",
+    "set_theme",
+    "declare_profiles",
+    "set_routes",
+    "set_app_size",
+    "lint_app",
+    "preview_app",
+];
+
 impl ServerHandler for AgentDrafterServer {
+    /// `#[tool_handler]`'s generated body, plus the retired-name filter. See
+    /// [`RETIRED_TOOL_NAMES`]; `crates/biorouter-mcp/src/knowledge/server.rs`
+    /// does the same thing for the same reason.
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
+        Ok(rmcp::model::ListToolsResult {
+            tools: self
+                .tool_router
+                .list_all()
+                .into_iter()
+                .filter(|tool| !RETIRED_TOOL_NAMES.contains(&tool.name.as_ref()))
+                .collect(),
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
+    /// Verbatim what `#[tool_handler]` generated; re-check when bumping rmcp.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             server_info: Implementation {
@@ -3598,8 +3849,9 @@ run.addEventListener("click", async () => {
         .unwrap();
 
         let build = s
-            .build_app(Parameters(AppIdParams {
+            .build_app(Parameters(BuildAppParams {
                 id: "cohort-review-console".into(),
+                check_only: None,
             }))
             .await
             .unwrap();
@@ -3832,8 +4084,9 @@ br.run("hello", "#missing");
             .unwrap();
 
         let build = s
-            .build_app(Parameters(AppIdParams {
+            .build_app(Parameters(BuildAppParams {
                 id: "broken-harness".into(),
+                check_only: None,
             }))
             .await
             .unwrap();
@@ -3918,8 +4171,9 @@ br.run("hello", "#missing");
             .await
             .unwrap();
         let res = s
-            .build_app(Parameters(AppIdParams {
+            .build_app(Parameters(BuildAppParams {
                 id: "launchy".into(),
+                check_only: None,
             }))
             .await
             .unwrap();
