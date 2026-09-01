@@ -16,8 +16,9 @@ only as a Linux tarball, and only to a provisioned server.
 This page records the decisions that replaced that arrangement. They were taken together, and
 several of them only make sense as a set: the reason a browser session cannot switch models
 (SD-1) is also the reason it needs no proof-of-user mechanism, which is the reason the daemon
-can be spawned with a closed stdin (SD-7). Read [the architecture](serve-architecture.md) for
-how the result is built, and [browser access](browser-access.md) for how to use it.
+can be spawned with a closed stdin (SD-7) — and the reason every control that needs that proof
+must say so before the user reaches for it (SD-8). Read [the architecture](serve-architecture.md)
+for how the result is built, and [browser access](browser-access.md) for how to use it.
 
 Records are identified `SD-n` — *serve decision*. The numbering is stable; a superseded record
 keeps its number and says what replaced it.
@@ -191,6 +192,38 @@ model rather than two.
 proof-of-user digest. Under SD-1 that is the intended configuration, not a limitation — but it
 means the daemon a `serve` session talks to is deliberately less capable than the one the
 desktop application starts, and anything that assumes otherwise is wrong.
+
+---
+
+## SD-8 — A control that can never work here says so, rather than failing on click
+
+**Ruling.** Everything that depends on the proof-of-user digest SD-7 declines to install must
+declare itself unavailable **before** the user acts on it, and the daemon's refusal must be
+distinguishable from an ordinary "you did not prove this" refusal.
+
+Concretely: `POST /action-required/tool-confirmation` answers a refused approval with a body
+carrying `reason: "unproven"` or `reason: "noKeyInstalled"` and a sentence addressed to a person;
+the approval card reads `isBrowserSurface()` up front and renders that sentence in place of its
+Allow/Deny buttons; and the agent is not offered tools whose only path runs through such an
+approval — the three skill mutations and the extension manager's install and delete are withheld
+from the advertised roster when no person is reachable.
+
+**Why.** SD-1 already required that *"the interface must explain the refusal rather than appear
+broken"*, and stated it about the model picker. The same argument covers every proof-backed
+control, and an approval card is the worst case: three buttons that look live, a bare 403 on
+click, and a refusal written for an AI agent. Withholding the tools is the other half — a model
+that proposes an install it can never finish has wasted a turn and taught the user that the
+feature is broken rather than absent.
+
+**What this is NOT.** It is not a security change. Nothing that was refused becomes permitted;
+the gate in `confirm_tool_action` is unchanged in what it allows. This record is about a surface
+telling the truth in advance, which is exactly the asymmetry the privacy work rests on: a user
+who insists may proceed past a warning, but nothing proceeds automatically.
+
+**Consequence to accept.** The advertised tool roster is now a function of how the daemon was
+started, so two daemons on the same machine can offer different tools. The availability flag is
+sampled once per roster and threaded, rather than re-read inside each declaration, so a roster
+can never half-believe a person is reachable.
 
 ---
 
