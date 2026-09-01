@@ -258,6 +258,37 @@ pub struct PendingUserActions {
     entries: Mutex<HashMap<String, Entry>>,
 }
 
+/// Can THIS process obtain a person's proof at all?
+///
+/// The daemon is handed a proof-of-user key on stdin at startup and every
+/// approval that sets `requires_user_proof` is answered against it. `biorouter
+/// serve` spawns its daemon with `Stdio::null()` DELIBERATELY — that is the same
+/// property that stops a browser session changing the model — so it holds no
+/// key, and every such approval refuses forever.
+///
+/// A tool whose approval can never be granted must not be OFFERED. Reporting the
+/// refusal honestly is necessary but not sufficient: a model that is offered an
+/// installer will propose an install, and the user then meets a card whose three
+/// buttons cannot work.
+///
+/// Defaults to `true`, and the daemon sets it from the key it actually received.
+/// The direction is deliberate: an embedder that never calls this keeps today's
+/// behaviour, and the cost of being wrong is a tool that is advertised and then
+/// refused — never an approval that is skipped.
+static USER_PROOF_AVAILABLE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// Published once at daemon startup, beside `install_user_action_digest`.
+pub fn set_user_proof_available(available: bool) {
+    USER_PROOF_AVAILABLE.store(available, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether a proof-backed approval can be granted in this process. Tools that
+/// require one ask this before advertising themselves.
+pub fn user_proof_available() -> bool {
+    USER_PROOF_AVAILABLE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 impl PendingUserActions {
     /// The registry every production caller uses.
     ///

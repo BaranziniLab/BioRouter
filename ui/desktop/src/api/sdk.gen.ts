@@ -40,21 +40,6 @@ export const submitSecrets = <ThrowOnError extends boolean = false>(options: Opt
     }
 });
 
-/**
- * Deliver a tool-permission decision to the prompt that is waiting for it.
- *
- * **Idempotent** (BR-62). The decision is routed by tool request id to that
- * prompt's own channel, so a decision for an id nobody is waiting on — a
- * double-clicked Allow, a card the user answered after the prompt expired or the
- * turn was cancelled, a stale client replaying an old confirmation — is dropped
- * rather than applied to whatever tool call happens to be pending now. (Before
- * BR-62 confirmations went to a single per-agent channel, so a late "allow"
- * really could approve an unrelated later tool call.)
- *
- * Both outcomes are a 200: a duplicate click is a no-op, not a failure. The
- * `status` field reports which happened — `delivered` when a live prompt took
- * the decision, `unknown` when nothing was waiting on that id.
- */
 export const confirmToolAction = <ThrowOnError extends boolean = false>(options: Options<ConfirmToolActionData, ThrowOnError>) => (options.client ?? client).post<ConfirmToolActionResponses, ConfirmToolActionErrors, ThrowOnError>({
     url: '/action-required/tool-confirmation',
     ...options,

@@ -1770,109 +1770,7 @@ impl ExtensionManagerClient {
 
     #[allow(clippy::too_many_lines)]
     async fn get_tools(&self) -> Vec<Tool> {
-        let mut tools = vec![
-            Tool::new(
-                SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME.to_string(),
-                "List installed third-party extensions visible to this model, their exact names, and attachment state. Use the returned name with manage_extensions. For extensions absent from this inventory, search_marketplace_extensions finds packages available to install.".to_string(),
-                Arc::new(
-                    serde_json::json!({
-                        "type": "object",
-                        "required": [],
-                        "properties": {}
-                    })
-                    .as_object()
-                    .expect("Schema must be an object")
-                    .clone()
-                ),
-            ).annotate(ToolAnnotations {
-                title: Some("Discover extensions".to_string()),
-                read_only_hint: Some(true),
-                destructive_hint: Some(false),
-                idempotent_hint: Some(false),
-                open_world_hint: Some(false),
-            }),
-            Tool::new(
-                MANAGE_EXTENSIONS_TOOL_NAME.to_string(),
-                "Attach or detach an installed third-party extension in this chat.
-            Use the exact installed name from search_available_extensions, not a marketplace title or registry id.
-            Changes apply immediately in the current turn. The result lists exact availableTools
-            after attach or removedTools after detach; use or stop using those names accordingly.
-            ".to_string(),
-                Arc::new(
-                    serde_json::to_value(schema_for!(ManageExtensionsParams))
-                        .expect("Failed to serialize schema")
-                        .as_object()
-                        .expect("Schema must be an object")
-                        .clone()
-                ),
-            ).annotate(ToolAnnotations {
-                title: Some("Enable or disable an extension".to_string()),
-                read_only_hint: Some(false),
-                destructive_hint: Some(false),
-                idempotent_hint: Some(false),
-                open_world_hint: Some(false),
-            }),
-        ];
-
-        tools.extend([
-            Tool::new(
-                SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME.to_owned(),
-                "Browse or search trusted BAAM marketplace extensions. Pass `query` to match an id, name, organization, description or tag; omit it to list everything visible to this model. Private entries are hidden from public models."
-                    .to_owned(),
-                Arc::new(
-                    serde_json::to_value(schema_for!(SearchMarketplaceExtensionsParams))
-                        .expect("Failed to serialize schema")
-                        .as_object()
-                        .expect("Schema must be an object")
-                        .clone(),
-                ),
-            )
-            .annotate(ToolAnnotations {
-                title: Some("Browse or search BAAM marketplace".to_owned()),
-                read_only_hint: Some(true),
-                destructive_hint: Some(false),
-                idempotent_hint: Some(true),
-                open_world_hint: Some(true),
-            }),
-            Tool::new(
-                INSTALL_EXTENSION_TOOL_NAME.to_owned(),
-                "Install a BAAM extension by its exact trusted registry id. Biorouter resolves the download URL itself and requires the user's proof-backed approval. A result attached to this chat lists exact availableTools that are callable immediately; an installed-only result must be attached before use."
-                    .to_owned(),
-                Arc::new(
-                    serde_json::to_value(schema_for!(InstallExtensionParams))
-                        .expect("Failed to serialize schema")
-                        .as_object()
-                        .expect("Schema must be an object")
-                        .clone(),
-                ),
-            )
-            .annotate(ToolAnnotations {
-                title: Some("Install a BAAM extension".to_owned()),
-                read_only_hint: Some(false),
-                destructive_hint: Some(false),
-                idempotent_hint: Some(false),
-                open_world_hint: Some(true),
-            }),
-            Tool::new(
-                DELETE_EXTENSION_PACKAGE_TOOL_NAME.to_owned(),
-                "Permanently delete one or up to 50 validated marketplace-installed .brxt packages by exact registry id. The whole batch is preflighted before one proof-backed approval, every result is reported, and credentials are preserved."
-                    .to_owned(),
-                Arc::new(
-                    serde_json::to_value(schema_for!(DeleteExtensionPackageParams))
-                        .expect("Failed to serialize schema")
-                        .as_object()
-                        .expect("Schema must be an object")
-                        .clone(),
-                ),
-            )
-            .annotate(ToolAnnotations {
-                title: Some("Delete an installed BAAM package".to_owned()),
-                read_only_hint: Some(false),
-                destructive_hint: Some(true),
-                idempotent_hint: Some(false),
-                open_world_hint: Some(false),
-            }),
-        ]);
+        let mut tools = Self::tools_for(crate::pending_user_action::user_proof_available());
 
         // Only add resource tools if extension manager supports resources
         if let Some(weak_ref) = &self.context.extension_manager {
@@ -2081,6 +1979,138 @@ impl McpClientTrait for ExtensionManagerClient {
         Some(&self.info)
     }
 }
+
+
+impl ExtensionManagerClient {
+    /// The advertised roster, as a pure function of whether a person can be
+    /// asked. Sampled once by `get_tools` and threaded, in the spirit of
+    /// `CallCapability`: two reads of a process-global could disagree, and a
+    /// roster that half-believes a person is reachable is exactly the state
+    /// this gate exists to prevent.
+    #[allow(clippy::too_many_lines)]
+    fn tools_for(can_ask_a_person: bool) -> Vec<Tool> {
+        let mut tools = vec![
+            Tool::new(
+                SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME.to_string(),
+                "List installed third-party extensions visible to this model, their exact names, and attachment state. Use the returned name with manage_extensions. For extensions absent from this inventory, search_marketplace_extensions finds packages available to install.".to_string(),
+                Arc::new(
+                    serde_json::json!({
+                        "type": "object",
+                        "required": [],
+                        "properties": {}
+                    })
+                    .as_object()
+                    .expect("Schema must be an object")
+                    .clone()
+                ),
+            ).annotate(ToolAnnotations {
+                title: Some("Discover extensions".to_string()),
+                read_only_hint: Some(true),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(false),
+                open_world_hint: Some(false),
+            }),
+            Tool::new(
+                MANAGE_EXTENSIONS_TOOL_NAME.to_string(),
+                "Attach or detach an installed third-party extension in this chat.
+            Use the exact installed name from search_available_extensions, not a marketplace title or registry id.
+            Changes apply immediately in the current turn. The result lists exact availableTools
+            after attach or removedTools after detach; use or stop using those names accordingly.
+            ".to_string(),
+                Arc::new(
+                    serde_json::to_value(schema_for!(ManageExtensionsParams))
+                        .expect("Failed to serialize schema")
+                        .as_object()
+                        .expect("Schema must be an object")
+                        .clone()
+                ),
+            ).annotate(ToolAnnotations {
+                title: Some("Enable or disable an extension".to_string()),
+                read_only_hint: Some(false),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(false),
+                open_world_hint: Some(false),
+            }),
+        ];
+
+        // Browse/search are read-only and stay. Install and delete each park on a
+        // proof-backed approval, so on a daemon that cannot obtain one they are
+        // withheld rather than advertised-and-refused. See
+        // `pending_user_action::user_proof_available`.
+        //
+        // ⚠ `manage_extensions` stays advertised even though its *enable* arm
+        // can raise a proof-backed approval: that approval is a fallback for an
+        // operator-pinned-off extension, and the tool's ordinary path needs no
+        // approval at all. Withholding it would remove working functionality.
+        tools.extend([
+            Tool::new(
+                SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME.to_owned(),
+                "Browse or search trusted BAAM marketplace extensions. Pass `query` to match an id, name, organization, description or tag; omit it to list everything visible to this model. Private entries are hidden from public models."
+                    .to_owned(),
+                Arc::new(
+                    serde_json::to_value(schema_for!(SearchMarketplaceExtensionsParams))
+                        .expect("Failed to serialize schema")
+                        .as_object()
+                        .expect("Schema must be an object")
+                        .clone(),
+                ),
+            )
+            .annotate(ToolAnnotations {
+                title: Some("Browse or search BAAM marketplace".to_owned()),
+                read_only_hint: Some(true),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(true),
+                open_world_hint: Some(true),
+            }),
+        ]);
+
+        if can_ask_a_person {
+            tools.extend([
+            Tool::new(
+                INSTALL_EXTENSION_TOOL_NAME.to_owned(),
+                "Install a BAAM extension by its exact trusted registry id. Biorouter resolves the download URL itself and requires the user's proof-backed approval. A result attached to this chat lists exact availableTools that are callable immediately; an installed-only result must be attached before use."
+                    .to_owned(),
+                Arc::new(
+                    serde_json::to_value(schema_for!(InstallExtensionParams))
+                        .expect("Failed to serialize schema")
+                        .as_object()
+                        .expect("Schema must be an object")
+                        .clone(),
+                ),
+            )
+            .annotate(ToolAnnotations {
+                title: Some("Install a BAAM extension".to_owned()),
+                read_only_hint: Some(false),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(false),
+                open_world_hint: Some(true),
+            }),
+            Tool::new(
+                DELETE_EXTENSION_PACKAGE_TOOL_NAME.to_owned(),
+                "Permanently delete one or up to 50 validated marketplace-installed .brxt packages by exact registry id. The whole batch is preflighted before one proof-backed approval, every result is reported, and credentials are preserved."
+                    .to_owned(),
+                Arc::new(
+                    serde_json::to_value(schema_for!(DeleteExtensionPackageParams))
+                        .expect("Failed to serialize schema")
+                        .as_object()
+                        .expect("Schema must be an object")
+                        .clone(),
+                ),
+            )
+            .annotate(ToolAnnotations {
+                title: Some("Delete an installed BAAM package".to_owned()),
+                read_only_hint: Some(false),
+                destructive_hint: Some(true),
+                idempotent_hint: Some(false),
+                open_world_hint: Some(false),
+            }),
+        ]);
+        }
+
+        tools
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -3821,5 +3851,55 @@ mod tests {
             production,
             "extension_manager_extension.rs",
         );
+    }
+}
+
+/// F-07: a `biorouter serve` daemon is started with `Stdio::null()` (SD-7), so
+/// no proof-of-user digest is ever installed and every approval that sets
+/// `requires_user_proof` is refused — for anyone, always. A tool whose only
+/// path runs through such an approval must not be advertised there.
+#[cfg(test)]
+mod proof_gated_roster_tests {
+    use super::*;
+
+    fn names(can_ask_a_person: bool) -> Vec<String> {
+        ExtensionManagerClient::tools_for(can_ask_a_person)
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn the_two_proof_backed_mutations_are_withheld_when_no_person_is_reachable() {
+        let offered = names(false);
+        assert!(!offered.contains(&INSTALL_EXTENSION_TOOL_NAME.to_string()));
+        assert!(!offered.contains(&DELETE_EXTENSION_PACKAGE_TOOL_NAME.to_string()));
+    }
+
+    #[test]
+    fn everything_that_can_still_work_stays_offered() {
+        let offered = names(false);
+        // ⚠ The value of the gate is entirely in what it does NOT withhold. A
+        // browser session that can no longer look at its own extensions has
+        // been broken, not protected.
+        for still_useful in [
+            SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME,
+            SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME,
+            MANAGE_EXTENSIONS_TOOL_NAME,
+        ] {
+            assert!(
+                offered.contains(&still_useful.to_string()),
+                "{still_useful} was withheld, and it does not need a person's approval"
+            );
+        }
+    }
+
+    #[test]
+    fn a_desktop_daemon_is_offered_the_complete_roster() {
+        let offered = names(true);
+        assert!(offered.contains(&INSTALL_EXTENSION_TOOL_NAME.to_string()));
+        assert!(offered.contains(&DELETE_EXTENSION_PACKAGE_TOOL_NAME.to_string()));
+        // The gate removes exactly two entries and nothing else.
+        assert_eq!(offered.len(), names(false).len() + 2);
     }
 }

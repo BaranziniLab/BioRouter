@@ -2298,8 +2298,10 @@ impl SkillsClient {
     /// Offered even when no skill is installed yet. A machine with an empty
     /// skills directory is exactly the one that needs marketplace discovery
     /// and an installer.
-    fn marketplace_management_tools() -> Vec<Tool> {
-        vec![
+    /// See `pending_user_action::user_proof_available`: a tool whose approval can
+    /// never be granted must not be offered. Browsing stays; installing does not.
+    fn marketplace_management_tools(can_ask_a_person: bool) -> Vec<Tool> {
+        let mut tools = vec![
             Tool::new(
                 "searchMarketplaceSkills".to_string(),
                 indoc! {r#"
@@ -2320,34 +2322,45 @@ impl SkillsClient {
                 idempotent_hint: Some(true),
                 open_world_hint: Some(true),
             }),
+        ];
+        if can_ask_a_person {
+            tools.push(
             Tool::new(
-                "installMarketplaceSkill".to_string(),
-                indoc! {r#"
-                    Install a skill from BAAM by its exact trusted registry id.
+                    "installMarketplaceSkill".to_string(),
+                    indoc! {r#"
+                        Install a skill from BAAM by its exact trusted registry id.
 
-                    The registry resolves the download; this tool does not accept a caller-supplied
-                    URL. The archive still passes through the normal skill-package inspection and
-                    bundle-versus-individual triage. When it returns needsChoice, ask the user and
-                    call this tool again with the same registry_id plus their choice.
+                        The registry resolves the download; this tool does not accept a caller-supplied
+                        URL. The archive still passes through the normal skill-package inspection and
+                        bundle-versus-individual triage. When it returns needsChoice, ask the user and
+                        call this tool again with the same registry_id plus their choice.
 
-                    A non-dry-run call waits for the trusted desktop approval card before download
-                    or installation. A chat response cannot approve it. Select at most one
-                    component for an individual install; use separate approved calls for more.
-                "#}
-                .to_string(),
-                Self::tool_input_schema::<InstallMarketplaceSkillParams>(),
-            )
-            .annotate(ToolAnnotations {
-                title: Some("Install BAAM skill".to_string()),
-                read_only_hint: Some(false),
-                destructive_hint: Some(false),
-                idempotent_hint: Some(false),
-                open_world_hint: Some(true),
-            }),
-        ]
+                        A non-dry-run call waits for the trusted desktop approval card before download
+                        or installation. A chat response cannot approve it. Select at most one
+                        component for an individual install; use separate approved calls for more.
+                    "#}
+                    .to_string(),
+                    Self::tool_input_schema::<InstallMarketplaceSkillParams>(),
+                )
+                .annotate(ToolAnnotations {
+                    title: Some("Install BAAM skill".to_string()),
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    idempotent_hint: Some(false),
+                    open_world_hint: Some(true),
+                }),
+            );
+        }
+        tools
     }
 
-    fn package_management_tools() -> Vec<Tool> {
+    /// Both of these park an approval with `requires_user_proof: true`, so on a
+    /// daemon that can never obtain that proof neither can ever complete. See
+    /// `marketplace_management_tools`.
+    fn package_management_tools(can_ask_a_person: bool) -> Vec<Tool> {
+        if !can_ask_a_person {
+            return Vec::new();
+        }
         vec![
             Tool::new(
                 "importSkillPackage".to_string(),
@@ -2432,8 +2445,12 @@ impl SkillsClient {
     }
 
     fn management_tools() -> Vec<Tool> {
-        let mut tools = Self::marketplace_management_tools();
-        tools.extend(Self::package_management_tools());
+        // Sampled ONCE and threaded, in the spirit of `CallCapability`: two
+        // reads of a process-global could disagree and produce a roster that
+        // half-believes a person is reachable.
+        let can_ask_a_person = crate::pending_user_action::user_proof_available();
+        let mut tools = Self::marketplace_management_tools(can_ask_a_person);
+        tools.extend(Self::package_management_tools(can_ask_a_person));
         tools.extend(Self::session_management_tools());
         tools
     }
@@ -5064,5 +5081,57 @@ mod merged_surface_tests {
         let required: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
         assert!(required.contains(&"name"), "{required:?}");
         assert!(required.contains(&"enabled"), "{required:?}");
+    }
+}
+
+/// F-07: the three skill mutations all park an approval with
+/// `requires_user_proof: true` (`require_skill_mutation_approval`), so on a
+/// daemon started without a proof-of-user digest none of them can ever
+/// complete. Advertising them there teaches the model to propose an install it
+/// will be refused.
+#[cfg(test)]
+mod proof_gated_roster_tests {
+    use super::*;
+
+    fn names(can_ask_a_person: bool) -> Vec<String> {
+        let mut tools = SkillsClient::marketplace_management_tools(can_ask_a_person);
+        tools.extend(SkillsClient::package_management_tools(can_ask_a_person));
+        tools.into_iter().map(|tool| tool.name.to_string()).collect()
+    }
+
+    #[test]
+    fn the_three_mutations_are_withheld_when_no_person_is_reachable() {
+        let offered = names(false);
+        for withheld in [
+            "installMarketplaceSkill",
+            "importSkillPackage",
+            "removeSkillPackage",
+        ] {
+            assert!(
+                !offered.contains(&withheld.to_string()),
+                "{withheld} was advertised on a daemon that can never approve it"
+            );
+        }
+    }
+
+    #[test]
+    fn browsing_the_marketplace_survives_the_gate() {
+        // ⚠ Read-only discovery is the half a browser session keeps. Withholding
+        // it too would be a regression wearing a security fix's clothes.
+        assert!(names(false).contains(&"searchMarketplaceSkills".to_string()));
+    }
+
+    #[test]
+    fn a_desktop_daemon_is_offered_the_complete_roster() {
+        let offered = names(true);
+        for present in [
+            "searchMarketplaceSkills",
+            "installMarketplaceSkill",
+            "importSkillPackage",
+            "removeSkillPackage",
+        ] {
+            assert!(offered.contains(&present.to_string()), "{present} is missing");
+        }
+        assert_eq!(offered.len(), names(false).len() + 3);
     }
 }

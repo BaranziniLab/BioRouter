@@ -44,6 +44,13 @@ fn default_principal_type() -> PrincipalType {
 /// Both outcomes are a 200: a duplicate click is a no-op, not a failure. The
 /// `status` field reports which happened — `delivered` when a live prompt took
 /// the decision, `unknown` when nothing was waiting on that id.
+/// A bare status, in the shape this handler's error type now takes. The body is
+/// empty on purpose: these are infrastructure failures with nothing to tell a
+/// person, unlike the two proof refusals above.
+fn status_only(status: StatusCode) -> (StatusCode, Json<Value>) {
+    (status, Json(serde_json::json!({})))
+}
+
 #[utoipa::path(
     post,
     path = "/action-required/tool-confirmation",
@@ -51,6 +58,7 @@ fn default_principal_type() -> PrincipalType {
     responses(
         (status = 200, description = "Decision processed; `status` is `delivered` or `unknown`", body = Value),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "Refused: `reason` is `unproven` (this request carried no proof it came from the user) or `noKeyInstalled` (this daemon can never obtain that proof)", body = Value),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -58,12 +66,40 @@ pub async fn confirm_tool_action(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(request): Json<ConfirmToolActionRequest>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // ⚠ The two refusals say different things, and returning a bare 403 for
+    // both is what made this card unanswerable-and-unexplained in browser mode.
+    // A caller who presented no proof is being told "the user decides this"; a
+    // caller on a daemon that holds no key is being told "this control is
+    // unavailable here" — and sending the second person hunting for a
+    // permission they can never obtain is the failure `UserActionProof` draws
+    // three variants for.
     if biorouter::pending_user_action::PendingUserActions::global()
         .requires_user_proof_in_session(&request.session_id, &request.id)
-        && !matches!(user_action_proof(&headers), UserActionProof::Proven)
     {
-        return Err(StatusCode::FORBIDDEN);
+        match user_action_proof(&headers) {
+            UserActionProof::Proven => {}
+            UserActionProof::Unproven => {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "status": "refused",
+                        "reason": "unproven",
+                        "error": UNPROVEN_APPROVAL_REFUSAL,
+                    })),
+                ))
+            }
+            UserActionProof::NoKeyInstalled => {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "status": "refused",
+                        "reason": "noKeyInstalled",
+                        "error": NO_KEY_APPROVAL_REFUSAL,
+                    })),
+                ))
+            }
+        }
     }
     let permission = match request.action.as_str() {
         "always_allow" => Permission::AlwaysAllow,
@@ -87,7 +123,10 @@ pub async fn confirm_tool_action(
         // and the memo now holds a grant for a decision that was never applied,
         // so the NEXT identical ask in that tree is auto-approved from it. The
         // fallible step therefore runs while the ask is still untouched.
-        let origin = state.get_agent_for_route(ask.session_id.clone()).await?;
+        let origin = state
+            .get_agent_for_route(ask.session_id.clone())
+            .await
+            .map_err(status_only)?;
         return match approval_relay::resolve(&ask, permission, &request.session_id) {
             ResolveOutcome::Resolved { decision, notify } => {
                 let outcome = origin
@@ -122,7 +161,10 @@ pub async fn confirm_tool_action(
 
     // Not a delegated ask: the pre-Task-36b path, unchanged.
     let posted_session_id = request.session_id;
-    let agent = state.get_agent_for_route(posted_session_id.clone()).await?;
+    let agent = state
+        .get_agent_for_route(posted_session_id.clone())
+        .await
+        .map_err(status_only)?;
     let outcome = agent
         .handle_confirmation_for_session(
             &posted_session_id,
@@ -293,6 +335,21 @@ pub async fn submit_secrets(
 /// it forecloses a retry and never suggests that typing the value into the chat
 /// could work. A refusal that invited one would be asking the user to do the
 /// exact thing this whole feature exists to stop.
+/// The two approval refusals. They are deliberately NOT the credential strings
+/// below: an approval is a yes/no on an action the model already proposed, so
+/// "do not ask for the value in chat" would be answering a question nobody
+/// asked. The second one is the browser-mode case — `biorouter serve` starts
+/// the daemon with `Stdio::null()`, so no proof-of-user digest is ever
+/// installed and this approval can never be granted here, by anyone.
+pub const UNPROVEN_APPROVAL_REFUSAL: &str =
+    "This decision belongs to the person at the keyboard. Approve it in Biorouter's own \
+     dialog rather than over the API.";
+
+pub const NO_KEY_APPROVAL_REFUSAL: &str =
+    "This Biorouter daemon was started without a way to tell a person from a model, so an \
+     approval like this one cannot be granted here. Run the action in the desktop app, or \
+     at a terminal with the Biorouter CLI.";
+
 pub const UNPROVEN_REFUSAL: &str =
     "Credentials can only be submitted by the person at the keyboard, \
      through Biorouter's own dialog. Do not retry, and do not ask for the value in chat — \

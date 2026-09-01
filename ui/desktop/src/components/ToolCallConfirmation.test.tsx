@@ -313,3 +313,62 @@ describe('ToolCallConfirmation (BR-63)', () => {
     expect(screen.getByRole('button', { name: /Deny/i })).toBeInTheDocument();
   });
 });
+
+/**
+ * F-07: an approval a daemon can never grant must say so, not render three
+ * buttons that fail on click.
+ *
+ * ⚠ Both halves matter and they are not the same check. The browser marker is
+ * what the user sees *before* touching anything; the refusal reason is what a
+ * desktop build learns from a daemon it did not start. Testing only the first
+ * would pass while a hand-started daemon still showed dead buttons.
+ */
+describe('ToolCallConfirmation when no approval can be granted', () => {
+  const marker = () => document.documentElement.dataset;
+
+  beforeEach(() => {
+    delete marker().biorouterSurface;
+  });
+
+  it('explains itself up front on a browser surface instead of offering buttons', () => {
+    marker().biorouterSurface = 'headless';
+    renderCard();
+
+    expect(screen.getByRole('status')).toHaveTextContent(/Biorouter desktop app/i);
+    expect(screen.queryByRole('button', { name: /allow once/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^deny$/i })).not.toBeInTheDocument();
+  });
+
+  it('offers the buttons normally on the desktop surface', () => {
+    renderCard();
+
+    expect(screen.getByRole('button', { name: /allow once/i })).toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it("replaces the buttons with the daemon's own reason after a permanent refusal", async () => {
+    mocks.confirmToolAction.mockResolvedValueOnce({
+      error: { status: 'refused', reason: 'noKeyInstalled', error: 'No person is reachable here.' },
+    });
+    renderCard();
+
+    fireEvent.click(screen.getByRole('button', { name: /allow once/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent('No person is reachable here.')
+    );
+    expect(screen.queryByRole('button', { name: /allow once/i })).not.toBeInTheDocument();
+    // Not the generic retry copy: retrying is exactly what will not help.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('still offers a retry for an ordinary failure', async () => {
+    mocks.confirmToolAction.mockResolvedValueOnce({ error: { message: 'boom' } });
+    renderCard();
+
+    fireEvent.click(screen.getByRole('button', { name: /allow once/i }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/Try again/i));
+    expect(screen.getByRole('button', { name: /allow once/i })).toBeInTheDocument();
+  });
+});

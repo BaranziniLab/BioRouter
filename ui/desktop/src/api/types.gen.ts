@@ -4155,6 +4155,10 @@ export type ConfirmToolActionErrors = {
      */
     401: unknown;
     /**
+     * Refused: `reason` is `unproven` (this request carried no proof it came from the user) or `noKeyInstalled` (this daemon can never obtain that proof)
+     */
+    403: unknown;
+    /**
      * Internal server error
      */
     500: unknown;

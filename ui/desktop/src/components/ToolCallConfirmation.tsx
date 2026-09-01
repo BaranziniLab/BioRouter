@@ -6,6 +6,30 @@ import { confirmToolAction, ActionRequired } from '../api';
 import { Button } from './ui/button';
 import { ToolCallPreview, ToolRiskBadge } from './ToolCallPreview';
 import { userActionHeaders } from '../utils/userAction';
+import { isBrowserSurface } from '../utils/surface';
+
+/**
+ * What this card says instead of offering three buttons that cannot work.
+ *
+ * A `biorouter serve` daemon is started with `Stdio::null()` (SD-7), so no
+ * proof-of-user digest is ever installed and `confirm_tool_action` refuses
+ * every decision with `reason: "noKeyInstalled"` — not for this user, not for
+ * this request, but for anyone, always. Rendering Allow/Deny there is a lie the
+ * user only discovers by clicking.
+ */
+const BROWSER_CANNOT_APPROVE =
+  'This page is served to a browser, which has no way to prove a decision came from you ' +
+  'rather than from the model. Answer this request in the Biorouter desktop app.';
+
+/** The refusal reason the daemon returns when no approval can ever be granted. */
+function refusalIsPermanent(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'reason' in error &&
+    (error as { reason?: unknown }).reason === 'noKeyInstalled'
+  );
+}
 
 const ALLOW_ONCE = 'allow_once';
 const ALWAYS_ALLOW = 'always_allow';
@@ -58,6 +82,12 @@ export default function ToolConfirmation({
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [confirmationError, setConfirmationError] = useState('');
+  // Empty until we know approvals are impossible here — set up-front on a
+  // browser surface, and by the daemon's own refusal reason anywhere else (a
+  // desktop build talking to a daemon someone started by hand, say).
+  const [cannotApprove, setCannotApprove] = useState(() =>
+    isBrowserSurface() ? BROWSER_CANNOT_APPROVE : ''
+  );
   const sendingRef = useRef(false);
 
   // Sync internal state with stored state and props
@@ -118,6 +148,11 @@ export default function ToolConfirmation({
         acknowledgement && typeof acknowledgement === 'object' && 'status' in acknowledgement
           ? acknowledgement.status
           : undefined;
+      if (refusalIsPermanent(response.error)) {
+        const explanation = (response.error as { error?: unknown }).error;
+        setCannotApprove(typeof explanation === 'string' ? explanation : BROWSER_CANNOT_APPROVE);
+        return;
+      }
       if (
         response.error ||
         (acknowledgedStatus !== 'delivered' &&
@@ -127,8 +162,7 @@ export default function ToolConfirmation({
         setConfirmationError('Could not confirm your decision. Try again.');
         return;
       }
-      const resolvedStatus =
-        acknowledgedStatus === 'delivered' ? newStatus : acknowledgedStatus;
+      const resolvedStatus = acknowledgedStatus === 'delivered' ? newStatus : acknowledgedStatus;
       if (acknowledgedStatus === 'already_resolved') newActionDisplay = 'already answered';
       if (acknowledgedStatus === 'unknown') newActionDisplay = 'no longer available';
       setClicked(true);
@@ -218,38 +252,47 @@ export default function ToolConfirmation({
               </div>
             )}
 
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="default"
-                disabled={isSending}
-                onClick={() => handleButtonClick(ALLOW_ONCE)}
+            {cannotApprove ? (
+              <p
+                role="status"
+                className="rounded-lg bg-background-muted px-3 py-2 text-sm text-text-muted"
               >
-                Allow Once
-              </Button>
-              {/* Only offer "Always Allow" when there's no security finding. */}
-              {!prompt && (
+                {cannotApprove}
+              </p>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
                 <Button
                   type="button"
                   size="sm"
-                  variant="secondary"
+                  variant="default"
                   disabled={isSending}
-                  onClick={() => handleButtonClick(ALWAYS_ALLOW)}
+                  onClick={() => handleButtonClick(ALLOW_ONCE)}
                 >
-                  Always Allow
+                  Allow Once
                 </Button>
-              )}
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={isSending}
-                onClick={() => handleButtonClick(DENY)}
-              >
-                Deny
-              </Button>
-            </div>
+                {/* Only offer "Always Allow" when there's no security finding. */}
+                {!prompt && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={isSending}
+                    onClick={() => handleButtonClick(ALWAYS_ALLOW)}
+                  >
+                    Always Allow
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={isSending}
+                  onClick={() => handleButtonClick(DENY)}
+                >
+                  Deny
+                </Button>
+              </div>
+            )}
             {confirmationError && (
               <p role="alert" className="mt-2 text-sm text-text-warning">
                 {confirmationError}
