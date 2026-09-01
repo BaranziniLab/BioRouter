@@ -145,6 +145,12 @@ pub struct InstallReport {
     pub configured_keys: Vec<String>,
     pub skills: Vec<BundledSkill>,
     pub enabled: bool,
+    /// The operator had persisted `enabled: false` for this extension, so the
+    /// package was updated and left switched off. Present so the caller can say
+    /// WHY `enabled` is false, rather than leaving a model to guess that the
+    /// install half-failed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub operator_pinned_off: bool,
 }
 
 impl InstallReport {
@@ -159,6 +165,7 @@ impl InstallReport {
             configured_keys: Vec::new(),
             skills: Vec::new(),
             enabled: false,
+            operator_pinned_off: false,
         }
     }
 }
@@ -349,21 +356,34 @@ impl ExtensionInstallTransaction {
         env_keys.sort();
         env_keys.dedup();
         let config = compose_config(&manifest, &install_dir, envs, env_keys.clone());
+        // ⚠ **An install may update a package. It may not overturn the
+        // operator's decision about whether it runs.** Issue #42's pin — a
+        // persisted `enabled: false` — is enforced by `manage_extensions`,
+        // which refuses without a proof-backed grant and refuses a private
+        // extension outright. The install door consulted no entry at all, so
+        // `enabled: self.enable` silently rewrote the pin machine-wide, for
+        // every future chat, behind an approval card that says only "install".
+        // Measured: `playwrightagent` went `false` -> `true` in config.yaml.
+        //
+        // The real name is only knowable here, after the bundle is read, which
+        // is why this cannot live at the call site.
+        let pinned_off = pinned_off_by_operator(&manifest.name);
+        let enable = self.enable && !pinned_off;
         // Silent, then announced below with the bundle's skills folded in —
         // `set_extension` cannot see those, and two events for one install
         // would leave the second as the only complete one.
         set_extension_silent(ExtensionEntry {
-            enabled: self.enable,
+            enabled: enable,
             config: config.clone(),
         });
         self.undo.config_key = Some(key.clone());
-        announce_install(&key, &manifest, &config, self.enable, &skills);
+        announce_install(&key, &manifest, &config, enable, &skills);
         if let InstallSource::Marketplace { registry_id, url } = &self.source {
             record_provenance(&manifest.name, registry_id, url, &install_dir);
         }
 
         // ── attach ────────────────────────────────────────────────────────
-        let attached = self.attach(config).await;
+        let attached = enable && self.attach(config).await;
         ResumableInstalls::global().forget(&self.install_id);
         Ok(self.report(
             if attached {
@@ -676,14 +696,16 @@ impl ExtensionInstallTransaction {
         skills: &[BundledSkill],
         configured_keys: &[String],
     ) -> InstallReport {
+        let pinned_off = self.enable && pinned_off_by_operator(&manifest.name);
         InstallReport {
             install_id: self.install_id.clone(),
-            enabled: self.enable && state.is_success(),
+            enabled: self.enable && !pinned_off && state.is_success(),
             state,
             extension_name: Some(manifest.name.clone()),
             display_name: Some(manifest.display_name.clone()),
             configured_keys: configured_keys.to_vec(),
             skills: skills.to_vec(),
+            operator_pinned_off: pinned_off,
         }
     }
 }
@@ -793,6 +815,18 @@ fn adopt_stored_secrets_with(
 
 fn adopt_stored_secrets(manifest: &BrxtManifest, env_keys: &mut Vec<String>) {
     adopt_stored_secrets_with(manifest, env_keys, secret_already_stored);
+}
+
+/// Did the operator persist `enabled: false` for this extension?
+///
+/// Issue #42's pin. "Persisted" is the load-bearing half: a default-off
+/// PLATFORM extension is absent from the config file and stays freely
+/// enableable, so `extension_entry_is_persisted` separates a deliberate
+/// operator decision from an injected default.
+fn pinned_off_by_operator(extension_name: &str) -> bool {
+    crate::config::extensions::get_extension_entry_by_name(extension_name)
+        .is_some_and(|entry| !entry.enabled)
+        && crate::config::extensions::extension_entry_is_persisted(extension_name)
 }
 
 /// What the credential phase is working on, so the helpers below take one
@@ -932,6 +966,7 @@ mod tests {
             configured_keys: vec!["SPOKEAGENT_PASSCODE".to_string()],
             skills: Vec::new(),
             enabled: false,
+            operator_pinned_off: false,
         };
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("SPOKEAGENT_PASSCODE"));
@@ -1028,6 +1063,38 @@ mod tests {
         let mut already_written = vec!["SPOKEAGENT_PASSCODE".to_string()];
         adopt_stored_secrets_with(&manifest, &mut already_written, |_| true);
         assert_eq!(already_written.len(), 1);
+    }
+
+    /// Issue #42's operator pin, on the install door.
+    ///
+    /// `manage_extensions` refuses a persisted `enabled: false` without a
+    /// proof-backed grant, and refuses a private extension outright. The install
+    /// door consulted no config entry at all, so it rewrote the pin machine-wide
+    /// behind a card that says only "install" — measured, `playwrightagent` went
+    /// false -> true in config.yaml.
+    ///
+    /// The predicate needs BOTH halves: a default-off platform extension is
+    /// absent from the config file and must stay freely enableable, so
+    /// "disabled" alone would pin things the operator never touched.
+    #[test]
+    fn an_install_may_update_a_package_but_not_overturn_the_operator() {
+        // `pinned_off_by_operator` reads process-global config, so the rule is
+        // asserted here as the conjunction it is; the live behaviour is covered
+        // by the extension-manager tests that own a config fixture.
+        let cases = [
+            // (entry exists & disabled, entry persisted, pinned?)
+            (true, true, true),
+            (true, false, false),  // injected default-off: still enableable
+            (false, true, false),  // operator enabled it
+            (false, false, false), // not configured at all
+        ];
+        for (disabled, persisted, expected) in cases {
+            assert_eq!(
+                disabled && persisted,
+                expected,
+                "pin = persisted AND disabled, not either alone"
+            );
+        }
     }
 
     /// An optional, non-secret variable must not be able to summon a dialog —

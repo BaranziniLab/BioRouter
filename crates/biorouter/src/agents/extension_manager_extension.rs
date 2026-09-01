@@ -1352,11 +1352,20 @@ impl ExtensionManagerClient {
                     "toolAvailability".to_owned(),
                     serde_json::json!("notAttached"),
                 );
+                // The operator pin is a DIFFERENT reason for the same state, and
+                // conflating them tells the model to do the one thing it must
+                // not: retry the enable. Say which it is.
                 fields.insert(
                     "guidance".to_owned(),
-                    serde_json::json!(
-                        "The package is installed but its tools are not callable in this chat. Attach the extension before using them."
-                    ),
+                    serde_json::json!(if report.operator_pinned_off {
+                        "The package was updated, but the operator has this extension disabled in \
+                         the Biorouter configuration and an install does not overturn that. Do not \
+                         try to enable it. Tell the user it is installed and switched off, and that \
+                         they can turn it on in Settings > Extensions."
+                    } else {
+                        "The package is installed but its tools are not callable in this chat. \
+                         Attach the extension before using them."
+                    }),
                 );
             }
             _ => {}
@@ -3488,6 +3497,7 @@ mod tests {
             configured_keys: Vec::new(),
             skills: Vec::new(),
             enabled: true,
+            operator_pinned_off: false,
         };
         let cap = CallCapability::for_test(ProviderTier::Public, true);
         let payload: serde_json::Value =
@@ -3524,6 +3534,7 @@ mod tests {
             configured_keys: Vec::new(),
             skills: Vec::new(),
             enabled: false,
+            operator_pinned_off: false,
         };
         let payload: serde_json::Value = serde_json::from_str(
             &client
