@@ -64,6 +64,16 @@ export type SkillCatalogEntry =
   | { kind: 'single'; key: string; skill: CatalogSkill; enabled: boolean }
   | { kind: 'bundle'; key: string; bundle: CatalogBundle; enabled: boolean };
 
+/** Physical row identity. Bundle names are only logical toggle identities. */
+export function bundleCatalogEntryKey(bundle: CatalogBundle): string {
+  return JSON.stringify([bundle.sourceRoot, bundle.name]);
+}
+
+/** The backend intentionally applies a bundle-name toggle across every source. */
+export function skillCatalogToggleKey(entry: SkillCatalogEntry): string {
+  return entry.kind === 'single' ? entry.skill.name : entry.bundle.name;
+}
+
 export interface SkillCatalogState {
   /** Rows for the picker: bundles first, then standalone skills, each sorted. */
   entries: SkillCatalogEntry[];
@@ -288,7 +298,7 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
     const bundles: SkillCatalogEntry[] = pickerBundles(view)
       .map((bundle) => ({
         kind: 'bundle' as const,
-        key: bundle.name,
+        key: bundleCatalogEntryKey(bundle),
         bundle,
         enabled: bundle.state.effective,
       }))

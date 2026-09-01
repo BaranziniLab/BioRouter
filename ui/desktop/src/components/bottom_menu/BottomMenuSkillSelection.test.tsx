@@ -442,9 +442,7 @@ describe('BottomMenuSkillSelection', () => {
           skill('knowledge-lint', { bundle: 'knowledge-bases', builtin: true }),
           skill('update-soul', { bundle: 'knowledge-bases', builtin: true }),
         ],
-        bundles: [
-          bundle('knowledge-bases', ['knowledge-lint', 'update-soul'], { builtin: true }),
-        ],
+        bundles: [bundle('knowledge-bases', ['knowledge-lint', 'update-soul'], { builtin: true })],
       })
     );
     render(<BottomMenuSkillSelection sessionId={null} />);

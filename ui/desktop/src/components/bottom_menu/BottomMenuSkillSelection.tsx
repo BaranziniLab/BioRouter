@@ -8,7 +8,11 @@ import {
 } from '../ui/dropdown-menu';
 import { Input } from '../ui/input';
 import { Switch } from '../ui/switch';
-import { useSkillCatalog, type SkillCatalogEntry } from '../skills/useSkillCatalog';
+import {
+  skillCatalogToggleKey,
+  useSkillCatalog,
+  type SkillCatalogEntry,
+} from '../skills/useSkillCatalog';
 import { toastService } from '../../toasts';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
@@ -105,7 +109,11 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
   const handleBulkToggle = useCallback(() => {
     if (filteredEntries.length === 0) return;
     const targetEnabled = visibleEnabledCount === 0;
-    const keys = filteredEntries.filter((e) => e.enabled !== targetEnabled).map((e) => e.key);
+    const keys = [
+      ...new Set(
+        filteredEntries.filter((e) => e.enabled !== targetEnabled).map(skillCatalogToggleKey)
+      ),
+    ];
     if (keys.length === 0) return;
     void applyToggle(
       keys,
@@ -209,7 +217,7 @@ function SkillRow({
       <DropdownMenuCheckboxItem
         checked={enabled}
         showIndicator={false}
-        onCheckedChange={() => onToggle(entry.key, skill.name, enabled)}
+        onCheckedChange={() => onToggle(skillCatalogToggleKey(entry), skill.name, enabled)}
         onSelect={(event) => event.preventDefault()}
         className="flex cursor-pointer items-center justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium"
         title={skill.description || skill.name}
@@ -233,7 +241,7 @@ function SkillRow({
     <DropdownMenuCheckboxItem
       checked={enabled}
       showIndicator={false}
-      onCheckedChange={() => onToggle(entry.key, bundle.displayName, enabled)}
+      onCheckedChange={() => onToggle(skillCatalogToggleKey(entry), bundle.displayName, enabled)}
       onSelect={(event) => event.preventDefault()}
       className="flex cursor-pointer items-start justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium"
       title={`Bundle: ${subNames}`}

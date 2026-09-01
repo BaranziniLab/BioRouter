@@ -183,6 +183,42 @@ describe('SkillsView', () => {
     expect(items[0]).toHaveTextContent('→');
   });
 
+  it('keeps same-named package members scoped to their physical root', async () => {
+    const projectRoot = '/project/.biorouter/skills';
+    serve({
+      skills: [
+        skill('alpha', { bundle: 'pack', slug: 'pack/alpha' }),
+        skill('beta', {
+          bundle: 'pack',
+          slug: 'pack/beta',
+          directory: `${projectRoot}/pack/beta`,
+          sourceRoot: projectRoot,
+          source: { kind: 'project', extension: null, label: 'Project' },
+        }),
+      ],
+      bundles: [
+        bundle('pack', ['alpha'], { displayName: 'Installed Pack' }),
+        bundle('pack', ['beta'], {
+          displayName: 'Project Pack',
+          directory: `${projectRoot}/pack`,
+          sourceRoot: projectRoot,
+          source: { kind: 'project', extension: null, label: 'Project' },
+        }),
+      ],
+    });
+    render(<SkillsView />);
+
+    fireEvent.click(await screen.findByLabelText('Expand Installed Pack'));
+    const installed = screen.getByText('Installed Pack').closest('.biorouter-list-row')!;
+    expect(within(installed as HTMLElement).getByRole('list')).toHaveTextContent('alpha');
+    expect(within(installed as HTMLElement).getByRole('list')).not.toHaveTextContent('beta');
+
+    fireEvent.click(screen.getByLabelText('Expand Project Pack'));
+    const project = screen.getByText('Project Pack').closest('.biorouter-list-row')!;
+    expect(within(project as HTMLElement).getByRole('list')).toHaveTextContent('beta');
+    expect(within(project as HTMLElement).getByRole('list')).not.toHaveTextContent('alpha');
+  });
+
   it('removes a package through the importer rather than deleting a directory', async () => {
     serve({
       skills: [skill('alpha', { bundle: 'pack', slug: 'pack/alpha' })],
@@ -267,8 +303,6 @@ describe('SkillsView built-in bundles', () => {
     render(<SkillsView />);
 
     const row = (await screen.findByText('hyperframes')).closest('.biorouter-list-row')!;
-    expect(
-      within(row as HTMLElement).getByLabelText(/Delete skill package/)
-    ).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByLabelText(/Delete skill package/)).toBeInTheDocument();
   });
 });
