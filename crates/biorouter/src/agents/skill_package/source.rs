@@ -76,15 +76,27 @@ fn parse_github(url: &reqwest::Url) -> Option<GithubRepo> {
     if owner.is_empty() || repo.is_empty() {
         return None;
     }
+    // ⚠ **An ALLOWLIST, because the default here decides what gets downloaded.**
+    // Only `tree` and `commit` name a repository at a ref; a bare
+    // `github.com/<owner>/<repo>` is the repository itself. Everything else on
+    // github.com is a *direct artifact* — `/archive/…zip`, `/releases/download/…`,
+    // `/raw/…`, `/blob/…` — and must be fetched verbatim.
+    //
+    // This used to fall through as `Some(_) => None`, i.e. "the repo at HEAD",
+    // and only `archive` short-circuited. Every BAAM skill's download URL is
+    // `github.com/<owner>/<repo>/releases/download/<tag>/<file>.zip`, so every
+    // `installMarketplaceSkill` silently fetched
+    // `codeload.github.com/<owner>/<repo>/zip/HEAD` — the WHOLE repository (65
+    // skills) instead of the one named asset. It also defeated the marketplace's
+    // own integrity contract: `validate_https_url` checks the URL ends in the
+    // registry's declared `filename`, and then a different URL was fetched.
     let reference = match segments.next() {
         Some("tree") | Some("commit") => {
             let rest: Vec<&str> = segments.collect();
             (!rest.is_empty()).then(|| rest.join("/"))
         }
-        // `…/archive/refs/heads/main.zip` and friends are already archives.
-        Some("archive") => return None,
-        Some(_) => None,
         None => None,
+        Some(_) => return None,
     };
     Some(GithubRepo {
         owner,
@@ -324,5 +336,42 @@ mod tests {
             parse_github(&url("https://github.com/o/r/archive/refs/heads/main.zip")),
             None
         );
+    }
+
+    /// Every BAAM skill asset is a GitHub **release asset**, and reading one as
+    /// a repository reference substituted `codeload …/zip/HEAD` — the whole
+    /// repository — for the one named `.zip`. That is not a near miss: the
+    /// `biorouter-skills` repo holds 65 skills, so asking to install
+    /// `anti-ai-writing` returned a 65-way ambiguity prompt instead of a
+    /// 2,683-byte skill.
+    ///
+    /// Asserted as a family, not a single case: `releases` was only the first
+    /// direct-artifact path to reach the fall-through, and `raw` and `blob`
+    /// reach it the same way.
+    #[test]
+    fn a_direct_artifact_url_is_never_resolved_to_its_repository() {
+        for direct in [
+            "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-anti-ai-writing/anti-ai-writing.zip",
+            "https://github.com/o/r/releases/latest",
+            "https://github.com/o/r/raw/main/skill.zip",
+            "https://github.com/o/r/blob/main/SKILL.md",
+        ] {
+            assert_eq!(parse_github(&url(direct)), None, "{direct}");
+        }
+    }
+
+    /// The other half of the same rule: a real repository reference still
+    /// resolves, so tightening the match did not cost the repo-import path.
+    #[test]
+    fn a_repository_reference_still_resolves_to_its_source_archive() {
+        let bare = parse_github(&url("https://github.com/heygen-com/hyperframes")).unwrap();
+        assert_eq!(bare.repo, "hyperframes");
+        assert_eq!(bare.reference, None);
+
+        let at_ref = parse_github(&url("https://github.com/o/r/tree/some-branch")).unwrap();
+        assert_eq!(at_ref.reference.as_deref(), Some("some-branch"));
+
+        let at_commit = parse_github(&url("https://github.com/o/r/commit/abc123")).unwrap();
+        assert_eq!(at_commit.reference.as_deref(), Some("abc123"));
     }
 }

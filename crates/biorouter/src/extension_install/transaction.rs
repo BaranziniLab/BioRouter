@@ -397,6 +397,7 @@ impl ExtensionInstallTransaction {
         // being asked for again, and they go to the SAME place a card's answer
         // would: the credential store, with only the name recorded.
         self.apply_supplied(manifest, &mut values.envs, &mut values.env_keys)?;
+        adopt_stored_secrets(manifest, &mut values.env_keys);
 
         let unmet: Vec<BrxtEnvVar> = manifest
             .env_vars
@@ -410,7 +411,14 @@ impl ExtensionInstallTransaction {
             .map(|v| v.key.clone())
             .collect();
 
-        if !unmet.is_empty() {
+        // ⚠ **A dialog is raised for what BLOCKS the install, never for what is
+        // merely unset.** An `unmet` list is not a reason to interrupt a person:
+        // SPOKEAgent declares an optional, non-secret `SPOKE_LOG_LEVEL`, and
+        // asking `!unmet.is_empty()` parked a fully-satisfied install behind a
+        // modal asking for a log level. Optional values still ride along on a
+        // card that had to be shown anyway — they just cannot summon one.
+        let blocks_install = unmet.iter().any(|v| v.required || v.secret);
+        if blocks_install {
             match self
                 .collect_credentials(manifest, &unmet, policy, cancel)
                 .await?
@@ -428,6 +436,18 @@ impl ExtensionInstallTransaction {
                             self.undo.written_secrets.push(k);
                         }
                     }
+                }
+                // ⚠ The SAME rule as the `Refused` arm below, and it has to be:
+                // this arm used to stop unconditionally, so a person who
+                // dismissed a dialog asking only for an OPTIONAL value threw
+                // away an install whose every required value was already
+                // satisfied. Declining to supply something optional is not a
+                // decision to abandon the install.
+                Collected::Cancelled if unmet_required.is_empty() => {
+                    debug!(
+                        "Installing {} without the optional values the user declined",
+                        manifest.name
+                    );
                 }
                 Collected::Cancelled => {
                     return Ok(Some(self.stop(ctx, &unmet, InstallState::Cancelled)));
@@ -738,6 +758,43 @@ pub fn compose_config(
     }
 }
 
+/// Record the declared secrets the machine ALREADY holds, so the spawner is
+/// told to inject them.
+///
+/// ⚠ **A secret being "met" and a secret being RECORDED are two different
+/// things, and conflating them shipped a broken install.** `is_unmet` counts a
+/// value already in the credential store as satisfied — correctly, because
+/// re-asking for a passcode the machine holds trains the user to paste ones
+/// they need not. But `env_keys` is the *only* thing that tells the spawner to
+/// pull a secret back out of the store and put it in the child's environment,
+/// and it was previously appended to only for keys this run wrote. So a
+/// reinstall of an extension whose passcode was already stored produced
+/// `env_keys: []`: registered, `enabled: true`, and permanently unable to
+/// start, while the install reported success. Reproduced with SPOKEAgent —
+/// `RuntimeError: SPOKEAGENT_PASSCODE environment variable is required`.
+///
+/// Adopted keys deliberately do NOT join `undo.written_secrets`: this run did
+/// not write them, they may be shared with another extension, and a rollback
+/// that revoked them would break whatever else depends on them.
+/// Takes the store predicate as an argument so the RULE is testable without a
+/// real credential store — the alternative is a test that can only run on a
+/// machine that already holds the secret, which is how this went unnoticed.
+fn adopt_stored_secrets_with(
+    manifest: &BrxtManifest,
+    env_keys: &mut Vec<String>,
+    is_stored: impl Fn(&str) -> bool,
+) {
+    for var in &manifest.env_vars {
+        if var.secret && !env_keys.iter().any(|k| k == &var.key) && is_stored(&var.key) {
+            env_keys.push(var.key.clone());
+        }
+    }
+}
+
+fn adopt_stored_secrets(manifest: &BrxtManifest, env_keys: &mut Vec<String>) {
+    adopt_stored_secrets_with(manifest, env_keys, secret_already_stored);
+}
+
 /// What the credential phase is working on, so the helpers below take one
 /// borrow instead of four.
 struct InstallContext<'a> {
@@ -900,5 +957,92 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("Refusing to download"));
+    }
+
+    fn spoke_manifest() -> BrxtManifest {
+        BrxtManifest {
+            name: "spokeagent".to_string(),
+            display_name: "SPOKEAgent".to_string(),
+            description: "fixture".to_string(),
+            version: "0.4.1".to_string(),
+            entry_point: "spokeagent".to_string(),
+            repository: "https://github.com/BaranziniLab/SPOKEAgent".to_string(),
+            tools_count: None,
+            env_vars: vec![
+                BrxtEnvVar {
+                    key: "SPOKEAGENT_PASSCODE".to_string(),
+                    required: true,
+                    auto_propagate: false,
+                    default: None,
+                    description: "Access passcode provided by UCSF".to_string(),
+                    secret: true,
+                },
+                BrxtEnvVar {
+                    key: "SPOKE_LOG_LEVEL".to_string(),
+                    required: false,
+                    auto_propagate: false,
+                    default: None,
+                    description: "Logging level".to_string(),
+                    secret: false,
+                },
+            ],
+        }
+    }
+
+    /// The reinstall bug, as a rule rather than as a machine state.
+    ///
+    /// `env_keys` is the ONLY thing that tells the spawner to pull a secret out
+    /// of the store for the child, and it used to be appended to only for keys
+    /// the run itself wrote. A secret already stored is "met", so it was never
+    /// collected and never recorded — producing `env_keys: []` on every
+    /// reinstall, and a registered extension that could not start.
+    #[test]
+    fn a_secret_the_machine_already_holds_is_still_recorded_on_the_config() {
+        let manifest = spoke_manifest();
+        let mut env_keys = Vec::new();
+        adopt_stored_secrets_with(&manifest, &mut env_keys, |key| key == "SPOKEAGENT_PASSCODE");
+        assert_eq!(env_keys, vec!["SPOKEAGENT_PASSCODE".to_string()]);
+    }
+
+    /// Three things adoption must NOT do: invent a key the store does not hold,
+    /// promote a non-secret setting into the credential list (those belong in
+    /// `envs`), or duplicate one this run already wrote.
+    #[test]
+    fn adoption_never_invents_duplicates_or_promotes_a_plain_setting() {
+        let manifest = spoke_manifest();
+
+        let mut none_stored = Vec::new();
+        adopt_stored_secrets_with(&manifest, &mut none_stored, |_| false);
+        assert!(none_stored.is_empty());
+
+        // `SPOKE_LOG_LEVEL` is not a secret; even a store that claims to hold
+        // every key must not move it out of `envs`.
+        let mut everything_stored = Vec::new();
+        adopt_stored_secrets_with(&manifest, &mut everything_stored, |_| true);
+        assert_eq!(
+            everything_stored,
+            vec!["SPOKEAGENT_PASSCODE".to_string()],
+            "a non-secret setting must never be recorded as a credential"
+        );
+
+        let mut already_written = vec!["SPOKEAGENT_PASSCODE".to_string()];
+        adopt_stored_secrets_with(&manifest, &mut already_written, |_| true);
+        assert_eq!(already_written.len(), 1);
+    }
+
+    /// An optional, non-secret variable must not be able to summon a dialog —
+    /// the predicate the credential phase now branches on.
+    #[test]
+    fn only_a_required_or_secret_value_can_raise_a_credential_dialog() {
+        let manifest = spoke_manifest();
+        let optional_only = [manifest.env_vars[1].clone()];
+        assert!(
+            !optional_only.iter().any(|v| v.required || v.secret),
+            "SPOKE_LOG_LEVEL alone must not block an install"
+        );
+        assert!(
+            manifest.env_vars.iter().any(|v| v.required || v.secret),
+            "the passcode must still be able to raise one"
+        );
     }
 }
