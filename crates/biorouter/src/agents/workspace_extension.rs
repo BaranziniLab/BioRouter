@@ -3552,6 +3552,12 @@ impl WorkspaceClient {
                 .persist_extension_state(session_id)
                 .await
                 .map_err(|e| format!("failed to persist extension state: {e}"))?;
+            // `workspace__workspace_set_tools` is NOT in `tool_catalog_mutation`,
+            // so the reply loop's post-batch refresh never covered it: this tool
+            // changes ANOTHER chat's extension set, and until now no consumer of
+            // that chat was ever told. Published after the write, never before,
+            // so a refetch cannot race a row that has not landed.
+            crate::catalog::CatalogEvents::global().publish_session_refresh(session_id);
         }
         Ok(applied)
     }

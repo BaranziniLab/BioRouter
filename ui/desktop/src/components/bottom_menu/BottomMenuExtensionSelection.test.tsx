@@ -371,6 +371,41 @@ describe('BottomMenuExtensionSelection', () => {
     expect(screen.getByLabelText('Manage extensions (0 enabled)')).toBeInTheDocument();
   });
 
+  /**
+   * ⚠ **The popup is not the only consumer, and it is usually CLOSED.** The
+   * refetch above is exercised with the dropdown open, which a refactor that
+   * moved it inside an `isOpen` guard would still satisfy — while the count on
+   * the closed chip, a second window and `useToolCount` in another pane all
+   * went stale. That is the exact shape of "did not change with the popup
+   * open", so it is asserted without ever opening it.
+   */
+  it('refetches after a catalog change while the dropdown is closed', async () => {
+    mocks.getSessionExtensions.mockResolvedValue({ data: { extensions: [] } } as never);
+
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    await waitFor(() =>
+      expect(screen.getByLabelText('Manage extensions (0 enabled)')).toBeInTheDocument()
+    );
+    expect(screen.queryByRole('menuitemcheckbox')).not.toBeInTheDocument();
+    const callsBeforeChange = mocks.getSessionExtensions.mock.calls.length;
+
+    mocks.getSessionExtensions.mockResolvedValue({
+      data: { extensions: [{ type: 'stdio', name: 'example' }] },
+    } as never);
+    window.dispatchEvent(new CustomEvent(CATALOG_CHANGED_EVENT, { detail: { revision: 7 } }));
+
+    await waitFor(
+      () => expect(mocks.getSessionExtensions.mock.calls.length).toBeGreaterThan(callsBeforeChange),
+      { timeout: 1_500 }
+    );
+    expect(mocks.getSessionExtensions).toHaveBeenLastCalledWith({
+      path: { session_id: 'session-1' },
+    });
+    await waitFor(() =>
+      expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument()
+    );
+  });
+
   it('does not let a late response from the previous chat replace the current count', async () => {
     let resolvePrevious:
       | ((value: { data: { extensions: Array<{ type: string; name: string }> } }) => void)

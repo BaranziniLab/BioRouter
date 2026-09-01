@@ -1594,6 +1594,10 @@ async fn agent_add_extension(
             error!("Failed to persist extension state: {}", e);
             ErrorResponse::internal(format!("Failed to persist extension state: {}", e))
         })?;
+    // After the write, never before. The clicking window self-repairs from its
+    // own response, but a second window, the History list and `useToolCount` in
+    // another pane had no signal at all and stayed stale.
+    biorouter::catalog::CatalogEvents::global().publish_session_refresh(&request.session_id);
 
     // Issue #56 DR-26 at the USER's enable surface — the second half of the
     // ruling's "warn the user, naming both institutions, before proceeding", and
@@ -1974,6 +1978,8 @@ async fn agent_remove_extension(
                 status: StatusCode::INTERNAL_SERVER_ERROR,
             }
         })?;
+    // After the write, never before — see `agent_add_extension`.
+    biorouter::catalog::CatalogEvents::global().publish_session_refresh(&request.session_id);
 
     Ok(StatusCode::OK)
 }
@@ -2449,6 +2455,9 @@ async fn call_tool(
         .get_agent_for_route(payload.session_id.clone())
         .await?;
 
+    // Captured before `payload.name` is moved: the classifier below needs it,
+    // and this route is the one catalog-mutating door that never persisted.
+    let tool_name = payload.name.clone();
     let tool_call = CallToolRequestParams {
         task: None,
         name: payload.name.into(),
@@ -2486,6 +2495,38 @@ async fn call_tool(
         .result
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // A `manage_extensions` through this route mutated the LIVE manager and
+    // left `enabled_extensions.v0` untouched — the exact divergence the agent
+    // loop's post-batch block exists to close, on a path that never reaches it.
+    // Persist first, then announce: a consumer woken before the row lands would
+    // refetch the old state and render it authoritatively.
+    if result.is_error != Some(true) {
+        if let Some(mutation) =
+            biorouter::agents::session_extensions::tool_catalog_mutation(&tool_name)
+        {
+            if mutation.persist_extension_state {
+                if let Err(error) = agent.persist_extension_state(&payload.session_id).await {
+                    // Reported as a tool error rather than a status code, for
+                    // the same reason as every other refusal on this route: the
+                    // caller is a tool caller and the remedy is in the text.
+                    // A subagent session lands here deliberately — its grants
+                    // are immutable, and the tool must not appear to succeed.
+                    return Ok(Json(CallToolResponse {
+                        content: vec![Content::text(format!(
+                            "{tool_name} changed the live tool catalog, but this session could \
+                             not record it, so the change will not survive a reload: {error}"
+                        ))],
+                        structured_content: None,
+                        is_error: true,
+                        _meta: None,
+                    }));
+                }
+            }
+            biorouter::catalog::CatalogEvents::global()
+                .publish_session_refresh(&payload.session_id);
+        }
+    }
 
     Ok(Json(CallToolResponse {
         content: result.content,

@@ -29,6 +29,7 @@ use crate::agents::platform_tools::{
 use crate::agents::prompt_manager::PromptManager;
 use crate::agents::resource_refs::{extract_resource_refs, ResourceRefs};
 use crate::agents::retry::{RetryManager, RetryResult};
+use crate::agents::session_extensions::{tool_catalog_mutation, ToolCatalogMutation};
 use crate::agents::stall::{StallAction, StallCheckConfig, StallWatch};
 use crate::agents::subagent_task_config::TaskConfig;
 use crate::agents::subagent_tool::{
@@ -121,32 +122,6 @@ const MAX_ZERO_PROGRESS_TRUNCATION_CONTINUATIONS: u32 = 3;
 /// instead of the agent ending the turn on a half-finished response.
 const TRUNCATION_CONTINUATION_MESSAGE: &str = "Your previous response was cut off because it reached the output length limit (finish_reason=\"length\"). Continue exactly where you left off, and do not repeat what you already wrote.";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ToolCatalogMutation {
-    persist_extension_state: bool,
-}
-
-/// Model-facing catalog tools that can change the callable surface during the
-/// current turn. Read-only browse/search calls are deliberately absent.
-fn tool_catalog_mutation(tool_name: &str) -> Option<ToolCatalogMutation> {
-    let persist_extension_state = match tool_name {
-        "extensionmanager__manage_extensions"
-        | "extensionmanager__install_extension"
-        | "extensionmanager__delete_extension_package" => true,
-        "skills__installMarketplaceSkill"
-        | "skills__importSkillPackage"
-        | "skills__removeSkillPackage"
-        | "skills__setSkillEnabled"
-        // The retired pair still dispatches, so it still mutates the catalog.
-        | "skills__hotLoadSkill"
-        | "skills__hotUnloadSkill" => false,
-        _ => return None,
-    };
-    Some(ToolCatalogMutation {
-        persist_extension_state,
-    })
-}
-
 #[derive(Default)]
 struct MirroredCatalogRefresh {
     pending: HashMap<String, bool>,
@@ -183,39 +158,6 @@ impl MirroredCatalogRefresh {
         }
         self.changed && self.pending.is_empty()
     }
-}
-
-async fn persist_enabled_extensions_for_manager(
-    session_manager: &SessionManager,
-    extension_manager: &ExtensionManager,
-    session_id: &str,
-) -> Result<()> {
-    let session = session_manager.get_session(session_id, false).await?;
-    if session.session_type == SessionType::SubAgent {
-        return Err(anyhow!(
-            "subagent extension grants are immutable runtime-profile authority"
-        ));
-    }
-    let extensions_state =
-        EnabledExtensionsState::new(extension_manager.get_extension_configs().await);
-    let value = extensions_state
-        .to_value()
-        .map_err(|e| anyhow!("Extension state serialization failed: {}", e))?;
-
-    let written = session_manager
-        .update_extension_state(
-            session_id,
-            EnabledExtensionsState::EXTENSION_NAME,
-            EnabledExtensionsState::VERSION,
-            move |_| Ok(value),
-        )
-        .await?;
-    if written.is_none() {
-        return Err(anyhow!(
-            "cannot record extension state: no session {session_id}"
-        ));
-    }
-    Ok(())
 }
 
 fn should_offer_knowledge_platform_tools(
@@ -1489,7 +1431,7 @@ impl ChatBridgeDispatch {
         mutation: ToolCatalogMutation,
     ) -> std::result::Result<(), String> {
         if mutation.persist_extension_state {
-            persist_enabled_extensions_for_manager(
+            crate::agents::session_extensions::record(
                 self.session_manager.as_ref(),
                 self.extensions.as_ref(),
                 session_id,
@@ -7070,7 +7012,7 @@ impl Agent {
     /// on the other — and tool calls overlap by construction, so the window was
     /// reachable rather than theoretical.
     async fn write_enabled_extensions(&self, session_id: &str) -> Result<()> {
-        persist_enabled_extensions_for_manager(
+        crate::agents::session_extensions::record(
             self.config.session_manager.as_ref(),
             self.extension_manager.as_ref(),
             session_id,
@@ -11280,7 +11222,7 @@ mod tests {
     #[test]
     fn same_turn_catalog_refresh_covers_every_mutating_manager_tool_only() {
         for name in [
-            "extensionmanager__manage_extensions",
+            MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE,
             "extensionmanager__install_extension",
             "extensionmanager__delete_extension_package",
         ] {
@@ -13360,6 +13302,123 @@ mod tests {
                 None,
             )
             .await
+    }
+
+    /// **The NATIVE-model half of the same ordering rule.** The bridged path
+    /// above has persisted-then-published since `069a8879`; `manage_extensions`
+    /// on a native model reported `"detached"` from the tool and left the write
+    /// to this loop's post-batch block, where a failure was a `warn!`.
+    ///
+    /// `#[serial]` is load-bearing: `CatalogEvents` is process-global, so a
+    /// parallel test's bump would make the "it moved" half pass for the wrong
+    /// reason and could break the "it did not move" half.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn the_catalog_revision_moves_only_after_the_row_is_written() {
+        use crate::agents::extension::PlatformExtensionContext;
+        use crate::agents::extension_manager_extension::{
+            ExtensionManagerClient, MANAGE_EXTENSIONS_TOOL_NAME,
+        };
+        use crate::agents::mcp_client::{McpClientTrait, McpMeta};
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let load_fixture = || {
+            let manager = Arc::clone(&agent.extension_manager);
+            async move {
+                let config = ExtensionConfig::stdio(
+                    "catalogfixture",
+                    "unused-fixture-command",
+                    "ordinary public extension fixture",
+                    30_u64,
+                );
+                let key = config.key();
+                manager
+                    .add_client(
+                        key.clone(),
+                        config,
+                        Arc::new(BridgeFixtureClient),
+                        None,
+                        None,
+                    )
+                    .await;
+                key
+            }
+        };
+        let key = load_fixture().await;
+        let client = ExtensionManagerClient::new(PlatformExtensionContext {
+            extension_manager: Some(Arc::downgrade(&agent.extension_manager)),
+            session_manager: agent.config.session_manager.clone(),
+        })
+        .expect("the platform client builds");
+        let cap =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true);
+        let disable = |session: String| {
+            let client = &client;
+            async move {
+                client
+                    .call_tool(
+                        MANAGE_EXTENSIONS_TOOL_NAME,
+                        Some(object!({"action":"disable","extension_name":"catalogfixture"})),
+                        McpMeta::new(session, cap),
+                        CancellationToken::default(),
+                    )
+                    .await
+                    .expect("the platform client always answers, error or not")
+            }
+        };
+
+        let events = crate::catalog::CatalogEvents::global();
+
+        // The write cannot land: no such session row.
+        let before_failure = events.revision();
+        let failed = disable("no-such-session".to_owned()).await;
+        let failure_text = failed
+            .content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            failed.is_error,
+            Some(true),
+            "an unwritable session must not report a successful detach: {failure_text}"
+        );
+        // Not merely "it failed" — it must have failed on the WRITE, or this
+        // test is satisfied by a gate refusing before the record is reached.
+        assert!(
+            failure_text.contains("could not record it"),
+            "{failure_text}"
+        );
+        assert_eq!(
+            events.revision(),
+            before_failure,
+            "the catalog revision moved for a mutation that was never recorded"
+        );
+
+        // Same call, on the real session.
+        let _ = load_fixture().await;
+        let before_success = events.revision();
+        let ok = disable(session_id.clone()).await;
+        assert_ne!(ok.is_error, Some(true), "{ok:?}");
+        assert!(
+            events.revision() > before_success,
+            "a durable detach must wake every consumer of this chat"
+        );
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .expect("read the session back");
+        let persisted = EnabledExtensionsState::from_extension_data(&session.extension_data)
+            .expect("the detach must write enabled_extensions.v0");
+        assert!(
+            !persisted
+                .extensions
+                .iter()
+                .any(|extension| extension.key() == key),
+            "the row still names {key} after a detach"
+        );
     }
 
     #[tokio::test]

@@ -49,6 +49,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { CatalogBundle, CatalogSkill, CatalogView, SkillRoot } from '../../api';
 import { refreshSkillCatalog, setSessionSkills, skillCatalogHandler } from '../../api';
+import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
 import { isContextBundle, isContextSkill } from '../settings/contexts/contexts';
 import {
   loadSkillOverrides,
@@ -115,11 +116,13 @@ export interface SkillCatalogState {
 const EMPTY: CatalogView = { generation: 0, roots: [], skills: [], bundles: [] };
 
 /**
- * The machine-wide inventory-changed signal (#112). Named here as a constant so
- * the string is not spelled twice, and so a grep for the name finds the
- * consumer as well as the producer.
+ * The machine-wide inventory-changed signal (#112). Owned by
+ * `utils/catalogSubscription`, which is the module that *dispatches* it — this
+ * file used to declare its own `'catalog:changed'` literal, so one contract had
+ * two declarations that were equal only by luck. Re-exported rather than merely
+ * imported because `useSkillCatalog.test.ts` reads the name from here.
  */
-export const CATALOG_CHANGED_EVENT = 'catalog:changed';
+export { CATALOG_CHANGED_EVENT };
 
 function errorText(err: unknown): string {
   if (err instanceof Error) return err.message;

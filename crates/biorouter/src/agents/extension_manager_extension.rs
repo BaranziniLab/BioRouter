@@ -1259,7 +1259,13 @@ impl ExtensionManagerClient {
         let action = params.action;
         let extension_name = params.extension_name;
         let first = self
-            .manage_extensions_impl(action.clone(), extension_name.clone(), cap, false)
+            .manage_extensions_impl(
+                action.clone(),
+                extension_name.clone(),
+                cap,
+                false,
+                &session_id,
+            )
             .await
             .map_err(|error| ExtensionManagerToolError::OperationFailed {
                 message: error.message.to_string(),
@@ -1313,7 +1319,7 @@ impl ExtensionManagerClient {
                 .map_err(|error| ExtensionManagerToolError::OperationFailed {
                     message: error.message.to_string(),
                 })?;
-                self.attach_extension_to_session(extension_name, config, cap)
+                self.attach_extension_to_session(extension_name, config, cap, &session_id)
                     .await
                     .map_err(|error| ExtensionManagerToolError::OperationFailed {
                         message: error.message.to_string(),
@@ -1483,6 +1489,9 @@ impl ExtensionManagerClient {
             });
         }
 
+        // `session_id` is moved into the credential policy below, and the
+        // durability write after the install still needs it.
+        let owning_session = session_id.clone();
         let report = transaction
             .run(
                 CredentialPolicy::Ask {
@@ -1495,6 +1504,39 @@ impl ExtensionManagerClient {
             .await;
 
         let json = self.install_report_json(&report, cap).await;
+        // An install that ATTACHED is the same mutation as an enable, so it is
+        // made durable and announced the same way. `InstallState::Attached` is
+        // the correct condition and must not be widened: `attach_to` is wired
+        // only when the pre-flight passed and `enable` was asked for, and a
+        // second `guard_attach` can still refuse against the *installed*
+        // manifest name (registry `spokeagent-0.4.1` vs installed
+        // `spokeagent`), in which case the state is `Installed`, not
+        // `Attached`.
+        if matches!(report.state, InstallState::Attached) {
+            if let Some(extension_manager) = self
+                .context
+                .extension_manager
+                .as_ref()
+                .and_then(|weak| weak.upgrade())
+            {
+                if let Err(error) = crate::agents::session_extensions::record(
+                    &self.context.session_manager,
+                    &extension_manager,
+                    &owning_session,
+                )
+                .await
+                {
+                    return Err(ExtensionManagerToolError::OperationFailed {
+                        message: format!(
+                            "the extension was installed and attached for this turn but the \
+                             session could not record it, so the live state and the saved \
+                             roster have diverged: {error}"
+                        ),
+                    });
+                }
+                crate::catalog::CatalogEvents::global().publish_session_refresh(&owning_session);
+            }
+        }
         match &report.state {
             InstallState::NeedsCredentials { .. } | InstallState::Cancelled => {
                 // Not an error: a person declined or could not be asked. Say so
@@ -1575,6 +1617,7 @@ impl ExtensionManagerClient {
         extension_name: String,
         cap: crate::privacy::CallCapability,
         user_granted: bool,
+        session_id: &str,
     ) -> Result<Vec<Content>, ErrorData> {
         let extension_manager = self
             .context
@@ -1616,23 +1659,49 @@ impl ExtensionManagerClient {
                 .map(|tool| tool.name.to_string())
                 .collect::<Vec<_>>();
             removed_tools.sort();
-            return extension_manager
+            extension_manager
                 .remove_extension(&extension_name)
                 .await
-                .map(|_| {
-                    vec![Content::text(
-                        serde_json::json!({
-                            "extensionName": extension_name,
-                            "sessionState": "detached",
-                            "persistentConfigurationChanged": false,
-                            "removedTools": removed_tools,
-                            "toolAvailability": "revokedImmediately",
-                            "guidance": "The removedTools are unavailable now. Do not call them unless the extension is attached again.",
-                        })
-                        .to_string(),
-                    )]
+                .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+            // A mutation is persisted before it is reported — the rule
+            // `routes/skills.rs` states for the other half of the catalog.
+            // Reporting `"detached"` over an unwritten row is what left the
+            // popup showing an extension the turn had already unloaded, and
+            // restored it on the next reload.
+            //
+            // There is deliberately NO rollback here: the config has already
+            // left the manager, and a re-add can fail on its own (subprocess
+            // spawn), so a best-effort restore would add a second failure path
+            // no test could tell from the first. The error names the divergence
+            // instead.
+            crate::agents::session_extensions::record(
+                &self.context.session_manager,
+                &extension_manager,
+                session_id,
+            )
+            .await
+            .map_err(|e| {
+                ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    format!(
+                        "the extension was detached for this turn but the session could not \
+                         record it, so the live state and the saved roster have diverged: {e}"
+                    ),
+                    None,
+                )
+            })?;
+            crate::catalog::CatalogEvents::global().publish_session_refresh(session_id);
+            return Ok(vec![Content::text(
+                serde_json::json!({
+                    "extensionName": extension_name,
+                    "sessionState": "detached",
+                    "persistentConfigurationChanged": false,
+                    "removedTools": removed_tools,
+                    "toolAvailability": "revokedImmediately",
+                    "guidance": "The removedTools are unavailable now. Do not call them unless the extension is attached again.",
                 })
-                .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None));
+                .to_string(),
+            )]);
         }
 
         let entry = get_extension_entry_by_name(&extension_name);
@@ -1649,7 +1718,7 @@ impl ExtensionManagerClient {
             check_enable_allowed(entry, persisted, &extension_name, cap)?
         };
 
-        self.attach_extension_to_session(extension_name, config, cap)
+        self.attach_extension_to_session(extension_name, config, cap, session_id)
             .await
     }
 
@@ -1658,6 +1727,7 @@ impl ExtensionManagerClient {
         extension_name: String,
         config: ExtensionConfig,
         cap: crate::privacy::CallCapability,
+        session_id: &str,
     ) -> Result<Vec<Content>, ErrorData> {
         let extension_manager = self
             .context
@@ -1672,6 +1742,12 @@ impl ExtensionManagerClient {
                 )
             })?;
         let extension_key = config.key();
+        // Sampled BEFORE the add, so the rollback below can tell a true
+        // false->true transition from a re-add of something `/ext:`, a config
+        // default or an earlier call had already loaded. The manager holds one
+        // entry per key, so an unconditional rollback would unload an extension
+        // this call never brought in.
+        let was_enabled = extension_manager.is_extension_enabled(&extension_key).await;
         extension_manager
             .add_extension(config)
             .await
@@ -1684,6 +1760,30 @@ impl ExtensionManagerClient {
             .map(|tool| tool.name.to_string())
             .collect::<Vec<_>>();
         available_tools.sort();
+        // A mutation is persisted before it is reported (`routes/skills.rs`).
+        // Leaving the write to the reply loop's post-batch block meant
+        // `"attached"` was returned over a row that had not been written yet,
+        // and a failure there was a `warn!` with no signal to any surface.
+        if let Err(error) = crate::agents::session_extensions::record(
+            &self.context.session_manager,
+            &extension_manager,
+            session_id,
+        )
+        .await
+        {
+            if !was_enabled {
+                let _ = extension_manager.remove_extension(&extension_name).await;
+            }
+            return Err(ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!(
+                    "the extension could not be recorded on this session, so it was not \
+                     attached: {error}"
+                ),
+                None,
+            ));
+        }
+        crate::catalog::CatalogEvents::global().publish_session_refresh(session_id);
         Ok(vec![Content::text(
             serde_json::json!({
                 "extensionName": extension_name,
@@ -2315,7 +2415,7 @@ mod tests {
 
     #[tokio::test]
     async fn marketplace_install_and_delete_are_advertised_tools() {
-        let (_dir, _manager, client) = a_live_tool_client();
+        let (_dir, _manager, client, _session_id) = a_live_tool_client().await;
         let names = client
             .get_tools()
             .await
@@ -2589,7 +2689,7 @@ mod tests {
     {
         let _path_root = pinned_path_root();
         let fixture = install_deletion_fixture("playwrightagent", "Single").await;
-        let (_manager_root, manager, client) = a_live_tool_client();
+        let (_manager_root, manager, client, _session_id) = a_live_tool_client().await;
         assert!(!manager.is_extension_enabled(&fixture.config_key).await);
         let session_id = format!("delete-single-{}", uuid::Uuid::new_v4());
 
@@ -2615,7 +2715,7 @@ mod tests {
         let _path_root = pinned_path_root();
         let first = install_deletion_fixture("codegraphagent", "BatchOne").await;
         let second = install_deletion_fixture("bioroffice", "BatchTwo").await;
-        let (_manager_root, manager, client) = a_live_tool_client();
+        let (_manager_root, manager, client, _session_id) = a_live_tool_client().await;
         let session_id = format!("delete-batch-{}", uuid::Uuid::new_v4());
 
         let result = run_approved_delete(
@@ -2643,7 +2743,7 @@ mod tests {
     async fn post_approval_config_revalidation_leaves_the_replacement_and_package_untouched() {
         let _path_root = pinned_path_root();
         let fixture = install_deletion_fixture("opennotebookagent", "Revalidate").await;
-        let (_manager_root, manager, client) = a_live_tool_client();
+        let (_manager_root, manager, client, _session_id) = a_live_tool_client().await;
         let client = Arc::new(client);
         let session_id = format!("delete-revalidate-{}", uuid::Uuid::new_v4());
         let running = tokio::spawn({
@@ -2753,7 +2853,7 @@ mod tests {
         );
         assert!(approval.preview.is_some());
 
-        let (_manager_root, manager, _client) = a_live_tool_client();
+        let (_manager_root, manager, _client, _session_id) = a_live_tool_client().await;
         let cancel = CancellationToken::new();
         cancel.cancel();
         let cancelled = delete_staged_marketplace_package(
@@ -3473,10 +3573,17 @@ mod tests {
 
     /// A live `ExtensionManagerClient` over a real `ExtensionManager`, reached
     /// exactly as `configure_agent` builds it.
-    fn a_live_tool_client() -> (
+    /// The fourth element is a **real** session id, created in the same
+    /// temporary store the manager owns. The handler now writes
+    /// `enabled_extensions.v0` before it reports `attached`/`detached`, and
+    /// `update_extension_state` answers `Ok(None)` for a session that does not
+    /// exist — so a fixture with an invented id would fail the write and read
+    /// as a persistence bug rather than as the fixture gap it is.
+    async fn a_live_tool_client() -> (
         tempfile::TempDir,
         std::sync::Arc<crate::agents::extension_manager::ExtensionManager>,
         ExtensionManagerClient,
+        String,
     ) {
         let dir = tempfile::tempdir().unwrap();
         let em = std::sync::Arc::new(
@@ -3488,13 +3595,23 @@ mod tests {
             extension_manager: Some(std::sync::Arc::downgrade(&em)),
             session_manager: em.get_context().session_manager.clone(),
         };
+        let session = em
+            .get_context()
+            .session_manager
+            .create_session(
+                dir.path().to_path_buf(),
+                "fixture".to_owned(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .expect("the fixture session store accepts a session");
         let client = ExtensionManagerClient::new(context).expect("the platform client builds");
-        (dir, em, client)
+        (dir, em, client, session.id)
     }
 
     #[tokio::test]
     async fn attach_result_names_every_tool_that_is_immediately_callable() {
-        let (_dir, em, client) = a_live_tool_client();
+        let (_dir, em, client, session_id) = a_live_tool_client().await;
         let config = ExtensionConfig::Platform {
             name: "extensionmanager".to_owned(),
             description: "Extension Manager".to_owned(),
@@ -3507,6 +3624,7 @@ mod tests {
                 "Extension Manager".to_owned(),
                 config,
                 CallCapability::for_test(ProviderTier::Public, true),
+                &session_id,
             )
             .await
             .expect("the platform extension attaches");
@@ -3541,7 +3659,7 @@ mod tests {
 
     #[tokio::test]
     async fn attached_install_result_names_every_tool_that_is_immediately_callable() {
-        let (_dir, em, client) = a_live_tool_client();
+        let (_dir, em, client, _session_id) = a_live_tool_client().await;
         let context = PlatformExtensionContext {
             extension_manager: Some(std::sync::Arc::downgrade(&em)),
             session_manager: em.get_context().session_manager.clone(),
@@ -3598,7 +3716,7 @@ mod tests {
 
     #[tokio::test]
     async fn installed_but_unattached_report_does_not_claim_tools_are_callable() {
-        let (_dir, _em, client) = a_live_tool_client();
+        let (_dir, _em, client, _session_id) = a_live_tool_client().await;
         let report = crate::extension_install::InstallReport {
             install_id: "install-fixture".to_owned(),
             state: crate::extension_install::InstallState::Installed,
@@ -3630,7 +3748,7 @@ mod tests {
 
     #[tokio::test]
     async fn detach_result_names_every_tool_that_is_revoked_immediately() {
-        let (_dir, em, client) = a_live_tool_client();
+        let (_dir, em, client, session_id) = a_live_tool_client().await;
         let context = PlatformExtensionContext {
             extension_manager: Some(std::sync::Arc::downgrade(&em)),
             session_manager: em.get_context().session_manager.clone(),
@@ -3668,6 +3786,7 @@ mod tests {
                 "publicfixture".to_owned(),
                 cap,
                 false,
+                &session_id,
             )
             .await
             .expect("the ordinary public extension detaches");
@@ -3690,7 +3809,202 @@ mod tests {
             .is_empty());
     }
 
-    async fn disable(client: &ExtensionManagerClient, name: &str, cap: CallCapability) -> String {
+    /// A fixture extension the manager can hold without spawning anything.
+    async fn load_public_fixture(
+        em: &std::sync::Arc<crate::agents::extension_manager::ExtensionManager>,
+    ) -> String {
+        let context = PlatformExtensionContext {
+            extension_manager: Some(std::sync::Arc::downgrade(em)),
+            session_manager: em.get_context().session_manager.clone(),
+        };
+        let config = ExtensionConfig::stdio(
+            "publicfixture",
+            "unused-fixture-command",
+            "ordinary public extension fixture",
+            30_u64,
+        );
+        let key = config.key();
+        em.add_client(
+            key.clone(),
+            config,
+            std::sync::Arc::new(
+                ExtensionManagerClient::new(context).expect("fixture client builds"),
+            ),
+            None,
+            None,
+        )
+        .await;
+        key
+    }
+
+    async fn session_roster(
+        em: &std::sync::Arc<crate::agents::extension_manager::ExtensionManager>,
+        session_id: &str,
+    ) -> Vec<String> {
+        use crate::session::extension_data::ExtensionState;
+        let session = em
+            .get_context()
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .expect("the fixture session is readable");
+        crate::session::EnabledExtensionsState::from_extension_data(&session.extension_data)
+            .map(|state| {
+                state
+                    .extensions
+                    .iter()
+                    .map(|config| config.key())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    /// **The ordering, not merely the write.** The row must be on disk by the
+    /// time the tool says `"attached"`; a fix that publishes the catalog event
+    /// and still leaves the write to the reply loop's post-batch block passes
+    /// every behavioural test except this one.
+    #[tokio::test]
+    async fn an_attach_writes_the_session_row_before_it_reports_attached() {
+        let (_dir, em, client, session_id) = a_live_tool_client().await;
+        let config = ExtensionConfig::Platform {
+            name: "extensionmanager".to_owned(),
+            description: "Extension Manager".to_owned(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        let key = config.key();
+
+        let content = client
+            .attach_extension_to_session(
+                "Extension Manager".to_owned(),
+                config,
+                public_enforcing(),
+                &session_id,
+            )
+            .await
+            .expect("the platform extension attaches");
+        let text = content[0].as_text().expect("JSON text response");
+        let payload: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+        assert_eq!(payload["sessionState"], "attached");
+
+        let roster = session_roster(&em, &session_id).await;
+        assert!(
+            roster.contains(&key),
+            "the row must already name {key} when the tool reports attached: {roster:?}"
+        );
+    }
+
+    /// A failed write must not be a `warn!` behind a success — the failure mode
+    /// the reply loop's post-batch block still has. And the extension this call
+    /// brought in must not be left loaded against a row that never recorded it.
+    #[tokio::test]
+    async fn a_failed_session_write_does_not_report_attached_and_leaves_no_orphan() {
+        let (_dir, em, client, _session_id) = a_live_tool_client().await;
+        let config = ExtensionConfig::Platform {
+            name: "extensionmanager".to_owned(),
+            description: "Extension Manager".to_owned(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        let key = config.key();
+
+        let error = client
+            .attach_extension_to_session(
+                "Extension Manager".to_owned(),
+                config,
+                public_enforcing(),
+                "no-such-session",
+            )
+            .await
+            .expect_err("an unwritable session must not report attached");
+        assert!(
+            error.message.contains("could not be recorded"),
+            "{}",
+            error.message
+        );
+        assert!(
+            !em.is_extension_enabled(&key).await,
+            "a refused attach left {key} loaded"
+        );
+    }
+
+    /// The rollback is scoped to a true false->true transition. An
+    /// unconditional `remove_extension` would unload an extension that `/ext:`,
+    /// a config default or an earlier call had already put in the manager.
+    #[tokio::test]
+    async fn an_attach_over_an_already_loaded_extension_does_not_unload_it_when_the_write_fails() {
+        let (_dir, em, client, _session_id) = a_live_tool_client().await;
+        let key = load_public_fixture(&em).await;
+        assert!(em.is_extension_enabled(&key).await);
+
+        let error = client
+            .attach_extension_to_session(
+                "publicfixture".to_owned(),
+                ExtensionConfig::stdio(
+                    "publicfixture",
+                    "unused-fixture-command",
+                    "ordinary public extension fixture",
+                    30_u64,
+                ),
+                public_enforcing(),
+                "no-such-session",
+            )
+            .await
+            .expect_err("an unwritable session must not report attached");
+        assert!(
+            error.message.contains("could not be recorded"),
+            "{}",
+            error.message
+        );
+        assert!(
+            em.is_extension_enabled(&key).await,
+            "a rollback unloaded an extension this call never added"
+        );
+    }
+
+    /// Symmetric to the attach test. A fix applied only to the attach arm
+    /// leaves a detached extension still checked in the popup and restored on
+    /// the next reload.
+    #[tokio::test]
+    async fn a_disable_removes_the_extension_from_the_session_row() {
+        let (_dir, em, client, session_id) = a_live_tool_client().await;
+        let key = load_public_fixture(&em).await;
+        crate::agents::session_extensions::record(
+            &em.get_context().session_manager,
+            em.as_ref(),
+            &session_id,
+        )
+        .await
+        .expect("the fixture roster is recordable");
+        assert!(session_roster(&em, &session_id).await.contains(&key));
+
+        let content = client
+            .manage_extensions_impl(
+                ManageExtensionAction::Disable,
+                "publicfixture".to_owned(),
+                public_enforcing(),
+                false,
+                &session_id,
+            )
+            .await
+            .expect("the ordinary public extension detaches");
+        let text = content[0].as_text().expect("JSON text response");
+        let payload: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+        assert_eq!(payload["sessionState"], "detached");
+
+        let roster = session_roster(&em, &session_id).await;
+        assert!(
+            !roster.contains(&key),
+            "the row still names {key} after a detach: {roster:?}"
+        );
+    }
+
+    async fn disable(
+        client: &ExtensionManagerClient,
+        name: &str,
+        cap: CallCapability,
+        session_id: &str,
+    ) -> String {
         let result = client
             .call_tool(
                 MANAGE_EXTENSIONS_TOOL_NAME,
@@ -3700,7 +4014,7 @@ mod tests {
                         .unwrap()
                         .clone(),
                 ),
-                McpMeta::new("session-under-test", cap),
+                McpMeta::new(session_id, cap),
                 CancellationToken::default(),
             )
             .await
@@ -3720,12 +4034,13 @@ mod tests {
     /// `cap` was already a parameter, and this branch simply never read it.
     #[tokio::test]
     async fn a_public_chat_may_not_disable_a_private_extension_through_the_tool() {
-        let (_dir, em, client) = a_live_tool_client();
+        let (_dir, em, client, session_id) = a_live_tool_client().await;
 
         let refused = disable(
             &client,
             "ucsfomopagent",
             CallCapability::for_test(ProviderTier::Public, true),
+            &session_id,
         )
         .await;
         assert!(
@@ -3739,6 +4054,7 @@ mod tests {
             &client,
             "ucsfomopagent",
             CallCapability::for_test(ProviderTier::Private, true),
+            &session_id,
         )
         .await;
         assert!(
@@ -3754,7 +4070,7 @@ mod tests {
 
     #[tokio::test]
     async fn builtin_and_platform_capabilities_cannot_be_disabled_as_extensions() {
-        let (_dir, em, client) = a_live_tool_client();
+        let (_dir, em, client, session_id) = a_live_tool_client().await;
         for entry in capability_entries() {
             let name = entry.config.name();
             em.add_extension(entry.config)
@@ -3764,6 +4080,7 @@ mod tests {
                 &client,
                 &name,
                 CallCapability::for_test(ProviderTier::Private, true),
+                &session_id,
             )
             .await;
             assert!(refusal.contains("capability"), "{name}: {refusal}");
@@ -3778,11 +4095,12 @@ mod tests {
     /// DR-15's master opt-out reaches the disable gate through the capability.
     #[tokio::test]
     async fn the_master_toggle_silences_the_disable_gate() {
-        let (_dir, _em, client) = a_live_tool_client();
+        let (_dir, _em, client, session_id) = a_live_tool_client().await;
         let text = disable(
             &client,
             "ucsfomopagent",
             CallCapability::for_test(ProviderTier::Public, false),
+            &session_id,
         )
         .await;
         assert!(
