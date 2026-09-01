@@ -290,6 +290,19 @@ impl DecisionAuthority {
         Self(Authority::Unproven)
     }
 
+    /// Stand in for a proven surface, in a test that is exercising something
+    /// else and simply needs the desktop dialog's answer to land.
+    ///
+    /// ⚠ `#[cfg(test)]` is what keeps this honest: the compiler, not a
+    /// convention, is what stops it appearing in production code — so the audit
+    /// of the two privileged constructors stays a statement about the real
+    /// doors. A test that is exercising the GATE ITSELF must use the production
+    /// constructors instead, and the tests in this module do.
+    #[cfg(test)]
+    pub(crate) fn for_test_proven() -> Self {
+        Self(Authority::Proven)
+    }
+
     fn may_grant_proof_backed(self) -> bool {
         matches!(self.0, Authority::Proven | Authority::LocalHuman)
     }

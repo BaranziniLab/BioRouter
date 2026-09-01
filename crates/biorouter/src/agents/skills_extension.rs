@@ -4229,7 +4229,10 @@ Working dir biorouter content
                 crate::pending_user_action::UserActionOutcome::Approved {
                     permission: crate::permission::Permission::AllowOnce,
                 },
-                crate::pending_user_action::DecisionAuthority::unproven(),
+                // These stand in for the desktop dialog answering a
+                // proof-backed card, which is what the test is a fixture for —
+                // the gate itself is exercised in `decision_authority_tests`.
+                crate::pending_user_action::DecisionAuthority::for_test_proven(),
             ),
             crate::pending_user_action::ResolveOutcome::Delivered
         );

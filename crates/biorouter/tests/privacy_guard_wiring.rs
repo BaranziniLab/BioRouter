@@ -649,13 +649,20 @@ const REGISTRY: &[Guard] = &[
         sites: &[
             Site {
                 file: "crates/biorouter/src/agents/extension_manager_extension.rs",
-                counts: c(1, 0, 0),
+                counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
                 what: "#117's marketplace install tool, which gates the ATTACH rather than \
                        the install. Installing writes bytes to disk and is not an enable, \
                        so a refusal must still leave the package correctly installed. The \
                        manager's ordinary enable door uses the stricter \
-                       `extension_manager_enable_refusal`, tracked in the next row",
+                       `extension_manager_enable_refusal`, tracked in the next row. \
+                       TWO calls, and the second is not redundant: the first asks with the \
+                       REGISTRY's name, which is all that is known before the download, and \
+                       the registry's name and the installed one demonstrably differ in \
+                       production (SPOKEAgent advertises `spokeagent-0.4.1` and installs as \
+                       `spokeagent`). The second is a `guard_attach` closure asking the same \
+                       gate again with the manifest's real name, at the only point it is \
+                       knowable. Deleting either leaves a name the gate was never asked about",
             },
             Site {
                 file: "crates/biorouter/src/agents/workspace_extension.rs",
