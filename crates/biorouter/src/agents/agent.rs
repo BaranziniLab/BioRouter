@@ -974,24 +974,13 @@ const CODING_AGENT_BRIDGE_ALLOWED_AGENT_DRAFTER_TOOLS: &[&str] = &[
     "agent_drafter__build_app",
     "agent_drafter__configure_app",
     "agent_drafter__create_app",
-    // ⚠ The retired names ride along with the merged ones. They still
-    // dispatch (see agent_drafter's RETIRED_TOOL_NAMES), and the bridge gates a
-    // coding-agent child by EXACT name — dropping them would turn a working
-    // alias into a refusal the child cannot diagnose.
     "agent_drafter__declare_app",
-    "agent_drafter__declare_profiles",
-    "agent_drafter__declare_surface",
     "agent_drafter__delete_app",
     "agent_drafter__export_app",
     "agent_drafter__launch_app",
-    "agent_drafter__lint_app",
     "agent_drafter__list_apps",
     "agent_drafter__list_platform_catalog",
-    "agent_drafter__preview_app",
     "agent_drafter__read_app",
-    "agent_drafter__set_app_size",
-    "agent_drafter__set_routes",
-    "agent_drafter__set_theme",
     "agent_drafter__smoke_app",
     "agent_drafter__update_app",
 ];
@@ -1047,28 +1036,29 @@ const CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS: &[&str] = &[
     PLATFORM_INGEST_SOURCE_TOOL_NAME,
 ];
 
-/// ⚠ Carries the RETIRED names as well as the merged ones. The bridge gates a
-/// child coding agent's calls by exact name, and the retired names still
-/// dispatch — dropping them here would turn a working alias into a refusal that
-/// the child cannot diagnose.
+/// ⚠ The ADVERTISED roster, and only that — retired names do not belong here
+/// even though they still dispatch.
+///
+/// The two audiences are different. A retired name survives in `call_tool` for
+/// a persisted transcript and a stored user grant, both of which replay a name
+/// chosen before the merge. A coding-agent child has neither: its grant is
+/// minted per turn from the live tool list, so it can only ever call something
+/// it was just offered. A retired name here would be unreachable by
+/// construction, and `coding_agent_bridge_policy_matches_the_reviewed_builtin_
+/// router_rosters` asserts the two sets are equal for exactly that reason.
 const CODING_AGENT_BRIDGE_ALLOWED_SKILLS_TOOLS: &[&str] = &[
     "skills__searchSkills",
-    "skills__listSkills",
     "skills__loadSkill",
-    "skills__browseMarketplaceSkills",
     "skills__searchMarketplaceSkills",
     "skills__installMarketplaceSkill",
     "skills__importSkillPackage",
     "skills__removeSkillPackage",
     "skills__setSkillEnabled",
-    "skills__hotLoadSkill",
-    "skills__hotUnloadSkill",
 ];
 
 const CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS: &[&str] = &[
     "extensionmanager__search_available_extensions",
     "extensionmanager__manage_extensions",
-    "extensionmanager__browse_marketplace_extensions",
     "extensionmanager__search_marketplace_extensions",
     "extensionmanager__install_extension",
     "extensionmanager__delete_extension_package",
@@ -13598,11 +13588,26 @@ mod tests {
             PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
             PLATFORM_INGEST_SOURCE_TOOL_NAME,
             "skills__importSkillPackage",
-            "skills__hotLoadSkill",
+            "skills__setSkillEnabled",
             "extensionmanager__install_extension",
             "extensionmanager__manage_extensions",
         ] {
             assert!(coding_agent_bridge_policy_allows_tool(allowed), "{allowed}");
+        }
+        // ⚠ And a RETIRED name is not bridged, even though it still dispatches
+        // in-process. A child's grant is minted per turn from the live tool
+        // list, so it can only call what it was just offered; a retired name
+        // here would be unreachable by construction.
+        for retired in [
+            "skills__hotLoadSkill",
+            "skills__listSkills",
+            "extensionmanager__browse_marketplace_extensions",
+            "agent_drafter__lint_app",
+        ] {
+            assert!(
+                !coding_agent_bridge_policy_allows_tool(retired),
+                "{retired}"
+            );
         }
     }
 
