@@ -7,9 +7,10 @@ use anyhow::{anyhow, Error};
 use async_stream::try_stream;
 use chrono;
 use futures::Stream;
-use rmcp::model::{object, CallToolRequestParams, Role, Tool};
+use rmcp::model::{object, CallToolRequestParams, ErrorCode, ErrorData, Role, Tool};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResponsesApiResponse {
@@ -544,17 +545,22 @@ fn response_usage_to_usage(usage: &ResponseUsage) -> Usage {
 }
 
 fn process_streaming_output_items(
-    output_items: Vec<ResponseOutputItemInfo>,
+    output_items: Vec<(ResponseOutputItemInfo, bool)>,
     is_text_response: bool,
 ) -> Vec<MessageContent> {
     let mut content = Vec::new();
 
-    for item in output_items {
+    for (item, completion_confirmed) in output_items {
         match item {
             ResponseOutputItemInfo::Reasoning { .. } => {
                 // Skip reasoning items
             }
-            ResponseOutputItemInfo::Message { content: parts, .. } => {
+            ResponseOutputItemInfo::Message {
+                status,
+                content: parts,
+                ..
+            } => {
+                let completion_confirmed = completion_confirmed && status == "completed";
                 for part in parts {
                     match part {
                         ContentPart::OutputText { text, .. } => {
@@ -567,51 +573,112 @@ fn process_streaming_output_items(
                             name,
                             arguments,
                         } => {
-                            let parsed_args = if arguments.is_empty() {
-                                json!({})
-                            } else {
-                                serde_json::from_str(&arguments).unwrap_or_else(|_| json!({}))
-                            };
-
-                            content.push(MessageContent::tool_request(
+                            content.push(streaming_tool_content(
                                 id,
-                                Ok(CallToolRequestParams {
-                                    task: None,
-                                    name: name.into(),
-                                    arguments: Some(object(parsed_args)),
-                                    meta: None,
-                                }),
+                                name,
+                                &arguments,
+                                completion_confirmed,
                             ));
                         }
                     }
                 }
             }
             ResponseOutputItemInfo::FunctionCall {
+                status,
                 call_id,
                 name,
                 arguments,
                 ..
             } => {
-                let parsed_args = if arguments.is_empty() {
-                    json!({})
-                } else {
-                    serde_json::from_str(&arguments).unwrap_or_else(|_| json!({}))
-                };
-
-                content.push(MessageContent::tool_request(
+                content.push(streaming_tool_content(
                     call_id,
-                    Ok(CallToolRequestParams {
-                        task: None,
-                        name: name.into(),
-                        arguments: Some(object(parsed_args)),
-                        meta: None,
-                    }),
+                    name,
+                    &arguments,
+                    completion_confirmed && status == "completed",
                 ));
             }
         }
     }
 
     content
+}
+
+fn streaming_tool_content(
+    call_id: String,
+    name: String,
+    arguments: &str,
+    completion_confirmed: bool,
+) -> MessageContent {
+    if !completion_confirmed {
+        return MessageContent::tool_request(
+            call_id,
+            Err(ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                "Tool-call stream completion was not confirmed; the call was not executed. Emit a new, complete tool call.",
+                Some(json!({"biorouterToolCallFailure":"incomplete_stream"})),
+            )),
+        );
+    }
+
+    let parsed = if arguments.trim().is_empty() {
+        Ok(json!({}))
+    } else {
+        serde_json::from_str::<Value>(arguments).map_err(|error| {
+            ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                format!("Could not interpret tool use parameters: {error}"),
+                Some(json!({"biorouterToolCallFailure":"invalid_arguments"})),
+            )
+        })
+    }
+    .and_then(|value| {
+        if value.is_object() {
+            Ok(value)
+        } else {
+            Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                "Tool arguments must be a JSON object; the call was not executed.",
+                Some(json!({"biorouterToolCallFailure":"invalid_arguments"})),
+            ))
+        }
+    });
+
+    match parsed {
+        Ok(arguments) => MessageContent::tool_request(
+            call_id,
+            Ok(CallToolRequestParams {
+                task: None,
+                name: name.into(),
+                arguments: Some(object(arguments)),
+                meta: None,
+            }),
+        ),
+        Err(error) => MessageContent::tool_request(call_id, Err(error)),
+    }
+}
+
+fn output_item_id(item: &ResponseOutputItemInfo) -> &str {
+    match item {
+        ResponseOutputItemInfo::Reasoning { id, .. }
+        | ResponseOutputItemInfo::Message { id, .. }
+        | ResponseOutputItemInfo::FunctionCall { id, .. } => id,
+    }
+}
+
+struct PendingFunctionCall {
+    call_id: String,
+    name: String,
+}
+
+struct PendingOutputItem {
+    item_id: String,
+    calls: BTreeMap<i32, PendingFunctionCall>,
+}
+
+enum StreamingOutputItemState {
+    Pending(PendingOutputItem),
+    Unconfirmed(ResponseOutputItemInfo),
+    Completed(ResponseOutputItemInfo),
 }
 
 pub fn responses_api_to_streaming_message<S>(
@@ -627,7 +694,7 @@ where
         let mut response_id: Option<String> = None;
         let mut model_name: Option<String> = None;
         let mut final_usage: Option<ProviderUsage> = None;
-        let mut output_items: Vec<ResponseOutputItemInfo> = Vec::new();
+        let mut output_items: BTreeMap<i32, StreamingOutputItemState> = BTreeMap::new();
         let mut is_text_response = false;
 
         'outer: while let Some(response) = stream.next().await {
@@ -638,11 +705,9 @@ where
                 continue;
             }
 
-            // Parse SSE format: "event: <type>\ndata: <json>"
-            // For now, we only care about the data line
-            let data_line = if response_str.starts_with("data: ") {
-                response_str.strip_prefix("data: ").unwrap()
-            } else if response_str.starts_with("event: ") {
+            let data_line = if let Some(data) = response_str.strip_prefix("data:") {
+                data.trim_start()
+            } else if response_str.starts_with("event:") {
                 // Skip event type lines
                 continue;
             } else {
@@ -650,12 +715,12 @@ where
                 &response_str
             };
 
-            if data_line == "[DONE]" {
+            if data_line.trim() == "[DONE]" {
                 break 'outer;
             }
 
             let event: ResponsesStreamEvent = serde_json::from_str(data_line)
-                .map_err(|e| anyhow!("Failed to parse Responses stream event: {}: {:?}", e, data_line))?;
+                .map_err(|error| anyhow!("Failed to parse Responses stream event: {error}"))?;
 
             match event {
                 ResponsesStreamEvent::ResponseCreated { response, .. } |
@@ -683,8 +748,100 @@ where
                     yield (Some(msg), None, None);
                 }
 
-                ResponsesStreamEvent::OutputItemDone { item, .. } => {
-                    output_items.push(item);
+                ResponsesStreamEvent::OutputItemAdded {
+                    output_index,
+                    item,
+                    ..
+                } => {
+                    let pending = match item {
+                        ResponseOutputItemInfo::FunctionCall {
+                            id,
+                            call_id,
+                            name,
+                            ..
+                        } => Some(PendingOutputItem {
+                            item_id: id,
+                            calls: [(0, PendingFunctionCall { call_id, name })]
+                                .into_iter()
+                                .collect(),
+                        }),
+                        ResponseOutputItemInfo::Message { id, content, .. } => {
+                            let calls = content
+                                .into_iter()
+                                .enumerate()
+                                .filter_map(|part| match part {
+                                    (content_index, ContentPart::ToolCall { id, name, .. }) => {
+                                        i32::try_from(content_index).ok().map(|content_index| {
+                                            (
+                                                content_index,
+                                                PendingFunctionCall { call_id: id, name },
+                                            )
+                                        })
+                                    }
+                                    (_, ContentPart::OutputText { .. }) => None,
+                                })
+                                .collect::<BTreeMap<_, _>>();
+                            (!calls.is_empty()).then_some(PendingOutputItem {
+                                item_id: id,
+                                calls,
+                            })
+                        }
+                        ResponseOutputItemInfo::Reasoning { .. } => None,
+                    };
+                    if let Some(pending) = pending {
+                        output_items
+                            .entry(output_index)
+                            .or_insert(StreamingOutputItemState::Pending(pending));
+                    }
+                }
+
+                ResponsesStreamEvent::ContentPartAdded {
+                    item_id,
+                    output_index,
+                    content_index,
+                    part: ContentPart::ToolCall { id, name, .. },
+                    ..
+                } => {
+                    let call = PendingFunctionCall { call_id: id, name };
+                    match output_items.entry(output_index) {
+                        std::collections::btree_map::Entry::Vacant(entry) => {
+                            entry.insert(StreamingOutputItemState::Pending(PendingOutputItem {
+                                item_id,
+                                calls: [(content_index, call)].into_iter().collect(),
+                            }));
+                        }
+                        std::collections::btree_map::Entry::Occupied(mut entry) => {
+                            if let StreamingOutputItemState::Pending(pending) = entry.get_mut() {
+                                if pending.item_id == item_id {
+                                    pending.calls.entry(content_index).or_insert(call);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                ResponsesStreamEvent::OutputItemDone {
+                    output_index,
+                    item,
+                    ..
+                } => {
+                    let item_id = output_item_id(&item);
+                    let completion_matches = match output_items.get(&output_index) {
+                        None => true,
+                        Some(StreamingOutputItemState::Pending(pending)) => {
+                            pending.item_id == item_id
+                        }
+                        Some(StreamingOutputItemState::Unconfirmed(existing)) => {
+                            output_item_id(existing) == item_id
+                        }
+                        Some(StreamingOutputItemState::Completed(_)) => false,
+                    };
+                    if completion_matches {
+                        output_items.insert(
+                            output_index,
+                            StreamingOutputItemState::Completed(item),
+                        );
+                    }
                 }
 
                 ResponsesStreamEvent::OutputTextDone { .. } => {
@@ -704,9 +861,12 @@ where
                         finish_reason: None,
                     });
 
-                    // For complete output, use the response output items
-                    if !response.output.is_empty() {
-                        output_items = response.output;
+                    for (output_index, item) in response.output.into_iter().enumerate() {
+                        if let Ok(output_index) = i32::try_from(output_index) {
+                            output_items
+                                .entry(output_index)
+                                .or_insert(StreamingOutputItemState::Unconfirmed(item));
+                        }
                     }
 
                     break 'outer;
@@ -730,13 +890,33 @@ where
                 }
 
                 _ => {
-                    // Ignore other event types (OutputItemAdded, ContentPartAdded, ContentPartDone)
+                    // Ignore remaining non-tool progress events.
                 }
             }
         }
 
-        // Process final output items and yield usage data
-        let content = process_streaming_output_items(output_items, is_text_response);
+        let mut content = Vec::new();
+        for item in output_items.into_values() {
+            match item {
+                StreamingOutputItemState::Pending(pending) => {
+                    content.extend(pending.calls.into_values().map(|call| {
+                        streaming_tool_content(call.call_id, call.name, "", false)
+                    }));
+                }
+                StreamingOutputItemState::Unconfirmed(item) => {
+                    content.extend(process_streaming_output_items(
+                        vec![(item, false)],
+                        is_text_response,
+                    ));
+                }
+                StreamingOutputItemState::Completed(item) => {
+                    content.extend(process_streaming_output_items(
+                        vec![(item, true)],
+                        is_text_response,
+                    ));
+                }
+            }
+        }
 
         if !content.is_empty() {
             let mut message = Message::new(Role::Assistant, chrono::Utc::now().timestamp(), content);
