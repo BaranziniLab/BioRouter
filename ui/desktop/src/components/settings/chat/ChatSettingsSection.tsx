@@ -38,7 +38,8 @@ export default function ChatSettingsSection() {
         <div className="biorouter-settings-section-header">
           <h2 className="text-caps text-text-muted mb-1">Capabilities</h2>
           <p className="text-xs text-text-muted">
-            Built-in abilities are managed here. Most are enabled by default.
+            Choose which built-in abilities new chats start with. Existing chats keep their current
+            capabilities.
           </p>
         </div>
         <div className="biorouter-settings-list">

@@ -2374,36 +2374,26 @@ impl McpClientTrait for CodeExecutionClient {
                         results, in ONE execution. This is the purpose of this tool: fewer round-trips when a
                         task genuinely needs several calls whose outputs feed each other.
 
-                        DO NOT use this for basic file or system operations. Listing a directory, reading or
-                        writing a single file, copying, moving, deleting, or finding files, and running one
-                        command are simpler with the developer extension: call `developer/shell` (ls, cp, mv,
-                        rm, mkdir, rg) or `developer/text_editor` (view, write, str_replace) DIRECTLY instead
-                        of wrapping them in a script here.
-                        - WRONG: execute_code to `ls`, copy a file, or `rm`; use developer/shell directly.
-                        - WRONG: one execute_code call that wraps a single tool call; just call that tool.
+                        DO NOT use this for a basic operation that one effective direct tool already performs.
+                        - WRONG: one execute_code call that wraps a single tool call; call that tool directly.
                         - RIGHT: several dependent calls, or a loop/aggregation over their outputs, in one script.
 
                         EXAMPLE - Chain dependent calls with logic between them (ONE call):
                         ```javascript
-                        import { shell } from "developer";
-                        const branches = shell({ command: "git branch --format='%(refname:short)'" })
-                          .split("\n").filter(Boolean);
-                        const ahead = branches.map((b) => ({
-                          branch: b,
-                          count: shell({ command: `git rev-list --count main..${b}` }).trim(),
+                        import { list_items, inspect_item } from "module_name";
+                        const items = list_items({ state: "open" });
+                        const inspected = items.map((item) => ({
+                          item,
+                          details: inspect_item({ id: item.id }),
                         }));
-                        record_result({ ahead });
+                        record_result({ inspected });
                         ```
 
                         EXAMPLE - Fan out one call's output into follow-up calls (ONE call):
                         ```javascript
-                        import { shell, text_editor } from "developer";
-                        const files = shell({ command: "rg --files -g '*.md' docs" }).split("\n").filter(Boolean);
-                        const headings = files.map((f) => ({
-                          file: f,
-                          first: text_editor({ path: f, command: "view" }).split("\n")[0],
-                        }));
-                        record_result({ headings });
+                        import { list_items, read_item } from "module_name";
+                        const items = list_items({ category: "recent" });
+                        record_result(items.map((item) => read_item({ id: item.id })));
                         ```
 
                         SYNTAX:
@@ -2421,26 +2411,25 @@ impl McpClientTrait for CodeExecutionClient {
                         - Only the modules listed in "Modules:" above are importable: these and only these.
                         - There is NO Node.js or browser standard library here: no "fs", "path", "os",
                           "child_process", "http", "https", "crypto", "process", and no fetch/require.
-                          For files and commands import from "developer": import { shell, text_editor } from "developer";
-                        - Module names are case-sensitive and are the extension names, not package names.
+                          Use a listed effective capability module for files or commands when one is present.
+                        - Module names are case-sensitive capability or extension names, not package names.
 
                         MULTILINE SCRIPT ARGUMENTS:
                         - String.raw`...` ONLY preserves backslashes (\n stays two characters). It does NOT
                           make ${...} literal: every ${...} in ANY template literal is still parsed as a JS
                           expression (bash's ${VAR:-x} or ${!v} is a syntax error), and a backtick inside the
                           payload terminates the literal. Escape a literal dollar-brace as ${"$"}{ .
-                        - A payload containing backticks or ${...} (shell parameter expansion, markdown code
+                        - A payload containing backticks or ${...} (parameter expansion, markdown code
                           fences, nested scripts) is safer passed as a plain quoted string with \n escapes, or
-                          written to a file with developer/text_editor (write) and run via developer/shell.
+                          handled by an effective direct tool when one is available.
                         - Prefer one scripting language. Avoid nesting another interpreter unless the task requires it.
 
                         TOOL_GRAPH: Always provide tool_graph to describe the execution flow for the UI.
                         Each node has: tool (server/name), description (what it does), depends_on (indices of dependencies).
                         Example for chained operations:
                         [
-                          {"tool": "developer/shell", "description": "list files", "depends_on": []},
-                          {"tool": "developer/text_editor", "description": "read README.md", "depends_on": []},
-                          {"tool": "developer/text_editor", "description": "write output.txt", "depends_on": [0, 1]}
+                          {"tool": "module_name/list_items", "description": "list items", "depends_on": []},
+                          {"tool": "module_name/read_item", "description": "read each item", "depends_on": [0]}
                         ]
 
                         DISCOVERY:
@@ -2605,6 +2594,58 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use test_case::test_case;
+
+    #[tokio::test]
+    async fn model_facing_tool_description_calls_built_ins_capabilities() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            temp_dir.path().to_path_buf(),
+        ));
+        let client = CodeExecutionClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager,
+        })
+        .unwrap();
+
+        let tools = client
+            .list_tools(None, CancellationToken::new())
+            .await
+            .unwrap();
+        let description = tools
+            .tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == "execute_code")
+            .and_then(|tool| tool.description.as_deref())
+            .unwrap();
+
+        // ⚠ **Two surfaces, two different jobs — and asserting one against the
+        // other is why this test could not pass.** `list_tools` returns the
+        // DESCRIPTION, which must stay capability-agnostic: Developer can be
+        // switched off, so a description that hard-codes `developer/shell`
+        // teaches the model to call a tool that may not exist. The name
+        // "Developer capability" belongs to the server INSTRUCTIONS, which are
+        // free to name it because they say in the same breath what to do when
+        // it is absent.
+        assert!(description.contains("capability or extension names"));
+        assert!(!description.contains("developer extension"));
+        assert!(
+            !description.contains("developer/shell") && !description.contains("developer/text_editor"),
+            "the description must not hard-code a capability that may be disabled"
+        );
+
+        let instructions = client
+            .get_info()
+            .expect("code execution publishes server info")
+            .instructions
+            .clone()
+            .expect("code execution publishes server instructions");
+        assert!(instructions.contains("Developer capability"));
+        assert!(!instructions.contains("developer extension"));
+        assert!(
+            instructions.contains("if Developer is disabled"),
+            "naming Developer is only safe while the same passage says what to do without it"
+        );
+    }
 
     #[tokio::test]
     async fn test_execute_code_simple() {

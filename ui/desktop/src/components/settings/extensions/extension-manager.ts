@@ -23,26 +23,29 @@ interface ToggleExtensionDefaultProps {
   toggle: 'toggleOn' | 'toggleOff';
   extensionConfig: ExtensionConfig;
   addToConfig: (name: string, extensionConfig: ExtensionConfig, enabled: boolean) => Promise<void>;
+  itemKind?: 'capability' | 'extension';
 }
 
 export async function toggleExtensionDefault({
   toggle,
   extensionConfig,
   addToConfig,
+  itemKind = 'extension',
 }: ToggleExtensionDefaultProps) {
   const enabled = toggle === 'toggleOn';
+  const itemLabel = itemKind === 'capability' ? 'Capability' : 'Extension';
 
   try {
     await addToConfig(extensionConfig.name, extensionConfig, enabled);
     toastService.success({
       title: extensionConfig.name,
-      msg: enabled ? 'Extension enabled in defaults' : 'Extension removed from defaults',
+      msg: enabled ? `${itemLabel} enabled for new chats` : `${itemLabel} disabled for new chats`,
     });
   } catch (error) {
-    console.error('Failed to update extension default in config:', error);
+    console.error(`Failed to update ${itemKind} default in config:`, error);
     toastService.error({
       title: extensionConfig.name,
-      msg: 'Failed to update extension default',
+      msg: `Failed to update ${itemKind} default`,
     });
     throw error;
   }

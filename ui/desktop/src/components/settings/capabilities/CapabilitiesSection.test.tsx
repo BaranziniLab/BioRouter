@@ -59,6 +59,7 @@ describe('CapabilitiesSection', () => {
           toggle: 'toggleOn',
           extensionConfig: expect.objectContaining({ name: 'chatrecall', enabled: false }),
           addToConfig: mocks.addExtension,
+          itemKind: 'capability',
         })
       )
     );

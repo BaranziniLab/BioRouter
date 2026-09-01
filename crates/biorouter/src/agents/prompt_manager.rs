@@ -107,10 +107,16 @@ impl Default for PromptManager {
 struct SystemPromptContext {
     capabilities: Vec<ExtensionInfo>,
     extensions: Vec<ExtensionInfo>,
-    extension_manager_enabled: bool,
+    installed_extension_discovery_available: bool,
+    marketplace_extension_browse_available: bool,
+    marketplace_extension_search_available: bool,
+    extension_state_change_available: bool,
+    extension_package_install_available: bool,
+    extension_package_delete_available: bool,
     extension_resource_tools_available: bool,
-    skills_enabled: bool,
-    knowledge_enabled: bool,
+    extension_resource_tools_directly_callable: bool,
+    skill_load_available: bool,
+    knowledge_search_available: bool,
     developer_shell_available: bool,
     developer_text_editor_available: bool,
     code_execute_available: bool,
@@ -259,6 +265,18 @@ fn capability_has_tool(capabilities: &[ExtensionInfo], capability: &str, tool: &
     })
 }
 
+fn capability_has_direct_tool(
+    capabilities: &[ExtensionInfo],
+    capability: &str,
+    tool: &str,
+) -> bool {
+    capabilities.iter().any(|info| {
+        prompt_name_key(&info.name) == capability
+            && (!info.tool_roster_known
+                || info.directly_callable_tools.iter().any(|name| name == tool))
+    })
+}
+
 fn build_system_prompt_context(
     manager: &PromptManager,
     extensions_info: Vec<ExtensionInfo>,
@@ -269,24 +287,40 @@ fn build_system_prompt_context(
     let (capabilities, extensions): (Vec<_>, Vec<_>) = extensions_info
         .into_iter()
         .partition(|info| info.classification == ExtensionClassification::Capability);
-    let extension_manager_enabled = [
-        "manage_extensions",
+    let installed_extension_discovery_available = capability_has_tool(
+        &capabilities,
+        "extensionmanager",
+        "search_available_extensions",
+    );
+    let marketplace_extension_browse_available = capability_has_tool(
+        &capabilities,
+        "extensionmanager",
         "browse_marketplace_extensions",
+    );
+    let marketplace_extension_search_available = capability_has_tool(
+        &capabilities,
+        "extensionmanager",
         "search_marketplace_extensions",
-        "install_extension",
+    );
+    let extension_state_change_available =
+        capability_has_tool(&capabilities, "extensionmanager", "manage_extensions");
+    let extension_package_install_available =
+        capability_has_tool(&capabilities, "extensionmanager", "install_extension");
+    let extension_package_delete_available = capability_has_tool(
+        &capabilities,
+        "extensionmanager",
         "delete_extension_package",
-    ]
-    .iter()
-    .any(|tool| capability_has_tool(&capabilities, "extensionmanager", tool));
+    );
     let extension_resource_tools_available =
         capability_has_tool(&capabilities, "extensionmanager", "list_resources")
             && capability_has_tool(&capabilities, "extensionmanager", "read_resource");
-    let skills_enabled = capability_has_tool(&capabilities, "skills", "loadSkill")
-        || capability_has_tool(&capabilities, "skills", "listSkills");
-    let knowledge_enabled = capabilities.iter().any(|info| {
-        prompt_name_key(&info.name) == "knowledge"
-            && (!info.tool_roster_known || !info.available_tools.is_empty())
-    });
+    let extension_resource_tools_directly_callable = capability_has_direct_tool(
+        &capabilities,
+        "extensionmanager",
+        "list_resources",
+    ) && capability_has_direct_tool(&capabilities, "extensionmanager", "read_resource");
+    let skill_load_available = capability_has_tool(&capabilities, "skills", "loadSkill");
+    let knowledge_search_available = capability_has_tool(&capabilities, "knowledge", "kb_search");
 
     SystemPromptContext {
         developer_shell_available: capability_has_tool(&capabilities, "developer", "shell"),
@@ -298,10 +332,16 @@ fn build_system_prompt_context(
         code_execute_available: capability_has_tool(&capabilities, "codeexecution", "execute_code"),
         capabilities,
         extensions,
-        extension_manager_enabled,
+        installed_extension_discovery_available,
+        marketplace_extension_browse_available,
+        marketplace_extension_search_available,
+        extension_state_change_available,
+        extension_package_install_available,
+        extension_package_delete_available,
         extension_resource_tools_available,
-        skills_enabled,
-        knowledge_enabled,
+        extension_resource_tools_directly_callable,
+        skill_load_available,
+        knowledge_search_available,
         current_date_time: manager
             .fixed_timestamp
             .clone()
@@ -518,6 +558,15 @@ mod tests {
     use insta::assert_snapshot;
 
     use super::*;
+
+    fn capability_with_tools(name: &str, tools: &[&str]) -> ExtensionInfo {
+        let mut info = ExtensionInfo::capability(name, "focused capability guidance", false);
+        info.tool_roster_known = true;
+        info.available_tools = tools.iter().map(|tool| (*tool).to_string()).collect();
+        info.directly_callable_tools
+            .clone_from(&info.available_tools);
+        info
+    }
 
     #[test]
     fn test_build_system_prompt_sanitizes_override() {
@@ -736,6 +785,96 @@ mod tests {
         );
     }
 
+    #[test]
+    fn focused_guidance_requires_the_exact_effective_operation() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+
+        let skills_without_load = manager
+            .builder()
+            .with_extension(capability_with_tools("skills", &["listSkills"]))
+            .build();
+        assert!(!skills_without_load.contains("about-biorouter"));
+
+        let skills_with_load = manager
+            .builder()
+            .with_extension(capability_with_tools("skills", &["loadSkill"]))
+            .build();
+        assert!(skills_with_load.contains("about-biorouter"));
+
+        let knowledge_without_search = manager
+            .builder()
+            .with_extension(capability_with_tools("knowledge", &["kb_write_page"]))
+            .build();
+        assert!(!knowledge_without_search.contains("built-in **Soul**"));
+
+        let knowledge_with_search = manager
+            .builder()
+            .with_extension(capability_with_tools("knowledge", &["kb_search"]))
+            .build();
+        assert!(knowledge_with_search.contains("built-in **Soul**"));
+    }
+
+    #[test]
+    fn extension_manager_claims_follow_its_effective_operation_groups() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let build = |tools: &[&str]| {
+            manager
+                .builder()
+                .with_extension(capability_with_tools("Extension Manager", tools))
+                .build()
+        };
+
+        // One clause per operation, each gated on its own tool. A single
+        // combined sentence would have to be true whenever ANY of them is
+        // callable, which is the thing this block exists to stop: a model told
+        // it "can install" because `search_available_extensions` was present.
+        let discovery = build(&["search_available_extensions"]);
+        assert!(discovery.contains("- discover installed extensions and their exact names"));
+        assert!(!discovery.contains("- enable or disable"));
+        assert!(!discovery.contains("- install an extension package"));
+        assert!(!discovery.contains("- permanently delete"));
+        assert!(!discovery.contains("- discover marketplace extensions"));
+
+        let state_change = build(&["manage_extensions"]);
+        assert!(state_change.contains("- enable or disable a named installed extension"));
+        assert!(!state_change.contains("- discover installed extensions"));
+        assert!(!state_change.contains("- install an extension package"));
+
+        let install = build(&["install_extension"]);
+        assert!(install.contains("- install an extension package"));
+        assert!(!install.contains("- permanently delete"));
+
+        let delete = build(&["delete_extension_package"]);
+        assert!(delete.contains("- permanently delete an installed extension package"));
+        assert!(!delete.contains("- install an extension package"));
+
+        // Browse and search are one catalogue, so the clause collapses when
+        // both are callable rather than claiming the surface twice.
+        let browse_only = build(&["browse_marketplace_extensions"]);
+        assert!(browse_only.contains("- discover marketplace extensions by browsing the trusted"));
+        let search_only = build(&["search_marketplace_extensions"]);
+        assert!(search_only.contains("- discover marketplace extensions by searching the trusted"));
+        let both = build(&[
+            "browse_marketplace_extensions",
+            "search_marketplace_extensions",
+        ]);
+        assert!(both.contains("- discover marketplace extensions by browsing or searching"));
+
+        // ⚠ Every clause is a bullet under one subject line, so no rendering
+        // can open the paragraph with a subject-less "It" — which is what
+        // happened when the marketplace sentence led with a pronoun whose
+        // antecedent lived in a clause that had not rendered.
+        for rendered in [&discovery, &state_change, &install, &delete, &browse_only] {
+            assert!(rendered.contains(
+                "The Extension Manager capability can do only what this turn's effective roster allows:"
+            ));
+            assert!(!rendered.contains("\nIt can "));
+        }
+
+        let resources_only = build(&["list_resources", "read_resource"]);
+        assert!(resources_only.contains("Extension Manager operations are not available"));
+    }
+
     /// Contract test for the agentic-behavior clauses added to `system.md`.
     /// Each assertion guards one intentional instruction against silent
     /// removal/regression. These are the table-stakes behaviors the prompt
@@ -862,7 +1001,7 @@ mod tests {
             .join(" ");
 
         assert!(
-            p.contains("# ambiguity and delegation"),
+            p.contains("# ambiguity"),
             "the parent needs a section it can find: {p}"
         );
         // Scoped to the referent case. Completely Autonomous mode not asking
@@ -889,29 +1028,46 @@ mod tests {
             p.contains("don't act on every candidate to cover both"),
             "rewriting BOTH candidates is the exact measured failure: {p}"
         );
+        assert!(
+            !p.contains("before delegating") && !p.contains("comes back with status `blocked`"),
+            "delegation guidance must be absent when no delegation tool is available: {p}"
+        );
+
+        let delegating = manager
+            .builder()
+            .with_enable_subagents(true)
+            .build()
+            .to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            delegating.contains("# ambiguity and delegation"),
+            "an available delegation surface needs the full section: {delegating}"
+        );
         // What a blocked subagent means and what to do with it.
         assert!(
-            p.contains("comes back with status `blocked`"),
-            "the parent must be able to recognise the status: {p}"
+            delegating.contains("comes back with status `blocked`"),
+            "the parent must be able to recognise the status: {delegating}"
         );
         assert!(
-            p.contains("that is the delegation working, not failing"),
-            "unsaid, a model treats a no-edit run as a failed one and redoes the work: {p}"
+            delegating.contains("that is the delegation working, not failing"),
+            "unsaid, a model treats a no-edit run as a failed one and redoes the work: {delegating}"
         );
         assert!(
-            p.contains("delegate the task again with the answer written out in full"),
-            "the cheap path, when the parent CAN settle it, must be named: {p}"
+            delegating.contains("delegate the task again with the answer written out in full"),
+            "the cheap path, when the parent CAN settle it, must be named: {delegating}"
         );
         assert!(
-            p.contains("put the subagent's question to the user in your reply and wait"),
-            "the question must reach the user when neither party can settle it: {p}"
+            delegating.contains("put the subagent's question to the user in your reply and wait"),
+            "the question must reach the user when neither party can settle it: {delegating}"
         );
         assert!(
-            p.contains(
+            delegating.contains(
                 "never settle it by guessing, by delegating again with a guess, or by \
                         doing the work yourself instead"
             ),
-            "doing the work itself is what the parent actually did: {p}"
+            "doing the work itself is what the parent actually did: {delegating}"
         );
     }
 
@@ -923,11 +1079,7 @@ mod tests {
 
         let developer_only = manager
             .builder()
-            .with_extension(ExtensionInfo::capability(
-                "developer",
-                "dev instructions",
-                false,
-            ))
+            .with_extension(capability_with_tools("developer", &["shell"]))
             .build();
         assert!(
             !developer_only.contains("about-biorouter") && !developer_only.contains("Soul"),
@@ -936,11 +1088,7 @@ mod tests {
 
         let skills_only = manager
             .builder()
-            .with_extension(ExtensionInfo::capability(
-                "skills",
-                "skill instructions",
-                false,
-            ))
+            .with_extension(capability_with_tools("skills", &["loadSkill"]))
             .build();
         assert!(
             skills_only.contains("about-biorouter") && !skills_only.contains("Soul"),
@@ -949,11 +1097,7 @@ mod tests {
 
         let knowledge_only = manager
             .builder()
-            .with_extension(ExtensionInfo::capability(
-                "knowledge",
-                "knowledge instructions",
-                false,
-            ))
+            .with_extension(capability_with_tools("knowledge", &["kb_search"]))
             .build();
         assert!(
             !knowledge_only.contains("about-biorouter") && knowledge_only.contains("Soul"),
@@ -1151,9 +1295,42 @@ mod tests {
             "missing verify-before-done discipline"
         );
         assert!(
-            p.contains("Prefer the simplest tool for the job"),
+            p.contains("Prefer the simplest effective tool for the job"),
             "missing small-local tool-routing discipline"
         );
+        assert!(
+            !p.contains("Developer `shell`")
+                && !p.contains("Developer `text_editor`")
+                && !p.contains("Code Execution capability"),
+            "the empty capability roster must not leave named-tool guidance: {p}"
+        );
+
+        let shell_only = manager
+            .builder()
+            .with_extension(capability_with_tools("developer", &["shell"]))
+            .with_prompt_variant(PromptVariant::SmallLocal)
+            .build();
+        assert!(shell_only.contains("When Developer `shell` is available"));
+        assert!(!shell_only.contains("When Developer `text_editor` is available"));
+        assert!(!shell_only.contains("Prefer `text_editor` for file contents"));
+        assert!(!shell_only.contains("Use the Code Execution capability only"));
+
+        let editor_only = manager
+            .builder()
+            .with_extension(capability_with_tools("developer", &["text_editor"]))
+            .with_prompt_variant(PromptVariant::SmallLocal)
+            .build();
+        assert!(!editor_only.contains("When Developer `shell` is available"));
+        assert!(editor_only.contains("When Developer `text_editor` is available"));
+        assert!(!editor_only.contains("Prefer `shell` for commands"));
+
+        let code_execution_only = manager
+            .builder()
+            .with_extension(capability_with_tools("code_execution", &["execute_code"]))
+            .with_prompt_variant(PromptVariant::SmallLocal)
+            .build();
+        assert!(code_execution_only.contains("Use the Code Execution capability only"));
+        assert!(!code_execution_only.contains("When Developer `shell` is available"));
     }
 
     /// BR-3: a full custom prompt override is already complete, so the overlay
