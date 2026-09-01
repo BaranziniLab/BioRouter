@@ -2471,15 +2471,21 @@ async fn call_tool(
     // would hand an HTTP client whatever reach the user's chat happens to have.
     // Public + enforced is the most restrictive pair, and it is a constant, so
     // there is nothing here to race with `update_provider`.
-    let tool_result = match agent
-        .extension_manager
-        .dispatch_tool_call(
+    // F-15: and there is nobody here to ask, either. This entry has no admitted
+    // turn and no stream to draw a card on, so a decision raised beneath it
+    // would be inserted into a queue only the agent loop drains — waiting out
+    // its whole time-to-live unanswerable, and then surfacing in the NEXT chat
+    // turn as a question about something that happened minutes ago. Refusing
+    // to park is the same reasoning as the capability above, one layer down.
+    let tool_result = match biorouter::user_surface::without_human_surface(
+        agent.extension_manager.dispatch_tool_call(
             &payload.session_id,
             tool_call,
             biorouter::privacy::CallCapability::public_enforced(),
             CancellationToken::default(),
-        )
-        .await
+        ),
+    )
+    .await
     {
         Ok(result) => result,
         // Issue #56 Gate C: this used to be

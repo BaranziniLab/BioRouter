@@ -138,6 +138,16 @@ impl ActionRequiredManager {
         timeout_duration: Duration,
         session_id: Option<&str>,
     ) -> Result<Option<Value>> {
+        // ⚠ The unbounded half of the same refusal `PendingUserActions::park`
+        // makes. Any MCP server can reach here through `create_elicitation`, so
+        // the set of calls that might ask a question is not enumerable — which
+        // is precisely why the rule is about the CALLER's surface rather than a
+        // list of tools. `Ok(None)` is already this function's cancellation
+        // shape, so no caller learns a new outcome.
+        if crate::user_surface::no_human_surface() {
+            return Ok(None);
+        }
+
         let id = Uuid::new_v4().to_string();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let pending_request = PendingRequest {

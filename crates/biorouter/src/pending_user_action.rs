@@ -330,6 +330,26 @@ impl PendingUserActions {
         request: UserActionRequest,
     ) -> PendingUserAction {
         let id = Uuid::new_v4().to_string();
+
+        // ⚠ Refuse to park where there is nobody to answer. A card raised
+        // beneath `POST /agent/call_tool` has no admitted turn and no stream to
+        // draw on, so it would sit in a queue only the agent loop drains — for
+        // its whole time-to-live, unanswerable — and the NEXT chat turn would
+        // then surface it, as a question about something that happened minutes
+        // ago. Registering nothing is what makes that resurrection impossible.
+        //
+        // The returned handle answers `Cancelled` immediately, which every
+        // caller already handles: it is the same outcome a dismissal produces.
+        if crate::user_surface::no_human_surface() {
+            return PendingUserAction {
+                id,
+                request,
+                rx: None,
+                declined: true,
+                registry: Arc::clone(self),
+            };
+        }
+
         let (tx, rx) = oneshot::channel();
         self.lock().insert(
             id.clone(),
@@ -348,6 +368,7 @@ impl PendingUserActions {
             id,
             request,
             rx: Some(rx),
+            declined: false,
             registry: Arc::clone(self),
         }
     }
@@ -441,6 +462,33 @@ impl PendingUserActions {
         self.lock().contains_key(id)
     }
 
+    /// The ephemeral cards this session still has parked, as the messages they
+    /// were published as.
+    ///
+    /// For a late-joining observer on the session event stream. An ephemeral
+    /// card is deliberately never stored — a resolved approval must not
+    /// reappear in a transcript — so a reader that attaches after the card was
+    /// published has no other way to learn of it, and sees a turn that is
+    /// running and apparently stuck.
+    ///
+    /// ⚠ Rendered through `request_message`, the same function that published
+    /// the original, so the replay is byte-identical BY CONSTRUCTION rather
+    /// than by a second hand-written renderer that could drift. And it reads
+    /// the live map, which is what makes an already-answered card
+    /// unrepresentable here: resolution removes the entry.
+    ///
+    /// Elicitations are excluded by `is_ephemeral_card` and that is correct —
+    /// they are persisted, so an observer's conversation snapshot already
+    /// carries them.
+    pub fn pending_cards_for_session(&self, session_id: &str) -> Vec<Message> {
+        self.lock()
+            .iter()
+            .filter(|(_, entry)| entry.session_id.as_deref() == Some(session_id))
+            .map(|(id, entry)| request_message(id, &entry.request))
+            .filter(is_ephemeral_card)
+            .collect()
+    }
+
     /// Whether this exact session-scoped approval requires proof of a human
     /// action. A foreign session learns nothing and cannot satisfy the check.
     pub fn requires_user_proof_in_session(&self, session_id: &str, id: &str) -> bool {
@@ -507,6 +555,13 @@ pub struct PendingUserAction {
     id: String,
     request: UserActionRequest,
     rx: Option<oneshot::Receiver<UserActionOutcome>>,
+    /// Nothing was registered: `park` refused because no person could answer.
+    ///
+    /// Distinct from `rx: None` alone, which also means "already awaited" —
+    /// and the two must produce different outcomes. A declined park is
+    /// `Cancelled`, the fail-safe every caller handles; an already-awaited
+    /// handle is `Failed`, which names a bug in the caller.
+    declined: bool,
     registry: Arc<PendingUserActions>,
 }
 
@@ -537,6 +592,9 @@ impl PendingUserAction {
         ttl: Duration,
         cancel: Option<&CancellationToken>,
     ) -> UserActionOutcome {
+        if self.declined {
+            return UserActionOutcome::Cancelled;
+        }
         let Some(rx) = self.rx.take() else {
             return UserActionOutcome::Failed {
                 reason: "this request was already awaited".to_string(),
@@ -1062,5 +1120,92 @@ mod tests {
                 "{detail:?} invites an answer that cannot land"
             );
         }
+    }
+}
+
+/// F-15 Gap A: a decision raised where nobody can answer it must be refused,
+/// not parked. The failure it prevents is not a hang — it is a card that waits
+/// out its whole TTL unanswerable and is then resurrected by the NEXT chat
+/// turn, as a question about something that happened minutes ago.
+#[cfg(test)]
+mod no_human_surface_tests {
+    use super::*;
+
+    fn an_approval() -> UserActionRequest {
+        UserActionRequest::ToolApproval(ToolApprovalRequest {
+            tool_name: "developer__shell".to_string(),
+            arguments: serde_json::Map::new(),
+            prompt: None,
+            risk: None,
+            preview: None,
+            requires_user_proof: false,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_park_with_no_human_surface_registers_nothing_and_cancels() {
+        let registry = Arc::new(PendingUserActions::default());
+        let (id, outcome) = crate::user_surface::without_human_surface(async {
+            let parked = registry.park(Some("call-tool-session"), None, an_approval());
+            let id = parked.id().to_string();
+            // Must not block: there is nobody to answer, so the outcome is
+            // available immediately.
+            let outcome = parked.wait(Duration::from_secs(30), None).await;
+            (id, outcome)
+        })
+        .await;
+
+        assert!(matches!(outcome, UserActionOutcome::Cancelled), "{outcome:?}");
+        // ⚠ The registration is the half that matters. A refusal that still
+        // inserted would leave the entry for the next turn to surface, which is
+        // the exact bug — and `wait` returning promptly would hide it.
+        assert!(
+            !registry.is_pending(&id),
+            "a refused park must leave nothing behind for a later turn to find"
+        );
+        assert!(registry.pending_cards_for_session("call-tool-session").is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_park_is_untouched() {
+        // Catches a guard whose default is inverted, which would silently
+        // cancel every approval card in every normal turn.
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some("chat-session"), None, an_approval());
+        let id = parked.id().to_string();
+        assert!(registry.is_pending(&id));
+        assert_eq!(registry.pending_cards_for_session("chat-session").len(), 1);
+        assert!(registry.pending_cards_for_session("another-session").is_empty());
+
+        assert_eq!(
+            registry.resolve_in_session(
+                "chat-session",
+                &id,
+                UserActionOutcome::Approved {
+                    permission: crate::permission::Permission::AllowOnce,
+                },
+            ),
+            ResolveOutcome::Delivered
+        );
+        // A resolved card is unrepresentable: resolution removed the entry, so
+        // a late observer can never be shown one that was already answered.
+        assert!(registry.pending_cards_for_session("chat-session").is_empty());
+        let _ = parked.wait(Duration::from_secs(5), None).await;
+    }
+
+    #[tokio::test]
+    async fn an_already_awaited_handle_still_reports_a_caller_bug() {
+        // The `declined` flag must not collapse into `rx: None`: a declined
+        // park is the fail-safe `Cancelled`, while awaiting twice names a bug.
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some("chat-session"), None, an_approval());
+        let id = parked.id().to_string();
+        registry.cancel_session(&id);
+        let mut parked = parked;
+        parked.rx = None;
+        assert!(matches!(
+            parked.wait(Duration::from_millis(50), None).await,
+            UserActionOutcome::Failed { .. }
+        ));
     }
 }
