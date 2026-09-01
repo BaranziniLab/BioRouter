@@ -130,12 +130,20 @@ describe('deriveTrailingActivity', () => {
   });
 
   it('returns null when the last message asks for tool confirmation', () => {
+    // ⚠ This fixture used to be `{ type: 'toolConfirmationRequest' }`, a variant
+    // NOTHING in `crates/` constructs — so the test passed against a predicate
+    // that never fired in production, and a real approval card sat under a
+    // running "Thinking" clock for its whole TTL. The shape below is what the
+    // daemon actually sends.
     const confirmation = message('assistant', [
       {
-        type: 'toolConfirmationRequest',
-        id: 'confirm-1',
-        toolName: 'developer__shell',
-        arguments: {},
+        type: 'actionRequired',
+        data: {
+          actionType: 'toolConfirmation',
+          id: 'confirm-1',
+          toolName: 'developer__shell',
+          arguments: {},
+        },
       } as unknown as Message['content'][number],
     ]);
 

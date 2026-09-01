@@ -2404,7 +2404,15 @@ describe('notification batching (#22)', () => {
         id: 'confirm-1',
         role: 'assistant',
         created: 2,
-        content: [{ type: 'toolConfirmationRequest', id: 'tc-1' }],
+        // ⚠ The daemon's real shape. This was `toolConfirmationRequest`, a
+        // variant no Rust code constructs, so the assertion below held
+        // against a predicate that never fired for a real card.
+        content: [
+          {
+            type: 'actionRequired',
+            data: { actionType: 'toolConfirmation', id: 'tc-1', toolName: 'developer__shell' },
+          },
+        ],
         metadata: { userVisible: true, agentVisible: true },
       },
       token_state: tokenState,
