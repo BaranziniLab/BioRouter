@@ -698,16 +698,22 @@ const compactValue = (value: unknown, maxLength = MAX_SUMMARY_VALUE_LENGTH): str
   return `${text.slice(0, keep)}…${text.slice(-keep)}`;
 };
 
+const toolGraphNodeLabel = ({ tool, description }: ToolGraphNode): string => {
+  const text = description.replace(/\s+/g, ' ').trim();
+  const placeholder =
+    text === 'No description was provided.' ||
+    /^(?:tool(?: call)?|step|update|updating|task|operation)(?:\s+(?:tool(?: call)?|step|update|updating|task|operation))?\s*(?:(?:number|no\.?)\s*)?#?\s*\d+(?:\s+of\s+\d+)?[.!]?$/i.test(
+      text
+    );
+  return placeholder
+    ? humanize(tool.replace(/(?:__|[/\\])/g, '_'))
+        .replace(/\s+/g, ' ')
+        .trim()
+    : text;
+};
+
 const summarizeToolGraph = (graph: ToolGraphNode[]): string => {
-  const descriptions = graph.map(({ tool, description }) => {
-    const text = description.replace(/\s+/g, ' ').trim();
-    const placeholder =
-      text === 'No description was provided.' ||
-      /^(?:tool(?: call)?|step|update|updating|task|operation)\s*(?:(?:number|no\.?)\s*)?#?\s*\d+[.!]?$/i.test(
-        text
-      );
-    return placeholder ? humanize(tool.replace(/[/\\]/g, '_')).replace(/\s+/g, ' ').trim() : text;
-  });
+  const descriptions = graph.map(toolGraphNodeLabel);
   const actions = [...new Set(descriptions)];
   const shorten = (text: string, limit: number): string => {
     const characters = Array.from(text);
@@ -1242,9 +1248,12 @@ function ToolCallView({
   // conditionals mean plan and execution can legitimately differ.
   const resultMeta = (toolResponse?.toolResult as ToolResultWithMeta | undefined)?.value?._meta;
   const executedCalls = normalizeExecutedCalls(resultMeta?.['biorouter/tool-calls']);
+  const droppedCallCount = resultMeta?.['biorouter/tool-calls-dropped'];
   const droppedExecutedCalls =
-    typeof resultMeta?.['biorouter/tool-calls-dropped'] === 'number'
-      ? resultMeta['biorouter/tool-calls-dropped']
+    typeof droppedCallCount === 'number' &&
+    Number.isSafeInteger(droppedCallCount) &&
+    droppedCallCount >= 0
+      ? droppedCallCount
       : 0;
 
   // Status is derived from FACTS — is there a result, and is the turn still
@@ -1418,7 +1427,7 @@ function ToolCallView({
         return null;
       })()}
 
-      {executedCalls.length > 0 && (
+      {(executedCalls.length > 0 || droppedExecutedCalls > 0) && (
         <div className="border-t border-border-subtle">
           <ExecutedCallsView calls={executedCalls} dropped={droppedExecutedCalls} />
         </div>
@@ -1513,25 +1522,19 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
   // drift from them. Both hooks are non-throwing outside a provider.
   const codeStyle = codeThemesByFamily[useThemeFamily()][useResolvedTheme()];
 
-  const renderGraph = () => {
-    if (toolGraph.length === 0) return null;
-
-    const lines: string[] = [];
-
-    toolGraph.forEach((node, index) => {
-      const deps =
-        node.depends_on.length > 0 ? ` (uses ${node.depends_on.map((d) => d + 1).join(', ')})` : '';
-      lines.push(`${index + 1}. ${node.tool}: ${node.description}${deps}`);
-    });
-
-    return lines.join('\n');
-  };
-
   return (
     <div className={TOOL_INTERIOR_CLASS}>
-      <pre className="overflow-x-auto whitespace-pre-wrap text-secondary text-text-muted">
-        {renderGraph()}
-      </pre>
+      <ol className="overflow-x-auto whitespace-pre-wrap text-secondary text-text-muted">
+        {toolGraph.map((node, index) => {
+          const dependencies = node.depends_on.map((dependency) => dependency + 1).join(', ');
+          return (
+            <li key={index} title={`Tool: ${node.tool}`}>
+              {index + 1}. {toolGraphNodeLabel(node)}
+              {dependencies && ` (uses ${dependencies})`}
+            </li>
+          );
+        })}
+      </ol>
       {code && (
         <div className="-mx-3 mt-2 border-t border-border-subtle">
           <ToolCallExpandable
@@ -1595,10 +1598,15 @@ function parsedCallArguments(args?: string): Record<string, ToolCallArgumentValu
  * attributable to a specific call instead of reading as "the step failed".
  */
 function ExecutedCallsView({ calls, dropped }: { calls: ExecutedToolCall[]; dropped: number }) {
+  const total = calls.length + dropped;
   return (
     <ToolCallExpandable
       label={
-        <span className={TOOL_DISCLOSURE_LABEL_CLASS}>View executed calls ({calls.length})</span>
+        <span className={TOOL_DISCLOSURE_LABEL_CLASS}>
+          {dropped > 0
+            ? `View recorded calls (${calls.length} of ${total} executed)`
+            : `View executed calls (${calls.length})`}
+        </span>
       }
       isStartExpanded={false}
     >
@@ -1608,7 +1616,8 @@ function ExecutedCallsView({ calls, dropped }: { calls: ExecutedToolCall[]; drop
         ))}
         {dropped > 0 && (
           <div className="py-1 text-supporting text-text-muted">
-            …and {dropped} more call{dropped === 1 ? '' : 's'} not recorded.
+            {dropped} executed call{dropped === 1 ? ' was' : 's were'} not recorded, so{' '}
+            {dropped === 1 ? 'its' : 'their'} details are unavailable.
           </div>
         )}
       </div>

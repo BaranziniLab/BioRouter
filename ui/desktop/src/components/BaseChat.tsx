@@ -775,12 +775,66 @@ export function formatCompactNumber(value: number) {
 // (BaseChat.artifacts.test.ts precedent).
 export { selectBilledTokens };
 
-function countToolRequests(messages: Message[]) {
-  return messages.reduce(
-    (count, message) =>
-      count + message.content.filter((content) => content.type === 'toolRequest').length,
-    0
-  );
+function metadataRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function recordedNestedToolCallCount(value: unknown): number {
+  if (!Array.isArray(value)) return 0;
+  return value.filter((candidate) => {
+    const call = metadataRecord(candidate);
+    return typeof call?.tool === 'string' && call.tool.trim().length > 0;
+  }).length;
+}
+
+function droppedNestedToolCallCount(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+export function countSessionToolCalls(messages: Message[]): number {
+  const requestsById = new Map<string, Array<{ index: number; name: unknown }>>();
+  const responsesById = new Map<string, Array<{ index: number; toolResult: unknown }>>();
+  const contents = messages.flatMap((message) => message.content);
+  let total = 0;
+
+  contents.forEach((content, index) => {
+    if (content.type === 'toolRequest') {
+      total += 1;
+      const toolCall = metadataRecord(content.toolCall);
+      const value = metadataRecord(toolCall?.value);
+      const requests = requestsById.get(content.id) ?? [];
+      requests.push({ index, name: value?.name });
+      requestsById.set(content.id, requests);
+    }
+    if (content.type === 'toolResponse') {
+      const responses = responsesById.get(content.id) ?? [];
+      responses.push({ index, toolResult: content.toolResult });
+      responsesById.set(content.id, responses);
+    }
+  });
+
+  for (const [id, requests] of requestsById) {
+    const responses = responsesById.get(id) ?? [];
+    if (requests.length !== 1 || responses.length !== 1) continue;
+    const [request] = requests;
+    const [response] = responses;
+    if (
+      !request ||
+      !response ||
+      (request.name !== 'code_execution__execute_code' &&
+        request.name !== 'multi_tool_use__execute_code') ||
+      response.index <= request.index
+    ) {
+      continue;
+    }
+    const toolResult = metadataRecord(response.toolResult);
+    const value = metadataRecord(toolResult?.value);
+    const meta = metadataRecord(value?._meta);
+    total += recordedNestedToolCallCount(meta?.['biorouter/tool-calls']);
+    total += droppedNestedToolCallCount(meta?.['biorouter/tool-calls-dropped']);
+  }
+
+  return total;
 }
 
 function visitStrings(
@@ -1484,7 +1538,7 @@ function BaseChatContent({
     () => collectArtifactsFromMessages(messages, sessionWorkingDir, streamingTextMessageIndex),
     [messages, sessionWorkingDir, streamingTextMessageIndex]
   );
-  const sessionToolCallCount = useMemo(() => countToolRequests(messages), [messages]);
+  const sessionToolCallCount = useMemo(() => countSessionToolCalls(messages), [messages]);
   const codeDelta = useMemo(() => collectCodeDelta(messages), [messages]);
   // The per-model ledger can supersede live counters only when every row has a
   // certified billed total; incomplete historical rows stay visibly unknown.

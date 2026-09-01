@@ -366,17 +366,36 @@ describe('summarizeToolCall', () => {
     ).toBe('Read queue data');
   });
 
-  it.each([undefined, '', 'No description was provided.', 'Tool call number 1', 'Update #2'])(
-    'names a single action when its description is %s',
-    (description) => {
-      expect(
-        summarizeToolCall({
-          name: 'code_execution__execute_code',
-          arguments: { tool_graph: [{ tool: 'files/read', description }] },
-        })
-      ).toBe('Files Read');
-    }
-  );
+  it.each([
+    undefined,
+    '',
+    'No description was provided.',
+    'Tool call number 1',
+    'Update #2',
+    'Step 1 of 3',
+    'Update task #2',
+    'Operation no. 4 of 5',
+  ])('names a single action when its description is %s', (description) => {
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__execute_code',
+        arguments: { tool_graph: [{ tool: 'files/read', description }] },
+      })
+    ).toBe('Files Read');
+  });
+
+  it('preserves an ordinal label when it also names substantive work', () => {
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__execute_code',
+        arguments: {
+          tool_graph: [
+            { tool: 'files/read', description: 'Step 1 of 3: Read the signed manifest' },
+          ],
+        },
+      })
+    ).toBe('Step 1 of 3: Read the signed manifest');
+  });
 
   it('ignores malformed graph nodes and falls back for an empty graph', () => {
     expect(
@@ -549,7 +568,9 @@ describe('summarizeToolCall', () => {
 
     fireEvent.click(screen.getByText('Attempt the command').closest('button') as HTMLElement);
 
-    expect(screen.getByText('1. developer/shell: Attempt the command')).toBeInTheDocument();
+    const step = screen.getByText('1. Attempt the command');
+    expect(step).toHaveAttribute('title', 'Tool: developer/shell');
+    expect(screen.queryByText(/developer\/shell:/)).not.toBeInTheDocument();
     expect(screen.getByText('Tool call failed')).toBeInTheDocument();
     expect(screen.getByText('The command could not be started')).toBeInTheDocument();
     expect(screen.queryByText('Tool details unavailable')).not.toBeInTheDocument();
@@ -840,8 +861,13 @@ describe('ToolCallWithResponse executed-call transparency', () => {
       screen.getByText('Tool error from developer__shell: lss: command not found')
     ).toBeInTheDocument();
 
-    // The declared plan stays visible alongside — never force-matched.
-    expect(screen.getByText(/1\. developer\/text_editor: Read the manifest/)).toBeInTheDocument();
+    // The declared plan stays visible alongside — never force-matched — but
+    // uses the semantic operation as its visible label.
+    expect(screen.getByText('1. Read the manifest')).toHaveAttribute(
+      'title',
+      'Tool: developer/text_editor'
+    );
+    expect(screen.queryByText(/developer\/text_editor:/)).not.toBeInTheDocument();
   });
 
   it('renders the generated code through the shared syntax highlighter', () => {
@@ -949,9 +975,100 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     fireEvent.click(
       screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
     );
-    fireEvent.click(screen.getByText('View executed calls (1)').closest('button') as HTMLElement);
+    fireEvent.click(
+      screen.getByText('View recorded calls (1 of 4 executed)').closest('button') as HTMLElement
+    );
 
-    expect(screen.getByText(/and 3 more calls not recorded/)).toBeInTheDocument();
+    expect(
+      screen.getByText('3 executed calls were not recorded, so their details are unavailable.')
+    ).toBeInTheDocument();
+  });
+
+  it('shows dropped-call disclosure when no recorded rows are displayable', () => {
+    const droppedOnlyResponse = {
+      type: 'toolResponse' as const,
+      id: 'tool-exec-1',
+      toolResult: {
+        status: 'success',
+        value: {
+          isError: false,
+          content: [{ type: 'text', text: 'Result: done' }],
+          _meta: {
+            'biorouter/tool-calls': [null, { tool: '' }],
+            'biorouter/tool-calls-dropped': 2,
+          },
+        },
+      },
+    } as never;
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={coordinatedRequest}
+        toolResponse={droppedOnlyResponse}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+
+    fireEvent.click(
+      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+    );
+    fireEvent.click(
+      screen.getByText('View recorded calls (0 of 2 executed)').closest('button') as HTMLElement
+    );
+    expect(
+      screen.getByText('2 executed calls were not recorded, so their details are unavailable.')
+    ).toBeInTheDocument();
+  });
+
+  it('replaces numbered placeholders and opaque identifiers in the expanded graph', () => {
+    const placeholderRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-placeholder-graph',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'code_execution__execute_code',
+          arguments: {
+            tool_graph: [
+              { tool: 'agent_drafter/build_app', description: 'Step 1 of 3', depends_on: [] },
+              {
+                tool: 'agent_drafter/configure_app',
+                description: 'Update task #2',
+                depends_on: [0],
+              },
+              {
+                tool: 'agent_drafter/smoke_app',
+                description: 'Operation no. 4 of 5',
+                depends_on: [1],
+              },
+            ],
+          },
+        },
+      },
+    };
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={placeholderRequest}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+
+    fireEvent.click(
+      screen
+        .getByText('Agent Drafter Build App → Agent Drafter Smoke App')
+        .closest('button') as HTMLElement
+    );
+    expect(screen.getByText('1. Agent Drafter Build App')).toHaveAttribute(
+      'title',
+      'Tool: agent_drafter/build_app'
+    );
+    expect(screen.getByText('2. Agent Drafter Configure App (uses 1)')).toBeInTheDocument();
+    expect(screen.getByText('3. Agent Drafter Smoke App (uses 2)')).toBeInTheDocument();
+    expect(screen.queryByText(/(?:Step|Update task|Operation no\.)/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/agent_drafter\//)).not.toBeInTheDocument();
   });
 
   // Codex review of #28: content marked assistant-only was deliberately kept
