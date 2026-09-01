@@ -118,11 +118,11 @@
 //!
 //! [DR-23]: ../../../../docs/security/privacy-tiers-implementation-plan.md
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -193,7 +193,14 @@ pub struct MarketplaceInstallProvenance {
     pub source_url: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// ⚠ **`PartialEq`/`Eq` are load-bearing, not derive-everything hygiene.**
+/// `compaction_is_lossless` is the only test that catches the failure mode that
+/// actually matters — a compactor that "shrinks" the journal by dropping
+/// records rather than by folding them — and it can only do that by comparing
+/// the whole store either side of the fold. A derive on the *field* type
+/// ([`ExtensionProvenance`]) does not give the container `==`, so without this
+/// the assertion does not compile.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Store {
     #[serde(default)]
     version: u32,
@@ -379,6 +386,7 @@ where
         },
     )?;
     invalidate_cache();
+    maybe_compact(path);
     Ok(true)
 }
 
@@ -462,6 +470,7 @@ fn record_at(
     )?;
     write_current_pointer(path, &key, &install_id)?;
     invalidate_cache();
+    maybe_compact(path);
     Ok(())
 }
 
@@ -513,11 +522,209 @@ fn append_mutation(path: &Path, mutation: &ProvenanceMutation) -> std::io::Resul
     Ok(())
 }
 
+/// How long a mutation file must have sat on disk before it may be folded.
+///
+/// ⚠ **This is a correctness window, not a tuning knob.** The writer that
+/// matters today is TypeScript (`ui/desktop/src/utils/extensionProvenance.ts`),
+/// and it writes the mutation file FIRST and the `current/` pointer SECOND —
+/// two independent `rename`s with nothing atomic between them. A compactor that
+/// snapshots inside that gap computes a base store that does not contain the
+/// record, deletes the mutation file that was its only copy, and leaves the
+/// pointer landing a moment later aimed at nothing. The record is then gone
+/// with no error anywhere: a silent tier DOWNGRADE, which this module's header
+/// names as the one direction that must never happen. Sixty seconds is orders
+/// of magnitude wider than the gap between two `renameSync` calls, and being
+/// generous costs only that the journal stays long for a minute.
+///
+/// [`record_at`] on this side has the identical two-step shape
+/// (`append_mutation` then `write_current_pointer`), so the window covers a
+/// concurrent Rust writer as well as the desktop one — a thread compacting
+/// while another is between those two calls is the same hazard.
+const COMPACTION_GRACE: Duration = Duration::from_secs(60);
+
+/// How many fold-eligible mutation files must pile up before a writer pays for
+/// a compaction pass.
+///
+/// The cost being bounded is a READ cost, not disk space: [`mutation_stamp`] is
+/// part of the cache key, so it walks this directory on every cache HIT, and
+/// [`apply_mutations`] re-reads and re-parses every file on every miss — once
+/// per installed extension per turn, via Gate E. Thirty-two keeps that walk to a
+/// few dozen `stat`s while leaving the ordinary case (a handful of extensions,
+/// each installed once) never rewriting the base file at all. It is
+/// deliberately not 1: a pass rewrites the whole store, so folding on every
+/// install would trade an unbounded read cost for a quadratic write cost.
+const COMPACTION_THRESHOLD: usize = 32;
+
+/// Fold the settled part of the mutation journal into the base store file and
+/// delete the files that were folded.
+///
+/// ⚠ **Writers only.** Never call this from [`cached_store_at`]: that runs on
+/// the privacy gate path, once per installed extension per turn, and putting a
+/// store rewrite there would make every tool dispatch a potential writer.
+fn compact_mutations_at(path: &Path) -> std::io::Result<()> {
+    // ── Grace window ── see [`COMPACTION_GRACE`]: a file younger than this may
+    // still be one half of a writer's two-step mutation-then-pointer write.
+    let Some(cutoff) = SystemTime::now().checked_sub(COMPACTION_GRACE) else {
+        return Ok(());
+    };
+    let journal = read_mutations(path);
+    let mut foldable = journal
+        .iter()
+        .map(|(file, _)| settled_before(file, cutoff))
+        .collect::<Vec<_>>();
+
+    // ── Tombstone pairing ── a `DeleteIfMatches` may be folded ONLY together
+    // with every `Upsert` sharing its `install_id`, or not at all.
+    // `record_matches_install` compares install ids, so an unsettled upsert is
+    // exactly the record a folded tombstone would stop suppressing: folding the
+    // tombstone applies the deletion to a base that does not hold the record
+    // yet and then removes the tombstone, so the next read re-inserts the
+    // record through its `current/` pointer (`if !deleted { … insert(…) }`) —
+    // resurrection of provenance the user deleted.
+    let mut pinned: HashSet<Option<String>> = HashSet::new();
+    for (index, (_, mutation)) in journal.iter().enumerate() {
+        if foldable[index] {
+            continue;
+        }
+        if let ProvenanceMutation::Upsert { record, .. } = mutation {
+            pinned.insert(record.install_id.clone());
+        }
+    }
+    for (index, (_, mutation)) in journal.iter().enumerate() {
+        let ProvenanceMutation::DeleteIfMatches { expected } = mutation else {
+            continue;
+        };
+        if pinned.contains(&expected.install_id) {
+            foldable[index] = false;
+        }
+    }
+
+    let folded = journal
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| foldable[*index])
+        .map(|(_, (_, mutation))| mutation.clone())
+        .collect::<Vec<_>>();
+    if folded.is_empty() {
+        return Ok(());
+    }
+    let mut store = read_base_store(path);
+    apply_mutation_list(path, &mut store, folded);
+
+    // ── Atomic base write ── a torn base file does NOT fail loudly:
+    // `read_base_store` turns any parse failure into `Store::default()` behind a
+    // `warn!`, so half a file strips every extension's provenance at once and
+    // silently. [`write_store_at`] is temp + `write_all` + `sync_all` +
+    // `persist`, the shape `append_mutation` and `write_current_pointer` use.
+    write_store_at(path, &store)?;
+
+    // Base first, journal second. A crash between the two replays folded
+    // mutations onto a base that already holds them, which is idempotent; the
+    // other order loses records outright.
+    //
+    // ── Never delete pointer files ── `current/` is untouched. A pointer whose
+    // `install_id` no longer has an upsert is already skipped harmlessly by
+    // `apply_mutation_list`, and removing one by name would race a concurrent
+    // `write_current_pointer` for the same key.
+    for (index, (file, _)) in journal.iter().enumerate() {
+        if foldable[index] {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+    invalidate_cache();
+    Ok(())
+}
+
+/// Has `file` sat still for long enough to fold? An unreadable mtime answers
+/// no, because the conservative direction here is "leave it alone".
+fn settled_before(file: &Path, cutoff: SystemTime) -> bool {
+    std::fs::metadata(file)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .is_some_and(|modified| modified <= cutoff)
+}
+
+/// Replace the base store file atomically.
+///
+/// The same temp + `write_all` + `sync_all` + `persist` shape as
+/// [`append_mutation`] and [`write_current_pointer`], for the reason spelled out
+/// at the call site: a partially written base reads as "no provenance at all".
+fn write_store_at(path: &Path, store: &Store) -> std::io::Result<()> {
+    let directory = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    std::fs::create_dir_all(directory)?;
+    let body = serde_json::to_vec(store)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let mut temp = tempfile::NamedTempFile::new_in(directory)?;
+    temp.write_all(&body)?;
+    temp.as_file_mut().sync_all()?;
+    temp.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+/// Mutation files old enough to fold — one `read_dir` plus one `metadata` per
+/// entry, the same walk [`mutation_stamp`] already performs on every cache hit,
+/// so gating a write on it adds no new class of work.
+///
+/// An UPPER bound: it does not apply the tombstone-pairing rule, which can only
+/// ever hold a file back. Over-counting costs one pass that folds less than it
+/// hoped; under-counting would let the journal grow past the threshold unseen.
+fn fold_eligible_count(path: &Path) -> usize {
+    let Some(cutoff) = SystemTime::now().checked_sub(COMPACTION_GRACE) else {
+        return 0;
+    };
+    let Ok(entries) = std::fs::read_dir(mutations_dir(path)) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .filter(|entry| {
+            entry
+                .metadata()
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .is_some_and(|modified| modified <= cutoff)
+        })
+        .count()
+}
+
+/// Compact if enough of the journal has settled, from a WRITER.
+///
+/// A compaction failure is swallowed with a warning: an over-long journal is a
+/// performance problem, whereas failing an install or a package deletion
+/// because the base file could not be rewritten is a correctness one.
+fn maybe_compact(path: &Path) {
+    if fold_eligible_count(path) < COMPACTION_THRESHOLD {
+        return;
+    }
+    if let Err(error) = compact_mutations_at(path) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %error,
+            "could not compact the extension provenance journal; the next write will retry"
+        );
+    }
+}
+
 /// Parse the store at `path`. Any failure — absent, unreadable, not JSON, JSON
 /// of the wrong shape — is an empty store. See [`registry_ids_for`] for why
 /// that is not a silent downgrade.
 fn read_store_at(path: &Path) -> Store {
-    let mut store = match std::fs::read_to_string(path) {
+    let mut store = read_base_store(path);
+    apply_mutations(path, &mut store);
+    store
+}
+
+/// The base file alone, with none of the journal replayed over it.
+///
+/// Split out for [`compact_mutations_at`], which has to re-derive the base from
+/// a chosen SUBSET of the journal and therefore cannot use [`read_store_at`] —
+/// that would fold everything back in and defeat the point.
+fn read_base_store(path: &Path) -> Store {
+    match std::fs::read_to_string(path) {
         Ok(raw) => match serde_json::from_str::<Store>(&raw) {
             Ok(store) => store,
             Err(e) => {
@@ -530,14 +737,19 @@ fn read_store_at(path: &Path) -> Store {
             }
         },
         Err(_) => Store::default(),
-    };
-    apply_mutations(path, &mut store);
-    store
+    }
 }
 
-fn apply_mutations(path: &Path, store: &mut Store) {
+/// Every parseable mutation file, paired with the file it came from, in the
+/// order the reader folds them (sorted by path).
+///
+/// A file that will not parse is skipped rather than reported — the reader has
+/// always behaved that way, and [`compact_mutations_at`] deliberately inherits
+/// it: a file whose contents cannot be read is a file whose contribution cannot
+/// be folded, so it must never be deleted either.
+fn read_mutations(path: &Path) -> Vec<(PathBuf, ProvenanceMutation)> {
     let Ok(entries) = std::fs::read_dir(mutations_dir(path)) else {
-        return;
+        return Vec::new();
     };
     let mut paths = entries
         .filter_map(Result::ok)
@@ -545,14 +757,33 @@ fn apply_mutations(path: &Path, store: &mut Store) {
         .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
         .collect::<Vec<_>>();
     paths.sort();
-    let mutations = paths
+    paths
         .into_iter()
         .filter_map(|path| {
-            std::fs::read(&path)
+            let mutation = std::fs::read(&path)
                 .ok()
-                .and_then(|body| serde_json::from_slice::<ProvenanceMutation>(&body).ok())
+                .and_then(|body| serde_json::from_slice::<ProvenanceMutation>(&body).ok())?;
+            Some((path, mutation))
         })
+        .collect()
+}
+
+fn apply_mutations(path: &Path, store: &mut Store) {
+    let mutations = read_mutations(path)
+        .into_iter()
+        .map(|(_, mutation)| mutation)
         .collect::<Vec<_>>();
+    apply_mutation_list(path, store, mutations);
+}
+
+/// Fold `mutations` into `store`, resolving live records through the `current/`
+/// pointers on disk.
+///
+/// ⚠ **The one folding implementation.** [`compact_mutations_at`] calls this
+/// with a subset rather than reimplementing it, because the pointer indirection
+/// is what decides which of several upserts for one key is live — a compactor
+/// that folded upserts in file order would resurrect a superseded install.
+fn apply_mutation_list(path: &Path, store: &mut Store, mutations: Vec<ProvenanceMutation>) {
     let tombstones = mutations
         .iter()
         .filter_map(|mutation| match mutation {
@@ -1163,6 +1394,219 @@ mod tests {
         );
         assert!(ids.contains(&"playwrightagent".to_string()), "{ids:?}");
         assert!(ids.contains(&"cdwagent".to_string()), "{ids:?}");
+    }
+
+    /// The `*.json` mutation files **directly in** `mutations_dir(path)`, sorted.
+    ///
+    /// Both halves of that sentence are load-bearing. `current_pointers_dir` is
+    /// `mutations_dir(path).join("current")`, so a recursive walk would count
+    /// pointer files as journal entries — and it would happen to give the right
+    /// answer today only because pointer filenames are bare hex with no
+    /// extension. That is an accident of `pointer_filename`, not a guarantee, so
+    /// the one directory is counted explicitly.
+    fn mutation_files(path: &Path) -> Vec<PathBuf> {
+        let mut files = std::fs::read_dir(mutations_dir(path))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|file| file.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .collect::<Vec<_>>();
+        files.sort();
+        files
+    }
+
+    /// Move a file's mtime an hour into the past. Waiting out a sixty-second
+    /// grace window is not a test; moving the clock on the files is.
+    fn backdate(file: &Path) {
+        let when = SystemTime::now() - Duration::from_secs(3600);
+        let handle = std::fs::OpenOptions::new().write(true).open(file).unwrap();
+        handle
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_accessed(when)
+                    .set_modified(when),
+            )
+            .unwrap();
+    }
+
+    /// Age every mutation whose contents satisfy `wanted`, leaving the rest
+    /// inside the grace window.
+    fn age_mutations(path: &Path, wanted: impl Fn(&ProvenanceMutation) -> bool) {
+        for (file, mutation) in read_mutations(path) {
+            if wanted(&mutation) {
+                backdate(&file);
+            }
+        }
+    }
+
+    /// A record complete enough for `marketplace_installs_in_store` to return
+    /// it, with an `install_dir`/`source_url` pair unique to `index` so a
+    /// deletion cannot be ambiguous about which install it names.
+    fn marketplace_record(index: usize) -> ExtensionProvenance {
+        ExtensionProvenance {
+            install_id: None,
+            registry_id: "fixture-agent".to_owned(),
+            install_dir: Some(format!("/tmp/extensions/FixtureAgent-{index}")),
+            source_url: Some(format!(
+                "https://example.invalid/v{index}/fixture-agent.brxt"
+            )),
+            bundle_sha256: None,
+            recorded_at: None,
+        }
+    }
+
+    /// **Catches a compactor that shrinks by DROPPING records** — the real
+    /// failure mode here, which is not "fails to shrink". Two plausible wrong
+    /// implementations empty the directory and pass any file-count assertion:
+    /// one that writes the new base from the folded mutations alone rather than
+    /// from base ∪ folded (losing everything an earlier pass already folded),
+    /// and one that folds upserts in file order rather than through the
+    /// `current/` pointer (resurrecting a superseded install over the live one).
+    /// Comparing the whole store either side of the fold is what sees both,
+    /// which is why `Store` derives `PartialEq`.
+    #[test]
+    fn compaction_is_lossless() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROVENANCE_FILE);
+
+        record_at(&path, "alpha", marketplace_record(1)).unwrap();
+        record_at(&path, "beta", marketplace_record(2)).unwrap();
+        // A reinstall of `alpha`. The superseded upsert stays on disk forever,
+        // so a pointer-blind compactor has something to get wrong.
+        record_at(&path, "alpha", marketplace_record(3)).unwrap();
+        record_at(&path, "gamma", marketplace_record(4)).unwrap();
+
+        let victim = marketplace_installs_in_store(&read_store_at(&path), "fixture-agent")
+            .into_iter()
+            .find(|install| install.config_key == "gamma")
+            .expect("the gamma install");
+        assert!(remove_marketplace_install_provenance_at(&path, &victim).unwrap());
+
+        let before = read_store_at(&path);
+        assert_eq!(
+            before.extensions.len(),
+            2,
+            "the fixture did not build the store it claims, so equality after would prove nothing"
+        );
+        assert_eq!(
+            before.extensions["alpha"].install_dir.as_deref(),
+            Some("/tmp/extensions/FixtureAgent-3"),
+            "the reinstall did not supersede the first install"
+        );
+
+        age_mutations(&path, |_| true);
+        compact_mutations_at(&path).unwrap();
+
+        assert_eq!(read_store_at(&path), before);
+    }
+
+    /// **Catches folding an eligible tombstone away from an ineligible
+    /// `Upsert`.** The deletion is applied to a base that does not hold the
+    /// record yet, the tombstone file is then deleted, and the next read
+    /// re-inserts the record through its `current/` pointer — the marketplace
+    /// package the user removed comes back, and with it the provenance that
+    /// classifies it.
+    ///
+    /// `compaction_is_lossless` cannot see this. It compares a single instant,
+    /// and at that instant the pointer and the upsert agree with each other.
+    #[test]
+    fn compaction_does_not_resurrect_a_deleted_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROVENANCE_FILE);
+
+        record_at(&path, "fixture", marketplace_record(1)).unwrap();
+        let install = marketplace_installs_in_store(&read_store_at(&path), "fixture-agent")
+            .pop()
+            .expect("the install");
+        assert!(remove_marketplace_install_provenance_at(&path, &install).unwrap());
+        assert!(!read_store_at(&path).extensions.contains_key("fixture"));
+
+        // The tombstone has settled. The `Upsert` and pointer it suppresses have
+        // not, so the tombstone must be held back with them.
+        age_mutations(&path, |mutation| {
+            matches!(mutation, ProvenanceMutation::DeleteIfMatches { .. })
+        });
+        compact_mutations_at(&path).unwrap();
+
+        assert!(
+            !read_store_at(&path).extensions.contains_key("fixture"),
+            "a deleted marketplace package came back after compaction"
+        );
+        assert!(
+            read_mutations(&path).iter().any(|(_, mutation)| matches!(
+                mutation,
+                ProvenanceMutation::DeleteIfMatches { .. }
+            )),
+            "the tombstone was folded away from the fresh Upsert it has to outlive"
+        );
+    }
+
+    /// **Catches a compactor that snapshots between the TypeScript writer's two
+    /// writes.** `ui/desktop/src/utils/extensionProvenance.ts` renames the
+    /// mutation file first and the `current/` pointer second; folding inside
+    /// that gap computes a base missing the record and then deletes the only
+    /// copy of it, leaving the pointer that lands a moment later aimed at
+    /// nothing — a silent tier downgrade. A file younger than the grace window
+    /// must still be on disk after a pass.
+    #[test]
+    fn compaction_respects_the_grace_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROVENANCE_FILE);
+
+        record_at(&path, "fixture", marketplace_record(1)).unwrap();
+        let before = mutation_files(&path);
+        assert_eq!(before.len(), 1, "one install writes one mutation file");
+
+        compact_mutations_at(&path).unwrap();
+
+        assert_eq!(
+            mutation_files(&path),
+            before,
+            "a mutation younger than the grace window was folded"
+        );
+        assert_eq!(
+            read_store_at(&path).extensions["fixture"].registry_id,
+            "fixture-agent"
+        );
+    }
+
+    /// **Catches the unbounded growth the compactor exists for.** Deliberately
+    /// paired with `compaction_is_lossless`: a file count on its own is passed
+    /// by a compactor that simply empties the directory, so the two assertions
+    /// sit together — the count says the journal shrank, the equality says it
+    /// shrank by folding rather than by discarding.
+    #[test]
+    fn compaction_bounds_the_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROVENANCE_FILE);
+
+        for index in 0..50 {
+            record_at(
+                &path,
+                &format!("fixture-{}", index % 5),
+                marketplace_record(index),
+            )
+            .unwrap();
+        }
+        let victim = marketplace_installs_in_store(&read_store_at(&path), "fixture-agent")
+            .pop()
+            .expect("an install to delete");
+        assert!(remove_marketplace_install_provenance_at(&path, &victim).unwrap());
+
+        let before = mutation_files(&path).len();
+        assert_eq!(before, 51, "fifty installs plus one delete, one file each");
+        let store_before = read_store_at(&path);
+        assert_eq!(store_before.extensions.len(), 4, "five keys, one deleted");
+
+        age_mutations(&path, |_| true);
+        compact_mutations_at(&path).unwrap();
+
+        let after = mutation_files(&path).len();
+        assert!(
+            after < before,
+            "the journal did not shrink: {before} files before, {after} after"
+        );
+        assert_eq!(read_store_at(&path), store_before);
     }
 }
 
