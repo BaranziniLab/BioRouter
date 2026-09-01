@@ -53,6 +53,10 @@ pub enum MarketplaceError {
 pub struct MarketplaceExtensionDescriptor {
     pub registry_id: String,
     pub extension_name: String,
+    /// Whether the registry actually stated `extension_name`, as opposed to
+    /// `extension_name` being the registry id by fallback. Only a stated name
+    /// is advertised to the model.
+    pub advertises_name: bool,
     pub name: String,
     pub organization: String,
     pub version: String,
@@ -339,6 +343,16 @@ fn validate_extension(
         ));
     }
     let download_url = validate_https_url(&raw.download, Some(&raw.filename))?;
+    // ⚠ **The fallback is a GUESS, and it was advertised as fact.** With no
+    // `extension_name` the descriptor took the registry id — so SPOKEAgent, whose
+    // id carried its version, was advertised to the model as
+    // `extensionName: "spokeagent-0.4.1"` while the extension that actually
+    // installs is `spokeagent` (the name comes from the downloaded bundle's
+    // manifest). A model that passed the advertised name to `manage_extensions`
+    // got "not found". The fallback survives because it is what the uniqueness
+    // check and the known-authority raise key on, but `advertises_name` records
+    // that it was inferred, and `marketplace_descriptor_json` omits the field
+    // rather than stating a name nobody verified.
     let has_extension_name = raw.extension_name.is_some();
     let extension_name = raw.extension_name.unwrap_or_else(|| raw.id.clone());
     validate_id(&extension_name, "extension runtime name")?;
@@ -365,6 +379,7 @@ fn validate_extension(
     Ok(MarketplaceExtensionDescriptor {
         registry_id: raw.id,
         extension_name,
+        advertises_name: has_extension_name,
         name: raw.name,
         organization: raw.organization,
         version: raw.version,
@@ -790,11 +805,38 @@ mod tests {
     fn shipped_registry_snapshot_is_a_valid_offline_catalog() {
         let catalog = MarketplaceCatalog::from_bytes(EMBEDDED_REGISTRY).unwrap();
         let spoke = catalog
-            .resolve_extension_for_install("spokeagent-0.4.1", ProviderTier::Public)
+            .resolve_extension_for_install("spokeagent", ProviderTier::Public)
             .unwrap();
+        // ⚠ The ID carries no version; the ASSET does. A registry id is a name,
+        // and SPOKEAgent's used to be `spokeagent-0.4.1` — which the descriptor
+        // then advertised as the extension's name, while the extension that
+        // installs is `spokeagent`. The release asset really is versioned on
+        // GitHub, so `filename`/`download` keep the version and only the name
+        // loses it.
         assert_eq!(spoke.version, "v0.4.1");
         assert_eq!(spoke.filename, "spokeagent-0.4.1.brxt");
+        assert_eq!(spoke.extension_name, "spokeagent");
+        assert!(
+            spoke.advertises_name,
+            "the registry must STATE the name, not leave it to the id fallback"
+        );
         assert!(!catalog.browse_skills().is_empty());
+    }
+
+    /// No shipped registry id may carry a version. An id is a stable name; a
+    /// version belongs in `version` and in the asset filename.
+    #[test]
+    fn no_shipped_registry_id_carries_a_version() {
+        let catalog = MarketplaceCatalog::from_bytes(EMBEDDED_REGISTRY).unwrap();
+        for entry in catalog.browse_extensions(ProviderTier::Private) {
+            let bare = entry.version.trim_start_matches('v');
+            assert!(
+                !entry.registry_id.ends_with(bare) || bare.is_empty(),
+                "registry id `{}` carries its version `{}`",
+                entry.registry_id,
+                entry.version
+            );
+        }
     }
 
     #[test]

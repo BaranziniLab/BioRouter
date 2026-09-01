@@ -2151,6 +2151,43 @@ impl SkillsClient {
         let members = self
             .session_target_members(name)
             .ok_or_else(|| format!("Skill or bundle '{name}' is not installed"))?;
+
+        // ⚠ **A session grant cannot lift a hidden Context, so do not report that
+        // it did.** `compose_state` computes `effective` as
+        // `!hidden_context && …` — the hidden test comes FIRST, ahead of the
+        // override — so enabling a Context the user switched off in Settings
+        // writes an override that changes nothing. The tool used to answer
+        // `{"status":"loaded"}` regardless, and the per-turn inventory lists
+        // those same skills under "installed but disabled or hidden", so a model
+        // was steered into the call, told it worked, saw no change, and either
+        // looped or told the user a skill was active when it was not.
+        //
+        // Asked through `Self::is_hidden_context`, the predicate that already
+        // owns this rule, rather than a third hand-written copy of its two-key
+        // test — a Context row may name a whole BUNDLE, and a member carries its
+        // own `name:`, so a one-key test would miss a member of a hidden bundle.
+        if enable {
+            let hidden = hidden_contexts();
+            let skills = self.skills.skills();
+            let blocked = members.iter().any(|member| {
+                Self::is_hidden_context(
+                    member,
+                    skills
+                        .get(member)
+                        .and_then(|skill| skill.bundle_name.as_deref()),
+                    &hidden,
+                )
+            }) || Self::is_hidden_context(name, None, &hidden);
+            if blocked {
+                return Err(format!(
+                    "'{name}' is switched off in Settings > Chat > Contexts, and a per-chat grant \
+                     cannot lift that — the Settings switch is checked before any session \
+                     override, so the override would be written and change nothing. Ask the user \
+                     to turn it back on there; do not retry this call."
+                ));
+            }
+        }
+
         let names = vec![name.to_string()];
         let empty: &[String] = &[];
         let (add, remove): (&[String], &[String]) = if enable {

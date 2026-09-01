@@ -227,6 +227,16 @@ pub struct ExtensionInstallTransaction {
     supplied: HashMap<String, String>,
     enable: bool,
     manager: Option<std::sync::Weak<ExtensionManager>>,
+    /// Asked with the extension's REAL name — the one in the downloaded
+    /// bundle's manifest — immediately before the attach. `Some(reason)` blocks
+    /// the attach and is reported; the package is still installed.
+    ///
+    /// ⚠ The reason this exists at all: the caller's pre-flight can only check
+    /// the name the REGISTRY advertised, and those are not the same string. A
+    /// registry entry whose bundle declares a privacy-significant name would
+    /// otherwise be attached on a pre-flight that never saw it.
+    #[allow(clippy::type_complexity)]
+    attach_guard: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
     /// Everything this run created, in the order it created it, so a failure
     /// undoes exactly its own work and nothing else.
     undo: Undo,
@@ -253,6 +263,7 @@ impl ExtensionInstallTransaction {
             supplied: HashMap::new(),
             enable: true,
             manager: None,
+            attach_guard: None,
             undo: Undo::default(),
         }
     }
@@ -277,6 +288,15 @@ impl ExtensionInstallTransaction {
     /// hot-attached instead of waiting for a new chat.
     pub fn attach_to(mut self, manager: std::sync::Weak<ExtensionManager>) -> Self {
         self.manager = Some(manager);
+        self
+    }
+
+    /// See [`ExtensionInstallTransaction::attach_guard`].
+    pub fn guard_attach(
+        mut self,
+        guard: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.attach_guard = Some(Box::new(guard));
         self
     }
 
@@ -368,7 +388,16 @@ impl ExtensionInstallTransaction {
         // The real name is only knowable here, after the bundle is read, which
         // is why this cannot live at the call site.
         let pinned_off = pinned_off_by_operator(&manifest.name);
-        let enable = self.enable && !pinned_off;
+        // ⚠ The guard runs on the REAL name, which is only knowable here. The
+        // caller's pre-flight could only ask about the name the registry
+        // advertised, and a registry that omits `extension_name` makes that the
+        // registry ID — a different string, as SPOKEAgent's own entry proved
+        // (`spokeagent-0.4.1` advertised, `spokeagent` installed).
+        let guard_refusal = self
+            .attach_guard
+            .as_ref()
+            .and_then(|guard| guard(&manifest.name));
+        let enable = self.enable && !pinned_off && guard_refusal.is_none();
         // Silent, then announced below with the bundle's skills folded in —
         // `set_extension` cannot see those, and two events for one install
         // would leave the second as the only complete one.

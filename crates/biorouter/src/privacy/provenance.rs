@@ -287,6 +287,35 @@ pub fn marketplace_installs_for_registry_id(
     marketplace_installs_in_store(&cached_store_at(&provenance_path()), registry_id)
 }
 
+/// Does a RECORDED registry id name the same entry as `wanted`?
+///
+/// ⚠ Exact, plus one back-compat shape. A registry id is a stable name, but
+/// SPOKEAgent's shipped as `spokeagent-0.4.1` — the version baked into the id —
+/// and every machine that installed it recorded that string. Making the id
+/// version-free is the right fix (the descriptor was advertising it to the model
+/// as the extension's NAME, which it never was), but a bare equality test would
+/// then orphan those records: `delete_extension_package` resolves the new id,
+/// finds no provenance, and refuses to remove a package that is plainly there.
+///
+/// So a recorded id also matches when it is `wanted` followed by a `-` and a
+/// version-shaped tail. Deliberately narrow — `spokeagent-0.4.1` matches
+/// `spokeagent`, `spokeagent-nightly` does not — because this widens what a
+/// deletion will accept as the same package.
+pub fn registry_id_matches(recorded: &str, wanted: &str) -> bool {
+    if recorded == wanted {
+        return true;
+    }
+    recorded
+        .strip_prefix(wanted)
+        .and_then(|tail| tail.strip_prefix('-'))
+        .is_some_and(|version| {
+            !version.is_empty()
+                && version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte == b'.')
+        })
+}
+
 fn marketplace_installs_in_store(
     store: &Store,
     registry_id: &str,
@@ -295,7 +324,7 @@ fn marketplace_installs_in_store(
         .extensions
         .iter()
         .filter_map(|(config_key, record)| {
-            if record.registry_id != registry_id {
+            if !registry_id_matches(&record.registry_id, registry_id) {
                 return None;
             }
             Some(MarketplaceInstallProvenance {
@@ -1134,5 +1163,43 @@ mod tests {
         );
         assert!(ids.contains(&"playwrightagent".to_string()), "{ids:?}");
         assert!(ids.contains(&"cdwagent".to_string()), "{ids:?}");
+    }
+}
+
+#[cfg(test)]
+mod registry_id_tests {
+    use super::registry_id_matches;
+
+    /// SPOKEAgent shipped as `spokeagent-0.4.1` — the version baked into the id
+    /// — and every machine that installed it recorded that string. The id is
+    /// version-free now, and a bare equality test would orphan those records:
+    /// a delete would resolve the new id, find no provenance, and refuse to
+    /// remove a package that is plainly installed.
+    #[test]
+    fn a_legacy_versioned_id_still_names_its_package() {
+        assert!(registry_id_matches("spokeagent", "spokeagent"));
+        assert!(registry_id_matches("spokeagent-0.4.1", "spokeagent"));
+        assert!(registry_id_matches("spokeagent-1.0", "spokeagent"));
+    }
+
+    /// Deliberately narrow: this widens what a DELETION accepts as the same
+    /// package, so anything that is not a version-shaped tail must not match.
+    #[test]
+    fn nothing_but_a_version_tail_matches() {
+        for recorded in [
+            "spokeagent-nightly",
+            "spokeagentx",
+            "spokeagent-",
+            "spokeagent-0.4.1-beta",
+            "other-0.4.1",
+            "",
+        ] {
+            assert!(
+                !registry_id_matches(recorded, "spokeagent"),
+                "`{recorded}` must not be taken for `spokeagent`"
+            );
+        }
+        // And it is not symmetric: a bare id does not answer for a versioned one.
+        assert!(!registry_id_matches("spokeagent", "spokeagent-0.4.1"));
     }
 }

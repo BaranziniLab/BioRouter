@@ -204,9 +204,12 @@ fn marketplace_descriptor_json(
                 .collect(),
         ),
     };
-    serde_json::json!({
+    // ⚠ Only a name the REGISTRY stated. When it did not, `extension_name` is
+    // the registry id by fallback, and advertising that taught the model a name
+    // `manage_extensions` would refuse. The real name is in the bundle's
+    // manifest, which is not knowable until after the download.
+    let mut payload = serde_json::json!({
         "registryId": descriptor.registry_id,
-        "extensionName": descriptor.extension_name,
         "name": descriptor.name,
         "organization": descriptor.organization,
         "version": descriptor.version,
@@ -217,7 +220,16 @@ fn marketplace_descriptor_json(
         "license": descriptor.license,
         "privacy": descriptor.privacy,
         "affiliation": affiliation,
-    })
+    });
+    if descriptor.advertises_name {
+        if let Some(fields) = payload.as_object_mut() {
+            fields.insert(
+                "extensionName".to_owned(),
+                Value::String(descriptor.extension_name.clone()),
+            );
+        }
+    }
+    payload
 }
 
 fn marketplace_approval_request(
@@ -489,7 +501,14 @@ fn validated_marketplace_package_at(
             },
         });
     };
-    if provenance.registry_id != descriptor.registry_id {
+    // Same predicate the lookup used, so the two cannot disagree about whether a
+    // record belongs to this entry — a legacy versioned id would otherwise pass
+    // the lookup and then fail here, which reads as tampering rather than as a
+    // renamed id.
+    if !crate::privacy::provenance::registry_id_matches(
+        &provenance.registry_id,
+        &descriptor.registry_id,
+    ) {
         return Err(ExtensionManagerToolError::OperationFailed {
             message: "Marketplace provenance no longer matches the selected registry entry"
                 .to_owned(),
@@ -1449,6 +1468,17 @@ impl ExtensionManagerClient {
             if let Some(weak) = &self.context.extension_manager {
                 transaction = transaction.attach_to(weak.clone());
             }
+            // ⚠ The pre-flight above asked about `current.extension_name`, which
+            // is the REGISTRY's name — and when the registry omits one, that is
+            // the registry ID. The extension's real name comes from the
+            // downloaded bundle's manifest, and the two demonstrably differ in
+            // production (SPOKEAgent advertised `spokeagent-0.4.1`, installed as
+            // `spokeagent`). So the same gate is asked again with the real name,
+            // at the only point it is knowable.
+            transaction = transaction.guard_attach(move |installed_name| {
+                crate::privacy::refusal::extension_enable_refusal(cap, installed_name, None, false)
+                    .map(|error| error.message.to_string())
+            });
         }
 
         let report = transaction
