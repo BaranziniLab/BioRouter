@@ -132,11 +132,13 @@ pub enum WorkspaceCapability {
     Close,
     Watch,
     Open,
-    // Reading the user's preview panel. Two capabilities, not one: text is for
-    // acting on, pixels are for judging by, and collapsing them would hide that
-    // the CLI has no counterpart for either — there is no panel in a terminal.
+    // Reading the user's preview panel. ONE capability now: text and pixels
+    // were two tools until they became `workspace_read_panel { capture }`, and
+    // this table asserts row-for-row against the advertised surface — a second
+    // row here would be a row for a tool that no longer exists. The asymmetry
+    // it recorded is unchanged and still worth stating: there is no panel in a
+    // terminal, to read OR to photograph.
     ReadPanel,
-    CapturePanel,
     Spawn,
     // The daemon HTTP surface the GUI stands on (tag = "workspace").
     RouteReply,
@@ -157,7 +159,6 @@ pub const ALL_CAPABILITIES: &[WorkspaceCapability] = &[
     WorkspaceCapability::Watch,
     WorkspaceCapability::Open,
     WorkspaceCapability::ReadPanel,
-    WorkspaceCapability::CapturePanel,
     WorkspaceCapability::Spawn,
     WorkspaceCapability::RouteReply,
     WorkspaceCapability::RouteInterrupt,
@@ -190,7 +191,6 @@ pub fn surface(capability: WorkspaceCapability) -> Surface {
         C::Watch => Surface::Tool("workspace_watch"),
         C::Open => Surface::Tool("workspace_open"),
         C::ReadPanel => Surface::Tool("workspace_read_panel"),
-        C::CapturePanel => Surface::Tool("workspace_capture_panel"),
         // The ONE spawn tool (BR-71 decisions 20/22), advertised under its
         // pre-existing bare name — `biorouter::agents::subagent_tool::
         // SUBAGENT_TOOL_NAME`, not a `workspace_`-prefixed alias. The `workspace__`
@@ -321,10 +321,8 @@ pub fn cli_counterpart(capability: WorkspaceCapability) -> Counterpart {
         // read-panel` would have to invent a surface in order to report that it
         // does not exist, which is worse than saying so here.
         C::ReadPanel => Counterpart::Asymmetry {
-            reason: "the preview panel is a desktop surface; a terminal has none to read",
-        },
-        C::CapturePanel => Counterpart::Asymmetry {
-            reason: "the preview panel is a desktop surface; a terminal has none to photograph",
+            reason:
+                "the preview panel is a desktop surface; a terminal has none to read or photograph",
         },
     }
 }

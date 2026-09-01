@@ -1116,15 +1116,16 @@ impl DeveloperServer {
         let window_titles: Vec<String> =
             windows.into_iter().filter_map(|w| w.title().ok()).collect();
 
-        // Both halves of "what can I capture?" in one answer — the retired
-        // `list_windows` gave only the titles, so a model on a multi-monitor
-        // machine had to guess that display indices existed at all.
-        let monitors = Monitor::all().unwrap_or_default();
-        let content_text = format!(
-            "Available windows:\n{}\n\n{}",
-            window_titles.join("\n"),
-            describe_monitors(&monitors)
-        );
+        // ⚠ Byte-identical to what the retired `list_windows` returned, and
+        // deliberately so. Folding in the display list looked like an
+        // improvement — a model asking "what can I capture?" learns both halves
+        // — but it made the output depend on the machine's monitors, and this
+        // exchange is replayed from a recorded cassette
+        // (tests/mcp_replays/…mcpdeveloper). A consolidation moves the entry
+        // point; it does not quietly change what comes back. The display list
+        // is already reported on every display capture, which is where a model
+        // meets it.
+        let content_text = format!("Available windows:\n{}", window_titles.join("\n"));
 
         Ok(CallToolResult::success(vec![
             Content::text(content_text.clone()).with_audience(vec![Role::Assistant]),
