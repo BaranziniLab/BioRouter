@@ -412,8 +412,9 @@ pub struct SearchParams {
     pub query: String,
     #[serde(default = "default_search_limit")]
     pub limit: usize,
+    /// Which corpus to search. Defaults to the curated knowledge pages.
     #[serde(default)]
-    pub include_raw_sources: bool,
+    pub scope: SearchScope,
 }
 
 fn default_search_limit() -> usize {
@@ -473,6 +474,16 @@ pub struct HistoryOptParams {
     #[serde(default = "default_limit")]
     pub limit: usize,
 }
+
+/// Registered so the name keeps dispatching, but never advertised.
+///
+/// A retired tool is one whose job another tool already does through an
+/// argument — `kb_search_raw_sources` is `kb_search { scope: "raw_sources" }`.
+/// Dropping the ROUTE as well as the declaration would turn a stored
+/// `always allow` grant and every persisted transcript's retry into an
+/// unknown-tool error the caller cannot act on, so the route stays and only the
+/// advertisement goes.
+const RETIRED_TOOL_NAMES: &[&str] = &["kb_search_raw_sources"];
 
 #[tool_router(router = tool_router)]
 impl KnowledgeServer {
@@ -1452,7 +1463,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_search",
-        description = "BM25 full-text search over curated knowledge pages. Omit kb_id to search all visible knowledge bases. Set include_raw_sources=true only when the user explicitly asks to inspect/search original raw sources."
+        description = "BM25 full-text search over a knowledge base. Omit kb_id to search all visible knowledge bases. `scope` chooses the corpus: \"knowledge\" (the default) searches the curated pages; \"raw_sources\" searches the original source markdown only, and is for the rare case where the user specifically asks for raw/original/source-document evidence instead of the curated graph; \"all\" searches both."
     )]
     pub async fn kb_search(
         &self,
@@ -1460,11 +1471,7 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let scope = if p.include_raw_sources {
-            SearchScope::All
-        } else {
-            SearchScope::Knowledge
-        };
+        let scope = p.scope;
         let hits = if let Some(kb_id) = p.kb_id {
             let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
             crate::knowledge::store::search_with_scope(&kb_root, &p.query, p.limit, scope)
@@ -1489,9 +1496,14 @@ impl KnowledgeServer {
         ok_json(&hits)
     }
 
+    /// ⚠ **Registered but not advertised** — see [`RETIRED_TOOL_NAMES`]. It was
+    /// `kb_search` with `scope` pinned, and it advertised an
+    /// `include_raw_sources` field it then ignored. The route stays so persisted
+    /// transcripts and stored grants keep working; new calls go through
+    /// `kb_search { scope: "raw_sources" }`.
     #[tool(
         name = "kb_search_raw_sources",
-        description = "BM25 full-text search over original raw source markdown only. Use this rarely, when the user specifically asks for raw/original/source-document evidence instead of the curated knowledge graph."
+        description = "Retired: call kb_search with scope=\"raw_sources\" instead."
     )]
     pub async fn kb_search_raw_sources(
         &self,
@@ -1928,7 +1940,12 @@ impl ServerHandler for KnowledgeServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
         Ok(rmcp::model::ListToolsResult {
-            tools: self.tool_router.list_all(),
+            tools: self
+                .tool_router
+                .list_all()
+                .into_iter()
+                .filter(|tool| !RETIRED_TOOL_NAMES.contains(&tool.name.as_ref()))
+                .collect(),
             meta: None,
             next_cursor: None,
         })

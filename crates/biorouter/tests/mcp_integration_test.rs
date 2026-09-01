@@ -174,7 +174,7 @@ enum TestMode {
             "old_str": "# biorouter (modified by test)",
             "new_str": "# biorouter"
         }))},
-        CallToolRequestParams { task: None, meta: None, name: "list_windows".into(), arguments: Some(object!({})) },
+        CallToolRequestParams { task: None, meta: None, name: "screen_capture".into(), arguments: Some(object!({"list_only": true})) },
     ],
     vec![]
 )]

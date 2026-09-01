@@ -122,9 +122,9 @@ const INSTRUCTIONS: &str = indoc! {r#"
       in the reply instead of watching that completed result again.
     - workspace_read_panel: read what the preview panel shows now: document,
       figure, file or live web page. Use it when the user says "this" or "the
-      page"; text is cheap and you can act on it.
-    - workspace_capture_panel: screenshot it (returns a PNG path) to judge how
-      it LOOKS. You cannot act on a screenshot.
+      page"; text is cheap and you can act on it. Pass capture:true for a
+      screenshot (a PNG path) when you need to judge how it LOOKS, or when the
+      panel is an image with no readable text — you cannot act on a screenshot.
     - subagent: the ONLY way to delegate. A fresh agent with its own context
       window; fan-out means one call per child, with parallel calls when useful.
       In the app, the child is a visible tab the user can watch and steer. You
@@ -658,9 +658,19 @@ struct WorkspacePanelParams {
     /// The conversation whose preview panel to read. Defaults to the caller's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
-    /// `workspace_read_panel` only: how much text to return (default 20000).
+    /// How much text to return (default 20000). Ignored when `capture` is true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_chars: Option<u32>,
+    /// Default false, which returns the panel's TEXT — cheaper, and you can act
+    /// on it. True instead returns a SCREENSHOT, which you can only look at:
+    /// use it to judge how something LOOKS, or when the panel is an image with
+    /// no readable text.
+    ///
+    /// ⚠ "Default false." is written into this prose deliberately. `google.rs`
+    /// strips the schema's `default` key, so for a Gemini-bound model the
+    /// description is the only place the default is stated.
+    #[serde(default)]
+    capture: bool,
 }
 
 const PANEL_CAPTURE_MAX_BYTES: u64 = 16 * 1024 * 1024;
@@ -1566,27 +1576,16 @@ impl WorkspaceClient {
     /// `workspace_open_is_advertised_and_completes_the_surface` still holds it
     /// against the instruction block name for name.
     fn panel_tools() -> Vec<Tool> {
-        vec![
-            Self::tool(
-                "workspace_read_panel",
-                "Read what the preview panel is currently showing: the rendered \
-                 document, figure, file or live web page. **Prefer this over \
-                 workspace_capture_panel** — text is cheaper and can be acted \
-                 on, where a screenshot can only be looked at. Returns nothing \
-                 readable for an image; capture it instead.",
-                serde_json::to_value(schema_for!(WorkspacePanelParams)).unwrap(),
-                true,
-            ),
-            Self::tool(
-                "workspace_capture_panel",
-                "Screenshot the preview panel, saved as a PNG whose path is \
-                 returned. Use it to judge how something LOOKS — a figure, a \
-                 rendered page, a layout. You cannot act on a screenshot: to \
-                 find or change content, use workspace_read_panel.",
-                serde_json::to_value(schema_for!(WorkspacePanelParams)).unwrap(),
-                true,
-            ),
-        ]
+        vec![Self::tool(
+            "workspace_read_panel",
+            "Read or screenshot the preview panel: the rendered document, \
+             figure, file or live web page. By default returns its TEXT — \
+             cheaper, and you can act on it. Pass capture:true for a PNG \
+             instead, to judge how something LOOKS, or when the panel is an \
+             image with no readable text.",
+            serde_json::to_value(schema_for!(WorkspacePanelParams)).unwrap(),
+            true,
+        )]
     }
 
     /// **Design §7 column C, as one call**: may a caller admitted on this
@@ -2134,6 +2133,10 @@ impl WorkspaceClient {
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let args: WorkspacePanelParams = parse_args(arguments)?;
+        // ⚠ The verb comes from the ARGUMENT now, except for the retired name,
+        // whose callers have no `capture` field to set. `capture: true` SELECTS
+        // the screenshot frame; it does not add an image to the text.
+        let capture = args.capture || tool == "workspace_capture_panel";
         let session_id = args
             .session_id
             .unwrap_or_else(|| caller_session_id.to_string());
@@ -2144,7 +2147,7 @@ impl WorkspaceClient {
 
         let mut frame = serde_json::json!({
             "type": "workspace",
-            "cmd": if tool == "workspace_read_panel" { "read_panel" } else { "capture_panel" },
+            "cmd": if capture { "capture_panel" } else { "read_panel" },
             "session_id": session_id,
         });
         if let Some(max_chars) = args.max_chars {
@@ -2184,7 +2187,7 @@ impl WorkspaceClient {
         let mut safe_reply = reply;
         let screenshot_path = take_panel_screenshot_path(&mut safe_reply);
         let metadata = Content::text(frame_panel_reply(&mut safe_reply));
-        if tool != "workspace_capture_panel" || screenshot_path.is_none() {
+        if !capture || screenshot_path.is_none() {
             return Ok(vec![metadata]);
         }
         let image = materialize_panel_capture(screenshot_path.as_deref().unwrap_or_default())?;
@@ -11854,7 +11857,6 @@ pub(crate) mod tests {
             "workspace_set_tools",
             "workspace_watch",
             "workspace_read_panel",
-            "workspace_capture_panel",
         ] {
             assert!(
                 names.iter().any(|n| n == expected),
@@ -12958,7 +12960,6 @@ pub(crate) mod tests {
             vec![
                 // The merged spawn tool keeps its bare name (decision 22).
                 "subagent".to_string(),
-                "workspace_capture_panel".to_string(),
                 "workspace_close".to_string(),
                 "workspace_list".to_string(),
                 "workspace_open".to_string(),

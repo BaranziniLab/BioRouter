@@ -58,7 +58,6 @@ Common operations:
   merge decided it. The source base is only read and is left unchanged.
 - `kb_list_history` / `kb_restore_state` — git-backed change log + revert.
 - `kb_search` — search curated knowledge pages. If you omit `kb_id`, the search runs across **every knowledge base in this session** and each hit is tagged with the `kb_id` it came from. Cite that id when you use a hit.
-- `kb_search_raw_sources` — search original raw source markdown only. Use this rarely, when the user specifically asks for raw/original/source-document evidence or when curated pages clearly omit a needed detail.
 
 Two formats:
 
@@ -94,7 +93,7 @@ Retrieval behavior:
 
 - If this capability is enabled and `kb_list_bases` shows at least one visible knowledge base, treat the knowledge base as a low-cost memory source. At even a slight hint that the answer may depend on stored papers, project context, prior ingested material, biomedical domain notes, or "what do we know about..." style wording, run `kb_search` before answering.
 - Prefer the curated graph pages returned by `kb_search`. They are the pruned working knowledge layer.
-- Do not search raw sources by default. Only use `kb_search_raw_sources`, or `kb_search` with `include_raw_sources=true`, when the user explicitly asks for raw/original sources, source documents, verbatim provenance, or when curated pages are insufficient and the answer would otherwise be weak.
+- Do not search raw sources by default. `kb_search` defaults to `scope: "knowledge"`; pass `scope: "raw_sources"` (or `"all"`) only when the user explicitly asks for raw/original sources, source documents, verbatim provenance, or when curated pages are insufficient and the answer would otherwise be weak.
 
 Knowledge bases in this session:
 

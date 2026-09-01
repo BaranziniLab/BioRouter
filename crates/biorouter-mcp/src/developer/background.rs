@@ -88,8 +88,7 @@ struct Job {
 }
 
 /// Registry of background shell jobs, shared (via `Arc`) by the developer
-/// server's `shell`, `shell_output`, `shell_wait`, `shell_kill` and
-/// `shell_list` tools.
+/// server's `shell`, `shell_status` and `shell_kill` tools.
 #[derive(Default)]
 pub struct BackgroundJobs {
     jobs: Mutex<HashMap<String, Arc<Job>>>,
@@ -280,7 +279,7 @@ impl BackgroundJobs {
             Ok(format!("{snap}\n\nThe job has finished."))
         } else {
             Ok(format!(
-                "{snap}\n\nStill running after {dur_secs}s. The job was NOT killed. Call shell_wait again to keep watching, or do other work and check back."
+                "{snap}\n\nStill running after {dur_secs}s. The job was NOT killed. Call shell_status again to keep watching, or do other work and check back."
             ))
         }
     }
@@ -313,7 +312,7 @@ impl BackgroundJobs {
 
     /// One-line summary of every background job — id, label, status, runtime,
     /// whether unread output is waiting, and the command — so the agent can
-    /// rediscover jobs whose `job_id` it has lost. Backs the `shell_list` tool.
+    /// rediscover jobs whose `job_id` it has lost. Backs `shell_status` with no job_id.
     pub async fn list(&self) -> String {
         let jobs = self.jobs.lock().await;
         if jobs.is_empty() {
@@ -326,7 +325,7 @@ impl BackgroundJobs {
             let job = &jobs[&id];
             let status = job.status.lock().await.describe();
             // Peek at the read cursor without draining it, so listing a job
-            // doesn't consume the output a later `shell_output` should return.
+            // doesn't consume the output a later `shell_status` should return.
             let new_output = {
                 let out = job.output.lock().await;
                 out.cursor < out.buf.len()

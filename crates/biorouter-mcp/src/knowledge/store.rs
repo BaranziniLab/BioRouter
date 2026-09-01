@@ -274,8 +274,18 @@ pub struct SearchHit {
     pub snippet: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Which corpus a search reads.
+///
+/// ⚠ **No doc comment on any variant.** schemars splits a documented variant
+/// into `oneOf` + `const`, and `providers/formats/google.rs` strips both — a
+/// Gemini-bound model would receive this field with no accepted values at all.
+/// The per-value steer therefore lives in the TOOL's description, not here.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Deserialize, rmcp::schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum SearchScope {
+    #[default]
     Knowledge,
     RawSources,
     All,

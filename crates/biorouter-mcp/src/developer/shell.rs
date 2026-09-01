@@ -134,7 +134,7 @@ pub const FOREGROUND_TIMEOUT_ENV: &str = "BIOROUTER_SHELL_FOREGROUND_TIMEOUT_SEC
 /// watchdog is what fires — the tree is killed by the tool itself instead of
 /// depending on a cancellation round-trip, and the model gets an error that
 /// names the command, how long it ran, and the remedy (`background=true`, then
-/// `shell_wait` / `shell_output` / `shell_kill`, which this server already
+/// `shell_status` / `shell_kill`, which this server already
 /// offers for exactly this case).
 pub const FOREGROUND_TIMEOUT_DEFAULT: std::time::Duration = std::time::Duration::from_secs(240);
 
@@ -597,7 +597,7 @@ pub fn foreground_timeout_message(
          foreground limit: {}\n\
          Its whole process group was terminated, so nothing is left running.\n\
          If this command legitimately takes that long, re-run it with background=true and \
-         watch it with shell_wait / shell_output / shell_kill. Otherwise narrow it (a \
+         watch it with shell_status / shell_kill. Otherwise narrow it (a \
          smaller search root, a more specific pattern) and try again. Operators can change \
          the limit with {} (seconds; 0 disables it).",
         humanize_secs(elapsed),
@@ -1135,7 +1135,7 @@ mod tests {
         assert!(message.contains("240s"), "the budget it broke: {message}");
         assert!(message.contains("find "), "the command: {message}");
         assert!(
-            message.contains("background=true") && message.contains("shell_wait"),
+            message.contains("background=true") && message.contains("shell_status"),
             "the workflow for work of that size: {message}"
         );
         assert!(
