@@ -108,7 +108,6 @@ struct SystemPromptContext {
     capabilities: Vec<ExtensionInfo>,
     extensions: Vec<ExtensionInfo>,
     installed_extension_discovery_available: bool,
-    marketplace_extension_browse_available: bool,
     marketplace_extension_search_available: bool,
     extension_state_change_available: bool,
     extension_package_install_available: bool,
@@ -292,11 +291,9 @@ fn build_system_prompt_context(
         "extensionmanager",
         "search_available_extensions",
     );
-    let marketplace_extension_browse_available = capability_has_tool(
-        &capabilities,
-        "extensionmanager",
-        "browse_marketplace_extensions",
-    );
+    // ⚠ Browsing is `search_marketplace_extensions` with no query — the two
+    // tools merged. A separate `browse` boolean would now be permanently false
+    // and would silently delete the clause it gates.
     let marketplace_extension_search_available = capability_has_tool(
         &capabilities,
         "extensionmanager",
@@ -314,11 +311,9 @@ fn build_system_prompt_context(
     let extension_resource_tools_available =
         capability_has_tool(&capabilities, "extensionmanager", "list_resources")
             && capability_has_tool(&capabilities, "extensionmanager", "read_resource");
-    let extension_resource_tools_directly_callable = capability_has_direct_tool(
-        &capabilities,
-        "extensionmanager",
-        "list_resources",
-    ) && capability_has_direct_tool(&capabilities, "extensionmanager", "read_resource");
+    let extension_resource_tools_directly_callable =
+        capability_has_direct_tool(&capabilities, "extensionmanager", "list_resources")
+            && capability_has_direct_tool(&capabilities, "extensionmanager", "read_resource");
     let skill_load_available = capability_has_tool(&capabilities, "skills", "loadSkill");
     let knowledge_search_available = capability_has_tool(&capabilities, "knowledge", "kb_search");
 
@@ -333,7 +328,6 @@ fn build_system_prompt_context(
         capabilities,
         extensions,
         installed_extension_discovery_available,
-        marketplace_extension_browse_available,
         marketplace_extension_search_available,
         extension_state_change_available,
         extension_package_install_available,
@@ -833,7 +827,6 @@ mod tests {
         assert!(!discovery.contains("- enable or disable"));
         assert!(!discovery.contains("- install an extension package"));
         assert!(!discovery.contains("- permanently delete"));
-        assert!(!discovery.contains("- discover marketplace extensions"));
 
         let state_change = build(&["manage_extensions"]);
         assert!(state_change.contains("- enable or disable a named installed extension"));
@@ -848,17 +841,12 @@ mod tests {
         assert!(delete.contains("- permanently delete an installed extension package"));
         assert!(!delete.contains("- install an extension package"));
 
-        // Browse and search are one catalogue, so the clause collapses when
-        // both are callable rather than claiming the surface twice.
-        let browse_only = build(&["browse_marketplace_extensions"]);
-        assert!(browse_only.contains("- discover marketplace extensions by browsing the trusted"));
-        let search_only = build(&["search_marketplace_extensions"]);
-        assert!(search_only.contains("- discover marketplace extensions by searching the trusted"));
-        let both = build(&[
-            "browse_marketplace_extensions",
-            "search_marketplace_extensions",
-        ]);
-        assert!(both.contains("- discover marketplace extensions by browsing or searching"));
+        // Browse and search are ONE tool now — browsing is the same call with no
+        // query — so there is one clause, gated on the one surviving name.
+        let marketplace = build(&["search_marketplace_extensions"]);
+        assert!(marketplace.contains("- browse or search the trusted marketplace catalog"));
+        assert!(!discovery.contains("browse or search the trusted marketplace"));
+        let browse_only = &marketplace;
 
         // ⚠ Every clause is a bullet under one subject line, so no rendering
         // can open the paragraph with a subject-less "It" — which is what

@@ -1968,7 +1968,9 @@ mod web_and_script_tests {
         }
         // Every mention names the owner.
         let mentions = instructions.matches("screen_capture").count();
-        let attributed = instructions.matches("Developer capability's `screen_capture`").count()
+        let attributed = instructions
+            .matches("Developer capability's `screen_capture`")
+            .count()
             + instructions
                 .matches("`screen_capture` belongs to the **Developer** capability")
                 .count();

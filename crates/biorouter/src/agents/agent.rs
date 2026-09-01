@@ -136,6 +136,8 @@ fn tool_catalog_mutation(tool_name: &str) -> Option<ToolCatalogMutation> {
         "skills__installMarketplaceSkill"
         | "skills__importSkillPackage"
         | "skills__removeSkillPackage"
+        | "skills__setSkillEnabled"
+        // The retired pair still dispatches, so it still mutates the catalog.
         | "skills__hotLoadSkill"
         | "skills__hotUnloadSkill" => false,
         _ => return None,
@@ -990,39 +992,14 @@ const CODING_AGENT_BRIDGE_ALLOWED_AGENT_DRAFTER_TOOLS: &[&str] = &[
 ];
 
 const CODING_AGENT_BRIDGE_ALLOWED_AUTOVISUALISER_TOOLS: &[&str] = &[
-    "autovisualiser__render_area",
-    "autovisualiser__render_boxplot",
-    "autovisualiser__render_bubble",
-    "autovisualiser__render_calendar_heatmap",
-    "autovisualiser__render_chord",
-    "autovisualiser__render_choropleth",
-    "autovisualiser__render_class_diagram",
+    // The 32 single-figure tools are no longer declared — they are reached
+    // through `render_figure`'s `kind`, and their schemas through
+    // `describe_figure`. An allowlist that still named them would have let the
+    // capability through this bridge as a set of tools the model is never
+    // offered, while omitting the one door it is.
+    "autovisualiser__describe_figure",
     "autovisualiser__render_dashboard",
-    "autovisualiser__render_dendrogram",
-    "autovisualiser__render_donut",
-    "autovisualiser__render_er_diagram",
-    "autovisualiser__render_flowchart",
-    "autovisualiser__render_forest",
-    "autovisualiser__render_gantt",
-    "autovisualiser__render_gauge",
-    "autovisualiser__render_heatmap",
-    "autovisualiser__render_histogram",
-    "autovisualiser__render_kaplan_meier",
-    "autovisualiser__render_manhattan",
-    "autovisualiser__render_map",
-    "autovisualiser__render_mermaid",
-    "autovisualiser__render_mindmap",
-    "autovisualiser__render_network",
-    "autovisualiser__render_radar",
-    "autovisualiser__render_sankey",
-    "autovisualiser__render_sequence",
-    "autovisualiser__render_state_diagram",
-    "autovisualiser__render_sunburst",
-    "autovisualiser__render_timeline",
-    "autovisualiser__render_treemap",
-    "autovisualiser__render_volcano",
-    "autovisualiser__render_wordcloud",
-    "autovisualiser__show_chart",
+    "autovisualiser__render_figure",
 ];
 
 const CODING_AGENT_BRIDGE_ALLOWED_MEMORY_TOOLS: &[&str] = &[
@@ -1065,6 +1042,10 @@ const CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS: &[&str] = &[
     PLATFORM_INGEST_SOURCE_TOOL_NAME,
 ];
 
+/// ⚠ Carries the RETIRED names as well as the merged ones. The bridge gates a
+/// child coding agent's calls by exact name, and the retired names still
+/// dispatch — dropping them here would turn a working alias into a refusal that
+/// the child cannot diagnose.
 const CODING_AGENT_BRIDGE_ALLOWED_SKILLS_TOOLS: &[&str] = &[
     "skills__searchSkills",
     "skills__listSkills",
@@ -1074,6 +1055,7 @@ const CODING_AGENT_BRIDGE_ALLOWED_SKILLS_TOOLS: &[&str] = &[
     "skills__installMarketplaceSkill",
     "skills__importSkillPackage",
     "skills__removeSkillPackage",
+    "skills__setSkillEnabled",
     "skills__hotLoadSkill",
     "skills__hotUnloadSkill",
 ];
@@ -13585,6 +13567,10 @@ mod tests {
             "knowledge__kb_write_page",
             "extensionmanager__read_resource",
             "extensionmanager__list_resources",
+            // Retired with the Auto Visualiser consolidation: reachable as
+            // `render_figure{kind:"volcano"}`, never as a tool of its own.
+            "autovisualiser__render_volcano",
+            "autovisualiser__show_chart",
         ] {
             assert!(
                 !coding_agent_bridge_policy_allows_tool(blocked),
@@ -13594,6 +13580,8 @@ mod tests {
         for allowed in [
             "agent_drafter__create_app",
             "autovisualiser__render_dashboard",
+            "autovisualiser__render_figure",
+            "autovisualiser__describe_figure",
             "memory__retrieve_memories",
             "todo__todo_update",
             "chatrecall__chatrecall",
@@ -13873,7 +13861,7 @@ mod tests {
                 name: "skills".into(),
                 description: "read-only live Skills".into(),
                 bundled: Some(true),
-                available_tools: vec!["listSkills".into()],
+                available_tools: vec!["searchSkills".into()],
             })
             .await
             .expect("reload restricted Skills");
@@ -14813,7 +14801,7 @@ mod tests {
 
         for expected in [
             "skills__importSkillPackage",
-            "skills__hotLoadSkill",
+            "skills__setSkillEnabled",
             "extensionmanager__install_extension",
             "knowledge__kb_search",
             "workspace__workspace_send_prompt",
@@ -14858,7 +14846,7 @@ mod tests {
         }
         let listed = grant
             .call(CallToolRequestParams {
-                name: "skills__listSkills".into(),
+                name: "skills__searchSkills".into(),
                 arguments: Some(object!({"offset": 0, "limit": 5})),
                 meta: None,
                 task: None,
@@ -14868,7 +14856,7 @@ mod tests {
         assert_eq!(listed.is_error, Some(false), "{listed:?}");
 
         assert_eq!(
-            agent.tool_risks.risk_for("skills__listSkills"),
+            agent.tool_risks.risk_for("skills__searchSkills"),
             crate::permission::tool_risk::ToolRisk::Low,
             "restored read-only manager tools must retain their low-risk grade"
         );

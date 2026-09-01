@@ -61,7 +61,7 @@ Skills are reusable instruction sets: a folder containing a `SKILL.md` file
 with YAML frontmatter (`name`, `description`) followed by markdown
 instructions. The always-on system prompt carries only a **count** of the
 enabled skills, not their names; the agent finds a skill with `searchSkills`,
-pages the catalog with `listSkills`, and pulls in one body with `loadSkill`.
+pages the catalog with `searchSkills` (no query), and pulls in one body with `loadSkill`.
 
 - Primary location: `~/.config/biorouter/skills/<slug>/SKILL.md`. Also
   discovered from `~/.claude/skills`, `~/.config/agents/skills`, extension

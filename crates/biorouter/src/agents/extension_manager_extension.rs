@@ -77,7 +77,15 @@ pub struct InstallExtensionParams {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchMarketplaceExtensionsParams {
-    pub query: String,
+    /// Match a registry id, name, organization, description or tag. Omit to
+    /// list every entry visible to this model.
+    ///
+    /// ⚠ The doc comment is the contract, not decoration: schemars emits it as
+    /// the property's `description`, and that is the only channel through which
+    /// a Gemini-bound model learns that omitting the field lists everything —
+    /// `google.rs` keeps `description` under `properties` and strips `default`.
+    #[serde(default)]
+    pub query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1155,24 +1163,24 @@ impl ExtensionManagerClient {
         }
     }
 
-    async fn handle_browse_marketplace_extensions(
-        &self,
-        cap: crate::privacy::CallCapability,
-    ) -> Result<Vec<Content>, ExtensionManagerToolError> {
-        self.marketplace_extensions(None, cap).await
-    }
-
     async fn handle_search_marketplace_extensions(
         &self,
         arguments: Option<JsonObject>,
         cap: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, ExtensionManagerToolError> {
-        let arguments = arguments.ok_or(ExtensionManagerToolError::MissingParameter {
-            param_name: "arguments".to_owned(),
-        })?;
-        let params: SearchMarketplaceExtensionsParams =
-            serde_json::from_value(Value::Object(arguments))?;
-        self.marketplace_extensions(Some(&params.query), cap).await
+        // No arguments at all is the browse case, not a missing-parameter error:
+        // this tool absorbed `browse_marketplace_extensions`, whose whole schema
+        // was `{}`.
+        let params: SearchMarketplaceExtensionsParams = match arguments {
+            Some(arguments) => serde_json::from_value(Value::Object(arguments))?,
+            None => SearchMarketplaceExtensionsParams { query: None },
+        };
+        let query = params
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|query| !query.is_empty());
+        self.marketplace_extensions(query, cap).await
     }
 
     async fn marketplace_extensions(
@@ -1778,30 +1786,8 @@ impl ExtensionManagerClient {
 
         tools.extend([
             Tool::new(
-                BROWSE_MARKETPLACE_EXTENSIONS_TOOL_NAME.to_owned(),
-                "Browse BAAM marketplace extensions visible to this model. Returns trusted registry ids and install metadata; private entries are hidden from public models."
-                    .to_owned(),
-                Arc::new(
-                    serde_json::json!({
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {}
-                    })
-                    .as_object()
-                    .expect("Schema must be an object")
-                    .clone(),
-                ),
-            )
-            .annotate(ToolAnnotations {
-                title: Some("Browse BAAM marketplace".to_owned()),
-                read_only_hint: Some(true),
-                destructive_hint: Some(false),
-                idempotent_hint: Some(true),
-                open_world_hint: Some(true),
-            }),
-            Tool::new(
                 SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME.to_owned(),
-                "Search trusted BAAM marketplace entries by id, name, organization, description, or tag. Private entries are hidden from public models."
+                "Browse or search trusted BAAM marketplace extensions. Pass `query` to match an id, name, organization, description or tag; omit it to list everything visible to this model. Private entries are hidden from public models."
                     .to_owned(),
                 Arc::new(
                     serde_json::to_value(schema_for!(SearchMarketplaceExtensionsParams))
@@ -1812,7 +1798,7 @@ impl ExtensionManagerClient {
                 ),
             )
             .annotate(ToolAnnotations {
-                title: Some("Search BAAM marketplace".to_owned()),
+                title: Some("Browse or search BAAM marketplace".to_owned()),
                 read_only_hint: Some(true),
                 destructive_hint: Some(false),
                 idempotent_hint: Some(true),
@@ -1969,11 +1955,12 @@ impl McpClientTrait for ExtensionManagerClient {
                 self.handle_search_available_extensions(meta.capability)
                     .await
             }
-            BROWSE_MARKETPLACE_EXTENSIONS_TOOL_NAME => {
-                self.handle_browse_marketplace_extensions(meta.capability)
-                    .await
-            }
-            SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME => {
+            // ⚠ The retired name still dispatches. It is no longer advertised —
+            // browsing is this tool with no `query` — but a model that read the
+            // old name in an earlier transcript, or a stored `always allow`
+            // grant keyed on it, would otherwise meet an unknown-tool error it
+            // cannot act on.
+            BROWSE_MARKETPLACE_EXTENSIONS_TOOL_NAME | SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME => {
                 self.handle_search_marketplace_extensions(arguments, meta.capability)
                     .await
             }
@@ -2273,8 +2260,14 @@ mod tests {
             .into_iter()
             .map(|tool| tool.name.to_string())
             .collect::<Vec<_>>();
+        assert!(
+            !names
+                .iter()
+                .any(|name| name == BROWSE_MARKETPLACE_EXTENSIONS_TOOL_NAME),
+            "browsing is `{SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME}` with no query; \
+             re-advertising it puts a second tool on the surface for one job"
+        );
         for expected in [
-            BROWSE_MARKETPLACE_EXTENSIONS_TOOL_NAME,
             SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME,
             INSTALL_EXTENSION_TOOL_NAME,
             DELETE_EXTENSION_PACKAGE_TOOL_NAME,

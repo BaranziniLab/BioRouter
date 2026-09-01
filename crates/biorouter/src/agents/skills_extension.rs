@@ -199,7 +199,7 @@ pub fn context_config_key(id: &str) -> String {
 /// don't want this in my sidebar" into "the agent reports a failed skill load
 /// on every turn". Off here means **not surfaced**, never **unloadable** — the
 /// set returned here filters the catalog the model is told about
-/// ([`SkillsClient::enabled_skill_entries`], and through it `listSkills`,
+/// ([`SkillsClient::enabled_skill_entries`], and through it `searchSkills`,
 /// `searchSkills`, plus [`session_skill_inventory_instructions`]) and nothing
 /// else.
 fn hidden_contexts_in(config: &crate::config::Config) -> std::collections::HashSet<String> {
@@ -454,21 +454,19 @@ struct RemoveSkillPackageParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-struct BrowseMarketplaceSkillsParams {
-    offset: Option<usize>,
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct SearchMarketplaceSkillsParams {
-    query: String,
+    /// Match a registry id, name, category, description, tag or keyword. Omit
+    /// to list every entry in the registry. See `SearchSkillsParams::query` for
+    /// why this doc comment is load-bearing.
+    #[serde(default)]
+    query: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct InstallMarketplaceSkillParams {
-    /// Exact trusted BAAM registry id returned by browseMarketplaceSkills or
+    /// Exact trusted BAAM registry id returned by searchMarketplaceSkills or
     /// searchMarketplaceSkills.
     registry_id: String,
     /// `bundle` or `individual` when the curated archive itself is ambiguous.
@@ -485,11 +483,23 @@ struct InstallMarketplaceSkillParams {
 struct SessionSkillParams {
     /// Installed skill name or bundle name.
     name: String,
+    /// `true` enables the skill or bundle for this conversation; `false`
+    /// disables it. Required — an omitted default here would let a model that
+    /// meant to unload something load it instead.
+    enabled: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct SearchSkillsParams {
-    query: String,
+    /// Filter and rank installed skills by name, description or bundle. Omit to
+    /// page the whole catalog alphabetically.
+    ///
+    /// ⚠ The doc comment is the contract: schemars emits it as the property's
+    /// `description`, and that is the only channel through which a Gemini-bound
+    /// model learns what omitting the field does — `google.rs` keeps
+    /// `description` under `properties` and strips `default`.
+    #[serde(default)]
+    query: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
 }
@@ -1058,7 +1068,7 @@ impl SkillsClient {
     /// extension initialization is process-scoped; prompt assembly appends
     /// [`session_skill_inventory_instructions`] for the exact conversation.
     fn generate_instructions() -> String {
-        "The Skills capability provides these callable operations: listSkills and searchSkills inspect installed skills; loadSkill reads an exact installed skill; browseMarketplaceSkills and searchMarketplaceSkills inspect trusted BAAM entries; installMarketplaceSkill installs by exact trusted registry id; importSkillPackage installs from a trusted repository URL or local zip while preserving bundle triage; removeSkillPackage removes one or several installed packages after full-batch validation; hotLoadSkill and hotUnloadSkill enable or disable an installed skill or bundle for only this conversation. Every non-dry-run install, import, or removal waits for a trusted desktop approval click; a chat reply cannot approve it. For Biorouter questions, load about-biorouter directly when it is installed."
+        "The Skills capability provides these callable operations: searchSkills lists installed skills, or filters them when you pass a query; loadSkill reads an exact installed skill; searchMarketplaceSkills lists trusted BAAM entries, or filters them when you pass a query; installMarketplaceSkill installs by exact trusted registry id; importSkillPackage installs from a trusted repository URL or local zip while preserving bundle triage; removeSkillPackage removes one or several installed packages after full-batch validation; setSkillEnabled enables or disables an installed skill or bundle for only this conversation. Every non-dry-run install, import, or removal waits for a trusted desktop approval click; a chat reply cannot approve it. For Biorouter questions, load about-biorouter directly when it is installed."
             .to_string()
     }
 
@@ -1098,7 +1108,7 @@ impl SkillsClient {
     /// `&SessionSkillOverride::default()`.
     ///
     /// This is **the one surface a Context toggle acts on**: everything the
-    /// model can browse through `listSkills` and `searchSkills` comes through
+    /// model can browse through `searchSkills` comes through
     /// here, while [`Self::handle_load_skill`] deliberately does not, so a
     /// switched-off Context stays loadable by exact name (see
     /// [`hidden_contexts_in`] for why that asymmetry is required rather than
@@ -1485,26 +1495,24 @@ impl SkillsClient {
         )])
     }
 
-    async fn handle_browse_marketplace_skills(
-        &self,
-        arguments: Option<JsonObject>,
-    ) -> Result<Vec<Content>, String> {
-        let params: BrowseMarketplaceSkillsParams = Self::parse_tool_args(arguments)?;
-        let (offset, limit) = Self::parse_pagination(params.offset, params.limit);
-        Self::marketplace_skill_page(None, offset, limit).await
-    }
-
+    /// Browse or search the trusted BAAM skill registry.
+    ///
+    /// ⚠ An empty or absent `query` is the BROWSE case, not an error. This tool
+    /// absorbed `browseMarketplaceSkills`, whose entire schema was the two
+    /// pagination fields — a "Missing required parameter: query" here would be
+    /// a refusal of the call the retired tool existed to make.
     async fn handle_search_marketplace_skills(
         &self,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let params: SearchMarketplaceSkillsParams = Self::parse_tool_args(arguments)?;
-        let query = params.query.trim();
-        if query.is_empty() {
-            return Err("Missing required parameter: query".to_string());
-        }
+        let query = params
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|query| !query.is_empty());
         let (offset, limit) = Self::parse_pagination(params.offset, params.limit);
-        Self::marketplace_skill_page(Some(query), offset, limit).await
+        Self::marketplace_skill_page(query, offset, limit).await
     }
 
     async fn fetch_marketplace_install_plan(
@@ -1653,9 +1661,20 @@ impl SkillsClient {
         over: &crate::agents::session_skills::SessionSkillOverride,
     ) -> Result<Vec<Content>, String> {
         let params: SearchSkillsParams = Self::parse_tool_args(arguments)?;
-        let query = Self::normalize_search_text(params.query.trim());
+        let query = Self::normalize_search_text(params.query.as_deref().unwrap_or_default().trim());
+        // ⚠ An absent or empty query is the LIST case, not an error. This tool
+        // absorbed `listSkills`, whose entire schema was the two pagination
+        // fields; refusing here would refuse the call the retired tool made.
         if query.is_empty() {
-            return Err("Missing required parameter: query".to_string());
+            return self
+                .handle_list_skills(
+                    Some(serde_json::Map::from_iter([
+                        ("offset".to_string(), serde_json::json!(params.offset)),
+                        ("limit".to_string(), serde_json::json!(params.limit)),
+                    ])),
+                    over,
+                )
+                .await;
         }
 
         let terms: Vec<&str> = query.split_whitespace().collect();
@@ -2110,9 +2129,21 @@ impl SkillsClient {
         arguments: Option<JsonObject>,
         session_id: &str,
         before: &crate::agents::session_skills::SessionSkillOverride,
-        enable: bool,
+        // `None` for `setSkillEnabled`, which carries the verb in its arguments;
+        // `Some(verb)` for the retired `hotLoadSkill` / `hotUnloadSkill`, whose
+        // callers have no `enabled` field to read.
+        legacy_enable: Option<bool>,
     ) -> Result<Vec<Content>, String> {
+        let arguments = match legacy_enable {
+            Some(enable) => {
+                let mut arguments = arguments.unwrap_or_default();
+                arguments.insert("enabled".to_string(), serde_json::json!(enable));
+                Some(arguments)
+            }
+            None => arguments,
+        };
         let params: SessionSkillParams = Self::parse_tool_args(arguments)?;
+        let enable = params.enabled;
         let name = params.name.trim();
         if name.is_empty() {
             return Err("Missing required parameter: name".to_string());
@@ -2187,33 +2218,18 @@ impl SkillsClient {
             Tool::new(
                 "searchSkills".to_string(),
                 indoc! {r#"
-                    Search installed skills by name, description, or bundle.
+                    List or search the skills installed on this machine.
 
-                    Use this before loadSkill when you need to find the exact skill name.
-                    Results are paginated and include skill names and descriptions only.
+                    Pass `query` to match a name, description or bundle; omit it to page the
+                    whole catalog alphabetically. Use this before loadSkill when you need a
+                    skill's exact name. Results are paginated and carry names and descriptions
+                    only.
                 "#}
                 .to_string(),
                 Self::tool_input_schema::<SearchSkillsParams>(),
             )
             .annotate(ToolAnnotations {
-                title: Some("Search skills".to_string()),
-                read_only_hint: Some(true),
-                destructive_hint: Some(false),
-                idempotent_hint: Some(true),
-                open_world_hint: Some(false),
-            }),
-            Tool::new(
-                "listSkills".to_string(),
-                indoc! {r#"
-                    List installed skills in alphabetical pages.
-
-                    Use this for browsing the skill catalog when a search query is not obvious.
-                "#}
-                .to_string(),
-                Self::tool_input_schema::<ListSkillsParams>(),
-            )
-            .annotate(ToolAnnotations {
-                title: Some("List skills".to_string()),
+                title: Some("List or search skills".to_string()),
                 read_only_hint: Some(true),
                 destructive_hint: Some(false),
                 idempotent_hint: Some(true),
@@ -2248,35 +2264,20 @@ impl SkillsClient {
     fn marketplace_management_tools() -> Vec<Tool> {
         vec![
             Tool::new(
-                "browseMarketplaceSkills".to_string(),
-                indoc! {r#"
-                    Browse trusted skill entries published in BAAM.
-
-                    This returns registry ids and metadata, not arbitrary download URLs. Pass an
-                    exact returned registryId value as installMarketplaceSkill's registry_id.
-                "#}
-                .to_string(),
-                Self::tool_input_schema::<BrowseMarketplaceSkillsParams>(),
-            )
-            .annotate(ToolAnnotations {
-                title: Some("Browse BAAM skills".to_string()),
-                read_only_hint: Some(true),
-                destructive_hint: Some(false),
-                idempotent_hint: Some(true),
-                open_world_hint: Some(true),
-            }),
-            Tool::new(
                 "searchMarketplaceSkills".to_string(),
                 indoc! {r#"
-                    Search trusted BAAM skill entries by id, name, category, description, tag,
-                    or keyword. Use the exact returned registryId as installMarketplaceSkill's
-                    registry_id.
+                    Browse or search the trusted skill entries published in BAAM.
+
+                    Pass `query` to match an id, name, category, description, tag or keyword;
+                    omit it to list the whole registry. This returns registry ids and metadata,
+                    never arbitrary download URLs — pass an exact returned registryId as
+                    installMarketplaceSkill's registry_id.
                 "#}
                 .to_string(),
                 Self::tool_input_schema::<SearchMarketplaceSkillsParams>(),
             )
             .annotate(ToolAnnotations {
-                title: Some("Search BAAM skills".to_string()),
+                title: Some("Browse or search BAAM skills".to_string()),
                 read_only_hint: Some(true),
                 destructive_hint: Some(false),
                 idempotent_hint: Some(true),
@@ -2371,44 +2372,26 @@ impl SkillsClient {
     }
 
     fn session_management_tools() -> Vec<Tool> {
-        vec![
-            Tool::new(
-                "hotLoadSkill".to_string(),
-                indoc! {r#"
-                    Enable an installed skill or bundle for this conversation immediately.
+        vec![Tool::new(
+            "setSkillEnabled".to_string(),
+            indoc! {r#"
+                    Enable or disable an installed skill or bundle for this conversation,
+                    immediately.
 
-                    This writes only the current session override. It does not change the
-                    machine-wide Skills setting or any other conversation.
-                "#}
-                .to_string(),
-                Self::tool_input_schema::<SessionSkillParams>(),
-            )
-            .annotate(ToolAnnotations {
-                title: Some("Hot-load skill".to_string()),
-                read_only_hint: Some(false),
-                destructive_hint: Some(false),
-                idempotent_hint: Some(true),
-                open_world_hint: Some(false),
-            }),
-            Tool::new(
-                "hotUnloadSkill".to_string(),
-                indoc! {r#"
-                    Disable an installed skill or bundle for this conversation immediately.
-
-                    This writes only the current session override. It does not uninstall files,
+                    Pass `enabled: true` to load it and `enabled: false` to unload it. This
+                    writes only the current session override: it does not uninstall files,
                     change the machine-wide Skills setting, or affect another conversation.
                 "#}
-                .to_string(),
-                Self::tool_input_schema::<SessionSkillParams>(),
-            )
-            .annotate(ToolAnnotations {
-                title: Some("Hot-unload skill".to_string()),
-                read_only_hint: Some(false),
-                destructive_hint: Some(false),
-                idempotent_hint: Some(true),
-                open_world_hint: Some(false),
-            }),
-        ]
+            .to_string(),
+            Self::tool_input_schema::<SessionSkillParams>(),
+        )
+        .annotate(ToolAnnotations {
+            title: Some("Enable or disable a skill here".to_string()),
+            read_only_hint: Some(false),
+            destructive_hint: Some(false),
+            idempotent_hint: Some(true),
+            open_world_hint: Some(false),
+        })]
     }
 
     fn management_tools() -> Vec<Tool> {
@@ -2468,11 +2451,17 @@ impl McpClientTrait for SkillsClient {
         };
 
         let content = match name {
-            "searchSkills" => self.handle_search_skills(arguments, &over).await,
-            "listSkills" => self.handle_list_skills(arguments, &over).await,
+            // ⚠ The retired names still dispatch. They are no longer advertised —
+            // listing is `searchSkills` with no query, browsing is
+            // `searchMarketplaceSkills` with no query — but a model that read an
+            // old name in an earlier transcript, or a stored `always allow`
+            // grant keyed on one, would otherwise meet an unknown-tool error it
+            // cannot act on.
+            "searchSkills" | "listSkills" => self.handle_search_skills(arguments, &over).await,
             "loadSkill" => self.handle_load_skill(arguments, &over).await,
-            "browseMarketplaceSkills" => self.handle_browse_marketplace_skills(arguments).await,
-            "searchMarketplaceSkills" => self.handle_search_marketplace_skills(arguments).await,
+            "searchMarketplaceSkills" | "browseMarketplaceSkills" => {
+                self.handle_search_marketplace_skills(arguments).await
+            }
             "installMarketplaceSkill" => {
                 self.handle_install_marketplace_skill(
                     arguments,
@@ -2489,12 +2478,18 @@ impl McpClientTrait for SkillsClient {
                 self.handle_remove_skill_package(arguments, &meta.session_id, &cancellation_token)
                     .await
             }
+            "setSkillEnabled" => {
+                self.handle_session_skill_toggle(arguments, &meta.session_id, &over, None)
+                    .await
+            }
+            // The retired pair, kept dispatching with the verb their NAME
+            // carried — an old call has no `enabled` field to read.
             "hotLoadSkill" => {
-                self.handle_session_skill_toggle(arguments, &meta.session_id, &over, true)
+                self.handle_session_skill_toggle(arguments, &meta.session_id, &over, Some(true))
                     .await
             }
             "hotUnloadSkill" => {
-                self.handle_session_skill_toggle(arguments, &meta.session_id, &over, false)
+                self.handle_session_skill_toggle(arguments, &meta.session_id, &over, Some(false))
                     .await
             }
             _ => Err(format!("Unknown tool: {}", name)),
@@ -2536,7 +2531,7 @@ mod tests {
     /// `expected value at line 1 column 1`, naming neither SQLite nor the
     /// sharing. It is a race everywhere and was seen on macOS too; Windows'
     /// stricter file locking simply loses it far more often.
-    fn test_context() -> PlatformExtensionContext {
+    pub(super) fn test_context() -> PlatformExtensionContext {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let unique = format!(
             "biorouter-skills-test-sessions-{}-{}",
@@ -2902,18 +2897,29 @@ Content from dir3
         let instructions = SkillsClient::generate_instructions();
         assert!(!instructions.contains("installed skills currently enabled"));
         for tool in [
-            "listSkills",
             "searchSkills",
             "loadSkill",
-            "browseMarketplaceSkills",
             "searchMarketplaceSkills",
             "installMarketplaceSkill",
             "importSkillPackage",
             "removeSkillPackage",
+            "setSkillEnabled",
+        ] {
+            assert!(instructions.contains(tool), "instructions omit {tool}");
+        }
+        // ⚠ The instructions are embedded verbatim in the system prompt, so a
+        // retired name here teaches the model to call a tool it is never
+        // offered. The aliases exist for OLD transcripts, not for new calls.
+        for retired in [
+            "listSkills",
+            "browseMarketplaceSkills",
             "hotLoadSkill",
             "hotUnloadSkill",
         ] {
-            assert!(instructions.contains(tool), "instructions omit {tool}");
+            assert!(
+                !instructions.contains(retired),
+                "instructions still name the retired {retired}"
+            );
         }
 
         client.info.instructions = Some(instructions);
@@ -2965,15 +2971,12 @@ Content from dir3
             tool_names,
             vec![
                 "searchSkills",
-                "listSkills",
                 "loadSkill",
-                "browseMarketplaceSkills",
                 "searchMarketplaceSkills",
                 "installMarketplaceSkill",
                 "importSkillPackage",
                 "removeSkillPackage",
-                "hotLoadSkill",
-                "hotUnloadSkill",
+                "setSkillEnabled",
             ],
             "an empty machine must still expose discovery, install, and session lifecycle tools"
         );
@@ -3037,15 +3040,12 @@ Content
             tool_names,
             vec![
                 "searchSkills",
-                "listSkills",
                 "loadSkill",
-                "browseMarketplaceSkills",
                 "searchMarketplaceSkills",
                 "installMarketplaceSkill",
                 "importSkillPackage",
                 "removeSkillPackage",
-                "hotLoadSkill",
-                "hotUnloadSkill",
+                "setSkillEnabled",
             ]
         );
     }
@@ -3195,7 +3195,7 @@ Content
             .clone();
         let result = client
             .call_tool(
-                "listSkills",
+                "searchSkills",
                 Some(args),
                 McpMeta::new(
                     "test-session",
@@ -3406,7 +3406,7 @@ Content
         assert!(!instructions.is_empty());
         assert!(!instructions.contains("2 installed skills"));
         assert!(instructions.contains("searchSkills"));
-        assert!(instructions.contains("listSkills"));
+        assert!(instructions.contains("searchSkills"));
         // The instruction must actively nudge proactive loading via loadSkill
         // and name about-biorouter as the example, so the agent loads
         // self-knowledge instead of guessing about Biorouter.
@@ -4062,7 +4062,7 @@ Working dir biorouter content
     /// built cold, and the only thing that carries the session id is the
     /// `McpMeta` of a `call_tool` dispatch. It therefore pins, in one test,
     /// that `call_tool` reads the session's override at all, that the catalog
-    /// (`listSkills`) is filtered by it, and that `loadSkill` enforces it —
+    /// (`searchSkills`) is filtered by it, and that `loadSkill` enforces it —
     /// each of which a hand-bound unit test leaves free to regress.
     #[tokio::test]
     async fn a_persisted_override_reaches_call_tool_with_no_in_process_binding() {
@@ -4103,7 +4103,7 @@ Working dir biorouter content
         );
         assert!(
             !listed.contains("beta"),
-            "a session-revoked skill must not appear in listSkills: {listed}"
+            "a session-revoked skill must not appear in searchSkills: {listed}"
         );
 
         let refused = client
@@ -4255,7 +4255,7 @@ Working dir biorouter content
         let client = client_with(&["alpha", "beta"], temp.path(), session_manager.clone());
         let listed = client
             .call_tool(
-                "listSkills",
+                "searchSkills",
                 None,
                 McpMeta::new(
                     session.id.clone(),
@@ -4916,5 +4916,116 @@ Working dir biorouter content
         assert!(error.to_string().contains("disabled"), "{error:#}");
 
         skill_catalog::invalidate();
+    }
+}
+
+#[cfg(test)]
+mod merged_surface_tests {
+    use super::tests::test_context;
+    use super::*;
+
+    fn skills_client() -> SkillsClient {
+        SkillsClient::new(test_context()).expect("client")
+    }
+
+    fn meta() -> McpMeta {
+        McpMeta::new(
+            "merged-surface".to_string(),
+            crate::privacy::CallCapability::for_test_restricted(),
+        )
+    }
+
+    /// Six tools became three because the query is an ARGUMENT, not a second
+    /// tool: `listSkills` was `searchSkills` with no filter, and
+    /// `browseMarketplaceSkills` was `searchMarketplaceSkills` with no filter.
+    /// A model that omits the query must get the listing, not a
+    /// "missing required parameter" refusal.
+    #[tokio::test]
+    async fn omitting_the_query_lists_instead_of_refusing() {
+        let client = skills_client();
+        let meta = meta();
+        for tool in ["searchSkills", "searchMarketplaceSkills"] {
+            for arguments in [None, Some(JsonObject::new())] {
+                let result = client
+                    .call_tool(tool, arguments, meta.clone(), CancellationToken::new())
+                    .await
+                    .unwrap_or_else(|e| panic!("{tool} with no query errored: {e:?}"));
+                let text: String = result
+                    .content
+                    .iter()
+                    .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                    .collect();
+                assert!(
+                    !text.contains("Missing required parameter: query"),
+                    "{tool} still refuses the browse case: {text}"
+                );
+            }
+        }
+    }
+
+    /// The retired names keep dispatching. They are not advertised — that is
+    /// the whole point — but a persisted transcript, a stored `always allow`
+    /// grant, or a coding-agent child that read one still calls them, and an
+    /// unknown-tool error is something none of those can act on.
+    #[tokio::test]
+    async fn every_retired_name_still_dispatches() {
+        let client = skills_client();
+        let advertised: Vec<String> = client
+            .list_tools(None, CancellationToken::new())
+            .await
+            .expect("tools")
+            .tools
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+
+        for retired in [
+            "listSkills",
+            "browseMarketplaceSkills",
+            "hotLoadSkill",
+            "hotUnloadSkill",
+        ] {
+            assert!(
+                !advertised.iter().any(|name| name == retired),
+                "{retired} is advertised again"
+            );
+            let result = client
+                .call_tool(
+                    retired,
+                    Some(JsonObject::from_iter([(
+                        "name".to_string(),
+                        serde_json::json!("does-not-exist"),
+                    )])),
+                    meta(),
+                    CancellationToken::new(),
+                )
+                .await
+                .expect("dispatch");
+            let text: String = result
+                .content
+                .iter()
+                .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                .collect();
+            assert!(
+                !text.contains("Unknown tool"),
+                "{retired} no longer dispatches: {text}"
+            );
+        }
+    }
+
+    /// `setSkillEnabled` carries the verb in its arguments, and it is REQUIRED:
+    /// a defaulted `enabled` would let a model that meant to unload something
+    /// load it instead.
+    #[test]
+    fn the_session_toggle_requires_an_explicit_verb() {
+        let schema = SkillsClient::tool_input_schema::<SessionSkillParams>();
+        let required = schema
+            .get("required")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let required: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
+        assert!(required.contains(&"name"), "{required:?}");
+        assert!(required.contains(&"enabled"), "{required:?}");
     }
 }

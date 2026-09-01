@@ -805,3 +805,245 @@ pub async fn render_standalone_figure(tool: &str, args: Value) -> Result<String,
     .map_err(|e| e.message.to_string())?;
     common::html_from_result(&result).map_err(|e| e.message.to_string())
 }
+
+// ===========================================================================
+// The declared figure surface: one entry point, one describe tool
+// ===========================================================================
+//
+// ⚠ **Why the 32 figure tools are no longer DECLARED, and why their Rust
+// methods are untouched.**
+//
+// Azure and OpenAI reject any request whose `tools` array exceeds 128 entries,
+// with a non-retryable 400 before the model sees anything. Measured on this
+// tree: all built-in capabilities on and Code Execution off declared 130 tools,
+// 33 of them Auto Visualiser's — so a chat could not take a single turn. This
+// capability is where the headroom is, and it is also where consolidating is
+// nearly free, because the 32 single-figure tools are one tool with a
+// discriminator and the codebase already said so twice:
+//
+//   1. All 32 run the same pipeline in `common.rs` — validate, `js_data`,
+//      `assemble`, `finish`.
+//   2. `call_figure_tool` below is ALREADY a 32-way dispatcher keyed on exactly
+//      these names, and `render_dashboard` already ships a production feature
+//      where the model emits `{"tool": "render_volcano", "params": {…}}` per
+//      panel. Kind-dispatched figure calls are therefore measured to work with
+//      real models here, not a hypothesis.
+//
+// So this promotes the existing dispatcher to a declared tool. It moves no
+// rendering code, and the 32 `#[tool]` methods keep their names, schemas and
+// worked-example descriptions — they are simply routed into `figure_router`,
+// which is held for metadata rather than advertised. That is what lets
+// `describe_figure` hand back each kind's REAL schema and REAL example instead
+// of a second copy that could drift.
+//
+// Three other callers reach the figures without going through the declaration,
+// and none of them changes: `call_figure_tool` (dashboard panels),
+// `render_standalone_figure` (Agent Drafter's `ui_figure`), and every unit test
+// via the `ok_render!`/`err_render!` macros, which call the inherent methods.
+
+/// The one table. The `kind` enum, its slug, and the tool it dispatches to are
+/// generated together, so the schema the model sees and the dispatcher it
+/// reaches can never disagree — an invariant a test would otherwise have to
+/// check, and would only check for the pairs someone remembered to list.
+macro_rules! figure_kinds {
+    ($($variant:ident => ($slug:literal, $tool:literal)),+ $(,)?) => {
+        /// Which figure to draw. Enumerated in the schema, so a model cannot
+        /// invent a kind and a wrong guess is refused before any work happens.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        #[derive(rmcp::schemars::JsonSchema)]
+        pub enum FigureKind {
+            $(
+                #[serde(rename = $slug)]
+                $variant,
+            )+
+        }
+
+        impl FigureKind {
+            /// Every kind, for the guards and for `describe_figure`'s catalog.
+            pub const ALL: &'static [FigureKind] = &[$(FigureKind::$variant),+];
+
+            /// The value the model passes as `kind`.
+            pub fn slug(self) -> &'static str {
+                match self { $(FigureKind::$variant => $slug),+ }
+            }
+
+            /// The underlying tool whose schema, description and implementation
+            /// this kind is.
+            pub fn tool_name(self) -> &'static str {
+                match self { $(FigureKind::$variant => $tool),+ }
+            }
+        }
+    };
+}
+
+figure_kinds! {
+    Chart           => ("chart",            "show_chart"),
+    Histogram       => ("histogram",        "render_histogram"),
+    Boxplot         => ("boxplot",          "render_boxplot"),
+    Bubble          => ("bubble",           "render_bubble"),
+    Area            => ("area",             "render_area"),
+    Radar           => ("radar",            "render_radar"),
+    Donut           => ("donut",            "render_donut"),
+    Gauge           => ("gauge",            "render_gauge"),
+    Volcano         => ("volcano",          "render_volcano"),
+    Manhattan       => ("manhattan",        "render_manhattan"),
+    KaplanMeier     => ("kaplan_meier",     "render_kaplan_meier"),
+    Forest          => ("forest",           "render_forest"),
+    Network         => ("network",          "render_network"),
+    Sankey          => ("sankey",           "render_sankey"),
+    Chord           => ("chord",            "render_chord"),
+    Heatmap         => ("heatmap",          "render_heatmap"),
+    Treemap         => ("treemap",          "render_treemap"),
+    Sunburst        => ("sunburst",         "render_sunburst"),
+    Dendrogram      => ("dendrogram",       "render_dendrogram"),
+    Wordcloud       => ("wordcloud",        "render_wordcloud"),
+    CalendarHeatmap => ("calendar_heatmap", "render_calendar_heatmap"),
+    Mermaid         => ("mermaid",          "render_mermaid"),
+    Flowchart       => ("flowchart",        "render_flowchart"),
+    Gantt           => ("gantt",            "render_gantt"),
+    Sequence        => ("sequence",         "render_sequence"),
+    Mindmap         => ("mindmap",          "render_mindmap"),
+    Timeline        => ("timeline",         "render_timeline"),
+    ErDiagram       => ("er_diagram",       "render_er_diagram"),
+    StateDiagram    => ("state_diagram",    "render_state_diagram"),
+    ClassDiagram    => ("class_diagram",    "render_class_diagram"),
+    Map             => ("map",              "render_map"),
+    Choropleth      => ("choropleth",       "render_choropleth"),
+}
+
+/// Turn `{kind, data}` into the arguments the underlying tool already takes.
+///
+/// Thirty-one of the thirty-two land on `{"data": …}` — including `donut`,
+/// whose `#[serde(flatten)]` looks irregular in Rust but flattens a struct
+/// whose only field is itself named `data`, so its wire shape is the same as
+/// the rest. `mermaid` is the single genuine exception: it takes
+/// `{"mermaid_code": "<source>"}` and no `data` at all.
+///
+/// The leniency here is deliberately NARROWER than `DashboardFigure`'s
+/// key-hunting deserializer. That one hunts `tool`/`type`/`name`/`kind` across
+/// a panel object because a panel is a nested, model-authored structure; doing
+/// the same to a top-level `data` payload would let a figure's own field named
+/// `type` be mistaken for the discriminator.
+fn figure_arguments(kind: FigureKind, data: Value) -> Result<Value, ErrorData> {
+    if kind != FigureKind::Mermaid {
+        return Ok(json!({ "data": data }));
+    }
+    // Accept the source as a bare string, or under any of the names a model
+    // reaches for when it has been told the argument is called `data`.
+    let code = match &data {
+        Value::String(source) => Some(source.clone()),
+        Value::Object(map) => ["mermaid_code", "code", "source", "diagram", "data"]
+            .iter()
+            .find_map(|key| map.get(*key).and_then(Value::as_str).map(str::to_string)),
+        _ => None,
+    };
+    let code = code.ok_or_else(|| {
+        invalid(
+            "`mermaid` takes its diagram source as `data`: either the source string itself, \
+             or an object with a `mermaid_code` field. Call describe_figure with \
+             kind \"mermaid\" for the exact shape."
+                .to_string(),
+        )
+    })?;
+    Ok(json!({ "mermaid_code": code }))
+}
+
+/// Parameters for `render_figure`.
+#[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
+pub struct RenderFigureParams {
+    /// Which figure to draw.
+    pub kind: FigureKind,
+    /// The figure's payload. Its shape depends on `kind` — call
+    /// `describe_figure` with that kind for the exact schema and a worked
+    /// example.
+    pub data: Value,
+}
+
+/// Parameters for `describe_figure`.
+#[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
+pub struct DescribeFigureParams {
+    /// A single kind to describe in full. Omit for the one-line catalog of
+    /// every kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<FigureKind>,
+}
+
+#[tool_router(router = entry_router)]
+impl AutoVisualiserRouter {
+    /// The declared entry point for every single-figure visualization.
+    //
+    // ⚠ Keep this description SHORT. Azure/OpenAI cap
+    // `tools[n].function.description` at 1024 characters and reject the whole
+    // request — a second non-retryable 400 on the same provider this
+    // consolidation exists to avoid. Per-kind documentation belongs in
+    // `describe_figure`, which has no such budget because it is a RESULT.
+    #[tool(
+        name = "render_figure",
+        description = "Draw one interactive figure. Pick `kind` from the enum, and pass that kind's payload as `data`. The Auto Visualiser instructions in your system prompt list what each kind is for; call describe_figure with a kind to get its exact schema and a worked example. For an answer that needs more than one figure, call render_dashboard once instead of calling this repeatedly."
+    )]
+    pub async fn render_figure(
+        &self,
+        Parameters(params): Parameters<RenderFigureParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let arguments = figure_arguments(params.kind, params.data)?;
+        self.call_figure_tool(params.kind.tool_name(), arguments)
+            .await
+    }
+
+    /// The per-kind schema and worked example, read off the real tool.
+    #[tool(
+        name = "describe_figure",
+        description = "Get the exact `data` schema and a worked example for one render_figure kind, or omit `kind` for the catalog of every kind. Call this before render_figure whenever you are unsure of a payload's shape."
+    )]
+    pub async fn describe_figure(
+        &self,
+        Parameters(params): Parameters<DescribeFigureParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let Some(kind) = params.kind else {
+            let catalog: Vec<Value> = FigureKind::ALL
+                .iter()
+                .map(|kind| json!({ "kind": kind.slug() }))
+                .collect();
+            return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                serde_json::to_string_pretty(&json!({
+                    "kinds": catalog,
+                    "usage": "render_figure({ kind, data }). Call describe_figure with one kind \
+                              for its schema and a worked example.",
+                }))
+                .unwrap_or_default(),
+            )]));
+        };
+
+        // Read the REAL declaration rather than a second copy of it. The 32
+        // tools keep their `#[tool]` attributes precisely so this cannot drift.
+        let tool_name = kind.tool_name();
+        let described = self
+            .figure_router
+            .list_all()
+            .into_iter()
+            .find(|tool| tool.name.as_ref() == tool_name)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "`{}` has no underlying figure tool; this is a Biorouter bug.",
+                    kind.slug()
+                ))
+            })?;
+
+        let payload = json!({
+            "kind": kind.slug(),
+            // `mermaid` is the one kind whose payload is not the underlying
+            // tool's `data` field, so say what `data` means for it rather than
+            // handing back a schema keyed on a name the caller cannot use.
+            "dataIs": if kind == FigureKind::Mermaid {
+                "the Mermaid diagram source, as a string"
+            } else {
+                "the value of the underlying tool's `data` argument"
+            },
+            "schema": Value::Object((*described.input_schema).clone()),
+            "guidance": described.description.as_deref().unwrap_or_default(),
+        });
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&payload).unwrap_or_default(),
+        )]))
+    }
+}

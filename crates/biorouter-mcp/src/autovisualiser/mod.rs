@@ -420,7 +420,11 @@ pub struct RenderMermaidParams {
 /// An extension for automatic data visualization and UI generation
 #[derive(Clone)]
 pub struct AutoVisualiserRouter {
+    /// Advertised to the model: three tools.
     tool_router: ToolRouter<Self>,
+    /// Not advertised. The 32 single-figure tools, kept for their schemas and
+    /// worked examples so `describe_figure` reads the real declaration.
+    figure_router: ToolRouter<Self>,
     #[allow(dead_code)]
     cache_dir: PathBuf,
     instructions: String,
@@ -498,66 +502,79 @@ impl AutoVisualiserRouter {
             numbered caption under every figure.
 
             - Two or more figures on one topic → one `render_dashboard` call.
-            - Exactly one figure, with nothing to compare it against → the plain `render_*` tool.
+            - Exactly one figure, with nothing to compare it against → `render_figure`.
             - Always write the `caption` for each panel and a `summary` for the report. The prose is
               what makes the figures mean something; a report of unlabelled charts is worse than one
               good chart. Say what the figure shows and what the reader should notice in it.
             - `render_dashboard` takes the other tools' names and their exact arguments, so anything
               you can render on its own can be a panel.
 
+            ## How to draw one figure
+            Call `render_figure` with a `kind` from the list below and that kind's payload as `data`.
+            The headings say what each kind is FOR; when you need a kind's exact argument shape, call
+            `describe_figure` with that kind — it returns the schema and a worked example.
+
             ## Statistical & comparison charts
-            - **show_chart**: line, scatter, or bar charts
-            - **render_histogram**: distribution of a single numeric variable (auto-binned)
-            - **render_boxplot**: distribution/spread comparison across groups (quartiles + outliers)
-            - **render_bubble**: 3-variable scatter (x, y, and size)
-            - **render_area**: line/area chart, optionally stacked, for composition over time
-            - **render_radar**: multi-dimensional comparison (spider chart)
-            - **render_donut**: pie/donut charts for categorical proportions (single or grid)
-            - **render_gauge**: a single KPI value against a range
+            - **chart**: line, scatter, or bar charts
+            - **histogram**: distribution of a single numeric variable (auto-binned)
+            - **boxplot**: distribution/spread comparison across groups (quartiles + outliers)
+            - **bubble**: 3-variable scatter (x, y, and size)
+            - **area**: line/area chart, optionally stacked, for composition over time
+            - **radar**: multi-dimensional comparison (spider chart)
+            - **donut**: pie/donut charts for categorical proportions (single or grid)
+            - **gauge**: a single KPI value against a range
 
             ## Scientific / biomedical
-            - **render_volcano**: differential-expression volcano plot (log2 fold-change vs -log10 p)
-            - **render_manhattan**: GWAS Manhattan plot across chromosomes
-            - **render_kaplan_meier**: survival curves (step functions, optional censoring)
-            - **render_forest**: forest plot of effect sizes with confidence intervals
+            - **volcano**: differential-expression volcano plot (log2 fold-change vs -log10 p)
+            - **manhattan**: GWAS Manhattan plot across chromosomes
+            - **kaplan_meier**: survival curves (step functions, optional censoring)
+            - **forest**: forest plot of effect sizes with confidence intervals
 
             ## Relationships, flows & hierarchies
-            - **render_network**: force-directed node-link graph (knowledge graphs, PPI, gene networks)
-            - **render_sankey**: flow diagrams between stages
-            - **render_chord**: pairwise flows between entities (square matrix)
-            - **render_heatmap**: matrix as a colour grid (expression/correlation matrices)
-            - **render_treemap**: hierarchical proportional boxes
-            - **render_sunburst**: hierarchical radial chart
-            - **render_dendrogram**: hierarchical clustering / phylogenetic tree
-            - **render_wordcloud**: term-frequency word cloud
-            - **render_calendar_heatmap**: value-per-day calendar grid
+            - **network**: force-directed node-link graph (knowledge graphs, PPI, gene networks)
+            - **sankey**: flow diagrams between stages
+            - **chord**: pairwise flows between entities (square matrix)
+            - **heatmap**: matrix as a colour grid (expression/correlation matrices)
+            - **treemap**: hierarchical proportional boxes
+            - **sunburst**: hierarchical radial chart
+            - **dendrogram**: hierarchical clustering / phylogenetic tree
+            - **wordcloud**: term-frequency word cloud
+            - **calendar_heatmap**: value-per-day calendar grid
 
             ## Diagrams (Mermaid)
-            - **render_mermaid**: any raw Mermaid syntax
-            - **render_flowchart**: typed nodes/edges → flowchart
-            - **render_gantt**: project/experiment timelines
-            - **render_sequence**: sequence diagrams
-            - **render_mindmap**: mind maps
-            - **render_timeline**: chronological timelines
-            - **render_er_diagram**: entity-relationship diagrams
-            - **render_state_diagram**: state machines
-            - **render_class_diagram**: class/UML diagrams
+            - **mermaid**: any raw Mermaid syntax
+            - **flowchart**: typed nodes/edges → flowchart
+            - **gantt**: project/experiment timelines
+            - **sequence**: sequence diagrams
+            - **mindmap**: mind maps
+            - **timeline**: chronological timelines
+            - **er_diagram**: entity-relationship diagrams
+            - **state_diagram**: state machines
+            - **class_diagram**: class/UML diagrams
 
             ## Geographic
-            - **render_map**: interactive map with location markers
-            - **render_choropleth**: value-shaded regions from GeoJSON
+            - **map**: interactive map with location markers
+            - **choropleth**: value-shaded regions from GeoJSON
 
             ## Composite
-            - **render_dashboard**: several of the above, combined into one documented report
+            - **render_dashboard**: several of the above, combined into one documented report. This
+              is its own tool, not a `kind` — it composes figures rather than being one.
         "#};
 
         Self {
-            tool_router: Self::tool_router()
+            // ⚠ **Two routers, and the split is the whole consolidation.**
+            // `tool_router` is what the model SEES — `render_figure`,
+            // `describe_figure`, `render_dashboard`. `figure_router` holds the
+            // 32 single-figure tools with their real schemas and worked
+            // examples, so `describe_figure` can hand back the genuine
+            // declaration instead of a second copy that would drift. See the
+            // block above `figure_kinds!` in tools_dashboard.rs.
+            tool_router: Self::dashboard_router() + Self::entry_router(),
+            figure_router: Self::tool_router()
                 + Self::diagrams_router()
                 + Self::charts_router()
                 + Self::d3_router()
-                + Self::geo_router()
-                + Self::dashboard_router(),
+                + Self::geo_router(),
             cache_dir,
             instructions,
         }

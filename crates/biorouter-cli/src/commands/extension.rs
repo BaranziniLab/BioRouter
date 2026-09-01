@@ -508,6 +508,7 @@ mod tests {
             configured_keys: Vec::new(),
             skills: Vec::new(),
             enabled: false,
+            operator_pinned_off: false,
         }
     }
 

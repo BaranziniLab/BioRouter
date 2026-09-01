@@ -8,7 +8,7 @@ Come here when you want to know what a specific built-in capability can do, or w
 
 | Document | What it covers |
 |----------|----------------|
-| [Auto Visualiser](auto-visualiser.md) | How to enable the Auto Visualiser and which figures it produces, with a worked cohort-data example. The page carries a warning that its chart catalogue covers only 8 of the 34 tools the code registers — the source under `crates/biorouter-mcp/src/autovisualiser/` is the current truth for the full list. |
+| [Auto Visualiser](auto-visualiser.md) | How to enable the Auto Visualiser and which figures it produces, with a worked cohort-data example. The capability declares three tools — `render_figure`, `describe_figure` and `render_dashboard` — and reaches its 32 figure kinds through `render_figure`'s `kind`. |
 | [Chat Recall](chat-recall.md) | Searching your past session history by keyword or session ID so BioRouter can pull earlier context into the current conversation. Unlike most built-ins, this one ships disabled by default. |
 | [Code Execution](code-execution.md) | Code Mode: instead of calling MCP tools one at a time, the model writes a short JavaScript program that batches many tool calls into a single execution. |
 | [Computer Controller](computer-controller.md) | Enabling the Computer Controller, its tools, and a worked example combining web research with macOS system automation — the highest-blast-radius built-in, because it acts on your real desktop. |

@@ -2629,7 +2629,8 @@ mod tests {
         assert!(description.contains("capability or extension names"));
         assert!(!description.contains("developer extension"));
         assert!(
-            !description.contains("developer/shell") && !description.contains("developer/text_editor"),
+            !description.contains("developer/shell")
+                && !description.contains("developer/text_editor"),
             "the description must not hard-code a capability that may be disabled"
         );
 

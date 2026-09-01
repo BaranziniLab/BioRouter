@@ -109,12 +109,9 @@ The Extension Manager capability can do only what this turn's effective roster a
 {% if installed_extension_discovery_available %}
 - discover installed extensions and their exact names.
 {% endif %}
-{% if marketplace_extension_browse_available and marketplace_extension_search_available %}
-- discover marketplace extensions by browsing or searching the trusted catalog.
-{% elif marketplace_extension_browse_available %}
-- discover marketplace extensions by browsing the trusted catalog.
-{% elif marketplace_extension_search_available %}
-- discover marketplace extensions by searching the trusted catalog.
+{% if marketplace_extension_search_available %}
+- browse or search the trusted marketplace catalog: pass a query to match, or omit it to list
+  everything visible to you.
 {% endif %}
 {% if extension_state_change_available %}
 - enable or disable a named installed extension. Change state only when the user explicitly requests that action for

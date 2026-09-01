@@ -25,7 +25,7 @@ expensive thing on demand:
 1. **Discovery (always on, and it is one sentence).** The always-on system
    prompt carries a *count* of the enabled skills and the names of the tools
    that reach them — not the catalog. The agent finds a skill by calling
-   **`searchSkills`** (or **`listSkills`** to page the catalog), and what it
+   **`searchSkills`** (with no query, to page the whole catalog), and what it
    matches against there is the `name` + `description`. So the description
    still does all the triggering work; it simply has to survive a search rather
    than sit permanently in front of the model, which makes concrete trigger

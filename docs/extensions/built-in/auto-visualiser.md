@@ -1,12 +1,18 @@
 # Auto Visualiser capability
 
 > **What this is.** User guide to the built-in Auto Visualiser capability: how to enable it, which figures it can produce, and a worked cohort-data example.
-> **Status:** Current. The capability is live and healthy, but the chart catalogue in [Visualization types](#visualization-types) covers only 8 of the 34 tools the code now registers — see the warning below. For the full tool list the current truth is the source: `crates/biorouter-mcp/src/autovisualiser/` (`mod.rs`, `tools_charts.rs`, `tools_d3.rs`, `tools_extra.rs`, `tools_geo.rs`, `tools_dashboard.rs`).
+> **Status:** Current. The capability declares **three** tools — `render_figure`, `describe_figure` and `render_dashboard` — and reaches its **32 figure kinds** through `render_figure`'s `kind` argument. The chart catalogue in [Visualization types](#visualization-types) still covers only 8 of those kinds; for the full list the current truth is `FigureKind` in `crates/biorouter-mcp/src/autovisualiser/tools_dashboard.rs`, or a live `describe_figure` call with no `kind`.
 > **Audience:** end users.
 
 The Auto Visualiser capability lets BioRouter generate interactive data visualizations directly inside a conversation. It uses MCP-UI — the emerging Model Context Protocol standard for returning renderable UI from a tool — to return charts, graphs, maps and diagrams as `ui://` resources. A figure arrives in the conversation as a card you click; it opens in the artifact panel on the right, which is where every figure is shown. You do not have to ask for one explicitly.
 
-> **Warning.** The tool table in [Visualization types](#visualization-types) is out of date. The capability registers 34 tools. Not documented here: the scientific figures `render_volcano`, `render_manhattan`, `render_kaplan_meier` and `render_forest`; the relationship and hierarchy figures `render_heatmap`, `render_sunburst`, `render_dendrogram`, `render_wordcloud` and `render_calendar_heatmap`; the typed Mermaid wrappers (`render_flowchart`, `render_gantt`, `render_sequence`, `render_mindmap`, `render_timeline`, `render_er_diagram`, `render_state_diagram`, `render_class_diagram`); and the composite report tool `render_dashboard`, which combines several figures into one scrollable artifact. Until this page is refreshed, read the tool definitions in the source files named above.
+> **Warning.** The tool table in [Visualization types](#visualization-types) is out of date: it
+> documents 8 of the 32 kinds. Undocumented here are the scientific figures (`volcano`,
+> `manhattan`, `kaplan_meier`, `forest`), the relationship and hierarchy figures (`heatmap`,
+> `sunburst`, `dendrogram`, `wordcloud`, `calendar_heatmap`), and the typed Mermaid kinds
+> (`flowchart`, `gantt`, `sequence`, `mindmap`, `timeline`, `er_diagram`, `state_diagram`,
+> `class_diagram`). Rather than reading source, call `describe_figure` with a kind — it returns
+> that kind's real schema and a worked example, read straight off the tool definition.
 
 ## Configuration
 

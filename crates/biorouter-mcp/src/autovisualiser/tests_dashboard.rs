@@ -85,7 +85,10 @@ fn test_dashboard_tool_is_registered_and_advertised() {
     let router = AutoVisualiserRouter::new();
     assert!(router.tool_router.has_route("render_dashboard"));
 
-    // Every figure the dashboard can dispatch to must also be a real tool.
+    // Every figure the dashboard can dispatch to must still BE a tool — it is
+    // just no longer an ADVERTISED one. The invariant did not weaken when the
+    // 32 moved behind `render_figure`; it moved to `figure_router`, which is
+    // also what `describe_figure` reads their schemas out of.
     for name in [
         "show_chart",
         "render_volcano",
@@ -93,7 +96,14 @@ fn test_dashboard_tool_is_registered_and_advertised() {
         "render_mermaid",
         "render_choropleth",
     ] {
-        assert!(router.tool_router.has_route(name), "{name} is not registered");
+        assert!(
+            router.figure_router.has_route(name),
+            "{name} is not registered"
+        );
+        assert!(
+            !router.tool_router.has_route(name),
+            "{name} is advertised again; the 128-tool ceiling is why it must not be"
+        );
     }
 
     // And the instructions must steer the model to combine figures.
@@ -953,4 +963,253 @@ async fn dump_sample_dashboard() {
     let html = dashboard_html(&result);
     std::fs::write(&out, &html).unwrap();
     println!("wrote {} bytes to {out}", html.len());
+}
+
+// ---------------------------------------------------------------------------
+// The consolidation guards: 33 declared tools became 3, and nothing was lost
+// ---------------------------------------------------------------------------
+
+/// The ceiling this consolidation exists for. Azure and OpenAI reject a
+/// `tools` array longer than 128 with a non-retryable 400, and Auto Visualiser
+/// alone was 33 of the 130 built-in tools. A future contributor re-adding a
+/// `#[tool]` attribute to a figure method fails here rather than silently
+/// re-inflating the surface and killing every turn on those providers.
+#[test]
+fn exactly_three_tools_are_advertised() {
+    let router = AutoVisualiserRouter::new();
+    let mut advertised: Vec<String> = router
+        .tool_router
+        .list_all()
+        .into_iter()
+        .map(|tool| tool.name.to_string())
+        .collect();
+    advertised.sort();
+    assert_eq!(
+        advertised,
+        ["describe_figure", "render_dashboard", "render_figure"],
+        "the advertised Auto Visualiser surface changed"
+    );
+}
+
+/// The three tables agree by construction — `figure_kinds!` generates the enum,
+/// the slug and the tool name together — so what this actually checks is the
+/// join to the OTHER table, `call_figure_tool`'s dispatch arm, which is written
+/// by hand. A kind that names a tool the dispatcher does not know would fail
+/// only at call time, on the model's first attempt.
+#[test]
+fn every_kind_resolves_to_a_real_figure_tool() {
+    let router = AutoVisualiserRouter::new();
+    assert_eq!(FigureKind::ALL.len(), 32);
+    for kind in FigureKind::ALL {
+        assert!(
+            router.figure_router.has_route(kind.tool_name()),
+            "kind `{}` names `{}`, which is not a registered tool",
+            kind.slug(),
+            kind.tool_name()
+        );
+    }
+    // And no figure tool is orphaned — one that no kind names would be
+    // unreachable through the only door the model now has.
+    let named: std::collections::HashSet<&str> =
+        FigureKind::ALL.iter().map(|k| k.tool_name()).collect();
+    for tool in router.figure_router.list_all() {
+        assert!(
+            named.contains(tool.name.as_ref()),
+            "`{}` is registered but no kind reaches it",
+            tool.name
+        );
+    }
+}
+
+/// The no-regression proof, aimed at the only place behaviour could differ.
+///
+/// For 31 of the 32 kinds `render_figure` builds `{"data": …}` and calls
+/// `call_figure_tool` — byte for byte the call the dashboard already makes, so
+/// equivalence there is structural, and `every_kind_resolves_to_a_real_figure_tool`
+/// covers the part that could actually be wrong (the kind → tool join). What
+/// needs real evidence is `mermaid`, the one kind whose payload is reshaped,
+/// and a spread of kinds across the families to catch a dispatch mix-up.
+#[tokio::test]
+async fn the_entry_point_renders_what_the_legacy_call_rendered() {
+    let router = AutoVisualiserRouter::new();
+
+    let cases: Vec<(FigureKind, serde_json::Value)> = vec![
+        (
+            FigureKind::Chart,
+            serde_json::json!({"type":"bar","title":"T","labels":["a","b"],
+                "datasets":[{"label":"s","data":[1.0,2.0]}]}),
+        ),
+        (
+            FigureKind::Donut,
+            serde_json::json!({"title":"T","data":[{"label":"a","value":10.0}]}),
+        ),
+        (
+            FigureKind::Sankey,
+            serde_json::json!({"nodes":[{"name":"a"},{"name":"b"}],
+                "links":[{"source":"a","target":"b","value":10.0}]}),
+        ),
+        (
+            FigureKind::Chord,
+            serde_json::json!({"labels":["a","b"],"matrix":[[0.0,10.0],[5.0,0.0]]}),
+        ),
+        (
+            FigureKind::Treemap,
+            serde_json::json!({"name":"root","children":[{"name":"a","value":10.0}]}),
+        ),
+        (
+            FigureKind::Map,
+            serde_json::json!({"title":"T","markers":[
+                {"lat":37.7,"lng":-122.4,"name":"a","color":"#556677","value":0.0}]}),
+        ),
+    ];
+
+    for (kind, payload) in cases {
+        let legacy = router
+            .call_figure_tool(kind.tool_name(), serde_json::json!({ "data": payload }))
+            .await
+            .unwrap_or_else(|e| panic!("legacy call for `{}` failed: {e:?}", kind.slug()));
+        let via_entry = router
+            .render_figure(Parameters(RenderFigureParams {
+                kind,
+                data: payload,
+            }))
+            .await
+            .unwrap_or_else(|e| panic!("render_figure for `{}` failed: {e:?}", kind.slug()));
+        assert_eq!(
+            decode_html(&legacy),
+            decode_html(&via_entry),
+            "`{}` renders differently through render_figure",
+            kind.slug()
+        );
+    }
+}
+
+/// `mermaid` is the one kind whose wire shape is genuinely different — it takes
+/// `mermaid_code`, not `data`. The entry point normalizes that away, and the
+/// normalization has to accept what a model told "pass it as `data`" will send.
+#[tokio::test]
+async fn mermaid_accepts_the_shapes_a_model_will_send_and_refuses_the_rest() {
+    let router = AutoVisualiserRouter::new();
+    let source = "graph TD; A-->B;";
+
+    let legacy = router
+        .call_figure_tool(
+            "render_mermaid",
+            serde_json::json!({ "mermaid_code": source }),
+        )
+        .await
+        .expect("legacy mermaid");
+
+    for shape in [
+        serde_json::json!(source),
+        serde_json::json!({ "mermaid_code": source }),
+        serde_json::json!({ "code": source }),
+        serde_json::json!({ "source": source }),
+        serde_json::json!({ "data": source }),
+    ] {
+        let rendered = router
+            .render_figure(Parameters(RenderFigureParams {
+                kind: FigureKind::Mermaid,
+                data: shape.clone(),
+            }))
+            .await
+            .unwrap_or_else(|e| panic!("mermaid rejected {shape}: {e:?}"));
+        assert_eq!(decode_html(&legacy), decode_html(&rendered), "{shape}");
+    }
+
+    // A payload with no source anywhere must say what to do, not render an
+    // empty diagram.
+    let err = router
+        .render_figure(Parameters(RenderFigureParams {
+            kind: FigureKind::Mermaid,
+            data: serde_json::json!({ "nodes": [] }),
+        }))
+        .await
+        .unwrap_err();
+    assert!(err.message.contains("describe_figure"), "{}", err.message);
+}
+
+/// A describe tool that advertised shapes the renderer rejects would be worse
+/// than none: it is the model's only route to a kind's arguments now.
+#[tokio::test]
+async fn describe_figure_answers_for_every_kind_and_lists_them_all() {
+    let router = AutoVisualiserRouter::new();
+
+    let catalog = router
+        .describe_figure(Parameters(DescribeFigureParams { kind: None }))
+        .await
+        .expect("catalog");
+    let catalog = result_text(&catalog);
+    for kind in FigureKind::ALL {
+        assert!(
+            catalog.contains(kind.slug()),
+            "the catalog omits `{}`",
+            kind.slug()
+        );
+    }
+
+    for kind in FigureKind::ALL {
+        let described = router
+            .describe_figure(Parameters(DescribeFigureParams { kind: Some(*kind) }))
+            .await
+            .unwrap_or_else(|e| panic!("describe_figure({}) failed: {e:?}", kind.slug()));
+        let body: serde_json::Value =
+            serde_json::from_str(&result_text(&described)).expect("describe returns JSON");
+        assert_eq!(body["kind"], kind.slug());
+        assert!(
+            body["schema"].is_object() && !body["schema"].as_object().unwrap().is_empty(),
+            "`{}` has no schema",
+            kind.slug()
+        );
+        assert!(
+            body["guidance"].as_str().is_some_and(|g| !g.trim().is_empty()),
+            "`{}` lost its worked example — that text is the model's only \
+             per-kind documentation now",
+            kind.slug()
+        );
+    }
+}
+
+/// The 17 KB of per-kind prose must stay in `describe_figure`'s RESULT, not
+/// creep back into the declarations.
+///
+/// ⚠ **This is NOT a provider limit, and an earlier draft of this test wrongly
+/// said it was.** A design review claimed Azure/OpenAI cap
+/// `tools[n].function.description` at 1024 characters and reject the request.
+/// Measured against the live Versa Azure gpt-5.5 endpoint on 2026-08-31: a turn
+/// carrying `render_dashboard`'s 2,626-character description succeeded. The
+/// array-length cap of 128 is real and enforced; a description cap is not, at
+/// least not at that size.
+///
+/// What this guards is the thing that made the surface expensive in the first
+/// place: 33 declarations carrying 17,509 bytes of worked examples, sent on
+/// every single turn. The budget is generous enough that `render_dashboard`'s
+/// deliberately long call-once guidance fits, and tight enough that folding a
+/// kind's examples back into a declared tool fails here.
+#[test]
+fn per_kind_documentation_stays_out_of_the_declarations() {
+    let router = AutoVisualiserRouter::new();
+    let total: usize = router
+        .tool_router
+        .list_all()
+        .iter()
+        .map(|tool| tool.description.as_deref().unwrap_or_default().len())
+        .sum();
+    assert!(
+        total <= 4_096,
+        "the advertised Auto Visualiser descriptions total {total} bytes; per-kind \
+         schemas and examples belong in describe_figure's result, which is not sent \
+         on every turn"
+    );
+}
+
+/// The plain text of a tool result, for the tools that answer with text rather
+/// than a `ui://` resource.
+fn result_text(result: &CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+        .collect::<Vec<_>>()
+        .join("")
 }

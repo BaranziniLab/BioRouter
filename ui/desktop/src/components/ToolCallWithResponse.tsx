@@ -891,10 +891,15 @@ const summarizeExtensionManagerCall = (
       ? `Removing ${count} extension package${count === 1 ? '' : 's'}`
       : 'Removing an extension package';
   }
-  if (toolName === 'browse_marketplace_extensions') return 'Browsing available extensions';
-  if (toolName === 'search_marketplace_extensions') {
+  // One tool now, and the summary reads off the ARGUMENT rather than the name:
+  // browsing is this call with no query. The retired name stays in the match
+  // because persisted transcripts still hold calls made under it.
+  if (
+    toolName === 'search_marketplace_extensions' ||
+    toolName === 'browse_marketplace_extensions'
+  ) {
     const query = namedArgument(args, ['query']);
-    return query ? `Searching extensions for ${query}` : 'Searching available extensions';
+    return query ? `Searching extensions for ${query}` : 'Browsing available extensions';
   }
   if (toolName === 'search_available_extensions')
     return 'Listing extensions available to this chat';
@@ -904,14 +909,17 @@ const summarizeExtensionManagerCall = (
 const summarizeSkillsCall = (toolName: string, args: Record<string, unknown>): string | null => {
   const skill = namedEntity(args, ['name', 'registry_id']);
 
-  if (toolName === 'hotLoadSkill')
-    return skill ? `Loading skill ${skill} into this chat` : 'Loading a skill into this chat';
-  if (toolName === 'hotUnloadSkill')
+  // `setSkillEnabled` carries the verb in `enabled`; the retired pair carried it
+  // in the name, and persisted transcripts still hold both.
+  if (toolName === 'setSkillEnabled' || toolName === 'hotLoadSkill' || toolName === 'hotUnloadSkill') {
+    const enabling = toolName === 'hotLoadSkill' || args?.enabled === true;
+    if (enabling)
+      return skill ? `Loading skill ${skill} into this chat` : 'Loading a skill into this chat';
     return skill ? `Unloading skill ${skill} from this chat` : 'Unloading a skill from this chat';
-  if (toolName === 'browseMarketplaceSkills') return 'Browsing available skills';
-  if (toolName === 'searchMarketplaceSkills') {
+  }
+  if (toolName === 'searchMarketplaceSkills' || toolName === 'browseMarketplaceSkills') {
     const query = namedArgument(args, ['query']);
-    return query ? `Searching skills for ${query}` : 'Searching available skills';
+    return query ? `Searching skills for ${query}` : 'Browsing available skills';
   }
   if (toolName === 'installMarketplaceSkill') {
     const label = skill ? `skill ${skill}` : 'a skill';
