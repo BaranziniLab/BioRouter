@@ -25,6 +25,10 @@ import { extensionPairingRefused } from '../settings/extensions/extensionPrivacy
 import { useBoundProviderTier } from '../privacy/useBoundProviderTier';
 import { setExtensionOverride, getExtensionOverrides } from '../../store/extensionOverrides';
 import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
+import {
+  OPEN_CURRENT_CHAT_EXTENSIONS_EVENT,
+  type SessionToolEventDetail,
+} from '../../utils/sessionToolEvents';
 
 /** §14.5's reason, in the composer's own words. Public model → private tool. */
 const PAIRING_REFUSED_REASON =
@@ -108,6 +112,15 @@ export const BottomMenuExtensionSelection = ({
       if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    const openForCurrentChat = (event: Event) => {
+      const detail = (event as CustomEvent<SessionToolEventDetail>).detail;
+      if (detail?.sessionId === sessionId) setIsOpen(true);
+    };
+    window.addEventListener(OPEN_CURRENT_CHAT_EXTENSIONS_EVENT, openForCurrentChat);
+    return () => window.removeEventListener(OPEN_CURRENT_CHAT_EXTENSIONS_EVENT, openForCurrentChat);
+  }, [sessionId]);
 
   useEffect(() => {
     sessionToggleChainsRef.current.clear();

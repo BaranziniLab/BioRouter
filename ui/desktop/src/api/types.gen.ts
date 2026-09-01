@@ -273,6 +273,14 @@ export type CallToolResponse = {
     structured_content?: unknown;
 };
 
+export type CallableToolCountQuery = {
+    session_id: string;
+};
+
+export type CallableToolCountResponse = {
+    count: number;
+};
+
 export type CancelActiveWorkResponse = {
     message: string;
 };
@@ -4280,6 +4288,38 @@ export type CallToolResponses = {
 };
 
 export type CallToolResponse2 = CallToolResponses[keyof CallToolResponses];
+
+export type GetCallableToolCountData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * Active session whose model-visible tools should be counted
+         */
+        session_id: string;
+    };
+    url: '/agent/callable_tool_count';
+};
+
+export type GetCallableToolCountErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+    /**
+     * Agent not initialized
+     */
+    424: unknown;
+};
+
+export type GetCallableToolCountResponses = {
+    /**
+     * Model-visible callable tool count
+     */
+    200: CallableToolCountResponse;
+};
+
+export type GetCallableToolCountResponse = GetCallableToolCountResponses[keyof GetCallableToolCountResponses];
 
 export type CancelTurnData = {
     body: CancelTurnRequest;

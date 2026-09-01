@@ -198,6 +198,14 @@ fn code_execution_mode_is_active(loaded: bool, tools: &[Tool]) -> bool {
             .any(|tool| tool.name == format!("{CODE_EXECUTION_EXTENSION}__execute_code"))
 }
 
+struct PreparedModelToolSurface {
+    directly_callable_tools: Vec<Tool>,
+    available_tools: Vec<Tool>,
+    bridge_plan: Option<crate::agents::agent::CodingAgentBridgePlan>,
+    bridge_replaces_tool_surface: bool,
+    code_execution_active: bool,
+}
+
 async fn toolshim_postprocess(
     response: Message,
     toolshim_tools: &[Tool],
@@ -212,6 +220,68 @@ async fn toolshim_postprocess(
 }
 
 impl Agent {
+    async fn prepare_model_tool_surface(
+        &self,
+        session_id: &str,
+        provider: &Arc<dyn Provider>,
+    ) -> PreparedModelToolSurface {
+        let mut tools = self.list_tools(session_id, None).await;
+
+        let frontend_tools = self.frontend_tools.lock().await;
+        tools.extend(
+            frontend_tools
+                .values()
+                .map(|frontend| frontend.tool.clone()),
+        );
+        drop(frontend_tools);
+
+        let code_execution_loaded = self
+            .extension_manager
+            .is_extension_enabled(CODE_EXECUTION_EXTENSION)
+            .await;
+        let available_tools = tools.clone();
+        let bridge_plan = self
+            .prepare_coding_agent_bridge_plan(provider, &available_tools)
+            .await;
+        let bridge_replaces_tool_surface = provider.uses_tool_bridge_for_tool_surface();
+        let active_bridge_plan = bridge_replaces_tool_surface.then(|| {
+            bridge_plan
+                .as_ref()
+                .expect("a bridge-backed provider always has a bridge plan")
+        });
+        let code_execution_active = !bridge_replaces_tool_surface
+            && code_execution_mode_is_active(code_execution_loaded, &available_tools);
+        if let Some(plan) = active_bridge_plan {
+            tools.clone_from(&plan.tools);
+        } else if code_execution_active {
+            let code_exec_prefix = format!("{CODE_EXECUTION_EXTENSION}__");
+            tools.retain(|tool| survives_code_execution_filter(&tool.name, &code_exec_prefix));
+        }
+
+        // Stable ordering preserves multi-session prompt caching.
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+
+        PreparedModelToolSurface {
+            directly_callable_tools: tools,
+            available_tools,
+            bridge_plan,
+            bridge_replaces_tool_surface,
+            code_execution_active,
+        }
+    }
+
+    /// Number of tools advertised directly to the model bound to this session.
+    ///
+    /// This is the final model-facing surface: privacy filtering, frontend
+    /// tools, Code Execution narrowing, and coding-agent bridge replacement have
+    /// all been applied. The permission editor intentionally uses a different,
+    /// unfiltered route so a human can still administer hidden private tools.
+    pub async fn callable_tool_count(&self, session_id: &str) -> Result<usize> {
+        let provider = self.provider().await?;
+        let surface = self.prepare_model_tool_surface(session_id, &provider).await;
+        Ok(surface.directly_callable_tools.len())
+    }
+
     pub async fn prepare_tools_and_prompt(
         &self,
         session_id: &str,
@@ -235,25 +305,16 @@ impl Agent {
         String,
         Option<crate::agents::agent::CodingAgentBridgePlan>,
     )> {
-        // Get tools from extension manager
-        let mut tools = self.list_tools(session_id, None).await;
-
-        // Add frontend tools
-        let frontend_tools = self.frontend_tools.lock().await;
-        for frontend_tool in frontend_tools.values() {
-            tools.push(frontend_tool.tool.clone());
-        }
-        drop(frontend_tools);
-
-        let code_execution_loaded = self
-            .extension_manager
-            .is_extension_enabled(CODE_EXECUTION_EXTENSION)
-            .await;
-        let effective_tools = tools.clone();
-        let bridge_plan = self
-            .prepare_coding_agent_bridge_plan(provider, &effective_tools)
-            .await;
-        let bridge_replaces_tool_surface = provider.uses_tool_bridge_for_tool_surface();
+        let surface = self.prepare_model_tool_surface(session_id, provider).await;
+        let mut tools = surface.directly_callable_tools;
+        let effective_tools = surface.available_tools;
+        let bridge_plan = surface.bridge_plan;
+        let bridge_replaces_tool_surface = surface.bridge_replaces_tool_surface;
+        let code_execution_active = surface.code_execution_active;
+        // Only actual turn preparation may replace shared execution policy.
+        // Read-only consumers such as the callable-count route must not change
+        // how an already-running turn grades or approves a tool call.
+        self.tool_risks.refresh_from_tools(&tools);
         let active_bridge_plan = if bridge_replaces_tool_surface {
             Some(
                 bridge_plan
@@ -263,26 +324,6 @@ impl Agent {
         } else {
             None
         };
-        let code_execution_active = !bridge_replaces_tool_surface
-            && code_execution_mode_is_active(code_execution_loaded, &effective_tools);
-        if let Some(plan) = active_bridge_plan {
-            tools.clone_from(&plan.tools);
-        } else if code_execution_active {
-            let code_exec_prefix = format!("{CODE_EXECUTION_EXTENSION}__");
-            tools.retain(|tool| survives_code_execution_filter(&tool.name, &code_exec_prefix));
-        }
-
-        // Stable tool ordering is important for multi session prompt caching.
-        tools.sort_by(|a, b| a.name.cmp(&b.name));
-
-        // BR-18: re-grade the risk registry from *this* tool list — the exact set
-        // the model can call from. Doing it here (rather than off the extension
-        // manager alone) means platform, frontend, subagent and final-output tools
-        // are graded too, and a tool that just disappeared (extension disabled,
-        // code-execution filter applied) stops being auto-approvable. Cheap: a
-        // hashmap rebuild over a few dozen already-materialised tools, on a path
-        // that is already doing a `list_tools` + prompt render.
-        self.tool_risks.refresh_from_tools(&tools);
 
         // Prepare system prompt
         let mut extensions_info = self.extension_manager.get_extensions_info().await;
@@ -777,7 +818,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_tools_returns_sorted_tools_including_frontend() -> anyhow::Result<()> {
+    async fn callable_count_is_pure_while_turn_prep_grades_sorted_frontend_tools(
+    ) -> anyhow::Result<()> {
         let agent = crate::agents::Agent::new();
 
         let session = agent
@@ -821,9 +863,19 @@ mod tests {
             .unwrap();
 
         let working_dir = std::env::current_dir()?;
+        assert!(agent.tool_risks.is_empty());
+        let callable_count = agent.callable_tool_count(&session.id).await?;
+        assert!(callable_count >= 2);
+        assert!(
+            agent.tool_risks.is_empty(),
+            "a read-only count request mutated the shared risk registry"
+        );
+
         let (tools, _toolshim_tools, _system_prompt) = agent
             .prepare_tools_and_prompt(&session.id, &working_dir)
             .await?;
+        assert_eq!(callable_count, tools.len());
+        assert_eq!(agent.tool_risks.len(), tools.len());
 
         let names: Vec<String> = tools.iter().map(|t| t.name.clone().into_owned()).collect();
         assert!(names.iter().any(|n| n == "frontend__a_tool"));

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { agentRemoveExtension } from '../../../api';
+import { agentAddExtension, agentRemoveExtension } from '../../../api';
 import { userActionHeaders } from '../../../utils/userAction';
-import { removeFromAgent } from './agent-api';
+import { addToAgent, removeFromAgent } from './agent-api';
 
 vi.mock('../../../api', () => ({
   agentAddExtension: vi.fn(),
@@ -26,7 +26,7 @@ vi.mock('../../../utils/extensionErrorUtils', () => ({
   formatExtensionErrorMessage: vi.fn((message: string) => message),
 }));
 
-describe('removeFromAgent', () => {
+describe('agent extension API', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -42,6 +42,34 @@ describe('removeFromAgent', () => {
       body: { session_id: 'child-session', name: 'developer' },
       throwOnError: true,
     });
+  });
+
+  it('announces successful live attach and detach for the addressed chat', async () => {
+    vi.mocked(userActionHeaders).mockResolvedValue({ 'X-User-Action': 'proof' });
+    vi.mocked(agentAddExtension).mockResolvedValue({ data: '' } as never);
+    vi.mocked(agentRemoveExtension).mockResolvedValue({ data: {} } as never);
+    const changed = vi.fn();
+    window.addEventListener('session-tools:changed', changed);
+
+    await addToAgent(
+      {
+        type: 'stdio',
+        name: 'notes',
+        description: 'Notes',
+        cmd: 'notes',
+        args: [],
+      },
+      'chat-1',
+      false
+    );
+    await removeFromAgent('notes', 'chat-1', false);
+
+    expect(changed).toHaveBeenCalledTimes(2);
+    expect(changed.mock.calls.map(([event]) => (event as CustomEvent).detail)).toEqual([
+      { sessionId: 'chat-1' },
+      { sessionId: 'chat-1' },
+    ]);
+    window.removeEventListener('session-tools:changed', changed);
   });
 
   it('does not invent proof when the user-action bridge is unavailable', async () => {

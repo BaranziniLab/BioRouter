@@ -3,6 +3,7 @@ import { agentAddExtension, ExtensionConfig, agentRemoveExtension } from '../../
 import { errorMessage } from '../../../utils/conversionUtils';
 import { userActionHeaders } from '../../../utils/userAction';
 import { showCrossAffiliationNotice } from '../../../utils/crossAffiliationNotice';
+import { notifySessionToolsChanged } from '../../../utils/sessionToolEvents';
 import {
   createExtensionRecoverHints,
   formatExtensionErrorMessage,
@@ -31,6 +32,7 @@ export async function addToAgent(
       body: { session_id: sessionId, config: extensionConfig },
       throwOnError: true,
     });
+    notifySessionToolsChanged(sessionId);
     if (showToast) {
       toastService.dismiss(toastId);
       toastService.success({
@@ -90,6 +92,7 @@ export async function removeFromAgent(
       body: { session_id: sessionId, name: extensionName },
       throwOnError: true,
     });
+    notifySessionToolsChanged(sessionId);
     if (showToast) {
       toastService.dismiss(toastId);
       toastService.success({

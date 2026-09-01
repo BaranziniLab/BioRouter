@@ -295,6 +295,16 @@ pub struct GetToolsQuery {
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
+pub struct CallableToolCountQuery {
+    session_id: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct CallableToolCountResponse {
+    count: usize,
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct StartAgentRequest {
     working_dir: String,
     #[serde(default)]
@@ -1228,6 +1238,45 @@ async fn get_tools(
     tools.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(Json(tools))
+}
+
+#[utoipa::path(
+    get,
+    path = "/agent/callable_tool_count",
+    params(
+        ("session_id" = String, Query, description = "Active session whose model-visible tools should be counted")
+    ),
+    responses(
+        (status = 200, description = "Model-visible callable tool count", body = CallableToolCountResponse),
+        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 424, description = "Agent not initialized")
+    )
+)]
+async fn get_callable_tool_count(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<CallableToolCountQuery>,
+) -> Result<Json<CallableToolCountResponse>, StatusCode> {
+    let session_id = query.session_id;
+    let child_initializing = biorouter::agents::subagent_handle::is_child_initializing(&session_id);
+    let agent = if child_initializing {
+        state
+            .peek_agent(&session_id)
+            .await
+            .ok_or(StatusCode::FAILED_DEPENDENCY)?
+    } else {
+        state.get_agent_for_route(session_id.clone()).await?
+    };
+
+    // This endpoint drives a model-context warning. Count the final model-facing
+    // surface, after Gate E, frontend additions, Code Execution narrowing,
+    // and coding-agent bridge replacement. `/agent/tools` deliberately remains
+    // the unfiltered permission-editor surface so a human can administer private
+    // tools a public model cannot see.
+    let count = agent
+        .callable_tool_count(&session_id)
+        .await
+        .map_err(|_| StatusCode::FAILED_DEPENDENCY)?;
+    Ok(Json(CallableToolCountResponse { count }))
 }
 
 #[utoipa::path(
@@ -2534,6 +2583,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/agent/restart", post(restart_agent))
         .route("/agent/update_working_dir", post(update_working_dir))
         .route("/agent/tools", get(get_tools))
+        .route("/agent/callable_tool_count", get(get_callable_tool_count))
         .route("/agent/read_resource", post(read_resource))
         .route("/agent/call_tool", post(call_tool))
         .route("/agent/list_apps", get(list_apps))

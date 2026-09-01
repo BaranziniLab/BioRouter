@@ -352,7 +352,28 @@ describe('ModelAndProviderProvider privacy barrier', () => {
     );
   });
 
+  it('invalidates this chat callable-tool count after a successful provider change', async () => {
+    mocks.updateAgentProvider.mockResolvedValueOnce({ data: '' });
+    const changed = vi.fn();
+    window.addEventListener('session-tools:changed', changed);
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(screen.getByTestId('change-result')).toHaveTextContent('true'));
+    expect(changed).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: { sessionId: 'sess-1' } })
+    );
+    window.removeEventListener('session-tools:changed', changed);
+  });
+
   it('does not report success when the session bind is refused', async () => {
+    const changed = vi.fn();
+    window.addEventListener('session-tools:changed', changed);
     render(
       <ModelAndProviderProvider>
         <SessionSwitchHarness />
@@ -365,11 +386,13 @@ describe('ModelAndProviderProvider privacy barrier', () => {
     expect(mocks.toastSuccess).not.toHaveBeenCalled();
     // P4: the global default must not be rewritten by a refused per-session bind.
     expect(mocks.setConfigProvider).not.toHaveBeenCalled();
+    expect(changed).not.toHaveBeenCalled();
     expect(mocks.toastError).toHaveBeenCalledWith(
       expect.objectContaining({
         title: expect.stringContaining("Can't switch this chat"),
       })
     );
+    window.removeEventListener('session-tools:changed', changed);
   });
 });
 

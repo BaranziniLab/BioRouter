@@ -31,6 +31,7 @@ import {
   DialogTitle,
 } from './ui/dialog';
 import { Button } from './ui/button';
+import { notifySessionToolsChanged } from '../utils/sessionToolEvents';
 
 // titles
 export const UNKNOWN_PROVIDER_TITLE = 'Provider name lookup';
@@ -362,6 +363,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             throwOnError: true,
           });
           boundNotice = bound.data;
+          notifySessionToolsChanged(sessionId);
         }
 
         phase = 'config';

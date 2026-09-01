@@ -229,6 +229,43 @@
         }
       }
     },
+    "/agent/callable_tool_count": {
+      "get": {
+        "tags": [
+          "super::routes::agent"
+        ],
+        "operationId": "get_callable_tool_count",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Active session whose model-visible tools should be counted",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Model-visible callable tool count",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallableToolCountResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid secret key"
+          },
+          "424": {
+            "description": "Agent not initialized"
+          }
+        }
+      }
+    },
     "/agent/cancel": {
       "post": {
         "tags": [
@@ -6210,6 +6247,29 @@
           },
           "structured_content": {
             "nullable": true
+          }
+        }
+      },
+      "CallableToolCountQuery": {
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "CallableToolCountResponse": {
+        "type": "object",
+        "required": [
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },

@@ -142,6 +142,29 @@ describe('BottomMenuExtensionSelection', () => {
     mocks.removeFromAgent.mockResolvedValue(undefined as never);
   });
 
+  it('opens this chat menu when the tool-count warning asks to manage it', async () => {
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+
+    act(() =>
+      window.dispatchEvent(
+        new CustomEvent('current-chat-extensions:open', {
+          detail: { sessionId: 'another-session' },
+        })
+      )
+    );
+    expect(screen.queryByPlaceholderText('Search extensions...')).not.toBeInTheDocument();
+
+    act(() =>
+      window.dispatchEvent(
+        new CustomEvent('current-chat-extensions:open', {
+          detail: { sessionId: 'session-1' },
+        })
+      )
+    );
+
+    expect(await screen.findByPlaceholderText('Search extensions...')).toBeInTheDocument();
+  });
+
   it('keeps an immediate hub toggle when the menu closes and reopens', async () => {
     render(<BottomMenuExtensionSelection sessionId={null} />);
     const trigger = screen.getByLabelText(/Manage extensions/);
