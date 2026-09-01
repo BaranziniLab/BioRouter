@@ -846,13 +846,12 @@ mod tests {
         let marketplace = build(&["search_marketplace_extensions"]);
         assert!(marketplace.contains("- browse or search the trusted marketplace catalog"));
         assert!(!discovery.contains("browse or search the trusted marketplace"));
-        let browse_only = &marketplace;
 
         // ⚠ Every clause is a bullet under one subject line, so no rendering
         // can open the paragraph with a subject-less "It" — which is what
         // happened when the marketplace sentence led with a pronoun whose
         // antecedent lived in a clause that had not rendered.
-        for rendered in [&discovery, &state_change, &install, &delete, &browse_only] {
+        for rendered in [&discovery, &state_change, &install, &delete, &marketplace] {
             assert!(rendered.contains(
                 "The Extension Manager capability can do only what this turn's effective roster allows:"
             ));

@@ -25,8 +25,11 @@ use crate::active_work::{active_work, ActiveWorkKind};
 /// Cap a single job's captured output so a runaway process cannot exhaust
 /// memory. Matches the foreground shell's 400 KB ceiling.
 const MAX_OUTPUT_BYTES: usize = 400_000;
-/// Default and ceiling for `wait`'s bounded watch.
-pub const DEFAULT_WAIT_SECS: u64 = 120;
+/// Ceiling for `shell_status`'s bounded wait.
+///
+/// There is no default: the retired `shell_wait` had one because waiting was
+/// the whole tool, whereas `shell_status` waits only when the caller passes
+/// `timeout_secs`, and an absent value means "peek", not "wait 120 seconds".
 pub const MAX_WAIT_SECS: u64 = 600;
 
 /// Terminal-or-running state of a job. `Exited` carries the real OS exit code,

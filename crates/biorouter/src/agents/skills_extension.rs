@@ -1419,6 +1419,115 @@ impl SkillsClient {
         CatalogEvents::global().publish(reason, Vec::new(), skills, Some(session_id.to_string()));
     }
 
+    /// What an install can honestly say about the package it just wrote.
+    ///
+    /// ⚠ **A refreshed catalog is only half of "usable".** `install_in` ends
+    /// with `skill_catalog::refresh()`, so the skills are discoverable — but
+    /// discoverability is not enablement. `workspace_skills/v1` can still hold
+    /// a standing revocation, written by an earlier `setSkillEnabled`, by the
+    /// composer's own switch, or by `workspace_set_tools` from another
+    /// conversation entirely, and nothing on the install path prunes it. The
+    /// field this feeds was hard-coded `true`, so a package reinstalled into a
+    /// chat that had revoked it was reported usable while being filtered out of
+    /// every model-facing list — and `loadSkill` then refused it.
+    ///
+    /// The answer is composed by [`skill_catalog::SkillCatalog::view`], never
+    /// re-decided here: a second hand-written copy of the precedence ladder is
+    /// the bug class #113 catalogues, and the naive test — "is this name in
+    /// `over.remove`?" — is wrong for exactly the case that matters, because a
+    /// per-chat *bundle* toggle persists the bundle's name and no member's.
+    ///
+    /// Reading the post-install `CatalogView` rather than the `ImportPlan` also
+    /// settles a case a plan cannot: the same package installed `individual`
+    /// gives its components no bundle, so a standing revocation naming the
+    /// bundle genuinely stops applying, and the catalog is the only thing that
+    /// knows which shape landed.
+    fn installed_usability(
+        installed: &[crate::agents::skill_package::InstalledPackage],
+        view: &skill_catalog::CatalogView,
+    ) -> (bool, Vec<serde_json::Value>) {
+        use crate::agents::skill_package::ImportKind;
+        use skill_catalog::SessionState;
+
+        let mut blocked = Vec::new();
+        for package in installed {
+            // For a bundle install, say it once about the bundle rather than
+            // eight times about its members.
+            if package.kind == ImportKind::Bundle {
+                if let Some(bundle) = view.bundles.iter().find(|b| b.name == package.id) {
+                    if bundle.state.session == SessionState::Removed {
+                        blocked.push(serde_json::json!({
+                            "bundle": bundle.name,
+                            "reason": "This conversation has the bundle switched off.",
+                            "fix": format!(
+                                "setSkillEnabled {{ \"name\": \"{}\", \"enabled\": true }}",
+                                bundle.name
+                            ),
+                        }));
+                        continue;
+                    }
+                }
+            }
+
+            for name in &package.skills {
+                let Some(skill) = view.skills.iter().find(|s| &s.name == name) else {
+                    // ⚠ NOT `continue`. A name the post-install view does not
+                    // carry is the one case where silence would report the
+                    // opposite of the truth.
+                    blocked.push(serde_json::json!({
+                        "skill": name,
+                        "reason": "Installed, but not present in the refreshed catalog.",
+                        "fix": "Check the skill's frontmatter `name`, then call searchSkills.",
+                    }));
+                    continue;
+                };
+                if skill.state.effective {
+                    continue;
+                }
+                // The reason is READ off the separated fields, never
+                // re-derived — that is what they exist for.
+                let (reason, fix) = if skill.state.hidden_context {
+                    // Unreachable for a fresh install today: `refuse_shipped`
+                    // stops a package owning a shipped Context's name. Handled
+                    // rather than assumed away, and deliberately does not
+                    // suggest `setSkillEnabled`, which refuses this case.
+                    (
+                        "Hidden by a Context switched off in Settings.".to_string(),
+                        "Turn the Context back on in Settings → Contexts.".to_string(),
+                    )
+                } else if skill.state.session == SessionState::Removed {
+                    let reason = if skill.state.session_via_bundle {
+                        "This conversation has its bundle switched off.".to_string()
+                    } else {
+                        "This conversation has this skill switched off.".to_string()
+                    };
+                    // Name the SKILL even for the bundle case: skill `add`
+                    // beats bundle `remove` in the precedence ladder.
+                    (
+                        reason,
+                        format!(
+                            "setSkillEnabled {{ \"name\": \"{name}\", \"enabled\": true }}"
+                        ),
+                    )
+                } else {
+                    (
+                        "Disabled machine-wide.".to_string(),
+                        format!(
+                            "setSkillEnabled {{ \"name\": \"{name}\", \"enabled\": true }} for this chat, \
+                             or `biorouter skill enable {name}` for every chat"
+                        ),
+                    )
+                };
+                blocked.push(serde_json::json!({
+                    "skill": name,
+                    "reason": reason,
+                    "fix": fix,
+                }));
+            }
+        }
+        (blocked.is_empty(), blocked)
+    }
+
     fn install_plans(
         plans: &[crate::agents::skill_package::ImportPlan],
         session_id: &str,
@@ -1574,6 +1683,7 @@ impl SkillsClient {
         &self,
         arguments: Option<JsonObject>,
         session_id: &str,
+        over: &crate::agents::session_skills::SessionSkillOverride,
         cancellation_token: &CancellationToken,
     ) -> Result<Vec<Content>, String> {
         let params: InstallMarketplaceSkillParams = Self::parse_tool_args(arguments)?;
@@ -1624,12 +1734,15 @@ impl SkillsClient {
 
         Self::preclude_partial_install(&plans)?;
         let installed = Self::install_plans(&plans, session_id)?;
+        let (usable, blocked) =
+            Self::installed_usability(&installed, &skill_catalog::current().view(over));
         Ok(vec![Content::text(
             serde_json::json!({
                 "status": "installed",
                 "registryId": registry_id,
                 "installed": installed,
-                "usableInThisConversation": true,
+                "usableInThisConversation": usable,
+                "notUsable": blocked,
             })
             .to_string(),
         )])
@@ -1732,10 +1845,27 @@ impl SkillsClient {
         let disabled = Self::get_disabled_skills();
         if let Some(skill) = skills.get(skill_name) {
             if !Self::is_skill_enabled_for_session(skill_name, skill, &disabled, over) {
-                return Err(format!(
-                    "Skill '{}' is currently disabled. Enable it in Biorouter's Skills settings to use it.",
-                    skill_name
-                ));
+                // ⚠ Name the control that can actually clear this. The block
+                // may be a per-chat revocation in `workspace_skills/v1`, which
+                // Skills settings cannot see — sending the model there produced
+                // a loop: told the skill was usable, refused, then routed to a
+                // switch that would not move.
+                let session_scoped = !matches!(
+                    over.resolve(skill_name, skill.bundle_name.as_deref()),
+                    crate::agents::session_skills::OverrideMatch::None
+                );
+                return Err(if session_scoped {
+                    format!(
+                        "Skill '{skill_name}' is switched off for this conversation. \
+                         Turn it back on with setSkillEnabled {{ \"name\": \"{skill_name}\", \"enabled\": true }}."
+                    )
+                } else {
+                    format!(
+                        "Skill '{skill_name}' is disabled machine-wide. Turn it on for this \
+                         conversation with setSkillEnabled {{ \"name\": \"{skill_name}\", \"enabled\": true }}, \
+                         or for every conversation in Biorouter's Skills settings."
+                    )
+                });
             }
         }
 
@@ -1898,6 +2028,7 @@ impl SkillsClient {
         &self,
         arguments: Option<JsonObject>,
         session_id: &str,
+        over: &crate::agents::session_skills::SessionSkillOverride,
         cancellation_token: &CancellationToken,
     ) -> Result<Vec<Content>, String> {
         use crate::agents::skill_package::pending;
@@ -1950,14 +2081,18 @@ impl SkillsClient {
                 .await?;
         }
         let installed = Self::install_plans(&plans, session_id)?;
+        // The catalog was refreshed by the install, so the skills are callable
+        // in THIS conversation — the model does not need a new chat, and should
+        // not tell the user it does (#113 / #115). But "refreshed" is not
+        // "enabled": see `installed_usability`.
+        let (usable, blocked) =
+            Self::installed_usability(&installed, &skill_catalog::current().view(over));
         Ok(vec![Content::text(
             serde_json::json!({
                 "status": "installed",
                 "installed": installed,
-                // The catalog was refreshed by the install, so the skills are
-                // callable in THIS conversation — the model does not need a new
-                // chat, and should not tell the user it does (#113 / #115).
-                "usableInThisConversation": true,
+                "usableInThisConversation": usable,
+                "notUsable": blocked,
             })
             .to_string(),
         )])
@@ -2065,9 +2200,17 @@ impl SkillsClient {
 
         let mut results = Vec::with_capacity(planned.len());
         let mut all_removed = true;
+        // Every name this call actually deletes, for the override prune below.
+        // The TARGET belongs in here as well as its members: a per-chat bundle
+        // switch persists the bundle's own name and no member's, so pruning
+        // only the skills would leave behind the single entry that revokes all
+        // of them.
+        let mut deleted_names: Vec<String> = Vec::new();
         for (target, skills) in planned {
             match crate::agents::skill_package::remove(&target, &root) {
                 Ok(package) => {
+                    deleted_names.push(target.clone());
+                    deleted_names.extend(skills.iter().cloned());
                     let changes = skills
                         .iter()
                         .map(|name| CatalogSkillChange {
@@ -2098,6 +2241,37 @@ impl SkillsClient {
                         "error": format!("{error:#}"),
                     }));
                 }
+            }
+        }
+
+        // Forget this conversation's opinion about what was just deleted, so a
+        // later reinstall does not silently inherit a revocation the user made
+        // about a package that no longer existed.
+        //
+        // ⚠ Scoped to what THIS call deleted, and to THIS conversation. It is
+        // deliberately not a sweep of "names the catalog no longer lists":
+        // catalog membership is not stable (a working-directory root moves, an
+        // extension's skills root leaves with the extension), and dropping a
+        // `remove` entry fails OPEN. And it cannot be complete in principle —
+        // another chat may hold the same revocation, and `workspace_set_tools`
+        // writes overrides into sessions other than the caller's — which is why
+        // the honest install-time report, not this, is the fix for F-17.
+        //
+        // A failure here is logged, not returned: the packages are already
+        // gone, and turning a successful uninstall into an error would be a
+        // worse answer than a stale override entry.
+        if !deleted_names.is_empty() {
+            if let Err(error) = crate::agents::session_skills::forget(
+                &self.context.session_manager,
+                session_id,
+                &deleted_names,
+            )
+            .await
+            {
+                tracing::warn!(
+                    "could not prune this conversation's skill override after removing {:?}: {error:#}",
+                    deleted_names
+                );
             }
         }
 
@@ -2520,13 +2694,19 @@ impl McpClientTrait for SkillsClient {
                 self.handle_install_marketplace_skill(
                     arguments,
                     &meta.session_id,
+                    &over,
                     &cancellation_token,
                 )
                 .await
             }
             "importSkillPackage" => {
-                self.handle_import_skill_package(arguments, &meta.session_id, &cancellation_token)
-                    .await
+                self.handle_import_skill_package(
+                    arguments,
+                    &meta.session_id,
+                    &over,
+                    &cancellation_token,
+                )
+                .await
             }
             "removeSkillPackage" => {
                 self.handle_remove_skill_package(arguments, &meta.session_id, &cancellation_token)
@@ -4175,10 +4355,18 @@ Working dir biorouter content
             .await
             .unwrap();
         assert_eq!(refused.is_error, Some(true));
+        let refusal = tool_text(&refused);
         assert!(
-            tool_text(&refused).contains("disabled"),
-            "loadSkill must refuse a session-revoked skill: {}",
-            tool_text(&refused)
+            refusal.contains("switched off for this conversation"),
+            "loadSkill must refuse a session-revoked skill: {refusal}"
+        );
+        // ⚠ And it must name the control that can clear THIS block. The block
+        // lives in `workspace_skills/v1`, which Biorouter's Skills settings
+        // cannot see, so the old refusal sent the model to a switch that would
+        // not move it.
+        assert!(
+            refusal.contains("setSkillEnabled"),
+            "the refusal must name the per-chat control, not Settings: {refusal}"
         );
 
         let allowed = client
@@ -5133,5 +5321,197 @@ mod proof_gated_roster_tests {
             assert!(offered.contains(&present.to_string()), "{present} is missing");
         }
         assert_eq!(offered.len(), names(false).len() + 3);
+    }
+}
+
+/// F-17: an install reported `usableInThisConversation: true` unconditionally,
+/// so a package reinstalled into a chat that had switched it off was announced
+/// as ready and then refused by every model-facing surface.
+///
+/// These exercise the pure helper. The composition itself is
+/// `skill_catalog::compose_state`'s and is tested there; what is tested here is
+/// that the report *reads* the composed answer instead of asserting one.
+#[cfg(test)]
+mod installed_usability_tests {
+    use super::*;
+    use crate::agents::skill_package::{ImportKind, InstalledPackage};
+    use skill_catalog::{
+        CatalogBundle, CatalogSkill, CatalogView, SessionState, SkillSource, SkillSourceKind,
+        SkillState,
+    };
+    use std::path::PathBuf;
+
+    fn state(session: SessionState) -> SkillState {
+        SkillState {
+            machine_enabled: true,
+            session,
+            session_via_bundle: false,
+            hidden_context: false,
+            effective: session != SessionState::Removed,
+        }
+    }
+
+    fn skill(name: &str, bundle: Option<&str>, state: SkillState) -> CatalogSkill {
+        CatalogSkill {
+            name: name.to_string(),
+            description: String::new(),
+            slug: name.to_string(),
+            directory: PathBuf::from(name),
+            source_root: PathBuf::from("/root"),
+            source: SkillSource::new(SkillSourceKind::Biorouter, None),
+            bundle: bundle.map(str::to_string),
+            builtin: false,
+            state,
+        }
+    }
+
+    fn view(skills: Vec<CatalogSkill>, bundles: Vec<CatalogBundle>) -> CatalogView {
+        CatalogView {
+            generation: 1,
+            roots: Vec::new(),
+            skills,
+            bundles,
+        }
+    }
+
+    fn package(id: &str, kind: ImportKind, skills: &[&str]) -> InstalledPackage {
+        InstalledPackage {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            kind,
+            skills: skills.iter().map(|s| (*s).to_string()).collect(),
+            entry_point: None,
+            directory: PathBuf::from(id),
+            replaced: false,
+            catalog_generation: 1,
+        }
+    }
+
+    #[test]
+    fn a_reinstall_into_a_chat_that_switched_the_skill_off_is_not_reported_usable() {
+        // Catches the shipped implementation: a hard-coded `true`.
+        let (usable, blocked) = SkillsClient::installed_usability(
+            &[package("media-use", ImportKind::Single, &["media-use"])],
+            &view(
+                vec![skill("media-use", None, state(SessionState::Removed))],
+                Vec::new(),
+            ),
+        );
+        assert!(!usable);
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0]["skill"], "media-use");
+        assert!(
+            blocked[0]["fix"].as_str().unwrap().contains("setSkillEnabled"),
+            "the fix must name the control that can clear a per-chat block: {blocked:?}"
+        );
+    }
+
+    #[test]
+    fn a_bundle_level_switch_blocks_a_member_the_override_never_names() {
+        // ⚠ Not redundant with the test above, and this is the whole point of
+        // going through `compose_state`. A per-chat bundle toggle persists
+        // ONLY the bundle's name, so the obvious wrong fix —
+        // `!over.remove.contains(skill_name)` — passes that test and fails
+        // this one.
+        let mut member = state(SessionState::Removed);
+        member.session_via_bundle = true;
+        let (usable, blocked) = SkillsClient::installed_usability(
+            &[package("hyperframes", ImportKind::Single, &["media-use"])],
+            &view(
+                vec![skill("media-use", Some("hyperframes"), member)],
+                Vec::new(),
+            ),
+        );
+        assert!(!usable);
+        assert!(blocked[0]["reason"].as_str().unwrap().contains("bundle"));
+        // Name the SKILL: skill `add` beats bundle `remove` in the ladder, so
+        // enabling the member is what actually clears it.
+        assert!(blocked[0]["fix"]
+            .as_str()
+            .unwrap()
+            .contains("\"name\": \"media-use\""));
+    }
+
+    #[test]
+    fn an_individual_reinstall_escapes_a_stale_bundle_entry() {
+        // Catches an over-eager fix that consults the override directly and
+        // refuses on any entry naming the package id: installed `individual`,
+        // the components have no bundle, so the entry genuinely stops applying.
+        let (usable, blocked) = SkillsClient::installed_usability(
+            &[package("hyperframes", ImportKind::Single, &["media-use"])],
+            &view(
+                vec![skill("media-use", None, state(SessionState::Default))],
+                Vec::new(),
+            ),
+        );
+        assert!(usable, "unexpected block: {blocked:?}");
+        assert!(blocked.is_empty());
+    }
+
+    #[test]
+    fn a_machine_wide_disable_is_reported_too_and_named_as_such() {
+        // Catches a fix that reads only the session half and misses
+        // `skills-config.json` — a real second source of the same lie.
+        let mut off = state(SessionState::Default);
+        off.machine_enabled = false;
+        off.effective = false;
+        let (usable, blocked) = SkillsClient::installed_usability(
+            &[package("media-use", ImportKind::Single, &["media-use"])],
+            &view(vec![skill("media-use", None, off)], Vec::new()),
+        );
+        assert!(!usable);
+        assert!(blocked[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("machine-wide"));
+    }
+
+    #[test]
+    fn a_skill_missing_from_the_refreshed_catalog_is_reported_not_skipped() {
+        // Catches the `continue`-and-call-it-usable shape: a name the
+        // post-install view does not carry is the one case where silence
+        // reports the opposite of the truth.
+        let (usable, blocked) = SkillsClient::installed_usability(
+            &[package("media-use", ImportKind::Single, &["media-use"])],
+            &view(Vec::new(), Vec::new()),
+        );
+        assert!(!usable);
+        assert_eq!(blocked[0]["skill"], "media-use");
+    }
+
+    #[test]
+    fn a_bundle_install_says_it_once_about_the_bundle() {
+        // Catches a fix that repeats the same sentence for every member of an
+        // eight-skill package.
+        let mut member = state(SessionState::Removed);
+        member.session_via_bundle = true;
+        let bundle = CatalogBundle {
+            name: "hyperframes".to_string(),
+            display_name: "HyperFrames".to_string(),
+            directory: PathBuf::from("hyperframes"),
+            source_root: PathBuf::from("/root"),
+            source: SkillSource::new(SkillSourceKind::Biorouter, None),
+            skills: vec!["media-use".to_string(), "slideshow".to_string()],
+            package: None,
+            builtin: false,
+            state: state(SessionState::Removed),
+        };
+        let (usable, blocked) = SkillsClient::installed_usability(
+            &[package(
+                "hyperframes",
+                ImportKind::Bundle,
+                &["media-use", "slideshow"],
+            )],
+            &view(
+                vec![
+                    skill("media-use", Some("hyperframes"), member),
+                    skill("slideshow", Some("hyperframes"), member),
+                ],
+                vec![bundle],
+            ),
+        );
+        assert!(!usable);
+        assert_eq!(blocked.len(), 1, "one sentence, not one per member");
+        assert_eq!(blocked[0]["bundle"], "hyperframes");
     }
 }
