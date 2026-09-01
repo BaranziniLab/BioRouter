@@ -681,6 +681,358 @@ enum StreamingOutputItemState {
     Completed(ResponseOutputItemInfo),
 }
 
+/// The mutable state one Responses stream accumulates while it is read.
+///
+/// Every field here is written by an event and read either by a later event or
+/// by [`ResponsesStreamState::into_final_item`]; nothing in it is scratch.
+#[derive(Default)]
+struct ResponsesStreamState {
+    response_id: Option<String>,
+    model_name: Option<String>,
+    final_usage: Option<ProviderUsage>,
+    output_items: BTreeMap<i32, StreamingOutputItemState>,
+    is_text_response: bool,
+}
+
+impl ResponsesStreamState {
+    /// The single terminal item the stream owes its consumer, or `None` when it
+    /// produced neither content nor usage.
+    ///
+    /// Content wins: a non-empty message carries whatever usage arrived, which
+    /// is `None` for a stream that ended at `[DONE]` without a
+    /// `response.completed`. Usage with no content is yielded on its own.
+    fn into_final_item(self) -> Option<(Option<Message>, Option<ProviderUsage>)> {
+        let content = final_stream_content(self.output_items, self.is_text_response);
+
+        if !content.is_empty() {
+            let mut message =
+                Message::new(Role::Assistant, chrono::Utc::now().timestamp(), content);
+            if let Some(id) = self.response_id {
+                message = message.with_id(id);
+            }
+            return Some((Some(message), self.final_usage));
+        }
+
+        self.final_usage.map(|usage| (None, Some(usage)))
+    }
+}
+
+/// Whether the reader keeps consuming frames after an event.
+enum EventFlow {
+    Continue,
+    Stop,
+}
+
+/// The payload of one SSE line, or `None` for a line that carries no event.
+///
+/// `data:` may or may not be followed by a space, and a line with no field
+/// prefix at all is handed back as-is so a provider that omits it still decodes.
+fn stream_frame_payload(line: &str) -> Option<&str> {
+    // Skip empty lines
+    if line.trim().is_empty() {
+        return None;
+    }
+
+    if let Some(data) = line.strip_prefix("data:") {
+        Some(data.trim_start())
+    } else if line.starts_with("event:") {
+        // Skip event type lines
+        None
+    } else {
+        // Try to parse as-is in case there's no prefix
+        Some(line)
+    }
+}
+
+/// Decode one SSE payload into an event.
+///
+/// ⚠ The error must never repeat the payload: a malformed frame can hold raw
+/// model output, and this error travels all the way to the user.
+fn parse_stream_event(data_line: &str) -> anyhow::Result<ResponsesStreamEvent> {
+    serde_json::from_str(data_line)
+        .map_err(|error| anyhow!("Failed to parse Responses stream event: {error}"))
+}
+
+/// The message yielded for one `response.output_text.delta`.
+///
+/// An empty delta still yields a message — the frame is a liveness signal — and
+/// the response id is attached so the desktop client folds every delta into one
+/// message rather than rendering a message per token.
+fn text_delta_message(delta: &str, response_id: Option<&str>) -> Message {
+    let mut content = Vec::new();
+    if !delta.is_empty() {
+        content.push(MessageContent::text(delta));
+    }
+    let mut message = Message::new(Role::Assistant, chrono::Utc::now().timestamp(), content);
+
+    // Add ID so desktop client knows these deltas are part of the same message
+    if let Some(id) = response_id {
+        message = message.with_id(id);
+    }
+
+    message
+}
+
+/// The pending tool calls a `response.output_item.added` announces, if any.
+///
+/// Reasoning items and text-only messages hold nothing that could become a tool
+/// call, so they register no pending state: the pending map exists only to
+/// report *calls* the stream never finished.
+fn pending_output_item(item: ResponseOutputItemInfo) -> Option<PendingOutputItem> {
+    match item {
+        ResponseOutputItemInfo::FunctionCall {
+            id, call_id, name, ..
+        } => Some(PendingOutputItem {
+            item_id: id,
+            calls: [(0, PendingFunctionCall { call_id, name })]
+                .into_iter()
+                .collect(),
+        }),
+        ResponseOutputItemInfo::Message { id, content, .. } => {
+            let calls = content
+                .into_iter()
+                .enumerate()
+                .filter_map(|part| match part {
+                    (content_index, ContentPart::ToolCall { id, name, .. }) => {
+                        i32::try_from(content_index).ok().map(|content_index| {
+                            (content_index, PendingFunctionCall { call_id: id, name })
+                        })
+                    }
+                    (_, ContentPart::OutputText { .. }) => None,
+                })
+                .collect::<BTreeMap<_, _>>();
+            (!calls.is_empty()).then_some(PendingOutputItem { item_id: id, calls })
+        }
+        ResponseOutputItemInfo::Reasoning { .. } => None,
+    }
+}
+
+/// Record a tool call that arrived as a later `response.content_part.added`.
+///
+/// ⚠ An occupied index is only extended when it is still `Pending` *and* names
+/// the same item. A part belonging to some other item must not edit the entry
+/// sitting at this output index, and a `Completed` entry is a confirmed
+/// snapshot that nothing arriving later may touch.
+fn record_tool_call_part(
+    output_items: &mut BTreeMap<i32, StreamingOutputItemState>,
+    output_index: i32,
+    item_id: String,
+    content_index: i32,
+    call: PendingFunctionCall,
+) {
+    match output_items.entry(output_index) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(StreamingOutputItemState::Pending(PendingOutputItem {
+                item_id,
+                calls: [(content_index, call)].into_iter().collect(),
+            }));
+        }
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            if let StreamingOutputItemState::Pending(pending) = entry.get_mut() {
+                if pending.item_id == item_id {
+                    pending.calls.entry(content_index).or_insert(call);
+                }
+            }
+        }
+    }
+}
+
+/// Store the confirmed snapshot a `response.output_item.done` carries.
+///
+/// ⚠ A done event confirms only the item it names. A mismatched id, or a second
+/// done for an index already `Completed`, is dropped rather than overwriting —
+/// otherwise an unrelated item would silently make an unfinished tool call look
+/// executable.
+fn confirm_output_item(
+    output_items: &mut BTreeMap<i32, StreamingOutputItemState>,
+    output_index: i32,
+    item: ResponseOutputItemInfo,
+) {
+    let item_id = output_item_id(&item);
+    let completion_matches = match output_items.get(&output_index) {
+        None => true,
+        Some(StreamingOutputItemState::Pending(pending)) => pending.item_id == item_id,
+        Some(StreamingOutputItemState::Unconfirmed(existing)) => {
+            output_item_id(existing) == item_id
+        }
+        Some(StreamingOutputItemState::Completed(_)) => false,
+    };
+
+    if completion_matches {
+        output_items.insert(output_index, StreamingOutputItemState::Completed(item));
+    }
+}
+
+/// Fold a `response.completed` into the output map and report its usage.
+///
+/// ⚠ The final response's own items are recorded as `Unconfirmed`, never
+/// `Completed`, and only where nothing is tracked yet: `response.completed`
+/// restates items the stream may never have finished, so it must not stand in
+/// for the missing `output_item.done` that would make a partial tool call
+/// callable, nor replace a snapshot an earlier done already confirmed.
+fn absorb_completed_response(
+    response: ResponseMetadata,
+    model_name: Option<&str>,
+    output_items: &mut BTreeMap<i32, StreamingOutputItemState>,
+) -> ProviderUsage {
+    let provider_usage = ProviderUsage {
+        usage: response
+            .usage
+            .as_ref()
+            .map_or_else(Usage::default, response_usage_to_usage),
+        model: model_name.unwrap_or(&response.model).to_string(),
+        provider: None,
+        finish_reason: None,
+    };
+
+    for (output_index, item) in response.output.into_iter().enumerate() {
+        if let Ok(output_index) = i32::try_from(output_index) {
+            output_items
+                .entry(output_index)
+                .or_insert(StreamingOutputItemState::Unconfirmed(item));
+        }
+    }
+
+    provider_usage
+}
+
+/// The content of the one terminal message, in output-index order.
+///
+/// ⚠ Only a `Completed` item can produce a callable tool request. A `Pending`
+/// item's calls are drained as explicit incomplete-stream failures rather than
+/// dropped, so a truncated stream tells the model its call did not run instead
+/// of losing the call entirely.
+fn final_stream_content(
+    output_items: BTreeMap<i32, StreamingOutputItemState>,
+    is_text_response: bool,
+) -> Vec<MessageContent> {
+    let mut content = Vec::new();
+
+    for item in output_items.into_values() {
+        match item {
+            StreamingOutputItemState::Pending(pending) => {
+                content.extend(
+                    pending
+                        .calls
+                        .into_values()
+                        .map(|call| streaming_tool_content(call.call_id, call.name, "", false)),
+                );
+            }
+            StreamingOutputItemState::Unconfirmed(item) => {
+                content.extend(process_streaming_output_items(
+                    vec![(item, false)],
+                    is_text_response,
+                ));
+            }
+            StreamingOutputItemState::Completed(item) => {
+                content.extend(process_streaming_output_items(
+                    vec![(item, true)],
+                    is_text_response,
+                ));
+            }
+        }
+    }
+
+    content
+}
+
+/// Apply one decoded event to the stream state.
+///
+/// ⚠ `response.output_text.delta` is deliberately not handled here. It is the
+/// only event that emits anything mid-stream, so the reader intercepts it and
+/// every `yield` stays visible in one place; it reaches this function only if
+/// that interception is removed, and is a no-op here as it was under the
+/// catch-all arm.
+fn apply_stream_event(
+    event: ResponsesStreamEvent,
+    state: &mut ResponsesStreamState,
+) -> anyhow::Result<EventFlow> {
+    match event {
+        ResponsesStreamEvent::ResponseCreated { response, .. }
+        | ResponsesStreamEvent::ResponseInProgress { response, .. } => {
+            state.response_id = Some(response.id);
+            state.model_name = Some(response.model);
+        }
+
+        ResponsesStreamEvent::OutputItemAdded {
+            output_index, item, ..
+        } => {
+            if let Some(pending) = pending_output_item(item) {
+                state
+                    .output_items
+                    .entry(output_index)
+                    .or_insert(StreamingOutputItemState::Pending(pending));
+            }
+        }
+
+        ResponsesStreamEvent::ContentPartAdded {
+            item_id,
+            output_index,
+            content_index,
+            part: ContentPart::ToolCall { id, name, .. },
+            ..
+        } => {
+            record_tool_call_part(
+                &mut state.output_items,
+                output_index,
+                item_id,
+                content_index,
+                PendingFunctionCall { call_id: id, name },
+            );
+        }
+
+        ResponsesStreamEvent::OutputItemDone {
+            output_index, item, ..
+        } => {
+            confirm_output_item(&mut state.output_items, output_index, item);
+        }
+
+        ResponsesStreamEvent::OutputTextDone { .. } => {
+            // Text is already complete from deltas, this is just a summary event
+        }
+
+        ResponsesStreamEvent::ResponseCompleted { response, .. } => {
+            state.final_usage = Some(absorb_completed_response(
+                response,
+                state.model_name.as_deref(),
+                &mut state.output_items,
+            ));
+
+            return Ok(EventFlow::Stop);
+        }
+
+        ResponsesStreamEvent::FunctionCallArgumentsDelta { .. } => {
+            // Function call arguments are being streamed, but we'll get the complete
+            // arguments in the OutputItemDone event, so we can ignore deltas for now
+        }
+
+        ResponsesStreamEvent::FunctionCallArgumentsDone { .. } => {
+            // Arguments are complete, will be in the OutputItemDone event
+        }
+
+        ResponsesStreamEvent::ResponseFailed { error, .. } => {
+            return Err(anyhow!("Responses API failed: {:?}", error));
+        }
+
+        ResponsesStreamEvent::Error { error } => {
+            return Err(anyhow!("Responses API error: {:?}", error));
+        }
+
+        _ => {
+            // Ignore remaining non-tool progress events.
+        }
+    }
+
+    Ok(EventFlow::Continue)
+}
+
+/// Read an SSE stream from the Responses API into provider stream items.
+///
+/// The reader owns all three yield points: a text delta mid-stream, and the one
+/// terminal item. Everything else is state kept in [`ResponsesStreamState`] and
+/// only settled once the stream ends — at `[DONE]`, at `response.completed`, or
+/// at end of input — because a tool call is callable only when the stream said
+/// so explicitly.
 pub fn responses_api_to_streaming_message<S>(
     mut stream: S,
 ) -> impl Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
@@ -691,241 +1043,46 @@ where
         use futures::StreamExt;
 
         let mut accumulated_text = String::new();
-        let mut response_id: Option<String> = None;
-        let mut model_name: Option<String> = None;
-        let mut final_usage: Option<ProviderUsage> = None;
-        let mut output_items: BTreeMap<i32, StreamingOutputItemState> = BTreeMap::new();
-        let mut is_text_response = false;
+        let mut state = ResponsesStreamState::default();
 
         'outer: while let Some(response) = stream.next().await {
             let response_str = response?;
 
-            // Skip empty lines
-            if response_str.trim().is_empty() {
-                continue;
-            }
-
-            let data_line = if let Some(data) = response_str.strip_prefix("data:") {
-                data.trim_start()
-            } else if response_str.starts_with("event:") {
-                // Skip event type lines
-                continue;
-            } else {
-                // Try to parse as-is in case there's no prefix
-                &response_str
+            let data_line = match stream_frame_payload(&response_str) {
+                Some(data_line) => data_line,
+                None => continue,
             };
 
             if data_line.trim() == "[DONE]" {
                 break 'outer;
             }
 
-            let event: ResponsesStreamEvent = serde_json::from_str(data_line)
-                .map_err(|error| anyhow!("Failed to parse Responses stream event: {error}"))?;
-
-            match event {
-                ResponsesStreamEvent::ResponseCreated { response, .. } |
-                ResponsesStreamEvent::ResponseInProgress { response, .. } => {
-                    response_id = Some(response.id);
-                    model_name = Some(response.model);
-                }
-
+            match parse_stream_event(data_line)? {
                 ResponsesStreamEvent::OutputTextDelta { delta, .. } => {
-                    is_text_response = true;
+                    state.is_text_response = true;
                     accumulated_text.push_str(&delta);
 
                     // Yield incremental text updates for true streaming
-                    let mut content = Vec::new();
-                    if !delta.is_empty() {
-                        content.push(MessageContent::text(&delta));
+                    yield (
+                        Some(text_delta_message(&delta, state.response_id.as_deref())),
+                        None,
+                        None,
+                    );
+                }
+
+                event => {
+                    // `?` must stand on its own here: `try_stream!` does not
+                    // rewrite it inside a macro argument.
+                    let flow = apply_stream_event(event, &mut state)?;
+                    if matches!(flow, EventFlow::Stop) {
+                        break 'outer;
                     }
-                    let mut msg = Message::new(Role::Assistant, chrono::Utc::now().timestamp(), content);
-
-                    // Add ID so desktop client knows these deltas are part of the same message
-                    if let Some(id) = &response_id {
-                        msg = msg.with_id(id.clone());
-                    }
-
-                    yield (Some(msg), None, None);
-                }
-
-                ResponsesStreamEvent::OutputItemAdded {
-                    output_index,
-                    item,
-                    ..
-                } => {
-                    let pending = match item {
-                        ResponseOutputItemInfo::FunctionCall {
-                            id,
-                            call_id,
-                            name,
-                            ..
-                        } => Some(PendingOutputItem {
-                            item_id: id,
-                            calls: [(0, PendingFunctionCall { call_id, name })]
-                                .into_iter()
-                                .collect(),
-                        }),
-                        ResponseOutputItemInfo::Message { id, content, .. } => {
-                            let calls = content
-                                .into_iter()
-                                .enumerate()
-                                .filter_map(|part| match part {
-                                    (content_index, ContentPart::ToolCall { id, name, .. }) => {
-                                        i32::try_from(content_index).ok().map(|content_index| {
-                                            (
-                                                content_index,
-                                                PendingFunctionCall { call_id: id, name },
-                                            )
-                                        })
-                                    }
-                                    (_, ContentPart::OutputText { .. }) => None,
-                                })
-                                .collect::<BTreeMap<_, _>>();
-                            (!calls.is_empty()).then_some(PendingOutputItem {
-                                item_id: id,
-                                calls,
-                            })
-                        }
-                        ResponseOutputItemInfo::Reasoning { .. } => None,
-                    };
-                    if let Some(pending) = pending {
-                        output_items
-                            .entry(output_index)
-                            .or_insert(StreamingOutputItemState::Pending(pending));
-                    }
-                }
-
-                ResponsesStreamEvent::ContentPartAdded {
-                    item_id,
-                    output_index,
-                    content_index,
-                    part: ContentPart::ToolCall { id, name, .. },
-                    ..
-                } => {
-                    let call = PendingFunctionCall { call_id: id, name };
-                    match output_items.entry(output_index) {
-                        std::collections::btree_map::Entry::Vacant(entry) => {
-                            entry.insert(StreamingOutputItemState::Pending(PendingOutputItem {
-                                item_id,
-                                calls: [(content_index, call)].into_iter().collect(),
-                            }));
-                        }
-                        std::collections::btree_map::Entry::Occupied(mut entry) => {
-                            if let StreamingOutputItemState::Pending(pending) = entry.get_mut() {
-                                if pending.item_id == item_id {
-                                    pending.calls.entry(content_index).or_insert(call);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                ResponsesStreamEvent::OutputItemDone {
-                    output_index,
-                    item,
-                    ..
-                } => {
-                    let item_id = output_item_id(&item);
-                    let completion_matches = match output_items.get(&output_index) {
-                        None => true,
-                        Some(StreamingOutputItemState::Pending(pending)) => {
-                            pending.item_id == item_id
-                        }
-                        Some(StreamingOutputItemState::Unconfirmed(existing)) => {
-                            output_item_id(existing) == item_id
-                        }
-                        Some(StreamingOutputItemState::Completed(_)) => false,
-                    };
-                    if completion_matches {
-                        output_items.insert(
-                            output_index,
-                            StreamingOutputItemState::Completed(item),
-                        );
-                    }
-                }
-
-                ResponsesStreamEvent::OutputTextDone { .. } => {
-                    // Text is already complete from deltas, this is just a summary event
-                }
-
-                ResponsesStreamEvent::ResponseCompleted { response, .. } => {
-                    let model = model_name.as_ref().unwrap_or(&response.model);
-                    let usage = response
-                        .usage
-                        .as_ref()
-                        .map_or_else(Usage::default, response_usage_to_usage);
-                    final_usage = Some(ProviderUsage {
-                        usage,
-                        model: model.clone(),
-                        provider: None,
-                        finish_reason: None,
-                    });
-
-                    for (output_index, item) in response.output.into_iter().enumerate() {
-                        if let Ok(output_index) = i32::try_from(output_index) {
-                            output_items
-                                .entry(output_index)
-                                .or_insert(StreamingOutputItemState::Unconfirmed(item));
-                        }
-                    }
-
-                    break 'outer;
-                }
-
-                ResponsesStreamEvent::FunctionCallArgumentsDelta { .. } => {
-                    // Function call arguments are being streamed, but we'll get the complete
-                    // arguments in the OutputItemDone event, so we can ignore deltas for now
-                }
-
-                ResponsesStreamEvent::FunctionCallArgumentsDone { .. } => {
-                    // Arguments are complete, will be in the OutputItemDone event
-                }
-
-                ResponsesStreamEvent::ResponseFailed { error, .. } => {
-                    Err(anyhow!("Responses API failed: {:?}", error))?;
-                }
-
-                ResponsesStreamEvent::Error { error } => {
-                    Err(anyhow!("Responses API error: {:?}", error))?;
-                }
-
-                _ => {
-                    // Ignore remaining non-tool progress events.
                 }
             }
         }
 
-        let mut content = Vec::new();
-        for item in output_items.into_values() {
-            match item {
-                StreamingOutputItemState::Pending(pending) => {
-                    content.extend(pending.calls.into_values().map(|call| {
-                        streaming_tool_content(call.call_id, call.name, "", false)
-                    }));
-                }
-                StreamingOutputItemState::Unconfirmed(item) => {
-                    content.extend(process_streaming_output_items(
-                        vec![(item, false)],
-                        is_text_response,
-                    ));
-                }
-                StreamingOutputItemState::Completed(item) => {
-                    content.extend(process_streaming_output_items(
-                        vec![(item, true)],
-                        is_text_response,
-                    ));
-                }
-            }
-        }
-
-        if !content.is_empty() {
-            let mut message = Message::new(Role::Assistant, chrono::Utc::now().timestamp(), content);
-            if let Some(id) = response_id {
-                message = message.with_id(id);
-            }
-            yield (Some(message), final_usage, None);
-        } else if let Some(usage) = final_usage {
-            yield (None, Some(usage), None);
+        if let Some((message, usage)) = state.into_final_item() {
+            yield (message, usage, None);
         }
     }
 }
