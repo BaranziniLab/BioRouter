@@ -287,9 +287,11 @@ impl ChatRecallClient {
 
                 Search past conversations and load session summaries when the user expects some memory or context.
 
-                Two modes:
-                - Search mode: Use query with keywords/synonyms to find relevant messages
-                - Load mode: Use session_id to get first and last messages of a specific session
+                Three modes, chosen by which argument you pass:
+                - Search: pass `query` with keywords/synonyms to find relevant messages.
+                - Load: pass `session_id` to get the first and last messages of one session.
+                - Recent: pass neither, to list recent chat sessions. Prefer this over
+                  guessing keywords when the user refers to earlier work without naming it.
             "#}.to_string()),
         };
 

@@ -62,8 +62,19 @@ pub(super) fn attach_effective_tool_rosters(
         info.available_tools.sort();
         info.directly_callable_tools.sort();
 
+        // ⚠ **`info.name` is the manager's map KEY, not the extension's declared
+        // name.** `get_extensions_info` yields the normalized key, so Workspace
+        // arrives as `workspace` while `EXTENSION_NAME` is the literal
+        // `"Workspace"` — the comparison could never be true and this whole
+        // branch was dead, leaving the full Workspace instructions in the prompt
+        // even when only the delegation tools were callable. Code Execution's
+        // constant happens to be already-normalized (`code_execution`), which is
+        // exactly why the same bug next door does not show.
         if info.classification == crate::agents::extension::ExtensionClassification::Capability
-            && info.name == crate::agents::workspace_extension::EXTENSION_NAME
+            && info.name
+                == crate::config::extensions::name_to_key(
+                    crate::agents::workspace_extension::EXTENSION_NAME,
+                )
             && !info
                 .available_tools
                 .iter()
@@ -815,6 +826,47 @@ mod tests {
         let core = entries.iter().find(|info| info.name == "platform").unwrap();
         assert_eq!(core.available_tools, ["ingest_conversation"]);
         assert_eq!(core.directly_callable_tools, ["ingest_conversation"]);
+    }
+
+    /// The narrowed instruction blocks fire on the manager's map KEY, which is
+    /// not the extension's declared name. Workspace declares `"Workspace"` and
+    /// is keyed `workspace`, so the comparison was never true and the full
+    /// instructions shipped even with only the delegation tools callable.
+    ///
+    /// Asserted for BOTH capabilities that narrow, and in both directions —
+    /// Code Execution's constant is already normalized, so testing only it
+    /// would have passed while Workspace stayed dead.
+    #[test]
+    fn a_narrowed_capability_is_matched_by_its_map_key_not_its_declared_name() {
+        use crate::agents::extension::ExtensionInfo;
+
+        let narrowed = |key: &str, tool: &str| {
+            let mut entries = vec![ExtensionInfo::capability(key, "FULL GUIDANCE", false)];
+            let tools = vec![Tool::new(
+                format!("{key}__{tool}"),
+                "t",
+                object!({"type": "object"}),
+            )];
+            attach_effective_tool_rosters(&mut entries, &tools, &tools);
+            entries.remove(0).instructions
+        };
+
+        // `workspace_open` absent -> delegation-only.
+        assert!(narrowed("workspace", "subagent").contains("delegation-only"));
+        // `workspace_open` present -> the full block survives.
+        assert_eq!(narrowed("workspace", "workspace_open"), "FULL GUIDANCE");
+
+        assert!(narrowed("code_execution", "read_module").contains("restricted to the effective"));
+        assert_eq!(narrowed("code_execution", "execute_code"), "FULL GUIDANCE");
+
+        // And the declared name is genuinely not the key, so the guard is not
+        // vacuous.
+        assert_ne!(
+            crate::agents::workspace_extension::EXTENSION_NAME,
+            crate::config::extensions::name_to_key(
+                crate::agents::workspace_extension::EXTENSION_NAME
+            )
+        );
     }
 
     #[tokio::test]

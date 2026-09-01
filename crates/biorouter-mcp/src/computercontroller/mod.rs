@@ -428,11 +428,11 @@ impl ComputerControllerServer {
                 - PowerShell for system automation and UI control
                 - Windows Management Instrumentation (WMI)
                 - Registry access and system settings
-              - If `screen_capture` is in this capability's effective roster, use it when visual confirmation is needed
+              - If the Developer capability's `screen_capture` is in the effective roster, use it when visual confirmation is needed
 
             computer_control
               - System automation using PowerShell
-              - If `screen_capture` is available, use it to inspect the current state before choosing the next control action.
+              - If the Developer capability's `screen_capture` is listed, use it to inspect the current state before choosing the next control action.
             "#},
             "macos" => indoc! {r#"
             Here are some extra tools:
@@ -443,11 +443,11 @@ impl ComputerControllerServer {
               - macOS-specific features:
                 - AppleScript for system and UI control
                 - Integration with macOS apps and services
-              - If `screen_capture` is in this capability's effective roster, use it when visual confirmation is needed
+              - If the Developer capability's `screen_capture` is in the effective roster, use it when visual confirmation is needed
 
             computer_control
               - System automation using AppleScript
-              - If `screen_capture` is available, use it to inspect the current state before choosing the next control action.
+              - If the Developer capability's `screen_capture` is listed, use it to inspect the current state before choosing the next control action.
 
             When you need to interact with websites or web applications, consider using the computer_control tool with AppleScript, which can automate Safari or other browsers to:
               - Open specific URLs
@@ -468,12 +468,12 @@ impl ComputerControllerServer {
                 - X11/Wayland window management
                 - D-Bus system services integration
                 - Desktop environment control
-              - If `screen_capture` is in this capability's effective roster, use it when visual confirmation is needed
+              - If the Developer capability's `screen_capture` is in the effective roster, use it when visual confirmation is needed
 
             computer_control
               - System automation using shell commands and system tools
               - Desktop environment automation (GNOME, KDE, etc.)
-              - If `screen_capture` is available, use it to inspect the current state before choosing the next control action.
+              - If the Developer capability's `screen_capture` is listed, use it to inspect the current state before choosing the next control action.
 
             When you need to interact with websites or web applications, consider using tools like xdotool or wmctrl for:
               - Window management
@@ -496,7 +496,7 @@ impl ComputerControllerServer {
             Try to do your best to find ways to complete a task without too many questions or offering options unless it is really unclear, find a way if you can.
             You can also guide them steps if they can help out as you go along.
 
-            `screen_capture` may be available in this capability. Treat the effective roster in the system prompt as authoritative; never claim or call it when it is absent.
+            `screen_capture` belongs to the **Developer** capability, not this one, so it is available only when Developer is enabled and lists it. Treat the effective roster in the system prompt as authoritative; never claim or call it when it is absent.
 
             ## How to operate the computer (read this before using computer_control)
 
@@ -525,7 +525,7 @@ impl ComputerControllerServer {
                stuck. Before clicking, identify the target element by name/role;
                if you cannot find it, list the available elements/windows rather
                than guessing where it is.
-            5. WHEN `screen_capture` IS LISTED, remember that screenshots are
+            5. WHEN the Developer capability's `screen_capture` IS LISTED, remember that screenshots are
                per-display. Its result lists connected displays and the primary;
                target the correct display or a window-title substring rather than
                assuming the window is on display 0.
@@ -1924,6 +1924,58 @@ mod web_and_script_tests {
     fn construction_defers_fallible_http_initialization() {
         let server = ComputerControllerServer::new();
         assert!(server.http_client.lock().unwrap().is_none());
+    }
+
+    /// Guidance may only claim tools this capability actually registers.
+    ///
+    /// ⚠ `screen_capture` is registered by `DeveloperServer`, never by this
+    /// router — but every screenshot mention here said "in this capability",
+    /// so the routing advice pointed at a tool the model would never find under
+    /// Computer Control. A capability that describes another's tool must name
+    /// the owner, which is what this asserts.
+    ///
+    /// The check is over the WHOLE instruction string rather than one line,
+    /// because the wrong attribution appeared eight times in three
+    /// per-platform blocks and two shared ones — fixing the first and missing
+    /// the rest is the likely regression.
+    #[test]
+    fn guidance_never_claims_a_tool_this_capability_does_not_register() {
+        let server = ComputerControllerServer::new();
+        let owned: Vec<String> = ComputerControllerServer::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        assert!(
+            !owned.iter().any(|name| name == "screen_capture"),
+            "this test is only meaningful while screen_capture lives in Developer; \
+             it now appears in this router and the guidance should be revisited"
+        );
+
+        let instructions = server.instructions.clone();
+        assert!(
+            instructions.contains("screen_capture"),
+            "the screenshot routing advice is worth keeping — just attributed"
+        );
+        for claim in [
+            "`screen_capture` is in this capability",
+            "`screen_capture` may be available in this capability",
+        ] {
+            assert!(
+                !instructions.contains(claim),
+                "guidance claims a Developer tool as its own: {claim}"
+            );
+        }
+        // Every mention names the owner.
+        let mentions = instructions.matches("screen_capture").count();
+        let attributed = instructions.matches("Developer capability's `screen_capture`").count()
+            + instructions
+                .matches("`screen_capture` belongs to the **Developer** capability")
+                .count();
+        assert_eq!(
+            mentions, attributed,
+            "{mentions} screen_capture mentions but only {attributed} name Developer as the owner"
+        );
     }
 
     #[tokio::test]
