@@ -51,7 +51,6 @@ pub mod session_events;
 pub mod slash_commands;
 pub mod subprocess;
 pub mod system;
-pub mod user_surface;
 /// Test-binary-only: pin `BIOROUTER_PATH_ROOT` under a temp dir before any test
 /// runs, so a default `cargo test -p biorouter --lib` cannot write into the
 /// developer's real `~/.config/biorouter`.
@@ -61,6 +60,7 @@ pub mod token_counter;
 pub mod tool_inspection;
 pub mod tool_monitor;
 pub mod tracing;
+pub mod user_surface;
 pub mod utils;
 pub mod workflow;
 pub mod workflow_deeplink;

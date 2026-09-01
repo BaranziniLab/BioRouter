@@ -2082,7 +2082,6 @@ impl McpClientTrait for ExtensionManagerClient {
     }
 }
 
-
 impl ExtensionManagerClient {
     /// The advertised roster, as a pure function of whether a person can be
     /// asked. Sampled once by `get_tools` and threaded, in the spirit of
@@ -2212,7 +2211,6 @@ impl ExtensionManagerClient {
         tools
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -2650,6 +2648,7 @@ mod tests {
                 crate::pending_user_action::UserActionOutcome::Approved {
                     permission: crate::permission::Permission::AllowOnce,
                 },
+                crate::pending_user_action::DecisionAuthority::unproven(),
             ),
             crate::pending_user_action::ResolveOutcome::Delivered
         );
@@ -2780,6 +2779,7 @@ mod tests {
                 crate::pending_user_action::UserActionOutcome::Approved {
                     permission: crate::permission::Permission::AllowOnce,
                 },
+                crate::pending_user_action::DecisionAuthority::unproven(),
             ),
             crate::pending_user_action::ResolveOutcome::Delivered
         );

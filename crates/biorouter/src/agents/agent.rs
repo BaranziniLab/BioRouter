@@ -2882,6 +2882,14 @@ pub enum ConfirmationOutcome {
     /// a prompt that already expired or was cancelled, or a stale client. The
     /// decision was dropped rather than applied to some other pending call.
     Unknown,
+    /// A prompt was waiting, and this surface may not grant it: the approval
+    /// requires proof that a person decided, and the answering door cannot
+    /// supply it. The prompt stays parked.
+    ///
+    /// ⚠ Collapsing this into `Unknown` would tell the answering surface
+    /// nothing, which is the unactionable-refusal failure the honest approval
+    /// card exists to prevent, reproduced one layer down.
+    Unproven,
 }
 
 /// One queued mid-turn injection: the text plus who injected it (BR-71).
@@ -7527,13 +7535,23 @@ impl Agent {
     /// was cancelled, a stale client replaying an old card) is **dropped** and
     /// reported as [`ConfirmationOutcome::Unknown`] — it must never be applied to
     /// whatever other tool call happens to be pending now.
+    /// ⚠ Hardcodes `unproven()`, and can do so safely: with no session this
+    /// returns before ever reaching the registry, so the value is unobservable.
+    /// Taking it as a parameter would oblige callers that auto-approve with no
+    /// human present — `biorouter web`'s, for one — to name a word they could
+    /// only get wrong.
     pub async fn handle_confirmation(
         &self,
         request_id: String,
         confirmation: PermissionConfirmation,
     ) -> ConfirmationOutcome {
-        self.handle_confirmation_in_session(None, request_id, confirmation)
-            .await
+        self.handle_confirmation_in_session(
+            None,
+            request_id,
+            confirmation,
+            crate::pending_user_action::DecisionAuthority::unproven(),
+        )
+        .await
     }
 
     /// Handle a confirmation posted from the exact session whose surface
@@ -7544,8 +7562,9 @@ impl Agent {
         session_id: &str,
         request_id: String,
         confirmation: PermissionConfirmation,
+        authority: crate::pending_user_action::DecisionAuthority,
     ) -> ConfirmationOutcome {
-        self.handle_confirmation_in_session(Some(session_id), request_id, confirmation)
+        self.handle_confirmation_in_session(Some(session_id), request_id, confirmation, authority)
             .await
     }
 
@@ -7554,6 +7573,7 @@ impl Agent {
         session_id: Option<&str>,
         request_id: String,
         confirmation: PermissionConfirmation,
+        authority: crate::pending_user_action::DecisionAuthority,
     ) -> ConfirmationOutcome {
         let sender = self
             .pending_confirmations
@@ -7614,8 +7634,17 @@ impl Agent {
                     session_id,
                     &request_id,
                     relayed,
+                    authority,
                 ) {
                     ResolveOutcome::Delivered => ConfirmationOutcome::Delivered,
+                    ResolveOutcome::Unproven => {
+                        // A refused privilege escalation, not a stale click.
+                        warn!(
+                            "Refusing to grant request {request_id} in session {session_id}: \
+                             the answering surface cannot prove a person decided"
+                        );
+                        ConfirmationOutcome::Unproven
+                    }
                     ResolveOutcome::Rejected | ResolveOutcome::Unknown => {
                         debug!(
                             "Ignoring confirmation for request {}: no prompt is awaiting a decision",
@@ -12024,6 +12053,7 @@ mod tests {
                     "bridged-sess",
                     id.clone(),
                     confirmation(Permission::AllowOnce),
+                    crate::pending_user_action::DecisionAuthority::unproven(),
                 )
                 .await,
             ConfirmationOutcome::Delivered
@@ -12063,6 +12093,7 @@ mod tests {
                 "bridged-sess",
                 parked.id().to_string(),
                 confirmation(Permission::Cancel),
+                crate::pending_user_action::DecisionAuthority::unproven(),
             )
             .await;
         assert_eq!(

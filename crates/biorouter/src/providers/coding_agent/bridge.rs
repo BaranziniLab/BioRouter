@@ -2468,6 +2468,7 @@ mod tests {
                 UserActionOutcome::Approved {
                     permission: crate::permission::Permission::AllowOnce,
                 },
+                crate::pending_user_action::DecisionAuthority::unproven(),
             ),
             crate::pending_user_action::ResolveOutcome::Delivered,
         );
@@ -2674,6 +2675,7 @@ mod tests {
             UserActionOutcome::Denied {
                 permission: crate::permission::Permission::DenyOnce,
             },
+            crate::pending_user_action::DecisionAuthority::unproven(),
         );
 
         let refusal = tokio::time::timeout(Duration::from_secs(10), running)

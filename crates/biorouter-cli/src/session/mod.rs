@@ -1239,6 +1239,13 @@ impl CliSession {
                                                 principal_type: PrincipalType::Tool,
                                                 permission,
                                             },
+                                            // Nobody is at the terminal in a
+                                            // non-interactive run — that is the
+                                            // whole reason this arm exists — so
+                                            // it must not claim a person acted.
+                                            // It only ever carries a denial in
+                                            // any case.
+                                            biorouter::pending_user_action::DecisionAuthority::unproven(),
                                         )
                                         .await;
                                     continue;
@@ -1275,6 +1282,18 @@ impl CliSession {
                                             principal_type: PrincipalType::Tool,
                                             permission,
                                         },
+                                        // A person answered `prompt_tool_confirmation`
+                                        // at a terminal no model authored.
+                                        //
+                                        // ⚠ That prompt has a defensive non-tty
+                                        // arm which can reach here having
+                                        // decided `DenyOnce` with nobody
+                                        // present. Harmless, because the gate
+                                        // fires only on an ALLOW — but it does
+                                        // mean this word is not a proof that a
+                                        // person spoke, only that a surface a
+                                        // model cannot author was asked.
+                                        biorouter::pending_user_action::DecisionAuthority::from_local_human_surface(),
                                     )
                                     .await;
                             } else if let Some((elicitation_id, elicitation_message, schema)) = find_elicitation_request(&message) {

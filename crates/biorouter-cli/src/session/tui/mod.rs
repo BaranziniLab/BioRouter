@@ -601,6 +601,11 @@ async fn drive_response(
                                         principal_type: PrincipalType::Tool,
                                         permission,
                                     },
+                                    // The modal is the same local human surface
+                                    // as the CLI prompt: a person pressed a key
+                                    // in a terminal, and no model can author
+                                    // that.
+                                    biorouter::pending_user_action::DecisionAuthority::from_local_human_surface(),
                                 )
                                 .await;
                             app.thinking = Some(super::thinking::get_random_thinking_message().to_string());

@@ -3281,13 +3281,7 @@ fn config_disabled_extension_lines(
     persisted: &std::collections::HashSet<String>,
     cap: crate::privacy::CallCapability,
 ) -> Vec<String> {
-    extension_listing_lines(
-        entries,
-        persisted,
-        &std::collections::HashSet::new(),
-        cap,
-    )
-    .0
+    extension_listing_lines(entries, persisted, &std::collections::HashSet::new(), cap).0
 }
 
 /// The two buckets `search_available_extensions` offers the model, from ONE
@@ -3328,27 +3322,27 @@ fn extension_listing_lines(
         .collect();
 
     let describe = |extension: &crate::config::ExtensionEntry| -> String {
-            let config = &extension.config;
-            let description = match config {
-                ExtensionConfig::Builtin {
-                    description,
-                    display_name,
-                    ..
-                } => {
-                    if description.is_empty() {
-                        display_name.as_deref().unwrap_or("Built-in extension")
-                    } else {
-                        description
-                    }
+        let config = &extension.config;
+        let description = match config {
+            ExtensionConfig::Builtin {
+                description,
+                display_name,
+                ..
+            } => {
+                if description.is_empty() {
+                    display_name.as_deref().unwrap_or("Built-in extension")
+                } else {
+                    description
                 }
-                ExtensionConfig::Sse { .. } => "SSE extension (unsupported)",
-                ExtensionConfig::Platform { description, .. }
-                | ExtensionConfig::StreamableHttp { description, .. }
-                | ExtensionConfig::Stdio { description, .. }
-                | ExtensionConfig::Frontend { description, .. }
-                | ExtensionConfig::InlinePython { description, .. } => description,
-            };
-            format!("- {} - {}", config.name(), description)
+            }
+            ExtensionConfig::Sse { .. } => "SSE extension (unsupported)",
+            ExtensionConfig::Platform { description, .. }
+            | ExtensionConfig::StreamableHttp { description, .. }
+            | ExtensionConfig::Stdio { description, .. }
+            | ExtensionConfig::Frontend { description, .. }
+            | ExtensionConfig::InlinePython { description, .. } => description,
+        };
+        format!("- {} - {}", config.name(), description)
     };
 
     let disabled = visible

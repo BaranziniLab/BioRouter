@@ -772,6 +772,7 @@ async fn a_bridged_call_needing_approval_is_answerable_and_resumes() {
                     biorouter::pending_user_action::UserActionOutcome::Approved {
                         permission: biorouter::permission::Permission::AllowOnce,
                     },
+                    biorouter::pending_user_action::DecisionAuthority::unproven(),
                 );
             assert_eq!(
                 outcome,
@@ -901,6 +902,7 @@ async fn a_denied_bridged_call_returns_a_result_the_child_can_act_on() {
                 biorouter::pending_user_action::UserActionOutcome::Denied {
                     permission: biorouter::permission::Permission::DenyOnce,
                 },
+                biorouter::pending_user_action::DecisionAuthority::unproven(),
             )
         }
     });
@@ -1030,6 +1032,7 @@ async fn a_bridged_codex_call_needing_approval_is_answerable_and_resumes() {
                 biorouter::pending_user_action::UserActionOutcome::Approved {
                     permission: biorouter::permission::Permission::AllowOnce,
                 },
+                biorouter::pending_user_action::DecisionAuthority::unproven(),
             )
         }
     });

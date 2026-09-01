@@ -1505,9 +1505,7 @@ impl SkillsClient {
                     // beats bundle `remove` in the precedence ladder.
                     (
                         reason,
-                        format!(
-                            "setSkillEnabled {{ \"name\": \"{name}\", \"enabled\": true }}"
-                        ),
+                        format!("setSkillEnabled {{ \"name\": \"{name}\", \"enabled\": true }}"),
                     )
                 } else {
                     (
@@ -2486,10 +2484,9 @@ impl SkillsClient {
     /// See `pending_user_action::user_proof_available`: a tool whose approval can
     /// never be granted must not be offered. Browsing stays; installing does not.
     fn marketplace_management_tools(can_ask_a_person: bool) -> Vec<Tool> {
-        let mut tools = vec![
-            Tool::new(
-                "searchMarketplaceSkills".to_string(),
-                indoc! {r#"
+        let mut tools = vec![Tool::new(
+            "searchMarketplaceSkills".to_string(),
+            indoc! {r#"
                     Browse or search the trusted skill entries published in BAAM.
 
                     Pass `query` to match an id, name, category, description, tag or keyword;
@@ -2497,17 +2494,16 @@ impl SkillsClient {
                     never arbitrary download URLs — pass an exact returned registryId as
                     installMarketplaceSkill's registry_id.
                 "#}
-                .to_string(),
-                Self::tool_input_schema::<SearchMarketplaceSkillsParams>(),
-            )
-            .annotate(ToolAnnotations {
-                title: Some("Browse or search BAAM skills".to_string()),
-                read_only_hint: Some(true),
-                destructive_hint: Some(false),
-                idempotent_hint: Some(true),
-                open_world_hint: Some(true),
-            }),
-        ];
+            .to_string(),
+            Self::tool_input_schema::<SearchMarketplaceSkillsParams>(),
+        )
+        .annotate(ToolAnnotations {
+            title: Some("Browse or search BAAM skills".to_string()),
+            read_only_hint: Some(true),
+            destructive_hint: Some(false),
+            idempotent_hint: Some(true),
+            open_world_hint: Some(true),
+        })];
         if can_ask_a_person {
             tools.push(
             Tool::new(
@@ -4233,6 +4229,7 @@ Working dir biorouter content
                 crate::pending_user_action::UserActionOutcome::Approved {
                     permission: crate::permission::Permission::AllowOnce,
                 },
+                crate::pending_user_action::DecisionAuthority::unproven(),
             ),
             crate::pending_user_action::ResolveOutcome::Delivered
         );
@@ -5295,7 +5292,10 @@ mod proof_gated_roster_tests {
     fn names(can_ask_a_person: bool) -> Vec<String> {
         let mut tools = SkillsClient::marketplace_management_tools(can_ask_a_person);
         tools.extend(SkillsClient::package_management_tools(can_ask_a_person));
-        tools.into_iter().map(|tool| tool.name.to_string()).collect()
+        tools
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
     }
 
     #[test]
@@ -5329,7 +5329,10 @@ mod proof_gated_roster_tests {
             "importSkillPackage",
             "removeSkillPackage",
         ] {
-            assert!(offered.contains(&present.to_string()), "{present} is missing");
+            assert!(
+                offered.contains(&present.to_string()),
+                "{present} is missing"
+            );
         }
         assert_eq!(offered.len(), names(false).len() + 3);
     }
@@ -5343,7 +5346,9 @@ mod proof_gated_roster_tests {
 #[cfg(test)]
 mod continued_import_origin_tests {
     use super::*;
-    use crate::agents::skill_package::{pending, Evidence, ImportKind, ImportPlan, SourceProvenance};
+    use crate::agents::skill_package::{
+        pending, Evidence, ImportKind, ImportPlan, SourceProvenance,
+    };
     use crate::session::SessionManager;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -5443,6 +5448,7 @@ mod continued_import_origin_tests {
             crate::pending_user_action::UserActionOutcome::Denied {
                 permission: crate::permission::Permission::DenyOnce,
             },
+            crate::pending_user_action::DecisionAuthority::unproven(),
         );
         let _ = call.await;
         arguments
@@ -5555,7 +5561,10 @@ mod installed_usability_tests {
         assert_eq!(blocked.len(), 1);
         assert_eq!(blocked[0]["skill"], "media-use");
         assert!(
-            blocked[0]["fix"].as_str().unwrap().contains("setSkillEnabled"),
+            blocked[0]["fix"]
+                .as_str()
+                .unwrap()
+                .contains("setSkillEnabled"),
             "the fix must name the control that can clear a per-chat block: {blocked:?}"
         );
     }

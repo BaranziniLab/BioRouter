@@ -14,9 +14,7 @@
 mod test_sandbox;
 
 use axum::{body::Body, http::Request};
-use biorouter::pending_user_action::{
-    PendingUserActions, ToolApprovalRequest, UserActionRequest,
-};
+use biorouter::pending_user_action::{PendingUserActions, ToolApprovalRequest, UserActionRequest};
 use biorouter_server::state::AppState;
 use tower::ServiceExt;
 
@@ -24,20 +22,22 @@ use tower::ServiceExt;
 /// releases the park, so a helper that returned only the id would leave every
 /// caller testing an approval that no longer exists — which reads as a broken
 /// gate rather than a broken fixture.
-fn park(requires_user_proof: bool, session_id: &str) -> biorouter::pending_user_action::PendingUserAction {
-    PendingUserActions::global()
-        .park(
-            Some(session_id),
-            None,
-            UserActionRequest::ToolApproval(ToolApprovalRequest {
-                tool_name: "developer__shell".to_string(),
-                arguments: serde_json::Map::new(),
-                prompt: None,
-                risk: None,
-                preview: None,
-                requires_user_proof,
-            }),
-        )
+fn park(
+    requires_user_proof: bool,
+    session_id: &str,
+) -> biorouter::pending_user_action::PendingUserAction {
+    PendingUserActions::global().park(
+        Some(session_id),
+        None,
+        UserActionRequest::ToolApproval(ToolApprovalRequest {
+            tool_name: "developer__shell".to_string(),
+            arguments: serde_json::Map::new(),
+            prompt: None,
+            risk: None,
+            preview: None,
+            requires_user_proof,
+        }),
+    )
 }
 
 fn post(id: &str, session_id: &str) -> Request<Body> {

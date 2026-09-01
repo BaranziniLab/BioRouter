@@ -274,14 +274,22 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let (sm, session) = manager_and_session(&temp, "forget").await;
 
-        apply(&sm, &session, &["alpha".into()], &["beta".into(), "gamma".into()])
-            .await
-            .unwrap();
+        apply(
+            &sm,
+            &session,
+            &["alpha".into()],
+            &["beta".into(), "gamma".into()],
+        )
+        .await
+        .unwrap();
 
         let after = forget(&sm, &session, &["alpha".to_string(), "beta".to_string()])
             .await
             .unwrap();
-        assert!(after.add.is_empty(), "an `add` entry must go too: {after:?}");
+        assert!(
+            after.add.is_empty(),
+            "an `add` entry must go too: {after:?}"
+        );
         assert_eq!(after.remove, vec!["gamma".to_string()]);
 
         // Persisted, not just returned.

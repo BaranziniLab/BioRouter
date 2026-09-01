@@ -181,6 +181,7 @@ async fn a_value_bearing_answer_to_a_credential_card_is_refused() {
         UserActionOutcome::Provided {
             data: serde_json::json!({ "SPOKEAGENT_PASSCODE": SECRET }),
         },
+        biorouter::pending_user_action::DecisionAuthority::unproven(),
     );
     assert_eq!(
         outcome,
@@ -192,7 +193,12 @@ async fn a_value_bearing_answer_to_a_credential_card_is_refused() {
         "a refused answer must leave the caller parked, not release it with the value"
     );
 
-    registry.resolve_in_session("s-refuse", &id, UserActionOutcome::Cancelled);
+    registry.resolve_in_session(
+        "s-refuse",
+        &id,
+        UserActionOutcome::Cancelled,
+        biorouter::pending_user_action::DecisionAuthority::unproven(),
+    );
     drop(parked);
 }
 

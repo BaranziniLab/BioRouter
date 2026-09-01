@@ -45,10 +45,8 @@ async fn a_tool_dispatched_with_no_human_surface_is_cancelled_not_parked() {
     let registry = Arc::new(PendingUserActions::default());
     let session = format!("call-tool-{}", std::process::id());
 
-    let outcome = biorouter::user_surface::without_human_surface(a_tool_that_asks(
-        &registry, &session,
-    ))
-    .await;
+    let outcome =
+        biorouter::user_surface::without_human_surface(a_tool_that_asks(&registry, &session)).await;
 
     assert!(
         matches!(outcome, UserActionOutcome::Cancelled),
@@ -112,6 +110,7 @@ async fn the_same_tool_outside_that_scope_still_parks_normally() {
             UserActionOutcome::Approved {
                 permission: biorouter::permission::Permission::AllowOnce,
             },
+            biorouter::pending_user_action::DecisionAuthority::unproven(),
         ),
         biorouter::pending_user_action::ResolveOutcome::Delivered
     );

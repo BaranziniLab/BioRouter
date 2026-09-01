@@ -74,6 +74,18 @@ pub async fn confirm_tool_action(
     // unavailable here" — and sending the second person hunting for a
     // permission they can never obtain is the failure `UserActionProof` draws
     // three variants for.
+    // ⚠ Sampled ONCE, unconditionally, before the check below. Two reads of
+    // the header would leave a window between `requires_user_proof_in_session`
+    // (one lock acquisition) and `resolve_in_session` (a later one) — and a
+    // gate whose two halves can observe different instants is the race the
+    // sample-once rule exists to close.
+    let authority = match user_action_proof(&headers) {
+        UserActionProof::Proven => {
+            biorouter::pending_user_action::DecisionAuthority::from_user_action_proof()
+        }
+        _ => biorouter::pending_user_action::DecisionAuthority::unproven(),
+    };
+
     if biorouter::pending_user_action::PendingUserActions::global()
         .requires_user_proof_in_session(&request.session_id, &request.id)
     {
@@ -137,6 +149,7 @@ pub async fn confirm_tool_action(
                             principal_type: request.principal_type,
                             permission: decision,
                         },
+                        authority,
                     )
                     .await;
                 dismiss_on(&notify, &ask.request_id).await;
@@ -144,6 +157,7 @@ pub async fn confirm_tool_action(
                     "status": match outcome {
                         ConfirmationOutcome::Delivered => "delivered",
                         ConfirmationOutcome::Unknown => "unknown",
+                        ConfirmationOutcome::Unproven => "refused",
                     },
                     "dismissed": notify,
                 })))
@@ -173,12 +187,14 @@ pub async fn confirm_tool_action(
                 principal_type: request.principal_type,
                 permission,
             },
+            authority,
         )
         .await;
 
     let status = match outcome {
         ConfirmationOutcome::Delivered => "delivered",
         ConfirmationOutcome::Unknown => "unknown",
+        ConfirmationOutcome::Unproven => "refused",
     };
 
     Ok(Json(serde_json::json!({ "status": status })))

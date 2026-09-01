@@ -5558,6 +5558,54 @@ async fn apply_state_write(
 /// (3) read the user's decision from the SAME socket, (4) feed it back via
 /// `handle_confirmation`, and (5) clear the snapshot. No separate route and no
 /// reply-loop concurrency change — the decision rides the app's own authed WS.
+/// Answer one parked decision on behalf of an app page, and deal honestly with
+/// a refusal.
+///
+/// ⚠ **The page's JavaScript is written by the agent.** So this door cannot
+/// prove a person decided anything, and says so — which means an approval that
+/// requires proof is refused here.
+///
+/// ⚠ **The deny follow-up is not tidiness.** A refusal leaves the caller
+/// PARKED, deliberately, so that a surface which can answer still could. But no
+/// such surface exists for this card: an ephemeral card is not stored and
+/// nothing re-surfaces it. Without the follow-up the tool sits for its full
+/// time-to-live — 570 seconds for a skill mutation — with no card anywhere, and
+/// nothing rate-limits the model's retry. A denial always lands, because the
+/// gate keys on `is_allowed()`.
+async fn resolve_app_decision(
+    agent: &std::sync::Arc<biorouter::agents::Agent>,
+    session_id: &str,
+    id: &str,
+    permission: Permission,
+) -> biorouter::agents::ConfirmationOutcome {
+    let outcome = agent
+        .handle_confirmation_for_session(
+            session_id,
+            id.to_string(),
+            PermissionConfirmation {
+                principal_type: PrincipalType::Tool,
+                permission,
+            },
+            biorouter::pending_user_action::DecisionAuthority::unproven(),
+        )
+        .await;
+
+    if matches!(outcome, biorouter::agents::ConfirmationOutcome::Unproven) {
+        agent
+            .handle_confirmation_for_session(
+                session_id,
+                id.to_string(),
+                PermissionConfirmation {
+                    principal_type: PrincipalType::Tool,
+                    permission: Permission::DenyOnce,
+                },
+                biorouter::pending_user_action::DecisionAuthority::unproven(),
+            )
+            .await;
+    }
+    outcome
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_action_required(
     socket_tx: &mut WsSink,
@@ -5640,16 +5688,16 @@ async fn handle_action_required(
         }
     };
 
-    agent
-        .handle_confirmation_for_session(
-            session_id,
-            id.clone(),
-            PermissionConfirmation {
-                principal_type: PrincipalType::Tool,
-                permission,
-            },
+    if matches!(
+        resolve_app_decision(agent, session_id, id, permission).await,
+        biorouter::agents::ConfirmationOutcome::Unproven
+    ) {
+        let _ = send_json(
+            socket_tx,
+            json!({"type":"approval_refused","requestId": id, "reason":"unproven"}),
         )
         .await;
+    }
 
     clear_run_state(state, session_id).await;
 }
@@ -10668,5 +10716,102 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+/// F-12: an app page's `Approve` frame is model-authored JavaScript, so the
+/// socket cannot prove a person decided. A proof-backed approval is therefore
+/// refused there — and the refusal must be FAST.
+#[cfg(test)]
+mod app_decision_tests {
+    use super::*;
+    use biorouter::pending_user_action::{
+        PendingUserActions, ToolApprovalRequest, UserActionOutcome, UserActionRequest,
+    };
+
+    /// The same construction path production uses, so the funnel under test is
+    /// the real one — `handle_confirmation_for_session` falls through to the
+    /// registry only when the id is absent from the agent's own map, and a
+    /// hand-built agent could differ on exactly that.
+    async fn an_agent(session: &str) -> std::sync::Arc<biorouter::agents::Agent> {
+        let state = crate::state::AppState::new().await.unwrap();
+        state
+            .get_agent_for_route(session.to_string())
+            .await
+            .expect("an agent for the session under test")
+    }
+
+    fn a_proof_backed_approval(session: &str) -> biorouter::pending_user_action::PendingUserAction {
+        PendingUserActions::global().park(
+            Some(session),
+            None,
+            UserActionRequest::ToolApproval(ToolApprovalRequest {
+                tool_name: "skills__removeSkillPackage".to_string(),
+                arguments: serde_json::Map::new(),
+                prompt: None,
+                risk: None,
+                preview: None,
+                requires_user_proof: true,
+            }),
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_app_approval_denies_immediately_instead_of_hanging() {
+        // ⚠ Catches shipping the gate WITHOUT the deny follow-up. A refusal
+        // leaves the caller parked by design — but no surface can re-raise an
+        // ephemeral card, so without the follow-up the tool sits for its full
+        // time-to-live (570 seconds for a skill mutation) with no card
+        // anywhere, and nothing rate-limits the model's retry.
+        let session = format!("app-refusal-{}", std::process::id());
+        let agent = an_agent(&session).await;
+        let parked = a_proof_backed_approval(&session);
+        let id = parked.id().to_string();
+
+        let outcome = resolve_app_decision(&agent, &session, &id, Permission::AllowOnce).await;
+        assert_eq!(
+            outcome,
+            biorouter::agents::ConfirmationOutcome::Unproven,
+            "an app page must not be able to grant a proof-backed approval"
+        );
+
+        // The parked tool call learns the answer now, not in nine minutes.
+        assert!(
+            matches!(
+                parked.wait(std::time::Duration::from_secs(5), None).await,
+                UserActionOutcome::Denied { .. }
+            ),
+            "the refusing door must follow up with a denial rather than leave the call parked"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_app_page_can_still_answer_an_ordinary_approval() {
+        // Catches a gate that refuses everything from the app socket, which
+        // would break every ordinary in-app tool confirmation.
+        let session = format!("app-ordinary-{}", std::process::id());
+        let agent = an_agent(&session).await;
+        let parked = PendingUserActions::global().park(
+            Some(&session),
+            None,
+            UserActionRequest::ToolApproval(ToolApprovalRequest {
+                tool_name: "developer__shell".to_string(),
+                arguments: serde_json::Map::new(),
+                prompt: None,
+                risk: None,
+                preview: None,
+                requires_user_proof: false,
+            }),
+        );
+        let id = parked.id().to_string();
+
+        assert_eq!(
+            resolve_app_decision(&agent, &session, &id, Permission::AllowOnce).await,
+            biorouter::agents::ConfirmationOutcome::Delivered
+        );
+        assert!(matches!(
+            parked.wait(std::time::Duration::from_secs(5), None).await,
+            UserActionOutcome::Approved { .. }
+        ));
     }
 }

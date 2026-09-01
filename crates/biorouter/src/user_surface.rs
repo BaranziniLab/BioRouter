@@ -60,6 +60,9 @@ mod tests {
             assert!(no_human_surface());
         })
         .await;
-        assert!(!no_human_surface(), "the scope must not leak past its future");
+        assert!(
+            !no_human_surface(),
+            "the scope must not leak past its future"
+        );
     }
 }

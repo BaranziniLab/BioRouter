@@ -305,15 +305,24 @@ impl ActionRequiredManager {
                 Some(data) => UserActionOutcome::Provided { data },
                 None => UserActionOutcome::Cancelled,
             };
+            // ⚠ `unproven()`, and the arm below is not dead code. This relay
+            // only ever carries `Provided`/`Cancelled`, neither of which trips
+            // the gate — but it is reachable from any user message carrying an
+            // elicitation response, INCLUDING one typed into an app page, so
+            // the honest word here is the one that assumes nothing.
             return match PendingUserActions::global().resolve_in_session(
                 session_id,
                 &request_id,
                 relayed,
+                crate::pending_user_action::DecisionAuthority::unproven(),
             ) {
                 ResolveOutcome::Delivered => Ok(()),
                 ResolveOutcome::Rejected => Err(anyhow::anyhow!(
                     "Request {} does not accept that answer",
                     request_id
+                )),
+                ResolveOutcome::Unproven => Err(anyhow::anyhow!(
+                    "Request {request_id} needs a person's approval"
                 )),
                 ResolveOutcome::Unknown => Err(anyhow::anyhow!("Request not found")),
             };
