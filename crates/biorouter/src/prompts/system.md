@@ -104,7 +104,7 @@ This extension is loaded but has no effective tools for this turn; do not follow
 No third-party extensions are loaded for this turn.
 {% endif %}
 
-{% if installed_extension_discovery_available or marketplace_extension_browse_available or marketplace_extension_search_available or extension_state_change_available or extension_package_install_available or extension_package_delete_available %}
+{% if installed_extension_discovery_available or marketplace_extension_search_available or extension_state_change_available or extension_package_install_available or extension_package_delete_available %}
 The Extension Manager capability can do only what this turn's effective roster allows:
 {% if installed_extension_discovery_available %}
 - discover installed extensions and their exact names.

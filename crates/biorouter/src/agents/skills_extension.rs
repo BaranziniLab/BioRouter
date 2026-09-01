@@ -1985,9 +1985,15 @@ impl SkillsClient {
         let fetched = skill_package::fetch(&source)
             .await
             .map_err(|error| format!("{error:#}"))?;
-        let plan =
+        let mut plan =
             skill_package::plan_from_entries(fetched.entries, &fetched.id_hints, fetched.source)
                 .map_err(|error| format!("{error:#}"))?;
+        // Carry the card's own rendering of the source onto the plan, so a
+        // second approval for the same operation — the `needsChoice` →
+        // `plan_id` path — names what the first one named. Without this the
+        // continuation card falls back to `SourceProvenance`, which for a local
+        // archive carries no path at all.
+        plan.origin = Some(approval_source);
         Ok((plan, false))
     }
 
@@ -2000,7 +2006,12 @@ impl SkillsClient {
         let package_names: Vec<_> = plans.iter().map(|plan| plan.id.clone()).collect();
         let approval = Self::approval_arguments(serde_json::json!({
             "operation": "importSkillPackage",
-            "source": plans.first().map(|plan| plan.source.clone()),
+            // ⚠ No `SourceProvenance` fallback. This function runs only when
+            // the caller supplied a `plan_id`, so every plan reaching it came
+            // out of `pending`, an in-process map with a 15-minute TTL — which
+            // means it was stamped by `resolve_import_plan` in this same build.
+            // A fallback would only ever restore the pathless card.
+            "source": plans.first().and_then(|plan| plan.origin.clone()),
             "planId": &params.plan_id,
             "choice": &params.choice,
             "components": &params.components,
@@ -5321,6 +5332,149 @@ mod proof_gated_roster_tests {
             assert!(offered.contains(&present.to_string()), "{present} is missing");
         }
         assert_eq!(offered.len(), names(false).len() + 3);
+    }
+}
+
+/// F-20(d): the approval card for a *continued* import rendered its source from
+/// `SourceProvenance`, which for a local archive carries no path — so the one
+/// consent gate on the `dry_run` → `needsChoice` → `plan_id` path showed
+/// `{"url":null,"reference":null,"resolvedCommit":null,"installer":"archive"}`
+/// and named nothing the user could recognise.
+#[cfg(test)]
+mod continued_import_origin_tests {
+    use super::*;
+    use crate::agents::skill_package::{pending, Evidence, ImportKind, ImportPlan, SourceProvenance};
+    use crate::session::SessionManager;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    fn a_parked_plan(origin: serde_json::Value) -> String {
+        pending::park(ImportPlan {
+            origin: Some(origin),
+            kind: ImportKind::Bundle,
+            id: "hyperframes".to_string(),
+            display_name: "HyperFrames".to_string(),
+            version: None,
+            entry_point: None,
+            groups: Default::default(),
+            components: Vec::new(),
+            evidence: Evidence::StructuralInference,
+            ambiguity: None,
+            source: SourceProvenance::default(),
+            shadows: Vec::new(),
+            files: Vec::new(),
+        })
+    }
+
+    /// The approval this raises is never answered: what is under test is the
+    /// card's ARGUMENTS, which are published before anyone decides.
+    async fn card_for(origin: serde_json::Value) -> JsonObject {
+        let temp = TempDir::new().unwrap();
+        let _env =
+            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
+        let session_manager = Arc::new(SessionManager::new(temp.path().join("sessions")));
+        let session = session_manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "continued-import".to_string(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let session_id = session.id.clone();
+        let client = SkillsClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager,
+        })
+        .unwrap();
+        let meta = McpMeta::new(
+            session_id.clone(),
+            crate::privacy::CallCapability::for_test_restricted(),
+        );
+
+        let plan_id = a_parked_plan(origin);
+        let call = tokio::spawn({
+            let session_id = session_id.clone();
+            async move {
+                let _ = session_id;
+                client
+                    .call_tool(
+                        "importSkillPackage",
+                        Some(
+                            serde_json::json!({ "plan_id": plan_id, "choice": "bundle" })
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                        ),
+                        meta,
+                        CancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+        crate::action_required_manager::ActionRequiredManager::global()
+            .request_arrived(&session_id)
+            .await;
+        let messages = crate::action_required_manager::ActionRequiredManager::global()
+            .drain_requests(&session_id);
+        let (approval_id, arguments) = messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .find_map(|content| {
+                let crate::conversation::message::MessageContent::ActionRequired(action) = content
+                else {
+                    return None;
+                };
+                let crate::conversation::message::ActionRequiredData::ToolConfirmation {
+                    id,
+                    arguments,
+                    ..
+                } = &action.data
+                else {
+                    return None;
+                };
+                Some((id.clone(), arguments.clone()))
+            })
+            .expect("a continued import must publish an approval card");
+        // Release the parked call so the test does not hold a task to the TTL.
+        let _ = crate::pending_user_action::PendingUserActions::global().resolve_in_session(
+            &session_id,
+            &approval_id,
+            crate::pending_user_action::UserActionOutcome::Denied {
+                permission: crate::permission::Permission::DenyOnce,
+            },
+        );
+        let _ = call.await;
+        arguments
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_continued_local_archive_import_names_the_archive() {
+        // Catches the status quo, where this sole consent gate renders four
+        // fields, three of them null, and no file name at all.
+        let card = card_for(serde_json::json!({
+            "kind": "localArchive",
+            "filePath": "/tmp/hyperframes.zip",
+        }))
+        .await;
+        assert_eq!(card["source"]["kind"], "localArchive");
+        assert_eq!(card["source"]["filePath"], "/tmp/hyperframes.zip");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_continued_url_import_still_names_its_url() {
+        // Catches "fixing" the pathless card by dropping the `source` key for
+        // a bare `planId`, which removes the source line from BOTH variants.
+        let card = card_for(serde_json::json!({
+            "kind": "repositoryOrArchiveUrl",
+            "url": "https://github.com/example/hyperframes",
+            "reference": serde_json::Value::Null,
+        }))
+        .await;
+        assert_eq!(
+            card["source"]["url"],
+            "https://github.com/example/hyperframes"
+        );
     }
 }
 

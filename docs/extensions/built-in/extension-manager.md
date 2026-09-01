@@ -1,10 +1,12 @@
 # Extension Manager capability
 
-> **What this is.** User guide to the built-in Extension Manager: how BioRouter discovers, enables and disables other extensions mid-session so the active tool count stays small.
+> **What this is.** User guide to the built-in Extension Manager: how BioRouter discovers, enables and disables other extensions mid-session so the active tool count stays small, and how it searches the trusted BAAM marketplace to install a package you don't have or permanently delete one you no longer want.
 > **Status:** Current. The capability is enabled by default, so no manual setup is normally needed.
 > **Audience:** end users.
 
 You don't always need to manage extensions by hand. The Extension Manager lets BioRouter discover, enable and disable extensions during an active session. Based on the task you give it, BioRouter recognizes when it needs a specific extension, enables it, and suggests disabling unused ones when the tool bloat starts eating your context window. Describe your task and BioRouter handles the extension management.
+
+It is not limited to what you already have. When nothing installed fits the task, BioRouter can search the trusted BAAM marketplace, install a package from it with your approval, and — with a separate approval — permanently delete an installed marketplace package you no longer want.
 
 > **Note.** This capability is **enabled by default**. Its internal registration still uses the legacy `PlatformExtensionDef` type; that storage name does not make it an installed extension. The configuration walkthrough below is only needed if you previously disabled it, or want to confirm its state.
 
@@ -44,6 +46,12 @@ The Extension Manager addresses this by letting BioRouter:
 - **Enable** extensions only when needed for a specific task
 - **Disable** extensions when they're no longer required
 
+The same capability also reaches past what is already installed, letting BioRouter:
+
+- **Search** the trusted BAAM marketplace for a package that fits the task
+- **Install** that package with your approval, without you leaving the chat
+- **Delete** an installed marketplace package permanently, again with your approval
+
 The result is a more focused session where BioRouter has exactly the tools it needs, when it needs them.
 
 > **Note.** The "5 extensions / 50 tools" figure is a rule of thumb for keeping tool selection sharp, not an enforced limit. Nothing fails when you exceed it; tool-choice quality and response time degrade gradually.
@@ -53,14 +61,14 @@ The result is a more focused session where BioRouter has exactly the tools it ne
 | Tool | Description | Use Case |
 |------|-------------|----------|
 | `search_available_extensions` | List installed third-party extensions and exact names | Finding what is already installed |
-| `browse_marketplace_extensions` / `search_marketplace_extensions` | Browse or search trusted BAAM entries visible to this model | Finding a package to install |
+| `search_marketplace_extensions` | Browse or search trusted BAAM entries visible to this model — omit the query to list everything | Finding a package to install |
 | `manage_extensions` | Enable or disable an extension by name | Loading/unloading extensions dynamically |
 | `install_extension` | Install a BAAM marketplace extension end to end | The extension is not installed at all |
 | `delete_extension_package` | Delete one or up to 50 validated marketplace packages after approval | Permanent removal; shared credentials are retained |
 | `list_resources` | List resources from extensions (if supported) | Discovering available data sources |
 | `read_resource` | Read specific resource content (if supported) | Accessing extension-provided data |
 
-> **Tip.** The resource tools (`list_resources` and `read_resource`) are only available when at least one enabled extension supports resources.
+> **Tip.** Not every tool in this table is offered in every session. The resource tools (`list_resources` and `read_resource`) appear only when at least one enabled extension supports resources. `install_extension` and `delete_extension_package` each wait on your approval, so they are withheld entirely where no one can be asked for it — on a daemon started by `biorouter serve` for browser access, for instance. Browsing and searching are read-only and always available.
 
 ## Installing one the user does not have
 

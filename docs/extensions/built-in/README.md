@@ -13,7 +13,7 @@ Come here when you want to know what a specific built-in capability can do, or w
 | [Code Execution](code-execution.md) | Code Mode: instead of calling MCP tools one at a time, the model writes a short JavaScript program that batches many tool calls into a single execution. |
 | [Computer Controller](computer-controller.md) | Enabling the Computer Controller, its tools, and a worked example combining web research with macOS system automation — the highest-blast-radius built-in, because it acts on your real desktop. |
 | [Developer](developer.md) | A walkthrough of the Developer capability and its five tools, plus a reference on constraining it with permission modes, tool permissions, and `.biorouterignore`. |
-| [Extension Manager](extension-manager.md) | How BioRouter discovers, enables, and disables other extensions mid-session so the active tool count stays small. |
+| [Extension Manager](extension-manager.md) | How BioRouter discovers other extensions and attaches or detaches them mid-session so the active tool count stays small — and how it searches the trusted BAAM marketplace to install a package you do not have, or permanently delete one you no longer want. |
 | [Memory](memory.md) | The trigger words that store, recall, and forget memories, where memories live on disk, and a worked example teaching BioRouter a lab's analysis standards. Predates the Knowledge feature; the page explains how the two relate. |
 | [Skills](skills.md) | Where skills are discovered from on disk, how to get more of them, and a worked GWAS-pipeline example showing a skill steering the agent. |
 | [Todo](todo.md) | How BioRouter breaks multi-step work into a tracked checklist and reports progress as it goes. |

@@ -101,9 +101,16 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             "extensionmanager",
             PlatformExtensionDef {
                 name: extension_manager_extension::EXTENSION_NAME,
+                // ⚠ A FRESH-INSTALL-ONLY fix. `inject_platform_extensions`
+                // takes the configured entry when one exists, so a
+                // `config.yaml` that already carries an `extensionmanager`
+                // Platform entry keeps whatever description it was written
+                // with — forever. Editing this changes what NEW installs see,
+                // not what existing ones read.
                 description:
-                    "Look up which extensions are available and turn one on or off, so a task \
-                     that needs a tool you have not loaded can still finish",
+                    "Look up which extensions are available, attach or detach one, search the \
+                     trusted marketplace, install a package, or permanently delete an installed \
+                     one — so a task that needs a tool you have not loaded can still finish",
                 default_enabled: true,
                 client_factory: |ctx| {
                     Box::new(extension_manager_extension::ExtensionManagerClient::new(ctx).unwrap())

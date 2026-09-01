@@ -141,6 +141,7 @@ pub fn plan_from_entries(
         .collect();
 
     Ok(ImportPlan {
+        origin: None,
         kind: ImportKind::Bundle,
         id,
         display_name,
@@ -235,6 +236,7 @@ fn single_plan(
         .or_else(|| id_hints.iter().find_map(|hint| sanitize_package_id(hint)))
         .ok_or_else(|| anyhow::anyhow!("could not derive a folder name for this skill"))?;
     Ok(ImportPlan {
+        origin: None,
         kind: ImportKind::Single,
         display_name: component.name.clone(),
         id,

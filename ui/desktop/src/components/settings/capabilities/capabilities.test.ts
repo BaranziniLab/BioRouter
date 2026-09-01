@@ -39,6 +39,16 @@ describe('capabilities', () => {
     }
   });
 
+  it('the extension manager description names installing and deleting', () => {
+    // The natural half-fix mentions installation and leaves out deletion — the
+    // irreversible half, and the only reason this consent copy matters. Not an
+    // equality check: the Rust-side description is a different sentence in a
+    // different register, deliberately.
+    const description = CAPABILITIES.find((c) => c.key === 'extensionmanager')?.description ?? '';
+    expect(description).toMatch(/install/i);
+    expect(description).toMatch(/delet/i);
+  });
+
   it('only upgrade-enables newly promoted default-on capabilities', () => {
     for (const name of ['autovisualiser', 'code_execution', 'computercontroller']) {
       expect(shouldDefaultEnablePromotedCapability({ name, enabled: false }), name).toBe(true);

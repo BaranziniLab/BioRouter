@@ -3095,9 +3095,17 @@ impl ExtensionManager {
         // do-not-enable label (#42). Biorouter capabilities are managed on
         // their own settings surface and never enter this extension listing.
         // Entries this caller may not see at all never reach the labelling step.
-        let disabled_extensions = config_disabled_extension_lines(
+        // The keys of the LIVE map, taken once. An entry the config enables but
+        // this map does not hold is installed-and-detached: `manage_extensions
+        // {disable}` never touches the config, so a detach left the extension
+        // invisible to this inventory entirely — the model could not learn its
+        // name to attach it again.
+        let live_keys: std::collections::HashSet<String> =
+            self.extensions.lock().await.keys().cloned().collect();
+        let (disabled_extensions, detached_extensions) = extension_listing_lines(
             &get_all_extensions(),
             &crate::config::persisted_extension_names(),
+            &live_keys,
             admitted,
         );
 
@@ -3126,8 +3134,29 @@ impl ExtensionManager {
                 "Extensions disabled in the config:\n{}\n",
                 disabled_extensions.join("\n")
             ));
-        } else {
-            output_parts.push("No extensions available to enable.\n".to_string());
+        }
+
+        if !detached_extensions.is_empty() {
+            // ⚠ The hedge is not decoration. The Settings permission editor
+            // rebuilds an extension with a remove-then-add, and a session-start
+            // spawn can fail — both leave an extension in exactly this state
+            // while being unable to attach.
+            output_parts.push(format!(
+                "Installed but not attached to this chat (attach with manage_extensions; \
+                 an attach can still fail if the extension is broken):\n{}\n",
+                detached_extensions.join("\n")
+            ));
+        }
+
+        if disabled_extensions.is_empty() && detached_extensions.is_empty() {
+            // The old copy said "No extensions available to enable", which was
+            // false on two counts: it ignored the detached bucket, and it is
+            // no longer true in general now that the marketplace can supply one.
+            output_parts.push(
+                "No installed extensions are currently detached or disabled; use \
+                 search_marketplace_extensions to find one to install.\n"
+                    .to_string(),
+            );
         }
 
         if !enabled_extensions.is_empty() {
@@ -3244,14 +3273,46 @@ pub(crate) const CONFIG_DISABLED_LABEL: &str = "(disabled by user; do not enable
 /// landed: a private extension renamed by hand in `config.yaml` reads Public by
 /// name alone, and only its `--directory` argument still points at the install.
 /// Passing the config can raise the answer, never lower it.
+/// The config-disabled bucket alone, for the tests and callers that only ever
+/// cared about that half.
+#[cfg(test)]
 fn config_disabled_extension_lines(
     entries: &[crate::config::ExtensionEntry],
     persisted: &std::collections::HashSet<String>,
     cap: crate::privacy::CallCapability,
 ) -> Vec<String> {
-    entries
+    extension_listing_lines(
+        entries,
+        persisted,
+        &std::collections::HashSet::new(),
+        cap,
+    )
+    .0
+}
+
+/// The two buckets `search_available_extensions` offers the model, from ONE
+/// visibility chain.
+///
+/// Splitting them meant the detached bucket could have been built straight off
+/// `get_all_extensions()`. It is not, and that is the point of the shared
+/// chain: the capability exclusion and the `privacy_refusal`-under-`enforced`
+/// predicate below are Gate E's verdict for this surface, and a second listing
+/// that skipped them would be a fresh privacy leak in a cleanup commit.
+///
+/// ⚠ **The label is parameterised, not shared.** `CONFIG_DISABLED_LABEL` says
+/// the operator switched this off deliberately and the model should ask before
+/// enabling it. Stamping that on the *detached* bucket would tell the model not
+/// to do the one thing that bucket exists to invite — a detached extension is
+/// installed and enabled in the config, and simply is not attached to this
+/// chat.
+fn extension_listing_lines(
+    entries: &[crate::config::ExtensionEntry],
+    persisted: &std::collections::HashSet<String>,
+    live_keys: &std::collections::HashSet<String>,
+    cap: crate::privacy::CallCapability,
+) -> (Vec<String>, Vec<String>) {
+    let visible: Vec<&crate::config::ExtensionEntry> = entries
         .iter()
-        .filter(|extension| !extension.enabled)
         .filter(|extension| !extension.config.is_capability())
         .filter(|extension| {
             if !cap.enforced() {
@@ -3264,7 +3325,9 @@ fn config_disabled_extension_lines(
             let class = crate::privacy::resolve_extension(&name, Some(&extension.config));
             crate::privacy::refusal::privacy_refusal(&name, class.tier, cap.tier()).is_none()
         })
-        .map(|extension| {
+        .collect();
+
+    let describe = |extension: &crate::config::ExtensionEntry| -> String {
             let config = &extension.config;
             let description = match config {
                 ExtensionConfig::Builtin {
@@ -3285,18 +3348,35 @@ fn config_disabled_extension_lines(
                 | ExtensionConfig::Frontend { description, .. }
                 | ExtensionConfig::InlinePython { description, .. } => description,
             };
-            if persisted.contains(&config.name()) {
-                format!(
-                    "- {} - {} {}",
-                    config.name(),
-                    description,
-                    CONFIG_DISABLED_LABEL
-                )
+            format!("- {} - {}", config.name(), description)
+    };
+
+    let disabled = visible
+        .iter()
+        .filter(|extension| !extension.enabled)
+        .map(|extension| {
+            let line = describe(extension);
+            if persisted.contains(&extension.config.name()) {
+                format!("{line} {CONFIG_DISABLED_LABEL}")
             } else {
-                format!("- {} - {}", config.name(), description)
+                line
             }
         })
-        .collect()
+        .collect();
+
+    // ⚠ `normalize(&config.key())` and nothing else. That is exactly what
+    // `add_extension_with_origin` keys the live map by; `config::name_to_key`
+    // is a DIFFERENT reduction, and comparing against it would report every
+    // extension whose name carries whitespace or punctuation as permanently
+    // detached.
+    let detached = visible
+        .iter()
+        .filter(|extension| extension.enabled)
+        .filter(|extension| !live_keys.contains(&normalize(&extension.config.key())))
+        .map(|extension| describe(extension))
+        .collect();
+
+    (disabled, detached)
 }
 
 #[cfg(test)]
@@ -4566,6 +4646,107 @@ mod tests {
                 config: ExtensionConfig::stdio("custom", "cmd", "A custom server", 30_u64),
             },
         ]
+    }
+
+    /// F-20(a): `manage_extensions {disable}` detaches from the live map and
+    /// never touches the config, so a detached extension appeared in NEITHER
+    /// bucket — `search_available_extensions` answered "No extensions available
+    /// to enable" while the extension sat installed and enabled on disk. The
+    /// model could not learn the name it needed to attach it again.
+    mod detached_bucket_tests {
+        use super::*;
+
+        fn an_enabled_third_party() -> Vec<crate::config::ExtensionEntry> {
+            vec![crate::config::ExtensionEntry {
+                enabled: true,
+                config: ExtensionConfig::stdio("custom", "cmd", "A custom server", 30_u64),
+            }]
+        }
+
+        fn detached(entries: &[crate::config::ExtensionEntry], live: &[&str]) -> Vec<String> {
+            let live_keys = live.iter().map(|k| (*k).to_string()).collect();
+            extension_listing_lines(
+                entries,
+                &std::collections::HashSet::new(),
+                &live_keys,
+                a_private_caller(),
+            )
+            .1
+        }
+
+        #[test]
+        fn a_detached_extension_is_listed_without_the_do_not_enable_label() {
+            // Catches reusing the disabled renderer, which stamps "disabled by
+            // the user; do not enable without asking" on the one bucket whose
+            // whole purpose is to invite the model to re-attach.
+            let lines = detached(&an_enabled_third_party(), &[]);
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(lines[0].contains("custom"));
+            assert!(
+                !lines[0].contains(CONFIG_DISABLED_LABEL),
+                "the re-attach bucket must not tell the model not to re-attach: {lines:?}"
+            );
+        }
+
+        #[test]
+        fn an_attached_extension_is_not_listed_as_detached() {
+            // Catches "detached bucket = every config-enabled entry", which
+            // would list everything currently loaded.
+            assert!(detached(&an_enabled_third_party(), &["custom"]).is_empty());
+        }
+
+        #[test]
+        fn detachment_is_tested_with_the_live_maps_own_key() {
+            // Catches comparing `config.name()` — or `config::name_to_key` —
+            // against a map keyed by `normalize(config.key())`, which would
+            // report every extension whose name carries whitespace or
+            // punctuation as permanently detached.
+            let entries = vec![crate::config::ExtensionEntry {
+                enabled: true,
+                config: ExtensionConfig::stdio("My Agent", "cmd", "A custom server", 30_u64),
+            }];
+            let key = normalize(&entries[0].config.key());
+            assert_ne!(
+                key,
+                entries[0].config.name(),
+                "the fixture only discriminates if the two reductions differ"
+            );
+            assert!(detached(&entries, &[key.as_str()]).is_empty());
+        }
+
+        #[test]
+        fn the_detached_bucket_hides_a_private_extension_from_a_public_model() {
+            // Catches building the new bucket straight off `get_all_extensions()`
+            // without the `privacy_refusal` predicate — a fresh Gate E leak in
+            // a cleanup commit, of exactly the kind finding 13 closed.
+            let entries = vec![crate::config::ExtensionEntry {
+                enabled: true,
+                config: ExtensionConfig::stdio(
+                    "ucsfomopagent",
+                    "uv",
+                    "Natural-language SQL over the UCSF OMOP de-identified clinical database",
+                    30_u64,
+                ),
+            }];
+            assert_eq!(
+                crate::privacy::resolve_extension("ucsfomopagent", None).tier,
+                crate::privacy::ProviderTier::Private,
+                "the fixture only discriminates if this name really is private"
+            );
+
+            let empty = std::collections::HashSet::new();
+            let public = extension_listing_lines(&entries, &empty, &empty, a_public_caller()).1;
+            assert!(
+                public.is_empty(),
+                "a private connector reached a public model's detached bucket: {public:?}"
+            );
+            let private = extension_listing_lines(&entries, &empty, &empty, a_private_caller()).1;
+            assert_eq!(
+                private.len(),
+                1,
+                "the private caller must still see it, or the filter is just an empty list"
+            );
+        }
     }
 
     /// **Finding 13, half one — the config catalogue.**

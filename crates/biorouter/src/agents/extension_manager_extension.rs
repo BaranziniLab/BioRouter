@@ -1112,13 +1112,14 @@ impl ExtensionManagerClient {
             instructions: Some(indoc! {r#"
                 Extension Management
 
-                Use these tools to discover, enable, and disable extensions, as well as review resources.
+                Use these tools to discover installed extensions, attach and detach them, search the
+                trusted BAAM marketplace, install a package from it, permanently delete an installed
+                package, and review resources.
 
                 Available tools:
-                - search_available_extensions: List installed extensions and their exact names
-                - manage_extensions: Enable or disable extensions
-                - browse_marketplace_extensions: Browse trusted BAAM entries visible to this model
-                - search_marketplace_extensions: Search trusted BAAM entries
+                - search_available_extensions: List installed extensions and their exact names, including any that are installed but not attached to this chat
+                - manage_extensions: Attach or detach an installed extension
+                - search_marketplace_extensions: Search trusted BAAM entries; omit the query to browse everything visible to this model
                 - install_extension: Install an exact trusted registry id after user approval
                 - delete_extension_package: Permanently delete one or several validated marketplace packages after one user approval
                 - list_resources/read_resource: Resource tools, when they are advertised for the current session
@@ -1134,8 +1135,9 @@ impl ExtensionManagerClient {
                 A successful change applies immediately in the current turn. Its response names the
                 exact availableTools or removedTools; call an available tool directly by that name,
                 and never call a removed tool unless the extension is attached again.
-                Use browse/search to obtain an exact registry id, then install_extension when the
-                extension is not installed at all. An install result with state attached also names
+                Use search_marketplace_extensions (omit query to browse) to obtain an exact registry
+                id, then install_extension when the extension is not installed at all. An install
+                result with state attached also names
                 immediately callable availableTools; state installed means attach it before use.
                 Never provide a download URL or install
                 one by running shell commands, and NEVER ask the user to type an API key,
@@ -2348,6 +2350,24 @@ mod tests {
         assert!(instructions.contains("omitted when no loaded extension supports resources"));
         assert!(instructions.contains("immediately callable availableTools"));
         assert!(instructions.contains("state installed means attach it before use"));
+
+        // ⚠ A retired name has TWO spellings in prose, and a single-token
+        // check sees only one. `browse/search` names the retired verb while
+        // containing no retired token, so deleting the roster line and
+        // leaving that sentence passes a bare
+        // `!contains(BROWSE_MARKETPLACE_EXTENSIONS_TOOL_NAME)` — and the
+        // model still reads an instruction to browse.
+        for retired in [BROWSE_MARKETPLACE_EXTENSIONS_TOOL_NAME, "browse/search"] {
+            assert!(
+                !instructions.contains(retired),
+                "the instructions still name a retired tool ('{retired}'), which teaches \
+                 the model to call something it is never offered"
+            );
+        }
+        assert!(instructions.contains("omit the query to browse"));
+        // The capability's own one-line summary must name what it can now do,
+        // including the irreversible half.
+        assert!(instructions.contains("permanently delete"));
     }
 
     fn package_entry(name: &str, install_dir: &std::path::Path) -> ExtensionEntry {

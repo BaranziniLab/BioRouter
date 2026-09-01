@@ -885,11 +885,16 @@ const summarizeExtensionManagerCall = (
     return args.enable === false ? `${label} without attaching it` : label;
   }
   if (toolName === 'delete_extension_package') {
-    const count = countNamedArguments(args, 'registry_ids');
+    // The count comes FIRST because the Rust side merges both arguments:
+    // `preflight_delete_registry_ids` does `requested.insert(0, registry_id)`,
+    // so a call carrying `registry_id` AND `registry_ids` deletes all of them.
+    // Naming the singular as soon as it is present would report a three-package
+    // delete as one. Same shape in `removeSkillPackage` below.
+    const total =
+      countNamedArguments(args, 'registry_ids') + (namedArgument(args, ['registry_id']) ? 1 : 0);
+    if (total > 1) return `Removing ${total} extension packages`;
     if (extension) return `Removing extension package ${extension}`;
-    return count > 0
-      ? `Removing ${count} extension package${count === 1 ? '' : 's'}`
-      : 'Removing an extension package';
+    return total === 1 ? 'Removing 1 extension package' : 'Removing an extension package';
   }
   // One tool now, and the summary reads off the ARGUMENT rather than the name:
   // browsing is this call with no query. The retired name stays in the match
@@ -931,11 +936,12 @@ const summarizeSkillsCall = (toolName: string, args: Record<string, unknown>): s
     return args.dry_run === true ? `Previewing installation of ${label}` : `Installing ${label}`;
   }
   if (toolName === 'removeSkillPackage') {
-    const count = countNamedArguments(args, 'names');
+    // `preflight_removal_targets` merges `name` into `names` the same way
+    // `delete_extension_package` merges its pair, so the count leads here too.
+    const total = countNamedArguments(args, 'names') + (namedArgument(args, ['name']) ? 1 : 0);
+    if (total > 1) return `Removing ${total} skill packages`;
     if (skill) return `Removing skill package ${skill}`;
-    return count > 0
-      ? `Removing ${count} skill package${count === 1 ? '' : 's'}`
-      : 'Removing a skill package';
+    return total === 1 ? 'Removing 1 skill package' : 'Removing a skill package';
   }
   return null;
 };

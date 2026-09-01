@@ -47,7 +47,8 @@ export const CAPABILITIES: CapabilityMeta[] = [
   {
     key: 'extensionmanager',
     label: 'Extension Manager',
-    description: 'Lets Biorouter discover, enable, and disable extensions on its own.',
+    description:
+      'Lets Biorouter find and install extensions from the marketplace, attach and detach them on its own, and permanently delete an installed package once you approve it.',
     defaultEnabled: true,
   },
   {

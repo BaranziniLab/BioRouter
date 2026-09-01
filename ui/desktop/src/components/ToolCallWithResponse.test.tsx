@@ -120,6 +120,50 @@ describe('summarizeToolCall', () => {
         arguments: { registry_id: 'reagent-1.0.0', enable: true },
       })
     ).toBe('Installing Reagent v1.0.0');
+    // Both arguments are merged on the Rust side, so naming the singular first
+    // (today's `if (extension)` early return) understates the batch.
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__delete_extension_package',
+        arguments: { registry_id: 'spokeagent', registry_ids: ['playwrightagent', 'cdwagent'] },
+      })
+    ).toBe('Removing 3 extension packages');
+    // Dropping the `total === 1` arm silently anonymises every ordinary
+    // one-package batch delete, because the name is not read out of the array.
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__delete_extension_package',
+        arguments: { registry_ids: ['spokeagent'] },
+      })
+    ).toBe('Removing 1 extension package');
+    // Deleting the `if (extension)` branch outright would lose the name here.
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__delete_extension_package',
+        arguments: { registry_id: 'spokeagent' },
+      })
+    ).toBe('Removing extension package Spoke Agent');
+    // The skill mirror: `preflight_removal_targets` merges `name` into `names`.
+    expect(
+      summarizeToolCall({
+        name: 'skills__removeSkillPackage',
+        arguments: { name: 'alpha', names: ['beta'] },
+      })
+    ).toBe('Removing 2 skill packages');
+    // Same `total === 1` arm, on the skill half.
+    expect(
+      summarizeToolCall({
+        name: 'skills__removeSkillPackage',
+        arguments: { names: ['beta'] },
+      })
+    ).toBe('Removing 1 skill package');
+    // Same named-singular branch, on the skill half.
+    expect(
+      summarizeToolCall({
+        name: 'skills__removeSkillPackage',
+        arguments: { name: 'alpha' },
+      })
+    ).toBe('Removing skill package Alpha');
     expect(
       summarizeToolCall({
         name: 'skills__hotLoadSkill',
