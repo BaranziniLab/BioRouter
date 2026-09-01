@@ -59,6 +59,7 @@ struct BiorouterManifest {
 #[derive(Debug, Deserialize)]
 struct BiorouterComponent {
     name: String,
+    directory: Option<String>,
 }
 
 /// `.codex-plugin/plugin.json` and `.claude-plugin/plugin.json`.
@@ -267,6 +268,7 @@ fn biorouter_record(entries: &[Entry]) -> anyhow::Result<Option<ManifestFacts>> 
                 crate::agents::skill_catalog::PACKAGE_RECORD_FILE
             )
         })?;
+        let inferred_root = common_record_component_root(&parsed.components);
         return Ok(Some(ManifestFacts {
             evidence: Some(Evidence::BiorouterManifest),
             name: parsed.id.clone(),
@@ -277,6 +279,7 @@ fn biorouter_record(entries: &[Entry]) -> anyhow::Result<Option<ManifestFacts>> 
                     .skills_path
                     .as_deref()
                     .map(normalize_path)
+                    .or(inferred_root)
                     .unwrap_or_default(),
             ),
             entry_point: parsed.entry_point,
@@ -285,6 +288,18 @@ fn biorouter_record(entries: &[Entry]) -> anyhow::Result<Option<ManifestFacts>> 
         }));
     }
     Ok(None)
+}
+
+fn common_record_component_root(components: &[BiorouterComponent]) -> Option<String> {
+    let mut parents = components.iter().map(|component| {
+        let directory = normalize_path(component.directory.as_deref()?);
+        let (parent, _) = directory.rsplit_once('/').unwrap_or(("", &directory));
+        Some(parent.to_string())
+    });
+    let first = parents.next()??;
+    parents
+        .all(|parent| parent.as_deref() == Some(first.as_str()))
+        .then_some(first)
 }
 
 fn plugin_manifest(
@@ -440,6 +455,21 @@ mod tests {
         .unwrap();
         assert_eq!(facts.evidence, Some(Evidence::BiorouterManifest));
         assert_eq!(facts.name.as_deref(), Some("ours"));
+    }
+
+    #[test]
+    fn an_older_biorouter_record_recovers_its_component_root_from_directories() {
+        let facts = detect(&[entry(
+            crate::agents::skill_catalog::PACKAGE_RECORD_FILE,
+            r#"{"id":"destiny-skill","components":[
+                {"name":"destiny","directory":"skills/destiny"},
+                {"name":"destiny-mbti","directory":"skills/destiny-mbti"}
+            ]}"#,
+        )])
+        .unwrap();
+
+        assert_eq!(facts.components_root.as_deref(), Some("skills"));
+        assert_eq!(facts.declared, vec!["destiny", "destiny-mbti"]);
     }
 
     /// A broken manifest must not be read as "no manifest". Falling through

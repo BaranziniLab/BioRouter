@@ -295,7 +295,10 @@ fn component_names_are_preserved_exactly_and_never_prefixed() {
         );
     }
     assert!(plan.components.iter().any(|c| c.name == "media-use"));
-    assert!(plan.components.iter().any(|c| c.directory == "media-use"));
+    assert!(plan
+        .components
+        .iter()
+        .any(|c| c.directory == "skills/media-use"));
 }
 
 /// Zipping only the `skills/` directory is a thing people do, and the depth
@@ -400,11 +403,103 @@ fn a_components_support_files_travel_with_it_and_do_not_become_components() {
     assert!(plan
         .files
         .iter()
-        .any(|(path, _)| path == "alpha/references/notes.md"));
+        .any(|(path, _)| path == "skills/alpha/references/notes.md"));
     assert!(plan
         .files
         .iter()
-        .any(|(path, _)| path == "alpha/scripts/run.sh"));
+        .any(|(path, _)| path == "skills/alpha/scripts/run.sh"));
+}
+
+/// Destiny is a plugin-shaped bundle whose members intentionally reach back to
+/// shared package roots (`../../scripts` and `../../references`).  Installing
+/// each member at the package root severs that contract even though every
+/// `SKILL.md` remains individually loadable.
+#[test]
+fn a_plugin_bundle_preserves_component_paths_and_shared_package_roots() {
+    let files = vec![
+        (
+            ".claude-plugin/plugin.json",
+            r#"{"name":"destiny-skill","skills":"./skills/"}"#.to_string(),
+        ),
+        (
+            "skills/destiny-astrology/SKILL.md",
+            format!(
+                "{}\nUse ../../references/environment.md and ../../scripts/natal.py.\n",
+                skill_md("destiny-astrology", "Compute a chart")
+            ),
+        ),
+        (
+            "skills/destiny-mbti/SKILL.md",
+            skill_md("destiny-mbti", "Text-only typology"),
+        ),
+        ("scripts/natal.py", "print('synthetic')".to_string()),
+        (
+            "references/environment.md",
+            "Synthetic environment notes".to_string(),
+        ),
+        (
+            "references/decoy/SKILL.md",
+            skill_md("must-not-be-callable", "Shared data, not a component"),
+        ),
+        ("install.sh", "must not be imported".to_string()),
+    ];
+    let plan = plan(&files, WrapperHint::SourceArchive, &["destiny-skill"]).unwrap();
+
+    assert!(plan
+        .components
+        .iter()
+        .all(|component| component.directory.starts_with("skills/")));
+    for expected in [
+        "skills/destiny-astrology/SKILL.md",
+        "skills/destiny-mbti/SKILL.md",
+        "scripts/natal.py",
+        "references/environment.md",
+    ] {
+        assert!(
+            plan.files.iter().any(|(path, _)| path == expected),
+            "missing {expected}"
+        );
+    }
+    assert!(!plan.files.iter().any(|(path, _)| path == "install.sh"));
+
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("skills-root");
+    let installed = install::install(&plan, &root).unwrap();
+    let package_root = root.join("destiny-skill");
+    assert_eq!(installed.directory, package_root);
+    assert!(package_root.join("scripts/natal.py").is_file());
+    assert!(package_root.join("references/environment.md").is_file());
+
+    let roots = vec![crate::agents::skill_catalog::SkillRoot {
+        path: root.clone(),
+        source: crate::agents::skill_catalog::SkillSource::new(
+            crate::agents::skill_catalog::SkillSourceKind::Biorouter,
+            None,
+        ),
+    }];
+    let catalog = crate::agents::skill_catalog::SkillCatalog::scan(roots, 1);
+    assert!(!catalog.skills().contains_key("must-not-be-callable"));
+    let astrology = catalog.skills().get("destiny-astrology").cloned().unwrap();
+    assert_eq!(
+        astrology.directory,
+        package_root.join("skills/destiny-astrology")
+    );
+    assert_eq!(
+        std::fs::canonicalize(astrology.directory.join("../../scripts/natal.py")).unwrap(),
+        std::fs::canonicalize(package_root.join("scripts/natal.py")).unwrap()
+    );
+    assert_eq!(
+        std::fs::canonicalize(astrology.directory.join("../../references/environment.md")).unwrap(),
+        std::fs::canonicalize(package_root.join("references/environment.md")).unwrap()
+    );
+    let view = catalog.view(&Default::default());
+    let bundle = view
+        .bundles
+        .iter()
+        .find(|bundle| bundle.name == "destiny-skill")
+        .unwrap();
+    assert_eq!(bundle.directory, package_root);
+    assert!(bundle.package.is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -609,10 +704,12 @@ fn installing_hyperframes_produces_one_expandable_bundle_the_catalog_can_see() {
     assert_eq!(installed.entry_point.as_deref(), Some("hyperframes"));
     assert!(!installed.replaced);
 
-    // The layout is the two-level one discovery already understands, so the
-    // package needs no special case anywhere downstream.
-    assert!(root.join("hyperframes/hyperframes/SKILL.md").is_file());
-    assert!(root.join("hyperframes/media-use/SKILL.md").is_file());
+    // The source's component root is preserved because members and shared
+    // package assets may refer to one another by relative path.
+    assert!(root
+        .join("hyperframes/skills/hyperframes/SKILL.md")
+        .is_file());
+    assert!(root.join("hyperframes/skills/media-use/SKILL.md").is_file());
 
     let roots = vec![crate::agents::skill_catalog::SkillRoot {
         path: root.clone(),
@@ -749,6 +846,10 @@ fn an_installed_package_round_trips_through_its_own_record() {
     assert_eq!(plan_b.id, "hyperframes");
     assert_eq!(plan_b.entry_point.as_deref(), Some("hyperframes"));
     assert_eq!(plan_b.components.len(), 5);
+    assert!(plan_b
+        .components
+        .iter()
+        .all(|component| component.directory.starts_with("skills/")));
     assert_eq!(plan_b.groups["core"], vec!["hyperframes", "media-use"]);
 }
 
@@ -800,6 +901,25 @@ fn install_refuses_a_hand_built_plan_carrying_an_escaping_path() {
 
     assert!(install::install(&plan, &root).is_err());
     assert!(!temp.path().join("escaped.md").exists());
+}
+
+#[test]
+fn install_refuses_a_hand_built_plan_with_an_escaping_component_directory() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("skills");
+    let mut plan = plan(
+        &[
+            ("pack/alpha/SKILL.md", skill_md("alpha", "First")),
+            ("pack/beta/SKILL.md", skill_md("beta", "Second")),
+        ],
+        WrapperHint::Infer,
+        &["pack"],
+    )
+    .unwrap();
+    plan.components[0].directory = "../outside".to_string();
+
+    assert!(install::install(&plan, &root).is_err());
+    assert!(!root.join("pack").exists());
 }
 
 #[test]

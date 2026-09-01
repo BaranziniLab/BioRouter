@@ -121,6 +121,25 @@ pub fn plan_from_entries(
 
     let ambiguity = ambiguity_for(&facts, &components, &components_root);
 
+    // A manifest-defined component root is meaningful package layout.  A
+    // structurally inferred named parent is instead the package directory the
+    // installer is about to create, so carrying it would duplicate the package
+    // name (`pack/pack/member`).  `skills/` is the conventional meaningful
+    // exception even when inferred from an archive without a manifest.
+    let source_package_root = (facts.components_root.is_none()
+        && components_root != "skills"
+        && !components_root.ends_with("/skills"))
+    .then_some(components_root.as_str())
+    .filter(|root| !root.is_empty());
+    let files = keep_bundle_files(&entries, &components, source_package_root);
+    let components = components
+        .into_iter()
+        .map(|mut component| {
+            component.directory = package_relative_path(&component.directory, source_package_root);
+            component
+        })
+        .collect();
+
     Ok(ImportPlan {
         kind: ImportKind::Bundle,
         id,
@@ -131,21 +150,8 @@ pub fn plan_from_entries(
         evidence,
         ambiguity,
         shadows: Vec::new(),
-        files: components
-            .iter()
-            .flat_map(|component| {
-                keep_files(&entries, &component.directory)
-                    .into_iter()
-                    .map(|(path, data)| (format!("{}/{path}", leaf(&component.directory)), data))
-            })
-            .collect(),
-        components: components
-            .into_iter()
-            .map(|component| PlannedSkill {
-                directory: leaf(&component.directory),
-                ..component
-            })
-            .collect(),
+        files,
+        components,
         source,
     })
 }
@@ -465,16 +471,57 @@ fn keep_files(entries: &[Entry], directory: &str) -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
-/// The last path component — the directory name a component keeps on disk.
-///
-/// ⚠ **This preserves the source's own folder name**, `media-use` and
-/// `slideshow` included. No package prefix is added: several of HyperFrames'
-/// members do not start with `hyperframes-`, so a prefix would be both a lie
-/// about their identity and useless as a detector.
-fn leaf(directory: &str) -> String {
-    directory
-        .rsplit('/')
-        .next()
-        .unwrap_or(directory)
+/// Preserve a bundle's declared component directories plus the small set of
+/// shared package roots skill ecosystems conventionally reference.  Root
+/// installers and arbitrary repository files remain outside the import plan.
+fn keep_bundle_files(
+    entries: &[Entry],
+    components: &[PlannedSkill],
+    source_package_root: Option<&str>,
+) -> Vec<(String, Vec<u8>)> {
+    const SHARED_ROOTS: &[&str] = &["assets", "references", "scripts"];
+
+    entries
+        .iter()
+        .filter(|entry| !MANIFEST_FILES.contains(&entry.name.as_str()))
+        .filter(|entry| entry.name != crate::agents::skill_catalog::PACKAGE_RECORD_FILE)
+        .filter(|entry| {
+            components.iter().any(|component| {
+                entry.name == format!("{}/SKILL.md", component.directory)
+                    || entry.name.starts_with(&format!("{}/", component.directory))
+            }) || {
+                source_package_relative(&entry.name, source_package_root).is_some_and(|relative| {
+                    SHARED_ROOTS
+                        .iter()
+                        .any(|root| relative.starts_with(&format!("{root}/")))
+                })
+            }
+        })
+        .map(|entry| {
+            (
+                package_relative_path(&entry.name, source_package_root),
+                entry.data.clone(),
+            )
+        })
+        .collect()
+}
+
+fn package_relative_path(path: &str, source_package_root: Option<&str>) -> String {
+    source_package_relative(path, source_package_root)
+        .unwrap_or(path)
         .to_string()
+}
+
+fn source_package_relative<'a>(
+    path: &'a str,
+    source_package_root: Option<&str>,
+) -> Option<&'a str> {
+    match source_package_root {
+        Some(root) => path.strip_prefix(&format!("{root}/")),
+        None => Some(path),
+    }
+}
+
+fn leaf(directory: &str) -> &str {
+    directory.rsplit('/').next().unwrap_or(directory)
 }

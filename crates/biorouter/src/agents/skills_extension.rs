@@ -952,10 +952,42 @@ impl SkillsClient {
         Ok(files)
     }
 
-    /// Two-level discovery over the given roots: `<slug>/SKILL.md` (single
-    /// skill) or `<bundle>/<slug>/SKILL.md` (bundle sub-skill), keyed by
-    /// frontmatter name — a later root's skill overrides an earlier one's.
-    /// Files whose frontmatter fails to parse are skipped (never loaded).
+    /// `None` means there is no modern component list and legacy discovery
+    /// should run. `Some` is authoritative, including an empty vector for any
+    /// invalid modern record, so callers fail closed without partial members.
+    fn recorded_package_skills(
+        package_dir: &Path,
+        bundle_name: &str,
+        source_root: &Path,
+    ) -> Option<Vec<Skill>> {
+        use crate::agents::skill_catalog::PackageComponentDiscovery;
+
+        let records = match crate::agents::skill_catalog::package_component_skill_files(package_dir)
+        {
+            PackageComponentDiscovery::Legacy => return None,
+            PackageComponentDiscovery::Invalid => return Some(Vec::new()),
+            PackageComponentDiscovery::Valid(records) => records,
+        };
+        let mut skills = Vec::with_capacity(records.len());
+        for record in records {
+            let Ok(skill) =
+                Self::parse_skill_file(&record.path, Some(bundle_name.to_string()), source_root)
+            else {
+                return Some(Vec::new());
+            };
+            if skill.metadata.name != record.name {
+                return Some(Vec::new());
+            }
+            skills.push(skill);
+        }
+        Some(skills)
+    }
+
+    /// Bounded discovery over the given roots: legacy trees use
+    /// `<slug>/SKILL.md` or `<bundle>/<slug>/SKILL.md`; imported package records
+    /// name their exact component directories. A later root's skill overrides
+    /// an earlier one's. Files whose frontmatter fails to parse are skipped
+    /// (never loaded), while a modern package fails closed as a unit.
     /// Pub so the CLI lists exactly what this extension will load.
     pub fn discover_skills_in_directories(directories: &[PathBuf]) -> HashMap<String, Skill> {
         let mut skills = HashMap::new();
@@ -968,19 +1000,32 @@ impl SkillsClient {
                         continue;
                     }
 
+                    let bundle_name = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(str::to_string);
+                    if let Some(bundle_name) = bundle_name.as_deref() {
+                        if let Some(package_skills) =
+                            Self::recorded_package_skills(&path, bundle_name, dir)
+                        {
+                            for skill in package_skills {
+                                skills.insert(skill.metadata.name.clone(), skill);
+                            }
+                            continue;
+                        }
+                    }
+
                     let skill_file = path.join("SKILL.md");
                     if skill_file.exists() {
-                        // Single skill
+                        // Only a legacy or record-less entry reaches this
+                        // point. A modern record above is authoritative even
+                        // when an undeclared root SKILL.md also exists.
                         if let Ok(skill) = Self::parse_skill_file(&skill_file, None, dir) {
                             skills.insert(skill.metadata.name.clone(), skill);
                         }
                     } else {
-                        // Bundle: check if sub-directories contain SKILL.md
-                        let bundle_name = path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .map(str::to_string);
-
+                        // Hand-assembled bundles keep the legacy exact
+                        // one-level scan when there is no package record.
                         if let (Some(bundle_name), Ok(sub_entries)) =
                             (bundle_name, std::fs::read_dir(&path))
                         {
@@ -1680,6 +1725,14 @@ impl SkillsClient {
             .ok_or_else(|| format!("Skill '{}' not found", skill_name))?;
 
         let mut response = format!("# Skill: {}\n\n{}\n\n", skill.metadata.name, skill.body);
+
+        if let Some(bundle) = skill.bundle_name.as_deref() {
+            let package_root = skill.source_root.join(bundle);
+            response.push_str(&format!(
+                "## Package Location\n\nPackage root: {}\n\nResolve package-relative references and package-root environment variables from this directory.\n\n",
+                package_root.display()
+            ));
+        }
 
         if !skill.supporting_files.is_empty() {
             response.push_str(&format!(
@@ -2681,6 +2734,64 @@ Body 3
     }
 
     #[test]
+    fn package_record_components_are_validated_atomically_by_name() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        let package = root.join("package");
+        for (directory, name) in [("alpha", "alpha"), ("skills/beta", "beta")] {
+            let skill_dir = package.join(directory);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: Fixture\n---\nBody"),
+            )
+            .unwrap();
+        }
+        fs::write(
+            package.join("SKILL.md"),
+            "---\nname: undeclared-root\ndescription: Undeclared fixture\n---\nBody",
+        )
+        .unwrap();
+
+        fs::write(
+            package.join(crate::agents::skill_catalog::PACKAGE_RECORD_FILE),
+            "{not-json",
+        )
+        .unwrap();
+        assert!(
+            SkillsClient::discover_skills_in_directories(std::slice::from_ref(&root)).is_empty()
+        );
+
+        fs::write(
+            package.join(crate::agents::skill_catalog::PACKAGE_RECORD_FILE),
+            serde_json::json!({"components": [
+                {"name": "swapped", "directory": "alpha"},
+                {"name": "beta", "directory": "skills/beta"}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        assert!(
+            SkillsClient::discover_skills_in_directories(std::slice::from_ref(&root)).is_empty()
+        );
+
+        fs::write(
+            package.join(crate::agents::skill_catalog::PACKAGE_RECORD_FILE),
+            serde_json::json!({"components": [
+                {"name": "alpha", "directory": "alpha"},
+                {"name": "beta", "directory": "skills/beta"}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let skills = SkillsClient::discover_skills_in_directories(&[root]);
+        assert_eq!(skills.len(), 2);
+        assert!(skills.contains_key("alpha"));
+        assert!(skills.contains_key("beta"));
+        assert!(!skills.contains_key("undeclared-root"));
+    }
+
+    #[test]
     fn test_discover_skills_from_multiple_directories() {
         let temp_dir = TempDir::new().unwrap();
 
@@ -3612,6 +3723,43 @@ Working dir biorouter content
             .filter_map(|c| c.as_text().map(|t| t.text.clone()))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[tokio::test]
+    async fn loading_a_bundle_member_reports_the_package_root() {
+        let temp = TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(temp.path().join("sessions")));
+        let mut client = client_with(&["destiny-astrology"], temp.path(), session_manager);
+        let skill = client
+            .skills
+            .pinned_mut()
+            .get_mut("destiny-astrology")
+            .unwrap();
+        skill.bundle_name = Some("destiny-skill".to_string());
+        skill.directory = temp.path().join("destiny-skill/skills/destiny-astrology");
+
+        let loaded = client
+            .handle_load_skill(
+                Some(
+                    serde_json::json!({"name": "destiny-astrology"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                &crate::agents::session_skills::SessionSkillOverride::default(),
+            )
+            .await
+            .unwrap();
+        let text: String = loaded
+            .iter()
+            .filter_map(|content| content.as_text().map(|value| value.text.clone()))
+            .collect();
+
+        assert!(text.contains(&format!(
+            "Package root: {}",
+            temp.path().join("destiny-skill").display()
+        )));
+        assert!(text.contains("package-root environment variables"));
     }
 
     #[test]
