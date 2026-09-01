@@ -162,6 +162,7 @@ impl BrxtBundle {
         if manifest.name.trim().is_empty() {
             bail!("manifest.json missing required field: \"name\"");
         }
+        validate_extension_name(&manifest.name)?;
         if manifest.entry_point.trim().is_empty() {
             bail!("manifest.json missing required field: \"entry_point\"");
         }
@@ -369,9 +370,87 @@ pub fn extensions_root() -> PathBuf {
     crate::config::paths::Paths::config_dir().join("extensions")
 }
 
+/// Refuse a `manifest.name` that would not stay inside the extensions root.
+///
+/// ⚠ **The bundle names its own install directory** — every installer does
+/// `extensions_root().join(&manifest.name)` — and the install transaction's
+/// `rollback` does `remove_dir_all` on the result. A bundle declaring
+/// `"name": "../../evil"` therefore picks an arbitrary directory to write into
+/// and, on any failure, to delete.
+///
+/// Deliberately identical to `validate_extension_name` in the daemon's
+/// `routes::shell`, and to the check the desktop's `brxt:uninstall` handler
+/// performs: a bundle one reader accepts and another refuses is a bug report
+/// nobody can reproduce.
+pub fn validate_extension_name(name: &str) -> Result<()> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+        bail!("Invalid extension name in manifest.json: {name:?}");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A structurally valid `.brxt` whose manifest declares `name`, written
+    /// into `dir` and nowhere else.
+    fn bundle_declaring(dir: &Path, name: &str) -> PathBuf {
+        use std::io::Write as _;
+        let path = dir.join("fixture.brxt");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        let options = zip::write::FileOptions::default();
+        let manifest = serde_json::json!({
+            "name": name,
+            "display_name": "Fixture",
+            "description": "a fixture bundle",
+            "version": "0.0.1",
+            "entry_point": "main.py",
+            "repository": "https://example.test/fixture",
+            "env_vars": [],
+        });
+        for (entry, body) in [
+            ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
+            ("README.md", b"# Fixture\n".to_vec()),
+            (
+                "pyproject.toml",
+                b"[project]\nname = \"fixture\"\n".to_vec(),
+            ),
+            ("src/main.py", b"pass\n".to_vec()),
+        ] {
+            zip.start_file(entry, options).unwrap();
+            zip.write_all(&body).unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    /// ⚠ **The bundle names its own install directory.** Every installer does
+    /// `extensions_root().join(&manifest.name)`, and the install transaction's
+    /// `rollback` does `remove_dir_all` on the result — so a bundle declaring
+    /// `"name": "../evil"` picks a directory outside the extensions root to
+    /// write into and, on any failure, to delete. Refusing at `open` is what
+    /// makes every reader of a bundle agree.
+    #[test]
+    fn a_bundle_name_with_a_separator_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        for bad in ["../evil", "..", ".", "a/b", "a\\b", "/etc/passwd"] {
+            let path = bundle_declaring(dir.path(), bad);
+            let Err(err) = BrxtBundle::open(&path) else {
+                panic!("{bad} was accepted as an extension name");
+            };
+            assert!(
+                err.to_string().contains("Invalid extension name"),
+                "{bad} was refused for the wrong reason: {err}"
+            );
+        }
+        let good = bundle_declaring(dir.path(), "spokeagent");
+        assert_eq!(
+            BrxtBundle::open(&good).unwrap().manifest().name,
+            "spokeagent",
+            "an ordinary name must still open"
+        );
+    }
 
     #[test]
     fn hint_broken_homebrew_rust() {

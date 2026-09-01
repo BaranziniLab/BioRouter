@@ -3823,13 +3823,26 @@ ipcMain.handle(
     }
   ) => {
     try {
-      const installDir = path.join(
-        os.homedir(),
-        '.config',
-        'biorouter',
-        'extensions',
-        extensionName
-      );
+      // ⚠ `extensionName` is the BUNDLE's own `manifest.name`, handed straight
+      // through from `BrxtInstallModal.tsx` — so the archive names the
+      // directory it is written into. Without this check a bundle declaring
+      // `"name": "../../evil"` escapes the extensions root, and the desktop is
+      // the third installer: the Rust transaction and `routes::shell` both
+      // validate, and the `brxt:uninstall` handler below performs exactly this
+      // check on exactly this string.
+      if (
+        !extensionName ||
+        /[/\\]/.test(extensionName) ||
+        extensionName === '..' ||
+        extensionName === '.'
+      ) {
+        return { error: 'Invalid extension name.' };
+      }
+      const extensionsBase = path.join(os.homedir(), '.config', 'biorouter', 'extensions');
+      const installDir = path.join(extensionsBase, extensionName);
+      if (!installDir.startsWith(extensionsBase + path.sep)) {
+        return { error: 'Invalid extension name.' };
+      }
 
       // Create install directory
       fsSync.mkdirSync(installDir, { recursive: true });

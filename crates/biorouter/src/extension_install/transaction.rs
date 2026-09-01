@@ -25,8 +25,7 @@
 //! inventing a prompt nobody will see.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -49,6 +48,7 @@ use super::brxt::{
     extensions_root, run_uv_sync, secret_already_stored, uv_available, uv_missing_message,
     BrxtBundle, BrxtEnvVar, BrxtManifest, BundledSkill,
 };
+use super::claim::{self, ClaimSource, InstallClaim};
 use super::credentials::{request_credentials, revoke, CredentialSpec, DEFAULT_CREDENTIAL_TTL};
 
 /// Where the bundle comes from.
@@ -167,53 +167,6 @@ impl InstallReport {
             enabled: false,
             operator_pinned_off: false,
         }
-    }
-}
-
-/// Non-secret state kept so a cancelled install can be retried without
-/// re-downloading and re-building. Deliberately holds no values.
-#[derive(Debug, Clone)]
-pub struct ResumableInstall {
-    pub install_id: String,
-    pub extension_name: String,
-    pub display_name: String,
-    pub bundle_path: PathBuf,
-    pub install_dir: PathBuf,
-    /// The variables still to collect.
-    pub pending_vars: Vec<BrxtEnvVar>,
-}
-
-/// Installs that stopped at the credential step and can be resumed.
-#[derive(Default)]
-pub struct ResumableInstalls {
-    entries: Mutex<HashMap<String, ResumableInstall>>,
-}
-
-impl ResumableInstalls {
-    pub fn global() -> &'static Arc<Self> {
-        static INSTANCE: once_cell::sync::Lazy<Arc<ResumableInstalls>> =
-            once_cell::sync::Lazy::new(|| Arc::new(ResumableInstalls::default()));
-        &INSTANCE
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, ResumableInstall>> {
-        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    pub fn get(&self, install_id: &str) -> Option<ResumableInstall> {
-        self.lock().get(install_id).cloned()
-    }
-
-    pub fn list(&self) -> Vec<ResumableInstall> {
-        self.lock().values().cloned().collect()
-    }
-
-    fn put(&self, entry: ResumableInstall) {
-        self.lock().insert(entry.install_id.clone(), entry);
-    }
-
-    pub fn forget(&self, install_id: &str) {
-        self.lock().remove(install_id);
     }
 }
 
@@ -349,20 +302,31 @@ impl ExtensionInstallTransaction {
         let key = name_to_key(&manifest.name);
 
         // ── extract + build ───────────────────────────────────────────────
-        let install_dir = extensions_root().join(&manifest.name);
+        let root = extensions_root();
+        let install_dir = root.join(&manifest.name);
+        // Belt and braces beside `BrxtBundle::open`'s name validation, and the
+        // same shape `install_brxt_bundle` uses in the daemon. The BUNDLE names
+        // this directory and `rollback` deletes it, so a name that escapes the
+        // extensions root is a bundle that can delete an arbitrary tree.
+        if !install_dir.starts_with(&root) {
+            anyhow::bail!("Refusing to install under an invalid extension name");
+        }
         let existed = install_dir.exists();
+        let ctx = InstallContext {
+            manifest: &manifest,
+            skills: &skills,
+            install_dir: &install_dir,
+            existed_before: existed,
+        };
+        // Before the first byte is written, so a tree that appears on disk is
+        // always a tree something on disk claims.
+        self.record_claim(self.claim_for(&ctx));
         bundle.extract_to(&install_dir)?;
         self.undo.install_dir = Some(install_dir.clone());
         self.undo.created_install_dir = !existed;
         run_uv_sync(&install_dir)?;
 
         // ── credentials ───────────────────────────────────────────────────
-        let ctx = InstallContext {
-            manifest: &manifest,
-            skills: &skills,
-            bundle_path: &bundle_path,
-            install_dir: &install_dir,
-        };
         let mut values = ResolvedValues::default();
         if let Some(stopped) = self
             .settle_credentials(&ctx, &mut values, policy, cancel)
@@ -413,7 +377,9 @@ impl ExtensionInstallTransaction {
 
         // ── attach ────────────────────────────────────────────────────────
         let attached = enable && self.attach(config).await;
-        ResumableInstalls::global().forget(&self.install_id);
+        // A claim that outlives a finished install is a permanent phantom
+        // "pending install" on every reader.
+        claim::remove_claim(&self.install_id);
         Ok(self.report(
             if attached {
                 InstallState::Attached
@@ -547,7 +513,7 @@ impl ExtensionInstallTransaction {
         pending: &[BrxtEnvVar],
         state: InstallState,
     ) -> InstallReport {
-        self.park_for_resume(ctx.manifest, ctx.bundle_path, ctx.install_dir, pending);
+        self.park_for_resume(ctx, pending);
         self.rollback_config_only();
         self.report(state, ctx.manifest, ctx.skills, &[])
     }
@@ -680,26 +646,51 @@ impl ExtensionInstallTransaction {
         }
     }
 
-    fn park_for_resume(
-        &self,
-        manifest: &BrxtManifest,
-        bundle_path: &std::path::Path,
-        install_dir: &std::path::Path,
-        pending: &[BrxtEnvVar],
-    ) {
-        ResumableInstalls::global().put(ResumableInstall {
-            install_id: self.install_id.clone(),
-            extension_name: manifest.name.clone(),
-            display_name: manifest.display_name.clone(),
-            bundle_path: bundle_path.to_path_buf(),
-            install_dir: install_dir.to_path_buf(),
-            pending_vars: pending.to_vec(),
-        });
+    /// This run's claim, at the phase it starts in.
+    fn claim_for(&self, ctx: &InstallContext<'_>) -> InstallClaim {
+        InstallClaim::new(
+            &self.install_id,
+            &ctx.manifest.name,
+            &ctx.manifest.display_name,
+            ctx.install_dir,
+            ctx.existed_before,
+            ClaimSource::from(&self.source),
+        )
+    }
+
+    /// Write the claim, and never fail an install over it.
+    ///
+    /// A claim that could not be written costs the *reclaim* path — the user
+    /// has to reinstall rather than run `biorouter extension configure`.
+    /// Aborting here would cost them the extension itself, which is worse.
+    fn record_claim(&self, claim: InstallClaim) {
+        if let Err(e) = claim::write_claim(&claim) {
+            warn!(
+                "Could not record the install claim for {}: {e}",
+                claim.extension_name
+            );
+        }
+    }
+
+    /// Rewrite this run's claim to say it stopped, and on which key names.
+    ///
+    /// ⚠ **The claim is the only record that outlives the process.** What this
+    /// replaced was a process-global map holding a `bundle_path` that, for a
+    /// marketplace install, pointed into a `TempDir` already dropped — so it
+    /// was unreadable after a restart and dangling before one. The claim
+    /// records the re-fetchable source instead, and key NAMES only.
+    fn park_for_resume(&self, ctx: &InstallContext<'_>, pending: &[BrxtEnvVar]) {
+        let keys = pending.iter().map(|v| v.key.clone()).collect();
+        self.record_claim(self.claim_for(ctx).parked(keys));
     }
 
     /// Undo the registration and the credentials, but keep the extracted tree
-    /// and its built environment — that is the expensive half, it contains
-    /// nothing sensitive, and a resumed install reuses it.
+    /// and its built environment.
+    ///
+    /// The tree is the expensive half and contains nothing sensitive, and
+    /// `run_uv_sync` is incremental against the surviving `.venv`. A resumed
+    /// install *does* re-download and re-extract — `run_inner` extracts
+    /// unconditionally — it just does not pay for the environment again.
     fn rollback_config_only(&mut self) {
         if let Some(key) = self.undo.config_key.take() {
             remove_extension(&key);
@@ -715,7 +706,7 @@ impl ExtensionInstallTransaction {
                 let _ = std::fs::remove_dir_all(&dir);
             }
         }
-        ResumableInstalls::global().forget(&self.install_id);
+        claim::remove_claim(&self.install_id);
     }
 
     fn report(
@@ -863,8 +854,11 @@ fn pinned_off_by_operator(extension_name: &str) -> bool {
 struct InstallContext<'a> {
     manifest: &'a BrxtManifest,
     skills: &'a [BundledSkill],
-    bundle_path: &'a std::path::Path,
-    install_dir: &'a std::path::Path,
+    install_dir: &'a Path,
+    /// Whether the tree was already there when this run started. Sampled before
+    /// anything can create it, and recorded on the claim so a reader can tell a
+    /// first install from an upgrade that parked.
+    existed_before: bool,
 }
 
 /// Values resolved so far: settings bound for `config.yaml`, and the NAMES of
@@ -1124,6 +1118,70 @@ mod tests {
                 "pin = persisted AND disabled, not either alone"
             );
         }
+    }
+
+    /// The claim is a plaintext file in the user's config directory. Same rule
+    /// as the report: key NAMES, and no shape a value fits in.
+    ///
+    /// The assertion is structural rather than "this particular secret is
+    /// absent", because the failure it guards against is somebody adding a
+    /// `supplied` map or a resolved env map to `InstallClaim` to make resuming
+    /// easier — which no value-specific test would ever fail on.
+    #[test]
+    fn a_parked_claim_records_key_names_and_never_a_value() {
+        let manifest = spoke_manifest();
+        let claim = InstallClaim::new(
+            "i-1",
+            &manifest.name,
+            &manifest.display_name,
+            Path::new("/ext/spokeagent"),
+            false,
+            ClaimSource::LocalFile {
+                path: PathBuf::from("/bundles/spokeagent.brxt"),
+            },
+        )
+        .parked(vec!["SPOKEAGENT_PASSCODE".to_string()]);
+
+        let json = serde_json::to_string(&claim).unwrap();
+        assert!(json.contains("SPOKEAGENT_PASSCODE"), "{json}");
+        assert!(json.contains("\"parked\""), "{json}");
+        for field in ["\"value\"", "\"values\"", "\"supplied\"", "\"envs\""] {
+            assert!(
+                !json.contains(field),
+                "a claim grew a field a credential fits in: {json}"
+            );
+        }
+    }
+
+    /// ⚠ The literal shape the in-memory record had, and the reason it could
+    /// never be resumed: `bundle_path` for a marketplace install pointed inside
+    /// a `TempDir` dropped when the install returned. A claim records the URL,
+    /// which is the half a resume can act on.
+    #[test]
+    fn a_marketplace_claim_records_the_url_not_a_temp_bundle_path() {
+        let manifest = spoke_manifest();
+        let claim = InstallClaim::new(
+            "i-2",
+            &manifest.name,
+            &manifest.display_name,
+            Path::new("/ext/spokeagent"),
+            false,
+            ClaimSource::Marketplace {
+                registry_id: "spokeagent-0.4.1".to_string(),
+                url: "https://biorouter.ucsf.edu/bundles/spokeagent.brxt".to_string(),
+            },
+        )
+        .parked(vec!["SPOKEAGENT_PASSCODE".to_string()]);
+
+        let json = serde_json::to_string(&claim).unwrap();
+        let temp = std::env::temp_dir();
+        let temp = temp.to_string_lossy();
+        assert!(
+            !json.contains(temp.as_ref()),
+            "the claim recorded a path under the download's temp dir ({temp}): {json}"
+        );
+        assert!(json.contains("https://biorouter.ucsf.edu/"), "{json}");
+        assert!(json.contains("spokeagent-0.4.1"), "{json}");
     }
 
     /// An optional, non-secret variable must not be able to summon a dialog —

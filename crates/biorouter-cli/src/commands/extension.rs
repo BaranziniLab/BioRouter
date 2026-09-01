@@ -14,8 +14,8 @@ use biorouter::agents::extension::ExtensionConfig;
 use biorouter::config::extensions::{get_all_extensions, name_to_key, remove_extension};
 use biorouter::config::paths::Paths;
 use biorouter::extension_install::{
-    BrxtEnvVar, CredentialPolicy, ExtensionInstallTransaction, InstallReport, InstallSource,
-    InstallState,
+    claim, BrxtEnvVar, ClaimSource, CredentialPolicy, ExtensionInstallTransaction, InstallClaim,
+    InstallReport, InstallSource, InstallState,
 };
 use console::{style, Color};
 
@@ -248,12 +248,25 @@ fn report_install(report: &InstallReport, interactive: bool) -> Result<()> {
 /// setting-to-config. Existing values are reported as **configured** and never
 /// read back — the prompt offers to replace them, and skipping keeps whatever is
 /// already stored.
+///
+/// ⚠ **There need not be a config entry.** An install that stopped at the
+/// credential step never registered one — that is the whole point of the stop —
+/// so the `No extension named …` refusal below used to fire on exactly the case
+/// the extension-manager tool tells the user to run this command for. A parked
+/// [`claim`] is the second place to look, and finishing one means resuming the
+/// transaction rather than editing an entry that does not exist.
 pub async fn handle_configure(name: String) -> Result<()> {
     let key = name_to_key(&name);
     let entry = get_all_extensions()
         .into_iter()
-        .find(|e| name_to_key(&e.config.name()) == key)
-        .ok_or_else(|| anyhow!("No extension named '{name}' is configured"))?;
+        .find(|e| name_to_key(&e.config.name()) == key);
+    let Some(entry) = entry else {
+        let claim = claim::read_claims()
+            .into_iter()
+            .find(|c| name_to_key(&c.extension_name) == key)
+            .ok_or_else(|| anyhow!("No extension named '{name}' is configured"))?;
+        return finish_parked_install(&name, claim).await;
+    };
 
     let install_dir = brxt_install_dir(&entry.config)
         .ok_or_else(|| anyhow!("'{name}' was not installed from a .brxt bundle"))?;
@@ -315,6 +328,72 @@ pub async fn handle_configure(name: String) -> Result<()> {
         .dim()
     );
     Ok(())
+}
+
+/// Finish an install that stopped at the credential step.
+///
+/// The tree and its built `.venv` are still on disk — that is what the claim
+/// points at — so the manifest can be read from there and the values asked for
+/// here. What this must NOT do is write them with [`store_configured_values`]:
+/// that folds the result into an `ExtensionEntry`, and a parked install has
+/// none. The values are handed to a fresh transaction carrying the parked
+/// install's own id, which registers the extension for the first time.
+async fn finish_parked_install(name: &str, claim: InstallClaim) -> Result<()> {
+    let vars = declared_vars(&claim.install_dir)?;
+    if vars.is_empty() {
+        bail!(
+            "'{name}' has an unfinished install at {} but declares no configurable values. \
+             Re-run `biorouter extension install` on the bundle.",
+            claim.install_dir.display()
+        );
+    }
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "`biorouter extension configure` needs a terminal so it can read values with echo off.\n  \
+             {} has an unfinished install waiting on: {}",
+            name,
+            claim.pending_keys.join(", ")
+        );
+    }
+
+    println!(
+        "  {} finishing an install of {} that stopped waiting for {}",
+        style("·").dim(),
+        style(name).bold(),
+        style(claim.pending_keys.join(", ")).dim(),
+    );
+    let values = prompt_for_values(&vars)?;
+    let source = resume_source(name, claim.source)?;
+    let report = ExtensionInstallTransaction::new(source)
+        .with_install_id(claim.install_id)
+        .with_values(values)
+        .run(CredentialPolicy::Prompt(Box::new(prompt_for_values)), None)
+        .await;
+    report_install(&report, true)
+}
+
+/// The source a resumed install re-reads its bundle from.
+///
+/// A marketplace claim carries the URL, which is re-fetchable. A local `.brxt`
+/// that has since been moved or deleted is not, and saying *which* file is
+/// missing is the difference between an actionable message and "install
+/// failed".
+fn resume_source(name: &str, source: ClaimSource) -> Result<InstallSource> {
+    match source {
+        ClaimSource::LocalFile { path } => {
+            if !path.exists() {
+                bail!(
+                    "'{name}' has an unfinished install, but the bundle it came from is gone: {}\n  \
+                     Re-run `biorouter extension install <bundle>` with the .brxt file.",
+                    path.display()
+                );
+            }
+            Ok(InstallSource::LocalFile { path })
+        }
+        ClaimSource::Marketplace { registry_id, url } => {
+            Ok(InstallSource::Marketplace { registry_id, url })
+        }
+    }
 }
 
 /// Where a `.brxt` extension was unpacked, read off the `--directory` argument
@@ -567,5 +646,103 @@ mod tests {
     #[test]
     fn stdin_is_not_read_unless_asked_for() {
         assert!(read_secret_stdin(false).unwrap().is_empty());
+    }
+
+    /// ⚠ **The recovery route the extension-manager tool advertises.** An
+    /// install that stops at the credential step never registers a config
+    /// entry, so `configure` used to bail with "No extension named …" on
+    /// exactly the case it is told to users for. The fallback must find the
+    /// parked claim and resolve its tree.
+    ///
+    /// Asserted through the no-terminal refusal: a test process has no tty, so
+    /// reaching the "needs a terminal" message — naming the pending key read
+    /// out of the claim's own tree — proves the install dir was resolved.
+    #[tokio::test]
+    async fn configure_falls_back_to_a_parked_claim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_str().unwrap().to_string();
+        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root))]);
+        // Prove the fixture is pointed at the temp tree before anything is
+        // written or deleted: the real config root holds live extensions.
+        for dir in [claim::claims_dir(), extensions_root()] {
+            assert!(
+                dir.starts_with(tmp.path()),
+                "the fixture resolved to {} — refusing to write there",
+                dir.display()
+            );
+        }
+
+        // A tree with a manifest, and a claim pointing at it. No config entry —
+        // that is the state a parked install leaves behind.
+        let name = "parkedfixture";
+        let tree = extensions_root().join(name);
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(
+            tree.join("manifest.json"),
+            serde_json::json!({
+                "name": name,
+                "env_vars": [{
+                    "key": "PARKED_FIXTURE_PASSCODE",
+                    "required": true,
+                    "secret": true,
+                    "description": "",
+                }],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        claim::write_claim(
+            &InstallClaim::new(
+                "i-parked",
+                name,
+                "Parked Fixture",
+                &tree,
+                false,
+                ClaimSource::LocalFile {
+                    path: tmp.path().join("parkedfixture.brxt"),
+                },
+            )
+            .parked(vec!["PARKED_FIXTURE_PASSCODE".to_string()]),
+        )
+        .unwrap();
+
+        let err = handle_configure(name.to_string())
+            .await
+            .expect_err("a test process has no terminal, so this cannot prompt")
+            .to_string();
+        assert!(
+            !err.contains("No extension named"),
+            "the parked claim was not consulted: {err}"
+        );
+        assert!(err.contains("PARKED_FIXTURE_PASSCODE"), "{err}");
+    }
+
+    /// A local bundle that has since moved cannot be resumed, and the message
+    /// has to name the file — "install failed" sends the user nowhere.
+    #[test]
+    fn a_resume_whose_bundle_is_gone_names_the_missing_file() {
+        let err = resume_source(
+            "spokeagent",
+            ClaimSource::LocalFile {
+                path: PathBuf::from("/definitely/not/here/spokeagent.brxt"),
+            },
+        )
+        .expect_err("a missing bundle cannot be resumed")
+        .to_string();
+        assert!(
+            err.contains("/definitely/not/here/spokeagent.brxt"),
+            "{err}"
+        );
+
+        // A marketplace claim is re-fetchable, so it resumes.
+        let source = resume_source(
+            "spokeagent",
+            ClaimSource::Marketplace {
+                registry_id: "spokeagent-0.4.1".to_string(),
+                url: "https://biorouter.ucsf.edu/x.brxt".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(matches!(source, InstallSource::Marketplace { .. }));
     }
 }

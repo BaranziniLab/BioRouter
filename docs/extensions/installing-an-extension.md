@@ -28,7 +28,9 @@ The states an install can end in are all reportable, to a person and to a model:
 
 Rollback is scoped to the run's own work. A tree that already existed is not deleted — a failed upgrade that removes a working extension is worse than a failed upgrade — and a credential the machine already held is not revoked, because other extensions may share it.
 
-> **A cancelled credential step keeps the expensive half.** The extracted tree and its built Python environment survive as a resume record ([`ResumableInstalls`](../../crates/biorouter/src/extension_install/transaction.rs)), holding the extension's name and which keys are still needed — and no values. Retrying does not re-download or rebuild.
+> **A cancelled credential step leaves a claim on disk, and the claim is what makes it findable again.** The extracted tree and its built Python environment survive, and beside them — in `extension-installs/`, a *sibling* of the extensions directory so a bundle cannot forge one — sits an [`InstallClaim`](../../crates/biorouter/src/extension_install/claim.rs) naming the extension, its install directory, and which keys are still needed. No values, ever.
+>
+> ⚠ **This used to say the record lived in a process-global map and that "retrying does not re-download or rebuild". Both were wrong.** The map was write-only and died with the process, so quitting the app left the tree unreachable and invisible on every surface — which is the whole reason the claim is now written to disk. And a resume *does* re-download and re-extract; what survives the round trip is the built `.venv`, which is the expensive part. Finish a claimed install with `biorouter extension configure <name>`, which prompts with echo off.
 
 ---
 

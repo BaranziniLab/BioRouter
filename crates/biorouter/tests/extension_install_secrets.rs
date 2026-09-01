@@ -349,3 +349,217 @@ fn flattening_a_conversation_that_contains_the_card_yields_no_value() {
     // The audit line survives — it is the useful, safe half.
     assert!(flattened.contains("SPOKEAGENT_PASSCODE"));
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// The on-disk claim (F-13)
+//
+// A stopped install used to be recorded only in a process-global map, so the
+// one case it existed for — "I closed the app before I had the passcode" — was
+// never recoverable. These run the real transaction end to end against the
+// sandbox above and look at what is left on disk afterwards.
+//
+// `#[serial]` because they all assert on the *contents* of one claims
+// directory, and the binary's tests otherwise run concurrently.
+// ──────────────────────────────────────────────────────────────────────────────
+
+use std::path::PathBuf;
+
+use biorouter::extension_install::brxt::{extensions_root, uv_available};
+use biorouter::extension_install::claim::{claims_dir, read_claims};
+use biorouter::extension_install::{
+    ClaimPhase, CredentialPolicy, ExtensionInstallTransaction, InstallSource, InstallState,
+};
+
+/// A minimal `.brxt` on disk, plus the temp dir that owns it.
+struct Fixture {
+    _dir: tempfile::TempDir,
+    path: PathBuf,
+}
+
+/// Build a structurally valid bundle. `pyproject` is a parameter because a
+/// bundle whose `uv sync` fails is how the failed-install path is reached
+/// without a network.
+fn bundle(name: &str, env_vars: Vec<BrxtEnvVar>, pyproject: &str) -> Fixture {
+    use std::io::Write as _;
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join(format!("{name}.brxt"));
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+    let options = zip::write::FileOptions::default();
+    let mut m = manifest(env_vars);
+    m.name = name.to_string();
+    for (entry, body) in [
+        ("manifest.json", serde_json::to_vec(&m).unwrap()),
+        ("README.md", b"# Fixture\n".to_vec()),
+        ("pyproject.toml", pyproject.as_bytes().to_vec()),
+        ("src/main.py", b"pass\n".to_vec()),
+    ] {
+        zip.start_file(entry, options).unwrap();
+        zip.write_all(&body).unwrap();
+    }
+    zip.finish().unwrap();
+    Fixture { _dir: dir, path }
+}
+
+fn working_pyproject(name: &str) -> String {
+    format!("[project]\nname = \"{name}\"\nversion = \"0.0.1\"\nrequires-python = \">=3.10\"\ndependencies = []\n")
+}
+
+/// Empty the claims directory, having first PROVED it is the sandbox's and not
+/// the developer's. `~/.config/biorouter` holds live extensions.
+fn clear_claims() {
+    let dir = claims_dir();
+    assert!(
+        dir.starts_with(sandbox()),
+        "the fixture resolved to {} — refusing to delete anything there",
+        dir.display()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `uv` builds every bundle's environment; without it there is no install to
+/// observe. Reported rather than silently passing.
+fn uv_or_skip(test: &str) -> bool {
+    if uv_available() {
+        return true;
+    }
+    eprintln!("skipping {test}: `uv` is not installed");
+    false
+}
+
+/// What F-13 is about. A refused install must leave something on disk that
+/// names the extension, its tree, and the key it is still waiting for —
+/// otherwise there is nothing for `biorouter extension configure` to find.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_refused_install_leaves_a_parked_claim_on_disk() {
+    sandbox();
+    if !uv_or_skip("a_refused_install_leaves_a_parked_claim_on_disk") {
+        return;
+    }
+    clear_claims();
+    // A key and a name of this test's own. `SPOKEAGENT_PASSCODE` is written to
+    // the sandbox's credential store by `the_install_learns_key_names_and_…`,
+    // and a stored secret counts as MET — so sharing the name would make this
+    // test pass or fail on the order the binary happened to run in.
+    let name = "parkedclaimfixture";
+    let key = "PARKED_CLAIM_PASSCODE";
+    let tree = extensions_root().join(name);
+    let _ = std::fs::remove_dir_all(&tree);
+
+    let fixture = bundle(name, vec![var(key, true, true)], &working_pyproject(name));
+    let report = ExtensionInstallTransaction::new(InstallSource::LocalFile {
+        path: fixture.path.clone(),
+    })
+    .run(CredentialPolicy::Refuse, None)
+    .await;
+
+    assert_eq!(
+        report.state,
+        InstallState::NeedsCredentials {
+            keys: vec![key.to_string()]
+        },
+        "{report:?}"
+    );
+
+    let claims = read_claims();
+    assert_eq!(claims.len(), 1, "expected exactly one claim: {claims:?}");
+    let claim = &claims[0];
+    assert_eq!(claim.phase, ClaimPhase::Parked);
+    assert_eq!(claim.extension_name, name);
+    assert_eq!(claim.install_dir, tree);
+    assert!(
+        !claim.existed_before,
+        "a first install must not claim it found the tree"
+    );
+    assert_eq!(claim.pending_keys, vec![key.to_string()]);
+    assert_eq!(claim.install_id, report.install_id);
+    // The expensive half survives, which is what makes the claim resumable.
+    assert!(tree.join("manifest.json").is_file());
+
+    // ...and the plaintext claim carries no value, because there is none in it.
+    let file = std::fs::read_dir(claims_dir())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let body = std::fs::read_to_string(&file).unwrap();
+    assert!(!body.contains(SECRET), "{body}");
+
+    clear_claims();
+    let _ = std::fs::remove_dir_all(&tree);
+}
+
+/// A claim that outlives a finished install is a permanent phantom "pending
+/// install" on every reader.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_successful_install_leaves_no_claim() {
+    sandbox();
+    if !uv_or_skip("a_successful_install_leaves_no_claim") {
+        return;
+    }
+    clear_claims();
+    let name = "claimfixtureok";
+    let tree = extensions_root().join(name);
+    let _ = std::fs::remove_dir_all(&tree);
+
+    let fixture = bundle(name, Vec::new(), &working_pyproject(name));
+    let report = ExtensionInstallTransaction::new(InstallSource::LocalFile {
+        path: fixture.path.clone(),
+    })
+    .run(CredentialPolicy::Refuse, None)
+    .await;
+
+    assert!(report.state.is_success(), "{report:?}");
+    assert!(
+        read_claims().is_empty(),
+        "a finished install left a claim behind: {:?}",
+        read_claims()
+    );
+
+    biorouter::config::extensions::remove_extension(&biorouter::config::extensions::name_to_key(
+        name,
+    ));
+    let _ = std::fs::remove_dir_all(&tree);
+}
+
+/// Same rule on the other side: a run that failed and rolled itself back owns
+/// nothing, so it must claim nothing.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_failed_install_leaves_no_claim() {
+    sandbox();
+    if !uv_or_skip("a_failed_install_leaves_no_claim") {
+        return;
+    }
+    clear_claims();
+    let name = "claimfixturebad";
+    let tree = extensions_root().join(name);
+    let _ = std::fs::remove_dir_all(&tree);
+
+    // Unparseable TOML, so `uv sync` fails immediately and offline.
+    let fixture = bundle(name, Vec::new(), "this is not toml at all [[[\n");
+    let report = ExtensionInstallTransaction::new(InstallSource::LocalFile {
+        path: fixture.path.clone(),
+    })
+    .run(CredentialPolicy::Refuse, None)
+    .await;
+
+    assert!(
+        matches!(report.state, InstallState::Failed { .. }),
+        "{report:?}"
+    );
+    assert!(
+        read_claims().is_empty(),
+        "a rolled-back install left a claim behind: {:?}",
+        read_claims()
+    );
+    assert!(
+        !tree.exists(),
+        "a rolled-back first install must not leave its tree: {}",
+        tree.display()
+    );
+    // Nothing was written outside the sandbox on the way.
+    assert!(extensions_root().starts_with(sandbox()));
+}
