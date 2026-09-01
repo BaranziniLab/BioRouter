@@ -4919,6 +4919,18 @@ impl Agent {
                                     "`{canonical}` was enabled for this turn but its session state could not be persisted: {error}"
                                 ));
                             } else {
+                                // The fourth instance of F-05's shape: this
+                                // path persists correctly and told no consumer,
+                                // so the composer's extension popup, the
+                                // History list and another pane's tool count
+                                // all stayed stale until something else moved
+                                // the revision. Published only on the success
+                                // branch — a refresh after a failed write would
+                                // send every consumer to re-read a row that
+                                // never landed, and render the old state as
+                                // authoritative.
+                                crate::catalog::CatalogEvents::global()
+                                    .publish_session_refresh(session_id);
                                 notes.push(format!(
                                     "`{canonical}` was enabled because the user selected it explicitly."
                                 ));
