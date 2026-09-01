@@ -928,6 +928,20 @@ read `useSkillCatalog`.
   Precedence: skill `add` > skill `remove` > **bundle** `add` > bundle `remove`
   > machine-wide. The bundle arms are load-bearing — without them a per-chat
   bundle toggle writes a name no skill matches.
+- ⚠ **A refreshed catalog is not an enabled skill, and an install must not say
+  it is.** Both install handlers hard-coded `"usableInThisConversation": true`,
+  so a package reinstalled into a chat that had switched it off was announced as
+  ready and then filtered out of every model-facing list. The answer is composed
+  by `SkillCatalog::view`, never re-decided — and the obvious hand-rolled test
+  ("is this name in `over.remove`?") is wrong for exactly the case that matters,
+  because a per-chat **bundle** toggle persists the bundle's name and no
+  member's. Reading the post-install catalog rather than the `ImportPlan` also
+  settles which shape landed: installed `individual`, the components have no
+  bundle, so a revocation naming the bundle genuinely stops applying.
+  `session_skills::forget` prunes on uninstall, but that is hygiene, not the
+  fix: another chat may hold the same revocation, and `workspace_set_tools`
+  writes overrides into sessions other than the caller's, so no prune on any
+  remove path can ever be complete.
 - ⚠ `CatalogSkill.builtin` answers "did Biorouter put this here?", and
   `CatalogBundle.builtin` answers it for a bundle **row**, which is a different
   control over a different directory. That second field is defence in depth —
@@ -1089,7 +1103,7 @@ Test the gate where it is: the unit tests in `agents/agent.rs`
 prints a URL. The daemon serves the SPA **on its own origin**, so nothing is proxied. This
 replaced a standalone `biorouter-headless` binary and its Linux tarball, both deleted
 2026-08-23; release assets went 11 → 10. Design and reasoning:
-[`docs/deployment/serve-decisions.md`](docs/deployment/serve-decisions.md) (SD-1..SD-7),
+[`docs/deployment/serve-decisions.md`](docs/deployment/serve-decisions.md) (SD-1..SD-8),
 [`serve-architecture.md`](docs/deployment/serve-architecture.md),
 [`browser-access.md`](docs/deployment/browser-access.md).
 
@@ -1102,6 +1116,29 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   **agent**, so every surface that writes a capability key asks `isBrowserSurface()`
   (`ui/desktop/src/utils/surface.ts`) and explains *before* the user can reach the 409. Do not
   "fix" browser mode by weakening the refusal.
+- **A control that can never work here says so, before it is touched** (SD-8). The same
+  `Stdio::null()` that closes SD-1 means NO approval carrying `requires_user_proof` can ever
+  be granted on a `serve` daemon — for anyone, always. So `confirm_tool_action` answers a
+  refusal with `reason: "unproven"` or `"noKeyInstalled"` and a sentence written for a person;
+  the approval card reads `isBrowserSurface()` up front and renders that in place of its
+  buttons; and the roster withholds the tools whose only path runs through such an approval
+  (skills' three mutations, the extension manager's install and delete). Browsing, searching
+  and `manage_extensions` stay — the last one's approval is a fallback for an
+  operator-pinned-off extension and its ordinary path needs none. ⚠ Not a security change:
+  nothing that was refused becomes permitted. The availability flag is sampled ONCE per roster
+  and threaded, so a roster can never half-believe a person is reachable.
+- **Proof of a person is checked at the resolution choke point, not at one route.** Every door
+  that answers a parked decision — the HTTP route, an Agent Drafter app's WebSocket, ACP, the
+  CLI prompt, the TUI modal, an ancestor agent's relay — passes a `DecisionAuthority` into
+  `PendingUserActions::resolve_matching`, which refuses an *allow* on a proof-backed
+  `ToolApproval` from a surface that cannot prove a person acted. It is a newtype with a
+  private field, not an enum, because an enum variant is a literal any crate could write; a
+  repo-walk test in `pending_user_action.rs` asserts the two privileged constructors appear
+  only in `routes/action_required.rs` and the two CLI surfaces. ⚠ The gate keys on
+  `is_allowed()` and the request's own flag, never on the variant — denials and cancellations
+  land from anywhere, and a gate on `ToolApproval(_)` would kill every bridged coding-agent
+  approval on the desktop. A refusing door must also immediately deny: a refusal leaves the
+  caller parked by design, and nothing re-raises an ephemeral card.
 - **The serving path.** `Settings.serve_ui` (`BIOROUTER_SERVE_UI`) →
   `routes::web_ui::attach`, called **after** `check_token` in `commands/agent.rs` so the shell
   and bundle sit *structurally outside* that middleware rather than being exempted by path.
