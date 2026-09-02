@@ -893,6 +893,26 @@ struct CodingAgentBridgePolicy {
 // proof-backed surfaces. Ordinary extensions use a separate, per-turn path:
 // they must already be attached to the session, pass Gate E for the pinned
 // capability, and retain the exact config and tool grant captured by the plan.
+// ⚠ `workspace_list` is ABSENT, and it is not clear whether that was decided or
+// inherited — which is why this note exists rather than a fix (#161). The shape
+// is odd on its face: a bridged child may READ a conversation's full contents by
+// id, but not enumerate ids. That is the more sensitive operation permitted and
+// the less sensitive one withheld, and it buys little containment either way,
+// because `create_session` allocates ids as `YYYYMMDD_N` (`MAX(N) + 1`), so a
+// child that wants them can count. What actually holds the boundary is the tier
+// gate — verified live: a public-model caller is refused with the
+// private-conversation message.
+//
+// Measured consequence: under `claude_code` the model correctly reports it
+// cannot list conversations and offers `chatrecall` instead, while the same
+// prompt under Versa Claude and Versa GPT lists them.
+//
+// Resolving it means either adding `workspace_list` (parity with what this list
+// already permits) or dropping `workspace_read_conversation` (if a bridged child
+// genuinely should not reach other conversations, the READ is the tool to drop).
+// Both change the security posture, so both are the owner's call, not a passing
+// edit — see the `DEVELOPER` entry below for how a deliberate omission reads
+// when it says why.
 const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__subagent",
     "workspace__workspace_read_conversation",
