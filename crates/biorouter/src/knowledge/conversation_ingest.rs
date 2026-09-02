@@ -832,7 +832,27 @@ mod tests {
         .await
         .unwrap_err()
         .to_string();
-        assert!(missing.contains("not installed"), "{missing}");
+        assert!(
+            missing.contains("not installed"),
+            "{missing}\n\n\
+             ⚠ If this failed with `Ok(Some(Soul {{ … }}))`, the soul skill was \
+             planted in this test's own root by a CONCURRENT test, and the cause \
+             is not in this file. `execution::manager` line ~104 calls \
+             `soul::install`, which seeds `update-soul` into \
+             `Paths::config_dir()` — i.e. whatever `BIOROUTER_PATH_ROOT` is \
+             ambient — and it takes no env lock. While this test holds the lock, \
+             that ambient value is OUR temp dir, so any test in this binary that \
+             starts an execution manager writes the skill here.\n\
+             This is the family recorded at `model.rs` (search \
+             \"only serialises callers that *ask* for it\"): the guard is \
+             present and correct and cannot help, because the writer never asks \
+             for it. Observed once, in a full `cargo test --workspace` on a \
+             machine also running another repository's suite; 8 targeted runs \
+             (alone x5, this binary x2, --test-threads=1) and all three CI \
+             platforms pass. Do NOT add a lock here — it is already here. The \
+             fix, if this recurs, is to stop the assertion depending on the \
+             ABSENCE of a file in a process-global location."
+        );
         assert_eq!(
             raw_source_count(&svc, crate::knowledge::soul::SOUL_KB_ID),
             raw_before
