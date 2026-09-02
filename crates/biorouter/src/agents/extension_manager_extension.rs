@@ -58,6 +58,15 @@ pub enum ManageExtensionAction {
 pub struct ManageExtensionsParams {
     pub action: ManageExtensionAction,
     /// Exact installed name returned by search_available_extensions, not a marketplace registry id.
+    // ⚠ `alias`, not `rename`, and a `//` comment rather than a `///` one: the
+    // SCHEMA still teaches the snake_case name (a doc comment here would ship
+    // this paragraph to the model as the property's description), and the alias
+    // only forgives the camelCase spelling. It exists because the caller is not
+    // guessing — our own result payloads hand it `extensionName`, since `json!` keys are
+    // camelCase for the GUI that reads the same payloads — and it passes back
+    // the spelling we gave it. Rejecting that costs a whole round-trip to say
+    // "expected extension_name", a correction the caller should never have had to make.
+    #[serde(alias = "extensionName")]
     pub extension_name: String,
 }
 
@@ -68,6 +77,15 @@ pub struct InstallExtensionParams {
     /// The BAAM registry `id` of the extension to install, e.g.
     /// `playwright-agent`. Recorded as provenance so the privacy tier is
     /// re-derived from a stable id rather than from a renameable config name.
+    // ⚠ `alias`, not `rename`, and a `//` comment rather than a `///` one: the
+    // SCHEMA still teaches the snake_case name (a doc comment here would ship
+    // this paragraph to the model as the property's description), and the alias
+    // only forgives the camelCase spelling. It exists because the caller is not
+    // guessing — our own result payloads hand it `registryId`, since `json!` keys are
+    // camelCase for the GUI that reads the same payloads — and it passes back
+    // the spelling we gave it. Rejecting that costs a whole round-trip to say
+    // "expected registry_id", a correction the caller should never have had to make.
+    #[serde(alias = "registryId")]
     pub registry_id: String,
     /// Enable the extension after installing it. Defaults to true.
     #[serde(default = "default_true")]
@@ -92,11 +110,29 @@ pub struct SearchMarketplaceExtensionsParams {
 #[serde(deny_unknown_fields)]
 pub struct DeleteExtensionPackageParams {
     /// One exact trusted BAAM registry id.
+    // ⚠ `alias`, not `rename`, and a `//` comment rather than a `///` one: the
+    // SCHEMA still teaches the snake_case name (a doc comment here would ship
+    // this paragraph to the model as the property's description), and the alias
+    // only forgives the camelCase spelling. It exists because the caller is not
+    // guessing — our own result payloads hand it `registryId`, since `json!` keys are
+    // camelCase for the GUI that reads the same payloads — and it passes back
+    // the spelling we gave it. Rejecting that costs a whole round-trip to say
+    // "expected registry_id", a correction the caller should never have had to make.
+    #[serde(alias = "registryId")]
     pub registry_id: Option<String>,
     /// Several exact trusted BAAM registry ids. The whole batch is validated
     /// before any package is removed.
     #[serde(default)]
     #[schemars(length(max = 50))]
+    // ⚠ `alias`, not `rename`, and a `//` comment rather than a `///` one: the
+    // SCHEMA still teaches the snake_case name (a doc comment here would ship
+    // this paragraph to the model as the property's description), and the alias
+    // only forgives the camelCase spelling. It exists because the caller is not
+    // guessing — our own result payloads hand it `registryIds`, since `json!` keys are
+    // camelCase for the GUI that reads the same payloads — and it passes back
+    // the spelling we gave it. Rejecting that costs a whole round-trip to say
+    // "expected registry_ids", a correction the caller should never have had to make.
+    #[serde(alias = "registryIds")]
     pub registry_ids: Vec<String>,
 }
 
@@ -141,12 +177,30 @@ fn default_true() -> bool {
 pub struct ReadResourceParams {
     pub uri: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    // ⚠ `alias`, not `rename`, and a `//` comment rather than a `///` one: the
+    // SCHEMA still teaches the snake_case name (a doc comment here would ship
+    // this paragraph to the model as the property's description), and the alias
+    // only forgives the camelCase spelling. It exists because the caller is not
+    // guessing — our own result payloads hand it `extensionName`, since `json!` keys are
+    // camelCase for the GUI that reads the same payloads — and it passes back
+    // the spelling we gave it. Rejecting that costs a whole round-trip to say
+    // "expected extension_name", a correction the caller should never have had to make.
+    #[serde(alias = "extensionName")]
     pub extension_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ListResourcesParams {
     #[serde(skip_serializing_if = "Option::is_none")]
+    // ⚠ `alias`, not `rename`, and a `//` comment rather than a `///` one: the
+    // SCHEMA still teaches the snake_case name (a doc comment here would ship
+    // this paragraph to the model as the property's description), and the alias
+    // only forgives the camelCase spelling. It exists because the caller is not
+    // guessing — our own result payloads hand it `extensionName`, since `json!` keys are
+    // camelCase for the GUI that reads the same payloads — and it passes back
+    // the spelling we gave it. Rejecting that costs a whole round-trip to say
+    // "expected extension_name", a correction the caller should never have had to make.
+    #[serde(alias = "extensionName")]
     pub extension_name: Option<String>,
 }
 
@@ -2280,6 +2334,56 @@ mod argument_visibility_tests {
              and install_extension's `registry_id` — or the case flip is invisible \
              to the model that just read one and must now write the other: \
              {description}"
+        );
+    }
+
+    /// The spelling we HAND the model round-trips back in.
+    ///
+    /// `install_extension` accepts `registry_id`; the search result whose value
+    /// the caller is copying prints it as `registryId`, because these payloads
+    /// are also read by the GUI and `json!` keys are camelCase there. So the
+    /// obvious call — take the id out of the result, put it in the argument —
+    /// was refused, and the caller spent a round-trip discovering a case
+    /// convention it had no way to know. Same trap on `registry_ids` and
+    /// `extension_name`.
+    ///
+    /// Two halves, and the second is what keeps this from being a rename:
+    /// the alias is accepted, AND the schema still teaches only the snake_case
+    /// name, so nothing learns the camelCase spelling from us.
+    #[test]
+    fn a_camel_case_argument_is_accepted_but_never_taught() {
+        use super::{DeleteExtensionPackageParams, InstallExtensionParams, ManageExtensionsParams};
+        // Accepted.
+        let installed: InstallExtensionParams =
+            serde_json::from_value(serde_json::json!({ "registryId": "spoke-agent" }))
+                .expect("the spelling our own search result prints must be accepted");
+        assert_eq!(installed.registry_id, "spoke-agent");
+        let managed: ManageExtensionsParams = serde_json::from_value(
+            serde_json::json!({ "action": "enable", "extensionName": "SPOKEAgent" }),
+        )
+        .expect("the spelling our own result payloads print must be accepted");
+        assert_eq!(managed.extension_name, "SPOKEAgent");
+        let deleted: DeleteExtensionPackageParams =
+            serde_json::from_value(serde_json::json!({ "registryIds": ["a", "b"] }))
+                .expect("the batch spelling must be accepted too");
+        assert_eq!(deleted.registry_ids, vec!["a".to_owned(), "b".to_owned()]);
+
+        // Never taught. schemars emits a field's DOC comment as the property
+        // description, so the note explaining the alias must not be a `///` —
+        // six copies of it would ride along in every tool schema.
+        let schema = serde_json::to_value(schemars::schema_for!(InstallExtensionParams)).unwrap();
+        let text = schema.to_string();
+        assert!(
+            text.contains("registry_id"),
+            "the schema must still teach the snake_case name: {text}"
+        );
+        assert!(
+            !text.contains("registryId"),
+            "an alias must not reach the schema — that would teach the spelling              it exists to forgive: {text}"
+        );
+        assert!(
+            !text.contains("round-trip"),
+            "the alias rationale is for a code reader, not for the model's tool              schema; make it a `//` comment: {text}"
         );
     }
 
