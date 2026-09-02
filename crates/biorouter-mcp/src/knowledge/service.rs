@@ -425,14 +425,33 @@ impl FileLockGuard {
     /// How long a knowledge write may wait for another holder before it gives
     /// up and says so (#157).
     ///
-    /// Generous, because a legitimate holder can be a whole ingest macro; finite,
-    /// because the alternative measured in a live daemon was an unbounded wait.
-    /// Writes to one base stopped answering entirely — no result, no error, no
-    /// timeout — while reads to the same base and writes to other bases were
+    /// FINITE, because the alternative measured in a live daemon was an unbounded
+    /// wait: writes to one base stopped answering entirely — no result, no error,
+    /// no timeout — while reads to the same base and writes to other bases were
     /// fine, and only restarting the daemon cleared it. The desktop app runs one
     /// long-lived daemon (observed uptime: days), so "until restart" is a long
     /// time to be unable to save.
-    const KB_WRITE_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+    ///
+    /// ⚠ And LONGER THAN THE LONGEST LEGITIMATE HOLD, which is what actually sets
+    /// the number. A macro holds this lock across its whole sub-agent loop, so the
+    /// ceiling is that loop's own budget — [`SubAgentBounds::max_wall`], 300 s by
+    /// default but **900 s** as `biorouter-cli`'s knowledge commands construct it
+    /// — plus conversion, staging and commit either side of it. A bound below that
+    /// does not report a wedge, it manufactures one: an ordinary long ingest would
+    /// fail every concurrent caller with a message blaming a holder that is in fact
+    /// working normally, and the louder the message the more convincing the false
+    /// report. This constant was first written as 120 s, under even the DEFAULT
+    /// budget, which is the bug this paragraph exists to stop recurring;
+    /// `the_lock_wait_exceeds_every_macro_wall_clock_budget` fails if a macro
+    /// budget is ever raised past it.
+    ///
+    /// Raising it also lengthens the SYNCHRONOUS wait in [`Self::acquire_bounded`],
+    /// which would be a bad trade if it could pin a Tokio worker for half an hour.
+    /// It cannot: checked caller by caller, every production path into the sync
+    /// `lock_existing_kb` runs inside `spawn_blocking` — the `*_async` wrappers go
+    /// through `run_existing_kb_mutation`, and `reset_knowledge` is spawned by its
+    /// route. Re-check that before raising this further.
+    const KB_WRITE_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1800);
 
     /// `acquire`, but bounded. Whatever holds the lock, the caller gets a
     /// sentence naming the base instead of a call that never returns.
@@ -1435,21 +1454,79 @@ impl KnowledgeService {
         kb_id: &str,
         cancel: Option<&CancellationToken>,
     ) -> Result<KnowledgeWriteGuard> {
+        self.lock_kb_path_waiting(kb_id, cancel, FileLockGuard::KB_WRITE_LOCK_WAIT)
+            .await
+    }
+
+    /// [`Self::lock_kb_path_cancellable`] with the queue deadline supplied.
+    ///
+    /// The deadline is a parameter for ONE reason: so the tests can prove it
+    /// actually fires. The shipped value is 30 minutes (it has to clear the
+    /// longest legitimate macro), which is not a duration a test can wait out,
+    /// and driving `tokio::time` forward instead needs the `test-util` feature
+    /// this crate does not enable. Threading it through is the alternative to a
+    /// bound nothing exercises — and both arms take the same deadline, so a test
+    /// that drives one is testing the code path the other uses.
+    async fn lock_kb_path_waiting(
+        &self,
+        kb_id: &str,
+        cancel: Option<&CancellationToken>,
+        wait: std::time::Duration,
+    ) -> Result<KnowledgeWriteGuard> {
         paths::validate_kb_id(kb_id)?;
         let m = self
             .locks
             .entry(kb_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
-        let process_guard = match cancel {
-            Some(cancel) => {
-                tokio::select! {
+        // #157: BOUNDED — and on BOTH arms. This in-process mutex, not the file
+        // lock below, is what matched every symptom measured in a live daemon:
+        // writes to one base stopped answering while reads and other bases were
+        // fine, and only a restart cleared it (a file lock would have survived
+        // one; an in-process `Mutex` does not). A holder that never releases
+        // makes every later caller here await forever.
+        //
+        // ⚠ Two ways to put this fix in the wrong place, both of which I did:
+        //
+        //  1. Bounding `lock_existing_kb`'s FILE lock instead. It compiled, its
+        //     unit test passed, and it changed nothing — the MCP tools reach a
+        //     base through THIS function. Measured: with only that bound in
+        //     place, `kb_get_graph` still returned nothing at 200 s.
+        //  2. Bounding only the `None` arm. Nearly every tool handler in
+        //     `server.rs` passes `Some(context.ct)`, so the arm that looks like
+        //     the exception is the one the whole surface actually takes; a
+        //     cancel token is an escape only if somebody cancels.
+        //
+        // Evidence, both halves: the DIAGNOSIS came from the running app — a live
+        // daemon, a real wedge, and a `kb_get_graph` that answered at the deadline
+        // instead of never — which is what caught (1) being on the wrong wait
+        // while its unit test was passing. The BEHAVIOUR is covered here, by tests
+        // that drive `lock_kb_path_waiting` with a short deadline on each arm.
+        let queued = async {
+            match cancel {
+                Some(cancel) => tokio::select! {
                     biased;
-                    () = cancel.cancelled() => anyhow::bail!("knowledge operation cancelled while waiting for the KB lock"),
-                    guard = m.lock_owned() => guard,
-                }
+                    () = cancel.cancelled() => None,
+                    guard = m.lock_owned() => Some(guard),
+                },
+                None => Some(m.lock_owned().await),
             }
-            None => m.lock_owned().await,
+        };
+        let process_guard = match tokio::time::timeout(wait, queued).await {
+            Ok(Some(guard)) => guard,
+            Ok(None) => {
+                anyhow::bail!("knowledge operation cancelled while waiting for the KB lock")
+            }
+            // Both causes named, because this message cannot tell them apart and
+            // a confident wrong diagnosis is worse than an honest fork.
+            Err(_) => anyhow::bail!(
+                "timed out after {}s waiting for knowledge base '{kb_id}'. Another \
+                     operation still holds it: if an ingest, query or lint is running on \
+                     this base, let it finish and retry; if nothing is running, the lock \
+                     is stuck and restarting Biorouter clears it (see issue #157). Nothing \
+                     was written.",
+                wait.as_secs()
+            ),
         };
         if cancel.is_some_and(CancellationToken::is_cancelled) {
             anyhow::bail!("knowledge operation cancelled after acquiring the KB queue lock");
@@ -5530,6 +5607,201 @@ mod tests {
             recovered.head().unwrap().shorthand(),
             Some("main" | "master")
         ));
+    }
+
+    /// #157, the shipped behaviour: a caller that cannot get the queue lock
+    /// eventually gives up and SAYS SO, instead of never returning.
+    ///
+    /// Driven at 150 ms rather than the shipped 30 minutes — the duration is
+    /// arithmetic, the wiring is what this proves.
+    #[tokio::test]
+    async fn a_waiter_that_cannot_get_the_kb_queue_gives_up_and_names_the_base() {
+        let (_dir, svc) = svc();
+        // ⚠ A DISTINCTIVE id, not the `"k"` the tests around this one use. With
+        // `"k"` the naming assertion below is satisfied by the letter k in
+        // "knowledge base" — it passed against a message with the id stripped
+        // out of it entirely, which is the whole property it claims to check.
+        let kb = "wedged-base-7f3";
+        svc.create_base(kb, "K", None).unwrap();
+        let held = svc.lock_kb(kb).await.unwrap();
+
+        let waited = std::time::Instant::now();
+        let error = match svc
+            .lock_kb_path_waiting(kb, None, std::time::Duration::from_millis(150))
+            .await
+        {
+            Ok(_) => panic!("a waiter behind a held lock must time out, not hang"),
+            Err(error) => error,
+        };
+        let elapsed = waited.elapsed();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("timed out"), "{message}");
+        assert!(
+            message.contains(kb),
+            "the base must be named so the user knows WHICH one is stuck: {message}"
+        );
+        assert!(
+            message.contains("Nothing \\\nwas written.") || message.contains("Nothing was written"),
+            "the caller must be told no write landed: {message}"
+        );
+        // Both causes, because the message cannot tell them apart.
+        assert!(message.contains("let it finish and retry"), "{message}");
+        assert!(message.contains("restarting Biorouter"), "{message}");
+        assert!(
+            elapsed >= std::time::Duration::from_millis(150),
+            "returned in {elapsed:?} — that is not the deadline firing"
+        );
+        drop(held);
+    }
+
+    /// The same deadline on the CANCELLABLE arm.
+    ///
+    /// This is the arm that matters most and the one I first left unbounded:
+    /// nearly every tool handler in `server.rs` passes `Some(context.ct)`, so the
+    /// arm that reads like the special case is the one the whole tool surface
+    /// takes. A cancel token bounds the wait only if somebody actually cancels.
+    #[tokio::test]
+    async fn the_cancellable_arm_is_bounded_too_when_nobody_cancels() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let held = svc.lock_kb("k").await.unwrap();
+
+        let never_fired = CancellationToken::new();
+        let error = match svc
+            .lock_kb_path_waiting(
+                "k",
+                Some(&never_fired),
+                std::time::Duration::from_millis(150),
+            )
+            .await
+        {
+            Ok(_) => panic!("an uncancelled waiter must still hit the deadline"),
+            Err(error) => error,
+        };
+
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("timed out"),
+            "expected the deadline, got: {message}"
+        );
+        assert!(!never_fired.is_cancelled());
+        drop(held);
+    }
+
+    /// ...and cancellation still wins over the deadline when it does fire, with
+    /// its own distinct message. Restructuring the two arms into one `timeout`
+    /// could have collapsed these into a single "timed out" answer.
+    #[tokio::test]
+    async fn cancelling_a_queued_waiter_still_reports_cancellation_not_a_timeout() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let held = svc.lock_kb("k").await.unwrap();
+
+        let cancel = CancellationToken::new();
+        let fires = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            fires.cancel();
+        });
+        let error = match svc
+            .lock_kb_path_waiting("k", Some(&cancel), std::time::Duration::from_secs(30))
+            .await
+        {
+            Ok(_) => panic!("a cancelled waiter must not acquire the lock"),
+            Err(error) => error,
+        };
+
+        let message = format!("{error:#}");
+        assert!(message.contains("cancelled"), "{message}");
+        assert!(
+            !message.contains("timed out"),
+            "cancellation must not be reported as the deadline: {message}"
+        );
+        drop(held);
+    }
+
+    /// #157. The lock wait must exceed the longest hold it can legitimately be
+    /// waiting on, or it stops reporting wedges and starts inventing them.
+    ///
+    /// A macro holds the KB lock across its whole sub-agent loop, so every
+    /// `max_wall` budget anywhere in the workspace is a lower bound on a
+    /// legitimate hold. `KB_WRITE_LOCK_WAIT` was first written as 120 s against a
+    /// default budget of 300 s and a CLI budget of 900 s — every long ingest would
+    /// have failed its concurrent callers with a message blaming a stuck holder.
+    /// Grepping the tree rather than naming the constants is deliberate: the CLI's
+    /// budget lives in a crate that depends on this one, so it cannot be imported
+    /// here, and a hand-copied list is exactly what drifts.
+    #[test]
+    fn the_lock_wait_exceeds_every_macro_wall_clock_budget() {
+        // CARGO_MANIFEST_DIR is <workspace>/crates/biorouter-mcp; go up twice.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let crates = root.join("crates");
+        assert!(
+            crates.is_dir(),
+            "this guard walks {}; if that path is wrong every assertion below \
+             passes for the wrong reason",
+            crates.display()
+        );
+
+        // `max_wall: Duration::from_secs(300)` and `const MAX_WALL_SECS: u64 = 30`.
+        let literal = regex::Regex::new(r"max_wall\s*:\s*Duration::from_secs\((\d+)\)").unwrap();
+        let named = regex::Regex::new(r"MAX_WALL_SECS\s*:\s*u64\s*=\s*(\d+)").unwrap();
+
+        let mut scanned = 0usize;
+        let mut budgets: Vec<(String, u64)> = vec![];
+        for entry in walkdir::WalkDir::new(&crates) {
+            let entry = entry.expect("this guard must not silently skip an unreadable directory");
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("unreadable source file {}: {e}", path.display()));
+            scanned += 1;
+            let rel = path
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            for caps in literal
+                .captures_iter(&text)
+                .chain(named.captures_iter(&text))
+            {
+                budgets.push((rel.clone(), caps[1].parse().unwrap()));
+            }
+        }
+
+        // A walk that reads nothing is indistinguishable from a walk that finds
+        // nothing wrong, so make both ways of doing no work loud.
+        assert!(
+            scanned > 500,
+            "only {scanned} source files scanned — the walk is not covering the \
+             workspace, so this guard proves nothing"
+        );
+        assert!(
+            budgets.len() >= 3,
+            "found {} wall-clock budgets; the sub-agent default, the CLI's and the \
+             credibility fallback's are all expected, so a shortfall means the \
+             patterns have gone stale and stopped matching",
+            budgets.len()
+        );
+
+        let wait = FileLockGuard::KB_WRITE_LOCK_WAIT.as_secs();
+        for (file, budget) in &budgets {
+            assert!(
+                *budget < wait,
+                "{file} allows a macro to run for {budget}s while a caller waiting \
+                 for that macro's knowledge base gives up after {wait}s. The waiter \
+                 would fail an operation that is working normally, and blame a stuck \
+                 lock for it. Raise KB_WRITE_LOCK_WAIT above {budget}s."
+            );
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
