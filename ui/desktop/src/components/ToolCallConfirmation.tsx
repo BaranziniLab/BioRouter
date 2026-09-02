@@ -200,7 +200,7 @@ export default function ToolConfirmation({
     </div>
   ) : (
     <>
-      <div className="biorouter-message-content overflow-hidden rounded-2xl border border-border-subtle bg-background-default animate-in fade-in slide-in-from-bottom-1 duration-200">
+      <div className="biorouter-message-content text-body overflow-hidden rounded-2xl border border-border-subtle bg-background-default animate-in fade-in slide-in-from-bottom-1 duration-200">
         {/* Security finding banner, only when the backend flagged one */}
         {prompt && (
           <div className="flex items-start gap-2 border-b border-border-subtle bg-background-warning/10 px-4 py-2.5 text-sm text-text-warning">
