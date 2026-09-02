@@ -179,6 +179,28 @@ describe('ToolCallConfirmation (BR-63)', () => {
     expect(screen.getByText('Text Editor')).toBeInTheDocument();
   });
 
+  /// The display name is PROSE and must be set in the body font.
+  ///
+  /// It was `font-mono` — a leftover from when this printed the raw
+  /// `developer__text_editor` identifier rather than "Text Editor" — while the
+  /// RESOLVED state a few lines away rendered the same string in the body font.
+  /// One string, two typefaces, in one component, both visible in the same
+  /// screenshot.
+  ///
+  /// The other tests here would pass either way: they assert the text, not the
+  /// typeface. This is the one that fails if the mono comes back.
+  it('sets the tool name in the body font, not monospace', () => {
+    renderCard({ toolName: 'developer__text_editor' });
+    const name = screen.getByText('Text Editor');
+    expect(name.className).not.toMatch(/font-mono/);
+    // …and no ancestor inside the card imposes it either, which is how this
+    // would regress without touching the element itself.
+    for (let node = name.parentElement; node; node = node.parentElement) {
+      expect(node.className ?? '').not.toMatch(/font-mono/);
+      if (node.tagName === 'BODY') break;
+    }
+  });
+
   it('separates camel-case manager names in authorization cards', () => {
     renderCard({ toolName: 'skills__installMarketplaceSkill' });
     expect(screen.getByText('Install Marketplace Skill')).toBeInTheDocument();

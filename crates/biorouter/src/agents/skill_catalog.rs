@@ -137,7 +137,10 @@ pub struct SkillRoot {
 pub fn roots() -> Vec<SkillRoot> {
     let mut roots = Vec::new();
 
-    if let Some(home) = dirs::home_dir() {
+    // `Paths::home_dir`, not `dirs::home_dir`: the latter ignores the
+    // environment on Windows, so a relocated home silently did not apply there
+    // and this function kept reading the real profile's `.claude/skills`.
+    if let Some(home) = crate::config::paths::Paths::home_dir() {
         roots.push(SkillRoot {
             path: home.join(".claude/skills"),
             source: SkillSource::new(SkillSourceKind::ClaudeHome, None),

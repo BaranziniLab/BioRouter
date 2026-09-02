@@ -67,11 +67,10 @@
       "privacy": "public"
     },
     {
-      "id": "spokeagent",
+      "id": "spokeagent-0.4.1",
       "name": "SPOKEAgent",
       "organization": "BaranziniLab · UCSF",
       "version": "v0.4.1",
-      "extension_name": "spokeagent",
       "description": "Structure-aware access to the SPOKE biomedical knowledge graph (43M nodes): live schema introspection, entity/identifier resolution, node profiling, shortest-path finding, and guarded read-only Cypher across diseases, genes, proteins, drugs, and pathways. Includes a bundled spoke-knowledge-graph skill. Requires a SPOKEAGENT_PASSCODE (see credentials page).",
       "tags": [
         "UCSF",
@@ -82,7 +81,8 @@
       "download": "https://github.com/BaranziniLab/SPOKEAgent/releases/download/v0.4.1/spokeagent-0.4.1.brxt",
       "filename": "spokeagent-0.4.1.brxt",
       "license": "Apache-2.0",
-      "privacy": "public"
+      "privacy": "public",
+      "extension_name": "spokeagent"
     },
     {
       "id": "codegraphagent",

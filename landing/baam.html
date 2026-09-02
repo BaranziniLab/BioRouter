@@ -540,7 +540,15 @@
       </div>
 
       <!-- SPOKEAgent -->
-      <div class="ext-card" data-license="Apache-2.0">
+      <!-- data-extension-name is REQUIRED here even though the card is public:
+           without it the generator has no name to publish, the descriptor falls
+           back to the registry id, and the marketplace advertises
+           "spokeagent-0.4.1" while the extension that actually installs is
+           "spokeagent". A model that passed the advertised name to
+           manage_extensions got "not found". The id keeps its version on
+           purpose — it is derived from the release asset, and the app matches
+           on the base slug — so the NAME is the thing that has to be stated. -->
+      <div class="ext-card" data-license="Apache-2.0" data-extension-name="SPOKEAgent">
         <div class="ext-card-header">
           <div class="icon-tile">
             <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="m7 7 3 3M14 10l3-3M10 14l-3 3M14 14l3 3"/></svg>

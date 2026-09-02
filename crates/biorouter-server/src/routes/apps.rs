@@ -9547,19 +9547,37 @@ mod tests {
             env_lock::lock_env(base_env(root, host))
         }
 
-        /// `lock_env_for` plus a relocated `HOME`.
+        /// `lock_env_for` plus a relocated home directory.
         ///
         /// ⚠ `env_lock` is ONE process-wide mutex, so this cannot be a second
         /// `lock_env` call layered on the first — that deadlocks. Any test that
         /// needs a variable `lock_env_for` does not pin has to be handed the
         /// whole set in a single call, which is why the list is built here.
+        ///
+        /// ⚠ BOTH `HOME` and `USERPROFILE`, because "the home directory" is not
+        /// one variable. `skill_catalog::roots()` asks `dirs::home_dir()`, which
+        /// reads `HOME` on unix and `USERPROFILE` on Windows — so pinning only
+        /// `HOME` relocated nothing on Windows, the catalog kept reading the
+        /// RUNNER's `~/.claude/skills`, and the decoy this test plants was
+        /// absent. That is not a hypothetical: it failed
+        /// `an_apps_skill_grant_is_bounded_to_search_and_load` and
+        /// `a_worker_profile_naming_uninstalled_skills_is_not_armed` on
+        /// `test (windows-latest)` while passing on macOS and Linux, with the
+        /// hermeticity assertion's own message — "the skill catalog is reading
+        /// directories this test does not own" — naming the cause exactly.
+        ///
+        /// Setting both on every platform is deliberate: the unused one is inert,
+        /// and a per-platform `cfg` would leave the other path untested on the
+        /// machine most people develop on.
         pub(super) fn lock_env_for_home(
             root: &std::path::Path,
             home: &std::path::Path,
             host: &str,
         ) -> env_lock::EnvGuard<'static> {
             let mut vars = base_env(root, host);
-            vars.push(("HOME", Some(home.to_string_lossy().into_owned())));
+            let home = home.to_string_lossy().into_owned();
+            vars.push(("HOME", Some(home.clone())));
+            vars.push(("USERPROFILE", Some(home)));
             env_lock::lock_env(vars)
         }
 

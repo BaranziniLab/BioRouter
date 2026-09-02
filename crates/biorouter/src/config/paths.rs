@@ -41,6 +41,44 @@ impl Paths {
         }
     }
 
+    /// The user's home directory, resolved the SAME way on every platform.
+    ///
+    /// ⚠ Not `dirs::home_dir()`, and the difference is not cosmetic. On unix
+    /// that function reads `$HOME`; on Windows it calls
+    /// `SHGetKnownFolderPath(FOLDERID_Profile)` and reads no environment
+    /// variable at all. So a test — or a sandboxed run — that relocates the home
+    /// directory is honoured on macOS and Linux and silently ignored on Windows,
+    /// where the process keeps reading the real profile.
+    ///
+    /// That is not hypothetical: `skill_catalog::roots()` derives
+    /// `~/.claude/skills` and `~/.config/agents/skills` from the home directory,
+    /// and two `routes::apps` tests that relocate it passed on macOS and Linux
+    /// while failing `test (windows-latest)` with their own hermeticity message,
+    /// "the skill catalog is reading directories this test does not own".
+    ///
+    /// Reading the platform's own variable — `USERPROFILE` on Windows, `HOME`
+    /// elsewhere — is what makes relocation work identically on all three. The
+    /// `dirs` call stays as the fallback for a process whose environment says
+    /// nothing, which is the normal case for a real user on Windows.
+    ///
+    /// A BLANK value reads as absent, for the same reason `BIOROUTER_PATH_ROOT`
+    /// does above: an empty home yields cwd-relative paths that no two processes
+    /// agree on.
+    ///
+    /// This is the same rule `routes::shell::home_dir` already applied for the
+    /// browser surface; it lives here now so there is one answer rather than two.
+    pub fn home_dir() -> Option<PathBuf> {
+        let from_env = if cfg!(windows) {
+            std::env::var_os("USERPROFILE")
+        } else {
+            std::env::var_os("HOME")
+        };
+        from_env
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty())
+            .or_else(dirs::home_dir)
+    }
+
     pub fn config_dir() -> PathBuf {
         Self::get_dir(DirType::Config)
     }
@@ -109,4 +147,80 @@ enum DirType {
     Config,
     Data,
     State,
+}
+
+#[cfg(test)]
+mod home_dir_tests {
+    use super::Paths;
+
+    /// The home directory must be relocatable the SAME way on all three
+    /// platforms — that is the whole reason this helper exists rather than a
+    /// direct `dirs::home_dir()` call.
+    ///
+    /// `dirs::home_dir()` reads `$HOME` on unix but calls
+    /// `SHGetKnownFolderPath(FOLDERID_Profile)` on Windows, reading no
+    /// environment at all — so a relocation applied on macOS and Linux was
+    /// silently ignored on Windows. Two `routes::apps` tests failed exactly
+    /// that way on `test (windows-latest)` while passing everywhere else.
+    ///
+    /// Asserted at the SOURCE rather than by setting the variable, because a
+    /// test can only set the variable its own platform reads; reading the code
+    /// is the only way to check the OTHER platform's branch from here.
+    #[test]
+    fn the_home_directory_is_resolved_from_the_environment_on_every_platform() {
+        let source = include_str!("paths.rs");
+        let body = source
+            .split("pub fn home_dir() -> Option<PathBuf> {")
+            .nth(1)
+            .expect("Paths::home_dir must exist")
+            .split("\n    }")
+            .next()
+            .expect("its body must be a block");
+
+        assert!(
+            body.contains("cfg!(windows)"),
+            "the resolver must branch on the platform: the variable is \
+             USERPROFILE on Windows and HOME elsewhere. Body was:\n{body}"
+        );
+        assert!(
+            body.contains("USERPROFILE") && body.contains("\"HOME\""),
+            "both platform variables must be named, or one OS is unreachable: \n{body}"
+        );
+        assert!(
+            body.contains("dirs::home_dir"),
+            "a process whose environment says nothing must still resolve — that \
+             is the normal case for a real user on Windows: \n{body}"
+        );
+        assert!(
+            body.contains("as_os_str().is_empty()") || body.contains("is_empty()"),
+            "a BLANK value must read as absent, like BIOROUTER_PATH_ROOT above: \n{body}"
+        );
+    }
+
+    /// …and on THIS platform, relocation actually works end to end.
+    #[test]
+    #[serial_test::serial]
+    fn relocating_the_home_directory_takes_effect_here() {
+        let tmp = tempfile::tempdir().expect("a relocation target");
+        let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let _env = env_lock::lock_env([(var, Some(tmp.path().to_string_lossy().into_owned()))]);
+        assert_eq!(
+            Paths::home_dir().as_deref(),
+            Some(tmp.path()),
+            "the resolver ignored the platform's own home variable"
+        );
+    }
+
+    /// A blank value is absent, not a relative root.
+    #[test]
+    #[serial_test::serial]
+    fn a_blank_home_falls_back_rather_than_resolving_to_nothing() {
+        let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let _env = env_lock::lock_env([(var, Some(String::new()))]);
+        let resolved = Paths::home_dir();
+        assert!(
+            resolved.is_none_or(|p| !p.as_os_str().is_empty()),
+            "a blank home must never resolve to an empty path"
+        );
+    }
 }

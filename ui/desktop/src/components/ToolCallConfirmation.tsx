@@ -239,8 +239,18 @@ export default function ToolConfirmation({
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <Lock className="h-4 w-4 shrink-0 text-text-muted" />
               <span className="text-sm font-medium text-text-default">
-                {/* Name the tool. "this tool" told the user nothing. */}
-                Run <span className="font-mono">{friendlyToolName(toolName)}</span>?
+                {/* Name the tool. "this tool" told the user nothing.
+                    ⚠ NOT `font-mono`. `friendlyToolName` returns a Title Case
+                    display name ("Install Extension"), not the raw
+                    `extensionmanager__install_extension` id it started life as —
+                    and the resolved state a few lines above renders the SAME
+                    string in the body font. One string, two typefaces, in one
+                    component. Monospace here is a leftover from when this
+                    printed the identifier.
+                    The <span> stays: it keeps the name a distinct node, which is
+                    what lets a test assert on the name alone rather than on the
+                    whole "Run … ?" sentence. Only the font moved. */}
+                Run <span>{friendlyToolName(toolName)}</span>?
               </span>
               {risk && <ToolRiskBadge risk={risk} />}
             </div>

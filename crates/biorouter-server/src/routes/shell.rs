@@ -511,12 +511,10 @@ fn is_denied(path: &Path) -> bool {
 /// keeping it here means a test can build a [`PathGuard`] over a temporary
 /// directory without one.
 fn home_dir() -> Option<PathBuf> {
-    let raw = if cfg!(windows) {
-        std::env::var_os("USERPROFILE")
-    } else {
-        std::env::var_os("HOME")
-    };
-    raw.map(PathBuf::from).filter(|p| !p.as_os_str().is_empty())
+    // One answer, not two. This rule now lives on `Paths` because
+    // `skill_catalog` needed it as well — and needed it to fall back to
+    // `dirs::home_dir()`, which this copy did not do.
+    biorouter::config::paths::Paths::home_dir()
 }
 
 /// Where this surface keeps the interface's own settings.
