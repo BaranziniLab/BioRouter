@@ -153,12 +153,106 @@ fn read_or_create_docx(path: &str) -> Result<Docx, ErrorData> {
     }
 }
 
+/// The non-empty `word/media/*` entries currently in `path`, by name.
+///
+/// Read BEFORE the rewrite, because the rewrite is what loses them.
+fn existing_media(path: &str) -> Vec<(String, Vec<u8>)> {
+    let Ok(bytes) = fs::read(path) else {
+        return Vec::new();
+    };
+    let Ok(mut archive) = zip::ZipArchive::new(Cursor::new(bytes)) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for index in 0..archive.len() {
+        let Ok(mut entry) = archive.by_index(index) else {
+            continue;
+        };
+        let name = entry.name().to_string();
+        if !name.starts_with("word/media/") || name.ends_with('/') || entry.size() == 0 {
+            continue;
+        }
+        let mut data = Vec::new();
+        if std::io::Read::read_to_end(&mut entry, &mut data).is_ok() && !data.is_empty() {
+            out.push((name, data));
+        }
+    }
+    out
+}
+
+/// Write `doc` to `path`, carrying any images the document already had.
+///
+/// ⚠ **A `docx-rs` read → write round-trip DROPS the bytes of an embedded
+/// image**, leaving a zero-length `word/media/*` entry behind while reporting
+/// success. That is silent data loss, and it is not confined to `add_image`:
+/// measured on the running app, a plain `append` of text to a document
+/// containing one 225-byte PNG left that entry at 0 bytes, and two consecutive
+/// `add_image` calls left the FIRST image at 0 while the second was intact.
+/// The document is then unreadable — `reject_degenerate_media` refuses it (and
+/// before #154 `read_docx` spun forever on it).
+///
+/// So every media entry the built archive emits EMPTY is refilled from the
+/// original, by exact name. Deliberately narrow on both axes: the name must
+/// match, so a newly added image (which gets a new name) is never a candidate;
+/// and the entry must be empty, so a writer that ever reuses a name with real
+/// content keeps it. The name check is what carries the property today — the
+/// emptiness check is defence for a writer that does not exist yet, and
+/// `an_edit_preserves_an_image_the_document_already_had` says so rather than
+/// implying it covers both.
 fn write_docx_file(path: &str, doc: Docx) -> Result<(), ErrorData> {
+    let preserved = existing_media(path);
     let mut buf = Vec::new();
     doc.build()
         .pack(&mut Cursor::new(&mut buf))
         .map_err(|e| docx_error(format!("Failed to build DOCX: {}", e)))?;
+    let buf = if preserved.is_empty() {
+        buf
+    } else {
+        restore_media(buf, &preserved)?
+    };
     fs::write(path, &buf).map_err(|e| docx_error(format!("Failed to write DOCX file: {}", e)))
+}
+
+/// Refill every zero-length `word/media/*` entry in `built` from `preserved`.
+fn restore_media(built: Vec<u8>, preserved: &[(String, Vec<u8>)]) -> Result<Vec<u8>, ErrorData> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(built))
+        .map_err(|e| docx_error(format!("Failed to reopen the built DOCX: {}", e)))?;
+    let mut out = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(Cursor::new(&mut out));
+        let options =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for index in 0..archive.len() {
+            let mut entry = archive
+                .by_index(index)
+                .map_err(|e| docx_error(format!("Failed to read a DOCX entry: {}", e)))?;
+            let name = entry.name().to_string();
+            if name.ends_with('/') {
+                writer
+                    .add_directory(name, options)
+                    .map_err(|e| docx_error(format!("Failed to write a DOCX directory: {}", e)))?;
+                continue;
+            }
+            let mut data = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut data)
+                .map_err(|e| docx_error(format!("Failed to read a DOCX entry: {}", e)))?;
+            // Only a media entry the writer left EMPTY is refilled.
+            if data.is_empty() && name.starts_with("word/media/") {
+                if let Some((_, original)) = preserved.iter().find(|(n, _)| *n == name) {
+                    data = original.clone();
+                }
+            }
+            writer
+                .start_file(name, options)
+                .map_err(|e| docx_error(format!("Failed to start a DOCX entry: {}", e)))?;
+            std::io::Write::write_all(&mut writer, &data)
+                .map_err(|e| docx_error(format!("Failed to write a DOCX entry: {}", e)))?;
+        }
+        writer
+            .finish()
+            .map_err(|e| docx_error(format!("Failed to finish the DOCX archive: {}", e)))?;
+    }
+    Ok(out)
 }
 
 fn extract_paragraph_text(p: &Paragraph) -> String {
@@ -768,6 +862,151 @@ mod tests {
 
         // Clean up
         fs::remove_file(test_output_path).unwrap();
+    }
+
+    /// An edit must not destroy an image the document already had.
+    ///
+    /// The `docx-rs` read → write round-trip drops embedded image bytes and
+    /// reports success, so the document is silently corrupted and then refused
+    /// by `reject_degenerate_media`. Measured on the running app before this
+    /// fix: a plain `append` took a 225-byte PNG to 0 bytes, and two
+    /// consecutive `add_image` calls left the FIRST image at 0.
+    ///
+    /// Both halves are asserted, because "preserve everything" and "preserve
+    /// nothing" are equally wrong: the pre-existing image keeps its bytes, and
+    /// the newly added one keeps its own.
+    #[tokio::test]
+    async fn an_edit_preserves_an_image_the_document_already_had() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc = dir.path().join("figure.docx");
+        let png = dir.path().join("small.png");
+        // Two DIFFERENT real PNGs (1x1 red, 4x4 blue), generated so their encoded
+        // lengths differ — see the note at the second `add_image` for why that
+        // matters.
+        std::fs::write(
+            &png,
+            [
+                0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+                0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+                0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x78,
+                0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0xC9, 0xFE, 0x92,
+                0xEF, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+            ],
+        )
+        .unwrap();
+
+        let media_sizes = |p: &std::path::Path| -> Vec<(String, u64)> {
+            let bytes = std::fs::read(p).unwrap();
+            let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+            (0..zip.len())
+                .filter_map(|i| {
+                    let e = zip.by_index(i).ok()?;
+                    let name = e.name().to_string();
+                    (name.starts_with("word/media/") && !name.ends_with('/'))
+                        .then_some((name, e.size()))
+                })
+                .collect()
+        };
+
+        let params = serde_json::json!({
+            "mode": "add_image",
+            "image_path": png.to_str().unwrap(),
+            "width": 32, "height": 32,
+        });
+        docx_tool(
+            doc.to_str().unwrap(),
+            "update_doc",
+            Some("Figure one"),
+            Some(&params),
+        )
+        .await
+        .expect("adding the first image");
+        let after_add = media_sizes(&doc);
+        assert_eq!(after_add.len(), 1, "one image so far: {after_add:?}");
+        assert!(after_add[0].1 > 0, "the added image must have bytes");
+
+        // A plain text edit — nothing to do with images — must not touch it.
+        docx_tool(
+            doc.to_str().unwrap(),
+            "update_doc",
+            Some("some appended prose"),
+            Some(&serde_json::json!({ "mode": "append" })),
+        )
+        .await
+        .expect("appending text");
+        let after_append = media_sizes(&doc);
+        assert!(
+            after_append.iter().all(|(_, size)| *size > 0),
+            "a text edit destroyed an embedded image: {after_append:?}"
+        );
+
+        // …and a SECOND, DIFFERENT image keeps the first and keeps its own bytes.
+        //
+        // The two PNGs differ in length so the final assertion can tell the new
+        // image's bytes from the old one's.
+        //
+        // ⚠ What this does NOT prove: that the `data.is_empty()` half of the
+        // refill is doing work. Measured — dropping it leaves this test green,
+        // because the refill is keyed by entry NAME and a newly added image
+        // always gets a new name, so there is nothing to substitute. That check
+        // is defence for the case where a writer reuses a name with different
+        // content; no operation here does, so it is deliberately unexercised
+        // rather than accidentally covered.
+        let png_b = dir.path().join("bigger.png");
+        std::fs::write(
+            &png_b,
+            [
+                0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+                0x44, 0x52, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x08, 0x02, 0x00, 0x00,
+                0x00, 0x26, 0x93, 0x09, 0x29, 0x00, 0x00, 0x00, 0x10, 0x49, 0x44, 0x41, 0x54, 0x78,
+                0x9C, 0x63, 0x60, 0x60, 0xF8, 0x8F, 0x84, 0x88, 0xE2, 0x00, 0x00, 0x8E, 0xB3, 0x0F,
+                0xF1, 0xB3, 0xA3, 0x2F, 0x33, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+                0x42, 0x60, 0x82,
+            ],
+        )
+        .unwrap();
+        assert_ne!(
+            std::fs::read(&png).unwrap().len(),
+            std::fs::read(&png_b).unwrap().len(),
+            "the two source images must differ in length for this to prove anything"
+        );
+
+        docx_tool(
+            doc.to_str().unwrap(),
+            "update_doc",
+            Some("Figure two"),
+            Some(&serde_json::json!({
+                "mode": "add_image",
+                "image_path": png_b.to_str().unwrap(),
+                "width": 32, "height": 32,
+            })),
+        )
+        .await
+        .expect("adding the second image");
+        let after_second = media_sizes(&doc);
+        assert_eq!(after_second.len(), 2, "two images now: {after_second:?}");
+        assert!(
+            after_second.iter().all(|(_, size)| *size > 0),
+            "adding an image destroyed the earlier one: {after_second:?}"
+        );
+        let mut sizes: Vec<u64> = after_second.iter().map(|(_, size)| *size).collect();
+        sizes.sort_unstable();
+        assert_ne!(
+            sizes[0], sizes[1],
+            "both images have the same size, so the second was overwritten with the \
+             first's bytes — preservation must refill only the EMPTY entries: \
+             {after_second:?}"
+        );
+
+        // The document still reads, which is the property the user cares about.
+        let read = docx_tool(doc.to_str().unwrap(), "extract_text", None, None)
+            .await
+            .expect("the document must still be readable after all of that");
+        let text = format!("{read:?}");
+        assert!(
+            text.contains("Figure one") && text.contains("Figure two"),
+            "{text}"
+        );
     }
 
     #[tokio::test]
