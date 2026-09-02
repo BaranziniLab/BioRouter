@@ -893,28 +893,29 @@ struct CodingAgentBridgePolicy {
 // proof-backed surfaces. Ordinary extensions use a separate, per-turn path:
 // they must already be attached to the session, pass Gate E for the pinned
 // capability, and retain the exact config and tool grant captured by the plan.
-// ⚠ `workspace_list` is ABSENT, and it is not clear whether that was decided or
-// inherited — which is why this note exists rather than a fix (#161). The shape
-// is odd on its face: a bridged child may READ a conversation's full contents by
-// id, but not enumerate ids. That is the more sensitive operation permitted and
-// the less sensitive one withheld, and it buys little containment either way,
-// because `create_session` allocates ids as `YYYYMMDD_N` (`MAX(N) + 1`), so a
-// child that wants them can count. What actually holds the boundary is the tier
-// gate — verified live: a public-model caller is refused with the
-// private-conversation message.
+// `workspace_list` is here by an explicit owner decision (#161), not by
+// accident, and the reasoning is worth keeping because the shape looks
+// asymmetric at a glance.
 //
-// Measured consequence: under `claude_code` the model correctly reports it
-// cannot list conversations and offers `chatrecall` instead, while the same
-// prompt under Versa Claude and Versa GPT lists them.
+// It was ABSENT while `workspace_read_conversation` was present — the more
+// sensitive operation permitted and the less sensitive one withheld. That bought
+// no containment: `create_session` allocates ids as `YYYYMMDD_N` (`MAX(N) + 1`),
+// so a child that wants ids can count to them, and reading a conversation it can
+// already name was allowed. What actually holds this boundary is the TIER GATE,
+// not the roster — verified live, a public-model caller is refused with the
+// private-conversation message and reads nothing.
 //
-// Resolving it means either adding `workspace_list` (parity with what this list
-// already permits) or dropping `workspace_read_conversation` (if a bridged child
-// genuinely should not reach other conversations, the READ is the tool to drop).
-// Both change the security posture, so both are the owner's call, not a passing
-// edit — see the `DEVELOPER` entry below for how a deliberate omission reads
-// when it says why.
+// So the omission cost a legitimate read-only capability and stopped nothing.
+// Measured before the change: under `claude_code` the model correctly reported
+// it could not list conversations and offered `chatrecall` instead, while the
+// same prompt under Versa Claude and Versa GPT listed them.
+//
+// ⚠ Adding a tool here is a security-posture change. This one is a `list` whose
+// results the tier gate already filters; do not read it as licence to add a
+// WRITE without the same scrutiny.
 const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__subagent",
+    "workspace__workspace_list",
     "workspace__workspace_read_conversation",
     "workspace__workspace_send_prompt",
     "workspace__workspace_close",
@@ -13943,6 +13944,43 @@ mod tests {
             "only {checked} allowlist entries checked — the allowlist pattern has \
              gone stale, so this guard passed without reading the lists"
         );
+    }
+
+    /// #161: a bridged child can enumerate conversations, not only read one it
+    /// already knows the id of.
+    ///
+    /// The pairing is the point, so both halves are asserted. Listing without
+    /// reading would be a roster that hands out ids and nothing else; reading
+    /// without listing was the shipped state, and it withheld the LESS sensitive
+    /// operation while permitting the more sensitive one — against sequential
+    /// ids (`YYYYMMDD_N`, `MAX(N) + 1`) that a child can simply count to.
+    ///
+    /// ⚠ What keeps this safe is the TIER GATE, not this list: a public-model
+    /// caller is refused at dispatch and reads nothing, verified live. This test
+    /// pins the roster decision; it does not stand in for that gate, which has
+    /// its own tests under `privacy::`.
+    #[test]
+    fn a_bridged_child_may_list_conversations_as_well_as_read_one() {
+        assert!(
+            coding_agent_bridge_policy_allows_tool("workspace__workspace_list"),
+            "listing was withheld while reading was allowed, which is the wrong \
+             way round and bought no containment (#161)"
+        );
+        assert!(
+            coding_agent_bridge_policy_allows_tool("workspace__workspace_read_conversation"),
+            "the pairing is deliberate: listing ids is only useful with the read"
+        );
+        // …and adding the list did not open the write side by accident.
+        for never in [
+            "workspace__workspace_open",
+            "workspace__workspace_set_tools",
+            "workspace__workspace_read_panel",
+        ] {
+            assert!(
+                !coding_agent_bridge_policy_allows_tool(never),
+                "{never} must stay off the bridge"
+            );
+        }
     }
 
     #[test]
