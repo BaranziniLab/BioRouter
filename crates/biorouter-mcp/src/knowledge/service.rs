@@ -453,6 +453,27 @@ impl FileLockGuard {
     /// route. Re-check that before raising this further.
     const KB_WRITE_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1800);
 
+    /// How long a READ may wait for the same lock (#159).
+    ///
+    /// Deliberately far shorter than [`Self::KB_WRITE_LOCK_WAIT`], and the
+    /// asymmetry is the point rather than an oversight:
+    ///
+    /// * A **write** that gives up loses work, so it waits out the longest
+    ///   legitimate holder.
+    /// * A **read** that gives up loses nothing and is safe to retry, so making
+    ///   it wait the same 30 minutes buys the caller nothing and costs them a
+    ///   view of their own knowledge base.
+    ///
+    /// Reads take this lock for FAIRNESS, not visibility — `get_graph`'s own
+    /// note says so, and `read_page` takes no lock at all — so the property to
+    /// preserve is "a stream of readers cannot starve a macro", which a bounded
+    /// wait preserves exactly. What it drops is the case that has no business
+    /// blocking a read at all: an OPEN TRANSACTION, which holds this lock for as
+    /// long as somebody leaves it open. Measured before this bound:
+    /// `kb_get_graph` and `kb_lint` never returned while a transaction was open
+    /// on the base, while another base answered in 8 ms.
+    const KB_READ_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
+
     /// `acquire`, but bounded. Whatever holds the lock, the caller gets a
     /// sentence naming the base instead of a call that never returns.
     ///
@@ -1424,17 +1445,39 @@ impl KnowledgeService {
         self.lock_kb_path_cancellable(kb_id, cancel).await
     }
 
+    /// [`Self::lock_existing_kb_cancellable`] for a READ path: same queue, same
+    /// fairness, [`FileLockGuard::KB_READ_LOCK_WAIT`] instead of the write
+    /// deadline. See that constant for why the two differ (#159).
+    pub(crate) async fn lock_existing_kb_for_read(
+        &self,
+        kb_id: &str,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<KnowledgeWriteGuard> {
+        self.lock_existing_kb_waiting(kb_id, cancel, FileLockGuard::KB_READ_LOCK_WAIT)
+            .await
+    }
+
     pub(crate) async fn lock_existing_kb_cancellable(
         &self,
         kb_id: &str,
         cancel: Option<&CancellationToken>,
+    ) -> Result<KnowledgeWriteGuard> {
+        self.lock_existing_kb_waiting(kb_id, cancel, FileLockGuard::KB_WRITE_LOCK_WAIT)
+            .await
+    }
+
+    async fn lock_existing_kb_waiting(
+        &self,
+        kb_id: &str,
+        cancel: Option<&CancellationToken>,
+        wait: std::time::Duration,
     ) -> Result<KnowledgeWriteGuard> {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         if !kb_root.exists() {
             anyhow::bail!("kb '{kb_id}' not found");
         }
-        self.lock_kb_path_cancellable(kb_id, cancel)
+        self.lock_kb_path_waiting(kb_id, cancel, wait)
             .await
             .map_err(|error| {
                 if !kb_root.exists() {
@@ -1521,10 +1564,10 @@ impl KnowledgeService {
             // a confident wrong diagnosis is worse than an honest fork.
             Err(_) => anyhow::bail!(
                 "timed out after {}s waiting for knowledge base '{kb_id}'. Another \
-                     operation still holds it: if an ingest, query or lint is running on \
-                     this base, let it finish and retry; if nothing is running, the lock \
-                     is stuck and restarting Biorouter clears it (see issue #157). Nothing \
-                     was written.",
+                     operation still holds it. Most often that is an OPEN TRANSACTION: \
+                     commit or abort it (kb_commit_txn / kb_abort_txn) and this will go \
+                     through. Otherwise an ingest, query or lint is running — let it finish \
+                     and retry. Nothing was written.",
                 wait.as_secs()
             ),
         };
@@ -1571,10 +1614,10 @@ impl KnowledgeService {
                 drop(cancel_waiter_on_drop);
                 anyhow::bail!(
                     "timed out after {}s waiting for the on-disk lock of knowledge base \
-                     '{kb_id}'. Another operation still holds it: if an ingest, query or lint \
-                     is running on this base, let it finish and retry; if nothing is running, \
-                     the lock has been left held and restarting Biorouter clears it (see issue \
-                     #157). Nothing was written.",
+                     '{kb_id}'. Another operation still holds it. Most often that is an OPEN \
+                     TRANSACTION: commit or abort it (kb_commit_txn / kb_abort_txn) and this \
+                     will go through. Otherwise an ingest, query or lint is running — let it \
+                     finish and retry. Nothing was written.",
                     wait.as_secs()
                 );
             }
@@ -3465,7 +3508,11 @@ impl KnowledgeService {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         anyhow::ensure!(kb_root.exists(), "kb '{kb_id}' does not exist");
-        let guard = self.lock_kb(kb_id).await?;
+        // #159: the READ deadline, for the reason above — the queue is here for
+        // fairness against macros, and an open transaction is not a macro.
+        let guard = self
+            .lock_kb_path_waiting(kb_id, None, FileLockGuard::KB_READ_LOCK_WAIT)
+            .await?;
         let svc = self.clone();
         let kb_id = kb_id.to_string();
         tokio::task::spawn_blocking(move || {
@@ -5640,6 +5687,48 @@ mod tests {
         ));
     }
 
+    /// #159: a READ gives up long before a write does, so an open transaction
+    /// cannot make a base unreadable.
+    ///
+    /// The asymmetry is the whole fix, so both halves are asserted here: a
+    /// read's deadline must be shorter than a write's, and the read path must
+    /// actually use it. Held with a bare `FileLockGuard` so only the on-disk
+    /// half blocks, matching the live wedge.
+    #[tokio::test]
+    async fn a_read_gives_up_far_sooner_than_a_write_when_the_base_is_locked() {
+        assert!(
+            FileLockGuard::KB_READ_LOCK_WAIT < FileLockGuard::KB_WRITE_LOCK_WAIT,
+            "a read must not wait as long as a write: losing a read costs nothing \
+             and it can be retried, so making it wait out the longest legitimate \
+             writer is all cost and no benefit"
+        );
+
+        let (_dir, svc) = svc();
+        let kb = "read-vs-write";
+        svc.create_base(kb, "K", None).unwrap();
+        let held = svc.lock_existing_kb(kb).expect("hold the on-disk lock");
+
+        // The read path's own entry point, at a short deadline, so this asserts
+        // the wiring rather than the constant.
+        let waited = std::time::Instant::now();
+        let error = match svc
+            .lock_kb_path_waiting(kb, None, std::time::Duration::from_millis(150))
+            .await
+        {
+            Ok(_) => panic!("a read behind a held lock must give up, not hang"),
+            Err(error) => error,
+        };
+        assert!(waited.elapsed() >= std::time::Duration::from_millis(150));
+        assert!(format!("{error:#}").contains("timed out"), "{error:#}");
+        drop(held);
+
+        // …and with the lock free it succeeds, so the bound is not refusing
+        // every read.
+        svc.lock_kb_path_waiting(kb, None, std::time::Duration::from_millis(150))
+            .await
+            .expect("an uncontended read must still acquire the lock");
+    }
+
     /// #157, the OTHER unbounded wait on the same path — the on-disk `flock`.
     ///
     /// This is the one that actually wedged a live daemon. Held here by a
@@ -5729,8 +5818,11 @@ mod tests {
             "the caller must be told no write landed: {message}"
         );
         // Both causes, because the message cannot tell them apart.
-        assert!(message.contains("let it finish and retry"), "{message}");
-        assert!(message.contains("restarting Biorouter"), "{message}");
+        assert!(message.contains("let it finish"), "{message}");
+        assert!(
+            message.contains("kb_commit_txn"),
+            "the message must name the fix for the COMMON cause — an open transaction: {message}"
+        );
         assert!(
             elapsed >= std::time::Duration::from_millis(150),
             "returned in {elapsed:?} — that is not the deadline firing"

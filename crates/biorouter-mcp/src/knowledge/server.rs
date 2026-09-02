@@ -1206,9 +1206,13 @@ impl KnowledgeServer {
         // provider and therefore have a tier to ratchet with.
         let caller = CallerIdentity::from_context(Some(&context));
         let cancel = context.ct;
+        // #159: a READ deadline. Lint queues for fairness — so a stream of lints
+        // cannot starve a macro — but it must not queue forever behind an OPEN
+        // TRANSACTION, which holds this lock for as long as somebody leaves it
+        // open. A lint that gives up loses nothing and can be retried.
         let lock = self
             .service
-            .lock_existing_kb_cancellable(&kb_id, Some(&cancel))
+            .lock_existing_kb_for_read(&kb_id, Some(&cancel))
             .await
             .map_err(into_err)?;
         // CP1 ran before this potentially long lock wait. A private writer can
