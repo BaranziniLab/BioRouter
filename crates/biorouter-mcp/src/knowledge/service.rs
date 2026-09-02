@@ -422,6 +422,56 @@ impl FileLockGuard {
         Ok(Self { file })
     }
 
+    /// How long a knowledge write may wait for another holder before it gives
+    /// up and says so (#157).
+    ///
+    /// Generous, because a legitimate holder can be a whole ingest macro; finite,
+    /// because the alternative measured in a live daemon was an unbounded wait.
+    /// Writes to one base stopped answering entirely — no result, no error, no
+    /// timeout — while reads to the same base and writes to other bases were
+    /// fine, and only restarting the daemon cleared it. The desktop app runs one
+    /// long-lived daemon (observed uptime: days), so "until restart" is a long
+    /// time to be unable to save.
+    const KB_WRITE_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// `acquire`, but bounded. Whatever holds the lock, the caller gets a
+    /// sentence naming the base instead of a call that never returns.
+    ///
+    /// This does NOT explain why a lock is ever held that long — that is #157's
+    /// open question, and this deliberately does not pretend to answer it. It
+    /// converts an unbounded wait into a reportable failure, which is worth
+    /// having whatever the cause turns out to be.
+    fn acquire_bounded(path: &Path, wait: std::time::Duration, what: &str) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(Self { file }),
+                Err(error) if is_lock_contended(&error) => {
+                    if std::time::Instant::now() >= deadline {
+                        anyhow::bail!(
+                            "timed out after {}s waiting for the write lock on {what}. Another \
+                             knowledge operation still holds it; nothing was written. If this \
+                             persists with no operation running, restarting Biorouter releases \
+                             the lock (see issue #157).",
+                            wait.as_secs()
+                        );
+                    }
+                    std::thread::park_timeout(std::time::Duration::from_millis(10));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
     /// Interruptible `flock` acquisition for async callers. There is no
     /// artificial deadline: a live operation waits as long as its owner does,
     /// while cancellation bounds shutdown latency to one poll interval.
@@ -1098,7 +1148,15 @@ impl KnowledgeService {
         if !kb_root.exists() {
             anyhow::bail!("kb '{kb_id}' not found");
         }
-        let guard = FileLockGuard::acquire(&self.kb_lock_path(kb_id)).map_err(|error| {
+        // #157: bounded, not blocking. `acquire` uses `flock` with no deadline, so
+        // a lock nobody releases turned every later write to this base into a
+        // call that never returned.
+        let guard = FileLockGuard::acquire_bounded(
+            &self.kb_lock_path(kb_id),
+            FileLockGuard::KB_WRITE_LOCK_WAIT,
+            &format!("knowledge base '{kb_id}'"),
+        )
+        .map_err(|error| {
             if !kb_root.exists() {
                 anyhow::anyhow!("kb '{kb_id}' not found")
             } else {
@@ -4847,7 +4905,20 @@ mod tests {
                 .await
         });
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        // ⚠ A LIVENESS wait, not a performance assertion. What this test is about
+        // is cancellation semantics; reaching the mock server at all is only the
+        // precondition. One second was a budget for "spawn a task, resolve a URL
+        // and complete an HTTP round trip", which is a property of the machine —
+        // it failed 6/6 here on a loaded box while passing in a quieter full-suite
+        // run 30 minutes earlier, with and without the change under test.
+        //
+        // Same shape as the other wall-clock deadlines this campaign had to fix:
+        // a policy row decided by the host's $HOME, a scheduler test starved by
+        // its siblings, an esbuild reaper given one second to fork. Generous here
+        // costs nothing when the code is right and stops a green suite going red
+        // for reasons that have nothing to do with it.
+        const REACHED_SERVER: std::time::Duration = std::time::Duration::from_secs(30);
+        tokio::time::timeout(REACHED_SERVER, async {
             loop {
                 if !server.received_requests().await.unwrap().is_empty() {
                     break;
@@ -4859,7 +4930,10 @@ mod tests {
         .expect("the source conversion never reached the blocking HTTP response");
         cancel.cancel();
 
-        let error = tokio::time::timeout(std::time::Duration::from_secs(1), ingest)
+        // Cancellation itself IS bounded on purpose: it must interrupt promptly,
+        // and a generous bound here would hide a cancel that never lands. 10s is
+        // still two orders of magnitude above the work involved.
+        let error = tokio::time::timeout(std::time::Duration::from_secs(10), ingest)
             .await
             .expect("cancellation did not interrupt source conversion")
             .expect("the source task panicked")
@@ -5248,6 +5322,61 @@ mod tests {
     /// derived from [`paths::kb_root`]. Windows refuses to move a directory
     /// with an open handle underneath it, so a lock built that way breaks
     /// `delete_base` and every base rename there and nowhere else.
+    /// #157. A held write lock must produce a REPORTABLE failure, not a call
+    /// that never returns.
+    ///
+    /// Measured in a live daemon before this: writes to one base stopped
+    /// answering entirely — no result, no error, 45s+ — while reads to that same
+    /// base and writes to other bases were unaffected, and only a restart
+    /// cleared it. This does not explain why a lock is held that long; it makes
+    /// the wait finite and the failure legible.
+    #[test]
+    fn a_held_write_lock_times_out_with_a_sentence_instead_of_hanging() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("held.lock");
+
+        // A real contended flock, taken and kept for the duration.
+        let held = super::FileLockGuard::acquire(&lock).expect("take the lock");
+
+        let started = std::time::Instant::now();
+        let Err(err) = super::FileLockGuard::acquire_bounded(
+            &lock,
+            std::time::Duration::from_millis(300),
+            "knowledge base 'probe'",
+        ) else {
+            panic!("a lock held by someone else must not be waited on forever");
+        };
+        let waited = started.elapsed();
+
+        let msg = err.to_string();
+        assert!(msg.contains("timed out"), "must say it timed out: {msg}");
+        assert!(
+            msg.contains("probe"),
+            "must name the base, so the caller knows WHICH one is stuck: {msg}"
+        );
+        assert!(
+            msg.contains("nothing was written"),
+            "must say the write did not happen: {msg}"
+        );
+        assert!(
+            waited >= std::time::Duration::from_millis(250),
+            "it must actually wait for the deadline, not fail instantly: {waited:?}"
+        );
+
+        // And once the holder lets go, the same call succeeds — the bound must
+        // not have broken ordinary contention.
+        drop(held);
+        assert!(
+            super::FileLockGuard::acquire_bounded(
+                &lock,
+                std::time::Duration::from_secs(5),
+                "knowledge base 'probe'",
+            )
+            .is_ok(),
+            "a released lock must be takeable — the bound must not break ordinary contention"
+        );
+    }
+
     #[test]
     fn the_write_lock_path_is_never_derived_from_the_base_root() {
         let production = include_str!("service.rs")
