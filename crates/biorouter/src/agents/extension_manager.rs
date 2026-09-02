@@ -2684,13 +2684,7 @@ impl ExtensionManager {
         let (client_name, client, client_config, ext_class, extension_origin) = self
             .get_client_for_tool(&prefixed_name)
             .await
-            .ok_or_else(|| {
-                ErrorData::new(
-                    ErrorCode::RESOURCE_NOT_FOUND,
-                    format!("Tool '{}' not found", tool_call.name),
-                    None,
-                )
-            })?;
+            .ok_or_else(|| unroutable_tool_error(&prefixed_name, tool_call.name.as_ref()))?;
 
         let tool_name = prefixed_name
             .strip_prefix(client_name.as_str())
@@ -8302,6 +8296,84 @@ mod tests {
                 .await
                 .contains(&expected_warning("cdwagent", "stanford")),
             "the grant named the OMOP connector, not every UCSF connector"
+        );
+    }
+}
+
+/// What to answer when no extension claims `prefixed_name`.
+///
+/// ⚠ Not always "not found". A `platform__*` tool is ADVERTISED — it is in
+/// `/agent/tools` — but dispatched by `Agent::dispatch`, so it reaches this
+/// point with no client and "not found" is the one answer that is untrue. That
+/// answer sends the reader hunting for a missing extension. Measured: 17 of 419
+/// driven calls answered "Tool 'platform__ingest_source' not found" while the
+/// same tool ingested successfully in a model turn.
+///
+/// `subagent` has the same shape and has always said so plainly; this keeps the
+/// four platform tools consistent with it.
+fn unroutable_tool_error(prefixed_name: &str, requested: &str) -> ErrorData {
+    if crate::agents::platform_tools::is_platform_tool_name(prefixed_name) {
+        return ErrorData::new(
+            ErrorCode::INVALID_REQUEST,
+            format!(
+                "`{requested}` is dispatched by the agent loop, not by an extension, so it \
+                 cannot be called through this entry point. Ask for it in a chat turn instead."
+            ),
+            None,
+        );
+    }
+    ErrorData::new(
+        ErrorCode::RESOURCE_NOT_FOUND,
+        format!("Tool '{requested}' not found"),
+        None,
+    )
+}
+
+#[cfg(test)]
+mod platform_dispatch_error_tests {
+    /// A `platform__*` tool is ADVERTISED but dispatched by `Agent::dispatch`,
+    /// so it reaches `ExtensionManager` and finds no client. "Tool not found"
+    /// was the one answer that is untrue: the tool exists, it is in
+    /// `/agent/tools`, and it works in a chat turn — measured, 17 of 419 driven
+    /// calls answered "Tool 'platform__ingest_source' not found" while the same
+    /// tool ingested successfully in a model turn.
+    ///
+    /// `subagent` has the same shape and has always said so plainly; this makes
+    /// the four platform tools consistent with it.
+    #[test]
+    fn a_platform_tool_is_not_reported_as_missing() {
+        for name in crate::agents::platform_tools::PLATFORM_TOOL_NAMES {
+            assert!(
+                crate::agents::platform_tools::is_platform_tool_name(name),
+                "{name} must be recognised as agent-dispatched"
+            );
+        }
+        assert!(
+            !crate::agents::platform_tools::is_platform_tool_name("developer__shell"),
+            "an ordinary extension tool must still take the not-found path"
+        );
+
+        // The message the dispatch site produces for these names, pinned at the
+        // source: a reader who greps for the old wording should find nothing.
+        let source = include_str!("extension_manager.rs");
+        // The PLATFORM arm specifically. The function legitimately contains the
+        // ordinary "not found" answer too — that is its other branch — so the
+        // assertion has to be scoped to the branch under test, or it fails a
+        // correct implementation.
+        let arm = source
+            .split("if crate::agents::platform_tools::is_platform_tool_name(prefixed_name) {")
+            .nth(1)
+            .expect("the unroutable-tool answer must special-case agent-dispatched tools")
+            .split("\n    }")
+            .next()
+            .expect("the platform arm must be a block");
+        assert!(
+            arm.contains("dispatched by the agent loop"),
+            "the refusal must say WHY, not that the tool is missing: {arm}"
+        );
+        assert!(
+            !arm.contains("not found"),
+            "a tool that exists must not be reported as missing: {arm}"
         );
     }
 }
