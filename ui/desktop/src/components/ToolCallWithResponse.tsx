@@ -916,7 +916,11 @@ const summarizeSkillsCall = (toolName: string, args: Record<string, unknown>): s
 
   // `setSkillEnabled` carries the verb in `enabled`; the retired pair carried it
   // in the name, and persisted transcripts still hold both.
-  if (toolName === 'setSkillEnabled' || toolName === 'hotLoadSkill' || toolName === 'hotUnloadSkill') {
+  if (
+    toolName === 'setSkillEnabled' ||
+    toolName === 'hotLoadSkill' ||
+    toolName === 'hotUnloadSkill'
+  ) {
     const enabling = toolName === 'hotLoadSkill' || args?.enabled === true;
     if (enabling)
       return skill ? `Loading skill ${skill} into this chat` : 'Loading a skill into this chat';
@@ -1760,7 +1764,16 @@ function ToolResultView({
           />
         )}
         {hasResource(result) && (
-          <pre className="font-sans text-sm whitespace-pre-wrap break-all overflow-x-auto max-w-full">
+          // ⚠ NOT `font-sans`. This is `JSON.stringify(…, null, 2)` in a <pre>
+          // — the same value class the other two raw dumps in this file render
+          // in `font-mono text-code` (ExecutedCallArguments above, and the
+          // malformed-args fallback beside it). All three are disclosures of
+          // ONE tool call, so expanding "View output" and "View executed calls"
+          // put pretty-printed JSON on screen in two typefaces at once.
+          // A proportional face also defeats the point of the <pre>: the
+          // two-space indent `stringify` emits only reads as structure when the
+          // glyphs are fixed-width. D-31 in styles/main.css: mono earns code.
+          <pre className="font-mono text-code whitespace-pre-wrap break-all overflow-x-auto max-w-full">
             {JSON.stringify(result, null, 2)}
           </pre>
         )}

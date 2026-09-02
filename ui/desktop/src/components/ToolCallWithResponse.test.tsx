@@ -653,6 +653,64 @@ describe('summarizeToolCall', () => {
     expect(screen.queryByText('Tool details unavailable')).not.toBeInTheDocument();
   });
 
+  /// A raw resource dump is CODE and must be set in the monospace face.
+  ///
+  /// It was `font-sans` while the two other pretty-printed-JSON dumps in this
+  /// same file — `ExecutedCallArguments` and the malformed-args fallback — use
+  /// `font-mono text-code`. All three are disclosures of ONE tool call, so
+  /// opening "View output" and "View executed calls" showed the same class of
+  /// value in two typefaces on one card. A proportional face also throws away
+  /// the point of the <pre>: `JSON.stringify(…, null, 2)`'s indent only reads
+  /// as structure in a fixed-width font.
+  ///
+  /// jsdom never runs Tailwind, so asserting a computed font would pass
+  /// whatever the class says. This asserts the CLASS on the element.
+  it('dumps a raw resource result in the monospace face, not the body font', () => {
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-resource',
+      toolCall: {
+        status: 'success',
+        value: { name: 'developer__exec_command', arguments: { cmd: 'make-report' } },
+      },
+    };
+
+    const { container } = render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        toolResponse={
+          {
+            type: 'toolResponse',
+            id: 'tool-resource',
+            toolResult: {
+              status: 'success',
+              value: {
+                content: [
+                  {
+                    type: 'resource',
+                    resource: { uri: 'file:///tmp/report.csv', mimeType: 'text/csv' },
+                  },
+                ],
+              },
+            },
+          } as never
+        }
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+
+    fireEvent.click(screen.getByText(/Running make-report/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText('View output').closest('button') as HTMLElement);
+
+    const dump = [...container.querySelectorAll('pre')].find((node) =>
+      node.textContent?.includes('file:///tmp/report.csv')
+    );
+    expect(dump).toBeDefined();
+    expect(dump!.className).toMatch(/font-mono/);
+    expect(dump!.className).not.toMatch(/font-sans/);
+  });
+
   it('shows MCP is_error text as an inline tool failure', () => {
     const toolRequest: ToolRequestMessageContent = {
       type: 'toolRequest',

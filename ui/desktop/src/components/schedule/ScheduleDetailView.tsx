@@ -347,7 +347,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                   {scheduleDetails.currently_running && scheduleDetails.current_session_id && (
                     <p className="text-sm text-text-default">
                       <span className="font-semibold">Current session ID:</span>{' '}
-                      {scheduleDetails.current_session_id}
+                      <span className="font-mono">{scheduleDetails.current_session_id}</span>
                     </p>
                   )}
                   {scheduleDetails.currently_running && scheduleDetails.process_start_time && (
@@ -480,7 +480,11 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                       className="text-sm font-semibold text-text-default truncate"
                       title={session.name || session.id}
                     >
-                      {session.name || `Session ID: ${session.id}`}
+                      {session.name || (
+                        <>
+                          Session ID: <span className="font-mono">{session.id}</span>
+                        </>
+                      )}
                     </h3>
                     <p className="text-xs text-text-muted mt-1">
                       Created:{' '}
@@ -496,7 +500,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                         className="text-xs text-text-muted mt-1 truncate"
                         title={session.workingDir}
                       >
-                        Dir: {session.workingDir}
+                        Dir: <span className="font-mono">{session.workingDir}</span>
                       </p>
                     )}
                     {session.accumulatedTotalTokens !== undefined &&

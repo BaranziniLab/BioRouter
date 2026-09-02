@@ -46,9 +46,20 @@ cd ui/desktop && npm run test-e2e               # Run Playwright E2E tests
 ```bash
 cargo fmt                           # Format Rust code
 ./scripts/clippy-lint.sh            # Run clippy linter
-cd ui/desktop && npm run lint:check # ESLint + Prettier check
+cd ui/desktop && npm run lint:check   # tsc + ESLint + themes/contrast/tokens — NOT Prettier
+cd ui/desktop && npm run format:check # Prettier; nothing else runs it, CI included
 just check-everything               # Run all style/lint checks
 ```
+
+⚠ **Frontend formatting is not enforced anywhere.** `lint:check` resolves to
+`typecheck && eslint && check:themes && check:contrast && check:tokens` — no
+Prettier — and no workflow under `.github/workflows/` invokes Prettier either.
+This line used to claim `lint:check` was an "ESLint + Prettier check"; it never
+was, and the drift is measurable: on 2026-09-02, five files under
+`ui/desktop/src` failed `format:check` on `main`. Run `format:check` yourself
+before pushing frontend changes, and do not wire it into CI without fixing
+those five first — a gate that fails on arrival gets disabled rather than
+obeyed.
 
 ### Build & Release
 

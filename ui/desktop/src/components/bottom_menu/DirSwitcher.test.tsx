@@ -305,3 +305,49 @@ describe('DirSwitcher tooltip control mode (#50)', () => {
     expect(await screen.findByRole('tooltip')).toHaveTextContent(WORKING_DIR);
   });
 });
+
+/// A working directory is a PATH, and paths are monospace across the app:
+/// RecentChats.tsx (the sidebar tooltip), SessionHistoryView.tsx and
+/// SharedSessionView.tsx all set this same value in `font-mono`. The composer
+/// chip was the one body-font holdout — and it sits on screen at the same time
+/// as the sidebar, so hovering a recent chat showed a mono path inches from a
+/// body-font one.
+///
+/// jsdom never runs Tailwind, so a computed-font assertion would pass whatever
+/// the class says. These assert the CLASS on the element, and walk ancestors
+/// where the face could be inherited instead.
+describe('DirSwitcher — the working directory is a path, so it is monospace', () => {
+  it('sets the unlocked chip in monospace', () => {
+    render(
+      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={false} />
+    );
+    expect(screen.getByText(WORKING_DIR).className).toMatch(/font-mono/);
+  });
+
+  it('sets the locked basename label in monospace', () => {
+    render(
+      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={true} />
+    );
+    // Same component, so the face must not flip when the chat locks.
+    expect(screen.getByText('Desktop').className).toMatch(/font-mono/);
+  });
+
+  it('sets the hover tooltip in monospace, overriding the tooltip font-sans', async () => {
+    const user = userEvent.setup();
+    render(
+      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={true} />
+    );
+
+    await user.hover(screen.getByTestId('dir-switcher-locked'));
+    const tooltip = await screen.findByRole('tooltip');
+
+    // `ui/Tooltip.tsx` puts `font-sans` on the content box itself, so the
+    // override must be on a descendant — asserting on the box would pass while
+    // the path still rendered in the body font.
+    const path = [...tooltip.querySelectorAll('*')].find(
+      (node) => node.textContent === WORKING_DIR
+    );
+    expect(path).toBeDefined();
+    expect(path!.className).toMatch(/font-mono/);
+  });
+});

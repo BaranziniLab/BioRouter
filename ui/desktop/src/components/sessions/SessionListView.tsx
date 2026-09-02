@@ -451,7 +451,12 @@ const SessionItem = React.memo(function SessionItem({
             </div>
             <div className="flex items-center gap-2 min-w-0">
               <Folder className="w-3 h-3 flex-shrink-0" />
-              <span className="truncate max-w-[240px]">{session.working_dir}</span>
+              {/* Monospace, because this is a PATH. Clicking this row opens
+                  SessionHistoryView, whose header draws the same value beside
+                  the same Folder glyph at the same size and colour — in
+                  `font-mono`. Body font here made a path change face on
+                  navigation. See D-31 in styles/main.css: mono earns paths. */}
+              <span className="truncate max-w-[240px] font-mono">{session.working_dir}</span>
             </div>
           </div>
         </button>

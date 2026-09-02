@@ -40,10 +40,6 @@ describe('syncBundledExtensions', () => {
     await syncBundledExtensions(existingExtensions, addExtension);
 
     expect(existingExtensions).toEqual([]);
-    expect(addExtension).not.toHaveBeenCalledWith(
-      'tutorial',
-      expect.anything(),
-      expect.anything()
-    );
+    expect(addExtension).not.toHaveBeenCalledWith('tutorial', expect.anything(), expect.anything());
   });
 });

@@ -544,12 +544,15 @@ export default function LocalModelInventory() {
                   : acceleratorMemoryLabel(snapshot?.system.accelerator_memory_kind)}
               </DetailRow>
               <DetailRow label="Recommendation">{selectedModel.suitability_message}</DetailRow>
-              <DetailRow label="Ollama model" mono>
-                {selectedModel.ollama_name ?? 'none'}
-              </DetailRow>
-              <DetailRow label="Fallback GGUF" mono>
-                {selectedModel.hf_spec}
-              </DetailRow>
+              {/* NOT `mono`. These are the same two fields the list row behind
+                  this dialog prints in the body font, and a model id is a NAME
+                  everywhere else in the app — the composer chip, the model
+                  pickers, the onboarding cards, ApplicationsView. `mono` here
+                  made one field change face between the row and the dialog it
+                  opens. The `mono` rows below stay: those are filesystem
+                  paths, which is a job mono actually earns (D-31). */}
+              <DetailRow label="Ollama model">{selectedModel.ollama_name ?? 'none'}</DetailRow>
+              <DetailRow label="Fallback GGUF">{selectedModel.hf_spec}</DetailRow>
               <DetailRow label="Official URL">
                 <button
                   type="button"

@@ -119,6 +119,38 @@ describe('LocalModelInventory', () => {
     expect(screen.getAllByText(/Fast — ~4B active parameters/).length).toBeGreaterThanOrEqual(2);
   });
 
+  /// A model id is a NAME, so it is set in the body font — the way the composer
+  /// chip, every model picker, the onboarding cards and ApplicationsView set it.
+  /// `Ollama model` and `Fallback GGUF` were `mono` while the list row BEHIND
+  /// this dialog prints those same two fields in the body font, so one field
+  /// changed face between a row and the dialog that row opens.
+  ///
+  /// The path rows are asserted in the same test on purpose: the fix is "model
+  /// ids are names, paths are paths", not "this dialog has no monospace", and a
+  /// test that only checked the first half would be satisfied by flattening
+  /// every row to the body font.
+  ///
+  /// jsdom never runs Tailwind, so a computed-font assertion would pass
+  /// whatever the class says. This asserts the CLASS on the value element.
+  it('sets model ids in the body font and paths in monospace (#F-21)', async () => {
+    render(<LocalModelInventory />);
+    fireEvent.click(await screen.findByText('View Info'));
+
+    const valueFor = async (label: string) => {
+      const node = await screen.findByText(label);
+      const value = node.nextElementSibling;
+      expect(value, `no value cell beside "${label}"`).not.toBeNull();
+      return value as HTMLElement;
+    };
+
+    // Model ids: names, so body font.
+    expect((await valueFor('Ollama model')).className).not.toMatch(/font-mono/);
+    expect((await valueFor('Fallback GGUF')).className).not.toMatch(/font-mono/);
+
+    // Filesystem paths: a job mono earns (D-31), and still mono.
+    expect((await valueFor('Model store')).className).toMatch(/font-mono/);
+  });
+
   it('renders the busy row for an operation started elsewhere (#34)', async () => {
     llamaServerStore.beginOperation('start', 'gemma4', 'downloading 42%', { poll: false });
     render(<LocalModelInventory />);

@@ -156,10 +156,7 @@ describe('recordExtensionProvenance', () => {
 
     const mutations = provenanceMutations(configDir);
     expect(mutations).toHaveLength(2);
-    expect(mutations.map((mutation) => mutation.key).sort()).toEqual([
-      'firstagent',
-      'secondagent',
-    ]);
+    expect(mutations.map((mutation) => mutation.key).sort()).toEqual(['firstagent', 'secondagent']);
     expect(new Set(mutations.map((mutation) => mutation.record.install_id)).size).toBe(2);
   });
 

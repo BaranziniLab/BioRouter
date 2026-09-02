@@ -622,6 +622,36 @@ describe('SessionListView stat column sizing', () => {
   });
 });
 
+/// A working directory is a PATH, and this list is one click from
+/// SessionHistoryView, whose header draws the same value beside the same
+/// Folder glyph at the same size and colour — in `font-mono`. Body font here
+/// made a path change typeface purely by being navigated to. The sidebar's
+/// RecentChats tooltip, SharedSessionView and SessionItem all use mono too.
+///
+/// jsdom never runs Tailwind, so asserting a computed font would pass whatever
+/// the class says. This asserts the CLASS, and walks the ancestors because
+/// `font-mono` on a parent is inherited — the way this would regress without
+/// the element itself being touched.
+describe('SessionListView — the working directory is a path, so it is monospace', () => {
+  it('sets the row working directory in monospace, not the body font', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [row({ id: 'session-1', name: 'Analysis', working_dir: '/Users/wgu/data' })],
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+
+    await screen.findByText('Analysis');
+    const dir = screen.getByText('/Users/wgu/data');
+    expect(dir.className).toMatch(/font-mono/);
+  });
+});
+
 // v1.89.0 visual review, D4. The bare `<input type="checkbox">` this replaces
 // computed `appearance: auto` / `accent-color: auto`, so it painted as the macOS
 // system blue in light mode and a bare white square in dark — the only unstyled

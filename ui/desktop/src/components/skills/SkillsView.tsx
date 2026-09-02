@@ -450,7 +450,18 @@ function BundleRow({
             <p className="text-supporting text-text-subtle mt-0.5">entry point: {entryPoint}</p>
           )}
           {!expanded && (
-            <p className="text-supporting text-text-subtle mt-1 font-mono truncate">
+            // ⚠ NOT `font-mono`. These are skill NAMES, and `entryPoint` three
+            // lines above is one of them — so a collapsed package card printed
+            // the same string ("hyperframes") twice, in two typefaces, both
+            // visible at once. Expanding the row rendered those same names in
+            // the body font again (the <li>s below), so the face also flipped
+            // on expand.
+            // D-31 in styles/main.css settles it: "mono keeps the jobs it
+            // EARNS — code, the terminal, paths, figures where columns must
+            // align… Mono for data, sans for chrome." A skill name is a name,
+            // and every other skill-name render in the app (SkillItem, the
+            // composer picker, the @-mention list, BrowseSkillsModal) is body.
+            <p className="text-supporting text-text-subtle mt-1 truncate">
               {bundle.skills.join(' · ')}
             </p>
           )}

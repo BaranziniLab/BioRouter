@@ -175,7 +175,7 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
       className={`z-[100] h-7 min-w-0 rounded-md px-1 text-text-default/70 text-supporting flex items-center select-none [&>svg]:size-4 ${className}`}
     >
       <FolderDot className="mr-0.5" size={16} />
-      <div className="max-w-[112px] min-w-0 truncate">{workingDirLabel(workingDir)}</div>
+      <div className="max-w-[112px] min-w-0 truncate font-mono">{workingDirLabel(workingDir)}</div>
     </span>
   ) : (
     <button
@@ -184,7 +184,7 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
       disabled={isDirectoryChooserOpen}
     >
       <FolderDot className="mr-0.5" size={16} />
-      <div className="max-w-[112px] min-w-0 truncate [direction:rtl]">{workingDir}</div>
+      <div className="max-w-[112px] min-w-0 truncate font-mono [direction:rtl]">{workingDir}</div>
     </button>
   );
 
@@ -203,7 +203,12 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
         }}
       >
         <TooltipTrigger asChild>{trigger}</TooltipTrigger>
-        <TooltipContent side="top">{workingDir}</TooltipContent>
+        <TooltipContent side="top">
+          {/* `ui/Tooltip.tsx` pins `font-sans` on the content box, so the
+              override has to sit on a child. RecentChats.tsx does exactly
+              this for the same value; copied rather than reinvented. */}
+          <span className="font-mono">{workingDir}</span>
+        </TooltipContent>
       </Tooltip>
     </TooltipProvider>
   );

@@ -99,3 +99,55 @@ describe('manual schedule run feedback', () => {
     await act(async () => finish());
   });
 });
+
+describe('one session id, one typeface', () => {
+  /**
+   * A session id was rendered three times on this screen in two faces.
+   *
+   * In a single run card, an unnamed session's heading printed
+   * `Session ID: <id>` in the body font while the row 26 lines below printed
+   * `ID: <id>` in `font-mono` — the SAME string, in one card, visible without
+   * scrolling. The running-schedule line above printed a third copy in the body
+   * font again. The working directory beside them was body here and mono in the
+   * sidebar, the history view and the shared-session view.
+   *
+   * The rule is `main.css`'s own D-31 — "mono for data, sans for chrome" — and
+   * an id and a path are both data. What makes this a bug rather than a
+   * preference is that the two renderings are on screen at the same time.
+   *
+   * ⚠ jsdom never runs Tailwind, so `getComputedStyle(...).fontFamily` reports
+   * the same thing whatever the class says. The assertion has to be on the
+   * class, and it walks up from the text node because the class sits on a
+   * wrapping span rather than on the element holding the text.
+   */
+  const monoAncestor = (element: HTMLElement | null): boolean => {
+    for (let node = element; node; node = node.parentElement) {
+      if (node.classList?.contains('font-mono')) return true;
+    }
+    return false;
+  };
+
+  it('sets an unnamed session id and its working directory in the data face', async () => {
+    mocks.getScheduleSessions.mockResolvedValue([
+      { id: 'sess-20260902-7f3', name: null, workingDir: '/tmp/work', messageCount: 2 },
+    ]);
+    renderDetails();
+
+    // The heading's fallback and the ID row are the same string; both must be
+    // mono, which is what the ID row was already doing alone.
+    const rendered = await screen.findAllByText('sess-20260902-7f3');
+    expect(rendered.length).toBeGreaterThan(1);
+    for (const node of rendered) {
+      expect(monoAncestor(node as HTMLElement)).toBe(true);
+    }
+    expect(monoAncestor(screen.getByText('/tmp/work') as HTMLElement)).toBe(true);
+  });
+
+  it('sets a running schedule’s current session id in the same face', async () => {
+    mocks.listSchedules.mockResolvedValue([
+      { ...schedule, currently_running: true, current_session_id: 'sess-running-1' },
+    ]);
+    renderDetails();
+    expect(monoAncestor((await screen.findByText('sess-running-1')) as HTMLElement)).toBe(true);
+  });
+});

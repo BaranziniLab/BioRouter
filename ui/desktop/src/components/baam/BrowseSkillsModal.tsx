@@ -255,9 +255,14 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
                                 {skill.name}
                               </span>
                               {skill.type && (
-                                <span className="text-[11px] text-text-subtle font-mono">
-                                  {skill.type}
-                                </span>
+                                // NOT `font-mono`. Registry `type` values are
+                                // English phrases — "5 skills · auto-applied",
+                                // "User-invocable · /scientific-research" — not
+                                // machine tokens, and this sits inline beside
+                                // `skill.name` in the body font on the same row.
+                                // D-31 in styles/main.css: mono for data, sans
+                                // for chrome.
+                                <span className="text-[11px] text-text-subtle">{skill.type}</span>
                               )}
                               {installed && (
                                 <span className="text-[10px] uppercase tracking-wide text-background-info bg-background-info/10 rounded px-1.5 py-0.5">

@@ -183,6 +183,55 @@ describe('SkillsView', () => {
     expect(items[0]).toHaveTextContent('→');
   });
 
+  /// Skill names are PROSE and must be set in the body font.
+  ///
+  /// The collapsed member list was `font-mono` while "entry point: …" three
+  /// lines above it — printing one of those very same names — was body. One
+  /// string ("hyperframes"), two typefaces, in one card, both on screen at
+  /// once. Expanding the row then rendered the same names in the body font a
+  /// third way, so the face flipped on expand too.
+  ///
+  /// jsdom never runs Tailwind, so a computed-style assertion would pass
+  /// whatever the class says. This asserts the CLASS, and walks the ancestors
+  /// because `font-mono` on a parent is inherited — which is how this would
+  /// regress without the element itself being touched.
+  it('sets collapsed package member names in the body font, not monospace', async () => {
+    serve({
+      skills: [
+        skill('hyperframes', { bundle: 'hyperframes', slug: 'hyperframes/hyperframes' }),
+        skill('media-use', { bundle: 'hyperframes', slug: 'hyperframes/media-use' }),
+      ],
+      bundles: [
+        bundle('hyperframes', ['hyperframes', 'media-use'], {
+          displayName: 'HyperFrames',
+          package: {
+            id: 'hyperframes',
+            displayName: 'HyperFrames',
+            version: '0.8.12',
+            entryPoint: 'hyperframes',
+            sourceUrl: null,
+            sourceRef: null,
+            resolvedCommit: null,
+            installer: null,
+            installedAt: null,
+            groups: { core: ['hyperframes'], 'on-demand': ['media-use'] },
+          },
+        }),
+      ],
+    });
+    render(<SkillsView />);
+
+    const members = await screen.findByText('hyperframes · media-use');
+    // The same name, in the same card, is already body font here.
+    expect(screen.getByText('entry point: hyperframes').className).not.toMatch(/font-mono/);
+
+    expect(members.className).not.toMatch(/font-mono/);
+    for (let node = members.parentElement; node; node = node.parentElement) {
+      expect(node.className ?? '').not.toMatch(/font-mono/);
+      if (node.tagName === 'BODY') break;
+    }
+  });
+
   it('keeps same-named package members scoped to their physical root', async () => {
     const projectRoot = '/project/.biorouter/skills';
     serve({
