@@ -787,8 +787,26 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn missing_or_disabled_soul_skill_fails_before_raw_staging() {
         let temp = tempfile::tempdir().unwrap();
-        let _env =
-            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
+        // ⚠ HOME as well as BIOROUTER_PATH_ROOT, and that is the whole isolation
+        // (#162). `skill_catalog::roots()` reads THREE domains: `~/.claude/skills`
+        // and `~/.config/agents/skills` come from `dirs::home_dir()`, and only
+        // the Biorouter root follows `BIOROUTER_PATH_ROOT`. Pinning one of them
+        // leaves the catalog reading the ambient home, so this test asserted
+        // "the soul skill is not installed" against a directory it did not own.
+        //
+        // Deterministic, not a race: planting `update-soul` in
+        // `$HOME/.claude/skills` reproduces the exact failure
+        // (`unwrap_err()` on `Ok(Some(Soul { … }))`) every time, and a clean HOME
+        // passes every time. It surfaced as a flake only because whichever test
+        // wrote into the shared test HOME first decided the outcome.
+        //
+        // The product is right to read those roots — a skill in `~/.claude/skills`
+        // IS available to BioRouter, deliberately (`SkillSourceKind::ClaudeHome`).
+        // It is the test's isolation that was partial.
+        let _env = env_lock::lock_env([
+            ("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap())),
+            ("HOME", Some(temp.path().to_str().unwrap())),
+        ]);
         crate::agents::skill_catalog::invalidate();
         let manager = Arc::new(crate::session::SessionManager::new(
             temp.path().join("sessions"),
