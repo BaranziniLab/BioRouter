@@ -1118,7 +1118,7 @@ impl ExtensionManagerClient {
 
                 Available tools:
                 - search_available_extensions: List installed extensions and their exact names, including any that are installed but not attached to this chat
-                - manage_extensions: Attach or detach an installed extension
+                - manage_extensions: enable or disable an installed extension (`action` is `enable` or `disable`, never `attach`/`detach`)
                 - search_marketplace_extensions: Search trusted BAAM entries; omit the query to browse everything visible to this model
                 - install_extension: Install an exact trusted registry id after user approval
                 - delete_extension_package: Permanently delete one or several validated marketplace packages after one user approval
@@ -2113,7 +2113,8 @@ impl ExtensionManagerClient {
             }),
             Tool::new(
                 MANAGE_EXTENSIONS_TOOL_NAME.to_string(),
-                "Attach or detach an installed third-party extension in this chat.
+                "Enable or disable an installed third-party extension in this chat — `action` is exactly `enable` or `disable`.
+            Enable is what \"attach\" means here and disable is \"detach\"; those two words are not accepted values.
             Use the exact installed name from search_available_extensions, not a marketplace title or registry id.
             Changes apply immediately in the current turn. The result lists exact availableTools
             after attach or removedTools after detach; use or stop using those names accordingly.
@@ -2146,7 +2147,7 @@ impl ExtensionManagerClient {
         tools.extend([
             Tool::new(
                 SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME.to_owned(),
-                "Browse or search trusted BAAM marketplace extensions. Pass `query` to match an id, name, organization, description or tag; omit it to list everything visible to this model. Private entries are hidden from public models."
+                "Browse or search trusted BAAM marketplace extensions. Pass `query` to match an id, name, organization, description or tag; omit it to list everything visible to this model. Private entries are hidden from public models. Results carry `registryId` (camelCase); pass that exact value as install_extension's `registry_id` (snake_case) — the two tools spell the same field differently."
                     .to_owned(),
                 Arc::new(
                     serde_json::to_value(schema_for!(SearchMarketplaceExtensionsParams))
@@ -2209,6 +2210,97 @@ impl ExtensionManagerClient {
         }
 
         tools
+    }
+}
+
+#[cfg(test)]
+mod argument_visibility_tests {
+    //! The model can only pass the arguments something told it about.
+    //!
+    //! In code-execution mode NO JSON schema reaches the model — the prompt
+    //! carries `Modules: <server names>` and nothing else, and the rendered
+    //! signature keeps only the FIRST LINE of a tool's description and drops
+    //! per-parameter docs entirely. So for these two tools the description's
+    //! opening line is, in practice, the whole specification.
+    //!
+    //! Both of the failures these guard were observed in a real session:
+    //!   * `action: "attach"` — our own description and server instructions both
+    //!     said "Attach or detach", and neither named the accepted values.
+    //!   * `registryId` instead of `registry_id` — the model did not invent it;
+    //!     `search_marketplace_extensions` RETURNS `registryId` (camelCase) and
+    //!     `install_extension` demands `registry_id` (snake_case), so it copied
+    //!     the key out of our own output one call earlier.
+
+    /// `manage_extensions` must name its accepted values on the first line, and
+    /// must not teach the verb that is not accepted.
+    #[test]
+    fn manage_extensions_states_its_action_values_before_anything_else() {
+        let source = include_str!("extension_manager_extension.rs");
+        let description = source
+            .split("MANAGE_EXTENSIONS_TOOL_NAME.to_string(),")
+            .nth(1)
+            .expect("the manage_extensions tool must be constructed here")
+            .split(".to_string(),")
+            .next()
+            .expect("its description literal");
+        let first_line = description
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .expect("a non-empty first line");
+
+        assert!(
+            first_line.contains("`enable`") && first_line.contains("`disable`"),
+            "the FIRST line must name both accepted values — it is the only line \
+             that survives into the code-execution signature: {first_line}"
+        );
+        assert!(
+            !first_line.starts_with("                \"Attach"),
+            "the first line must not open by teaching \"Attach\", which is not an \
+             accepted value: {first_line}"
+        );
+    }
+
+    /// The camelCase/snake_case seam between the two tools has to be stated
+    /// where the model reads it, because our own output is the source of the
+    /// wrong key.
+    #[test]
+    fn the_marketplace_search_says_which_key_its_result_feeds() {
+        let source = include_str!("extension_manager_extension.rs");
+        let description = source
+            .split("SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME.to_owned(),")
+            .nth(1)
+            .expect("the search tool must be constructed here")
+            .split(".to_owned(),")
+            .next()
+            .expect("its description literal");
+
+        assert!(
+            description.contains("registryId") && description.contains("registry_id"),
+            "the description must name BOTH spellings — the result's `registryId` \
+             and install_extension's `registry_id` — or the case flip is invisible \
+             to the model that just read one and must now write the other: \
+             {description}"
+        );
+    }
+
+    /// …and the server instructions must not contradict the tool description.
+    /// They are a second copy of the same claim in the same system prompt.
+    #[test]
+    fn the_server_instructions_do_not_teach_the_rejected_verb() {
+        let source = include_str!("extension_manager_extension.rs");
+        let line = source
+            .lines()
+            .find(|line| line.contains("- manage_extensions:"))
+            .expect("the instruction bullet must exist");
+        assert!(
+            line.contains("enable") && line.contains("disable"),
+            "the instruction bullet must name the accepted values: {line}"
+        );
+        assert!(
+            !line.contains("Attach or detach"),
+            "the bullet still teaches the rejected verb, which is where the model \
+             read it the first time: {line}"
+        );
     }
 }
 
