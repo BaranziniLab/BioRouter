@@ -43,11 +43,7 @@ const GAP_K = 0.02; // letters -> underline, fraction of cap height
 const THICK_K = 0.15; // underline thickness, fraction of cap height
 const WORK_SIZE = 100;
 
-// The brand mark is set in Inter (bundled @font-face in main.css), not the native
-// UI stack, so the BR monogram matches the app icon on every platform. The native
-// stack stays only as a load-time fallback.
-const SANS =
-  'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif';
+import { BRAND_SANS as SANS } from './brandFont';
 
 type Geo = {
   vb: string;

@@ -54,11 +54,7 @@ const UL_WIDTH = 1.0; // 1.0 = underline exactly the "oR" pair
 const WORK_SIZE = 100; // font-size in SVG user units; the viewBox scales it to `className`
 const BIO_LEN = 3; // "Bio" is the first three characters
 
-// The brand mark is set in Inter (bundled @font-face in main.css), not the native
-// UI stack, so the wordmark reads identically on every platform and matches the
-// app icon. The native stack stays only as a load-time fallback.
-const SANS =
-  'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif';
+import { BRAND_SANS as SANS } from './brandFont';
 
 type Geo = {
   vbX: number;
