@@ -91,6 +91,47 @@ renderer" — it is a prop quietly going missing at one call site and a whole cl
 seeing the same thing everyone else sees. If a surface genuinely needs a different presentation,
 make the choice explicit and testable at the call site, and write down why here.
 
+## A link is only a link when the panel could open it
+
+A file path the assistant mentions is rendered as an accent-coloured, underlined,
+clickable control — but only once the main process confirms the panel could actually
+show it. Until then, and whenever it could not, the same text renders as ordinary
+prose: no accent, no underline, not focusable, no click handler.
+
+"Could show it" is deliberately stricter than "the file exists". The check runs the
+same allowlist and the same symlink refusal that `read-artifact-file` runs, because a
+verdict reached down a *different* resolution than the click takes is worse than no
+verdict — it paints an accent link onto a file the panel then refuses to open. It also
+keeps the reply from being an existence oracle: a path outside the allowlist answers
+"no" exactly as a deleted one does, and the reply carries two booleans and nothing else.
+
+Four states, and the two that look alike are the design:
+
+| state | meaning | rendering |
+|---|---|---|
+| `unchecked` | we know nothing — no bridge, or the check itself failed | link (legacy behaviour) |
+| `checking` | asked, no answer yet | plain |
+| `present` | confirmed | link |
+| `missing` | asked, and it is gone or denied | plain |
+
+`missing` is an answer; `unchecked` is the lack of one. Defaulting to plain and
+*upgrading* is what stops a dead path being clickable even for one frame. Routing a
+**failed** check to `unchecked` rather than `missing` is what stops one transient IPC
+hiccup stripping every real file in the transcript of its link — the same bug pointed
+the other way. Surfaces with no bridge at all (the vitest suites, `biorouter serve` in a
+browser) keep the pre-existing behaviour of linking everything.
+
+Path resolution is operating-system independent by construction: drive-letter and UNC
+paths are recognised on every platform and refused rather than grafted onto a POSIX
+working directory, `~` expands from `$HOME` / `%USERPROFILE%` with `os.homedir()` behind
+it, and every join goes through `node:path`.
+
+⚠ **jsdom cannot check the part that was reported.** The defect was a *colour*, and a
+component test asserts a class without knowing whether that class resolves to anything.
+`ui/desktop/.filelink-harness/` mounts the real component with the real stylesheet for
+exactly that reason; run it with
+`npx vite --config .filelink-harness/vite.config.mts --port 5299`.
+
 ## Related documentation
 
 - [How an Auto Visualiser figure's libraries reach the renderer](artifact-cdn-assets.md) — the CSP and CDN-inlining mechanism behind whatever surface displays the figure.

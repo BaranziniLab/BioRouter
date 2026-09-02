@@ -463,7 +463,10 @@ The check runs as the **first statement of `open_new_session`**, ahead of the ex
 - Requires the daemon: `starting a new session requires the BioRouter daemon`.
 - `working_dir` **defaults to the caller's**. A different directory is allowed but never silent — it is named in the tool result *and* in a toast, and the toast is deliberately emitted **after** placement, because a renderer that routes a session's toasts to that session's tab would drop one that arrived before the tab existed.
 - `primary_knowledge_base` absent means `Auto`, which on a brand-new session pins the first id. `workspace_open` always chooses one rather than leaving a session with bases and no write target, in which KB-less writes fail.
-- `prompt` runs as a detached turn, provenance-stamped as an agent injection from the caller.
+- `prompt` runs as a detached turn, provenance-stamped as an agent injection from the caller, and it **spends a §5 fan-out slot** — the same per-caller budget `workspace_send_prompt` spends, not a second one. Over budget the whole call is refused with `this session already has N injected turns in flight (cap M); wait for one to finish before opening another conversation with a prompt`.
+  - The cap is checked **before `start_session`**, for the same reason the `new.kind` refusal above is: a refusal that has already minted a row produces the unparented conversation the refusal exists to prevent.
+  - The budget is shared because two tools start a detached turn in someone else's conversation, and for a while only one of them counted. A model that reached for `workspace_open` instead of `workspace_send_prompt` therefore fanned out with nothing counting at all — which surfaced as a single request opening several side conversations that all ran the same task.
+  - **Creating a conversation is not what is capped.** The same call without a `prompt` still succeeds at the cap; only the injected turn is budgeted.
 - It **never** retargets an existing session's working directory; the directory is set at creation, so it takes neither post-creation writer and cannot race the turn guard those share.
 
 Opening an existing session validates that it exists first (`no such session: …`), so a dangling frame never reaches the GUI.
