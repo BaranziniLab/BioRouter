@@ -38,6 +38,21 @@ pub(crate) fn logical_path(prefix: &str, relative: &Path) -> String {
 }
 
 pub fn list_pages(kb_root: &Path, prefix: Option<&str>) -> Result<Vec<PageRef>> {
+    // #158: "this base has no pages yet" and "this base is not on disk" are
+    // different answers, and returning `[]` for both makes them indistinguishable
+    // to every caller. An agent asked to summarise a base whose directory has
+    // gone would then report, truthfully as far as it can tell, that the base is
+    // empty. A base with a registry row but no directory is exactly that case.
+    //
+    // The base's own root missing is an error; `knowledge/` missing under a real
+    // root is a legitimately empty base, which is what a freshly created one is.
+    if !kb_root.exists() {
+        anyhow::bail!(
+            "knowledge base directory is missing at {} — the base is registered but not on \
+             disk, so it can be neither read nor re-created under that id",
+            kb_root.display()
+        );
+    }
     let knowledge_dir = kb_root.join("knowledge");
     if !knowledge_dir.exists() {
         return Ok(Vec::new());
@@ -614,6 +629,42 @@ mod tests {
             .unwrap()
             .head_file_matches(Path::new("knowledge/entities/hrv.md"), body.as_bytes())
             .unwrap());
+    }
+
+    /// #158. `[]` must mean "this base has no pages", never "this base is not
+    /// on disk". A registry row whose directory has gone produced the second
+    /// while looking like the first, so an agent asked to summarise the base
+    /// would report it empty — truthfully, as far as it could tell.
+    ///
+    /// The mutation that exposed this: reverting the guard left all 19 store
+    /// tests green, because nothing covered a missing base root.
+    #[test]
+    fn a_missing_base_root_is_an_error_not_an_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // A real base with no pages yet — legitimately empty.
+        let fresh = dir.path().join("fresh");
+        std::fs::create_dir_all(&fresh).unwrap();
+        assert!(
+            super::list_pages(&fresh, None)
+                .expect("a real base must read")
+                .is_empty(),
+            "a base with no knowledge/ directory is empty, not an error"
+        );
+
+        // A base root that is not there at all.
+        let gone = dir.path().join("gone");
+        let err = super::list_pages(&gone, None)
+            .expect_err("a base whose directory is missing must not read as empty");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing"),
+            "the error must say the base is missing: {msg}"
+        );
+        assert!(
+            msg.contains("gone"),
+            "and name the path so the caller can act: {msg}"
+        );
     }
 
     #[test]

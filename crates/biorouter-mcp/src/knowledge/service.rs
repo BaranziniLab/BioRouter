@@ -1550,12 +1550,29 @@ impl KnowledgeService {
             anyhow::bail!("kb '{id}' already exists at {}", kb_root.display());
         }
         let metadata = BasePublicationSnapshot::capture(&self.root)?;
-        anyhow::ensure!(
-            !registry::load(&self.root)?
-                .iter()
-                .any(|entry| entry.id == id),
-            "kb-id '{id}' already registered"
-        );
+        // #158: this is the guard a user actually hits, and a bare "already
+        // registered" is a dead end when the row is an ORPHAN — the directory is
+        // gone (checked immediately above), so `kb_list_bases` does not show the
+        // base and the id can be neither seen, read, deleted nor re-created.
+        // Name the stale row and where it lives so the refusal points somewhere.
+        //
+        // `registry::register` carries the same distinction for its own callers;
+        // this one exists because create refuses here first and never reaches it.
+        if let Some(stale) = registry::load(&self.root)?
+            .into_iter()
+            .find(|entry| entry.id == id)
+        {
+            if stale.path.exists() {
+                anyhow::bail!("kb-id '{id}' already registered");
+            }
+            anyhow::bail!(
+                "kb-id '{id}' is registered but its directory is missing ({}). The row is \
+                 stale, which is why this id is neither listed nor creatable. Remove it from \
+                 {} to free the id.",
+                stale.path.display(),
+                registry::registry_path(&self.root).display()
+            );
+        }
         let staged_root = self
             .root
             .join(format!(".creating-{id}-{}", uuid::Uuid::new_v4()));

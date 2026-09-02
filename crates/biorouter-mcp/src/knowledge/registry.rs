@@ -26,7 +26,22 @@ pub fn load(root: &Path) -> Result<Vec<RegistryEntry>> {
 
 pub fn register(root: &Path, entry: RegistryEntry) -> Result<()> {
     let mut bases = load(root)?;
-    if bases.iter().any(|b| b.id == entry.id) {
+    if let Some(existing) = bases.iter().find(|b| b.id == entry.id) {
+        // #158: a bare "already registered" is accurate and useless when the row
+        // is an ORPHAN — the directory is gone, so `kb_list_bases` does not show
+        // the base, and the user is refused an id they cannot see, cannot read
+        // and cannot delete. Name the orphan and where it is recorded, so the
+        // refusal points somewhere.
+        if !existing.path.exists() {
+            anyhow::bail!(
+                "kb-id '{}' is registered but its directory is missing ({}). The row is stale, \
+                 which is why this id is neither listed nor creatable. Remove it from {} to \
+                 free the id.",
+                entry.id,
+                existing.path.display(),
+                registry_path(root).display()
+            );
+        }
         anyhow::bail!("kb-id '{}' already registered", entry.id);
     }
     bases.push(entry);
@@ -93,13 +108,82 @@ mod tests {
     #[test]
     fn register_rejects_duplicate() {
         let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ms");
+        // #158: the base directory is created here, where before this test used a
+        // path that never existed. That made it pass through the ORPHAN branch
+        // rather than the duplicate one — it was asserting the right message from
+        // the wrong path, and would have gone on passing if the plain duplicate
+        // refusal were deleted entirely. The orphan case has its own test below.
+        std::fs::create_dir_all(&path).unwrap();
         let e = RegistryEntry {
             id: "ms".into(),
-            path: dir.path().join("ms"),
+            path,
         };
         register(dir.path(), e.clone()).unwrap();
         let err = register(dir.path(), e).unwrap_err();
         assert!(err.to_string().contains("already registered"));
+    }
+
+    /// #158. An orphan row — registered, directory gone — made an id
+    /// permanently unusable: `kb_list_bases` hid it, `kb_create_base` refused it
+    /// as taken, and the refusal named nothing the user could act on.
+    #[test]
+    fn a_registered_id_whose_directory_is_gone_says_so_and_says_where() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let missing = root.join("ghost-base");
+        super::register(
+            root,
+            super::RegistryEntry {
+                id: "ghost".into(),
+                path: missing.clone(),
+            },
+        )
+        .expect("first registration");
+
+        // The directory never existed, which is the shape a partial create or an
+        // externally removed base leaves behind.
+        let err = super::register(
+            root,
+            super::RegistryEntry {
+                id: "ghost".into(),
+                path: missing.clone(),
+            },
+        )
+        .expect_err("a second registration must still be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("directory is missing"),
+            "the refusal must say WHY the id is unavailable: {msg}"
+        );
+        assert!(msg.contains("registry.yaml"), "and where to fix it: {msg}");
+    }
+
+    /// The ordinary duplicate — a real base — keeps its plain refusal.
+    #[test]
+    fn a_registered_id_that_really_exists_keeps_the_plain_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let real = root.join("real-base");
+        std::fs::create_dir_all(&real).unwrap();
+        super::register(
+            root,
+            super::RegistryEntry {
+                id: "real".into(),
+                path: real.clone(),
+            },
+        )
+        .expect("first registration");
+        let err = super::register(
+            root,
+            super::RegistryEntry {
+                id: "real".into(),
+                path: real,
+            },
+        )
+        .expect_err("duplicate refused");
+        assert!(err.to_string().contains("already registered"), "{err}");
+        assert!(!err.to_string().contains("directory is missing"), "{err}");
     }
 
     #[test]
