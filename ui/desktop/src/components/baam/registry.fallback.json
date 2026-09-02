@@ -67,7 +67,7 @@
       "privacy": "public"
     },
     {
-      "id": "spokeagent-0.4.1",
+      "id": "spokeagent",
       "name": "SPOKEAgent",
       "organization": "BaranziniLab · UCSF",
       "version": "v0.4.1",
