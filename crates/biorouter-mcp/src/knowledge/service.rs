@@ -1545,9 +1545,40 @@ impl KnowledgeService {
             }
             Ok::<_, anyhow::Error>(file_guard)
         });
-        let file_guard = acquire
-            .await
-            .map_err(|error| anyhow::anyhow!("knowledge KB lock task failed: {error}"))??;
+        // #157: BOUNDED, and this is the half that actually wedges. Proven on a
+        // live daemon: with nothing running, an outside `flock(LOCK_EX|LOCK_NB)`
+        // on the base's lock file is REFUSED, and `sample` shows every waiter
+        // parked in `acquire_cancellable` -> `fs2::unix::flock` -> the syscall,
+        // having already passed the in-process mutex above. So a leaked
+        // `FileLockGuard` — not a busy mutex — is what turns later operations on
+        // that base into calls that never return, until the process exits.
+        //
+        // ⚠ I twice reported the in-process mutex as the mechanism. It can wedge
+        // too, and it is bounded above, but the file lock is a SECOND unbounded
+        // wait on the same path, and bounding only one leaves the hang intact.
+        // A cancel token is not a deadline: `acquire_cancellable` waits forever
+        // while nobody cancels.
+        //
+        // On elapse, drop `cancel_waiter_on_drop` FIRST. That cancels the token
+        // the blocking task is polling, so it stops waiting on `flock` and the
+        // thread returns to the pool instead of being pinned for the life of the
+        // process — bounding the caller while leaking a blocking thread per
+        // attempt would trade one exhaustion for another.
+        let file_guard = match tokio::time::timeout(wait, acquire).await {
+            Ok(joined) => joined
+                .map_err(|error| anyhow::anyhow!("knowledge KB lock task failed: {error}"))??,
+            Err(_) => {
+                drop(cancel_waiter_on_drop);
+                anyhow::bail!(
+                    "timed out after {}s waiting for the on-disk lock of knowledge base \
+                     '{kb_id}'. Another operation still holds it: if an ingest, query or lint \
+                     is running on this base, let it finish and retry; if nothing is running, \
+                     the lock has been left held and restarting Biorouter clears it (see issue \
+                     #157). Nothing was written.",
+                    wait.as_secs()
+                );
+            }
+        };
         drop(cancel_waiter_on_drop);
         if cancel.is_some_and(CancellationToken::is_cancelled) {
             anyhow::bail!("knowledge operation cancelled after acquiring the KB lock");
@@ -5607,6 +5638,58 @@ mod tests {
             recovered.head().unwrap().shorthand(),
             Some("main" | "master")
         ));
+    }
+
+    /// #157, the OTHER unbounded wait on the same path — the on-disk `flock`.
+    ///
+    /// This is the one that actually wedged a live daemon. Held here by a
+    /// SEPARATE `FileLockGuard` rather than by a `lock_kb` guard, which is what
+    /// makes it a file-lock test: the in-process mutex is free, so a waiter
+    /// walks straight past the bound above and blocks in `acquire_cancellable`.
+    /// Exactly the stack a `sample` of the wedged daemon showed.
+    ///
+    /// Fails against the shipped-at-the-time code, which awaited that
+    /// `spawn_blocking` with no deadline and simply never returned.
+    #[tokio::test]
+    async fn a_waiter_that_cannot_get_the_on_disk_lock_gives_up_and_names_the_base() {
+        let (_dir, svc) = svc();
+        let kb = "flock-wedged-b2";
+        svc.create_base(kb, "K", None).unwrap();
+
+        // The leak, reproduced: the file lock is held and nothing holds the
+        // in-process mutex, so only the `flock` half can block.
+        let held = svc.lock_existing_kb(kb).expect("take the on-disk lock");
+        assert!(
+            !svc.kb_queue_is_occupied(kb),
+            "the in-process queue must be FREE"
+        );
+
+        let waited = std::time::Instant::now();
+        let error = match svc
+            .lock_kb_path_waiting(kb, None, std::time::Duration::from_millis(200))
+            .await
+        {
+            Ok(_) => panic!("a waiter behind a held on-disk lock must time out, not hang"),
+            Err(error) => error,
+        };
+        let elapsed = waited.elapsed();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("timed out"), "{message}");
+        assert!(
+            message.contains("on-disk lock"),
+            "must say WHICH lock: {message}"
+        );
+        assert!(
+            message.contains(kb),
+            "the base must be named so the user knows which one is stuck: {message}"
+        );
+        assert!(message.contains("Nothing was written"), "{message}");
+        assert!(
+            elapsed >= std::time::Duration::from_millis(200),
+            "returned in {elapsed:?} — that is not the deadline firing"
+        );
+        drop(held);
     }
 
     /// #157, the shipped behaviour: a caller that cannot get the queue lock
