@@ -186,9 +186,67 @@ struct ActiveKnowledgeTransaction {
     session_id: String,
     txn: crate::knowledge::git::Txn,
     _write_guard: crate::knowledge::service::KnowledgeWriteGuard,
+    /// When this transaction was opened or last used (#157).
+    ///
+    /// An open transaction holds the base's WRITE LOCK — the in-process mutex
+    /// and the on-disk `flock` both — for its whole lifetime, so an abandoned
+    /// one makes every later operation on that base, from any other session,
+    /// block forever. Measured: `kb_begin_txn` and nothing else leaves an
+    /// outside `flock(LOCK_EX|LOCK_NB)` refused, and a second session's
+    /// `kb_get_graph` and `kb_lint` on that base never return while another
+    /// base answers in 8 ms.
+    ///
+    /// The two reapers that existed both fire on TEARDOWN — session end,
+    /// connection end — so a transaction abandoned while its session is still
+    /// alive was never released. That is the ordinary case: a model opens one,
+    /// then the turn errors, is cancelled, or simply moves on.
+    touched_at: std::time::Instant,
 }
 
+/// How long an open knowledge transaction may sit untouched before it is
+/// treated as abandoned and rolled back (#157).
+///
+/// ⚠ Longer than the longest LEGITIMATE quiet stretch inside one, which is a
+/// macro's own wall-clock budget (`SubAgentBounds::max_wall` — 300 s by default,
+/// 900 s as `biorouter-cli` builds it): a macro opens a transaction and can go
+/// quiet for a whole model call inside it. Reaping a live transaction would
+/// roll back work in progress, which is worse than the hang this prevents, so
+/// the threshold is deliberately generous. It only has to be FINITE — the bug
+/// is that an abandoned transaction was held until the process exited.
+const ABANDONED_TRANSACTION_IDLE: std::time::Duration = std::time::Duration::from_secs(1800);
+
 impl KnowledgeTransactionCoordinator {
+    /// Slots whose transaction has been untouched for longer than
+    /// [`ABANDONED_TRANSACTION_IDLE`].
+    async fn abandoned(&self) -> Vec<(String, ActiveKnowledgeTransactionSlot)> {
+        self.abandoned_after(ABANDONED_TRANSACTION_IDLE).await
+    }
+
+    /// [`Self::abandoned`] with the threshold supplied, so a test can drive the
+    /// reaper without waiting out the shipped 30 minutes.
+    async fn abandoned_after(
+        &self,
+        idle: std::time::Duration,
+    ) -> Vec<(String, ActiveKnowledgeTransactionSlot)> {
+        let mut out = Vec::new();
+        for (kb_id, slot) in self.slots() {
+            // `try_lock`, never `lock().await`: a slot held by a transaction
+            // that is being committed right now is BUSY, not abandoned, and
+            // waiting for it here would put the reaper behind the very work it
+            // is meant to be checking on.
+            let is_abandoned = match slot.try_lock() {
+                Ok(active) => active
+                    .as_ref()
+                    .is_some_and(|txn| txn.touched_at.elapsed() >= idle),
+                Err(_) => false,
+            };
+            if is_abandoned {
+                out.push((kb_id, slot));
+            }
+        }
+        out
+    }
+
     fn slot(&self, kb_id: &str) -> ActiveKnowledgeTransactionSlot {
         self.active
             .entry(kb_id.to_string())
@@ -598,6 +656,23 @@ impl KnowledgeServer {
             .ok_or_else(transaction_unavailable)
     }
 
+    /// Mark a transaction as still in use, so the reaper measures IDLE time
+    /// rather than total age. Without this a macro that legitimately runs
+    /// longer than [`ABANDONED_TRANSACTION_IDLE`] would have its work rolled
+    /// back underneath it.
+    fn touch_active_transaction(
+        active: &mut Option<ActiveKnowledgeTransaction>,
+        handle: &str,
+        session_id: &str,
+    ) {
+        if let Some(txn) = active
+            .as_mut()
+            .filter(|txn| txn.handle == handle && txn.session_id == session_id)
+        {
+            txn.touched_at = std::time::Instant::now();
+        }
+    }
+
     async fn assert_transaction_admission(
         &self,
         tool: &str,
@@ -622,11 +697,11 @@ impl KnowledgeServer {
         };
         match handle {
             Some(handle) => {
-                Self::active_transaction_branch(
-                    &active,
-                    handle,
-                    &Self::transaction_session_id(context)?,
-                )?;
+                let session_id = Self::transaction_session_id(context)?;
+                Self::active_transaction_branch(&active, handle, &session_id)?;
+                // Still in use, so the reaper's clock restarts here.
+                let mut active = active;
+                Self::touch_active_transaction(&mut active, handle, &session_id);
                 Ok(())
             }
             None if active.is_some() => Err(transaction_unavailable()),
@@ -1413,6 +1488,7 @@ impl KnowledgeServer {
             session_id,
             txn,
             _write_guard: write_guard,
+            touched_at: std::time::Instant::now(),
         });
         ok_json(&serde_json::json!({ "txn": handle }))
     }
@@ -1969,6 +2045,36 @@ impl ServerHandler for KnowledgeServer {
         // value so a callee cannot ask half the question.
         let caller = CallerIdentity::from_context(Some(&context));
         let name = request.name.to_string();
+
+        // #157. Roll back transactions nothing has touched for a long time,
+        // BEFORE this call goes looking for a lock. An open transaction holds
+        // the base's write lock, and the only two reapers that existed fired on
+        // teardown, so one abandoned by a live session held its base until the
+        // process exited. Doing it here rather than on a timer means no
+        // background task to own, and the check runs exactly when it matters:
+        // just before somebody would otherwise queue behind it.
+        //
+        // Cheap in the normal case — `abandoned()` walks the open transactions,
+        // which is almost always none, and never blocks on a busy slot.
+        let abandoned = self.transactions.abandoned().await;
+        if !abandoned.is_empty() {
+            let ids: Vec<String> = abandoned.iter().map(|(kb_id, _)| kb_id.clone()).collect();
+            match self.abort_transaction_slots(abandoned, None).await {
+                Ok(released) if released > 0 => tracing::warn!(
+                    "knowledge: rolled back {released} abandoned transaction(s) on {ids:?} \
+                     after {}s idle; the base(s) were holding a write lock (see issue #157)",
+                    ABANDONED_TRANSACTION_IDLE.as_secs()
+                ),
+                Ok(_) => {}
+                // Never fail the caller's tool because cleanup of somebody
+                // else's transaction failed; it will be retried next call.
+                Err(error) => {
+                    tracing::warn!(
+                        "knowledge: could not roll back an abandoned transaction: {error:#}"
+                    )
+                }
+            }
+        }
 
         if let Some(kb_id) = self.gated_kb_id(&name, request.arguments.as_ref(), Some(&context))? {
             // Issue #56, Task 10C. The read half of the ruling, and the reason
@@ -2556,6 +2662,76 @@ mod tests {
             "commit_message": "write A",
             "txn": txn,
         })
+    }
+
+    /// #157, the root cause. An open transaction holds the base's write lock —
+    /// the in-process mutex AND the on-disk `flock` — for its whole lifetime, so
+    /// one that is never committed made every later operation on that base, from
+    /// any session, block until the process exited.
+    ///
+    /// The two reapers that existed both fired on TEARDOWN, which is exactly the
+    /// case this is not: the session is alive and simply never comes back to the
+    /// transaction.
+    #[tokio::test]
+    async fn a_transaction_nobody_touches_is_rolled_back_and_releases_its_base() {
+        let (server, _tmp, _root) = migrated_server_with_bases(&["kb", "other"]);
+        let _handle = begin_transaction_handle(&server, "kb", "session-a").await;
+
+        // Precondition, and the property the whole bug rests on: an open
+        // transaction really is holding the base's lock. Without this assertion
+        // the test below could pass against a build where a transaction holds
+        // nothing at all.
+        assert!(
+            server.service.kb_queue_is_occupied("kb"),
+            "precondition: an open transaction holds the base's write lock"
+        );
+
+        // Nothing is abandoned yet — a transaction opened a moment ago must not
+        // be reaped, or a live macro would have its work rolled back under it.
+        assert!(
+            server
+                .transactions
+                .abandoned_after(std::time::Duration::from_secs(3600))
+                .await
+                .is_empty(),
+            "a transaction opened just now is in use, not abandoned"
+        );
+
+        // …and once it has been idle past the threshold, it is.
+        let stale = server
+            .transactions
+            .abandoned_after(std::time::Duration::ZERO)
+            .await;
+        assert_eq!(stale.len(), 1, "the idle transaction must be reaped");
+        assert_eq!(stale[0].0, "kb");
+
+        let released = server
+            .abort_transaction_slots(stale, None)
+            .await
+            .expect("rolling back an abandoned transaction");
+        assert_eq!(released, 1);
+
+        // The lock is free again, which is the whole point: the base is usable
+        // without restarting the process.
+        assert!(
+            !server.service.kb_queue_is_occupied("kb"),
+            "rolling the transaction back must release the base's write lock"
+        );
+
+        // And the base really does take writes again.
+        let after = call_tool_as_session(
+            &server,
+            "kb_write_page",
+            transaction_write_args("kb", None),
+            Some("session-b"),
+            Private,
+        )
+        .await;
+        let after = after.expect("the write must reach the tool, not be refused upstream");
+        assert!(
+            !after.is_error.unwrap_or(false),
+            "the base must accept writes after the abandoned transaction is rolled back: {after:?}"
+        );
     }
 
     #[tokio::test]
