@@ -962,7 +962,13 @@ const CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS: &[&str] = &[
     "knowledge__kb_get_graph",
     "knowledge__kb_list_history",
     "knowledge__kb_search",
-    "knowledge__kb_search_raw_sources",
+    // ⚠ NOT `knowledge__kb_search_raw_sources`. It is in this router's own
+    // `RETIRED_TOOL_NAMES` (`knowledge/server.rs`) — it is `kb_search
+    // { scope: "raw_sources" }` now — and the doc block below says in as many
+    // words that retired names do not belong in an allowlist. It sat here
+    // anyway, because the parity test that vouches for these lists covered
+    // three of the seven routers and this was one of the four it did not
+    // reach (#150.3).
     "knowledge__kb_get_active",
 ];
 
@@ -13812,6 +13818,110 @@ mod tests {
         assert_eq!(
             prefixed("memory"),
             expected(CODING_AGENT_BRIDGE_ALLOWED_MEMORY_TOOLS)
+        );
+    }
+
+    /// #150.3. `coding_agent_bridge_policy_matches_the_reviewed_builtin_router_rosters`
+    /// compares three routers — agent_drafter, autovisualiser and memory —
+    /// because those are the three whose extensions a unit test can stand up
+    /// cheaply. The doc block above the allowlists claims something broader:
+    /// that no RETIRED name is in any of them. Nothing checked that, and one
+    /// was: `knowledge__kb_search_raw_sources`, retired into
+    /// `kb_search { scope: "raw_sources" }`, sat in the knowledge allowlist
+    /// under a comment saying retired names do not belong there.
+    ///
+    /// So this reads the SOURCE instead of instantiating anything, which is what
+    /// lets it cover all seven routers at once — and every router added later,
+    /// without being widened again. It is deliberately not a hand-written list
+    /// of retired names: the hand-written list in the parity test is exactly
+    /// what missed this one.
+    #[test]
+    fn no_bridge_allowlist_names_a_tool_its_own_router_has_retired() {
+        // CARGO_MANIFEST_DIR is <workspace>/crates/biorouter; go up twice.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let crates = root.join("crates");
+        assert!(
+            crates.is_dir(),
+            "this guard walks {}; a wrong root makes every assertion below pass \
+             for the wrong reason",
+            crates.display()
+        );
+
+        // Every `const RETIRED_TOOL_NAMES: &[&str] = &[ ... ];` in the tree,
+        // whatever router declares it, and whether or not it is `#[cfg(test)]`.
+        let retired_decl =
+            regex::Regex::new(r"(?s)RETIRED_TOOL_NAMES:\s*&\[&str\]\s*=\s*&\[(.*?)\]\s*;").unwrap();
+        let string_lit = regex::Regex::new(r#""([A-Za-z0-9_]+)""#).unwrap();
+
+        let mut scanned = 0usize;
+        let mut retired: std::collections::BTreeSet<String> = Default::default();
+        let mut retired_sources: Vec<String> = vec![];
+        for entry in walkdir::WalkDir::new(&crates) {
+            let entry = entry.expect("this guard must not silently skip an unreadable directory");
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("unreadable source file {}: {e}", path.display()));
+            scanned += 1;
+            for decl in retired_decl.captures_iter(&text) {
+                retired_sources.push(path.display().to_string());
+                for name in string_lit.captures_iter(&decl[1]) {
+                    retired.insert(name[1].to_string());
+                }
+            }
+        }
+
+        // A walk that reads nothing and a walk that finds nothing wrong produce
+        // the identical green result, so make both ways of doing no work loud.
+        assert!(
+            scanned > 500,
+            "only {scanned} source files scanned — this guard is not covering the \
+             workspace and proves nothing"
+        );
+        assert!(
+            retired_sources.len() >= 2,
+            "found RETIRED_TOOL_NAMES in {retired_sources:?}; the knowledge router \
+             and the workspace extension both declare one, so a shortfall means the \
+             pattern has gone stale and this guard has quietly stopped looking"
+        );
+
+        // Every allowlist, by the same reading rather than by naming them.
+        let allowlist_decl = regex::Regex::new(
+            r"(?s)const (CODING_AGENT_BRIDGE_ALLOWED_[A-Z_]+):\s*&\[&str\]\s*=\s*&\[(.*?)\]\s*;",
+        )
+        .unwrap();
+        let agent_source = include_str!("agent.rs");
+        let mut checked = 0usize;
+        for list in allowlist_decl.captures_iter(agent_source) {
+            let list_name = &list[1];
+            for entry in string_lit.captures_iter(&list[2]) {
+                let full = &entry[1];
+                // Allowlists are `router__tool`; compare on the tool half, which
+                // is what a router's own retired table records.
+                // `rsplit` (not `split(..).next_back()`): a multi-character
+                // pattern's `Split` is not a `DoubleEndedIterator`.
+                let bare = full.rsplit("__").next().unwrap_or(full);
+                checked += 1;
+                assert!(
+                    !retired.contains(bare),
+                    "{list_name} allows '{full}', but '{bare}' is in a router's \
+                     RETIRED_TOOL_NAMES. A child's grant is minted per turn from the \
+                     live tool list, so a retired name here is unreachable at best \
+                     and a resurrected surface at worst."
+                );
+            }
+        }
+        assert!(
+            checked > 20,
+            "only {checked} allowlist entries checked — the allowlist pattern has \
+             gone stale, so this guard passed without reading the lists"
         );
     }
 

@@ -1595,7 +1595,16 @@ const PENDING_TOOLS: &[(&str, &str)] = &[];
 /// declared *here*, beside the tool table, so the reader who renames a tool
 /// meets the rule at the moment it applies.
 #[cfg(test)]
-const RETIRED_TOOL_NAMES: &[&str] = &["subagent_status", "workspace_spawn_subagent"];
+const RETIRED_TOOL_NAMES: &[&str] = &[
+    "subagent_status",
+    "workspace_spawn_subagent",
+    // Folded into `workspace_read_panel { capture: true }` by 2f4997bd. The
+    // `call_tool` alias keeps it dispatchable, so nothing broke and the row was
+    // simply never added (#150.4) — which is the failure mode the rule above
+    // exists to prevent: the instruction scan cannot flag a name it does not
+    // know is retired, so the prose is free to keep routing the model to it.
+    "workspace_capture_panel",
+];
 
 pub struct WorkspaceClient {
     info: InitializeResult,

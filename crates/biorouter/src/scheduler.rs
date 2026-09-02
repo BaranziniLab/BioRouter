@@ -2246,7 +2246,14 @@ mod tests {
     /// implementation the first poll parks inside the start-of-run persist, so
     /// the flag is set and no task exists to clear it, and this test hangs on
     /// the assertion below until it fails.
-    #[tokio::test]
+    /// ⚠ `current_thread`, and the precondition below is read WITHOUT awaiting.
+    /// Both are load-bearing, and this test was flaky (~1 run in 8) until they
+    /// were: the fix under test detaches the run, and a nonexistent source makes
+    /// that detached task finish almost immediately, so an `.await` between the
+    /// poll and the precondition hands it exactly the opening it needs to clear
+    /// the flag before the assertion reads it. The test then fails reporting
+    /// that the job was never marked running — the opposite of what happened.
+    #[tokio::test(flavor = "current_thread")]
     async fn a_dropped_run_now_future_still_clears_the_running_flag() {
         let temp_dir = tempdir().unwrap();
         let storage_path = temp_dir.path().join("schedule.json");
@@ -2269,8 +2276,19 @@ mod tests {
                 futures::poll!(run.as_mut()).is_pending(),
                 "the run must still be in flight when the caller goes away"
             );
+            // `try_lock`, not `list_scheduled_jobs().await`: on a current-thread
+            // runtime a task is only preempted at an await point, so reading the
+            // flag without one is what makes this precondition deterministic
+            // rather than a race against the detached run.
+            let running = scheduler
+                .jobs
+                .try_lock()
+                .expect("nothing else holds the jobs lock at this point")
+                .get("dropped-run")
+                .map(|(_, job)| job.currently_running)
+                .expect("the job is registered");
             assert!(
-                scheduler.list_scheduled_jobs().await[0].currently_running,
+                running,
                 "precondition: the job was marked running before the drop"
             );
             drop(run);
