@@ -557,8 +557,21 @@ async fn a_real_biorouter_extension_executes_and_its_output_reaches_the_childs_a
     serve_real_bridge().await;
     let lease = bridge::issue(grant).expect("the base URL is published");
 
+    // ⚠ Must be EXACTLY the config the provider writes, `timeout` included.
+    // Without that field the child falls back to its own default per-call
+    // deadline, which is far shorter than `approval_ttl()` (570s) — so a card
+    // nobody answers is reported to the model as a bare "The operation timed
+    // out" instead of Biorouter's readable "expired before anyone answered it".
+    // This test omitted it, so it was asserting against a deadline production
+    // does not have, and any child that RETRIED after the denial failed it.
     let config = serde_json::json!({
-        "mcpServers": { "biorouter": { "type": "http", "url": lease.url() } }
+        "mcpServers": {
+            "biorouter": {
+                "type": "http",
+                "url": lease.url(),
+                "timeout": bridge::child_tool_call_timeout().as_millis() as u64,
+            }
+        }
     });
     let config_path = dir.path().join("mcp.json");
     std::fs::write(&config_path, config.to_string()).expect("write the bridge config");
@@ -689,6 +702,38 @@ async fn a_real_biorouter_extension_executes_and_its_output_reaches_the_childs_a
 /// not a shortcut: it is the *only* channel the card travels on, so a test that
 /// finds it here is finding the thing the GUI would render, and a card that never
 /// arrives fails this poll rather than passing silently.
+/// The same poll, but a timeout is an ANSWER rather than a panic.
+///
+/// A denier that keeps answering cards needs to stop when no more arrive; the
+/// panicking variant would fail the test at the end of every successful run.
+async fn await_published_approval_opt(
+    session_id: &str,
+    within: std::time::Duration,
+) -> Option<String> {
+    use biorouter::conversation::message::{ActionRequiredData, MessageContent};
+    tokio::time::timeout(within, async {
+        loop {
+            for message in biorouter::action_required_manager::ActionRequiredManager::global()
+                .drain_requests(session_id)
+            {
+                for content in &message.content {
+                    if let MessageContent::ActionRequired(action) = content {
+                        if let ActionRequiredData::ToolConfirmation { id, tool_name, .. } =
+                            &action.data
+                        {
+                            eprintln!("approval card raised for {tool_name}");
+                            return id.clone();
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .ok()
+}
+
 async fn await_published_approval(session_id: &str, within: std::time::Duration) -> String {
     use biorouter::conversation::message::{ActionRequiredData, MessageContent};
     tokio::time::timeout(within, async {
@@ -891,24 +936,59 @@ async fn a_denied_bridged_call_returns_a_result_the_child_can_act_on() {
     serve_real_bridge().await;
     let lease = bridge::issue(grant).expect("the base URL is published");
 
+    // ⚠ Deny for the WHOLE run, not once. A model may RETRY after a refusal —
+    // this one does, roughly half the time — and each retry parks a NEW card.
+    // Answering only the first left every later card unanswered until
+    // `approval_ttl` (570s), which the child reports as a bare "The operation
+    // timed out", failing the assertion below for a reason that has nothing to do
+    // with the denial path.
+    //
+    // That flakiness read as a code regression and cost a long bisect: it
+    // correlated cleanly with an unrelated two-line change across seven runs
+    // (4 pass / 3 fail, split exactly on that file), and the correlation
+    // INVERTED as soon as this test was fixed. Seven runs was not enough to tell
+    // a real effect from a coin flip.
     let denier = tokio::spawn({
         let session_id = session_id.clone();
         async move {
-            let id =
-                await_published_approval(&session_id, std::time::Duration::from_secs(90)).await;
-            biorouter::pending_user_action::PendingUserActions::global().resolve_in_session(
-                &session_id,
-                &id,
-                biorouter::pending_user_action::UserActionOutcome::Denied {
-                    permission: biorouter::permission::Permission::DenyOnce,
-                },
-                biorouter::pending_user_action::DecisionAuthority::unproven(),
-            )
+            let mut first = None;
+            loop {
+                let Some(id) =
+                    await_published_approval_opt(&session_id, std::time::Duration::from_secs(20))
+                        .await
+                else {
+                    break;
+                };
+                let outcome = biorouter::pending_user_action::PendingUserActions::global()
+                    .resolve_in_session(
+                        &session_id,
+                        &id,
+                        biorouter::pending_user_action::UserActionOutcome::Denied {
+                            permission: biorouter::permission::Permission::DenyOnce,
+                        },
+                        biorouter::pending_user_action::DecisionAuthority::unproven(),
+                    );
+                if first.is_none() {
+                    first = Some(outcome);
+                }
+            }
+            first.expect("at least one approval card must have been raised and denied")
         }
     });
 
+    // ⚠ EXACTLY the config the provider writes, `timeout` included. Without that
+    // field the child falls back to its own default per-call deadline, far
+    // shorter than `approval_ttl()`, so an unanswered card surfaces as a bare
+    // "The operation timed out" rather than Biorouter's readable refusal — i.e.
+    // the test would assert against a deadline production does not have.
     let config = serde_json::json!({
-        "mcpServers": { "biorouter": { "type": "http", "url": lease.url() } }
+        "mcpServers": {
+            "biorouter": {
+                "type": "http",
+                "url": lease.url(),
+                "timeout": bridge::child_tool_call_timeout().as_millis() as u64,
+            }
+        }
     });
     let config_path = dir.path().join("mcp.json");
     std::fs::write(&config_path, config.to_string()).expect("write the bridge config");
