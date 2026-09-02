@@ -758,8 +758,54 @@ const extensions = extCards.map(({ attrs, inner: card }, index) => {
   const parts = org.split('·').map((p) => p.trim());
   const version = parts.find((p) => /^v?\d/.test(p)) || '';
   const organization = parts.filter((p) => p !== version).join(' · ');
+  // ⚠ The PUBLISHED id is `data-registry-id` when the card states one, and the
+  // download slug otherwise. It is deliberately NOT `extensionKey`.
+  //
+  // The slug alone was wrong for exactly one card. SPOKEAgent's release asset
+  // is `spokeagent-0.4.1.brxt`, so its id became `spokeagent-0.4.1` — a VERSION
+  // baked into a stable name, which the app then advertised as the extension's
+  // name while the extension that installs is `spokeagent`, and which changes
+  // with every release.
+  //
+  // The obvious repair — publish `extensionKey` as the id — is wrong twice
+  // over, and both reasons are already written down in this file. It would
+  // assert that ids and manifest names are the same thing, which the
+  // extensionKey block above rejects in as many words ("`spokeagent-0.4.1`
+  // proves ids and manifest names diverge"). And it would make id ==
+  // extension_name for EVERY card, which is precisely the condition that makes
+  // a generator keyed on the wrong field indistinguishable from a correct one —
+  // the reason `suffixed-download` is a fixture at all. The security test would
+  // have gone vacuous while still passing.
+  //
+  // So the id gets its own declaration. Two fields, stated separately, because
+  // they are two different things that merely coincide on 36 of 37 cards.
+  const declaredId = String(attrs['data-registry-id'] ?? '').trim();
+  const publishedId = declaredId || id;
+  if (attrs['data-registry-id'] !== undefined && !publishedId) {
+    fail(`${label}: data-registry-id is empty, which would publish the card under no id at all`);
+  }
+  if (declaredId && normalizeLikeTheManager(declaredId) !== declaredId) {
+    fail(
+      `${label}: data-registry-id "${declaredId}" is not a bare key — an id is typed into ` +
+        `install_extension, so it must be ASCII letters, digits, "_" or "-" only`
+    );
+  }
+  // The rule the Rust snapshot test enforces, moved to the source. An id is a
+  // STABLE NAME; a version belongs in `version` and in the asset filename, both
+  // of which keep it. Catching it here tells whoever edits the page, at the
+  // moment they edit it, instead of failing a Rust test three layers away that
+  // names no card.
+  const bareVersion = version.replace(/^v/, '');
+  if (bareVersion && publishedId.endsWith(bareVersion)) {
+    fail(
+      `${label}: the published id "${publishedId}" ends with this card's version ` +
+        `"${version}" — an id is a name and must not move when the version does. ` +
+        `The download filename may carry the version; add data-registry-id to give ` +
+        `the catalog a stable id.`
+    );
+  }
   return {
-    id,
+    id: publishedId,
     name,
     organization,
     version,
