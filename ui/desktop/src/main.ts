@@ -3428,6 +3428,122 @@ ipcMain.handle('read-artifact-file', async (event, filePath: string) => {
   }
 });
 
+// --- Does a linked file actually exist? --------------------------------------
+//
+// The assistant names paths it never created, and the renderer used to paint
+// every one of them as a clickable accent-coloured link. These few helpers
+// answer the one question that separates a real file from a described one, and
+// they are written so the answer holds on any host OS: no `/` is assumed
+// anywhere, every join goes through `node:path`, and the Windows drive-letter
+// and UNC forms `parseFileLink` accepts in the renderer are recognised here too.
+
+/** `C:\…`, `C:/…` and `\\server\share\…`. Recognised on EVERY platform, so a
+ *  Windows path is never quietly grafted onto a POSIX working directory. */
+const WINDOWS_ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/;
+
+function isAbsoluteOnAnyPlatform(candidate: string): boolean {
+  return (
+    path.isAbsolute(candidate) || candidate.startsWith('/') || WINDOWS_ABSOLUTE_PATH.test(candidate)
+  );
+}
+
+/**
+ * The user's home directory, environment first: `$HOME` on posix,
+ * `%USERPROFILE%` on win32, and the OS's own record when neither is set.
+ */
+function homeDirectory(): string {
+  const fromEnvironment = process.platform === 'win32' ? process.env.USERPROFILE : process.env.HOME;
+  if (fromEnvironment && fromEnvironment.trim()) return fromEnvironment;
+  try {
+    return os.homedir();
+  } catch {
+    return '';
+  }
+}
+
+/** Expand a leading `~`, `~/` or `~\` against {@link homeDirectory}. */
+function expandHomePrefix(candidate: string): string {
+  if (candidate === '~') return homeDirectory() || candidate;
+  if (!candidate.startsWith('~/') && !candidate.startsWith('~\\')) return candidate;
+  const home = homeDirectory();
+  return home ? path.join(home, candidate.slice(2)) : candidate;
+}
+
+/**
+ * The absolute path the preview panel would read for this link, or null when it
+ * cannot be located at all.
+ *
+ * The composition matters more than any single step: `expandHomePrefix` +
+ * `reinterpretTildeAsAbsolute` + `expandBiorouterPath` is exactly what
+ * `expandBiorouterPath` alone does to the same string in `read-artifact-file`,
+ * with the home reading taken from the environment rather than straight from
+ * `os.homedir()`. Agreement with that handler is the whole point — an "exists"
+ * verdict reached down a *different* resolution than the click will take is
+ * worse than no verdict, because it paints an orange link onto a file the panel
+ * then fails to open.
+ */
+function resolveCheckedFilePath(rawPath: unknown, rawWorkingDir: unknown): string | null {
+  if (typeof rawPath !== 'string') return null;
+  const candidate = rawPath.trim();
+  if (!candidate || candidate.includes('\0')) return null;
+
+  const expanded = expandBiorouterPath(
+    reinterpretTildeAsAbsolute(candidate, expandHomePrefix(candidate), (probe) =>
+      fsSync.existsSync(probe)
+    )
+  );
+
+  if (WINDOWS_ABSOLUTE_PATH.test(expanded)) {
+    // Only a Windows host can say anything about a drive-letter or UNC path.
+    // Elsewhere `path.resolve` would silently graft it onto the process cwd and
+    // stat something unrelated, so answer "cannot locate" instead.
+    return process.platform === 'win32' ? path.resolve(expanded) : null;
+  }
+  if (isAbsoluteOnAnyPlatform(expanded)) return path.resolve(expanded);
+
+  const workingDir = typeof rawWorkingDir === 'string' ? rawWorkingDir.trim() : '';
+  if (!workingDir) return null;
+  const base = expandBiorouterPath(expandHomePrefix(workingDir));
+  if (!isAbsoluteOnAnyPlatform(base)) return null;
+  if (WINDOWS_ABSOLUTE_PATH.test(base) && process.platform !== 'win32') return null;
+  return path.resolve(base, expanded);
+}
+
+/** A message can name a lot of paths; it cannot name an unbounded number. */
+const MAX_FILE_PATH_CHECKS = 512;
+const FILE_PATH_CHECK_MISS = { exists: false, isDirectory: false };
+
+/**
+ * Existence of a batch of paths, one answer per request, in order.
+ *
+ * The reply is two booleans and nothing else — no contents, no directory
+ * listing, no error text — so it cannot serve as a weaker read channel beside
+ * `read-artifact-file`. "Exists" deliberately means *"the preview panel could
+ * show this"*, which is the question a link is really asking: a path the
+ * allowlist denies and a path that was deleted both answer no, and a symlink
+ * answers no because `read-artifact-file` refuses to preview one. That also
+ * stops this becoming an existence oracle for `~/.ssh` and friends.
+ */
+ipcMain.handle('check-file-paths', async (event, requests: unknown) => {
+  if (!Array.isArray(requests)) return [];
+  const sessionWorkingDir = workingDirForSender(event);
+  return Promise.all(
+    requests.slice(0, MAX_FILE_PATH_CHECKS).map(async (request) => {
+      const entry = (request ?? {}) as { path?: unknown; workingDir?: unknown };
+      const resolvedPath = resolveCheckedFilePath(entry.path, entry.workingDir);
+      if (!resolvedPath) return FILE_PATH_CHECK_MISS;
+      if (!isAllowedFilePath(resolvedPath, sessionWorkingDir)) return FILE_PATH_CHECK_MISS;
+      try {
+        const stats = await fs.lstat(resolvedPath);
+        if (stats.isSymbolicLink()) return FILE_PATH_CHECK_MISS;
+        return { exists: stats.isFile() || stats.isDirectory(), isDirectory: stats.isDirectory() };
+      } catch {
+        return FILE_PATH_CHECK_MISS;
+      }
+    })
+  );
+});
+
 ipcMain.handle('write-file', async (_event, filePath, content) => {
   try {
     const expandedPath = expandBiorouterPath(filePath);

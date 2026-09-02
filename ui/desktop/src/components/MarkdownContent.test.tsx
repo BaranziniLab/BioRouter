@@ -2,6 +2,11 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/react';
 import { screen, waitFor } from '@testing-library/dom';
 import MarkdownContent from './MarkdownContent';
+import {
+  resetFileLinkStatusForTests,
+  type FilePathCheckRequest,
+  type FilePathCheckResult,
+} from './artifacts/fileLinkStatus';
 
 // Mock the icons to avoid import issues
 vi.mock('./icons', () => ({
@@ -1225,6 +1230,205 @@ for the result.`;
       expect(screen.queryByRole('button', { name: 'Run script' })).not.toBeInTheDocument();
       expect(screen.queryByRole('link', { name: 'Run script' })).not.toBeInTheDocument();
       expect(onOpenArtifact).not.toHaveBeenCalled();
+    });
+  });
+
+  // A path the assistant merely NAMED — a script it described, a `/tmp` tree
+  // since cleaned up — used to render as an accent-coloured link that did
+  // nothing when clicked. `check-file-paths` separates the two cases; these
+  // tests pin both halves of the resulting contract, plus the surfaces that
+  // have no bridge to ask.
+  describe('Existence-aware file links', () => {
+    function installCheckBridge(
+      answer: (request: FilePathCheckRequest) => FilePathCheckResult = () => ({
+        exists: true,
+        isDirectory: false,
+      })
+    ) {
+      const checkFilePaths = vi.fn(async (requests: FilePathCheckRequest[]) =>
+        requests.map(answer)
+      );
+      Object.defineProperty(window, 'electron', {
+        configurable: true,
+        value: { checkFilePaths },
+      });
+      return checkFilePaths;
+    }
+
+    afterEach(() => {
+      // @ts-expect-error — remove the per-test electron stub.
+      delete window.electron;
+      resetFileLinkStatusForTests();
+      vi.restoreAllMocks();
+    });
+
+    it('keeps the accent link treatment for a file confirmed to exist', async () => {
+      installCheckBridge();
+      const onOpenArtifact = vi.fn();
+
+      render(
+        <MarkdownContent
+          content="See `/Users/wgu/project/analysis.sql` for the query."
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      const button = await screen.findByRole('button', { name: '/Users/wgu/project/analysis.sql' });
+      expect(button).toHaveClass('text-text-accent');
+      expect(button).toHaveClass('underline');
+      expect(button).toHaveClass('cursor-pointer');
+
+      fireEvent.click(button);
+      expect(onOpenArtifact).toHaveBeenCalledWith({
+        kind: 'file',
+        title: 'analysis.sql',
+        path: '/Users/wgu/project/analysis.sql',
+      });
+    });
+
+    it('decolors a file the main process cannot find and makes it inert', async () => {
+      installCheckBridge(() => ({ exists: false, isDirectory: false }));
+      const onOpenArtifact = vi.fn();
+
+      render(
+        <MarkdownContent
+          content="I would put it in /Users/wgu/project/imagined.py next."
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      const mention = await screen.findByText('/Users/wgu/project/imagined.py');
+      await waitFor(() => expect(mention.tagName).toBe('SPAN'));
+      // Decolored, not muted: the ask was that it read as ordinary prose.
+      expect(mention).toHaveClass('text-text-default');
+      expect(mention).not.toHaveClass('text-text-accent');
+      expect(mention).not.toHaveClass('underline');
+      expect(mention).not.toHaveClass('cursor-pointer');
+      // Not a button, not focusable, and nothing happens when it is clicked.
+      expect(
+        screen.queryByRole('button', { name: '/Users/wgu/project/imagined.py' })
+      ).not.toBeInTheDocument();
+      expect(mention).not.toHaveAttribute('tabindex');
+      fireEvent.click(mention);
+      expect(onOpenArtifact).not.toHaveBeenCalled();
+    });
+
+    it('keeps a missing inline-code path looking like inline code, minus the link', async () => {
+      installCheckBridge(() => ({ exists: false, isDirectory: false }));
+      const onOpenArtifact = vi.fn();
+
+      render(
+        <MarkdownContent
+          content="Write it to `/Users/wgu/project/imagined.py`."
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      const mention = await screen.findByText('/Users/wgu/project/imagined.py');
+      await waitFor(() => expect(mention.tagName).toBe('SPAN'));
+      // The TEXT is unchanged — same family, size and fill as inline code.
+      expect(mention).toHaveClass('font-mono');
+      expect(mention).toHaveClass('text-[13px]');
+      expect(mention).toHaveClass('bg-background-medium');
+      expect(mention).not.toHaveClass('text-text-accent');
+    });
+
+    it('never renders a link before the answer arrives, not even for one frame', async () => {
+      let release: ((results: FilePathCheckResult[]) => void) | undefined;
+      const checkFilePaths = vi.fn(
+        () =>
+          new Promise<FilePathCheckResult[]>((resolve) => {
+            release = resolve;
+          })
+      );
+      Object.defineProperty(window, 'electron', {
+        configurable: true,
+        value: { checkFilePaths },
+      });
+
+      render(
+        <MarkdownContent
+          content="See `/Users/wgu/project/analysis.sql` for the query."
+          onOpenArtifact={vi.fn()}
+        />
+      );
+
+      const mention = await screen.findByText('/Users/wgu/project/analysis.sql');
+      expect(mention.tagName).toBe('SPAN');
+      expect(screen.queryByRole('button')).not.toBeInTheDocument();
+
+      release?.([{ exists: true, isDirectory: false }]);
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: '/Users/wgu/project/analysis.sql' })
+        ).toBeInTheDocument()
+      );
+    });
+
+    it('keeps the legacy behaviour on a surface with no bridge to ask', async () => {
+      const onOpenArtifact = vi.fn();
+
+      // No `window.electron` at all — `biorouter serve` in a browser, and every
+      // suite above this one. "Start plain" would mean nothing is EVER a link
+      // there, so the absence of the bridge keeps the pre-existing contract.
+      render(
+        <MarkdownContent
+          content="See `/Users/wgu/project/imagined.py` for the query."
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      const button = await screen.findByRole('button', { name: '/Users/wgu/project/imagined.py' });
+      expect(button).toHaveClass('text-text-accent');
+      fireEvent.click(button);
+      expect(onOpenArtifact).toHaveBeenCalled();
+    });
+
+    it('asks once for a path a single message mentions three times', async () => {
+      const checkFilePaths = installCheckBridge();
+
+      render(
+        <MarkdownContent
+          content={[
+            'First `/Users/wgu/project/analysis.sql`.',
+            'Then /Users/wgu/project/analysis.sql again.',
+            '- [Third](/Users/wgu/project/analysis.sql)',
+          ].join('\n\n')}
+          onOpenArtifact={vi.fn()}
+        />
+      );
+
+      await waitFor(() =>
+        expect(screen.getAllByRole('button', { name: /analysis\.sql|Third/ })).toHaveLength(3)
+      );
+      expect(checkFilePaths).toHaveBeenCalledTimes(1);
+      expect(checkFilePaths.mock.calls[0][0]).toEqual([
+        { path: '/Users/wgu/project/analysis.sql' },
+      ]);
+    });
+
+    it.each([
+      ['a Windows drive-letter path', 'C:\\Users\\x\\a.py'],
+      ['a home-relative path', '~/a.py'],
+    ])('hands %s to the main process verbatim, unmangled', async (_label, target) => {
+      const checkFilePaths = installCheckBridge();
+
+      render(
+        <MarkdownContent
+          content={`Open \`${target}\` now.`}
+          workingDir="/Users/wgu/project"
+          onOpenArtifact={vi.fn()}
+        />
+      );
+
+      // Resolution of `~` and of a drive letter belongs to the main process,
+      // which knows the host OS; the renderer must not join either onto the
+      // session working directory on its way there.
+      await waitFor(() => expect(checkFilePaths).toHaveBeenCalledTimes(1));
+      expect(checkFilePaths.mock.calls[0][0]).toEqual([
+        { path: target, workingDir: '/Users/wgu/project' },
+      ]);
+      expect(await screen.findByRole('button', { name: target })).toBeInTheDocument();
     });
   });
 });

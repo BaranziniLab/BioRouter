@@ -173,6 +173,17 @@ type ArtifactFilePreview =
       found: false;
     };
 
+/**
+ * One entry of a batched file-existence check.
+ *
+ * Mirrors `FilePathCheckRequest` in components/artifacts/fileLinkStatus.ts —
+ * preload cannot import renderer modules, so the shape is restated here the way
+ * `ArtifactFilePreview` above is.
+ */
+type FilePathCheckRequest = { path: string; workingDir?: string };
+/** The whole answer to one such entry. */
+type FilePathCheckResult = { exists: boolean; isDirectory: boolean };
+
 type TerminalCreateResult =
   | {
       success: true;
@@ -242,6 +253,17 @@ type ElectronAPI = {
   importSessionFile: () => Promise<string | null>;
   readFile: (directory: string) => Promise<FileResponse>;
   readArtifactFile: (filePath: string) => Promise<ArtifactFilePreview>;
+  /**
+   * Does each of these paths exist, and is it a directory? One answer per
+   * request, in order.
+   *
+   * Batched deliberately: a chat message can name thirty paths, and the
+   * renderer asks about all of them at once rather than thirty round trips.
+   * The reply carries nothing but the two booleans — never file contents, never
+   * a directory listing — so it cannot become a second, weaker read channel
+   * beside `readArtifactFile`.
+   */
+  checkFilePaths: (requests: FilePathCheckRequest[]) => Promise<FilePathCheckResult[]>;
   writeFile: (directory: string, content: string) => Promise<boolean>;
   ensureDirectory: (dirPath: string) => Promise<boolean>;
   listFiles: (dirPath: string, extension?: string) => Promise<string[]>;
@@ -597,6 +619,8 @@ const electronAPI: ElectronAPI = {
   importSessionFile: () => ipcRenderer.invoke('import-session-file'),
   readFile: (filePath: string) => ipcRenderer.invoke('read-file', filePath),
   readArtifactFile: (filePath: string) => ipcRenderer.invoke('read-artifact-file', filePath),
+  checkFilePaths: (requests: FilePathCheckRequest[]) =>
+    ipcRenderer.invoke('check-file-paths', requests),
   writeFile: (filePath: string, content: string) =>
     ipcRenderer.invoke('write-file', filePath, content),
   ensureDirectory: (dirPath: string) => ipcRenderer.invoke('ensure-directory', dirPath),

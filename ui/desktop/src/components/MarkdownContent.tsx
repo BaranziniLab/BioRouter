@@ -30,6 +30,7 @@ import {
   resolveFileLink,
   type KnownFilePaths,
 } from './artifacts/artifactFileLinks';
+import { isOpenableFileLink, useFileLinkExistence } from './artifacts/fileLinkStatus';
 
 interface CodeProps extends React.ClassAttributes<HTMLElement>, React.HTMLAttributes<HTMLElement> {
   inline?: boolean;
@@ -189,25 +190,62 @@ function artifactSourceFromMarkdownValue(
 const LINK_CLASS =
   'cursor-pointer font-medium text-text-accent underline decoration-text-accent/40 underline-offset-2 transition-colors hover:decoration-text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus';
 
+// Both variants are mono at 13px — the same size as a fenced block
+// (CODE_FONT_SIZE) and inline code. The sole difference is the inline-code
+// fill, which is the only thing `inlineCode` should mean; the two variants
+// used to also disagree on font-size (0.9em vs 0.95em) for no stated reason.
+const ARTIFACT_LINK_BASE_CLASS = 'inline break-all rounded-sm text-left font-mono text-[13px]';
+
 function ArtifactLinkButton({
   artifact,
   children,
   onOpenArtifact,
   inlineCode = false,
+  workingDir,
 }: {
   artifact: ArtifactSource;
   children: React.ReactNode;
   onOpenArtifact: (artifact: ArtifactSource) => void;
   inlineCode?: boolean;
+  workingDir?: string;
 }) {
+  // Only a file has an existence to check. An external URL reports `unchecked`
+  // and keeps the link treatment it has always had.
+  const existence = useFileLinkExistence(
+    artifact.kind === 'file' ? artifact.path : null,
+    workingDir
+  );
+
+  // A path the assistant only *named* — a script it described, a `/tmp` tree
+  // that has since been cleaned up — is not a destination, so it stops looking
+  // like one: no accent ink, no underline, no pointer, no focus stop, and not a
+  // <button> at all. It is DECOLORED to `text-text-default` rather than muted;
+  // the ask was that it read as ordinary prose, not that it be de-emphasised.
+  //
+  // This is also the state a link starts in whenever the check is available, so
+  // a dead path is never clickable for even one frame — the link treatment is
+  // an upgrade applied once existence is confirmed, never a default walked back.
+  if (!isOpenableFileLink(existence)) {
+    return inlineCode ? (
+      // Same fill, padding, family and size as the inline-code recipe, so the
+      // text is unchanged and only its role is.
+      <span
+        className={`${ARTIFACT_LINK_BASE_CLASS} bg-background-medium px-1 py-0.5 text-text-default`}
+      >
+        {children}
+      </span>
+    ) : (
+      // Prose keeps its own family: an unlinkable path in a sentence already
+      // renders as a plain string when `resolveFileLink` refuses it (see
+      // `linkifyFilePaths`), and this matches that precedent exactly.
+      <span className="break-all text-text-default">{children}</span>
+    );
+  }
+
   return (
-    // Both variants are mono at 13px — the same size as a fenced block
-    // (CODE_FONT_SIZE) and inline code. The sole difference is the inline-code
-    // fill, which is the only thing `inlineCode` should mean; the two variants
-    // used to also disagree on font-size (0.9em vs 0.95em) for no stated reason.
     <button
       type="button"
-      className={`inline break-all rounded-sm text-left font-mono text-[13px] ${LINK_CLASS} ${
+      className={`${ARTIFACT_LINK_BASE_CLASS} ${LINK_CLASS} ${
         inlineCode ? 'bg-background-medium px-1 py-0.5' : ''
       }`}
       onClick={() => onOpenArtifact(artifact)}
@@ -364,7 +402,12 @@ const MarkdownCode = memo(
     return !inline && match ? (
       <CodeBlock language={match[1]}>{text.replace(/\n$/, '')}</CodeBlock>
     ) : artifact && onOpenArtifact ? (
-      <ArtifactLinkButton artifact={artifact} onOpenArtifact={onOpenArtifact} inlineCode>
+      <ArtifactLinkButton
+        artifact={artifact}
+        onOpenArtifact={onOpenArtifact}
+        workingDir={workingDir}
+        inlineCode
+      >
         {children}
       </ArtifactLinkButton>
     ) : (
@@ -408,7 +451,12 @@ function linkifyFilePaths(
         continue;
       }
       out.push(
-        <ArtifactLinkButton key={match.index} artifact={artifact} onOpenArtifact={onOpenArtifact}>
+        <ArtifactLinkButton
+          key={match.index}
+          artifact={artifact}
+          onOpenArtifact={onOpenArtifact}
+          workingDir={workingDir}
+        >
           {filePath}
         </ArtifactLinkButton>
       );
@@ -541,6 +589,7 @@ const MarkdownContent = memo(function MarkdownContent({
                       ...(resolved.line ? { line: resolved.line } : {}),
                     }}
                     onOpenArtifact={onOpenArtifact}
+                    workingDir={workingDir}
                   >
                     {children}
                   </ArtifactLinkButton>
