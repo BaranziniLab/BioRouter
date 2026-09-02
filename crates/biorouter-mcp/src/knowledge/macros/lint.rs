@@ -274,8 +274,26 @@ fn is_existing_raw_evidence(kb_root: &Path, source: &str, target: &str) -> bool 
     if !logical.starts_with("raw") {
         return false;
     }
-    logical.to_str().is_some_and(|logical| {
-        crate::knowledge::store::resolve_readable_path(kb_root, logical)
+    // ⚠ Join with '/', do NOT hand over `logical.to_str()`.
+    //
+    // `resolve_readable_path` takes a KB *logical* path — the slash-separated
+    // vocabulary every other KB surface speaks (link targets, `kb_write_page`
+    // arguments, the manifest) — and gates on a literal `"raw/"` prefix. The
+    // value here is an OS `PathBuf`, so on Windows `to_str()` yields
+    // `raw\evidence\source.md`, which fails that prefix test and made the
+    // resolver report every existing raw file as absent. The visible symptom was
+    // nothing to do with paths: a source page's links to evidence that is really
+    // there were listed as `missing_concept_pages`, on Windows only.
+    //
+    // Every component is `Normal` by the time the loop above finishes, so the
+    // join is exact rather than a normalisation guess.
+    let logical: Option<String> = logical
+        .components()
+        .map(|component| component.as_os_str().to_str())
+        .collect::<Option<Vec<_>>>()
+        .map(|parts| parts.join("/"));
+    logical.is_some_and(|logical| {
+        crate::knowledge::store::resolve_readable_path(kb_root, &logical)
             .is_ok_and(|path| path.is_file())
     })
 }

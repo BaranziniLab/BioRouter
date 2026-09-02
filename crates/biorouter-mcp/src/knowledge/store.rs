@@ -167,6 +167,20 @@ pub(crate) fn write_atomically(path: &Path, content: &[u8]) -> Result<()> {
 
 /// Path is readable: `knowledge/`, `raw/`, or top-level `index.md` / `schema.md` / `log.md`.
 pub(crate) fn resolve_readable_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf> {
+    // FIRST, ahead of the prefix test, because that test MISDIAGNOSES this
+    // input: it would tell a developer whose path is `raw\evidence\source.md`
+    // that it "must start with raw/", which it plainly does. A KB logical path
+    // is slash-separated on every platform; a backslash means an OS `Path` was
+    // stringified and handed over instead. That is not a near miss but a silent
+    // wrong answer — the prefix test fails and a file that is really there is
+    // reported absent, which is exactly how this survived as a Windows-only lint
+    // bug, invisible on POSIX for the obvious reason.
+    if logical.contains('\\') {
+        anyhow::bail!(
+            "page path must be slash-separated; `{logical}` looks like an OS path, not a \
+             knowledge-base path"
+        );
+    }
     let ok = logical.starts_with("knowledge/")
         || logical.starts_with("raw/")
         || matches!(logical, "index.md" | "schema.md" | "log.md");
@@ -209,6 +223,20 @@ pub(crate) const WRITE_PATH_RECOVERY: &str = "raw/ holds immutable ingested sour
 /// Path is writable: `knowledge/` pages plus `index.md`, `schema.md`, and `log.md`.
 /// `raw/` is read-only — the raw source tree is immutable by design.
 fn resolve_writable_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf> {
+    // FIRST, ahead of the prefix test, because that test MISDIAGNOSES this
+    // input: it would tell a developer whose path is `raw\evidence\source.md`
+    // that it "must start with raw/", which it plainly does. A KB logical path
+    // is slash-separated on every platform; a backslash means an OS `Path` was
+    // stringified and handed over instead. That is not a near miss but a silent
+    // wrong answer — the prefix test fails and a file that is really there is
+    // reported absent, which is exactly how this survived as a Windows-only lint
+    // bug, invisible on POSIX for the obvious reason.
+    if logical.contains('\\') {
+        anyhow::bail!(
+            "page path must be slash-separated; `{logical}` looks like an OS path, not a \
+             knowledge-base path"
+        );
+    }
     if !is_writable_page_path(logical) {
         anyhow::bail!(
             "write path must start with knowledge/ or be index.md/schema.md/log.md; \
@@ -825,6 +853,43 @@ mod tests {
         let path = resolve_readable_path(&kb, "knowledge/notes/missing.md").unwrap();
         assert_eq!(path, kb.join("knowledge/notes/missing.md"));
         assert!(!path.exists());
+    }
+
+    /// An OS path is refused where a knowledge-base path is required.
+    ///
+    /// This is the POSIX-testable half of a bug that could only FAIL on Windows.
+    /// `is_existing_raw_evidence` in the lint built an OS `PathBuf` and handed
+    /// over `to_str()`, so on Windows the resolver received
+    /// `raw\evidence\source.md`. The prefix test wants a literal `raw/`, so the
+    /// call bailed, `is_file()` was never reached, and a source page's links to
+    /// evidence that was really on disk came back as `missing_concept_pages` —
+    /// on Windows only, with a symptom that reads as a linting bug rather than a
+    /// path bug.
+    ///
+    /// A test of the CALLER cannot catch that from here: on POSIX the buggy and
+    /// the fixed spellings produce byte-identical strings. This can, because it
+    /// feeds the resolver the exact value Windows produced. It is asserted on
+    /// both resolvers because both carry the same prefix contract, and the write
+    /// side would have failed the same way the moment a caller made the same
+    /// mistake.
+    #[test]
+    fn a_backslash_separated_path_is_not_a_knowledge_base_path() {
+        let (_dir, kb) = fresh();
+        for logical in ["raw\\evidence\\source.md", "knowledge\\notes\\a.md"] {
+            let read = resolve_readable_path(&kb, logical).unwrap_err();
+            assert!(
+                read.to_string().contains("slash-separated"),
+                "read path `{logical}`: {read:#}"
+            );
+            let write = resolve_writable_path(&kb, logical).unwrap_err();
+            assert!(
+                write.to_string().contains("slash-separated"),
+                "write path `{logical}`: {write:#}"
+            );
+        }
+        // …and the slash spelling of the same page is still accepted, so the
+        // refusal is about the separator and not about the path.
+        resolve_readable_path(&kb, "raw/evidence/source.md").unwrap();
     }
 
     #[test]
