@@ -5,7 +5,20 @@ pub struct Paths;
 
 impl Paths {
     fn get_dir(dir_type: DirType) -> PathBuf {
-        if let Ok(test_root) = std::env::var("BIOROUTER_PATH_ROOT") {
+        // ⚠ A BLANK value reads as ABSENT, deliberately. Taken literally, an empty
+        // `BIOROUTER_PATH_ROOT` yields a *cwd-relative* `./config`, and a relative
+        // config dir has no cross-process meaning: the daemon, the CLI and the
+        // Electron main process each resolve it against a different working
+        // directory, so the three stop agreeing on where config lives. Every other
+        // resolver on both sides already reads blank as absent —
+        // `biorouter-mcp::resolve_config_dir`, `routes::shell::home_dir`, and the
+        // desktop `biorouterPaths.ts` — so this was the last holdout, and the one
+        // that could aim a recursive-delete writer at `<cwd>/config`.
+        // Pinned by `tests/path_resolver_agreement.rs`.
+        if let Some(test_root) = std::env::var("BIOROUTER_PATH_ROOT")
+            .ok()
+            .filter(|root| !root.trim().is_empty())
+        {
             let base = PathBuf::from(test_root);
             match dir_type {
                 DirType::Config => base.join("config"),

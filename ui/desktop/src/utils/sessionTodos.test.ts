@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '../api';
 import { sessionTodoItems, todoMutationRevision } from './sessionTodos';
+import { scriptedTodoExchange } from './scriptedTodoExchange.fixture';
 
 export function todoExchange(
   id: string,
@@ -110,5 +111,47 @@ describe('acknowledged To Do changes', () => {
     { name: 'developer__shell' },
   ])('does not treat an unconfirmed or unrelated call as an update', (options) => {
     expect(todoMutationRevision(todoExchange('a', options))).toBe('[]');
+  });
+});
+
+describe('acknowledged To Do changes a script ran as sub-calls', () => {
+  const write = { tool: 'todo__todo_write' };
+  const add = { tool: 'todo__todo_add' };
+  const update = { tool: 'todo__todo_update' };
+
+  it('invalidates for a scripted checklist, and again for every later run', () => {
+    const first = scriptedTodoExchange('run-1', [write, add, update]);
+    const one = todoMutationRevision(first);
+    // The bug: top-level requests alone see nothing here, so the summary never
+    // refetches and a list created while it is open never appears.
+    expect(one).not.toBe('[]');
+    // Replay is not new work.
+    expect(todoMutationRevision([...first, ...first])).toBe(one);
+    // A second run is, even though nothing top-level changed. Catches a marker
+    // that latches on the first scripted mutation and never moves again.
+    expect(todoMutationRevision([...first, ...scriptedTodoExchange('run-2', [add])])).not.toBe(one);
+    // So is a longer run under the same id. Catches keying on the id alone.
+    expect(todoMutationRevision(scriptedTodoExchange('run-1', [write, add, update, add]))).not.toBe(
+      one
+    );
+  });
+
+  it('invalidates even when the enclosing script run itself failed', () => {
+    // The sub-call's write is already persisted; a later throw does not undo it.
+    expect(
+      todoMutationRevision(scriptedTodoExchange('run-1', [write], { failedRun: true }))
+    ).not.toBe('[]');
+  });
+
+  it.each([
+    { tool: 'todo__todo_update', status: 'error' },
+    { tool: 'todo__plan_write' },
+    { tool: 'developer__shell' },
+  ])('ignores a failed or non-checklist sub-call', (call) => {
+    expect(todoMutationRevision(scriptedTodoExchange('run-1', [call]))).toBe('[]');
+  });
+
+  it('ignores a run that recorded no checklist sub-calls at all', () => {
+    expect(todoMutationRevision(scriptedTodoExchange('run-1', []))).toBe('[]');
   });
 });

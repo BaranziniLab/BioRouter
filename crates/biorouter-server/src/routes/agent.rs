@@ -2497,10 +2497,39 @@ async fn call_tool(
         Err(error) => return dispatch_failure_response(&error).map(Json),
     };
 
-    let result = tool_result
-        .result
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // #152: dispatching a tool and RUNNING it are two separate fallible steps —
+    // `dispatch_tool_call` hands back a `ToolCallResult` whose `.result` is a
+    // future. The `Err` arm above repairs the first; this repairs the second,
+    // which is where the overwhelming majority of tool errors are raised.
+    //
+    // ⚠ This line was `.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)` — the
+    // exact thing the comment three lines above says was wrong, left in place on
+    // the sibling site when that one was fixed. Measured cost: 45 of 419 driven
+    // tool calls answered `500` with a ZERO-LENGTH body while `rmcp` logged the
+    // real message at WARN ("no such background job: …", "kb '…' already
+    // exists", "`render_figure` arguments are invalid for kind \"volcano\"").
+    // A 500 is retryable by convention and a tool error is not, so the caller
+    // both lost the remedy and was invited to retry a call that cannot succeed.
+    //
+    // `extension_manager.rs:2837-2840` already maps `ServiceError::McpError`
+    // back to its `ErrorData`, so the awaited error downcasts correctly here —
+    // the classifier was simply never asked.
+    let result = match tool_result.result.await {
+        Ok(result) => result,
+        // No downcast needed, and that is the point: this future's error type is
+        // ALREADY `ErrorData`, so the message was never ambiguous or wrapped —
+        // it was simply discarded. `dispatch_failure_response` exists for the
+        // sibling site above, whose error arrives as an `anyhow::Error` and has
+        // to be classified; here the classification is in the type.
+        Err(error) => {
+            return Ok(Json(CallToolResponse {
+                content: vec![Content::text(error.message.to_string())],
+                structured_content: None,
+                is_error: true,
+                _meta: None,
+            }))
+        }
+    };
 
     // A `manage_extensions` through this route mutated the LIVE manager and
     // left `enabled_extensions.v0` untouched — the exact divergence the agent
@@ -4753,6 +4782,48 @@ mod gate_c_call_tool_tests {
     use biorouter::privacy::refusal::privacy_refusal;
     use biorouter::privacy::ProviderTier;
     use rmcp::model::{ErrorCode, ErrorData};
+
+    /// #152. The tests below prove the CLASSIFIER is right; none of them proved
+    /// it was REACHED on the path that carries most tool errors, and for a long
+    /// time it was not.
+    ///
+    /// `dispatch_tool_call` hands back a `ToolCallResult` whose `.result` is a
+    /// future: dispatching a tool and RUNNING it are two separate fallible
+    /// steps. The dispatch arm was repaired; the await three lines below it kept
+    /// `.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)`, so every error raised
+    /// by the tool ITSELF — the common case — was answered `500` with a
+    /// zero-length body while `rmcp` logged the real message at WARN. Measured
+    /// on a 419-case drive: 45 of them.
+    ///
+    /// This asserts the shape of the repaired arm at the source, because the
+    /// alternative is an `AppState` that opens the real user session database.
+    /// A line-wise pin is weak evidence in general; it is the right strength
+    /// here, because the defect was not a wrong CLASSIFICATION but a call site
+    /// that never classified at all.
+    #[test]
+    fn the_tool_results_own_error_is_answered_as_a_tool_error_not_a_bare_500() {
+        let source = include_str!("agent.rs");
+        let awaited = source
+            .split("let result = match tool_result.result.await {")
+            .nth(1)
+            .expect(
+                "the tool-result await must be a `match` that inspects its error; if this \
+                 shape changed, re-read #152 before updating the anchor",
+            );
+        // `split` rather than a byte-index slice: `clippy::string_slice` is denied
+        // repo-wide, and indexing a string can land inside a UTF-8 character.
+        let arm = awaited.split("};").next().unwrap_or(awaited);
+        assert!(
+            arm.contains("is_error: true") && arm.contains("error.message"),
+            "the awaited tool error must reach the caller as its own message. #152: this arm \
+             was `.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)`, which discarded every \
+             message a tool produced. Arm was:\n{arm}"
+        );
+        assert!(
+            !arm.contains("INTERNAL_SERVER_ERROR"),
+            "a tool that answered is not a server fault (#152). Arm was:\n{arm}"
+        );
+    }
 
     fn text_of(response: &super::CallToolResponse) -> String {
         response

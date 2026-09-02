@@ -687,7 +687,19 @@ where
     }
 
     try_stream! {
-        let mut accumulated_text = String::new();
+        // ⚠ There is no `accumulated_text` here on purpose — see the identical
+        // note in `openai_responses.rs`. One used to be push_str'd on every
+        // `text_delta` and never read: each delta is yielded as it arrives, and
+        // the terminal message is assembled from the tool-call maps and the
+        // thinking buffers. Deleting it in only one of the two decoders is how
+        // they start to diverge, so both went at once.
+        //
+        // ⚠ **This hunk is dead-code removal, and nothing else.** It is NOT part
+        // of the #145 supervisory-steer fix, which lives in
+        // `agents/subagent_tool.rs` and `agents/workspace_extension.rs` — a
+        // reader diffing this branch for that fix will not find any of it here.
+        // Nothing in this decoder's behaviour changes: the buffer had no
+        // readers, so removing it cannot alter a single byte the caller sees.
         let mut active_tool_calls: std::collections::HashMap<u64, StreamingToolCall> = std::collections::HashMap::new();
         let mut tool_call_order: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
         let mut completed_tool_contents: std::collections::HashMap<u64, MessageContent> = std::collections::HashMap::new();
@@ -820,8 +832,6 @@ where
                         if delta.get("type") == Some(&json!("text_delta")) {
                             // Text content delta
                             if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
-                                accumulated_text.push_str(text);
-
                                 // Yield partial text message with the same ID from message_start
                                 let mut message = Message::new(
                                     Role::Assistant,

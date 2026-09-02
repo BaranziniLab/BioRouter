@@ -476,7 +476,10 @@ was removed to make it true:
      reports, and Agent Drafter app preview cards (`create_app`, `configure_app`,
      `update_app`, `build_app`, `launch_app`, `preview_app` all return one).
   2. Files a tool call created, read off the call's **arguments** —
-     `text_editor` (`write`/`create`/`str_replace`/`insert`/`diff`, never `view`),
+     `text_editor` (`write`/`str_replace`/`insert`/`undo_edit`, never `view`; ⚠ this
+     line listed `create` and `diff` as commands until 2026-09-01 — `create` is not a
+     command at all and `diff` is a *parameter* on `str_replace`, and `undo_edit` was
+     missing),
      `write_file`/`create_file`/`edit_file`/…, and `shell` redirect / `-o`
      `--output` targets. Relative paths resolve against the session working dir.
      Only successful tool responses count. See `fileArtifactPathsFromToolCall`.
@@ -753,7 +756,14 @@ gone, along with its exemption from the secret-key middleware; see
   global error card) → base64 `ui://` blob (`finish`). Every tool also enforces
   size limits + semantic checks and returns a friendly `INVALID_PARAMS` message
   instead of producing a broken figure.
-- **Tools (33):** charts (`show_chart`, `render_histogram`, `render_boxplot`,
+- **Tools: 3 advertised, 32 metadata-only.** ⚠ This line read "Tools (33)" until
+  2026-09-01 and listed the 32 figure tools as individually callable. They are **not**:
+  they live in a non-dispatchable `figure_router` behind `render_figure` (a `kind` plus
+  that kind's arguments) and `describe_figure`, with `render_dashboard` the third
+  advertised tool. `exactly_three_tools_are_advertised` in `tests_dashboard.rs:1249` pins
+  it. The 32 names below are the **kinds**, not callable tool names — an error message
+  that hands one of them to a model is naming a call it cannot make (#150).
+  Kinds: charts (`show_chart`, `render_histogram`, `render_boxplot`,
   `render_bubble`, `render_area`, `render_radar`, `render_donut`, `render_gauge`);
   scientific (`render_volcano`, `render_manhattan`, `render_kaplan_meier`,
   `render_forest`); relationships/hierarchies (`render_network`, `render_sankey`,
@@ -1013,14 +1023,25 @@ deleted, not kept in step.
 
 Tests: `cargo test -p biorouter --lib -- skill`,
 `cargo test -p biorouter-server --lib -- routes::skills`,
-`cargo test -p biorouter-cli --lib` (**needs an isolated `HOME` — and `CARGO_HOME`
-kept pointing at the real one**: cargo derives `CARGO_HOME` from `$HOME`, so a bare
-`HOME=$(mktemp -d) cargo test …` loses the crate registry and dies with
-`error[E0463]: can't find crate for \`biorouter\``. That surfaces as **rc=101 with zero
-failing tests**, which reads as a flake rather than as nothing having compiled — and a
-harness that greps for `test result:` reports the PREVIOUS build's count. Use
-`HOME=$(mktemp -d) CARGO_HOME="$HOME/.cargo" cargo test -p biorouter-cli`), and
-`cd ui/desktop && npm run test:run`.
+`cargo test -p biorouter-cli --lib` (**needs an isolated `HOME` — and both `CARGO_HOME`
+and `RUSTUP_HOME` kept pointing at the real ones, as LITERAL paths**: cargo and rustup
+both derive their homes from `$HOME`, so a bare `HOME=$(mktemp -d) cargo test …` loses
+the crate registry and dies with `error[E0463]: can't find crate for \`biorouter\``. That
+surfaces as **rc=101 with zero failing tests**, which reads as a flake rather than as
+nothing having compiled — and a harness that greps for `test result:` reports the
+PREVIOUS build's count.
+
+⚠ **Do not write `CARGO_HOME="$HOME/.cargo"` in the same command.** This line said exactly
+that until 2026-09-01 and it is wrong in zsh: the assignments are applied left to right,
+so `$HOME` expands to the **new temp dir**, not the real one. The failure is not an error
+— it silently redirects `RUSTUP_HOME` as well, so cargo re-downloads the whole toolchain
+and every target recompiles from scratch (measured: `installing component 'rustc'` mid-run,
+and 11m38s for a single crate that normally takes seconds). Use literals:
+
+```bash
+HOME=$(mktemp -d) CARGO_HOME=/Users/wgu/.cargo RUSTUP_HOME=/Users/wgu/.rustup cargo test -p biorouter-cli
+```
+), and `cd ui/desktop && npm run test:run`.
 
 ### Workspace control (several conversations at once)
 
@@ -1035,8 +1056,12 @@ and the capability itself by [`docs/extensions/built-in/workspace.md`](docs/exte
 
 - **The `workspace` capability** (represented internally by the legacy platform-extension type) —
   `crates/biorouter/src/agents/workspace_extension.rs`, registered
-  `default_enabled: false`. Enabling it is an explicit user decision, not a
-  default: its tools read and write conversations other than the one you are in.
+  **`default_enabled: true`** (`agents/extension.rs:93`, pinned by
+  `workspace_is_a_default_on_capability_granting_its_whole_surface`). ⚠ This line said
+  `false` until 2026-09-01, and `workspace_extension.rs`'s own module doc still does —
+  grep the registry, not the doc. It ships ON as a capability (#76) and grants the FULL
+  surface (`available_tools` empty), including reading and steering other conversations.
+  The delegation gate excludes it by name so it cannot satisfy condition 5 by itself.
   Supporting modules: `agents/workspace_inspector.rs`,
   `agents/workspace_summary.rs`, and `crates/biorouter/src/workspace_services.rs`
   (the shared service the extension and the HTTP layer both call).

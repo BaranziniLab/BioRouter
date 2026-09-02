@@ -20,6 +20,96 @@ use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "skills";
 
+/// One sentence per callable Skills operation, keyed by its tool name.
+///
+/// The capability's system-prompt prose is ASSEMBLED from this rather than
+/// written out, because that prose reaches the model through a different route
+/// than the tool list does: `ExtensionManager::get_extensions_info` filters by
+/// `allowed_extension_keys` and never by the conversation's effective roster, so
+/// a session that is granted two of these seven still read instructions for all
+/// seven and called five tools that answer with a refusal. An app agent (whose
+/// grant is `APP_SKILLS_TOOLS`, `searchSkills` + `loadSkill`) is the case that
+/// showed it.
+const SKILL_OPERATION_GUIDANCE: &[(&str, &str)] = &[
+    (
+        "searchSkills",
+        "searchSkills lists installed skills, or filters them when you pass a query",
+    ),
+    ("loadSkill", "loadSkill reads an exact installed skill"),
+    (
+        "searchMarketplaceSkills",
+        "searchMarketplaceSkills lists trusted BAAM entries, or filters them when you pass a query",
+    ),
+    (
+        "installMarketplaceSkill",
+        "installMarketplaceSkill installs by exact trusted registry id",
+    ),
+    (
+        "importSkillPackage",
+        "importSkillPackage installs from a trusted repository URL or local zip while preserving bundle triage",
+    ),
+    (
+        "removeSkillPackage",
+        "removeSkillPackage removes one or several installed packages after full-batch validation",
+    ),
+    (
+        "setSkillEnabled",
+        "setSkillEnabled enables or disables an installed skill or bundle for only this conversation",
+    ),
+];
+
+/// The operations the desktop approval sentence is about. Naming a click a
+/// caller can never reach is noise at best and a wrong mental model at worst,
+/// so the sentence is emitted only when one of these is callable.
+const SKILL_APPROVAL_GATED_OPERATIONS: &[&str] = &[
+    "installMarketplaceSkill",
+    "importSkillPackage",
+    "removeSkillPackage",
+];
+
+const SKILL_APPROVAL_SENTENCE: &str = "Every non-dry-run install, import, or removal waits for a trusted desktop approval click; a chat reply cannot approve it.";
+
+/// Advice that is only actionable with `loadSkill`, so it is emitted only with it.
+const SKILL_ABOUT_BIOROUTER_SENTENCE: &str =
+    "For Biorouter questions, load about-biorouter directly when it is installed.";
+
+/// The Skills capability's instructions for ONE conversation's effective roster.
+///
+/// `callable` is the extension's own tool names (unprefixed) as that
+/// conversation may actually call them. An operation missing from it is left
+/// out of the prose entirely — the prompt must not teach a tool the caller does
+/// not have.
+///
+/// Called with every name for the process-wide default
+/// ([`SkillsClient::generate_instructions`]) and with the narrowed roster from
+/// `reply_parts::attach_effective_tool_rosters`, so the two can never disagree.
+pub(crate) fn instructions_for_operations(callable: &[String]) -> String {
+    let offered: Vec<&str> = SKILL_OPERATION_GUIDANCE
+        .iter()
+        .filter(|(name, _)| callable.iter().any(|have| have == name))
+        .map(|(_, sentence)| *sentence)
+        .collect();
+    if offered.is_empty() {
+        return "The Skills capability is present but none of its operations are callable in this conversation. Do not call any skills__ tool; work from the skills already loaded into this conversation.".to_string();
+    }
+    let mut text = format!(
+        "The Skills capability provides these callable operations: {}.",
+        offered.join("; ")
+    );
+    if SKILL_APPROVAL_GATED_OPERATIONS
+        .iter()
+        .any(|gated| callable.iter().any(|have| have == gated))
+    {
+        text.push(' ');
+        text.push_str(SKILL_APPROVAL_SENTENCE);
+    }
+    if callable.iter().any(|have| have == "loadSkill") {
+        text.push(' ');
+        text.push_str(SKILL_ABOUT_BIOROUTER_SENTENCE);
+    }
+    text
+}
+
 const SKILL_MUTATION_APPROVAL_TTL: Duration = Duration::from_secs(570);
 
 /// Skills that ship with Biorouter. They are re-seeded into the user's skills
@@ -1067,9 +1157,17 @@ impl SkillsClient {
     /// Static tool guidance. Live counts and names do not belong here because
     /// extension initialization is process-scoped; prompt assembly appends
     /// [`session_skill_inventory_instructions`] for the exact conversation.
+    ///
+    /// Assembled from [`SKILL_OPERATION_GUIDANCE`] rather than written out, so
+    /// the full-roster prose and the narrowed prose
+    /// ([`instructions_for_operations`]) cannot describe an operation
+    /// differently — or describe a different set of them.
     fn generate_instructions() -> String {
-        "The Skills capability provides these callable operations: searchSkills lists installed skills, or filters them when you pass a query; loadSkill reads an exact installed skill; searchMarketplaceSkills lists trusted BAAM entries, or filters them when you pass a query; installMarketplaceSkill installs by exact trusted registry id; importSkillPackage installs from a trusted repository URL or local zip while preserving bundle triage; removeSkillPackage removes one or several installed packages after full-batch validation; setSkillEnabled enables or disables an installed skill or bundle for only this conversation. Every non-dry-run install, import, or removal waits for a trusted desktop approval click; a chat reply cannot approve it. For Biorouter questions, load about-biorouter directly when it is installed."
-            .to_string()
+        let all: Vec<String> = SKILL_OPERATION_GUIDANCE
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect();
+        instructions_for_operations(&all)
     }
 
     /// The composed disabled test for the session this client serves: the

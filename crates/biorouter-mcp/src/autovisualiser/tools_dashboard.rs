@@ -22,19 +22,36 @@ const MAX_PANELS: usize = 24;
 const MAX_RECEIPT_FAILURES: usize = 8;
 const MAX_PROSE_LEN: usize = 8_000;
 
-/// Which figure to render in a panel, and with what arguments.
+/// One `render_figure` call: which figure to draw in this panel, and with what.
 ///
-/// Accepts the obvious shapes a model might emit:
-///   `{"tool": "render_volcano", "params": {...}}`
-///   `{"type": "volcano", "params": {...}}`
-///   `{"tool": "render_volcano", "data": {...}}`   ← bare tool args, no `params`
+/// Write it as `{"tool": "render_figure", "params": {"kind": …, "data": …}}`.
+// ⚠ Everything below this line is a `//` comment on purpose: this doc comment
+// ships to the model inside `render_dashboard`'s advertised schema, and the
+// shapes recorded here are BACK-COMPAT, not recommendations. Naming a retired
+// tool in the advertised schema is the very thing #142/#150 are about — a model
+// that copies `render_volcano` out of a schema has been handed a tool it cannot
+// call. The deserializer below still accepts all of them:
+//
+//   `{"tool": "render_figure", "params": {"kind": "volcano", "data": {…}}}`  ← canonical
+//   `{"tool": "render_figure", "kind": "volcano", "data": {…}}`   ← flattened
+//   `{"kind": "volcano", "data": {…}}`      ← `kind` alone; no `tool` key at all
+//   `{"type": "volcano", "params": {…}}`    ← the kind under another name
+//   `{"tool": "render_volcano", "params": {…}}`  ← the retired per-kind tool name
+//   `{"tool": "render_volcano", "data": {…}}`    ← bare tool args, no `params`
+//
+// The last four resolve to the per-kind tool DIRECTLY (`normalize_tool_name`
+// turns `volcano` into `render_volcano`), so they never reach the
+// `render_figure` unwrap in `call_figure_tool` and their `params` are that
+// tool's own arguments, not `{kind, data}`. That is why the two doc comments
+// below describe only the canonical shape: a field doc that tried to describe
+// both would contradict itself, which is exactly what it used to do.
 #[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
 pub struct DashboardFigure {
-    /// The Auto Visualiser tool to render, e.g. `render_volcano`, `show_chart`,
-    /// `render_mermaid`. The `render_` prefix may be omitted.
+    /// `render_figure` — the one tool that draws a figure.
     pub tool: String,
-    /// Exactly the arguments you would pass to that tool on its own,
-    /// e.g. `{"data": {...}}`.
+    /// Exactly the arguments `render_figure` takes: a `kind` plus that kind's
+    /// payload as `data`, e.g. `{"kind": "volcano", "data": {...}}`. Call
+    /// `describe_figure` with a kind for its exact `data` schema.
     pub params: Value,
 }
 
@@ -384,7 +401,11 @@ impl AutoVisualiserRouter {
     ) -> Result<(String, Vec<Asset>), ErrorData> {
         let name = normalize_tool_name(&figure.tool);
         let params = figure.params.clone();
-        let (result, assets) = common::render_fragment(self.call_figure_tool(&name, params)).await;
+        // A panel is written by a chat agent, whose figure vocabulary is
+        // `render_figure` + `kind` — the per-kind names it may also have used
+        // are back-compat, not something it can look up.
+        let call = self.call_figure_tool(&name, params, FigureVocabulary::RenderFigure);
+        let (result, assets) = common::render_fragment(call).await;
         Ok((common::html_from_result(&result?)?, assets))
     }
 
@@ -396,11 +417,36 @@ impl AutoVisualiserRouter {
     /// ([`render_standalone_figure`]) go through here, so a figure is
     /// byte-for-byte identical however it is reached. `render_dashboard` is not in
     /// this table — it composes these figures rather than being one.
+    ///
+    /// `vocab` says which figure names the *caller's* model can actually emit, and
+    /// only the error paths read it. The two doors have different rosters, so a
+    /// single phrasing is wrong for one of them however it is written — see
+    /// [`FigureVocabulary`].
     async fn call_figure_tool(
         &self,
         name: &str,
         params: Value,
+        vocab: FigureVocabulary,
     ) -> Result<CallToolResult, ErrorData> {
+        // `render_figure` is the ONLY figure tool a chat model is offered, so it
+        // is also the name it reaches for inside a dashboard panel — measured
+        // live on Versa, which sent `{"tool": "render_figure", "params":
+        // {"kind": …, "data": …}}` and was told the visualization did not exist
+        // (#142).
+        //
+        // Two callers reach this branch: a dashboard panel, and
+        // `render_standalone_figure` (Agent Drafter's `ui_figure`, whose `tool`
+        // argument a model also fills in). The declared `render_figure` does
+        // NOT — it resolves its own `kind` and calls in as `kind.tool_name()`,
+        // which is why one unwrap is always enough: `tool_name()` never returns
+        // `render_figure`, so this cannot recurse.
+        let (name, params) = if name == RENDER_FIGURE {
+            let (kind, data) = render_figure_call(params)?;
+            (kind.tool_name(), figure_arguments(data))
+        } else {
+            (name, params)
+        };
+
         // Deserialize into the tool's own parameter struct, then call it.
         macro_rules! dispatch {
             ($($tool:literal => ($method:ident, $params_ty:ty)),+ $(,)?) => {
@@ -408,14 +454,11 @@ impl AutoVisualiserRouter {
                     $(
                         $tool => {
                             let typed: $params_ty = serde_json::from_value(params)
-                                .map_err(|e| invalid(format!("`{}` arguments are invalid: {e}", $tool)))?;
+                                .map_err(|e| invalid(figure_argument_error(vocab, $tool, &e.to_string())))?;
                             self.$method(Parameters(typed)).await
                         }
                     )+
-                    other => Err(invalid(format!(
-                        "Unknown visualization '{other}'. Use one of the Auto Visualiser \
-                         render_* tool names, e.g. render_volcano, render_heatmap, show_chart."
-                    ))),
+                    other => Err(invalid(unknown_figure_error(vocab, other))),
                 }
             };
         }
@@ -463,7 +506,7 @@ impl AutoVisualiserRouter {
 
 Use this WHENEVER an answer needs more than one figure. Calling render_* several times leaves the user opening one artifact per figure; render_dashboard gives them a single page that tells the whole story.
 
-Each panel names any other Auto Visualiser tool and passes exactly the arguments that tool takes on its own.
+Each panel's `figure` is a `render_figure` call: a `kind` and that kind's payload as `data`. Call describe_figure with a kind for its exact schema.
 
 Example:
 {
@@ -479,13 +522,13 @@ Example:
           "title": "Monthly cost",
           "caption": "A costs 100 units per month; B costs 120.",
           "notes": "Synthetic inputs supplied only to demonstrate the report format.",
-          "figure": {"tool": "show_chart", "params": {"data": {"type": "bar", "labels": ["A", "B"], "yAxisLabel": "Cost (units/month)", "datasets": [{"label": "Monthly cost", "data": [100, 120]}]}}}
+          "figure": {"tool": "render_figure", "params": {"kind": "chart", "data": {"type": "bar", "labels": ["A", "B"], "yAxisLabel": "Cost (units/month)", "datasets": [{"label": "Monthly cost", "data": [100, 120]}]}}}
         },
         {
           "title": "Time saved per run",
           "width": "half",
           "caption": "A saves 15 minutes per run; B saves 30.",
-          "figure": {"tool": "show_chart", "params": {"data": {"type": "bar", "labels": ["A", "B"], "yAxisLabel": "Time saved (minutes/run)", "datasets": [{"label": "Time saved", "data": [15, 30]}]}}}
+          "figure": {"tool": "render_figure", "params": {"kind": "chart", "data": {"type": "bar", "labels": ["A", "B"], "yAxisLabel": "Time saved (minutes/run)", "datasets": [{"label": "Time saved", "data": [15, 30]}]}}}
         }
       ]
     }
@@ -785,6 +828,14 @@ const ASSET_ORDER: [Asset; 5] = [
 /// legitimate. `args` are exactly the arguments the tool takes on its own
 /// (e.g. `{"data": …}`).
 ///
+/// ⚠ The caller here is Agent Drafter's `ui_figure`, and an app agent's
+/// vocabulary is the per-kind TOOL NAMES its description lists
+/// (`render_volcano`, `render_manhattan`, …). It has neither `render_figure` nor
+/// `describe_figure`: `configure_agent` never injects autovisualiser into an app
+/// agent. So this door keeps [`FigureVocabulary::ToolName`] — an error phrased
+/// in the chat agent's vocabulary would tell it to fix a call it never made,
+/// using two tools it does not have.
+///
 /// Assets are always inlined, ignoring `BIOROUTER_AUTOVIS_CDN`: the document
 /// lands in a `srcdoc` iframe the Electron CDN→inline rewriter cannot reach, so a
 /// remote `<script src=…>` would be blocked by the renderer CSP and render blank
@@ -798,7 +849,9 @@ pub async fn render_standalone_figure(tool: &str, args: Value) -> Result<String,
                 .map_err(|e| invalid(format!("`render_dashboard` arguments are invalid: {e}")))?;
             router.render_dashboard(Parameters(params)).await
         } else {
-            router.call_figure_tool(&name, args).await
+            router
+                .call_figure_tool(&name, args, FigureVocabulary::ToolName)
+                .await
         }
     })
     .await
@@ -911,41 +964,172 @@ figure_kinds! {
     Choropleth      => ("choropleth",       "render_choropleth"),
 }
 
-/// Turn `{kind, data}` into the arguments the underlying tool already takes.
+/// Turn a `render_figure` payload into the arguments the underlying tool takes.
 ///
-/// Thirty-one of the thirty-two land on `{"data": …}` — including `donut`,
-/// whose `#[serde(flatten)]` looks irregular in Rust but flattens a struct
-/// whose only field is itself named `data`, so its wire shape is the same as
-/// the rest. `mermaid` is the single genuine exception: it takes
-/// `{"mermaid_code": "<source>"}` and no `data` at all.
+/// All thirty-two land on `{"data": …}` — including `donut`, whose
+/// `#[serde(flatten)]` looks irregular in Rust but flattens a struct whose only
+/// field is itself named `data`, so its wire shape is the same as the rest.
 ///
-/// The leniency here is deliberately NARROWER than `DashboardFigure`'s
-/// key-hunting deserializer. That one hunts `tool`/`type`/`name`/`kind` across
-/// a panel object because a panel is a nested, model-authored structure; doing
-/// the same to a top-level `data` payload would let a figure's own field named
-/// `type` be mistaken for the discriminator.
-fn figure_arguments(kind: FigureKind, data: Value) -> Result<Value, ErrorData> {
-    if kind != FigureKind::Mermaid {
-        return Ok(json!({ "data": data }));
-    }
-    // Accept the source as a bare string, or under any of the names a model
-    // reaches for when it has been told the argument is called `data`.
-    let code = match &data {
-        Value::String(source) => Some(source.clone()),
-        Value::Object(map) => ["mermaid_code", "code", "source", "diagram", "data"]
-            .iter()
-            .find_map(|key| map.get(*key).and_then(Value::as_str).map(str::to_string)),
-        _ => None,
+/// ⚠ `mermaid` used to be the one exception, reshaped here into
+/// `{"mermaid_code": …}`. That leniency now lives on `RenderMermaidParams`'s own
+/// `Deserialize` instead, and it had to move: `render_figure` is only ONE of the
+/// four doors into `render_mermaid`. A panel written `{"kind": "mermaid",
+/// "data": "<source>"}` carries no `tool` key, so `DashboardFigure` reads `kind`
+/// as the tool name, resolves it straight to `render_mermaid` and never passes
+/// through here — and the tool then refused a payload that was, by
+/// `describe_figure`'s own account, correct.
+fn figure_arguments(data: Value) -> Value {
+    json!({ "data": data })
+}
+
+/// The name of the one figure tool the model is actually offered.
+const RENDER_FIGURE: &str = "render_figure";
+
+/// Pull `{kind, data}` out of a `render_figure` call's arguments.
+///
+/// This is the nested, model-authored half of the call, so it matches
+/// [`DashboardFigure`]'s own deserializer where that leniency is earned, and for
+/// the same reason: a strict `serde_json::from_value::<RenderFigureParams>`
+/// would refuse a payload whose only fault is that the model flattened `data`
+/// away, spelled it `params` because that is the key the panel above it uses, or
+/// stringified the whole object — all three are shapes models are recorded
+/// sending in this codebase.
+///
+/// It stays narrower in the one place that matters: it hunts no aliases for
+/// `kind`. Two reasons, and only the second holds in every case. When a panel
+/// omitted `tool`, `DashboardFigure` will already have consumed `type`/`name`/
+/// `kind` hunting for the tool name, so a second hunt here would be re-reading
+/// keys that were meant as the tool. Independently — and this is the one that
+/// bites when `tool` WAS present — a figure's own `type` field (`show_chart`
+/// payloads have one) must not be able to decide which figure gets drawn.
+fn render_figure_call(params: Value) -> Result<(FigureKind, Value), ErrorData> {
+    // Some models stringify nested tool-call arguments; `DashboardFigure`
+    // accepts that and this used to refuse it, so a stringified panel body
+    // failed one level in with a message about `kind` rather than about the
+    // string. (`normalize_dashboard_args` does the same for `sections`/`panels`.)
+    let params = match params {
+        Value::String(s) => serde_json::from_str::<Value>(&s).map_err(|e| {
+            invalid(format!(
+                "`render_figure` arguments were a JSON string that did not parse: {e}."
+            ))
+        })?,
+        other => other,
     };
-    let code = code.ok_or_else(|| {
+    let mut map = match params {
+        Value::Object(map) => map,
+        other => {
+            return Err(invalid(format!(
+                "`render_figure` takes an object with a `kind` and that kind's payload as \
+                 `data`; got {other}."
+            )))
+        }
+    };
+
+    let raw_kind = map.remove("kind").ok_or_else(|| {
         invalid(
-            "`mermaid` takes its diagram source as `data`: either the source string itself, \
-             or an object with a `mermaid_code` field. Call describe_figure with \
-             kind \"mermaid\" for the exact shape."
+            "`render_figure` needs a `kind` naming the figure to draw, e.g. \
+             {\"tool\": \"render_figure\", \"params\": {\"kind\": \"volcano\", \"data\": {…}}}. \
+             Call describe_figure for the list of kinds."
                 .to_string(),
         )
     })?;
-    Ok(json!({ "mermaid_code": code }))
+    let kind: FigureKind = serde_json::from_value(raw_kind.clone()).map_err(|_| {
+        invalid(format!(
+            "Unknown figure kind {raw_kind}. Call describe_figure for the list of kinds."
+        ))
+    })?;
+
+    // An explicit payload key wins; otherwise whatever is left on the object IS
+    // the payload, which is how a model that wrote `{"kind": "chart", "type":
+    // "bar", "datasets": […]}` still lands on a figure.
+    let data = ["data", "params", "arguments", "args"]
+        .iter()
+        .find_map(|key| map.remove(*key))
+        .unwrap_or(Value::Object(map));
+    Ok((kind, data))
+}
+
+/// Which figure names the caller's model can actually emit.
+///
+/// `call_figure_tool` has two doors and they hand out different rosters, so an
+/// error phrased for one is a dead end for the other. Only the error paths read
+/// this — dispatch is identical either way, which is what keeps a figure
+/// byte-for-byte the same however it is reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FigureVocabulary {
+    /// A chat agent with the Auto Visualiser extension. It sees exactly three
+    /// tools — `render_figure`, `describe_figure`, `render_dashboard` — so its
+    /// figures are named by `kind`, and the per-kind tool names are back-compat
+    /// it cannot look up.
+    RenderFigure,
+    /// Agent Drafter's `ui_figure`, whose own description hands the app agent
+    /// the per-kind tool names (`render_volcano`, `render_manhattan`, …) and
+    /// which has neither `render_figure` nor `describe_figure` to call.
+    ToolName,
+}
+
+/// Report a bad figure payload against a call the caller can actually make.
+///
+/// The 32 per-figure tools still dispatch, but they left the advertised roster
+/// when `render_figure` took over. Handing one of their names back to a CHAT
+/// agent — "`render_volcano` arguments are invalid: missing field `log2fc`" —
+/// gives it an identifier it cannot call, so it either retries the rejected
+/// shape or gives up (#150).
+///
+/// ⚠ "Left the roster" is true of Auto Visualiser's OWN advertised surface and
+/// nothing wider — which is why this takes a vocabulary rather than rewriting
+/// unconditionally. `ui_figure`'s description still lists eight of these names
+/// (plus `render_dashboard`, which IS advertised) to an audience that has
+/// nothing else to call. Auto Visualiser's own surface is now pinned clean by
+/// `the_advertised_surface_names_no_retired_figure_tool`; the `render_dashboard`
+/// back-compat shapes moved to `//` comments beside [`DashboardFigure`] to make
+/// that true.
+fn figure_argument_error(vocab: FigureVocabulary, tool: &str, detail: &str) -> String {
+    let by_tool_name = || format!("`{tool}` arguments are invalid: {detail}");
+    if vocab == FigureVocabulary::ToolName {
+        return by_tool_name();
+    }
+    match FigureKind::ALL.iter().find(|kind| kind.tool_name() == tool) {
+        Some(kind) => format!(
+            "`render_figure` arguments are invalid for kind \"{slug}\": {detail}. \
+             Call describe_figure with kind \"{slug}\" for the exact schema and a worked example.",
+            slug = kind.slug()
+        ),
+        // A dispatch-table name that no kind claims. Not dead code, and not
+        // pinned as such: `every_kind_resolves_to_a_real_figure_tool` joins
+        // `figure_kinds!` to the ROUTER, not to the hand-written dispatch table,
+        // so it cannot see an extra table entry. What is pinned is the branch
+        // that matters — `every_kind_reports_bad_arguments_against_render_figure`
+        // walks all 32 kinds through the real dispatcher and asserts none of
+        // them lands here. A table entry outside `figure_kinds!` would be a tool
+        // reached only by its own name, and naming it back is then correct.
+        None => by_tool_name(),
+    }
+}
+
+/// Report an unrecognised figure name in a vocabulary the caller has.
+///
+/// The old text named `render_volcano`, `render_heatmap` and `show_chart` to
+/// every caller. For a chat agent all three are unreachable (#142): it is being
+/// told to retry with tools that are not in its roster, which is the same
+/// dead end #150 describes for argument errors, one layer up.
+fn unknown_figure_error(vocab: FigureVocabulary, name: &str) -> String {
+    match vocab {
+        FigureVocabulary::RenderFigure => {
+            let kinds: Vec<&str> = FigureKind::ALL.iter().map(|kind| kind.slug()).collect();
+            format!(
+                "Unknown visualization '{name}'. Figures are drawn with `render_figure`, \
+                 passing one of these kinds as `kind`: {}. Call describe_figure with a kind \
+                 for its exact schema and a worked example.",
+                kinds.join(", ")
+            )
+        }
+        // `ui_figure` really does take a tool name, so this half is unchanged.
+        FigureVocabulary::ToolName => format!(
+            "Unknown visualization '{name}'. Use one of the Auto Visualiser render_* tool \
+             names, e.g. render_volcano, render_heatmap, show_chart."
+        ),
+    }
 }
 
 /// Parameters for `render_figure`.
@@ -985,9 +1169,16 @@ impl AutoVisualiserRouter {
         &self,
         Parameters(params): Parameters<RenderFigureParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let arguments = figure_arguments(params.kind, params.data)?;
-        self.call_figure_tool(params.kind.tool_name(), arguments)
-            .await
+        // Resolved here, so the dispatcher is entered as e.g. `render_volcano`
+        // and the `render_figure` unwrap inside it is never reached from this
+        // door. It is reached from the two doors whose `tool` is model-written.
+        let arguments = figure_arguments(params.data);
+        self.call_figure_tool(
+            params.kind.tool_name(),
+            arguments,
+            FigureVocabulary::RenderFigure,
+        )
+        .await
     }
 
     /// The per-kind schema and worked example, read off the real tool.

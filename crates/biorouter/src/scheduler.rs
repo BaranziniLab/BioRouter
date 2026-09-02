@@ -4,10 +4,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Local, Utc};
+use fs2::FileExt as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio_cron_scheduler::{job::JobId, Job, JobScheduler as TokioJobScheduler};
@@ -26,6 +28,17 @@ use crate::workflow::Workflow;
 
 type RunningTasksMap = HashMap<String, CancellationToken>;
 type JobsMap = HashMap<String, (JobId, ScheduledJob)>;
+
+/// The substring that marks a scheduler error as *"the run was stopped, it did
+/// not fail"*.
+///
+/// It exists because two independent readers key on this text: `run_now_handler`
+/// in `biorouter-server`, which turns a cancelled run into the `CANCELLED`
+/// sentinel the desktop schedule view (`ScheduleDetailView.tsx`) branches on,
+/// and a human reading `last_error`. Before issue #148B a cancelled run was
+/// reported as a *success*, so this string was never produced by anything and
+/// the route's branch was dead code.
+pub const RUN_CANCELLED_MARKER: &str = "was successfully cancelled";
 
 /// Count of in-progress *interactive* (user-facing) agent turns. While > 0 the
 /// scheduler defers scheduled jobs so background work doesn't compete with the
@@ -188,18 +201,30 @@ pub struct ScheduledJob {
 /// (overlap guard — a slow run never stacks), or has hit its `max_runs` cap
 /// (which also auto-pauses it). On a real run it marks the job running and bumps
 /// `run_count`; completion advances `last_run` only after success.
+///
+/// ⚠ `running_tasks` is taken here, **inside the `jobs` lock**, and that is the
+/// whole reason it is a parameter rather than the caller's business (issue
+/// #148A). `currently_running` and the cancel token are two halves of one fact
+/// published under two independent mutexes: a caller that registered the token
+/// after releasing `jobs` left a window in which another task could see
+/// `currently_running == true`, reach for the token, and find nothing — a Stop
+/// that silently cancelled nothing. Registering costs no `.await`
+/// ([`register_running_task`] takes a `std::sync::Mutex`), so there is no reason
+/// for the window to exist.
 async fn claim_run_slot(
     jobs: &Arc<Mutex<JobsMap>>,
+    running_tasks: &Arc<StdMutex<RunningTasksMap>>,
     job_id: &str,
+    token: &CancellationToken,
     now: DateTime<Utc>,
-) -> Option<ScheduledJob> {
+) -> RunSlot {
     let mut jobs_guard = jobs.lock().await;
     match jobs_guard.get_mut(job_id) {
-        None => None,
-        Some((_, job)) if job.paused => None,
+        None => RunSlot::Skipped,
+        Some((_, job)) if job.paused => RunSlot::Skipped,
         Some((_, job)) if job.currently_running => {
             tracing::info!("Skipping job '{}': previous run still in progress", job_id);
-            None
+            RunSlot::Skipped
         }
         Some((_, job)) if job.max_runs.is_some_and(|max| job.run_count >= max) => {
             tracing::info!(
@@ -208,7 +233,7 @@ async fn claim_run_slot(
                 job.max_runs
             );
             job.paused = true;
-            None
+            RunSlot::Capped
         }
         // Resource-aware deferral (jcode "ambient" idea): skip this firing (the
         // cron fires again next interval) when the provider is rate-limited or a
@@ -219,34 +244,559 @@ async fn claim_run_slot(
                 "Deferring scheduled job '{}': provider rate-limited, backing off",
                 job_id
             );
-            None
+            RunSlot::Skipped
         }
         Some(_) if pause_on_active() && interactive_active() => {
             tracing::info!("Deferring scheduled job '{}': user session active", job_id);
-            None
+            RunSlot::Skipped
         }
         Some((_, job)) => {
             job.currently_running = true;
             job.process_start_time = Some(now);
             job.run_count = job.run_count.saturating_add(1);
-            Some(job.clone())
+            let claimed = job.clone();
+            register_running_task(running_tasks, job_id, token.clone());
+            RunSlot::Claimed(Box::new(claimed))
         }
     }
 }
 
-async fn persist_jobs(
+/// What [`claim_run_slot`] decided, and — crucially — what the caller therefore
+/// owes the schedule file.
+///
+/// It used to be an `Option`, and the `None` arm cost a whole-file rewrite on
+/// every deferred tick for no change at all. Naming the auto-pause separately is
+/// what lets a skip write nothing (issue #140: every needless write is another
+/// chance to clobber another process's job).
+enum RunSlot {
+    /// Run it. Carries the snapshot to execute.
+    Claimed(Box<ScheduledJob>),
+    /// Do not run: the job hit `max_runs` and was auto-paused. That pause must
+    /// reach disk or it does not survive a restart.
+    Capped,
+    /// Do not run, and nothing changed.
+    Skipped,
+}
+
+// ---------------------------------------------------------------------------
+// Issue #140 — the schedule file is shared, so nobody may rewrite all of it.
+//
+// `biorouter schedule …` builds its OWN `Scheduler` over the same
+// `schedule.json` the daemon already has open, and the daemon's map is loaded
+// once, at construction. The old `persist_jobs` serialised that whole map over
+// the file, so the last writer silently deleted every job the other one had
+// added since — measured: a CLI-created job vanished the moment the GUI's Pause
+// button touched an unrelated schedule.
+//
+// The fix is that a mutation now READS the current file, applies only the change
+// it is responsible for, and writes the result back — all under an exclusive
+// cross-process lock, and published with a rename so a reader never sees a torn
+// file. Two consequences worth stating, because they are the reason this is not
+// simply "merge the map in":
+//
+//  * a mutation publishes FIELDS, not a job. A stale in-memory copy of a job can
+//    no longer overwrite another process's `last_run` just because someone
+//    pressed Pause.
+//  * every field edit is *modify-if-present* ([`edit_job`]). A job another
+//    process deleted stays deleted; only [`Scheduler::add_scheduled_job`] ever
+//    inserts.
+// ---------------------------------------------------------------------------
+
+/// An exclusive, cross-process lock on the schedule file, held for one whole
+/// read-modify-write. Same shape as `knowledge::soul`'s reconcile lock.
+struct ScheduleFileLock(fs::File);
+
+impl ScheduleFileLock {
+    fn acquire(storage_path: &Path) -> Result<Self, io::Error> {
+        if let Some(parent) = storage_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        // A sidecar rather than the schedule file itself: the write below
+        // replaces `schedule.json` by rename, which would drop a lock held on
+        // the old inode while another process still believed it held one.
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(schedule_lock_path(storage_path))?;
+        file.lock_exclusive()?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for ScheduleFileLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
+fn schedule_lock_path(storage_path: &Path) -> PathBuf {
+    let mut name = storage_path
+        .file_name()
+        .map(std::ffi::OsString::from)
+        .unwrap_or_else(|| std::ffi::OsString::from("schedule.json"));
+    name.push(".lock");
+    storage_path.with_file_name(name)
+}
+
+/// The schedule file's current contents.
+///
+/// A missing or empty file is "no jobs yet". **Everything else that cannot be
+/// turned into a job list is an error** — an unreadable file and an unparseable
+/// one alike — because of what every caller does next: it applies its own change
+/// to whatever comes back and writes the result. Handing back an empty list on a
+/// parse failure therefore does not "recover", it *publishes* the emptiness:
+/// nothing but [`Scheduler::add_scheduled_job`] ever inserts, so the jobs that
+/// failed to parse are gone from the file the moment anything else pauses,
+/// finishes or starts a run.
+///
+/// A copy of the unparseable file is kept aside for the operator to repair from,
+/// but that copy is a courtesy — the refusal to continue is what protects the
+/// data, and the refusal happens whether or not the copy succeeded.
+fn read_jobs_file(storage_path: &Path) -> Result<Vec<ScheduledJob>, io::Error> {
+    let data = match fs::read_to_string(storage_path) {
+        Ok(data) => data,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    if data.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    match serde_json::from_str(&data) {
+        Ok(list) => Ok(list),
+        Err(e) => {
+            // ⚠ A FIXED name, created only if absent. Every reader comes through
+            // here — including the reconcile at the top of every cron tick — so
+            // a timestamped copy would leave one `schedule.corrupt-<ms>` file per
+            // tick beside a file nobody has repaired yet. Not overwriting also
+            // means the FIRST corruption is the one kept, which is the one that
+            // still has the jobs in it.
+            let backup = storage_path.with_extension("corrupt");
+            let kept = if backup.exists() {
+                format!(
+                    "An earlier copy is already at {} and was left alone.",
+                    backup.display()
+                )
+            } else {
+                match fs::copy(storage_path, &backup) {
+                    Ok(_) => format!("A copy was kept at {}.", backup.display()),
+                    Err(copy_error) => format!(
+                        "A copy could NOT be kept ({copy_error}), so the file itself is the only \
+                         copy — it has been left exactly as it is."
+                    ),
+                }
+            };
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{} is not a valid schedule list ({e}). Refusing to continue: the next write \
+                     would replace it with an empty one. {kept} Repair or delete the file to \
+                     resume scheduling.",
+                    storage_path.display(),
+                ),
+            ))
+        }
+    }
+}
+
+/// Publish `list` by rename, so a concurrent reader sees either the old file or
+/// the new one and never a half-written one.
+fn write_jobs_file(storage_path: &Path, list: &[ScheduledJob]) -> Result<(), SchedulerError> {
+    let data = serde_json::to_string_pretty(list)?;
+    let mut tmp_name = storage_path.as_os_str().to_os_string();
+    tmp_name.push(format!(".tmp-{}", std::process::id()));
+    let tmp = PathBuf::from(tmp_name);
+    fs::write(&tmp, data)?;
+    fs::rename(&tmp, storage_path)?;
+    Ok(())
+}
+
+/// Read the schedule file under the same exclusive lock a write takes, on the
+/// blocking pool.
+///
+/// The lock is not decoration: without it a reader can land between
+/// [`write_jobs_file`]'s `fs::write` to the temp file and its `fs::rename`, and
+/// — more to the point — a reader that skipped the lock would be a second reader
+/// of a shared file with its own policy, which is how the two halves of this
+/// module drifted apart in the first place ([`Scheduler::load_jobs_from_storage`]
+/// used to open the file itself and treat an unparseable one as "no jobs").
+async fn read_jobs(storage_path: &Path) -> Result<Vec<ScheduledJob>, SchedulerError> {
+    let storage_path = storage_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let _lock = ScheduleFileLock::acquire(&storage_path)?;
+        read_jobs_file(&storage_path).map_err(SchedulerError::from)
+    })
+    .await
+    .map_err(|e| SchedulerError::PersistError(e.to_string()))?
+}
+
+/// Apply `change` to the on-disk schedule list under the exclusive lock, and
+/// hand back whatever `change` returns.
+///
+/// The whole read-modify-write runs on the blocking pool: `fs2`'s lock blocks,
+/// and holding it across an `.await` on the scheduler's runtime is how a cron
+/// callback would deadlock with a route handler.
+///
+/// `change` returns a `Result`, and an `Err` **aborts the write** — the file is
+/// left exactly as it was found. That is what lets a caller decide *under the
+/// lock* that its change must not happen at all (see
+/// [`Scheduler::add_scheduled_job`], whose duplicate-id check has to see the same
+/// list the insert would go into, not this process's memory).
+async fn persist_change<F, T>(storage_path: &Path, change: F) -> Result<T, SchedulerError>
+where
+    F: FnOnce(&mut Vec<ScheduledJob>) -> Result<T, SchedulerError> + Send + 'static,
+    T: Send + 'static,
+{
+    let storage_path = storage_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let _lock = ScheduleFileLock::acquire(&storage_path)?;
+        let mut list = read_jobs_file(&storage_path)?;
+        let value = change(&mut list)?;
+        write_jobs_file(&storage_path, &list)?;
+        Ok(value)
+    })
+    .await
+    .map_err(|e| SchedulerError::PersistError(e.to_string()))?
+}
+
+/// Edit the on-disk row for `id` **if it is still there**, reporting whether it
+/// was.
+///
+/// The no-op arm is the point: this process's copy of a job is not evidence that
+/// the job still exists. Re-inserting it would turn "the CLI deleted a job" into
+/// "the daemon undid the delete" — the same silent divergence as #140, mirrored.
+///
+/// ⚠ The returned `bool` is the other half of that fix, and it is load-bearing.
+/// Not resurrecting the row is only half a convergence: a daemon that quietly
+/// writes nothing still lists the job, still holds its cron entry, and still
+/// fires it. `false` means *the file no longer has this job*, and every caller
+/// that can act on that must — see [`Scheduler::forget_job`].
+#[must_use]
+fn edit_job(list: &mut [ScheduledJob], id: &str, edit: impl FnOnce(&mut ScheduledJob)) -> bool {
+    match list.iter_mut().find(|job| job.id == id) {
+        Some(job) => {
+            edit(job);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Mark a job as started. Only the run-state fields are published.
+///
+/// Returns the job's authoritative run count *after* this run was counted, or
+/// `None` when the file no longer has the job at all.
+async fn persist_run_start(
+    storage_path: &Path,
+    job: &ScheduledJob,
+    counts_toward_cap: bool,
+) -> Result<Option<u32>, SchedulerError> {
+    let id = job.id.clone();
+    let started = job.process_start_time;
+    persist_change(storage_path, move |list| {
+        let mut count = None;
+        let found = edit_job(list, &id, |stored| {
+            stored.currently_running = true;
+            stored.process_start_time = started;
+            // Read-modify-write against the FILE, not `max` against this
+            // process's copy. `run_count` is a monotonic counter of firings and
+            // this process's copy is loaded once, so two processes running the
+            // same `/loop` both wrote `max(disk, stale)` and lost every
+            // increment the other made — a bounded loop that never reaches its
+            // cap. `run_now` passes `counts_toward_cap = false`, because
+            // pressing "Run now" has never consumed a `/loop`'s budget.
+            if counts_toward_cap {
+                stored.run_count = stored.run_count.saturating_add(1);
+            }
+            count = Some(stored.run_count);
+        });
+        Ok(if found { count } else { None })
+    })
+    .await
+}
+
+/// Persist the auto-pause `claim_run_slot` applied when a job hit `max_runs`.
+///
+/// Returns `false` when the file no longer has the job.
+async fn persist_auto_pause(storage_path: &Path, job_id: &str) -> Result<bool, SchedulerError> {
+    let id = job_id.to_string();
+    persist_change(storage_path, move |list| {
+        Ok(edit_job(list, &id, |stored| stored.paused = true))
+    })
+    .await
+}
+
+/// What a finished run writes back onto its job.
+///
+/// Extracted from the two completion sites (the cron callback and `run_now`) so
+/// that the rule issue #148B is about — **`last_run` advances only on a real
+/// success** — is one testable statement instead of two copies of an `if`.
+/// `last_run` is a data cursor for the Meditation job, so advancing it past a
+/// run that was killed or refused silently skips an unprocessed window.
+#[derive(Clone, Debug)]
+struct RunCompletion {
+    finished_at: DateTime<Utc>,
+    error: Option<String>,
+}
+
+impl RunCompletion {
+    fn from_result(result: &Result<String>, finished_at: DateTime<Utc>) -> Self {
+        Self {
+            finished_at,
+            error: result.as_ref().err().map(|e| format!("{e:#}")),
+        }
+    }
+
+    fn apply(&self, job: &mut ScheduledJob) {
+        job.currently_running = false;
+        job.current_session_id = None;
+        job.process_start_time = None;
+        // Issue #56 (§9.3 C2). A failing tick leaves a job-level error the
+        // schedules UI can show, instead of only a log line nobody reads — a
+        // scheduled run mints a new session each time, so the failure has no
+        // other durable home. Cleared by the next run that succeeds.
+        job.last_error.clone_from(&self.error);
+        if self.error.is_none() {
+            job.last_run = Some(self.finished_at);
+        }
+    }
+}
+
+/// Record a finished run, in memory and on disk. Never fails the caller: the run
+/// is already over, and a persist error must not also lose the in-memory clear.
+///
+/// Returns `false` when the file no longer has this job — it was deleted while
+/// the run was in flight — so the caller can drop it from this process too.
+async fn record_run_completion(
     storage_path: &Path,
     jobs: &Arc<Mutex<JobsMap>>,
-) -> Result<(), SchedulerError> {
-    let jobs_guard = jobs.lock().await;
-    let list: Vec<ScheduledJob> = jobs_guard.values().map(|(_, j)| j.clone()).collect();
-    if let Some(parent) = storage_path.parent() {
-        // tokio::fs to avoid blocking the runtime — persist_jobs runs from
-        // async cron callbacks, several times per job firing.
-        tokio::fs::create_dir_all(parent).await?;
+    job_id: &str,
+    result: &Result<String>,
+) -> bool {
+    let completion = RunCompletion::from_result(result, Utc::now());
+    {
+        let mut jobs_guard = jobs.lock().await;
+        if let Some((_, job)) = jobs_guard.get_mut(job_id) {
+            completion.apply(job);
+        }
     }
-    let data = serde_json::to_string_pretty(&list)?;
-    tokio::fs::write(storage_path, data).await?;
+    let id = job_id.to_string();
+    let for_disk = completion.clone();
+    match persist_change(storage_path, move |list| {
+        Ok(edit_job(list, &id, |stored| for_disk.apply(stored)))
+    })
+    .await
+    {
+        Ok(found) => found,
+        Err(e) => {
+            tracing::error!("Failed to persist job completion for '{}': {}", job_id, e);
+            // A failed write is not evidence the job is gone; keep it.
+            true
+        }
+    }
+}
+
+/// The cancel-token registry is a plain `std::sync::Mutex` on purpose.
+///
+/// Issue #148A: `run_now` must get from "this job is now marked running" to
+/// "a task owns clearing that mark" without a single `.await` in between, or a
+/// dropped handler future strands the flag. A `tokio::sync::Mutex` lock is an
+/// await point; these critical sections are a `HashMap` insert and a remove, so
+/// a blocking lock costs nothing and closes the window.
+fn register_running_task(
+    tasks: &Arc<StdMutex<RunningTasksMap>>,
+    job_id: &str,
+    token: CancellationToken,
+) {
+    tasks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(job_id.to_string(), token);
+}
+
+fn unregister_running_task(tasks: &Arc<StdMutex<RunningTasksMap>>, job_id: &str) {
+    tasks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(job_id);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #140, the direction the modify-if-present fix does NOT cover on its own.
+//
+// `edit_job` refusing to resurrect a deleted row stops the daemon corrupting the
+// file. It does nothing about the daemon's own copy. The CLI is entirely offline
+// — every `biorouter schedule …` subcommand builds its own `Scheduler` over
+// `<data>/schedule.json` and never contacts `biorouterd` — while the daemon's map
+// is filled exactly once, at construction. So after `biorouter schedule remove`:
+// the row is off disk, and the running daemon still lists the job from
+// `/schedule/list`, still holds its cron entry, and still FIRES it, burning
+// tokens on a schedule the user deleted, until the daemon is restarted.
+//
+// Before the modify-if-present fix that divergence was at least self-limiting —
+// the daemon's whole-map write put the row back, wrongly but visibly. Now it is
+// permanent and silent, which is worse. The file is the shared source of truth,
+// so the fix is the other half of the same rule: **the daemon converges on the
+// file.** A job the file no longer has is dropped from this process's map and
+// from the cron scheduler, at the two moments it matters — before a tick decides
+// to run something, and whenever the job list is served.
+// ---------------------------------------------------------------------------
+
+/// Drop `job_id` from this process's map and cancel its cron entry.
+///
+/// The map removal is what actually stops the job: [`claim_run_slot`]'s `None`
+/// arm skips a job it cannot find. Removing the `tokio_cron_scheduler` entry as
+/// well is not tidiness — a stale entry keyed on the same job id would fire
+/// alongside a later job re-created under that id, and the two would double-run.
+async fn forget_job(jobs: &Arc<Mutex<JobsMap>>, tokio_scheduler: &TokioJobScheduler, job_id: &str) {
+    let uuid = jobs.lock().await.remove(job_id).map(|(uuid, _)| uuid);
+    if let Some(uuid) = uuid {
+        if let Err(e) = tokio_scheduler.remove(&uuid).await {
+            tracing::warn!(
+                "Dropped job '{}' from memory but could not remove its cron entry: {}",
+                job_id,
+                e
+            );
+        }
+    }
+}
+
+/// One firing of a cron job: reconcile against the file, claim a run slot, run
+/// it, record what happened.
+///
+/// A free function rather than the body of the closure in
+/// [`Scheduler::create_cron_task`] because it is the whole lifecycle of a
+/// scheduled run and reads as one sequence; the closure keeps only the argument
+/// clones that a `move` closure has to make per firing.
+async fn run_cron_tick(
+    task_job_id: String,
+    current_jobs_arc: Arc<Mutex<JobsMap>>,
+    running_tasks: Arc<StdMutex<RunningTasksMap>>,
+    local_storage_path: PathBuf,
+    cron_handle: TokioJobScheduler,
+) {
+    // The file is the shared source of truth, and the CLI writes it from another
+    // process. Converge BEFORE claiming a slot: a job the user deleted must not
+    // spend a single token, and the tick that discovers the deletion is the one
+    // that retires the cron entry. A read failure leaves everything alone.
+    if let Err(e) = converge_removals(&local_storage_path, &current_jobs_arc, &cron_handle).await {
+        tracing::warn!(
+            "Could not reconcile {} before running '{}': {}",
+            local_storage_path.display(),
+            task_job_id,
+            e
+        );
+    }
+
+    let cancel_token = CancellationToken::new();
+    let job_to_execute = match claim_run_slot(
+        &current_jobs_arc,
+        &running_tasks,
+        &task_job_id,
+        &cancel_token,
+        Utc::now(),
+    )
+    .await
+    {
+        // A deferred tick changed nothing, so it writes nothing.
+        RunSlot::Skipped => return,
+        RunSlot::Capped => {
+            match persist_auto_pause(&local_storage_path, &task_job_id).await {
+                Ok(true) => {}
+                Ok(false) => forget_job(&current_jobs_arc, &cron_handle, &task_job_id).await,
+                Err(e) => {
+                    tracing::error!("Failed to persist auto-pause for '{}': {}", task_job_id, e);
+                }
+            }
+            return;
+        }
+        RunSlot::Claimed(job) => *job,
+    };
+
+    match persist_run_start(&local_storage_path, &job_to_execute, true).await {
+        // The file's count is authoritative — another process may have fired
+        // this same `/loop` since our map was loaded — so adopt it, or
+        // `claim_run_slot`'s cap check keeps testing a number that is too low to
+        // ever reach `max_runs`.
+        Ok(Some(count)) => {
+            if let Some((_, job)) = current_jobs_arc.lock().await.get_mut(&task_job_id) {
+                job.run_count = job.run_count.max(count);
+            }
+        }
+        // Deleted between the reconcile above and now. The run has not started
+        // yet, so abandon it rather than burn a turn.
+        Ok(None) => {
+            unregister_running_task(&running_tasks, &task_job_id);
+            forget_job(&current_jobs_arc, &cron_handle, &task_job_id).await;
+            return;
+        }
+        Err(e) => tracing::error!("Failed to persist job status: {}", e),
+    }
+
+    let result = execute_job(
+        job_to_execute,
+        current_jobs_arc.clone(),
+        task_job_id.clone(),
+        cancel_token.clone(),
+    )
+    .await;
+
+    // Completion BEFORE unregistering: the two together are what "this job is
+    // running" means, and clearing the flag first is what keeps
+    // `kill_running_job` from seeing a running job with no token to cancel.
+    let still_on_disk = record_run_completion(
+        &local_storage_path,
+        &current_jobs_arc,
+        &task_job_id,
+        &result,
+    )
+    .await;
+    unregister_running_task(&running_tasks, &task_job_id);
+    if !still_on_disk {
+        forget_job(&current_jobs_arc, &cron_handle, &task_job_id).await;
+    }
+
+    match result {
+        Ok(_) => tracing::info!("Job '{}' completed", task_job_id),
+        Err(ref e) => tracing::error!("Job '{}' failed: {}", task_job_id, e),
+    }
+}
+
+/// Drop every in-memory job the schedule file no longer has.
+///
+/// An error reading the file propagates and **nothing is dropped**: a read that
+/// failed is not evidence that a job was deleted, and the cost of the two
+/// mistakes is not symmetric — forgetting a job the user still has means their
+/// schedule silently stops.
+async fn converge_removals(
+    storage_path: &Path,
+    jobs: &Arc<Mutex<JobsMap>>,
+    tokio_scheduler: &TokioJobScheduler,
+) -> Result<(), SchedulerError> {
+    let on_disk: std::collections::HashSet<String> = read_jobs(storage_path)
+        .await?
+        .into_iter()
+        .map(|job| job.id)
+        .collect();
+
+    let vanished: Vec<String> = {
+        let jobs_guard = jobs.lock().await;
+        jobs_guard
+            .keys()
+            .filter(|id| !on_disk.contains(*id))
+            .cloned()
+            .collect()
+    };
+
+    for id in vanished {
+        tracing::info!(
+            "Schedule '{}' is no longer in {}; dropping it from this process",
+            id,
+            storage_path.display()
+        );
+        forget_job(jobs, tokio_scheduler, &id).await;
+    }
     Ok(())
 }
 
@@ -254,7 +804,7 @@ pub struct Scheduler {
     tokio_scheduler: TokioJobScheduler,
     jobs: Arc<Mutex<JobsMap>>,
     storage_path: PathBuf,
-    running_tasks: Arc<Mutex<RunningTasksMap>>,
+    running_tasks: Arc<StdMutex<RunningTasksMap>>,
     session_manager: Arc<SessionManager>,
 }
 
@@ -268,7 +818,7 @@ impl Scheduler {
             .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
 
         let jobs = Arc::new(Mutex::new(HashMap::new()));
-        let running_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let running_tasks = Arc::new(StdMutex::new(HashMap::new()));
 
         let arc_self = Arc::new(Self {
             tokio_scheduler: internal_scheduler,
@@ -293,6 +843,10 @@ impl Scheduler {
         let jobs_arc = self.jobs.clone();
         let storage_path = self.storage_path.clone();
         let running_tasks_arc = self.running_tasks.clone();
+        // `JobsSchedulerLocked` is a handle, and cloning it clones the handle —
+        // the tick needs one so it can retire its own cron entry when the file
+        // says the job is gone (see `converge_removals`).
+        let cron_handle = self.tokio_scheduler.clone();
 
         let cron_parts: Vec<&str> = job.cron.split_whitespace().collect();
         let cron = match cron_parts.len() {
@@ -318,77 +872,13 @@ impl Scheduler {
 
         Job::new_async_tz(&cron, local_tz, move |_uuid, _l| {
             tracing::info!("Cron task triggered for job '{}'", job_for_task.id);
-            let task_job_id = job_for_task.id.clone();
-            let current_jobs_arc = jobs_arc.clone();
-            let local_storage_path = storage_path.clone();
-            let running_tasks = running_tasks_arc.clone();
-
-            Box::pin(async move {
-                let Some(job_to_execute) =
-                    claim_run_slot(&current_jobs_arc, &task_job_id, Utc::now()).await
-                else {
-                    // Persist the auto-pause (if any) so it survives restart.
-                    if let Err(e) = persist_jobs(&local_storage_path, &current_jobs_arc).await {
-                        tracing::error!("Failed to persist job status: {}", e);
-                    }
-                    return;
-                };
-
-                if let Err(e) = persist_jobs(&local_storage_path, &current_jobs_arc).await {
-                    tracing::error!("Failed to persist job status: {}", e);
-                }
-
-                let cancel_token = CancellationToken::new();
-                {
-                    let mut tasks = running_tasks.lock().await;
-                    tasks.insert(task_job_id.clone(), cancel_token.clone());
-                }
-
-                let result = execute_job(
-                    job_to_execute,
-                    current_jobs_arc.clone(),
-                    task_job_id.clone(),
-                    cancel_token.clone(),
-                )
-                .await;
-
-                {
-                    let mut tasks = running_tasks.lock().await;
-                    tasks.remove(&task_job_id);
-                }
-
-                {
-                    let mut jobs_guard = current_jobs_arc.lock().await;
-                    if let Some((_, job)) = jobs_guard.get_mut(&task_job_id) {
-                        job.currently_running = false;
-                        job.current_session_id = None;
-                        job.process_start_time = None;
-                        // Issue #56 (§9.3 C2). A failing tick leaves a
-                        // job-level error the schedules UI can show, instead of
-                        // only a log line nobody reads — a scheduled run mints
-                        // a new session each time, so the failure has no other
-                        // durable home. Cleared by the next run that succeeds.
-                        job.last_error = match &result {
-                            Ok(_) => None,
-                            Err(e) => Some(format!("{e:#}")),
-                        };
-                        if result.is_ok() {
-                            job.last_run = Some(Utc::now());
-                        }
-                    }
-                }
-
-                if let Err(e) = persist_jobs(&local_storage_path, &current_jobs_arc).await {
-                    tracing::error!("Failed to persist job completion: {}", e);
-                }
-
-                match result {
-                    Ok(_) => tracing::info!("Job '{}' completed", task_job_id),
-                    Err(ref e) => {
-                        tracing::error!("Job '{}' failed: {}", task_job_id, e);
-                    }
-                }
-            })
+            Box::pin(run_cron_tick(
+                job_for_task.id.clone(),
+                jobs_arc.clone(),
+                running_tasks_arc.clone(),
+                storage_path.clone(),
+                cron_handle.clone(),
+            ))
         })
         .map_err(|e| SchedulerError::CronParseError(e.to_string()))
     }
@@ -406,6 +896,7 @@ impl Scheduler {
         }
 
         let mut stored_job = original_job_spec;
+        let job_id = stored_job.id.clone();
         if make_copy {
             let original_workflow_path = Path::new(&stored_job.source);
             if !original_workflow_path.is_file() {
@@ -430,7 +921,35 @@ impl Scheduler {
             stored_job.process_start_time = None;
         }
 
+        // Built before the write so an invalid cron is refused without touching
+        // the file, and so the write below is the last fallible step that can
+        // leave the two out of step.
         let cron_task = self.create_cron_task(stored_job.clone())?;
+
+        // The ONE mutation that inserts. Everything else edits in place, so that
+        // a job another process removed is never resurrected (issue #140).
+        //
+        // ⚠ The duplicate-id check is HERE, inside the lock, and not only in the
+        // memory check at the top of this function. The memory check asks "does
+        // *this process* know that id", which a daemon that has never seen a
+        // CLI-created job answers `false` to — and the old `retain(…); push(…)`
+        // then force-replaced the stranger's row, taking its cron, its cursor
+        // and (via `make_copy`) its workflow file with it. An `Err` from the
+        // closure leaves the file exactly as it was.
+        //
+        // ⚠ The write also precedes the map insert on purpose: a tick that fires
+        // in the gap reconciles against a file that already has the job, whereas
+        // the other order would have the reconcile delete a job that was mid-add.
+        let spec_for_disk = stored_job.clone();
+        let id_for_disk = job_id.clone();
+        persist_change(&self.storage_path, move |list| {
+            if list.iter().any(|job| job.id == id_for_disk) {
+                return Err(SchedulerError::JobIdExists(id_for_disk));
+            }
+            list.push(spec_for_disk);
+            Ok(())
+        })
+        .await?;
 
         let job_uuid = self
             .tokio_scheduler
@@ -440,10 +959,8 @@ impl Scheduler {
 
         {
             let mut jobs_guard = self.jobs.lock().await;
-            jobs_guard.insert(stored_job.id.clone(), (job_uuid, stored_job));
+            jobs_guard.insert(job_id, (job_uuid, stored_job));
         }
-
-        persist_jobs(&self.storage_path, &self.jobs).await?;
         Ok(())
     }
 
@@ -515,30 +1032,22 @@ impl Scheduler {
         id
     }
 
+    /// Fill the in-memory map from the schedule file. The ONLY call site is
+    /// [`Scheduler::new`] — there is no re-read, no mtime check and no watcher,
+    /// which is why [`converge_removals`] exists.
+    ///
+    /// ⚠ It goes through [`read_jobs`] rather than opening the file itself. It
+    /// used to be a second reader with its own policy — no [`ScheduleFileLock`],
+    /// and an unparseable file silently became "no jobs" without so much as a
+    /// copy aside — and it is the reader most likely to *meet* a corrupt file,
+    /// since it runs before anything else in the process has touched it.
     async fn load_jobs_from_storage(self: &Arc<Self>) {
-        if !self.storage_path.exists() {
-            return;
-        }
-        let data = match fs::read_to_string(&self.storage_path) {
-            Ok(data) => data,
+        let list = match read_jobs(&self.storage_path).await {
+            Ok(list) => list,
             Err(e) => {
                 tracing::error!(
-                    "Failed to read {}: {}. Starting with empty schedule list.",
-                    self.storage_path.display(),
-                    e
-                );
-                return;
-            }
-        };
-        if data.trim().is_empty() {
-            return;
-        }
-
-        let list: Vec<ScheduledJob> = match serde_json::from_str(&data) {
-            Ok(jobs) => jobs,
-            Err(e) => {
-                tracing::error!(
-                    "Failed to parse {}: {}. Starting with empty schedule list.",
+                    "Failed to read {}: {}. Starting with an empty schedule list; the file has \
+                     NOT been modified.",
                     self.storage_path.display(),
                     e
                 );
@@ -605,7 +1114,25 @@ impl Scheduler {
         }
     }
 
+    /// Every schedule this process knows about, after reconciling against the
+    /// file.
+    ///
+    /// The reconcile is why this is not a bare map read. `/schedule/list` and
+    /// `biorouter schedule list` are the surfaces a user checks after deleting a
+    /// schedule somewhere else, and a daemon whose map was loaded once at
+    /// construction would keep listing it — see [`converge_removals`]. A read
+    /// failure is logged and the map served as-is, because failing to read the
+    /// file is not evidence that anything was deleted.
     pub async fn list_scheduled_jobs(&self) -> Vec<ScheduledJob> {
+        if let Err(e) =
+            converge_removals(&self.storage_path, &self.jobs, &self.tokio_scheduler).await
+        {
+            tracing::warn!(
+                "Could not reconcile {} while listing schedules: {}",
+                self.storage_path.display(),
+                e
+            );
+        }
         self.jobs
             .lock()
             .await
@@ -639,7 +1166,12 @@ impl Scheduler {
             }
         }
 
-        persist_jobs(&self.storage_path, &self.jobs).await?;
+        let removed_id = id.to_string();
+        persist_change(&self.storage_path, move |list| {
+            list.retain(|job| job.id != removed_id);
+            Ok(())
+        })
+        .await?;
         Ok(())
     }
 
@@ -666,7 +1198,31 @@ impl Scheduler {
         Ok(schedule_sessions)
     }
 
+    /// Run a schedule immediately.
+    ///
+    /// ## Issue #148A — the run must outlive its caller
+    ///
+    /// This is reached from an axum handler, and **axum drops a handler's future
+    /// when the client disconnects.** The old body marked the job
+    /// `currently_running`, persisted that, and then awaited `execute_job`
+    /// *inline*; every line that cleared the flag came after that await. A
+    /// browser tab closed mid-run — or any dropped request — therefore left the
+    /// flag set forever, and a job with `currently_running == true` is skipped
+    /// by [`claim_run_slot`], refused by `pause_schedule` and refused by
+    /// `update_schedule`. One dropped request bricked the schedule until the
+    /// daemon restarted (BR-38's load-time reconcile was the only escape).
+    ///
+    /// So the run is handed to a **detached task** that owns the whole
+    /// lifecycle, and this function only awaits its handle. Dropping a
+    /// `JoinHandle` does not cancel the task, so the completion path — clearing
+    /// the flag, recording `last_run`/`last_error`, persisting — always runs.
+    ///
+    /// ⚠ Between the claim below and `tokio::spawn` there is deliberately **no
+    /// `.await`**. Re-introducing one (a `tokio::sync::Mutex` on the cancel-token
+    /// registry, an eager persist) re-opens exactly the window this fixes, and
+    /// nothing in the type system will say so.
     pub async fn run_now(&self, sched_id: &str) -> Result<String, SchedulerError> {
+        let cancel_token = CancellationToken::new();
         let job_to_run = {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.get_mut(sched_id) {
@@ -679,60 +1235,67 @@ impl Scheduler {
                     }
                     job.currently_running = true;
                     job.process_start_time = Some(Utc::now());
+                    // Under the SAME lock that published `currently_running`.
+                    // See `claim_run_slot`: the flag and the token are two halves
+                    // of one fact, and registering after releasing `jobs` left a
+                    // window in which `kill_running_job` could see a running job
+                    // and find no token to cancel.
+                    register_running_task(&self.running_tasks, sched_id, cancel_token.clone());
                     job.clone()
                 }
                 None => return Err(SchedulerError::JobNotFound(sched_id.to_string())),
             }
         };
 
-        persist_jobs(&self.storage_path, &self.jobs).await?;
+        let jobs = self.jobs.clone();
+        let running_tasks = self.running_tasks.clone();
+        let storage_path = self.storage_path.clone();
+        let cron_handle = self.tokio_scheduler.clone();
+        let job_id = sched_id.to_string();
 
-        let cancel_token = CancellationToken::new();
-        {
-            let mut tasks = self.running_tasks.lock().await;
-            tasks.insert(sched_id.to_string(), cancel_token.clone());
-        }
-
-        let result = execute_job(
-            job_to_run,
-            self.jobs.clone(),
-            sched_id.to_string(),
-            cancel_token.clone(),
-        )
-        .await;
-
-        {
-            let mut tasks = self.running_tasks.lock().await;
-            tasks.remove(sched_id);
-        }
-
-        {
-            let mut jobs_guard = self.jobs.lock().await;
-            if let Some((_, job)) = jobs_guard.get_mut(sched_id) {
-                job.currently_running = false;
-                job.current_session_id = None;
-                job.process_start_time = None;
-                if result.is_ok() {
-                    job.last_run = Some(Utc::now());
+        let handle = tokio::spawn(async move {
+            // `false`: pressing "Run now" has never consumed a `/loop`'s
+            // `max_runs` budget, and making it do so would let the schedules UI
+            // silently retire a bounded loop.
+            match persist_run_start(&storage_path, &job_to_run, false).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    // Deleted from the file since this process loaded it. Give
+                    // up the claim rather than run a schedule that is gone.
+                    unregister_running_task(&running_tasks, &job_id);
+                    forget_job(&jobs, &cron_handle, &job_id).await;
+                    return Err(anyhow!(
+                        "schedule '{job_id}' no longer exists; it was deleted while this run was \
+                         being started"
+                    ));
                 }
-                // Issue #56 (§9.3 C2), same rule as the cron path: the failure
-                // is recorded on the schedule, not only returned to whoever
-                // pressed "run now".
-                job.last_error = match &result {
-                    Ok(_) => None,
-                    Err(e) => Some(format!("{e:#}")),
-                };
+                Err(e) => {
+                    tracing::error!("Failed to persist run-now start for '{}': {}", job_id, e);
+                }
             }
-        }
 
-        persist_jobs(&self.storage_path, &self.jobs).await?;
+            let result = execute_job(job_to_run, jobs.clone(), job_id.clone(), cancel_token).await;
 
-        match result {
-            Ok(session_id) => Ok(session_id),
-            Err(e) => Err(SchedulerError::AnyhowError(anyhow!(
+            // Completion BEFORE unregistering — see the cron path for why.
+            let still_on_disk = record_run_completion(&storage_path, &jobs, &job_id, &result).await;
+            unregister_running_task(&running_tasks, &job_id);
+            if !still_on_disk {
+                forget_job(&jobs, &cron_handle, &job_id).await;
+            }
+            result
+        });
+
+        match handle.await {
+            Ok(Ok(session_id)) => Ok(session_id),
+            Ok(Err(e)) => Err(SchedulerError::AnyhowError(anyhow!(
                 "Job '{}' failed: {}",
                 sched_id,
                 e
+            ))),
+            // A panicked run is the one case the completion path above cannot
+            // reach; BR-38's load-time reconcile clears the flag on restart.
+            Err(join_error) => Err(SchedulerError::SchedulerInternalError(format!(
+                "scheduled run '{sched_id}' panicked: {join_error}"
             ))),
         }
     }
@@ -754,7 +1317,7 @@ impl Scheduler {
             }
         }
 
-        persist_jobs(&self.storage_path, &self.jobs).await
+        self.publish_paused(sched_id, true).await
     }
 
     pub async fn unpause_schedule(&self, sched_id: &str) -> Result<(), SchedulerError> {
@@ -766,7 +1329,30 @@ impl Scheduler {
             }
         }
 
-        persist_jobs(&self.storage_path, &self.jobs).await
+        self.publish_paused(sched_id, false).await
+    }
+
+    /// Publish the one field pause/unpause owns.
+    ///
+    /// Issue #140: this used to serialise the *whole* in-memory map, so pressing
+    /// Pause in the desktop app deleted every schedule the CLI had added since
+    /// the daemon started.
+    ///
+    /// A row the file no longer has is not re-inserted — and, since the fix's
+    /// other half, is not left in this process either: pausing a job somebody
+    /// deleted tells us the deletion happened, so the job is dropped here and
+    /// the caller is told it is gone.
+    async fn publish_paused(&self, sched_id: &str, paused: bool) -> Result<(), SchedulerError> {
+        let id = sched_id.to_string();
+        let found = persist_change(&self.storage_path, move |list| {
+            Ok(edit_job(list, &id, |stored| stored.paused = paused))
+        })
+        .await?;
+        if !found {
+            forget_job(&self.jobs, &self.tokio_scheduler, sched_id).await;
+            return Err(SchedulerError::JobNotFound(sched_id.to_string()));
+        }
+        Ok(())
     }
 
     pub async fn update_schedule(
@@ -813,9 +1399,30 @@ impl Scheduler {
             }
         }
 
-        persist_jobs(&self.storage_path, &self.jobs).await
+        let id = sched_id.to_string();
+        let found = persist_change(&self.storage_path, move |list| {
+            Ok(edit_job(list, &id, |stored| stored.cron = new_cron))
+        })
+        .await?;
+        if !found {
+            forget_job(&self.jobs, &self.tokio_scheduler, sched_id).await;
+            return Err(SchedulerError::JobNotFound(sched_id.to_string()));
+        }
+        Ok(())
     }
 
+    /// Stop a run that is in progress.
+    ///
+    /// ⚠ **A cancel that cancelled nothing is an error, not a success.** This
+    /// used to return `Ok(())` whenever `running_tasks` held no token — the
+    /// route then reported *"Successfully killed running job"*, the desktop
+    /// Stop button went quiet, and the run carried on. That is the shape of the
+    /// #148 cancel complaint. After the fix in [`claim_run_slot`] and
+    /// [`Scheduler::run_now`] the token is registered under the same lock that
+    /// publishes `currently_running`, and cleared only after the completion has
+    /// been recorded, so "running with no token" no longer has a legitimate
+    /// window: reaching it means the run already finished (or that this process
+    /// is not the one running it), and the caller must be told.
     pub async fn kill_running_job(&self, sched_id: &str) -> Result<(), SchedulerError> {
         {
             let jobs_guard = self.jobs.lock().await;
@@ -831,13 +1438,28 @@ impl Scheduler {
             }
         }
 
-        {
-            let tasks = self.running_tasks.lock().await;
-            if let Some(token) = tasks.get(sched_id) {
-                token.cancel();
+        let cancelled = {
+            let tasks = self
+                .running_tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match tasks.get(sched_id) {
+                Some(token) => {
+                    token.cancel();
+                    true
+                }
+                None => false,
             }
-        }
+        };
 
+        if !cancelled {
+            return Err(SchedulerError::AnyhowError(anyhow!(
+                "Schedule '{}' has no run this process can stop: it is marked running but the \
+                 run has already finished, or it was started by another Biorouter process. \
+                 Nothing was cancelled.",
+                sched_id
+            )));
+        }
         Ok(())
     }
 
@@ -1066,6 +1688,9 @@ async fn execute_job(
     };
 
     let session_id = session_config.id.clone();
+    // Kept, because the outcome of this run is decided partly by whether the
+    // token fired — see `finish_scheduled_run` at the bottom of this function.
+    let run_token = cancel_token.clone();
     let stream = crate::session_context::with_session_id(Some(session_id.clone()), async {
         agent
             .reply(user_message, session_config, Some(cancel_token))
@@ -1115,7 +1740,90 @@ async fn execute_job(
     if let Some(error) = stream_error {
         return Err(error);
     }
-    Ok(session.id)
+    finish_scheduled_run(session.id, run_token.is_cancelled(), &conversation)
+}
+
+/// Why a scheduled run stopped (issue #148B).
+///
+/// Two of these three used to be indistinguishable from success at the
+/// `execute_job` boundary, because neither ends the reply stream with an `Err`:
+///
+/// * **Cancelled.** `Agent::reply`'s loop `break`s on a cancelled token, so the
+///   stream simply ends. `execute_job` returned `Ok`, both completion paths
+///   cleared `last_error` and advanced `last_run` — and for `daily-meditation`
+///   `last_run` *is* the Chat Recall discovery cursor, so pressing Stop silently
+///   skipped an unprocessed window of the user's chats.
+/// * **Refused.** Gate B returns its refusal as a normal one-message stream (an
+///   `Err` there would surface as a 500 from `/reply`). The scheduled run drained
+///   it without looking at it and reported success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScheduledRunEnd {
+    Completed,
+    Cancelled,
+    Refused,
+}
+
+/// Classify a finished run from the two signals available at the boundary.
+///
+/// The refusal arm keys on [`crate::privacy::refusal::TURN_REFUSAL_MARKER`],
+/// which exists for exactly this: a substring two independent readers agree on.
+///
+/// ⚠ **The shape of the transcript is as load-bearing as the marker**, and this
+/// is the second time that has been learned here. Only *assistant* text counts,
+/// because a workflow prompt quoting the marker would otherwise fail every run
+/// of that schedule. But scanning the whole transcript for assistant text is the
+/// same mistake wearing the other hat, and it bites the job this feature exists
+/// to protect: `daily-meditation` reads the user's chats, and any run that
+/// *summarises a chat in which a turn was once refused* would be classified
+/// `Refused`, never advance `last_run`, and re-scan the same window forever.
+///
+/// So the test is structural, not textual. Gate B refuses a turn by returning
+/// the refusal as the *whole* reply — one assistant message and nothing else —
+/// which no run that did work can look like, because a run that did work talks
+/// about what it did. Exactly one assistant message, and it carries the marker.
+fn classify_scheduled_run(cancelled: bool, conversation: &Conversation) -> ScheduledRunEnd {
+    if cancelled {
+        return ScheduledRunEnd::Cancelled;
+    }
+    let assistant: Vec<&Message> = conversation
+        .iter()
+        .filter(|message| message.role == rmcp::model::Role::Assistant)
+        .collect();
+    let refused = match assistant.as_slice() {
+        [only] => only
+            .as_concat_text()
+            .contains(crate::privacy::refusal::TURN_REFUSAL_MARKER),
+        _ => false,
+    };
+    if refused {
+        ScheduledRunEnd::Refused
+    } else {
+        ScheduledRunEnd::Completed
+    }
+}
+
+/// The one place a scheduled run is allowed to call itself a success.
+///
+/// §14.4: a refusal reaching this string may name the tier and nothing else —
+/// no session title, no working directory — so the refused arm restates the
+/// policy rather than echoing the transcript.
+fn finish_scheduled_run(
+    session_id: String,
+    cancelled: bool,
+    conversation: &Conversation,
+) -> Result<String> {
+    match classify_scheduled_run(cancelled, conversation) {
+        ScheduledRunEnd::Completed => Ok(session_id),
+        ScheduledRunEnd::Cancelled => Err(anyhow!(
+            "the run was stopped, so it {RUN_CANCELLED_MARKER} rather than finishing; \
+             the schedule's last-run cursor was not advanced"
+        )),
+        ScheduledRunEnd::Refused => Err(anyhow!(
+            "the privacy barrier refused this run's turn, so no work was done and the \
+             schedule's last-run cursor was not advanced. This chat is private and the \
+             model it is bound to is public; switch it to a private model."
+        )),
+    }
 }
 
 fn apply_scheduled_stream_item(
@@ -1210,6 +1918,162 @@ mod tests {
         let workflow_path = dir.join(format!("{}.yaml", name));
         fs::write(&workflow_path, "prompt: test\n").unwrap();
         workflow_path
+    }
+
+    /// A job with a cron that will not fire during a test, so the only runs are
+    /// the explicit ones.
+    fn dormant_job(id: &str, source: &Path) -> ScheduledJob {
+        ScheduledJob {
+            id: id.to_string(),
+            source: source.to_string_lossy().into_owned(),
+            cron: "0 0 0 1 1 *".to_string(),
+            last_run: None,
+            currently_running: false,
+            paused: false,
+            current_session_id: None,
+            process_start_time: None,
+            run_count: 0,
+            max_runs: None,
+            creator_session_id: None,
+            last_error: None,
+        }
+    }
+
+    fn ids_on_disk(storage_path: &Path) -> Vec<String> {
+        jobs_on_disk(storage_path)
+            .into_iter()
+            .map(|job| job.id)
+            .collect()
+    }
+
+    fn jobs_on_disk(storage_path: &Path) -> Vec<ScheduledJob> {
+        serde_json::from_str(&fs::read_to_string(storage_path).unwrap()).unwrap()
+    }
+
+    /// Issue #140, the measured defect: `biorouter schedule add` created a job,
+    /// the desktop app never saw it, and pressing Pause on an *unrelated*
+    /// schedule deleted it.
+    ///
+    /// Two `Scheduler`s over one file is exactly the shipped topology — the CLI
+    /// builds its own for every subcommand while the daemon holds one open — and
+    /// the daemon's map is loaded once, at construction. Fails against the old
+    /// `persist_jobs`, which serialised that stale whole map over the file:
+    /// `cli-added` is gone from disk the moment the daemon pauses `shared`.
+    #[tokio::test]
+    async fn one_schedulers_write_does_not_delete_the_others_job() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let shared_wf = create_test_workflow(temp_dir.path(), "shared");
+        let cli_wf = create_test_workflow(temp_dir.path(), "cli_added");
+
+        // The daemon, holding one job.
+        let daemon = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        daemon
+            .add_scheduled_job(dormant_job("shared", &shared_wf), false)
+            .await
+            .unwrap();
+
+        // The CLI: a second Scheduler over the same file, which adds a job the
+        // daemon's map will never hear about.
+        let cli = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        cli.add_scheduled_job(dormant_job("cli-added", &cli_wf), false)
+            .await
+            .unwrap();
+        assert!(
+            ids_on_disk(&storage_path).contains(&"cli-added".to_string()),
+            "precondition: the CLI's job reached disk"
+        );
+
+        // The GUI's Pause button, on the UNRELATED job.
+        daemon.pause_schedule("shared").await.unwrap();
+
+        let on_disk = jobs_on_disk(&storage_path);
+        let ids: Vec<&str> = on_disk.iter().map(|job| job.id.as_str()).collect();
+        assert!(
+            ids.contains(&"cli-added"),
+            "pausing an unrelated job deleted the other writer's schedule: {ids:?}"
+        );
+        assert!(
+            on_disk
+                .iter()
+                .find(|job| job.id == "shared")
+                .expect("the paused job is still on disk")
+                .paused,
+            "the pause itself must still be published"
+        );
+    }
+
+    /// The mirror of the test above, and the reason the fix publishes FIELDS
+    /// through [`edit_job`] rather than upserting whole jobs from memory.
+    ///
+    /// Fails against the obvious wrong fix — "read the file, then write every
+    /// job I hold back over it" — which passes the test above while quietly
+    /// resurrecting a job the other writer deleted.
+    #[tokio::test]
+    async fn a_write_does_not_resurrect_a_job_another_writer_removed() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let keep_wf = create_test_workflow(temp_dir.path(), "keep");
+        let doomed_wf = create_test_workflow(temp_dir.path(), "doomed");
+
+        let daemon = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        daemon
+            .add_scheduled_job(dormant_job("keep", &keep_wf), false)
+            .await
+            .unwrap();
+        daemon
+            .add_scheduled_job(dormant_job("doomed", &doomed_wf), false)
+            .await
+            .unwrap();
+
+        // A second writer that loaded both, and removes one.
+        let cli = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        cli.remove_scheduled_job("doomed", false).await.unwrap();
+        assert_eq!(ids_on_disk(&storage_path), vec!["keep".to_string()]);
+
+        // The daemon still holds `doomed` in memory. Neither touching an
+        // unrelated job nor touching `doomed` itself may bring it back.
+        daemon.pause_schedule("keep").await.unwrap();
+        // ⚠ This used to be `.unwrap()`, i.e. it asserted that pausing a deleted
+        // job SUCCEEDS silently. It does not any more, and the change is the
+        // point of `a_job_deleted_from_the_file_stops_being_served_and_stops_firing`:
+        // a no-op that reports success leaves the caller believing the job is
+        // paused and this process still listing and firing it. The disk
+        // assertion below — the thing this test was written for — is unchanged.
+        let refused = daemon
+            .pause_schedule("doomed")
+            .await
+            .expect_err("pausing a job the file no longer has is not a success");
+        assert!(
+            matches!(refused, SchedulerError::JobNotFound(_)),
+            "{refused}"
+        );
+
+        assert_eq!(
+            ids_on_disk(&storage_path),
+            vec!["keep".to_string()],
+            "a removed job must stay removed"
+        );
     }
 
     #[tokio::test]
@@ -1367,6 +2231,774 @@ mod tests {
         assert!(
             skills_and_components < reply,
             "all workflow state must precede reply"
+        );
+    }
+
+    /// Issue #148A: `run_now` is awaited inside an axum handler, and axum drops
+    /// a handler's future when the client disconnects. The old body marked the
+    /// job running, then awaited `execute_job` inline — every line that cleared
+    /// the flag was after that await — so a closed tab left the job
+    /// `currently_running` forever, which makes `claim_run_slot` skip it, and
+    /// `pause_schedule` / `update_schedule` refuse it.
+    ///
+    /// The drop is real, not simulated: the future is polled until it parks and
+    /// then dropped, which is what axum does to it. Against the old
+    /// implementation the first poll parks inside the start-of-run persist, so
+    /// the flag is set and no task exists to clear it, and this test hangs on
+    /// the assertion below until it fails.
+    #[tokio::test]
+    async fn a_dropped_run_now_future_still_clears_the_running_flag() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let scheduler = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+
+        // A source that does not exist, so the run fails fast instead of
+        // reaching a provider or the developer's real session store. What is
+        // under test is that the flag is cleared at all, not what cleared it.
+        let job = dormant_job("dropped-run", &temp_dir.path().join("gone.yaml"));
+        scheduler.add_scheduled_job(job, false).await.unwrap();
+
+        {
+            let mut run = Box::pin(scheduler.run_now("dropped-run"));
+            assert!(
+                futures::poll!(run.as_mut()).is_pending(),
+                "the run must still be in flight when the caller goes away"
+            );
+            assert!(
+                scheduler.list_scheduled_jobs().await[0].currently_running,
+                "precondition: the job was marked running before the drop"
+            );
+            drop(run);
+        }
+
+        // Poll the FILE, not memory: `record_run_completion` writes memory first,
+        // so a cleared on-disk copy proves both halves ran.
+        let mut cleared = false;
+        for _ in 0..100 {
+            sleep(Duration::from_millis(50)).await;
+            if !jobs_on_disk(&storage_path)[0].currently_running {
+                cleared = true;
+                break;
+            }
+        }
+        assert!(
+            cleared,
+            "a dropped run-now left the job marked running forever, bricking the schedule"
+        );
+        assert!(
+            !scheduler.list_scheduled_jobs().await[0].currently_running,
+            "the in-memory copy must be cleared too, or this process keeps skipping the job"
+        );
+    }
+
+    /// Issue #148B, the half that loses data. Cancellation `break`s the reply
+    /// loop rather than erroring, so `execute_job` returned `Ok` and both
+    /// completion paths advanced `last_run` — which, for `daily-meditation`, IS
+    /// the Chat Recall discovery cursor. Stopping a run therefore skipped an
+    /// unprocessed window of the user's chats, silently.
+    ///
+    /// Fails a wrong implementation that returns `Ok` on a cancelled token, and
+    /// separately one that advances `last_run` on any completion rather than on
+    /// a successful one.
+    #[test]
+    fn a_cancelled_run_is_not_a_success_and_does_not_move_the_cursor() {
+        let empty = Conversation::default();
+        assert_eq!(
+            classify_scheduled_run(true, &empty),
+            ScheduledRunEnd::Cancelled
+        );
+
+        let error = finish_scheduled_run("session-1".to_string(), true, &empty)
+            .expect_err("a cancelled run must not report success");
+        assert!(
+            error.to_string().contains(RUN_CANCELLED_MARKER),
+            "the server route keys on this marker to return its CANCELLED sentinel: {error}"
+        );
+
+        let cursor = chrono::DateTime::parse_from_rfc3339("2026-08-20T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut job = dormant_job("daily-meditation", Path::new("/does/not/matter.yaml"));
+        job.last_run = Some(cursor);
+        job.currently_running = true;
+        job.current_session_id = Some("run-session".to_string());
+
+        RunCompletion::from_result(&Err(error), Utc::now()).apply(&mut job);
+
+        assert_eq!(
+            job.last_run,
+            Some(cursor),
+            "a cancelled run must leave the discovery cursor where it was"
+        );
+        assert!(!job.currently_running, "the run is over either way");
+        assert!(job.current_session_id.is_none());
+        assert!(
+            job.last_error
+                .is_some_and(|e| e.contains(RUN_CANCELLED_MARKER)),
+            "the stop must be visible on the schedule, not only in a log line"
+        );
+    }
+
+    /// A successful run is still a success — the guard against "fix cancellation
+    /// by never advancing the cursor", which would break the Meditation job in
+    /// the other direction (it would re-scan the same window forever).
+    #[test]
+    fn a_successful_run_still_advances_the_cursor_and_clears_the_error() {
+        let finished_at = Utc::now();
+        let mut job = dormant_job("daily-meditation", Path::new("/does/not/matter.yaml"));
+        job.last_error = Some("a failure from the previous run".to_string());
+
+        RunCompletion::from_result(&Ok("session-1".to_string()), finished_at).apply(&mut job);
+
+        assert_eq!(job.last_run, Some(finished_at));
+        assert!(job.last_error.is_none());
+    }
+
+    /// Issue #148B's other shape: Gate B returns its refusal as a normal
+    /// one-message stream (an `Err` there would surface as a 500 from `/reply`),
+    /// which the scheduled run drained without inspecting and reported as
+    /// success.
+    ///
+    /// Fails an implementation that only checks the cancel token. The third case
+    /// is the one a naive "does the transcript contain the marker" check gets
+    /// wrong: the run's own prompt is in the same `Conversation`, so a workflow
+    /// that quotes the marker would otherwise fail every single run.
+    #[test]
+    fn a_privacy_refusal_is_not_a_success_but_an_echo_of_it_is_harmless() {
+        let mut refused = Conversation::default();
+        refused.push(Message::assistant().with_text(format!(
+            "This chat is private, so {}. Switch this chat to a private model.",
+            crate::privacy::refusal::TURN_REFUSAL_MARKER
+        )));
+        assert_eq!(
+            classify_scheduled_run(false, &refused),
+            ScheduledRunEnd::Refused
+        );
+        assert!(finish_scheduled_run("session-1".to_string(), false, &refused).is_err());
+
+        let mut ordinary = Conversation::default();
+        ordinary.push(Message::assistant().with_text("Meditation complete."));
+        assert_eq!(
+            classify_scheduled_run(false, &ordinary),
+            ScheduledRunEnd::Completed
+        );
+
+        let mut quoted_by_the_prompt = Conversation::default();
+        quoted_by_the_prompt.push(
+            Message::user().with_text(crate::privacy::refusal::TURN_REFUSAL_MARKER.to_string()),
+        );
+        quoted_by_the_prompt.push(Message::assistant().with_text("Meditation complete."));
+        assert_eq!(
+            classify_scheduled_run(false, &quoted_by_the_prompt),
+            ScheduledRunEnd::Completed,
+            "only the assistant's own words are evidence of a refusal"
+        );
+    }
+
+    /// The mirror image of the bug above, and the one that bites the job this
+    /// whole classification exists for.
+    ///
+    /// `daily-meditation` reads the user's chat history. Sooner or later one of
+    /// those chats contains a turn the privacy barrier refused, and the run
+    /// quotes it back while summarising. A classifier that scans the whole
+    /// transcript for an assistant message containing the marker calls that run
+    /// `Refused`, so `last_run` — which IS the Chat Recall discovery cursor —
+    /// never advances, and every subsequent run re-scans the same window and
+    /// quotes the same refusal again. Permanently stuck, and reported as a
+    /// failure every night.
+    ///
+    /// Fails the "any assistant message" implementation this replaced.
+    #[test]
+    fn a_run_that_merely_quotes_an_old_refusal_still_counts_as_work_done() {
+        let mut summarised = Conversation::default();
+        summarised.push(Message::user().with_text("Meditate over the last week of chats."));
+        summarised.push(Message::assistant().with_text("Reading the week's sessions."));
+        summarised.push(Message::assistant().with_text(format!(
+            "One session ended with a privacy refusal: \"{}\". Recorded that the user works on \
+             private data.",
+            crate::privacy::refusal::TURN_REFUSAL_MARKER
+        )));
+        assert_eq!(
+            classify_scheduled_run(false, &summarised),
+            ScheduledRunEnd::Completed,
+            "a run that did work and happened to quote a past refusal is not itself a refusal"
+        );
+
+        // And the consequence the classifier exists to protect: the cursor moves.
+        let finished_at = Utc::now();
+        let mut job = dormant_job("daily-meditation", Path::new("/does/not/matter.yaml"));
+        let outcome = finish_scheduled_run("session-1".to_string(), false, &summarised);
+        RunCompletion::from_result(&outcome, finished_at).apply(&mut job);
+        assert_eq!(
+            job.last_run,
+            Some(finished_at),
+            "the discovery cursor must advance, or the same window is re-scanned forever"
+        );
+
+        // A real refusal is still a refusal: Gate B returns it as the WHOLE
+        // reply, so one assistant message and nothing else.
+        let mut only_the_refusal = Conversation::default();
+        only_the_refusal.push(Message::user().with_text("Meditate over the last week of chats."));
+        only_the_refusal.push(Message::assistant().with_text(format!(
+            "This chat is private, so {}. Switch this chat to a private model.",
+            crate::privacy::refusal::TURN_REFUSAL_MARKER
+        )));
+        assert_eq!(
+            classify_scheduled_run(false, &only_the_refusal),
+            ScheduledRunEnd::Refused
+        );
+    }
+
+    /// Issue #140's other direction, and the one the modify-if-present fix made
+    /// *worse* rather than better.
+    ///
+    /// The CLI is entirely offline: every `biorouter schedule …` subcommand
+    /// builds its own `Scheduler` over the same `schedule.json` and never
+    /// contacts `biorouterd`. The daemon's map is filled once, at construction.
+    /// So after `biorouter schedule remove`, the daemon that never saw the delete
+    /// used to keep serving the job from `/schedule/list` AND keep firing its
+    /// cron entry — burning tokens on a schedule the user deleted, until the
+    /// daemon restarted. Before the modify-if-present fix that at least
+    /// resurrected the row on disk, wrongly but visibly; after it, the
+    /// divergence was permanent and silent.
+    ///
+    /// Fails an implementation whose only response to a deleted row is to write
+    /// nothing: the job is still listed, and `run_count` still climbs.
+    #[tokio::test]
+    async fn a_job_deleted_from_the_file_stops_being_served_and_stops_firing() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let workflow = create_test_workflow(temp_dir.path(), "deleted_elsewhere");
+
+        let daemon = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+
+        // Fires every second, so "still firing" is observable in a test.
+        let mut job = dormant_job("deleted-elsewhere", &workflow);
+        job.cron = "* * * * * *".to_string();
+        daemon.add_scheduled_job(job, false).await.unwrap();
+
+        // It really is live before the delete.
+        let mut fired = false;
+        for _ in 0..40 {
+            sleep(Duration::from_millis(100)).await;
+            if daemon.list_scheduled_jobs().await[0].run_count > 0 {
+                fired = true;
+                break;
+            }
+        }
+        assert!(fired, "precondition: the job fires while it is on disk");
+
+        // The CLI, in another process, deletes it. Modelled as a direct write to
+        // the file because that is exactly what the offline CLI's own
+        // `Scheduler` does, and because writing it here proves the daemon reads
+        // the file rather than being told by an API call.
+        fs::write(&storage_path, "[]").unwrap();
+
+        assert!(
+            daemon.list_scheduled_jobs().await.is_empty(),
+            "a job the file no longer has must not still be served from /schedule/list"
+        );
+
+        // And it must stop firing. Sample the count, wait out several cron
+        // intervals, and require it not to move.
+        let count_after_delete = jobs_after_delete_run_count(&daemon).await;
+        sleep(Duration::from_millis(2500)).await;
+        assert_eq!(
+            jobs_after_delete_run_count(&daemon).await,
+            count_after_delete,
+            "a deleted schedule kept firing: the daemon is still burning turns on it"
+        );
+        assert!(
+            daemon.list_scheduled_jobs().await.is_empty(),
+            "and it must stay gone"
+        );
+        // Nothing re-created the row, either.
+        assert_eq!(ids_on_disk(&storage_path), Vec::<String>::new());
+    }
+
+    /// How many runs the (possibly already forgotten) job has recorded. `0` once
+    /// it is gone, which is stable — the point is that it does not climb.
+    async fn jobs_after_delete_run_count(scheduler: &Arc<Scheduler>) -> u32 {
+        scheduler
+            .list_scheduled_jobs()
+            .await
+            .first()
+            .map_or(0, |job| job.run_count)
+    }
+
+    /// The recovery path must not be the destruction path.
+    ///
+    /// A parse failure used to be answered with `Ok(Vec::new())`: the caller then
+    /// applied its own change to that empty list and published it, so the FIRST
+    /// pause, completion or run-start after a corrupt file turned the corruption
+    /// into an empty schedule. Nothing but `add_scheduled_job` ever re-inserts,
+    /// so every other job was gone. Worse, the arm that logged "NOT copied aside
+    /// (the copy failed)" returned the same empty list — destroying outright.
+    ///
+    /// Fails an implementation whose parse arm returns an empty list, with or
+    /// without the copy.
+    #[tokio::test]
+    async fn a_corrupt_schedule_file_is_refused_not_emptied() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let corrupt = "[{\"id\": \"half-written\", \"cron\": ";
+        fs::write(&storage_path, corrupt).unwrap();
+
+        // Every door into the file refuses, and none of them writes.
+        let read = read_jobs(&storage_path)
+            .await
+            .expect_err("an unparseable schedule file is an error, not an empty list");
+        assert!(
+            read.to_string().contains("not a valid schedule list"),
+            "{read}"
+        );
+
+        let written = persist_change(&storage_path, |list| {
+            list.retain(|job| job.id != "anything");
+            Ok(())
+        })
+        .await;
+        assert!(
+            written.is_err(),
+            "a mutation must abort rather than publish its change over a file it could not read"
+        );
+
+        assert_eq!(
+            fs::read_to_string(&storage_path).unwrap(),
+            corrupt,
+            "the corrupt file must be left byte-for-byte intact"
+        );
+
+        // A copy is kept aside for the operator, under ONE fixed name however
+        // many readers hit the file — every cron tick reconciles, so a
+        // timestamped copy would litter the data directory.
+        let backup = temp_dir.path().join("schedule.corrupt");
+        assert_eq!(
+            fs::read_to_string(&backup).unwrap(),
+            corrupt,
+            "the unparseable file is copied aside"
+        );
+        for _ in 0..5 {
+            let _ = read_jobs(&storage_path).await;
+        }
+        let backups: Vec<_> = fs::read_dir(temp_dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("corrupt"))
+            .collect();
+        assert_eq!(
+            backups.len(),
+            1,
+            "repeated reads must not leave one backup each: {backups:?}"
+        );
+
+        // And a Scheduler over it starts empty WITHOUT touching the file, rather
+        // than loading empty and then publishing that emptiness.
+        let scheduler = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        assert!(scheduler.list_scheduled_jobs().await.is_empty());
+        assert_eq!(
+            fs::read_to_string(&storage_path).unwrap(),
+            corrupt,
+            "loading must not rewrite the file it could not parse"
+        );
+    }
+
+    /// `add_scheduled_job` checked for a duplicate id in THIS process's map and
+    /// then force-replaced the row on disk (`retain(…); push(…)`). A daemon that
+    /// has never seen a CLI-created job answers the memory check `false`, so
+    /// re-using that id silently overwrote the stranger's cron, its cursor — and,
+    /// under `make_copy`, its workflow file.
+    ///
+    /// Fails an implementation that checks duplicates only in memory.
+    #[tokio::test]
+    async fn adding_a_job_never_overwrites_one_this_process_has_not_seen() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let theirs = create_test_workflow(temp_dir.path(), "theirs");
+        let mine = create_test_workflow(temp_dir.path(), "mine");
+
+        // The daemon starts FIRST, over a file that does not exist yet, so its
+        // map is empty and stays empty — it is loaded exactly once. That is the
+        // shipped topology, not a contrivance.
+        let daemon = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+
+        // Then the CLI, in its own process, creates `report`.
+        let cli = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        let mut theirs_job = dormant_job("report", &theirs);
+        theirs_job.cron = "0 0 9 * * *".to_string();
+        cli.add_scheduled_job(theirs_job, false).await.unwrap();
+
+        // The daemon's memory check cannot see it; the file's must.
+        let refused = daemon
+            .add_scheduled_job(dormant_job("report", &mine), false)
+            .await
+            .expect_err("an id the FILE already has must be refused, not force-replaced");
+        assert!(
+            matches!(refused, SchedulerError::JobIdExists(_)),
+            "{refused}"
+        );
+
+        let on_disk = jobs_on_disk(&storage_path);
+        assert_eq!(on_disk.len(), 1);
+        assert_eq!(
+            on_disk[0].cron, "0 0 9 * * *",
+            "the other process's schedule must be untouched"
+        );
+        assert_eq!(
+            on_disk[0].source,
+            theirs.to_string_lossy(),
+            "and so must its workflow"
+        );
+    }
+
+    /// `run_count` is a monotonic counter of firings shared by every process
+    /// that runs the job. Publishing `max(disk, this process's copy)` loses every
+    /// increment the other process made — this process's copy was loaded once —
+    /// so a bounded `/loop` under-counts and never reaches `max_runs`.
+    ///
+    /// Fails the `stored.run_count.max(run_count)` implementation this replaced.
+    #[tokio::test]
+    async fn each_firing_increments_the_shared_run_count() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let workflow = create_test_workflow(temp_dir.path(), "counted");
+
+        let scheduler = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        scheduler
+            .add_scheduled_job(dormant_job("counted", &workflow), false)
+            .await
+            .unwrap();
+
+        // A stale in-memory copy, exactly as a daemon holds after another
+        // process has fired the job twice.
+        let stale = dormant_job("counted", &workflow);
+        assert_eq!(stale.run_count, 0);
+
+        for expected in 1..=3 {
+            let count = persist_run_start(&storage_path, &stale, true)
+                .await
+                .unwrap()
+                .expect("the job is on disk");
+            assert_eq!(
+                count, expected,
+                "every firing must advance the file's counter, stale caller or not"
+            );
+            assert_eq!(jobs_on_disk(&storage_path)[0].run_count, expected);
+        }
+
+        // "Run now" is not a firing and must not consume a `/loop`'s budget.
+        let unchanged = persist_run_start(&storage_path, &stale, false)
+            .await
+            .unwrap()
+            .expect("the job is on disk");
+        assert_eq!(unchanged, 3);
+        assert_eq!(jobs_on_disk(&storage_path)[0].run_count, 3);
+
+        // And a job the file no longer has reports that, rather than silently
+        // writing nothing.
+        fs::write(&storage_path, "[]").unwrap();
+        assert_eq!(
+            persist_run_start(&storage_path, &stale, true)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    /// The `RunSlot::Capped` arm: hitting `max_runs` auto-pauses the job, and
+    /// that pause has to REACH DISK or it does not survive a restart — the loop
+    /// would resume the moment the daemon came back.
+    ///
+    /// Fails an implementation whose `Capped` arm returns without persisting
+    /// (and, as a bonus, one that has `claim_run_slot` run the job anyway).
+    #[tokio::test]
+    async fn hitting_the_run_cap_pauses_the_job_on_disk_and_survives_a_restart() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let workflow = create_test_workflow(temp_dir.path(), "capped");
+
+        let scheduler = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        let mut job = dormant_job("capped", &workflow);
+        job.cron = "* * * * * *".to_string();
+        job.max_runs = Some(1);
+        job.run_count = 1; // already at the cap, so the next tick is the capped one
+        scheduler.add_scheduled_job(job, false).await.unwrap();
+
+        let mut paused_on_disk = false;
+        for _ in 0..40 {
+            sleep(Duration::from_millis(100)).await;
+            if jobs_on_disk(&storage_path)[0].paused {
+                paused_on_disk = true;
+                break;
+            }
+        }
+        assert!(
+            paused_on_disk,
+            "the auto-pause never reached disk, so the loop resumes on the next daemon start"
+        );
+        assert_eq!(
+            jobs_on_disk(&storage_path)[0].run_count,
+            1,
+            "a capped tick must not consume another run"
+        );
+
+        // The restart it has to survive.
+        drop(scheduler);
+        let restarted = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        assert!(restarted.list_scheduled_jobs().await[0].paused);
+    }
+
+    /// The cross-process lock. Two `Scheduler`s over one file is the shipped
+    /// topology, and a read-modify-write that is not serialised loses the write
+    /// that lands between another writer's read and its own rename.
+    ///
+    /// Concurrency is genuine — the writers run on a multi-thread runtime and
+    /// each holds the lock across a real file read and write. Fails an
+    /// implementation whose `persist_change` does not take `ScheduleFileLock`:
+    /// with 16 racing edits, interleaved read-modify-writes drop rows.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_writers_do_not_lose_each_others_rows() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        fs::write(&storage_path, "[]").unwrap();
+
+        let mut writers = Vec::new();
+        for n in 0..16 {
+            let path = storage_path.clone();
+            let source = temp_dir.path().join(format!("wf-{n}.yaml"));
+            writers.push(tokio::spawn(async move {
+                let job = dormant_job(&format!("job-{n}"), &source);
+                persist_change(&path, move |list| {
+                    // A real read-modify-write: read the list, think, then push.
+                    let existing = list.len();
+                    list.push(job);
+                    assert_eq!(list.len(), existing + 1);
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            }));
+        }
+        for writer in writers {
+            writer.await.unwrap();
+        }
+
+        let mut ids = ids_on_disk(&storage_path);
+        ids.sort();
+        let mut expected: Vec<String> = (0..16).map(|n| format!("job-{n}")).collect();
+        expected.sort();
+        assert_eq!(
+            ids, expected,
+            "a concurrent writer's row was lost: the read-modify-write is not serialised"
+        );
+    }
+
+    /// The publish is atomic: a reader sees the old file or the new one, never a
+    /// half-written one. `write_jobs_file` builds a complete temp file and
+    /// renames it over the target.
+    ///
+    /// ⚠ Asserting only "the content is right afterwards" tests nothing — an
+    /// in-place `fs::write` passes that, and so does a torn write once it
+    /// finishes. What separates the two is the *mechanism*, so the assertion is
+    /// on the mechanism: a rename replaces the directory entry, so the target's
+    /// inode changes, while writing in place keeps it. That is Unix-only, hence
+    /// the `cfg` — and the leftover check below runs everywhere, because a
+    /// "publish" that copies and leaves the temp behind is its own bug.
+    ///
+    /// Fails an implementation that writes the target in place.
+    #[test]
+    fn the_publish_is_a_rename_over_a_complete_file() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let workflow = temp_dir.path().join("wf.yaml");
+        let previous = vec![dormant_job("before", &workflow)];
+        write_jobs_file(&storage_path, &previous).unwrap();
+
+        #[cfg(unix)]
+        let inode_before = {
+            use std::os::unix::fs::MetadataExt as _;
+            fs::metadata(&storage_path).unwrap().ino()
+        };
+
+        // Big enough that an in-place write of it is genuinely non-atomic.
+        let next: Vec<ScheduledJob> = (0..200)
+            .map(|n| dormant_job(&format!("after-{n}"), &workflow))
+            .collect();
+        write_jobs_file(&storage_path, &next).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let inode_after = fs::metadata(&storage_path).unwrap().ino();
+            assert_ne!(
+                inode_before, inode_after,
+                "the schedule file was written in place: a concurrent reader can see it torn"
+            );
+        }
+
+        assert_eq!(jobs_on_disk(&storage_path).len(), 200);
+        let leftovers: Vec<_> = fs::read_dir(temp_dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "the temp file must be renamed, not copied and left: {leftovers:?}"
+        );
+    }
+
+    /// Issue #148's cancel complaint. `kill_running_job` returned `Ok(())`
+    /// whenever the cancel-token registry held nothing, and the route turned that
+    /// into "Successfully killed running job" — a Stop button that reported
+    /// success and cancelled nothing.
+    ///
+    /// Fails the implementation that ignored a missing token.
+    #[tokio::test]
+    async fn stopping_a_run_that_cannot_be_stopped_is_an_error() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let workflow = create_test_workflow(temp_dir.path(), "killable");
+        let scheduler = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        scheduler
+            .add_scheduled_job(dormant_job("killable", &workflow), false)
+            .await
+            .unwrap();
+
+        // Not running at all: already an error, and still is.
+        assert!(scheduler.kill_running_job("killable").await.is_err());
+
+        // Marked running with no token — the state a crashed or foreign run
+        // leaves behind, and the one that used to report success.
+        {
+            let mut jobs = scheduler.jobs.lock().await;
+            jobs.get_mut("killable").unwrap().1.currently_running = true;
+        }
+        let error = scheduler
+            .kill_running_job("killable")
+            .await
+            .expect_err("a cancel that cancelled nothing must not report success");
+        assert!(
+            error.to_string().contains("Nothing was cancelled"),
+            "the caller has to be able to tell: {error}"
+        );
+
+        // With a token registered it really does cancel.
+        let token = CancellationToken::new();
+        register_running_task(&scheduler.running_tasks, "killable", token.clone());
+        scheduler.kill_running_job("killable").await.unwrap();
+        assert!(token.is_cancelled());
+    }
+
+    /// The cancel token and `currently_running` are published under two
+    /// independent mutexes, so they have to be written under the SAME `jobs`
+    /// lock or there is a window in which a run is visibly running and has no
+    /// token to cancel — `kill_running_job`'s old silent `Ok(())`.
+    ///
+    /// A source-shape pin, because the window is a scheduling race a test cannot
+    /// reliably hit. Fails the implementation that registered the token after
+    /// the `jobs` guard was dropped.
+    #[test]
+    fn the_cancel_token_is_registered_under_the_lock_that_publishes_the_flag() {
+        let source = include_str!("scheduler.rs");
+
+        let claim = source
+            .split("async fn claim_run_slot(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n/// What [`claim_run_slot`]").next())
+            .expect("claim_run_slot production body");
+        assert!(
+            claim.contains("register_running_task(running_tasks, job_id, token.clone())"),
+            "claim_run_slot must register the token inside its own `jobs` lock"
+        );
+
+        let run_now = source
+            .split("pub async fn run_now(&self, sched_id: &str)")
+            .nth(1)
+            .and_then(|rest| rest.split("pub async fn pause_schedule").next())
+            .expect("run_now production body");
+        let registered = run_now
+            .find("register_running_task")
+            .expect("run_now registers its cancel token");
+        let guard_dropped = run_now
+            .find("None => return Err(SchedulerError::JobNotFound(sched_id.to_string())),")
+            .expect("the end of run_now's jobs-lock block");
+        assert!(
+            registered < guard_dropped,
+            "run_now must register the token inside the `jobs` lock, not after it"
+        );
+    }
+
+    /// The classifier is only worth anything if `execute_job` actually goes
+    /// through it. A source-shape pin, because the alternative — ticking a real
+    /// job — needs a real provider and writes into the developer's own session
+    /// store (see the note above `privacy_c2_tests`).
+    ///
+    /// Fails the exact regression it guards: someone restoring the old
+    /// `Ok(session.id)` tail.
+    #[test]
+    fn a_scheduled_run_never_reports_success_without_classifying_its_end() {
+        let source = include_str!("scheduler.rs");
+        let execute = source
+            .split("async fn execute_job(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n/// Why a scheduled run stopped").next())
+            .expect("execute_job production body");
+
+        assert!(
+            execute.contains("finish_scheduled_run(session.id, run_token.is_cancelled()"),
+            "the run's outcome must be classified from the cancel token and the transcript"
+        );
+        assert!(
+            !execute.contains("Ok(session.id)"),
+            "a scheduled run must not return success straight from the session id"
         );
     }
 

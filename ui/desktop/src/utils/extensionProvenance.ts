@@ -26,16 +26,25 @@
 // instead of guarding it — and it is why this file has no gated writer while
 // the session store does.
 //
-// ⚠ The config directory is hardcoded to `~/.config/biorouter`, the same way
-// the `brxt:install` handler that calls this already hardcodes
-// `~/.config/biorouter/extensions`. Rust resolves it through `Paths`, which
-// honours the `BIOROUTER_PATH_ROOT` test seam; the two therefore diverge under
-// that seam, which is a test-only relocation and not a shipped configuration.
+// ⚠ The config directory is **resolved**, through `utils/biorouterPaths.ts`,
+// which is the one derivation in the main process (#146). This module used to
+// hardcode `~/.config/biorouter` and its header argued the divergence was
+// harmless because `BIOROUTER_PATH_ROOT` is "a test-only relocation and not a
+// shipped configuration". That argument does not hold: the seam is what a
+// sandboxed dev build runs under, this module WRITES (a store file plus a
+// journal of `.d/` mutations), and the same hardcoded join stood in the
+// `brxt:install` handler that calls it and in the `brxt:uninstall` handler that
+// recursively deletes. The relocation being test-only is exactly why writing
+// outside it is a defect — it is the developer's real store that gets written.
+//
+// It also fixes two cases the hardcoded join was simply wrong about, seam or no
+// seam: a non-default `XDG_CONFIG_HOME`, and Windows, where Rust's `Paths` has
+// never resolved to `~/.config/biorouter`.
 
 import fsSync from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import * as crypto from 'crypto';
+import { biorouterConfigDir } from './biorouterPaths';
 
 /** Must equal `provenance::PROVENANCE_FILE` in the Rust crate. */
 export const PROVENANCE_FILE = 'extension-provenance.json';
@@ -113,10 +122,13 @@ export function mergeProvenance(
   };
 }
 
-/** `~/.config/biorouter` — see the file header for why this is hardcoded. */
-export function biorouterConfigDir(): string {
-  return path.join(os.homedir(), '.config', 'biorouter');
-}
+/**
+ * The Biorouter config directory — see the file header. Re-exported rather than
+ * re-derived: one resolver, `utils/biorouterPaths.ts`, and every main-process
+ * caller reads it. Kept as a named export here so the module's own callers do
+ * not have to know which file the derivation moved to.
+ */
+export { biorouterConfigDir };
 
 export interface RecordProvenanceInput {
   /** The name the config entry is about to be written under (`manifest.name`). */
@@ -170,10 +182,7 @@ export function recordExtensionProvenance(input: RecordProvenanceInput): Provena
     const mutationId = record.install_id!;
     const target = path.join(mutationDir, `${mutationId}.json`);
     const tmp = path.join(mutationDir, `.${mutationId}.tmp`);
-    fsSync.writeFileSync(
-      tmp,
-      `${JSON.stringify({ op: 'upsert', key, record })}\n`
-    );
+    fsSync.writeFileSync(tmp, `${JSON.stringify({ op: 'upsert', key, record })}\n`);
     fsSync.renameSync(tmp, target);
     const currentDir = path.join(mutationDir, 'current');
     fsSync.mkdirSync(currentDir, { recursive: true });

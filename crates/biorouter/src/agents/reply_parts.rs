@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_stream::try_stream;
@@ -19,6 +20,7 @@ use crate::providers::toolshim::{
 };
 
 use crate::agents::code_execution_extension::EXTENSION_NAME as CODE_EXECUTION_EXTENSION;
+use crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME;
 use crate::agents::subagent_tool::{SUBAGENT_TOOL_NAME, SUBAGENT_TOOL_PREFIXED};
 use crate::session::SessionType;
 
@@ -90,6 +92,32 @@ pub(super) fn attach_effective_tool_rosters(
                 .any(|tool| tool == "execute_code")
         {
             info.instructions = "Code Execution is restricted to the effective inspection tools above. Do not run code or hide other direct tools unless `execute_code` is present.".to_string();
+        }
+        // Same idiom, third capability. Skills' prose names seven operations,
+        // and `get_extensions_info` — which is what puts that prose in EVERY
+        // turn's system prompt — is filtered by `allowed_extension_keys` and
+        // never by the conversation's effective roster. An Agent-Drafter app
+        // agent is granted `searchSkills` + `loadSkill` and read instructions
+        // for five more that answer with a refusal.
+        //
+        // Unlike the two above this one does not swap in a fixed sentence: the
+        // narrowed prose is generated from the roster, so it stays correct for
+        // any subset rather than for the one subset somebody thought of. The
+        // full-roster case is rebuilt from the same table and is byte-identical
+        // to the static text, so the arm is a no-op wherever nothing was taken
+        // away — which is why it is not gated on a marker tool.
+        //
+        // `available_tools`, not `directly_callable_tools`: Code Execution
+        // narrowing is not a loss of capability (the tools stay reachable from
+        // a script) and must not rewrite this prose.
+        if info.classification == crate::agents::extension::ExtensionClassification::Capability
+            && info.name
+                == crate::config::extensions::name_to_key(
+                    crate::agents::skills_extension::EXTENSION_NAME,
+                )
+        {
+            info.instructions =
+                crate::agents::skills_extension::instructions_for_operations(&info.available_tools);
         }
     }
 }
@@ -186,11 +214,58 @@ fn coerce_tool_arguments(
 ///
 /// When the `code_execution` extension is active the model is meant to reach
 /// ordinary tools by *writing code*, so the tool list collapses to
-/// `code_execution__*`. Two families are exempt because code cannot express
-/// them: spawning a subagent (it runs its own agent loop, not a function call),
-/// and BR-71's workspace control (it operates the daemon and the GUI, not the
-/// sandbox). Both name forms of the spawn tool are kept — models strip prefixes.
-pub(crate) fn survives_code_execution_filter(tool_name: &str, code_exec_prefix: &str) -> bool {
+/// `code_execution__*`. The exemptions below are the tools code cannot express.
+///
+/// ⚠ **The premise of the whole filter is that a dropped tool is still
+/// reachable by writing code.** Anything the JS catalogue cannot list must be
+/// exempted here or it becomes reachable from NOWHERE. The catalogue is
+/// [`ExtensionManager::get_prefixed_tools_excluding`], so the question this
+/// predicate has to answer for is "is this tool in **that catalogue**".
+///
+/// That is NOT the same question as "is this tool in the `ExtensionManager`",
+/// and reading it that way is how the class stayed open after issue #141 was
+/// closed for one family. Four families are absent from the catalogue, and only
+/// one of them for the reason "not in the manager":
+///
+/// * the `platform__*` tools — dispatched by [`Agent::dispatch_tool_call`] and
+///   in no extension at all. Dropping them left `platform.ingest_source`
+///   answering `Module not found: platform` with no direct call to fall back to
+///   (issue #141): it cost the chat knowledge ingestion, scheduler management,
+///   and BR-7's recovery path for an offloaded tool result, whose stub tells the
+///   model to call `platform__read_session_blob`.
+/// * `workflow__final_output` — pushed onto the roster by
+///   [`Agent::list_tools_for`] from the Agent's own `final_output_tool`, and
+///   dispatched by the agent loop. `code_execution` is `default_enabled: true`,
+///   so without this exemption a workflow armed with `response.json_schema` has
+///   no way at all to emit its structured output.
+/// * the frontend tools — held in `Agent::frontend_tools`, appended in
+///   [`Agent::prepare_model_tool_surface`] and executed by the interface, so
+///   they are neither importable nor dispatchable from the sandbox. They are the
+///   one dynamic family, which is why this predicate has to be *told* their
+///   names rather than recognising them by shape.
+/// * `workspace__subagent` — the one family that IS in the manager: the
+///   catalogue builder strips it on the way out, for the same reason it is
+///   exempted here.
+///
+/// The remaining `workspace__*` tools are in the catalogue and exempted anyway,
+/// because operating the daemon and the GUI from inside the sandbox is not what
+/// that surface is for. That is deliberate and safe: an exemption may be a
+/// SUPERSET of the rule, and only a shortfall reaches nowhere. The guard that
+/// pins the shortfall direction end-to-end is
+/// `every_tool_absent_from_the_code_execution_catalogue_stays_directly_callable`
+/// below.
+///
+/// Both name forms of the spawn tool are kept — models strip prefixes.
+///
+/// [`ExtensionManager::get_prefixed_tools_excluding`]: crate::agents::ExtensionManager::get_prefixed_tools_excluding
+/// [`Agent::dispatch_tool_call`]: crate::agents::Agent
+/// [`Agent::list_tools_for`]: crate::agents::Agent
+/// [`Agent::prepare_model_tool_surface`]: crate::agents::Agent
+pub(crate) fn survives_code_execution_filter(
+    tool_name: &str,
+    code_exec_prefix: &str,
+    frontend_tool_names: &HashSet<String>,
+) -> bool {
     tool_name.starts_with(code_exec_prefix)
         || tool_name == SUBAGENT_TOOL_NAME
         || tool_name == SUBAGENT_TOOL_PREFIXED
@@ -200,6 +275,17 @@ pub(crate) fn survives_code_execution_filter(tool_name: &str, code_exec_prefix: 
         // `workspace_watch` / `workspace_read_conversation` / `workspace_close`,
         // which the `workspace__` prefix below already exempts.
         || tool_name.starts_with("workspace__")
+        // The predicate, not a second hand-written list: `code_execution`'s
+        // refusal path asks the same question, so a fifth platform tool is
+        // covered by both the day it is added.
+        || crate::agents::platform_tools::is_platform_tool_name(tool_name)
+        // The one constant the workflow's structured-output tool is built from,
+        // for the same reason.
+        || tool_name == FINAL_OUTPUT_TOOL_NAME
+        // Sampled by the caller from `Agent::frontend_tools` — there is no name
+        // shape to test, because a frontend tool is named by whichever client
+        // registered it.
+        || frontend_tool_names.contains(tool_name)
 }
 
 fn code_execution_mode_is_active(loaded: bool, tools: &[Tool]) -> bool {
@@ -244,6 +330,10 @@ impl Agent {
                 .values()
                 .map(|frontend| frontend.tool.clone()),
         );
+        // Sampled from the SAME lock guard that just supplied the tools, so the
+        // Code Execution filter below can never disagree with the list it is
+        // filtering about which names are frontend ones.
+        let frontend_tool_names: HashSet<String> = frontend_tools.keys().cloned().collect();
         drop(frontend_tools);
 
         let code_execution_loaded = self
@@ -266,7 +356,9 @@ impl Agent {
             tools.clone_from(&plan.tools);
         } else if code_execution_active {
             let code_exec_prefix = format!("{CODE_EXECUTION_EXTENSION}__");
-            tools.retain(|tool| survives_code_execution_filter(&tool.name, &code_exec_prefix));
+            tools.retain(|tool| {
+                survives_code_execution_filter(&tool.name, &code_exec_prefix, &frontend_tool_names)
+            });
         }
 
         // Stable ordering preserves multi-session prompt caching.
@@ -869,6 +961,83 @@ mod tests {
         );
     }
 
+    /// The Skills capability's prose is narrowed to the conversation's own
+    /// roster.
+    ///
+    /// `get_extensions_info` — which is what puts that prose in the system
+    /// prompt of every turn — is filtered by `allowed_extension_keys` and never
+    /// by `available_tools`, so an Agent-Drafter app agent granted
+    /// `searchSkills` + `loadSkill` read instructions for five more operations
+    /// and called tools that answer with a refusal. Nothing else catches it:
+    /// the roster is correct, the dispatch is correct, and only the prompt lies.
+    #[test]
+    fn the_skills_capability_advertises_only_the_operations_this_conversation_can_call() {
+        use crate::agents::extension::ExtensionInfo;
+
+        const ALL: [&str; 7] = [
+            "searchSkills",
+            "loadSkill",
+            "searchMarketplaceSkills",
+            "installMarketplaceSkill",
+            "importSkillPackage",
+            "removeSkillPackage",
+            "setSkillEnabled",
+        ];
+        let prose = |granted: &[&str]| {
+            let mut entries = vec![ExtensionInfo::capability("skills", "FULL GUIDANCE", false)];
+            let tools: Vec<Tool> = granted
+                .iter()
+                .map(|name| {
+                    Tool::new(
+                        format!("skills__{name}"),
+                        "t",
+                        object!({ "type": "object" }),
+                    )
+                })
+                .collect();
+            attach_effective_tool_rosters(&mut entries, &tools, &tools);
+            entries.remove(0).instructions
+        };
+
+        // The app-agent grant (`APP_SKILLS_TOOLS`).
+        let app = prose(&["searchSkills", "loadSkill"]);
+        assert!(app.contains("searchSkills"), "{app}");
+        assert!(app.contains("loadSkill"), "{app}");
+        for refused in &ALL[2..] {
+            assert!(
+                !app.contains(refused),
+                "the prompt must not teach `{refused}`, which this conversation cannot call: {app}"
+            );
+        }
+        assert!(
+            !app.contains("desktop approval"),
+            "the approval sentence describes a click no granted operation can reach: {app}"
+        );
+
+        // Nothing taken away: the full prose survives intact, so the arm cannot
+        // quietly shrink an ordinary chat's instructions.
+        let full = prose(&ALL);
+        for op in ALL {
+            assert!(
+                full.contains(op),
+                "the full roster must keep `{op}`: {full}"
+            );
+        }
+        assert!(full.contains("desktop approval"), "{full}");
+        assert!(full.contains("about-biorouter"), "{full}");
+
+        // And a roster with nothing on it says so rather than listing seven
+        // operations that all refuse.
+        let none = prose(&[]);
+        for op in ALL {
+            assert!(!none.contains(op), "{none}");
+        }
+        assert!(
+            none.contains("none of its operations are callable"),
+            "{none}"
+        );
+    }
+
     #[tokio::test]
     async fn callable_count_is_pure_while_turn_prep_grades_sorted_frontend_tools(
     ) -> anyhow::Result<()> {
@@ -975,31 +1144,249 @@ mod tests {
     #[test]
     fn the_code_execution_filter_keeps_the_prefixed_spawn_tool_and_workspace_tools() {
         let prefix = format!("{CODE_EXECUTION_EXTENSION}__");
+        let frontend: HashSet<String> = ["ui__pick_a_file".to_string()].into_iter().collect();
+        let no_frontend = HashSet::new();
         // Kept: the sandbox itself …
         assert!(survives_code_execution_filter(
             &format!("{prefix}execute_code"),
-            &prefix
+            &prefix,
+            &no_frontend
         ));
         // … both spellings of the spawn tool — a filter that knows only the
         // bare name deletes delegation from every default session …
-        assert!(survives_code_execution_filter("subagent", &prefix));
+        assert!(survives_code_execution_filter(
+            "subagent",
+            &prefix,
+            &no_frontend
+        ));
         assert!(survives_code_execution_filter(
             "workspace__subagent",
-            &prefix
+            &prefix,
+            &no_frontend
         ));
         // … and the whole workspace surface, or enabling Workspace Control
         // silently does nothing in the default configuration.
         assert!(survives_code_execution_filter(
             "workspace__workspace_list",
-            &prefix
+            &prefix,
+            &no_frontend
         ));
         assert!(survives_code_execution_filter(
             "workspace__workspace_send_prompt",
-            &prefix
+            &prefix,
+            &no_frontend
+        ));
+        // … every Agent-dispatched platform tool, which no script can import
+        // (issue #141). Asserted HERE, beside the rest of the filter, so an
+        // editor of this predicate sees the case rather than having to know
+        // that `agent.rs` holds a separate test about it.
+        for name in crate::agents::platform_tools::PLATFORM_TOOL_NAMES {
+            assert!(
+                survives_code_execution_filter(name, &prefix, &no_frontend),
+                "{name} is dispatched by the agent loop and is in no importable module"
+            );
+        }
+        // … the workflow structured-output tool, or a workflow with a
+        // `response.json_schema` has no way to emit its result at all …
+        assert!(survives_code_execution_filter(
+            FINAL_OUTPUT_TOOL_NAME,
+            &prefix,
+            &no_frontend
+        ));
+        // … and whatever the interface registered as a frontend tool, which is
+        // the one family with no name shape to test.
+        assert!(survives_code_execution_filter(
+            "ui__pick_a_file",
+            &prefix,
+            &frontend
+        ));
+        assert!(!survives_code_execution_filter(
+            "ui__pick_a_file",
+            &prefix,
+            &no_frontend
         ));
         // Dropped: everything the model is supposed to reach through code.
-        assert!(!survives_code_execution_filter("developer__shell", &prefix));
-        assert!(!survives_code_execution_filter("memory__remember", &prefix));
+        assert!(!survives_code_execution_filter(
+            "developer__shell",
+            &prefix,
+            &no_frontend
+        ));
+        assert!(!survives_code_execution_filter(
+            "memory__remember",
+            &prefix,
+            &no_frontend
+        ));
+    }
+
+    /// The CLASS guard, and the thing that was missing while issue #141 was
+    /// closed for exactly one of the families it applies to.
+    ///
+    /// Code Execution mode's whole premise is "a dropped tool is still
+    /// reachable by writing code", and the only thing that makes that true is
+    /// membership of `ExtensionManager::get_prefixed_tools_excluding` — the
+    /// importable-module catalogue. So the invariant is one implication, in one
+    /// direction:
+    ///
+    /// > a tool in `available_tools` that is NOT in the catalogue must survive
+    /// > [`survives_code_execution_filter`].
+    ///
+    /// Both lists are in hand inside [`Agent::prepare_model_tool_surface`],
+    /// which is why this drives a real Agent instead of asserting over a list of
+    /// names: a name list is a statement about the families somebody remembered,
+    /// and the three that were still unexempted after #141
+    /// (`workflow__final_output`, the frontend tools, and — in the catalogue's
+    /// eyes — `workspace__subagent`) are precisely the ones nobody did.
+    ///
+    /// The non-vacuity assertions below matter as much as the loop: with an
+    /// empty catalogue, or with nothing outside it, the implication holds for
+    /// free.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn every_tool_absent_from_the_code_execution_catalogue_stays_directly_callable() {
+        let path_root = tempfile::TempDir::new().expect("an isolated capability root");
+        let path_root_value = path_root.path().to_string_lossy().into_owned();
+        let _env = env_lock::lock_env([
+            ("BIOROUTER_PATH_ROOT", Some(path_root_value.as_str())),
+            ("BIOROUTER_SESSION_BLOB_LAZY_LOAD", Some("true")),
+        ]);
+
+        let store = tempfile::TempDir::new().expect("an isolated session store");
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            store.path().to_path_buf(),
+        ));
+        let session = session_manager
+            .create_session(
+                store.path().to_path_buf(),
+                "code-execution-catalogue".to_string(),
+                SessionType::User,
+            )
+            .await
+            .expect("create the session under test");
+        let agent = crate::agents::Agent::with_config(crate::agents::AgentConfig::new(
+            Arc::clone(&session_manager),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+
+        // One ordinary extension, so the catalogue is not empty …
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "todo".into(),
+                description: "todo".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .expect("add the ordinary extension");
+        // … Knowledge, which is what opens two of the platform tools …
+        for name in ["knowledge", "code_execution"] {
+            let target = crate::agents::extension_manager::resolve_bundled_extension(name)
+                .unwrap_or_else(|| panic!("{name} must resolve as a bundled capability"));
+            agent
+                .add_extension(target.into_config(format!("{name} for the catalogue guard")))
+                .await
+                .unwrap_or_else(|error| panic!("enable {name}: {error}"));
+        }
+        // … a frontend tool, which lives only in `Agent::frontend_tools` …
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Frontend {
+                name: "frontend".to_string(),
+                description: "desc".to_string(),
+                tools: vec![Tool::new(
+                    "frontend__pick_a_file".to_string(),
+                    "Ask the interface for a file".to_string(),
+                    object!({ "type": "object", "properties": { } }),
+                )],
+                instructions: None,
+                bundled: None,
+                available_tools: vec![],
+            })
+            .await
+            .expect("register the frontend tool");
+        // … and an armed structured-output response, which is the whole reason
+        // a workflow ever has `workflow__final_output` on its roster.
+        agent
+            .add_final_output_tool(crate::workflow::Response {
+                json_schema: Some(json!({ "type": "object" })),
+            })
+            .await;
+
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider {
+            model_config: ModelConfig::new("test-model").unwrap(),
+        });
+        agent
+            .update_provider(Arc::clone(&provider), &session.id)
+            .await
+            .expect("bind the mock provider");
+
+        let surface = agent
+            .prepare_model_tool_surface(&session.id, &provider)
+            .await;
+        assert!(
+            surface.code_execution_active,
+            "precondition: Code Execution narrowing must be in force, else this proves nothing"
+        );
+
+        let catalogue: HashSet<String> = agent
+            .extension_manager
+            .get_prefixed_tools_excluding(CODE_EXECUTION_EXTENSION, None)
+            .await
+            .expect("build the importable-module catalogue")
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        assert!(
+            !catalogue.is_empty(),
+            "an empty catalogue satisfies the implication for free"
+        );
+
+        let code_exec_prefix = format!("{CODE_EXECUTION_EXTENSION}__");
+        let uncatalogued: Vec<String> = surface
+            .available_tools
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .filter(|name| !catalogue.contains(name))
+            .filter(|name| !name.starts_with(&code_exec_prefix))
+            .collect();
+
+        // Non-vacuity, family by family: each of these is in the roster and NOT
+        // in the catalogue, so each is a real obligation rather than a name the
+        // loop below never sees.
+        for expected in [
+            crate::agents::platform_tools::PLATFORM_INGEST_SOURCE_TOOL_NAME,
+            crate::agents::platform_tools::PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
+            crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
+            FINAL_OUTPUT_TOOL_NAME,
+            "frontend__pick_a_file",
+        ] {
+            assert!(
+                uncatalogued.iter().any(|name| name == expected),
+                "{expected} must be in the roster and outside the catalogue for this \
+                 guard to mean anything: {uncatalogued:?}"
+            );
+        }
+
+        let frontend_tool_names: HashSet<String> =
+            agent.frontend_tools.lock().await.keys().cloned().collect();
+        let callable: HashSet<String> = surface
+            .directly_callable_tools
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        for name in &uncatalogued {
+            assert!(
+                survives_code_execution_filter(name, &code_exec_prefix, &frontend_tool_names),
+                "`{name}` is in the model's roster and in no importable module, so Code \
+                 Execution mode would leave it reachable from NOWHERE"
+            );
+            // The same statement one layer out: the exemption has to actually
+            // reach the surface the model is handed.
+            assert!(
+                callable.contains(name),
+                "`{name}` survives the predicate but is missing from the prepared roster"
+            );
+        }
     }
 
     #[test]

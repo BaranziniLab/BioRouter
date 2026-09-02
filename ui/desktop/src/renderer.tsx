@@ -145,7 +145,6 @@ async function headlessPost<T>(
   });
 }
 
-type HeadlessHealthResponse = { home_dir?: string };
 type HeadlessDirsResponse = { dirs?: string[] };
 type HeadlessFilesResponse = { files?: string[] };
 type HeadlessOkResponse = { ok?: boolean };
@@ -299,13 +298,22 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
         window.localStorage.setItem('biorouter-browser-settings', JSON.stringify(settings));
         return false;
       },
-      getBiorouterDir: async () => {
-        const health = await headlessJson<HeadlessHealthResponse>(
-          headlessConfig.headlessBaseUrl,
-          '/health'
-        );
-        return `${health?.home_dir || '/home/ubuntu'}/.config/biorouter`;
-      },
+      // ⚠ There is deliberately no `getBiorouterDir` here (#146). It built
+      // `${health.home_dir}/.config/biorouter`, which is a THIRD spelling of
+      // the config directory — it honours neither `BIOROUTER_PATH_ROOT` nor
+      // `XDG_CONFIG_HOME`, and on Windows names a directory the daemon has
+      // never used. It also had no callers: nothing in the app invoked it, and
+      // `preload.ts` never declared it, so this shim was answering a question
+      // the desktop surface does not ask. Deleting it removes a resolver rather
+      // than adding one that would have to be kept in step.
+      //
+      // ⚠ It cannot simply be pointed at the shared resolver either: this code
+      // runs in a BROWSER, against a daemon in another process (often another
+      // machine), so it has no access to that daemon's environment. If a caller
+      // ever needs this, the answer must come from the daemon — `/health`
+      // returns `home_dir` only, so `routes::shell::HealthResponse` would need
+      // to report the resolved config dir, which `Paths::config_dir()` already
+      // knows.
       getBinaryPath: async (binaryName: string) => binaryName,
       getAllowedExtensions: async () => [],
       ensureDirectory: async (dirPath: string) => {

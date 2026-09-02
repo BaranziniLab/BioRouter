@@ -160,13 +160,6 @@ impl MirroredCatalogRefresh {
     }
 }
 
-fn should_offer_knowledge_platform_tools(
-    knowledge_enabled: bool,
-    extension_name: Option<&str>,
-) -> bool {
-    knowledge_enabled && (extension_name.is_none() || extension_name == Some("platform"))
-}
-
 fn canonicalize_signed_replay_suffix(messages: &[Message]) -> Conversation {
     let mut grouped = Vec::<Message>::new();
     for message in messages.iter().cloned() {
@@ -7356,6 +7349,35 @@ impl Agent {
             .await
     }
 
+    /// The three gates that decide which `platform__*` tools this agent offers
+    /// — sampled HERE, once, and passed to
+    /// [`platform_tools::PlatformToolGates::tools`].
+    ///
+    /// This is the only place that can read all three: the scheduler handle and
+    /// the Knowledge capability are per-agent state, and the blob flag is a
+    /// process-global that a gate must never re-read for itself.
+    ///
+    /// It has exactly ONE caller today — [`Agent::list_tools_for`]. That is not
+    /// a claim that other readers exist and agree; it is the rule for the next
+    /// one: a reader of the same four tools **must** take the value from here
+    /// rather than re-derive it, because the drift between two hand-copied
+    /// lists is issue #141. `code_execution`'s catalogue is not such a reader —
+    /// it consumes no gates at all, since the platform tools are never in it.
+    pub(crate) async fn platform_tool_gates(&self) -> platform_tools::PlatformToolGates {
+        platform_tools::PlatformToolGates {
+            scheduler: self.config.scheduler_service.is_some(),
+            // Ingestion belongs to the Knowledge capability. If the user
+            // disables Knowledge, these higher-level write paths disappear with
+            // its primitives instead of remaining as an unlabelled bypass.
+            knowledge: self
+                .extension_manager
+                .is_extension_enabled("knowledge")
+                .await,
+            // BR-7: the retrieval half of externalized tool results.
+            session_blobs: message_blobs::lazy_load_enabled(),
+        }
+    }
+
     async fn list_tools_for(
         &self,
         session_id: &str,
@@ -7431,33 +7453,18 @@ impl Agent {
             }
         }
 
-        if (extension_name.is_none() || extension_name.as_deref() == Some("platform"))
-            && self.config.scheduler_service.is_some()
-        {
-            prefixed_tools.push(platform_tools::manage_schedule_tool());
-        }
-
-        // Ingestion belongs to the Knowledge capability. If the user disables
-        // Knowledge, these higher-level write paths disappear with its
-        // primitives instead of remaining as an unlabelled bypass.
-        let knowledge_enabled = self
-            .extension_manager
-            .is_extension_enabled("knowledge")
-            .await;
-        if should_offer_knowledge_platform_tools(knowledge_enabled, extension_name.as_deref()) {
-            prefixed_tools.push(platform_tools::ingest_conversation_tool());
-            prefixed_tools.push(platform_tools::ingest_source_tool());
-        }
-
-        // BR-7: the retrieval half of externalized tool results. Only offered
-        // when lazy blob loading is on — with the default hydrating read the
-        // payloads are spliced back into the conversation at load time, so the
-        // model never sees a stub and would have nothing to read back.
-        if (extension_name.is_none() || extension_name.as_deref() == Some("platform"))
-            && message_blobs::lazy_load_enabled()
-        {
-            prefixed_tools.push(platform_tools::read_session_blob_tool());
-        }
+        // The four Agent-owned `platform__*` tools, gated ONCE (issue #141).
+        // The three gates are sampled here because this is the only place that
+        // can see all three — the scheduler handle and the Knowledge capability
+        // are per-agent state, the blob flag is process-global — and the
+        // assembly itself lives in `platform_tools` so every other reader of
+        // the same four tools gets the same answer instead of a hand-copied
+        // list that drifts.
+        prefixed_tools.extend(
+            self.platform_tool_gates()
+                .await
+                .tools(extension_name.as_deref()),
+        );
 
         if extension_name.is_none() {
             if let Some(final_output_tool) = self.final_output_tool.lock().await.as_ref() {
@@ -11733,18 +11740,73 @@ mod tests {
         );
     }
 
+    /// The gates each still decide their own tool, and the `extension_name`
+    /// scope still applies to all four. Catches an assembly that ORs the gates
+    /// (a session with only Knowledge would gain the scheduler tool) and one
+    /// that drops the scope filter (`list_tools(Some("developer"))` would grow
+    /// four tools that do not belong to Developer).
     #[test]
-    fn platform_ingestion_tracks_the_knowledge_capability() {
-        assert!(should_offer_knowledge_platform_tools(true, None));
-        assert!(should_offer_knowledge_platform_tools(
-            true,
-            Some("platform")
-        ));
-        assert!(!should_offer_knowledge_platform_tools(false, None));
-        assert!(!should_offer_knowledge_platform_tools(
-            true,
-            Some("developer")
-        ));
+    fn each_platform_tool_tracks_its_own_gate_and_the_listing_scope() {
+        use platform_tools::PlatformToolGates;
+        let names = |gates: PlatformToolGates, scope: Option<&str>| -> Vec<String> {
+            gates
+                .tools(scope)
+                .into_iter()
+                .map(|tool| tool.name.to_string())
+                .collect()
+        };
+        let all = PlatformToolGates {
+            scheduler: true,
+            knowledge: true,
+            session_blobs: true,
+        };
+        let none = PlatformToolGates {
+            scheduler: false,
+            knowledge: false,
+            session_blobs: false,
+        };
+
+        assert_eq!(
+            names(all, None),
+            platform_tools::PLATFORM_TOOL_NAMES.to_vec()
+        );
+        assert_eq!(names(all, Some("platform")), names(all, None));
+        assert!(names(all, Some("developer")).is_empty());
+        assert!(names(none, None).is_empty());
+
+        assert_eq!(
+            names(
+                PlatformToolGates {
+                    knowledge: true,
+                    ..none
+                },
+                None
+            ),
+            vec![
+                PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
+                PLATFORM_INGEST_SOURCE_TOOL_NAME
+            ]
+        );
+        assert_eq!(
+            names(
+                PlatformToolGates {
+                    scheduler: true,
+                    ..none
+                },
+                None
+            ),
+            vec![PLATFORM_MANAGE_SCHEDULE_TOOL_NAME]
+        );
+        assert_eq!(
+            names(
+                PlatformToolGates {
+                    session_blobs: true,
+                    ..none
+                },
+                None
+            ),
+            vec![PLATFORM_READ_SESSION_BLOB_TOOL_NAME]
+        );
     }
 
     #[test]
@@ -14682,13 +14744,53 @@ mod tests {
         assert!(delivered.contains("Steer queued"), "{delivered}");
         let queued = target_agent.drain_soft_interrupts();
         assert_eq!(queued.len(), 1, "the live child must receive one steer");
-        assert_eq!(queued[0].text, "also verify update-soul");
+        // #145: the payload arrives inside the SUPERVISORY frame, not raw.
+        //
+        // This bridge is supervisory by construction — `enforce_child_
+        // supervision_scope` above admits only `mode:"steer"` to a DIRECT child
+        // — so `send_prompt_steer`'s `is_direct_subagent_child` is true for
+        // every call that reaches here, and the frame is exactly the case it
+        // was written for. Skipping it on this path would be strictly worse
+        // than on any other: an unframed steer is queued with
+        // `Some(AgentInjection)`, which `soft_interrupt_message` wraps in the
+        // UNTRUSTED `frame_workspace_injection` envelope telling the child to
+        // treat the body as another conversation's text — i.e. the parent that
+        // authored the child's task would be told to be ignored, over a channel
+        // that exists for nothing but parental supervision.
+        //
+        // The `None` provenance is the deliberate cost of that choice, recorded
+        // at the framing site: `soft_interrupt_message` frames every
+        // `Some(AgentInjection)` item in the untrusted envelope and cannot be
+        // asked for a different one, and nesting the two would put a supervisory
+        // block inside an envelope that disclaims it. Asserted rather than
+        // dropped, so a later `ProvenanceKind::SupervisorSteer` arm that lets
+        // the stamp come back has to come through this test.
+        //
+        // The subject of this test is SCOPE, and every scope assertion above is
+        // untouched.
+        assert!(
+            queued[0].text.contains("also verify update-soul"),
+            "the steer must still deliver the parent's words: {}",
+            queued[0].text
+        );
+        assert!(
+            queued[0].text.starts_with("<supervisor-steer "),
+            "a direct-child steer must arrive in the supervisory frame: {}",
+            queued[0].text
+        );
+        assert!(
+            queued[0].text.contains(&parent_id),
+            "the frame names the parent session so the child can check it: {}",
+            queued[0].text
+        );
         assert_eq!(
             queued[0]
                 .provenance
                 .as_ref()
                 .map(|provenance| provenance.kind),
-            Some(crate::conversation::message::ProvenanceKind::AgentInjection)
+            None,
+            "a framed supervisory steer is queued unstamped on purpose, so \
+             `soft_interrupt_message` does not re-wrap it in the untrusted envelope"
         );
         manager
             .deregister_agent_if_same(&child.id, &target_agent)
@@ -15049,6 +15151,102 @@ mod tests {
             "the user-facing approval must carry the restored tool's High grade: {approval:?}"
         );
         running.abort();
+    }
+
+    /// Issue #141: the four Agent-dispatched `platform__*` tools were reachable
+    /// from NOWHERE once Code Execution was on.
+    ///
+    /// Code Execution mode collapses the model's directly-callable list to
+    /// `code_execution__*` so ordinary tools are reached by *writing code*
+    /// (`survives_code_execution_filter`). The platform tools are dispatched by
+    /// the agent loop and are therefore absent from the JS module catalogue,
+    /// which `get_prefixed_tools_excluding` builds out of the ExtensionManager —
+    /// so dropping them here left `platform.ingest_source` answering
+    /// `Module not found: platform` with no direct call to fall back to.
+    ///
+    /// This asserts the model-facing surface, which is the only thing that can
+    /// prove reachability: `list_tools` alone passes today, because the surface
+    /// is narrowed one layer further down.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn code_execution_mode_keeps_the_agent_dispatched_platform_tools_callable() {
+        let path_root = tempfile::TempDir::new().expect("an isolated capability root");
+        let path_root_value = path_root.path().to_string_lossy().into_owned();
+        let _env = env_lock::lock_env([
+            ("BIOROUTER_PATH_ROOT", Some(path_root_value.as_str())),
+            ("BIOROUTER_SESSION_BLOB_LAZY_LOAD", Some("true")),
+        ]);
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        for name in ["knowledge", "code_execution"] {
+            let target = resolve_bundled_extension(name)
+                .unwrap_or_else(|| panic!("{name} must resolve as a bundled capability"));
+            agent
+                .add_extension(target.into_config(format!("{name} for issue #141")))
+                .await
+                .unwrap_or_else(|error| panic!("enable {name}: {error}"));
+        }
+
+        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "anthropic" });
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .expect("read the session under test");
+        let (tools, _, _, _) = agent
+            .prepare_tools_and_prompt_for_provider(&session_id, &session.working_dir, &provider)
+            .await
+            .expect("prepare an ordinary Code Execution turn");
+        let names: Vec<_> = tools.iter().map(|tool| tool.name.as_ref()).collect();
+
+        assert!(
+            names.contains(&"code_execution__execute_code"),
+            "precondition: Code Execution mode must be active, else this proves nothing: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name.starts_with("knowledge__")),
+            "precondition: Code Execution narrowing must be in force: {names:?}"
+        );
+
+        for expected in [
+            PLATFORM_INGEST_SOURCE_TOOL_NAME,
+            PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
+            PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
+        ] {
+            assert!(
+                names.contains(&expected),
+                "{expected} is dispatched by the agent loop and cannot be imported by a \
+                 script, so Code Execution mode must leave it directly callable: {names:?}"
+            );
+        }
+    }
+
+    /// The exemption is written against the ONE predicate that also decides the
+    /// dispatch branch, so a fifth platform tool is covered the day it is added.
+    /// A hand-listed exemption (`name == PLATFORM_INGEST_SOURCE_TOOL_NAME || …`)
+    /// passes the surface test above and fails this one.
+    #[test]
+    fn every_platform_tool_survives_the_code_execution_filter() {
+        let no_frontend = std::collections::HashSet::new();
+        for name in platform_tools::PLATFORM_TOOL_NAMES {
+            assert!(
+                crate::agents::reply_parts::survives_code_execution_filter(
+                    name,
+                    "code_execution__",
+                    &no_frontend
+                ),
+                "{name} is dispatched by the agent loop, so Code Execution mode must keep it"
+            );
+        }
+        assert!(
+            !crate::agents::reply_parts::survives_code_execution_filter(
+                "platformish__not_a_platform_tool",
+                "code_execution__",
+                &no_frontend
+            ),
+            "the exemption must be the platform-tool predicate, not a `platform` prefix match"
+        );
     }
 
     fn armed_structured_final_output(output: &str) -> Arc<Mutex<Option<FinalOutputTool>>> {

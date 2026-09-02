@@ -125,7 +125,15 @@ const MATRIX: &[(Platform, Dialect, &str, Expect)] = &[
     (Linux, Posix, r"rpm -e --nodeps glibc",       Expect::Ask("linux_pkg_force_remove")),
     (Linux, Posix, r"docker run --privileged -v /:/host alpine", Expect::Ask("container_escape")),
     (Linux, Posix, r"rm -rf node_modules",         Expect::Allow),
-    (Linux, Posix, r"rm -rf ~/Downloads",          Expect::Allow),
+    // ⚠ Was `rm -rf ~/Downloads`, and that row was decided by the HOST's `$HOME`,
+    // not by the Linux policy it claims to test: `command.rs:834` expands `~` via
+    // `home_dir()`. On macOS `mktemp -d` returns `/var/folders/…`, which matches the
+    // rule's `/var/**` glob, so the row flipped to Deny("baseline.rm_rf_system") the
+    // moment the suite ran under an isolated HOME — which is exactly what this
+    // repo's own documented recipe for `cargo test -p biorouter-cli` produces.
+    // An explicit Linux home path tests the intended property (a recursive delete
+    // under a user directory is allowed) on every host.
+    (Linux, Posix, r"rm -rf /home/user/Downloads", Expect::Allow),
     (Linux, Posix, r"dd if=in.iso of=./out.img",   Expect::Allow),
     (Linux, Posix, r"mv ./etc ./etc.bak",          Expect::Allow),   // relative `etc`, not /etc
     (Linux, Posix, r"systemctl status sshd",       Expect::Allow),

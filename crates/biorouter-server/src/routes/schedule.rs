@@ -9,7 +9,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
-use biorouter::scheduler::ScheduledJob;
+use biorouter::scheduler::{ScheduledJob, RUN_CANCELLED_MARKER};
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
 pub struct CreateScheduleRequest {
@@ -196,7 +196,7 @@ async fn delete_schedule(
 async fn run_now_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<RunNowResponse>, StatusCode> {
+) -> Result<Json<RunNowResponse>, (StatusCode, String)> {
     let scheduler = state.scheduler();
 
     let (workflow_display_name, workflow_version_opt) = if let Some(job) = scheduler
@@ -251,22 +251,61 @@ async fn run_now_handler(
         Ok(session_id) => Ok(Json(RunNowResponse { session_id })),
         Err(e) => {
             eprintln!("Error running schedule '{}' now: {:?}", id, e);
-            match e {
-                biorouter::scheduler::SchedulerError::JobNotFound(_) => Err(StatusCode::NOT_FOUND),
-                biorouter::scheduler::SchedulerError::AnyhowError(ref err) => {
-                    // Check if this is a cancellation error
-                    if err.to_string().contains("was successfully cancelled") {
-                        // Return a special session_id to indicate cancellation
-                        Ok(Json(RunNowResponse {
-                            session_id: "CANCELLED".to_string(),
-                        }))
-                    } else {
-                        Err(StatusCode::INTERNAL_SERVER_ERROR)
-                    }
-                }
-                _ => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            match classify_run_now_error(&id, &e) {
+                // The sentinel `ScheduleDetailView.tsx` branches on.
+                RunNowOutcome::Cancelled => Ok(Json(RunNowResponse {
+                    session_id: "CANCELLED".to_string(),
+                })),
+                RunNowOutcome::Failed(status, message) => Err((status, message)),
             }
         }
+    }
+}
+
+/// What a failed `scheduler.run_now` means to the client.
+#[derive(Debug, PartialEq, Eq)]
+enum RunNowOutcome {
+    /// Not a failure at all: the user stopped the run.
+    Cancelled,
+    Failed(StatusCode, String),
+}
+
+/// Classify a failed `run_now` into the status and the **message** the caller
+/// sees.
+///
+/// The message half is the fix. This handler used to answer every non-404 with a
+/// bare `StatusCode`, so the response had no body and the client had nothing but
+/// the number — which throws away the two errors here that were written to be
+/// read by a person: the privacy barrier's refusal, which says exactly what the
+/// user must change ("this chat is private and the model it is bound to is
+/// public; switch it to a private model"), and the scheduler's own failure text,
+/// the same string the schedules view shows as `last_error`. Both arrived at the
+/// run-now toast as an anonymous 500.
+///
+/// ⚠ A refusal's **status** stays 500 rather than becoming a 403, and that is a
+/// deliberate limit rather than an oversight: `#[utoipa::path]` above declares
+/// 200/404/500, `ui/desktop/openapi.json` is generated from it, and CI fails on
+/// drift between the two (`scripts/check-openapi-schema.sh`). A new status would
+/// need that spec and the generated TypeScript client regenerated alongside.
+/// Adding a *body* needs neither, because utoipa reads the attribute and not the
+/// handler's return type.
+fn classify_run_now_error(id: &str, error: &biorouter::scheduler::SchedulerError) -> RunNowOutcome {
+    use biorouter::scheduler::SchedulerError;
+    match error {
+        SchedulerError::JobNotFound(_) => RunNowOutcome::Failed(
+            StatusCode::NOT_FOUND,
+            format!("Schedule '{id}' was not found."),
+        ),
+        // A stopped run is not a failed one. Issue #148B: until the scheduler
+        // learned to tell cancellation from success this branch was unreachable
+        // — nothing produced the marker, because a killed run reported `Ok` and
+        // advanced the schedule's `last_run` cursor. The literal that used to be
+        // typed here now comes from the scheduler that emits it, so a reword
+        // cannot silently strand this arm again.
+        SchedulerError::AnyhowError(err) if err.to_string().contains(RUN_CANCELLED_MARKER) => {
+            RunNowOutcome::Cancelled
+        }
+        other => RunNowOutcome::Failed(StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
     }
 }
 
@@ -444,21 +483,42 @@ async fn update_schedule(
 pub async fn kill_running_job(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<KillJobResponse>, StatusCode> {
+) -> Result<Json<KillJobResponse>, (StatusCode, String)> {
     let scheduler = state.scheduler();
 
+    // ⚠ The success message below is only true because `kill_running_job` now
+    // FAILS when there was nothing to cancel. It used to return `Ok(())` whenever
+    // the cancel-token registry held no token for the schedule, so this route
+    // reported "Successfully killed running job" for a Stop that stopped
+    // nothing — the #148 cancel complaint.
     scheduler.kill_running_job(&id).await.map_err(|e| {
         eprintln!("Error killing running job '{}': {:?}", id, e);
-        match e {
-            biorouter::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
-            biorouter::scheduler::SchedulerError::AnyhowError(_) => StatusCode::BAD_REQUEST,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        }
+        classify_kill_error(&e)
     })?;
 
     Ok(Json(KillJobResponse {
         message: format!("Successfully killed running job '{}'", id),
     }))
+}
+
+/// Turn a refused Stop into the status and the **message** the caller sees.
+///
+/// The message half matters more here than anywhere else on this route file.
+/// `Scheduler::kill_running_job` now fails when there was no run to cancel —
+/// before that it returned `Ok(())` and this route answered "Successfully killed
+/// running job" for a Stop that stopped nothing, which is the #148 cancel
+/// complaint. A bare `StatusCode` would replace that lie with a silent 400,
+/// which is barely better: the whole content of the answer is the sentence
+/// *"it is marked running but the run has already finished, or it was started by
+/// another Biorouter process"*, and the user needs to read it.
+fn classify_kill_error(error: &biorouter::scheduler::SchedulerError) -> (StatusCode, String) {
+    use biorouter::scheduler::SchedulerError;
+    let status = match error {
+        SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
+        SchedulerError::AnyhowError(_) => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, error.to_string())
 }
 
 #[utoipa::path(
@@ -521,4 +581,119 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/schedule/{id}/inspect", get(inspect_running_job))
         .route("/schedule/{id}/sessions", get(sessions_handler)) // Corrected
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::anyhow;
+    use biorouter::scheduler::SchedulerError;
+
+    /// Issue #148B, the terminal half of it. A run the user stopped is not a
+    /// failure: `ScheduleDetailView.tsx` branches on the `CANCELLED` session id,
+    /// and it only ever sees it because this classification exists.
+    ///
+    /// Fails an implementation that treats every `AnyhowError` as a 500.
+    #[test]
+    fn a_stopped_run_is_reported_as_cancelled_not_as_a_failure() {
+        let stopped = SchedulerError::AnyhowError(anyhow!(
+            "the run was stopped, so it {RUN_CANCELLED_MARKER} rather than finishing; \
+             the schedule's last-run cursor was not advanced"
+        ));
+        assert_eq!(
+            classify_run_now_error("nightly", &stopped),
+            RunNowOutcome::Cancelled
+        );
+    }
+
+    /// The privacy barrier's refusal is written to be read by the person at the
+    /// keyboard — it names what they have to change. It used to reach the
+    /// run-now toast as an anonymous 500 with an empty body, so none of that
+    /// sentence survived the route.
+    ///
+    /// Fails the `Err(StatusCode::INTERNAL_SERVER_ERROR)` implementation this
+    /// replaced: there is no body for the assertion to look at.
+    #[test]
+    fn a_privacy_refusal_reaches_the_client_as_words_not_only_a_number() {
+        let refused = SchedulerError::AnyhowError(anyhow!(
+            "the privacy barrier refused this run's turn, so no work was done and the \
+             schedule's last-run cursor was not advanced. This chat is private and the \
+             model it is bound to is public; switch it to a private model."
+        ));
+        let RunNowOutcome::Failed(status, message) = classify_run_now_error("nightly", &refused)
+        else {
+            panic!("a refusal is a failure, not a cancellation");
+        };
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            message.contains("switch it to a private model"),
+            "the repair instruction must survive the route: {message}"
+        );
+        assert!(
+            message.contains("privacy barrier refused"),
+            "and so must the reason: {message}"
+        );
+    }
+
+    /// A missing schedule is still a 404, and now says which one.
+    #[test]
+    fn a_missing_schedule_is_a_404_that_names_it() {
+        let missing = SchedulerError::JobNotFound("nightly".to_string());
+        let RunNowOutcome::Failed(status, message) = classify_run_now_error("nightly", &missing)
+        else {
+            panic!("a missing schedule is a failure");
+        };
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(message.contains("nightly"), "{message}");
+    }
+
+    /// Every other scheduler failure keeps its own sentence too — this is the
+    /// string the schedules view shows as `last_error`, and the run-now toast
+    /// should not be the one surface that reduces it to "500".
+    #[test]
+    fn an_ordinary_failure_keeps_its_message() {
+        let broken = SchedulerError::CronParseError("expected 5 or 6 fields, got 2".to_string());
+        let RunNowOutcome::Failed(status, message) = classify_run_now_error("nightly", &broken)
+        else {
+            panic!("a broken cron is a failure");
+        };
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(message.contains("expected 5 or 6 fields"), "{message}");
+    }
+
+    /// A refused Stop has to arrive as words. `Scheduler::kill_running_job` now
+    /// fails when there was no run to cancel — it used to return `Ok(())`, and
+    /// this route answered "Successfully killed running job" for a Stop that
+    /// stopped nothing (#148). Replacing that lie with a bare 400 is barely
+    /// better; the sentence is the answer.
+    ///
+    /// Fails the `Err(StatusCode::BAD_REQUEST)` implementation this replaced:
+    /// there is no body for the assertion to look at.
+    ///
+    /// ⚠ This deliberately does NOT reach across into `biorouter`'s source with
+    /// `include_str!`. An earlier version of this test did, and it was measured
+    /// useless: mutating `scheduler.rs` recompiled `biorouter` but cargo reused
+    /// the already-built `biorouter_server` test binary, so the pin read the
+    /// *old* text and passed. A cross-crate source pin is a test that can go
+    /// stale without anything saying so.
+    #[test]
+    fn a_refused_stop_reaches_the_client_as_words_not_only_a_number() {
+        let nothing_to_cancel = SchedulerError::AnyhowError(anyhow!(
+            "Schedule 'nightly' has no run this process can stop: it is marked running but the \
+             run has already finished, or it was started by another Biorouter process. Nothing \
+             was cancelled."
+        ));
+        let (status, message) = classify_kill_error(&nothing_to_cancel);
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            message.contains("Nothing was cancelled"),
+            "the user must be able to tell a Stop that stopped nothing from one that worked: \
+             {message}"
+        );
+
+        let missing = SchedulerError::JobNotFound("nightly".to_string());
+        let (status, message) = classify_kill_error(&missing);
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(message.contains("nightly"), "{message}");
+    }
 }

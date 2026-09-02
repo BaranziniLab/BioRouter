@@ -1,6 +1,7 @@
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::extension_manager::get_parameter_names;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
+use crate::agents::platform_tools;
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -108,6 +109,45 @@ impl HostHooks for SandboxHooks {
     fn max_buffer_size(&self, _context: &mut Context) -> u64 {
         MAX_JS_ARRAY_BUFFER_BYTES
     }
+}
+
+/// What a script is told when it reaches for a `platform__*` tool (issue #141).
+///
+/// The sandbox cannot run these: they are dispatched by the agent loop, which
+/// is why `ExtensionManager::get_prefixed_tools_excluding` — the importable
+/// catalogue — has never listed them, exactly as it strips `workspace__subagent`
+/// for the same reason. Without this the model got `Module not found: platform`
+/// or `Tool not found`, neither of which names a next step, so it retried the
+/// import with a different spelling.
+///
+/// The second sentence is the load-bearing half: the direct call is a route the
+/// Code Execution filter does not close
+/// (`reply_parts::survives_code_execution_filter` exempts every
+/// `platform__*` name), so "call it directly" is advice the model can act on
+/// rather than a bare refusal.
+///
+/// ⚠ **What it must NOT do is promise the tool is in the roster.** Not removing
+/// something is not the same as it being there. This refusal fires on the name
+/// alone and knows nothing about
+/// [`platform_tools::PlatformToolGates`], which are per-agent state
+/// (`dispatch_sub_call` is a static fn with no path to them). Each platform tool
+/// is separately gated: with no `scheduler_service` there is no
+/// `platform__manage_schedule` in either list, and the same holds with Knowledge
+/// disabled, with `BIOROUTER_SESSION_BLOB_LAZY_LOAD` off, and under a
+/// coding-agent bridge surface. An earlier wording said Code Execution "leaves
+/// the platform tools in your tool list", full stop, and so told the model to
+/// call a tool it did not have. The wording below is true whichever way the
+/// gates fell.
+fn agent_loop_tool_refusal(named: &str) -> String {
+    format!(
+        "`{named}` is dispatched by the Biorouter agent loop, not by this sandbox, so there \
+         is no `{module}` module to import and it cannot be called from a script. Call the \
+         `{module}__…` tool directly instead: Code Execution mode does not remove the \
+         {module} tools from your tool list. Each one is separately gated by the capability \
+         it belongs to, so if it is not in your list it is unavailable in this conversation \
+         and no import or spelling will reach it.",
+        module = platform_tools::PLATFORM_EXTENSION_NAME
+    )
 }
 
 fn panic_payload_message(payload: &(dyn Any + Send)) -> Option<&str> {
@@ -1860,12 +1900,30 @@ impl CodeExecutionClient {
         let tools = self.get_tool_infos(Some(cap)).await;
         let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
 
+        // Issue #141: `platform` is *permanently* absent from this catalogue,
+        // not merely unknown, so "Module not found" sent the model looking for
+        // a spelling that does not exist. Both path shapes get the explanation,
+        // because the remedy is the same either way: stop importing and call
+        // the tool.
+        //
+        // Asked only where the ordinary lookup came up empty, so this can never
+        // shadow a real module: nothing reserves the `platform` extension key,
+        // and a refusal that fires ahead of the catalogue would hide an
+        // installed server that happened to normalize to it.
+        let explain_platform = |failed: &str| {
+            if parts.first() == Some(&platform_tools::PLATFORM_EXTENSION_NAME) {
+                agent_loop_tool_refusal(path)
+            } else {
+                failed.to_string()
+            }
+        };
+
         match parts.as_slice() {
             [server] => {
                 let server_tools: Vec<_> =
                     tools.iter().filter(|t| t.server_name == *server).collect();
                 if server_tools.is_empty() {
-                    return Err(format!("Module not found: {server}"));
+                    return Err(explain_platform(&format!("Module not found: {server}")));
                 }
                 let sigs: Vec<_> = server_tools.iter().map(|t| t.to_signature()).collect();
                 Ok(vec![Content::text(format!(
@@ -1877,7 +1935,7 @@ impl CodeExecutionClient {
                 let t = tools
                     .iter()
                     .find(|t| t.server_name == *server && t.tool_name == *tool)
-                    .ok_or_else(|| format!("Tool not found: {server}/{tool}"))?;
+                    .ok_or_else(|| explain_platform(&format!("Tool not found: {server}/{tool}")))?;
                 Ok(vec![Content::text(format!(
                     "// import * as {server} from \"{server}\";\n\n{}\n\n{}",
                     t.to_signature(),
@@ -1946,6 +2004,34 @@ impl CodeExecutionClient {
         Self::handle_search(&tools, &terms_vec, use_regex)
     }
 
+    /// Would these search terms have matched a `platform__*` tool, had the
+    /// catalogue ever contained one?
+    ///
+    /// The third discovery surface. `read_module("platform")` explains the dead
+    /// end; a *search* for the same capability hit it silently — "ingest" simply
+    /// matched nothing, with no pointer to the direct call, which is the same
+    /// dead end one function over. Scored with the caller's OWN matcher against
+    /// synthetic entries for the four tools, so a regex search and a phrase
+    /// search agree with each other and with the ranking next door, instead of
+    /// this hint having its own private idea of "matches".
+    fn platform_tool_search_hint(matcher: &ModuleSearchMatcher) -> Option<String> {
+        platform_tools::PLATFORM_TOOL_NAMES
+            .iter()
+            .find_map(|full_name| {
+                let (server_name, tool_name) = full_name.split_once("__")?;
+                let probe = ToolInfo {
+                    server_name: server_name.to_string(),
+                    tool_name: tool_name.to_string(),
+                    full_name: (*full_name).to_string(),
+                    description: String::new(),
+                    params: Vec::new(),
+                    return_type: String::new(),
+                };
+                (module_search_match_score(&probe, matcher) > 0).then(|| (*full_name).to_string())
+            })
+            .map(|matched| agent_loop_tool_refusal(&matched))
+    }
+
     fn handle_search(
         tools: &[ToolInfo],
         terms: &[String],
@@ -1967,26 +2053,40 @@ impl CodeExecutionClient {
                 .then_with(|| left.tool_name.cmp(&right.tool_name))
         });
 
+        // The catalogue can never contain a `platform__*` tool, so a search that
+        // was looking for one has to be told where it went — whether it matched
+        // nothing at all or matched something else instead.
+        let platform_hint = Self::platform_tool_search_hint(&matcher);
+
         if matching_tools.is_empty() {
             // An empty result set is a valid answer, not a tool failure (issue
             // #26): surfacing it as an error read as "broken tool" in the
             // transcript ([tool_error kind=tool_failure retryable=false]) and
             // fed the failure-streak counters for what was a perfectly good
             // search that simply matched nothing.
-            return Ok(vec![Content::text(format!(
+            let mut text = format!(
                 "No tools matched: {}. This catalog contains only the installed MCP tools, \
                  it does not include skills, web search, documents, or knowledge bases, and \
                  it does not answer questions. Try broader or different terms, or call \
                  read_module(\"<module>\") for a module you already know from the \
                  \"Modules:\" list.",
                 terms.join(", ")
-            ))]);
+            );
+            if let Some(hint) = platform_hint {
+                text.push_str("\n\n");
+                text.push_str(&hint);
+            }
+            return Ok(vec![Content::text(text)]);
         }
 
         let total_matches = matching_tools.len();
         matching_tools.truncate(MAX_MODULE_SEARCH_RESULTS);
 
-        let output = render_module_search_results(&matching_tools, total_matches);
+        let mut output = render_module_search_results(&matching_tools, total_matches);
+        if let Some(hint) = platform_hint {
+            output.push_str("\n\n");
+            output.push_str(&hint);
+        }
         Ok(vec![Content::text(output)])
     }
 
@@ -2136,6 +2236,30 @@ impl CodeExecutionClient {
         Option<String>,
         Option<TodoTaskRecord>,
     ) {
+        // Issue #141, as DEFENCE IN DEPTH — not as the path the model takes.
+        //
+        // A script cannot name an arbitrary tool: every sandbox tool call comes
+        // out of a generated catalogue binding, whose closure owns the
+        // `full_tool_name` it sends down `CALL_TX` (see `create_tool_function`),
+        // and the catalogue is `get_prefixed_tools_excluding`, which has never
+        // held a `platform__*` name. So the reachable dead end is the *import*,
+        // answered by `handle_read_module` / `handle_search_modules` above.
+        //
+        // This branch is what makes the guarantee hold if that ever stops being
+        // true — a future binding built from a wider list, or a caller of this
+        // function that is not `run_tool_handler`. Without it the answer would
+        // be `ExtensionManager`'s "Tool not found", which reads as a spelling
+        // mistake and gets retried; with it, the same remedy the import path
+        // gives. Placed ahead of the manager upgrade so the answer does not
+        // depend on a live manager: the tool would not be there either way.
+        if platform_tools::is_platform_tool_name(tool_name) {
+            return (
+                Err(agent_loop_tool_refusal(tool_name)),
+                "agent_loop_tool",
+                None,
+                None,
+            );
+        }
         let Some(manager) = extension_manager.and_then(std::sync::Weak::upgrade) else {
             return (
                 Err("Extension manager not available".to_string()),
@@ -2592,8 +2716,94 @@ impl McpClientTrait for CodeExecutionClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rmcp::object;
     use std::sync::Arc;
     use test_case::test_case;
+
+    /// Issue #141. A script naming a `platform__*` tool used to fall through to
+    /// `ExtensionManager::dispatch_tool_call`, which does not know these tools
+    /// and answers `Tool '…' not found` — indistinguishable from a typo, so the
+    /// model retried instead of switching to the direct call.
+    ///
+    /// The `None` manager is what makes this a real assertion rather than a
+    /// tautology: with the guard removed, this path returns "Extension manager
+    /// not available" and every assertion below fails.
+    #[tokio::test]
+    async fn a_script_naming_a_platform_tool_is_told_to_call_it_directly() {
+        let collected = Arc::new(Mutex::new(CollectedArtifacts::default()));
+        for name in platform_tools::PLATFORM_TOOL_NAMES {
+            let (result, kind, _user, _todo) = CodeExecutionClient::dispatch_sub_call(
+                "session-141",
+                crate::privacy::CallCapability::for_test_restricted(),
+                name,
+                "{}",
+                None,
+                &collected,
+                &CancellationToken::new(),
+            )
+            .await;
+            let error = result.expect_err("the sandbox cannot run an agent-loop tool");
+            assert_eq!(kind, "agent_loop_tool", "{name}: {error}");
+            assert!(
+                error.contains(name),
+                "the refusal must name the tool the script asked for: {error}"
+            );
+            assert!(
+                error.contains("Call the `platform__…` tool directly"),
+                "a refusal that does not name the remedy is the dead end this replaces: {error}"
+            );
+            assert!(
+                !error.contains("not found"),
+                "'not found' reads as a spelling mistake and gets retried: {error}"
+            );
+        }
+    }
+
+    /// The other half of the same dead end: the model reached
+    /// `read_module("platform")` precisely because the tool was missing from
+    /// its roster, and got `Module not found: platform`.
+    ///
+    /// Both path shapes are covered because `read_module` accepts `server` and
+    /// `server/tool`, and a guard written for only the first leaves the second
+    /// answering `Tool not found: platform/ingest_source`.
+    #[tokio::test]
+    async fn read_module_explains_that_platform_is_not_importable() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let client = CodeExecutionClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: Arc::new(crate::session::SessionManager::new(
+                temp_dir.path().to_path_buf(),
+            )),
+        })
+        .unwrap();
+
+        for path in ["platform", "platform/ingest_source", "/platform"] {
+            let error = client
+                .handle_read_module(
+                    Some(object!({ "module_path": path })),
+                    crate::privacy::CallCapability::for_test_restricted(),
+                )
+                .await
+                .expect_err("there is no importable platform module");
+            assert!(
+                error.contains("dispatched by the Biorouter agent loop")
+                    && error.contains("Call the `platform__…` tool directly"),
+                "{path}: {error}"
+            );
+        }
+
+        // The generic answer is untouched for a module that is merely absent —
+        // a guard written as "any unknown module is a platform tool" would tell
+        // the model to call `typo__…` directly.
+        let error = client
+            .handle_read_module(
+                Some(object!({ "module_path": "platformish" })),
+                crate::privacy::CallCapability::for_test_restricted(),
+            )
+            .await
+            .expect_err("an unknown module is still unknown");
+        assert_eq!(error, "Module not found: platformish");
+    }
 
     #[tokio::test]
     async fn model_facing_tool_description_calls_built_ins_capabilities() {
@@ -3650,6 +3860,110 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
+    }
+
+    /// The catalogue's THIRD discovery surface, and the one that stayed a dead
+    /// end after `read_module` was fixed (issue #141).
+    ///
+    /// A model looking for knowledge ingestion searches for it. The four
+    /// `platform__*` tools are permanently outside this catalogue, so the search
+    /// answered "No tools matched" — the same dead end `read_module("platform")`
+    /// used to give, one function over, and with no pointer to the direct call.
+    ///
+    /// Asserted in both shapes, because they render through different code:
+    /// a search that matches nothing at all, and one that matches something else
+    /// while the caller was after the platform tool.
+    #[test]
+    fn a_module_search_for_an_agent_loop_tool_names_the_direct_call() {
+        let text_of = |result: Vec<Content>| match &result[0].raw {
+            RawContent::Text(t) => t.text.clone(),
+            _ => panic!("Expected text"),
+        };
+        let tools = vec![ToolInfo {
+            server_name: "developer".to_string(),
+            tool_name: "shell".to_string(),
+            full_name: "developer__shell".to_string(),
+            description: "Execute shell commands".to_string(),
+            params: vec![("command".to_string(), "string".to_string(), true)],
+            return_type: "string".to_string(),
+        }];
+
+        // Nothing in the catalogue matches, and the thing the caller wanted can
+        // never be in it.
+        let empty = text_of(
+            CodeExecutionClient::handle_search(&tools, &["ingest_source".to_string()], false)
+                .unwrap(),
+        );
+        assert!(empty.contains("No tools matched"), "{empty}");
+        assert!(
+            empty.contains(platform_tools::PLATFORM_INGEST_SOURCE_TOOL_NAME),
+            "an empty search for a platform tool must name it rather than end the trail: {empty}"
+        );
+        assert!(
+            empty.contains("Call the `platform__…` tool directly"),
+            "the pointer must be the same remedy read_module gives: {empty}"
+        );
+
+        // And when the search DOES return something — the model asked for
+        // scheduling, got `developer/shell`, and would otherwise conclude the
+        // scheduler is unreachable.
+        let matched = text_of(
+            CodeExecutionClient::handle_search(
+                &tools,
+                &["shell".to_string(), "manage_schedule".to_string()],
+                false,
+            )
+            .unwrap(),
+        );
+        assert!(matched.contains("developer/shell"), "{matched}");
+        assert!(
+            matched.contains(platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME),
+            "a non-empty result must still point at the platform tool it cannot list: {matched}"
+        );
+
+        // A search with nothing platform-shaped in it must stay quiet, or the
+        // pointer is noise on every failed search rather than an answer.
+        let unrelated = text_of(
+            CodeExecutionClient::handle_search(&tools, &["nonexistent".to_string()], false)
+                .unwrap(),
+        );
+        assert!(
+            !unrelated.contains("platform__"),
+            "the pointer must be earned by the search terms: {unrelated}"
+        );
+
+        // Regex mode scores through the caller's own matcher, so it agrees.
+        let regexed = text_of(
+            CodeExecutionClient::handle_search(&tools, &["ingest_.*".to_string()], true).unwrap(),
+        );
+        assert!(
+            regexed.contains("Call the `platform__…` tool directly"),
+            "a regex search must reach the same explanation: {regexed}"
+        );
+    }
+
+    /// The refusal must not promise the tool is in the roster.
+    ///
+    /// It fires on the name alone and cannot see `PlatformToolGates`, and each
+    /// of the four is separately gated — with no `scheduler_service`,
+    /// `platform__manage_schedule` is in neither the roster nor the catalogue,
+    /// so "Code Execution deliberately leaves the platform tools in your tool
+    /// list" told the model to call a tool it did not have.
+    #[test]
+    fn the_agent_loop_refusal_does_not_claim_the_tool_is_in_the_roster() {
+        let refusal = agent_loop_tool_refusal(platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME);
+        assert!(
+            refusal.contains("if it is not in your list"),
+            "the refusal must allow for the gate being off: {refusal}"
+        );
+        assert!(
+            !refusal.contains("leaves the platform tools in your tool list"),
+            "an unconditional promise about the roster is false for a gated tool: {refusal}"
+        );
+        assert!(
+            refusal.contains("Call the `platform__…` tool directly"),
+            "softening the claim must not cost the remedy: {refusal}"
+        );
     }
 
     #[test]

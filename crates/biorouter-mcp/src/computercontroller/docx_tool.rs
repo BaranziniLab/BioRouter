@@ -103,9 +103,45 @@ fn invalid_params(message: impl Into<String>) -> ErrorData {
     }
 }
 
+/// #154. A `word/media/*` entry of ZERO length makes `read_docx` spin forever —
+/// no error, no progress. Every operation here (append, replace, insert,
+/// extract) goes through this function, so one such file wedges the agent's
+/// turn indefinitely, and nothing recovers it because the parse has no timeout.
+///
+/// Measured: the same document with a real 70-byte 1x1 PNG parses in 6ms; with
+/// that one entry emptied it was still running at 60s, three times over. Every
+/// other zip entry was byte-identical, and the container is otherwise valid
+/// (20 entries, well-formed `word/document.xml`).
+///
+/// Checking the archive first is a deterministic refusal rather than a timeout
+/// guess, and it names the offending part. It does not claim to catch every
+/// malformed document — see the test — only to stop the one shape this tool
+/// PRODUCES itself, via the `load_image_as_png` hole fixed alongside it.
+fn reject_degenerate_media(bytes: &[u8], path: &str) -> Result<(), ErrorData> {
+    let Ok(mut archive) = zip::ZipArchive::new(Cursor::new(bytes)) else {
+        // Not a readable zip at all: let `read_docx` produce its own message.
+        return Ok(());
+    };
+    for i in 0..archive.len() {
+        let Ok(entry) = archive.by_index(i) else {
+            continue;
+        };
+        let name = entry.name().to_string();
+        if name.starts_with("word/media/") && !name.ends_with('/') && entry.size() == 0 {
+            return Err(docx_error(format!(
+                "'{path}' embeds a zero-length image at '{name}', which this document format \
+                 cannot represent. Re-create the document, or add the image again from a file \
+                 that is not empty."
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn read_docx_file(path: &str) -> Result<Docx, ErrorData> {
     let file =
         fs::read(path).map_err(|e| docx_error(format!("Failed to read DOCX file: {}", e)))?;
+    reject_degenerate_media(&file, path)?;
     read_docx(&file).map_err(|e| docx_error(format!("Failed to parse DOCX file: {}", e)))
 }
 
@@ -379,6 +415,22 @@ fn load_image_as_png(image_path: &str) -> Result<Vec<u8>, ErrorData> {
         .to_lowercase();
 
     if extension == "png" {
+        // #154: the `.png` fast path returned these bytes UNVALIDATED, so an
+        // empty or non-PNG file was embedded verbatim — producing a document
+        // this very tool then hangs on forever. Every other extension goes
+        // through `image::load_from_memory` below, which rejects both. This
+        // path has to make the same two checks itself.
+        const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
+        if image_data.is_empty() {
+            return Err(docx_error(format!(
+                "Image file '{image_path}' is empty; refusing to embed a zero-length image"
+            )));
+        }
+        if !image_data.starts_with(PNG_MAGIC) {
+            return Err(docx_error(format!(
+                "Image file '{image_path}' is named .png but is not a PNG"
+            )));
+        }
         return Ok(image_data);
     }
 
@@ -463,6 +515,91 @@ pub async fn docx_tool(
             "Invalid operation: {}. Valid operations are: 'extract_text', 'update_doc'",
             operation
         ))),
+    }
+}
+
+#[cfg(test)]
+mod zero_byte_image_tests {
+    //! #154. A `.docx` carrying a zero-length `word/media/*` entry made
+    //! `read_docx` spin forever, and this tool's own `add_image` produced
+    //! exactly that file: the `.png` fast path in `load_image_as_png` returned
+    //! its bytes unvalidated.
+    //!
+    //! Both halves are pinned here because either alone leaves a hole — fixing
+    //! only the writer still hangs on a document some other program wrote, and
+    //! fixing only the reader leaves the tool manufacturing broken documents.
+    use super::{load_image_as_png, reject_degenerate_media};
+    use std::io::{Cursor, Write};
+
+    /// A real 1x1 PNG. The measured control: the SAME document carrying this
+    /// instead of an empty entry parses in 6ms.
+    const TINY_PNG: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, b'I', b'H', b'D',
+        b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, b'I', b'D', b'A', b'T', 0x78, 0x9c, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, b'I',
+        b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    fn docx_with_media(media: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let opts = zip::write::FileOptions::default();
+            zip.start_file("word/document.xml", opts).unwrap();
+            zip.write_all(b"<w:document/>").unwrap();
+            zip.start_file("word/media/rIdImage1.png", opts).unwrap();
+            zip.write_all(media).unwrap();
+            zip.finish().unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn a_zero_length_media_entry_is_refused_by_name() {
+        let err = reject_degenerate_media(&docx_with_media(b""), "report.docx")
+            .expect_err("a zero-length image must be refused, not handed to a parser that hangs");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("word/media/rIdImage1.png"),
+            "must name the part: {msg}"
+        );
+        assert!(msg.contains("report.docx"), "must name the document: {msg}");
+    }
+
+    #[test]
+    fn a_real_image_is_left_alone() {
+        reject_degenerate_media(&docx_with_media(TINY_PNG), "report.docx")
+            .expect("the control: an ordinary document must pass through untouched");
+    }
+
+    #[test]
+    fn a_non_zip_is_left_to_the_parsers_own_error() {
+        reject_degenerate_media(b"not a zip at all", "report.docx")
+            .expect("this guard reports one specific shape; it must not invent errors");
+    }
+
+    #[test]
+    fn an_empty_png_is_never_embedded() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty.png");
+        std::fs::write(&empty, b"").unwrap();
+        let err = load_image_as_png(empty.to_str().unwrap())
+            .expect_err("#154: the .png fast path returned empty bytes unvalidated");
+        assert!(format!("{err:?}").contains("empty"), "{err:?}");
+
+        let liar = dir.path().join("liar.png");
+        std::fs::write(&liar, b"GIF89a not really a png").unwrap();
+        load_image_as_png(liar.to_str().unwrap())
+            .expect_err("a .png that is not a PNG must be refused too");
+
+        let good = dir.path().join("good.png");
+        std::fs::write(&good, TINY_PNG).unwrap();
+        assert_eq!(
+            load_image_as_png(good.to_str().unwrap()).unwrap(),
+            TINY_PNG,
+            "a real PNG must still pass through byte-for-byte"
+        );
     }
 }
 

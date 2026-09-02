@@ -1406,6 +1406,313 @@ async function runSelftest() {
     JSON.stringify(cfgBad.warns)
   );
 
+  // ── Scenario Z: unconsumed top-level frames degrade VISIBLY (issue #143) ────
+  // The daemon sends `approval_refused` when an app page tries to grant a tool
+  // approval it may not grant: the tool is DENIED and the turn moves on. Nothing
+  // in the SDK consumed that frame, so the page said nothing and read as hung.
+  // The general defect is worse than the one frame — an unknown TOP-LEVEL frame
+  // reached `emit`, found an empty listener bucket and vanished.
+  //
+  // Driven in its own window because the timeline is mounted by `br.run()` into
+  // the run target, and the main harness page has no run target of its own.
+  const surfacesBefore = received.filter((f) => f.type === "ui_surface").length;
+  const domZ = new JSDOM(
+    '<!doctype html><html><head><title>Z</title></head><body><div id="tl"></div></body></html>',
+    { url: `http://127.0.0.1:${PORT}/`, runScripts: "outside-only", pretendToBeVisual: true }
+  );
+  const winZ = domZ.window;
+  const warnZ = [];
+  winZ.WebSocket = globalThis.WebSocket;
+  winZ.console = {
+    log: () => {},
+    info: () => {},
+    debug: () => {},
+    error: () => {},
+    warn: (...a) => warnZ.push(a.map(String).join(" ")),
+  };
+  winZ.BIOROUTER_APP_CONFIG = { appId: APP_ID, autoChat: false, ui: true, wsToken: WS_TOKEN };
+  winZ.eval(bundle);
+  const upZ = await waitFor(
+    () => received.filter((f) => f.type === "ui_surface").length > surfacesBefore
+  );
+  check("scenario Z page connects on its own socket", upZ, "no second ui_surface frame");
+
+  // `br.run()` mounts a timeline into `.br-run-status` inside the target when the
+  // app has no progress sink of its own. The run stays pending until we send
+  // `done`, which is the window in which the frames below arrive.
+  winZ.eval(
+    "window.__z = null;" +
+      "window.Biorouter.run('go', '#tl').then(function (t) { window.__z = t; }," +
+      " function (e) { window.__z = 'ERR:' + e.message; });"
+  );
+  const mounted = await waitFor(() => !!winZ.document.querySelector("#tl .br-run-status"));
+  check("br.run mounts a timeline into its target", mounted, "no .br-run-status in #tl");
+  const zRows = () =>
+    Array.from(winZ.document.querySelectorAll("#tl .br-run-step")).map((r) => r.textContent || "");
+
+  // The `approval` frame is the control: it already had a row before this fix,
+  // so a failure below is about `approval_refused`, not about the timeline.
+  send({ type: "approval", requestId: "req-z1", tool: "developer__shell" });
+  await waitFor(() => zRows().some((t) => /Approval needed/.test(t)));
+  check(
+    "an approval frame still draws its row (control)",
+    zRows().some((t) => /Approval needed/.test(t)),
+    JSON.stringify(zRows())
+  );
+
+  // ── The ORDINARY approval, which had no answer at all (issue #143's sibling)
+  // The refused path above is the rare one. The common one is a tool the daemon
+  // WOULD accept a decision for: `handle_action_required` parks the app socket's
+  // only reader on it, so with no approve/reject affordance in the SDK the whole
+  // connection froze behind a row that said "Approval needed" and offered no way
+  // to answer it. These assertions are the affordance.
+  const zActions = (id) =>
+    winZ.document.querySelector('#tl [data-br-approval="' + id + '"]');
+  const zButtons = (id) => {
+    const host = zActions(id);
+    return host ? Array.from(host.querySelectorAll("button")) : [];
+  };
+  // Null-safe on purpose: a regression that removes the controls entirely must
+  // REPORT, not throw out of `check`'s argument list and abort the whole run.
+  const zSettled = (id) => {
+    const host = zActions(id);
+    return host ? host.getAttribute("data-br-approval-settled") : null;
+  };
+  const zActionsHtml = (id) => (zActions(id) ? zActions(id).outerHTML : "(no controls)");
+  check(
+    "an approval row carries approve/reject buttons",
+    zButtons("req-z1").map((b) => b.getAttribute("data-br-approval-action")).join(",") ===
+      "approve,reject",
+    JSON.stringify(zButtons("req-z1").map((b) => b.outerHTML))
+  );
+
+  send({ type: "approval_refused", requestId: "req-z1", reason: "unproven" });
+  await waitFor(() => zRows().some((t) => /Approval refused/.test(t)));
+  const refusedRow = zRows().find((t) => /Approval refused/.test(t)) || "";
+  check(
+    "approval_refused draws a visible row instead of vanishing",
+    !!refusedRow,
+    JSON.stringify(zRows())
+  );
+  check(
+    "the approval_refused row says WHY and what it cost the run",
+    /may not grant tool approvals/.test(refusedRow) && /the tool was denied/.test(refusedRow),
+    refusedRow
+  );
+  check(
+    "approval_refused is a KNOWN kind — never reported as unrecognized",
+    !warnZ.some((w) => /unrecognized agent frame: approval_refused/i.test(w)) &&
+      !zRows().some((t) => /Unrecognized event/.test(t)),
+    JSON.stringify({ warns: warnZ, rows: zRows() })
+  );
+  check(
+    "the approval_refused row is styled as an error, not as progress",
+    !!Array.from(winZ.document.querySelectorAll("#tl .br-run-step--error")).find((r) =>
+      /Approval refused/.test(r.textContent || "")
+    ),
+    JSON.stringify(
+      Array.from(winZ.document.querySelectorAll("#tl .br-run-step")).map((r) => r.className)
+    )
+  );
+
+  check(
+    "a daemon-decided approval retires its own buttons",
+    zSettled("req-z1") === "Refused" && zButtons("req-z1").length === 0,
+    zActionsHtml("req-z1")
+  );
+
+  // Clicking Approve must reach the daemon as the `approve` frame
+  // `handle_action_required` is parked reading. Nothing called `br.approve`
+  // before, which is why the wait never ended.
+  send({ type: "approval", requestId: "req-z2", tool: "developer__shell" });
+  await waitFor(() => zButtons("req-z2").length === 2);
+  (zButtons("req-z2")[0] || { dispatchEvent: () => {} }).dispatchEvent(new winZ.Event("click"));
+  const approved = await waitFor(() =>
+    received.some((f) => f.type === "approve" && f.request === "req-z2")
+  );
+  check(
+    "clicking Approve sends the approve frame the daemon is waiting for",
+    approved,
+    JSON.stringify(received.filter((f) => f.type === "approve" || f.type === "reject"))
+  );
+  check(
+    "the approved row settles and its buttons are gone (no second decision)",
+    zSettled("req-z2") === "Approved" && zButtons("req-z2").length === 0,
+    zActionsHtml("req-z2")
+  );
+
+  send({ type: "approval", requestId: "req-z3", tool: "developer__shell" });
+  await waitFor(() => zButtons("req-z3").length === 2);
+  (zButtons("req-z3")[1] || { dispatchEvent: () => {} }).dispatchEvent(new winZ.Event("click"));
+  const rejected = await waitFor(() =>
+    received.some((f) => f.type === "reject" && f.request === "req-z3")
+  );
+  check(
+    "clicking Reject sends the reject frame",
+    rejected,
+    JSON.stringify(received.filter((f) => f.type === "approve" || f.type === "reject"))
+  );
+  check(
+    "the rejected row settles too",
+    zSettled("req-z3") === "Rejected" && zButtons("req-z3").length === 0,
+    zActionsHtml("req-z3")
+  );
+
+  // The daemon's bounded wait giving up. It reuses `approval_refused` rather
+  // than inventing a frame, so the row must say what a TIMEOUT means — a bare
+  // "timeout" reads as a network fault rather than as a decision taken for you.
+  send({ type: "approval", requestId: "req-z4", tool: "developer__shell" });
+  await waitFor(() => zButtons("req-z4").length === 2);
+  send({ type: "approval_refused", requestId: "req-z4", reason: "timeout" });
+  await waitFor(() => zSettled("req-z4") === "Refused");
+  const timeoutRow = zRows().find((t) => /nobody answered in time/.test(t)) || "";
+  check(
+    "an approval the daemon timed out says so in words, not as a bare reason code",
+    /nobody answered in time/.test(timeoutRow) && /the tool was denied/.test(timeoutRow),
+    JSON.stringify(zRows())
+  );
+  check(
+    "a timed-out approval also retires its buttons",
+    zSettled("req-z4") === "Refused" && zButtons("req-z4").length === 0,
+    zActionsHtml("req-z4")
+  );
+
+  // The more important half: a frame type this SDK version has never heard of.
+  const rowsBeforeUnknown = zRows().length;
+  send({ type: "quantum_frame", requestId: "q1" });
+  await waitFor(() => zRows().some((t) => /Unrecognized event/.test(t)));
+  const unknownRow = zRows().find((t) => /Unrecognized event/.test(t)) || "";
+  check(
+    "an unknown top-level frame draws a visible row rather than vanishing",
+    !!unknownRow,
+    JSON.stringify(zRows())
+  );
+  check("the unrecognized row names the frame type", /quantum_frame/.test(unknownRow), unknownRow);
+  check(
+    "an unknown top-level frame is warned once",
+    warnZ.filter((w) => /unrecognized agent frame: quantum_frame/i.test(w)).length === 1,
+    JSON.stringify(warnZ)
+  );
+  send({ type: "quantum_frame", requestId: "q2" });
+  await delay(120);
+  check(
+    "a repeat of the same unknown frame type does not re-warn",
+    warnZ.filter((w) => /unrecognized agent frame: quantum_frame/i.test(w)).length === 1,
+    JSON.stringify(warnZ)
+  );
+  send({ type: "tachyon_frame" });
+  await waitFor(() => warnZ.some((w) => /tachyon_frame/i.test(w)));
+  check(
+    "a DIFFERENT unknown frame type warns again (once per type, not once ever)",
+    warnZ.filter((w) => /unrecognized agent frame: tachyon_frame/i.test(w)).length === 1,
+    JSON.stringify(warnZ)
+  );
+
+  // The other half of the default arm, and the one a careless fix breaks: a
+  // KNOWN frame with no timeline row must still draw nothing. Treating "no
+  // summary" as "unknown" would push a row per streamed delta.
+  const rowsBeforeQuiet = zRows().length;
+  send({ type: "thought", delta: "hmm" });
+  send({ type: "usage", totalTokens: 12, model: "m" });
+  send({ type: "message", delta: "partial answer" });
+  await delay(150);
+  check(
+    "known-but-unsummarized frames (thought/usage/message) still draw no rows",
+    zRows().length === rowsBeforeQuiet,
+    `before=${rowsBeforeQuiet} after=${zRows().length} rows=${JSON.stringify(zRows())}`
+  );
+  check(
+    "known-but-unsummarized frames are not warned about",
+    !warnZ.some((w) => /unrecognized agent frame: (thought|usage|message)/i.test(w)),
+    JSON.stringify(warnZ)
+  );
+  check(
+    "the unknown-frame rows landed after the approval rows (ordering sanity)",
+    zRows().length > rowsBeforeUnknown,
+    `${rowsBeforeUnknown} → ${zRows().length}`
+  );
+
+  // The two other frames the daemon sends that had no consumer either.
+  send({
+    type: "capability_report",
+    degraded: true,
+    report: { missing_skills: ["variant-calling"], missing_knowledge_base: "cohort-kb" },
+  });
+  await waitFor(() => zRows().some((t) => /Capabilities missing/.test(t)));
+  const capRow = zRows().find((t) => /Capabilities missing/.test(t)) || "";
+  check(
+    "capability_report draws a row naming what is missing",
+    /variant-calling/.test(capRow) && /cohort-kb/.test(capRow),
+    capRow
+  );
+  send({ type: "output_retry", attempt: 2, errors: ["not an object"] });
+  await waitFor(() => zRows().some((t) => /Retrying structured output/.test(t)));
+  check(
+    "output_retry draws a row naming the attempt",
+    /attempt 2/.test(zRows().find((t) => /Retrying structured output/.test(t)) || ""),
+    JSON.stringify(zRows())
+  );
+  check(
+    "neither capability_report nor output_retry is reported as unrecognized",
+    !warnZ.some((w) => /unrecognized agent frame: (capability_report|output_retry)/i.test(w)),
+    JSON.stringify(warnZ)
+  );
+
+  send({ type: "done" });
+  await waitFor(() => winZ.eval("window.__z") !== null);
+  check(
+    "the run settles normally after all of the above",
+    winZ.eval("window.__z") === "partial answer",
+    JSON.stringify(winZ.eval("window.__z"))
+  );
+  domZ.window.close();
+
+  // ── Scenario Z2: the known-kind list covers the AgentEvent union exactly ────
+  // `KNOWN_EVENT_KINDS_MAP` is `Record<EventKind, true>`, so a missing or
+  // misspelt key is a type error — for an editor or a `tsc` run. NOTHING in this
+  // repo type-checks `sdk.ts` (esbuild transpiles, it does not check; the
+  // no-esbuild fallback strips types outright), so the type alone is a claim, not
+  // a gate. This is the gate: read the shipped source and compare the two lists.
+  //
+  // The direction that matters is ⊇ — a union member missing from the map turns
+  // a REAL daemon frame into a red "Unrecognized event" row in every app, the
+  // exact inverse of the bug the map exists to fix. ⊆ is checked too, because a
+  // key for a frame the daemon does not send is a kind nothing can ever draw.
+  const sdkSrc = await readFile(
+    join(HERE, "../../crates/biorouter-mcp/src/agent_drafter/templates/sdk.ts"),
+    "utf8"
+  );
+  const unionBlock = (sdkSrc.split("export type AgentEvent =")[1] || "").split(
+    "\ntype EventKind"
+  )[0];
+  const unionKinds = [...unionBlock.matchAll(/type:\s*"([a-z_]+)"/g)].map((m) => m[1]);
+  const mapBlock = (sdkSrc.split("const KNOWN_EVENT_KINDS_MAP")[1] || "").split("\n};")[0];
+  const mapKinds = [...mapBlock.matchAll(/^\s{2}([a-z_]+):\s*true,$/gm)].map((m) => m[1]);
+  check(
+    "the AgentEvent union was parsed at all (guards a vacuous pass below)",
+    unionKinds.length > 20 && mapKinds.length > 20,
+    `union=${unionKinds.length} map=${mapKinds.length}`
+  );
+  const missingFromMap = unionKinds.filter((k) => mapKinds.indexOf(k) < 0);
+  check(
+    "every AgentEvent member is a KNOWN_EVENT_KINDS_MAP key",
+    missingFromMap.length === 0,
+    "missing: " + JSON.stringify(missingFromMap)
+  );
+  const strayInMap = mapKinds.filter((k) => unionKinds.indexOf(k) < 0);
+  check(
+    "the map names no kind the AgentEvent union does not",
+    strayInMap.length === 0,
+    "stray: " + JSON.stringify(strayInMap)
+  );
+  check(
+    "the string list is DERIVED from the map, never written out twice",
+    /const KNOWN_EVENT_KINDS:\s*string\[\]\s*=\s*Object\.keys\(KNOWN_EVENT_KINDS_MAP\)/.test(
+      sdkSrc
+    ),
+    "KNOWN_EVENT_KINDS is not Object.keys(KNOWN_EVENT_KINDS_MAP)"
+  );
+
   dom.window.close();
   log(failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`);
   return failures === 0 ? 0 : 1;

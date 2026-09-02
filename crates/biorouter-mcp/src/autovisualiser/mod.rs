@@ -407,10 +407,76 @@ pub struct ShowChartParams {
 }
 
 /// Parameters for render_mermaid tool
-#[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
+#[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
 pub struct RenderMermaidParams {
     /// The Mermaid diagram code to render
     pub mermaid_code: String,
+}
+
+/// The keys a model reaches for when it hands over a Mermaid diagram.
+///
+/// `data` is on the list because `render_figure` documents every kind's payload
+/// as `data`, and `mermaid` is the one kind whose underlying tool does not have
+/// a field by that name — so a model that followed the instructions exactly
+/// sends `{"data": "<source>"}` to a tool declaring `mermaid_code`.
+const MERMAID_SOURCE_KEYS: [&str; 5] = ["mermaid_code", "code", "source", "diagram", "data"];
+
+/// How far to dig for the source before giving up. Depth 0 is the whole payload,
+/// so `{"data": {"mermaid_code": "<source>"}}` reaches the string at depth 2 and
+/// a stringified wrapper around it adds one more. The cap is there so a
+/// self-referential or deeply nested payload cannot recurse without bound.
+const MERMAID_MAX_DEPTH: usize = 3;
+
+/// Dig the diagram source out of whatever shape it arrived in.
+///
+/// Returns `None` when there is no string anywhere the source could be, which is
+/// the only case that should be an error — rendering an empty diagram instead
+/// would look like the tool worked.
+fn mermaid_source(value: &Value, depth: usize) -> Option<String> {
+    if depth > MERMAID_MAX_DEPTH {
+        return None;
+    }
+    match value {
+        // A Mermaid source is never a JSON object, so a string that parses as
+        // one is a stringified payload (some models stringify nested tool-call
+        // arguments) rather than a diagram. Anything else is the diagram.
+        Value::String(s) => match serde_json::from_str::<Value>(s) {
+            Ok(inner @ Value::Object(_)) => mermaid_source(&inner, depth + 1),
+            _ => Some(s.clone()),
+        },
+        Value::Object(map) => MERMAID_SOURCE_KEYS
+            .iter()
+            .find_map(|key| map.get(*key))
+            .and_then(|inner| mermaid_source(inner, depth + 1)),
+        _ => None,
+    }
+}
+
+/// Accept a Mermaid diagram however the caller spelled it.
+///
+/// ⚠ This leniency lives on the parameter struct, not on one caller, because
+/// `render_mermaid` has four doors and only one of them used to reshape the
+/// payload: `render_figure` (which documents the payload as `data`), a dashboard
+/// panel naming `render_mermaid` outright, a `kind`-only dashboard panel that
+/// `DashboardFigure` resolves to `render_mermaid`, and Agent Drafter's
+/// `ui_figure`. Reshaping at a single door left the other three handing this
+/// struct a `{"data": …}` it refused, and — once the refusal was rephrased
+/// against `render_figure` — refused with advice to go and check a schema the
+/// caller had already followed.
+impl<'de> Deserialize<'de> for RenderMermaidParams {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as DeError;
+        let value = Value::deserialize(d)?;
+        mermaid_source(&value, 0)
+            .map(|mermaid_code| RenderMermaidParams { mermaid_code })
+            .ok_or_else(|| {
+                DeError::custom(
+                    "a Mermaid diagram is its source text: pass the source string itself, or an \
+                     object carrying it under `mermaid_code` (`code`, `source`, `diagram` and \
+                     `data` are accepted too)",
+                )
+            })
+    }
 }
 
 // ===========================================================================
@@ -506,8 +572,8 @@ impl AutoVisualiserRouter {
             - Always write the `caption` for each panel and a `summary` for the report. The prose is
               what makes the figures mean something; a report of unlabelled charts is worse than one
               good chart. Say what the figure shows and what the reader should notice in it.
-            - `render_dashboard` takes the other tools' names and their exact arguments, so anything
-              you can render on its own can be a panel.
+            - A panel's `figure` is a `render_figure` call, so anything you can draw on its own
+              can be a panel: `{{"tool": "render_figure", "params": {{"kind": "volcano", "data": {{…}}}}}}`.
 
             ## How to draw one figure
             Call `render_figure` with a `kind` from the list below and that kind's payload as `data`.

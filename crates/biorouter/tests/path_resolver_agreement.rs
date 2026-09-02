@@ -7,6 +7,17 @@
 //! (a test drive, a worktree, a per-app jail) wrote its drafted apps into, and
 //! read knowledge bases out of, the user's **global** store. If someone adds a
 //! fourth hand-rolled resolver, this fails.
+//!
+//! ⚠ There is a THIRD resolver, in a language this test cannot reach:
+//! `ui/desktop/src/utils/biorouterPaths.ts`, the Electron main process's one
+//! derivation (#146). It matters for the same reason as the others and more so,
+//! because it WRITES — the `.brxt` handlers create, extract into and
+//! *recursively delete* the extensions directory — so a disagreement there is a
+//! sandbox escape rather than a stale read. Its own suite,
+//! `ui/desktop/src/utils/extensionUpdater.test.ts`, pins the same rules from
+//! the other side, including the `XDG_CONFIG_HOME` and Windows layouts this
+//! file's `Paths::config_dir()` calls resolve through `etcetera`. The two
+//! change together or not at all.
 
 use biorouter::config::paths::Paths;
 use serial_test::serial;
@@ -31,13 +42,90 @@ fn with_path_root<T>(root: Option<&str>, f: impl FnOnce() -> T) -> T {
 #[test]
 #[serial]
 fn mcp_config_dir_matches_the_authoritative_resolver() {
-    for root in [None, Some("/tmp/br-path-agreement")] {
+    // ⚠ The blank values (`Some("")`, `Some("   ")`) are deliberately NOT in
+    // this list: the two resolvers genuinely disagree there, and that
+    // disagreement has its own test below rather than being asserted away here.
+    // Everything else must agree byte for byte, and the awkward-but-real roots
+    // are in the list because both sides must take the value RAW — a resolver
+    // that trimmed or normalised it would drift from the other for a directory
+    // that legitimately contains spaces.
+    for root in [
+        None,
+        Some("/tmp/br-path-agreement"),
+        Some("/tmp/br-path-agreement/"),
+        Some("/tmp/br path agreement"),
+        Some("/tmp/ br-path-agreement"),
+    ] {
         with_path_root(root, || {
             assert_eq!(
                 biorouter_mcp::paths::config_dir(),
                 Paths::config_dir(),
                 "biorouter-mcp::paths::config_dir() drifted from biorouter::config::Paths \
                  (BIOROUTER_PATH_ROOT={root:?})"
+            );
+        });
+    }
+}
+
+/// A `BIOROUTER_PATH_ROOT` that is **set but blank** is read three different
+/// ways, and this pins the only property that must hold whichever way it is
+/// eventually settled: **no resolver may answer with a different ABSOLUTE
+/// directory than the others.**
+///
+/// Measured, and the reason this test exists:
+///
+/// | value      | `Paths::get_dir`        | `resolve_config_dir` |
+/// |------------|-------------------------|----------------------|
+/// | unset      | platform dir            | platform dir         |
+/// | `/tmp/x`   | `/tmp/x/config`         | `/tmp/x/config`      |
+/// | `""`       | **`config`** (relative) | platform dir         |
+/// | `"   "`    | **`   /config`**        | platform dir         |
+///
+/// `Paths::get_dir` uses `if let Ok(test_root) = env::var(…)`, and `env::var`
+/// returns `Ok("")` for a variable that is exported but empty — so the daemon
+/// resolves a **cwd-relative** `./config`.
+///
+/// **The decision: blank means unset.** Not taste — a relative config dir has
+/// no cross-process meaning at all. The daemon, the CLI and the desktop main
+/// process each have their own working directory, so `./config` names a
+/// different tree in each of them; mirroring the literal reading elsewhere
+/// cannot restore agreement, it only spreads the damage (in the desktop's case,
+/// onto a handler that recursively deletes). Every other resolver on both sides
+/// of the boundary already reads a blank value as absent: `resolve_config_dir`
+/// tests `!root.trim().is_empty()`, `routes::shell::home_dir` applies the same
+/// rule to `HOME` (`.filter(|p| !p.as_os_str().is_empty())`), and `main.ts`'s
+/// `expandBiorouterPath` has always had an `if (!pathRoot)` that an empty
+/// string falls through. `ui/desktop/src/utils/biorouterPaths.ts` now states it
+/// explicitly for the whole desktop main process, and its suite pins it.
+///
+/// ⚠ **The authoritative resolver is the one holdout, and this test does not
+/// pretend otherwise.** The fix is one line in
+/// `crates/biorouter/src/config/paths.rs` —
+/// `std::env::var("BIOROUTER_PATH_ROOT").ok().filter(|root| !root.trim().is_empty())`
+/// — which this test is written to survive: once it lands the two resolvers
+/// agree outright and the second assertion's escape hatch stops being used.
+/// Until then a blank root is a broken sandbox, but a broken sandbox that
+/// writes to a relative path is not the same failure as one that writes to the
+/// user's real tree, and only the second is a sandbox *escape*.
+#[test]
+#[serial]
+fn a_blank_path_root_never_sends_one_resolver_into_a_tree_the_other_avoids() {
+    for blank in ["", "   ", "\t"] {
+        with_path_root(Some(blank), || {
+            let shared = biorouter_mcp::paths::config_dir();
+            assert!(
+                shared.is_absolute(),
+                "the shared resolver answered a blank root with a relative path ({shared:?}); \
+                 a relative config dir names a different directory in every process that \
+                 resolves it"
+            );
+
+            let authoritative = Paths::config_dir();
+            assert!(
+                authoritative == shared || !authoritative.is_absolute(),
+                "a blank BIOROUTER_PATH_ROOT resolves to {authoritative:?} authoritatively but \
+                 {shared:?} everywhere else — two different ABSOLUTE trees, which is the \
+                 sandbox escape this seam exists to prevent"
             );
         });
     }

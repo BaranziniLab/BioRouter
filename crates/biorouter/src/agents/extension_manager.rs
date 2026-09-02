@@ -1774,10 +1774,13 @@ impl ExtensionManager {
     /// handed to the model before any tool call exists for Gate C to refuse.
     ///
     /// ⚠ `Agent::list_tools` appends the platform tools AFTER this returns, so
-    /// this cannot hide `platform__manage_schedule`,
-    /// `platform__ingest_conversation` or `platform__read_session_blob`. That is
-    /// correct — they are public, and the one that reads across sessions is
-    /// gated by Gate D — but it is written down so nobody "fixes" it.
+    /// this cannot hide any of them — all FOUR of
+    /// `crate::agents::platform_tools::PLATFORM_TOOL_NAMES`
+    /// (`platform__manage_schedule`, `platform__ingest_conversation`,
+    /// `platform__ingest_source`, `platform__read_session_blob`), not the three
+    /// this note used to list. That is correct — they are public, and the one
+    /// that reads across sessions is gated by Gate D — but it is written down so
+    /// nobody "fixes" it.
     fn filter_tools(
         &self,
         tools: &[Tool],

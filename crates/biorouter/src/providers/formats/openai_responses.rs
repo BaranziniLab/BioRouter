@@ -32,8 +32,15 @@ pub struct ResponsesApiResponse {
 pub enum ResponseOutputItem {
     Reasoning {
         id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        summary: Option<Vec<String>>,
+        /// ⚠ `Vec<Value>`, not `Vec<String>`. A reasoning summary arrives as
+        /// `[{"type":"summary_text","text":…}]` — objects, not strings — so the
+        /// stricter type failed the *whole response* the moment a summary was
+        /// present. `#[serde(other)]` below cannot save it: the tag
+        /// (`reasoning`) is one this decoder models, so serde commits to this
+        /// variant and then errors on the body. Nothing reads the summary; the
+        /// item is skipped wholesale by `responses_api_to_message`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<Vec<Value>>,
     },
     Message {
         id: String,
@@ -49,6 +56,17 @@ pub enum ResponseOutputItem {
         name: String,
         arguments: String,
     },
+    /// Any output-item `type` this decoder does not model.
+    ///
+    /// The non-streaming twin of [`ResponseOutputItemInfo::Unknown`], and it
+    /// matters for the same reason: `responses_api_to_message` is called on the
+    /// whole response, so one built-in tool call in `output[]` — `web_search_call`,
+    /// `mcp_call`, `code_interpreter_call`, `image_generation_call`,
+    /// `custom_tool_call` — turned an otherwise usable answer into a decode
+    /// error. An unmodelled item contributes no content, exactly as a
+    /// `Reasoning` item already did.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -65,6 +83,17 @@ pub enum ResponseContentBlock {
         name: String,
         input: Value,
     },
+    /// Any content-block `type` this decoder does not model — `refusal` above
+    /// all. The non-streaming twin of [`ContentPart::Unknown`], and closed for
+    /// the same reason it was: `#[serde(other)]` on the enclosing item fires
+    /// only when the *item's* tag is unknown, so a `message` item carrying a
+    /// refusal block selects `Message` and then fails one level down.
+    ///
+    /// Like the streaming half, an unmodelled block contributes no content —
+    /// a refusal reaches the user as absent text rather than as an error, and
+    /// surfacing refusal text is deliberately a separate change.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -157,6 +186,32 @@ pub enum ResponsesStreamEvent {
         sequence_number: i32,
         response: ResponseMetadata,
     },
+    /// How a stream ends when it hit a cap instead of finishing — in practice
+    /// the `max_output_tokens` **we ourselves set** from
+    /// `model_config.max_tokens`, and otherwise a content filter.
+    ///
+    /// ⚠ **Named, not left to the open arm below.** It carries the same payload
+    /// `response.completed` does — the usage for the turn and the terminal
+    /// `output[]` — so folding it into `Unknown` decoded the tag without
+    /// aborting the turn (which is what #147 asked for) while silently
+    /// discarding every token count and every output item that appeared only in
+    /// this frame. The two fixes are orthogonal: the open arm keeps unmodelled
+    /// tags cheap, this variant keeps a *modelled* terminal frame's data.
+    ///
+    /// ⚠ **Lenient where `response.completed` is strict**, and deliberately:
+    /// `response` is `Option` and a body this decoder cannot read degrades to
+    /// `None` rather than failing (see [`lenient_response_metadata`]). A
+    /// truncation frame that cannot be parsed must cost the usage, never the
+    /// answer that already streamed — that is the failure this whole variant
+    /// exists to prevent. `response.completed` keeps its hard failure because
+    /// there it is the *only* carrier of the response.
+    #[serde(rename = "response.incomplete")]
+    ResponseIncomplete {
+        #[serde(default)]
+        sequence_number: i32,
+        #[serde(default, deserialize_with = "lenient_response_metadata")]
+        response: Option<ResponseMetadata>,
+    },
     #[serde(rename = "response.failed")]
     ResponseFailed { sequence_number: i32, error: Value },
     #[serde(rename = "response.function_call_arguments.delta")]
@@ -177,6 +232,35 @@ pub enum ResponsesStreamEvent {
     },
     #[serde(rename = "error")]
     Error { error: Value },
+    /// Any `type` this decoder does not model.
+    ///
+    /// ⚠ **Not defensive tidiness — without it a single unmodelled tag costs
+    /// the whole turn.** `parse_stream_event` is called with `?` inside the
+    /// reader, `openai.rs` turns that error into
+    /// `RequestFailed("Stream decode error: …")`, and `with_retry` wraps only
+    /// the POST, never stream consumption — so nothing retries and every delta
+    /// already yielded is discarded along with the response.
+    ///
+    /// The tag that made this concrete is `response.incomplete`, which is how
+    /// the API ends a stream that hit the `max_output_tokens` **we ourselves
+    /// set** from `model_config.max_tokens` — i.e. a routine, self-inflicted
+    /// cap turned an otherwise complete answer into a failed request. ⚠ That
+    /// tag is **no longer covered here**: it carries the turn's usage and its
+    /// terminal `output[]`, so decoding it to `Unknown` cost exactly the data
+    /// the report was about, and it now has its own
+    /// [`ResponsesStreamEvent::ResponseIncomplete`] variant. What is left for
+    /// this arm is tags that carry nothing this crate consumes —
+    /// `response.refusal.delta` / `.done`, and the event types the Responses
+    /// API keeps adding for built-in tools and reasoning summaries.
+    ///
+    /// Inert by construction: `apply_stream_event` already ends in a catch-all
+    /// `_ =>` arm, so an unknown event advances nothing and yields nothing —
+    /// the stream simply runs on to `[DONE]` or end of input and emits whatever
+    /// terminal item it had accumulated. `response.failed` and `error` keep
+    /// their own explicit arms, so a real error is still a hard failure; only
+    /// tags nobody modelled become silence.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -191,6 +275,53 @@ pub struct ResponseMetadata {
     pub usage: Option<ResponseUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ResponseReasoningInfo>,
+    /// Why a `response.incomplete` frame ended the stream. Absent on every
+    /// other frame, which is why it is defaulted rather than required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incomplete_details: Option<IncompleteDetails>,
+}
+
+/// The `incomplete_details` object on a truncated response.
+///
+/// `reason` is optional because the mapping below must survive the API adding a
+/// shape this decoder has not seen — a truncation frame is the last thing that
+/// should fail to decode.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct IncompleteDetails {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Decode a `response` object, or `None` if it cannot be read.
+///
+/// ⚠ Only ever used by [`ResponsesStreamEvent::ResponseIncomplete`]. Serde's
+/// own `Option` handling covers a missing or null field and nothing else — a
+/// `response` object with, say, no `id` is still a hard error — so leniency
+/// here has to be written out: decode to a `Value` first, then try the real
+/// type and swallow the failure. The cost of a `None` is the turn's usage; the
+/// cost of the error it replaces is the whole answer.
+fn lenient_response_metadata<'de, D>(deserializer: D) -> Result<Option<ResponseMetadata>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
+}
+
+/// The OpenAI-style `finish_reason` a truncated response reports.
+///
+/// `max_output_tokens` becomes `"length"` — the one token the agent loop acts
+/// on (`TRUNCATION_CONTINUATION_MESSAGE` in `agents/agent.rs`), and the same
+/// mapping `formats::anthropic` and `formats::bedrock` already make for their
+/// own cap. ⚠ Every other reason passes through raw: `content_filter` is not a
+/// length problem, and auto-continuing one would re-ask for the content that
+/// was just refused.
+fn incomplete_finish_reason(details: Option<&IncompleteDetails>) -> String {
+    match details.and_then(|details| details.reason.as_deref()) {
+        Some("max_output_tokens") => "length".to_string(),
+        Some(reason) => reason.to_string(),
+        None => "incomplete".to_string(),
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -199,7 +330,14 @@ pub struct ResponseMetadata {
 pub enum ResponseOutputItemInfo {
     Reasoning {
         id: String,
-        summary: Vec<String>,
+        /// ⚠ `Vec<Value>` and defaulted, for the reason spelled out on
+        /// [`ResponseOutputItem::Reasoning`]: a summary arrives as
+        /// `[{"type":"summary_text","text":…}]`, so `Vec<String>` failed every
+        /// frame carrying one — latent only because `create_responses_request`
+        /// never asks for summaries. The `Unknown` arm below cannot cover it;
+        /// `reasoning` is a tag this decoder models.
+        #[serde(default)]
+        summary: Vec<Value>,
     },
     Message {
         id: String,
@@ -214,6 +352,23 @@ pub enum ResponseOutputItemInfo {
         name: String,
         arguments: String,
     },
+    /// Any output-item `type` this decoder does not model.
+    ///
+    /// ⚠ The enum-level arm on [`ResponsesStreamEvent`] does not reach here,
+    /// for the same reason it does not reach [`ContentPart`]: an item arrives
+    /// inside `response.output_item.added` / `.done` and inside
+    /// `response.completed`'s `output[]`, all tags this decoder knows, so serde
+    /// commits to those variants and then fails on the nested item. Every
+    /// built-in tool call — `web_search_call`, `mcp_call`,
+    /// `code_interpreter_call`, `image_generation_call`, `custom_tool_call` —
+    /// is one of these, which is why the built-in tools the event arm's comment
+    /// cites were **not** in fact covered by it.
+    ///
+    /// An unknown item produces no content and no pending call, so it can
+    /// neither add nor remove anything. It also reports no id
+    /// (see [`output_item_id`]), so it can never confirm a modelled item.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -232,6 +387,27 @@ pub enum ContentPart {
         name: String,
         arguments: String,
     },
+    /// Any part `type` this decoder does not model — `refusal` above all.
+    ///
+    /// ⚠ The enum-level arm on [`ResponsesStreamEvent`] cannot cover this, and
+    /// that is easy to get wrong: `#[serde(other)]` fires only when the *tag*
+    /// matches no variant. A `response.content_part.added` whose `part` is
+    /// `{"type":"refusal",…}` carries a tag this decoder knows, so it selects
+    /// `ContentPartAdded` and then fails on the nested part — the same
+    /// whole-turn loss, one level down. A refusal also reappears inside
+    /// `response.completed`'s `output[].content[]`, which is `Vec<ContentPart>`.
+    ///
+    /// Neither consumer can lose anything to this arm. `pending_output_item`
+    /// looks only for `ToolCall` parts; `process_streaming_output_items` reads
+    /// `OutputText` as well (`content.push(MessageContent::text(&text))`), and
+    /// an unmodelled part is neither — so it contributes nothing and removes
+    /// nothing. ⚠ This paragraph read "both consumers already ignore every part
+    /// that is not a `ToolCall`", which is false of the text arm; the
+    /// conclusion held, the premise did not. It does mean a refusal reaches the
+    /// user as absent text rather than as an error; surfacing refusal text is a
+    /// separate change and is deliberately not made here.
+    #[serde(other)]
+    Unknown,
 }
 
 fn add_conversation_history(input_items: &mut Vec<Value>, messages: &[Message]) {
@@ -462,6 +638,12 @@ pub fn responses_api_to_message(response: &ResponsesApiResponse) -> anyhow::Resu
             ResponseOutputItem::Reasoning { .. } => {
                 continue;
             }
+            // An item type this decoder does not model — a built-in tool call,
+            // say. Spelled out rather than folded into a `_` arm so a genuinely
+            // new item type still has to be considered here.
+            ResponseOutputItem::Unknown => {
+                continue;
+            }
             ResponseOutputItem::Message {
                 content: msg_content,
                 ..
@@ -473,6 +655,10 @@ pub fn responses_api_to_message(response: &ResponsesApiResponse) -> anyhow::Resu
                                 content.push(MessageContent::text(text));
                             }
                         }
+                        // A block this decoder does not model — a refusal, say.
+                        // Contributes nothing, exactly as its streaming twin
+                        // `ContentPart::Unknown` does.
+                        ResponseContentBlock::Unknown => {}
                         ResponseContentBlock::ToolCall { id, name, input } => {
                             content.push(MessageContent::tool_request(
                                 id.clone(),
@@ -555,6 +741,9 @@ fn process_streaming_output_items(
             ResponseOutputItemInfo::Reasoning { .. } => {
                 // Skip reasoning items
             }
+            // An item type this decoder does not model — a built-in tool call,
+            // say. Contributes no content, like a reasoning item.
+            ResponseOutputItemInfo::Unknown => {}
             ResponseOutputItemInfo::Message {
                 status,
                 content: parts,
@@ -580,6 +769,11 @@ fn process_streaming_output_items(
                                 completion_confirmed,
                             ));
                         }
+                        // An unmodelled part (a refusal, say) contributes no
+                        // content. Spelled out rather than folded into a `_`
+                        // arm so a genuinely new part type still has to be
+                        // considered here.
+                        ContentPart::Unknown => {}
                     }
                 }
             }
@@ -657,11 +851,19 @@ fn streaming_tool_content(
     }
 }
 
+/// The item's own id, or `""` for an item type this decoder does not model.
+///
+/// ⚠ The empty string is load-bearing: [`confirm_output_item`] compares this
+/// against the id of whatever is already tracked at that output index, and the
+/// API never issues an empty id — so an unmodelled item can never confirm a
+/// modelled one. It fails in the safe direction, leaving a half-streamed tool
+/// call reported as incomplete rather than promoted to callable.
 fn output_item_id(item: &ResponseOutputItemInfo) -> &str {
     match item {
         ResponseOutputItemInfo::Reasoning { id, .. }
         | ResponseOutputItemInfo::Message { id, .. }
         | ResponseOutputItemInfo::FunctionCall { id, .. } => id,
+        ResponseOutputItemInfo::Unknown => "",
     }
 }
 
@@ -798,12 +1000,14 @@ fn pending_output_item(item: ResponseOutputItemInfo) -> Option<PendingOutputItem
                             (content_index, PendingFunctionCall { call_id: id, name })
                         })
                     }
-                    (_, ContentPart::OutputText { .. }) => None,
+                    (_, ContentPart::OutputText { .. } | ContentPart::Unknown) => None,
                 })
                 .collect::<BTreeMap<_, _>>();
             (!calls.is_empty()).then_some(PendingOutputItem { item_id: id, calls })
         }
-        ResponseOutputItemInfo::Reasoning { .. } => None,
+        // Neither a reasoning item nor an unmodelled one can hold a tool call,
+        // so neither registers pending state.
+        ResponseOutputItemInfo::Reasoning { .. } | ResponseOutputItemInfo::Unknown => None,
     }
 }
 
@@ -863,13 +1067,19 @@ fn confirm_output_item(
     }
 }
 
-/// Fold a `response.completed` into the output map and report its usage.
+/// Fold a terminal response frame into the output map and report its usage.
+///
+/// Called for `response.completed` and for `response.incomplete` alike — both
+/// carry the turn's usage and its terminal `output[]`. The caller adds the
+/// finish reason, which is the only thing that differs between them.
 ///
 /// ⚠ The final response's own items are recorded as `Unconfirmed`, never
-/// `Completed`, and only where nothing is tracked yet: `response.completed`
+/// `Completed`, and only where nothing is tracked yet: a terminal frame
 /// restates items the stream may never have finished, so it must not stand in
 /// for the missing `output_item.done` that would make a partial tool call
-/// callable, nor replace a snapshot an earlier done already confirmed.
+/// callable, nor replace a snapshot an earlier done already confirmed. That
+/// matters more for a truncated response, not less: its `output[]` is by
+/// definition the place a half-finished tool call shows up.
 fn absorb_completed_response(
     response: ResponseMetadata,
     model_name: Option<&str>,
@@ -1001,6 +1211,29 @@ fn apply_stream_event(
             return Ok(EventFlow::Stop);
         }
 
+        // The truncated twin of the arm above, and it MUST do the same work:
+        // `response.incomplete` carries this turn's usage and its terminal
+        // `output[]` exactly as `response.completed` does. It is also terminal,
+        // hence the same `Stop`.
+        //
+        // The one difference is the finish reason. A cap we set ourselves maps
+        // to `"length"`, which is what makes the agent loop continue the answer
+        // instead of presenting a sentence that stops mid-word.
+        ResponsesStreamEvent::ResponseIncomplete { response, .. } => {
+            if let Some(response) = response {
+                let finish_reason = incomplete_finish_reason(response.incomplete_details.as_ref());
+                let mut usage = absorb_completed_response(
+                    response,
+                    state.model_name.as_deref(),
+                    &mut state.output_items,
+                );
+                usage.finish_reason = Some(finish_reason);
+                state.final_usage = Some(usage);
+            }
+
+            return Ok(EventFlow::Stop);
+        }
+
         ResponsesStreamEvent::FunctionCallArgumentsDelta { .. } => {
             // Function call arguments are being streamed, but we'll get the complete
             // arguments in the OutputItemDone event, so we can ignore deltas for now
@@ -1042,7 +1275,12 @@ where
     try_stream! {
         use futures::StreamExt;
 
-        let mut accumulated_text = String::new();
+        // ⚠ There is no `accumulated_text` here on purpose. One used to be
+        // push_str'd on every delta and never read: text reaches the caller as
+        // the deltas are yielded, and the terminal message is built from
+        // `state.output_items`. A write-only buffer beside the real state reads
+        // like a second source of truth and invites a "fix" that starts using
+        // it, which would duplicate every token.
         let mut state = ResponsesStreamState::default();
 
         'outer: while let Some(response) = stream.next().await {
@@ -1060,7 +1298,6 @@ where
             match parse_stream_event(data_line)? {
                 ResponsesStreamEvent::OutputTextDelta { delta, .. } => {
                     state.is_text_response = true;
-                    accumulated_text.push_str(&delta);
 
                     // Yield incremental text updates for true streaming
                     yield (
@@ -1329,5 +1566,478 @@ data: [DONE]
         assert_eq!(usage.usage.total_tokens, Some(1050));
         assert_eq!(usage.usage.billed_total(), Some(1050));
         Ok(())
+    }
+
+    // ── Issue #147: an unmodelled shape must not cost the turn ──────────────
+    //
+    // `parse_stream_event` is called with `?` inside the reader; `openai.rs`
+    // turns the error into `RequestFailed("Stream decode error: …")`, and
+    // `with_retry` wraps only the POST, so nothing retries.
+    //
+    // ⚠ The fix has FOUR parts, and this comment used to name only the first —
+    // which is how a half-fix reads as a whole one:
+    //
+    //   1. `#[serde(other)]` on `ResponsesStreamEvent`, for an unknown TAG.
+    //   2. The same on the three enums that sit INSIDE a modelled tag —
+    //      `ContentPart`, `ResponseOutputItemInfo`, and the non-streaming
+    //      `ResponseOutputItem` / `ResponseContentBlock`. Part 1 cannot reach
+    //      them: serde commits to a modelled variant and then fails one level
+    //      down, which is where every built-in tool call and every refusal was
+    //      landing.
+    //   3. `summary: Vec<Value>` on both reasoning items. No open arm can cover
+    //      this either — `reasoning` is a tag this decoder models, so only the
+    //      field's type decides.
+    //   4. The named `ResponseIncomplete` variant, which is not about decoding
+    //      at all: the tag decoded fine as `Unknown`, and the turn's usage and
+    //      terminal `output[]` were thrown away with it.
+    //
+    // The four controls at the end fail against the plausible over-correction
+    // of making the decoder lenient about everything.
+
+    /// Collect a whole SSE stream into (text, first error).
+    async fn drain(lines: &str) -> (String, Option<String>) {
+        let response_stream = tokio_stream::iter(
+            lines
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| Ok(line.to_string()))
+                .collect::<Vec<_>>(),
+        );
+        let messages = responses_api_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut text = String::new();
+        let mut error = None;
+        while let Some(result) = messages.next().await {
+            match result {
+                Ok((Some(message), _, _)) => text.push_str(&message.as_concat_text()),
+                Ok(_) => {}
+                Err(err) => {
+                    error = Some(err.to_string());
+                    break;
+                }
+            }
+        }
+        (text, error)
+    }
+
+    /// [`drain`], plus the last usage the stream reported.
+    ///
+    /// Separate rather than folded in because `drain`'s callers assert on text
+    /// alone, and a truncation's whole claim is about what arrives BESIDE the
+    /// text — the usage item is yielded with no message at all, so a helper
+    /// that only collects messages cannot see it.
+    async fn drain_with_usage(lines: &str) -> (String, Option<ProviderUsage>, Option<String>) {
+        let response_stream = tokio_stream::iter(
+            lines
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| Ok(line.to_string()))
+                .collect::<Vec<_>>(),
+        );
+        let messages = responses_api_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut text = String::new();
+        let mut usage = None;
+        let mut error = None;
+        while let Some(result) = messages.next().await {
+            match result {
+                Ok((message, item_usage, _)) => {
+                    if let Some(message) = message {
+                        text.push_str(&message.as_concat_text());
+                    }
+                    if item_usage.is_some() {
+                        usage = item_usage;
+                    }
+                }
+                Err(err) => {
+                    error = Some(err.to_string());
+                    break;
+                }
+            }
+        }
+        (text, usage, error)
+    }
+
+    /// The exact frame named in the report. `max_output_tokens` is set by
+    /// `create_responses_request` from `model_config.max_tokens`, so this is
+    /// the terminal frame of an ordinary capped generation — not an edge case.
+    ///
+    /// ⚠ This test used to assert `matches!(event, …::Unknown)` and its comment
+    /// framed a named variant as the *wrong* fix. That was a false dichotomy:
+    /// decoding the tag and keeping the data it carries are orthogonal, and the
+    /// open arm below still covers every tag nobody modelled. The requirement
+    /// this now states is the real one — the tag decodes as itself, and even a
+    /// body this decoder cannot read degrades to `None` instead of failing.
+    ///
+    /// Catches: an enum with no arm for this tag at all (the shipped one),
+    /// where these return `Err("Failed to parse Responses stream event: unknown
+    /// variant …")`; and a strict `response: ResponseMetadata`, where the
+    /// second payload fails.
+    #[test]
+    fn an_incomplete_response_decodes_as_itself() {
+        let event = parse_stream_event(r#"{"type":"response.incomplete"}"#)
+            .expect("response.incomplete must decode");
+        assert!(
+            matches!(
+                event,
+                ResponsesStreamEvent::ResponseIncomplete { response: None, .. }
+            ),
+            "a bodyless truncation frame must decode as ResponseIncomplete"
+        );
+
+        let event = parse_stream_event(
+            r#"{"type":"response.incomplete","sequence_number":3,"response":{"unreadable":true}}"#,
+        )
+        .expect("an unreadable incomplete body must not fail the frame");
+        assert!(matches!(
+            event,
+            ResponsesStreamEvent::ResponseIncomplete { response: None, .. }
+        ));
+    }
+
+    /// The data the named variant exists to keep: a turn truncated by our own
+    /// `max_output_tokens` still reports what it cost, and still tells the
+    /// agent loop it was cut off.
+    ///
+    /// Catches: decoding `response.incomplete` to `Unknown` (the state this
+    /// branch shipped in), where `apply_stream_event`'s `_ => {}` arm discards
+    /// the frame, `final_usage` is never set, and the turn reports no tokens,
+    /// no cost and no truncation.
+    #[tokio::test]
+    async fn a_truncated_turn_still_reports_its_usage_and_says_it_was_cut_off() {
+        let lines = r#"
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_inc","object":"response","created_at":1,"status":"in_progress","model":"gpt-5.4","output":[]}}
+data: {"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"partial "}
+data: {"type":"response.output_text.delta","sequence_number":2,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"answer"}
+data: {"type":"response.incomplete","sequence_number":3,"response":{"id":"resp_inc","object":"response","created_at":1,"status":"incomplete","model":"gpt-5.4","output":[],"usage":{"input_tokens":900,"output_tokens":128,"total_tokens":1028},"incomplete_details":{"reason":"max_output_tokens"}}}
+data: [DONE]
+"#;
+        let (text, usage, error) = drain_with_usage(lines).await;
+
+        assert_eq!(error, None, "a capped stream must not fail the request");
+        assert_eq!(text, "partial answer");
+
+        let usage = usage.expect("a truncated turn must still report its usage");
+        assert_eq!(usage.usage.input_tokens, Some(900));
+        assert_eq!(usage.usage.output_tokens, Some(128));
+        assert_eq!(usage.usage.total_tokens, Some(1028));
+        assert_eq!(usage.model, "gpt-5.4");
+        assert_eq!(
+            usage.finish_reason.as_deref(),
+            Some("length"),
+            "\"length\" is the one token the agent loop auto-continues on"
+        );
+    }
+
+    /// The other half of what the terminal frame carries: output items that
+    /// appear ONLY there. `response.completed` folds them in; the truncation
+    /// frame must too, or a turn whose only content arrived in the terminal
+    /// frame yields an empty message.
+    ///
+    /// No text deltas here on purpose — with `is_text_response` set, text from
+    /// the terminal frame is suppressed as an already-streamed duplicate, and
+    /// the assertion would measure the suppression instead of the merge.
+    ///
+    /// Catches: the same `Unknown` decode, and also a `ResponseIncomplete` arm
+    /// that reads `usage` but forgets to call `absorb_completed_response`.
+    #[tokio::test]
+    async fn a_truncated_turns_terminal_output_items_are_not_dropped() {
+        let lines = r#"
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_inc2","object":"response","created_at":1,"status":"in_progress","model":"gpt-5.4","output":[]}}
+data: {"type":"response.incomplete","sequence_number":1,"response":{"id":"resp_inc2","object":"response","created_at":1,"status":"incomplete","model":"gpt-5.4","output":[{"type":"message","id":"msg_1","status":"incomplete","role":"assistant","content":[{"type":"output_text","text":"only in the terminal frame"}]}],"incomplete_details":{"reason":"max_output_tokens"}}}
+data: [DONE]
+"#;
+        let (text, _, error) = drain_with_usage(lines).await;
+
+        assert_eq!(error, None);
+        assert_eq!(text, "only in the terminal frame");
+    }
+
+    /// A refusal is not a length problem. `"length"` makes the agent loop
+    /// re-ask for the rest of the answer; doing that to a content filter asks
+    /// again for the content that was just refused.
+    ///
+    /// Catches: mapping every `response.incomplete` to `"length"` — the
+    /// plausible simplification of `incomplete_finish_reason`, which passes the
+    /// two tests above.
+    #[tokio::test]
+    async fn a_content_filtered_truncation_is_not_reported_as_a_length_cap() {
+        let lines = r#"
+data: {"type":"response.incomplete","sequence_number":1,"response":{"id":"resp_cf","object":"response","created_at":1,"status":"incomplete","model":"gpt-5.4","output":[],"usage":{"input_tokens":10,"output_tokens":0,"total_tokens":10},"incomplete_details":{"reason":"content_filter"}}}
+data: [DONE]
+"#;
+        let (_, usage, error) = drain_with_usage(lines).await;
+
+        assert_eq!(error, None);
+        assert_eq!(
+            usage.expect("usage").finish_reason.as_deref(),
+            Some("content_filter"),
+        );
+    }
+
+    /// A built-in tool call is an output ITEM, not an event tag — so the
+    /// enum-level open arm never sees it, and `web_search_call` failed the
+    /// whole turn while the comment beside that arm cited built-in tools as
+    /// motivating. Three separate frames carry one: `output_item.added`,
+    /// `output_item.done`, and `response.completed`'s `output[]`.
+    ///
+    /// Catches: a closed `ResponseOutputItemInfo`, where the second frame
+    /// errors with "unknown variant `web_search_call`" and the streamed text is
+    /// lost with the turn.
+    #[tokio::test]
+    async fn a_built_in_tool_output_item_does_not_fail_the_stream() {
+        let lines = r#"
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_bt","object":"response","created_at":1,"status":"in_progress","model":"gpt-5.4","output":[]}}
+data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"web_search_call","id":"ws_1","status":"in_progress"}}
+data: {"type":"response.output_item.done","sequence_number":2,"output_index":0,"item":{"type":"web_search_call","id":"ws_1","status":"completed"}}
+data: {"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_1","output_index":1,"content_index":0,"delta":"searched"}
+data: {"type":"response.completed","sequence_number":4,"response":{"id":"resp_bt","object":"response","created_at":1,"status":"completed","model":"gpt-5.4","output":[{"type":"web_search_call","id":"ws_1","status":"completed"},{"type":"mcp_call","id":"mcp_1","status":"completed"}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}
+data: [DONE]
+"#;
+        let (text, usage, error) = drain_with_usage(lines).await;
+
+        assert_eq!(
+            error, None,
+            "a built-in tool item must not fail the request"
+        );
+        assert_eq!(text, "searched");
+        assert_eq!(usage.expect("usage").usage.total_tokens, Some(7));
+    }
+
+    /// The non-streaming path (`responses_api_to_message`), which the streaming
+    /// fix does not reach at all: a refusal content block and a built-in tool
+    /// item both arrive inside `output[]` of an ordinary POST response.
+    ///
+    /// Catches: closing only the streaming enums — the whole response fails to
+    /// deserialize, so the caller gets an error instead of the message the
+    /// model did produce.
+    #[test]
+    fn a_refusal_and_a_built_in_item_do_not_fail_the_non_streaming_path() {
+        let response: ResponsesApiResponse = serde_json::from_value(json!({
+            "id": "resp_ns",
+            "object": "response",
+            "created_at": 1,
+            "status": "completed",
+            "model": "gpt-5.4",
+            "output": [
+                { "type": "web_search_call", "id": "ws_1", "status": "completed" },
+                {
+                    "type": "message",
+                    "id": "msg_1",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [
+                        { "type": "refusal", "refusal": "I cannot help with that." },
+                        { "type": "output_text", "text": "here is what I can do" }
+                    ]
+                }
+            ]
+        }))
+        .expect("a response carrying a refusal and a built-in item must decode");
+
+        let message = responses_api_to_message(&response).expect("message");
+        assert_eq!(message.as_concat_text(), "here is what I can do");
+    }
+
+    /// Latent until reasoning summaries are requested, and fatal the moment
+    /// they are: the API returns `[{"type":"summary_text","text":…}]`, which a
+    /// `Vec<String>` cannot hold. The tag (`reasoning`) is modelled, so no
+    /// `#[serde(other)]` arm can cover this — only the field's type can.
+    ///
+    /// Catches: `summary: Vec<String>` / `Option<Vec<String>>` on either enum.
+    #[test]
+    fn a_reasoning_summary_of_objects_decodes_on_both_paths() {
+        let event = parse_stream_event(
+            r#"{"type":"response.output_item.done","sequence_number":1,"output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"thought about it"}]}}"#,
+        )
+        .expect("a streamed reasoning summary must decode");
+        assert!(matches!(
+            event,
+            ResponsesStreamEvent::OutputItemDone {
+                item: ResponseOutputItemInfo::Reasoning { .. },
+                ..
+            }
+        ));
+
+        let response: ResponsesApiResponse = serde_json::from_value(json!({
+            "id": "resp_rs",
+            "object": "response",
+            "created_at": 1,
+            "status": "completed",
+            "model": "gpt-5.4",
+            "output": [{
+                "type": "reasoning",
+                "id": "rs_1",
+                "summary": [{ "type": "summary_text", "text": "thought about it" }]
+            }]
+        }))
+        .expect("a non-streaming reasoning summary must decode");
+        assert!(matches!(
+            response.output.first(),
+            Some(ResponseOutputItem::Reasoning { .. })
+        ));
+    }
+
+    /// The same for the refusal events, and for a tag nobody has invented yet.
+    ///
+    /// Catches: a "fix" that special-cases `response.incomplete` with its own
+    /// named variant instead of an open arm — which passes the test above and
+    /// leaves every other unmodelled tag fatal.
+    #[test]
+    fn other_unmodelled_tags_decode_too() {
+        for payload in [
+            r#"{"type":"response.refusal.delta","sequence_number":4,"delta":"I cannot"}"#,
+            r#"{"type":"response.refusal.done","sequence_number":5,"refusal":"I cannot"}"#,
+            r#"{"type":"response.output_item.added.v9000","invented":true}"#,
+        ] {
+            let event = parse_stream_event(payload)
+                .unwrap_or_else(|err| panic!("{payload} must decode, got {err}"));
+            assert!(matches!(event, ResponsesStreamEvent::Unknown), "{payload}");
+        }
+    }
+
+    /// The bug as the user met it: text already streamed must survive the
+    /// truncation that ended the stream.
+    ///
+    /// Catches: the shipped decoder, where the third frame aborts the stream
+    /// and the two deltas are thrown away with it — the whole turn lost to a
+    /// cap we set ourselves.
+    #[tokio::test]
+    async fn a_stream_truncated_at_max_output_tokens_keeps_its_text() {
+        let lines = r#"
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_inc","object":"response","created_at":1,"status":"in_progress","model":"gpt-5.4","output":[]}}
+data: {"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"partial "}
+data: {"type":"response.output_text.delta","sequence_number":2,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"answer"}
+data: {"type":"response.incomplete","sequence_number":3,"response":{"id":"resp_inc","object":"response","created_at":1,"status":"incomplete","model":"gpt-5.4","output":[],"incomplete_details":{"reason":"max_output_tokens"}}}
+data: [DONE]
+"#;
+        let (text, error) = drain(lines).await;
+        assert_eq!(error, None, "a capped stream must not fail the request");
+        assert_eq!(text, "partial answer");
+    }
+
+    /// The nested half, which the enum-level arm CANNOT cover: a refusal
+    /// arrives as a `part` inside `response.content_part.added`, a tag this
+    /// decoder does know, so `#[serde(other)]` on `ResponsesStreamEvent` never
+    /// fires and the failure moves one level down into `ContentPart`.
+    ///
+    /// Catches: fixing only `ResponsesStreamEvent` and leaving `ContentPart`
+    /// closed — the exact half-fix the report warns about, which passes every
+    /// test above.
+    #[tokio::test]
+    async fn a_refusal_content_part_does_not_fail_the_stream() {
+        let lines = r#"
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_ref","object":"response","created_at":1,"status":"in_progress","model":"gpt-5.4","output":[]}}
+data: {"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"before"}
+data: {"type":"response.content_part.added","sequence_number":2,"item_id":"msg_1","output_index":0,"content_index":1,"part":{"type":"refusal","refusal":"I cannot help with that."}}
+data: {"type":"response.completed","sequence_number":3,"response":{"id":"resp_ref","object":"response","created_at":1,"status":"completed","model":"gpt-5.4","output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"refusal","refusal":"I cannot help with that."}]}]}}
+data: [DONE]
+"#;
+        let (text, error) = drain(lines).await;
+        assert_eq!(error, None, "a refusal part must not fail the request");
+        assert_eq!(text, "before");
+    }
+
+    /// Control 1. `#[serde(other)]` matches on the TAG only, so a frame that is
+    /// not JSON at all is still a hard error — and the error still refuses to
+    /// echo the payload, which may hold raw model output bound for the user.
+    ///
+    /// Catches: "fixing" the decode by making `parse_stream_event` swallow
+    /// every error (`unwrap_or(Unknown)`), which passes all four tests above
+    /// and silently drops real corruption.
+    #[test]
+    fn a_malformed_frame_is_still_an_error() {
+        let err = parse_stream_event(r#"{"type":"response.completed", TRUNCATED"#)
+            .expect_err("invalid JSON must still fail");
+        let rendered = err.to_string();
+        assert!(rendered.contains("Failed to parse Responses stream event"));
+        assert!(
+            !rendered.contains("TRUNCATED"),
+            "the payload must not be echoed"
+        );
+    }
+
+    /// Control 2. A tag this decoder DOES model, with a body it cannot satisfy,
+    /// must not be quietly reinterpreted as `Unknown`. `response.completed` is
+    /// where usage and the final output items come from; treating a broken one
+    /// as an ignorable event would drop a whole response without a word.
+    ///
+    /// Catches: putting the open arm on the wrong axis — e.g. adding
+    /// `#[serde(untagged)]` or a `Value` fallback variant, which would absorb
+    /// this instead of failing.
+    #[test]
+    fn a_known_tag_with_a_broken_body_is_still_an_error() {
+        parse_stream_event(r#"{"type":"response.completed","sequence_number":1}"#)
+            .expect_err("a response.completed with no response object must fail");
+    }
+
+    /// Control 3. The two events that *are* errors keep their explicit arms —
+    /// the unknown arm must not have shadowed them into silence.
+    ///
+    /// Catches: declaring `Unknown` before the `error` variant in a way that
+    /// captured it, or deleting those arms while adding the catch-all.
+    #[tokio::test]
+    async fn real_error_events_still_fail_the_stream() {
+        let failed = r#"
+data: {"type":"response.failed","sequence_number":1,"error":{"code":"server_error","message":"boom"}}
+"#;
+        let (_, error) = drain(failed).await;
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|e| e.contains("Responses API failed")),
+            "response.failed must still fail, got {error:?}"
+        );
+
+        let errored = r#"
+data: {"type":"error","error":{"code":"rate_limit_exceeded","message":"slow down"}}
+"#;
+        let (_, error) = drain(errored).await;
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|e| e.contains("Responses API error")),
+            "an error frame must still fail, got {error:?}"
+        );
+    }
+
+    /// Control 4. The unknown arm must not have eaten a tag that carries real
+    /// state. `response.output_item.done` is what makes a tool call callable,
+    /// and it is one `#[serde(rename)]` typo away from decoding as `Unknown`
+    /// and silently degrading every tool call to "never ran".
+    ///
+    /// Catches: a rename/spelling drift on any modelled variant, which is
+    /// exactly the failure the open arm now hides.
+    #[tokio::test]
+    async fn a_modelled_tag_is_not_swallowed_by_the_unknown_arm() {
+        let lines = r#"
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_tool","object":"response","created_at":1,"status":"in_progress","model":"gpt-5.4","output":[]}}
+data: {"type":"response.output_item.done","sequence_number":1,"output_index":0,"item":{"type":"function_call","id":"fc_1","status":"completed","call_id":"call_1","name":"developer__shell","arguments":"{\"command\":\"ls\"}"}}
+data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_tool","object":"response","created_at":1,"status":"completed","model":"gpt-5.4","output":[]}}
+data: [DONE]
+"#;
+        let response_stream = tokio_stream::iter(
+            lines
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| Ok(line.to_string()))
+                .collect::<Vec<_>>(),
+        );
+        let messages = responses_api_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut saw_tool_request = false;
+        while let Some(result) = messages.next().await {
+            let (message, _, _) = result.expect("stream must not fail");
+            if let Some(message) = message {
+                saw_tool_request |= message.is_tool_call();
+            }
+        }
+        assert!(
+            saw_tool_request,
+            "response.output_item.done must still produce a callable tool request"
+        );
     }
 }

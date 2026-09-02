@@ -153,6 +153,11 @@ import {
 } from './utils/managedAppPreviewPolicy';
 import { IMAGE_BLOB_URL_THRESHOLD_BYTES, IMAGE_MIME_TYPES } from './utils/imageFormats';
 import { recordExtensionProvenance } from './utils/extensionProvenance';
+import {
+  biorouterConfigDir,
+  biorouterExtensionsDir,
+  unsandboxedConfigDirCandidates,
+} from './utils/biorouterPaths';
 import { fetchRegistryWithLastGood } from './utils/registryCache';
 import { readArtifactDirectoryTree } from './utils/artifactDirectory';
 import {
@@ -191,11 +196,16 @@ function expandBiorouterPath(filePath: string): string {
     fsSync.existsSync(candidate)
   );
   const pathRoot = process.env.BIOROUTER_PATH_ROOT;
-  if (!pathRoot) return expandedPath;
+  if (!pathRoot || !pathRoot.trim()) return expandedPath;
 
-  const defaultConfigDir = path.join(os.homedir(), '.config', 'biorouter');
-  if (expandedPath === defaultConfigDir || expandedPath.startsWith(defaultConfigDir + path.sep)) {
-    return path.join(pathRoot, 'config', path.relative(defaultConfigDir, expandedPath));
+  // Both spellings of "the real config directory" are redirected — see
+  // `unsandboxedConfigDirCandidates`. Under a default XDG setup they are one
+  // and the same, so this loop runs once and behaves exactly as the single
+  // hardcoded join it replaced.
+  for (const configDir of unsandboxedConfigDirCandidates()) {
+    if (expandedPath === configDir || expandedPath.startsWith(configDir + path.sep)) {
+      return path.join(pathRoot, 'config', path.relative(configDir, expandedPath));
+    }
   }
   return expandedPath;
 }
@@ -224,14 +234,12 @@ export function allowedFileRoots(sessionWorkingDir?: string): string[] {
   });
 }
 
-/** The biorouter config.yaml path in the main process (honours the test-only
- *  BIOROUTER_PATH_ROOT redirect used by expandBiorouterPath). */
+/** The biorouter config.yaml path in the main process. Resolved by
+ *  `utils/biorouterPaths.ts`, which is the ONE derivation in this process —
+ *  it honours the BIOROUTER_PATH_ROOT redirect and, unlike the hardcoded join
+ *  that used to sit here, `XDG_CONFIG_HOME` and the Windows layout too. */
 function biorouterConfigYamlPath(): string {
-  const pathRoot = process.env.BIOROUTER_PATH_ROOT;
-  const dir = pathRoot
-    ? path.join(pathRoot, 'config')
-    : path.join(os.homedir(), '.config', 'biorouter');
-  return path.join(dir, 'config.yaml');
+  return path.join(biorouterConfigDir(), 'config.yaml');
 }
 
 // The preview allowlist must know the permission mode, but MUST read it from the
@@ -3838,7 +3846,13 @@ ipcMain.handle(
       ) {
         return { error: 'Invalid extension name.' };
       }
-      const extensionsBase = path.join(os.homedir(), '.config', 'biorouter', 'extensions');
+      // ⚠ Resolved, not hardcoded (#146). This handler creates a directory,
+      // extracts an archive over it and runs `uv sync` in it; deriving the base
+      // from `os.homedir()` meant a sandboxed dev build did all three inside
+      // the developer's real extensions tree. `biorouterExtensionsDir` is the
+      // one derivation in this process and the uninstall handler below reads
+      // the same one, which is what makes the containment check meaningful.
+      const extensionsBase = biorouterExtensionsDir();
       const installDir = path.join(extensionsBase, extensionName);
       if (!installDir.startsWith(extensionsBase + path.sep)) {
         return { error: 'Invalid extension name.' };
@@ -3915,8 +3929,13 @@ ipcMain.handle('brxt:uninstall', async (_event, { extensionName }: { extensionNa
     ) {
       return { error: 'Invalid extension name.' };
     }
-    const installDir = path.join(os.homedir(), '.config', 'biorouter', 'extensions', extensionName);
-    const extensionsBase = path.join(os.homedir(), '.config', 'biorouter', 'extensions');
+    // ⚠ The worst of the #146 sites, and the reason there is now exactly one
+    // resolver: `installDir` is handed straight to a recursive, forced
+    // `rmSync`. Derived from `os.homedir()`, a sandboxed dev build deleted out
+    // of the developer's REAL extensions tree. Resolved once and used for both
+    // the target and the containment base, so the two can never disagree.
+    const extensionsBase = biorouterExtensionsDir();
+    const installDir = path.join(extensionsBase, extensionName);
     if (!installDir.startsWith(extensionsBase + path.sep)) {
       return { error: 'Invalid extension name.' };
     }

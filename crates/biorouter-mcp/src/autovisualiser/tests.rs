@@ -610,6 +610,17 @@ async fn standalone_figure_dashboard_works() {
     assert!(!html.contains("cdn.jsdelivr.net"));
 }
 
+/// ⚠ This asserts the per-kind TOOL NAMES on purpose, and it is the one place
+/// that still should.
+///
+/// The dashboard's copy of this message was rewritten to name `render_figure`
+/// and the `kind` slugs, because a chat agent sees only three tools and cannot
+/// call `render_volcano` (#142). This door is Agent Drafter's `ui_figure`, whose
+/// own description hands the app agent exactly these names and which has neither
+/// `render_figure` nor `describe_figure` — `configure_agent` never injects
+/// autovisualiser into an app agent. Sharing one phrasing between the two doors
+/// is what created a NEW dead end here while fixing the one over there; the
+/// vocabulary is therefore chosen per call site.
 #[tokio::test]
 async fn standalone_figure_unknown_tool_errs_with_suggestions() {
     let err = render_standalone_figure("totally_made_up", json!({"data": {}}))
@@ -620,6 +631,10 @@ async fn standalone_figure_unknown_tool_errs_with_suggestions() {
     assert!(
         err.contains("render_volcano") || err.contains("show_chart"),
         "got: {err}"
+    );
+    assert!(
+        !err.contains("describe_figure"),
+        "an app agent has no describe_figure to call: {err}"
     );
 }
 
@@ -633,6 +648,41 @@ async fn standalone_figure_invalid_args_err_is_friendly() {
     .await
     .unwrap_err();
     assert!(err.contains("at least one dataset"), "got: {err}");
+}
+
+/// The same rule for a REJECTED PAYLOAD, which is the half the shared
+/// `figure_argument_error` choke point actually broke.
+///
+/// Measured before this fix: `ui_figure("render_volcano", …)` with a missing
+/// field came back as "`render_figure` arguments are invalid for kind
+/// \"volcano\": missing field `log2fc`. Call describe_figure with kind
+/// \"volcano\"…" — an app agent being told to fix a call it never made, with two
+/// tools it does not have. It must name the tool the caller named.
+#[tokio::test]
+async fn standalone_figure_invalid_args_name_the_tool_the_caller_named() {
+    let err = render_standalone_figure(
+        "render_volcano",
+        json!({"data": {"points": [{"label": "MYC", "negLog10P": 4.0}]}}),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        err.contains("log2fc"),
+        "must still say what is wrong: {err}"
+    );
+    assert!(
+        err.contains("render_volcano"),
+        "must name the tool `ui_figure` takes: {err}"
+    );
+    assert!(
+        !err.contains("render_figure"),
+        "an app agent cannot call render_figure: {err}"
+    );
+    assert!(
+        !err.contains("describe_figure"),
+        "an app agent cannot call describe_figure: {err}"
+    );
 }
 
 #[tokio::test]
