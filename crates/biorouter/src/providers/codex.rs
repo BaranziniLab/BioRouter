@@ -733,10 +733,30 @@ impl CodexProvider {
             // convention every sibling notification follows, so a match written
             // from the type names alone misses it.
             "error" => {
+                // #156: read BOTH spellings, nested first. Current Codex builds
+                // put the text at `params.error.message`; an older fold read
+                // `params.message`. `codex_stream.rs`'s `error_notice` already
+                // reads both and says why — "swapping one guess for the other
+                // would just move the blind spot" — but that fix landed on the
+                // streaming decoder only, so this arm always fell through to the
+                // placeholder and discarded the reason.
+                //
+                // Measured: the same account limit produced "You've hit your
+                // usage limit … try again at Sep 6th" on the streaming path and
+                // a bare "the Codex app server reported an error" here.
+                //
+                // The `turn/failed` arm above already reads the nested spelling,
+                // so this file handled both shapes — just not in this arm.
                 outcome.failure = Some(
                     params
-                        .get("message")
-                        .and_then(Value::as_str)
+                        .get("error")
+                        .and_then(|error| {
+                            error
+                                .as_str()
+                                .filter(|s| !s.is_empty())
+                                .or_else(|| error.get("message").and_then(Value::as_str))
+                        })
+                        .or_else(|| params.get("message").and_then(Value::as_str))
                         .unwrap_or("the Codex app server reported an error")
                         .to_string(),
                 );
@@ -1649,6 +1669,56 @@ impl Provider for CodexProvider {
 
 #[cfg(test)]
 mod tests {
+    /// #156. The `error` notification carries its text under EITHER spelling.
+    /// Reading only one is a blind spot, and reading only the flat one — which
+    /// this arm did — silently replaced a real reason with a placeholder.
+    ///
+    /// Measured against a live account limit: the streaming decoder surfaced
+    /// "You've hit your usage limit … try again at Sep 6th" while this fold
+    /// produced "the Codex app server reported an error", so the operator had
+    /// nothing to act on and could not tell a code defect from an account limit.
+    #[test]
+    fn an_error_notification_keeps_its_reason_under_either_spelling() {
+        use serde_json::json;
+
+        let reason = "You've hit your usage limit. Try again at Sep 6th.";
+
+        // Nested — what current Codex builds emit.
+        let mut outcome = super::TurnOutcome::default();
+        super::CodexProvider::absorb(
+            &mut outcome,
+            "error",
+            &json!({ "error": { "message": reason } }),
+        );
+        assert_eq!(
+            outcome.failure.as_deref(),
+            Some(reason),
+            "#156: the nested spelling must survive; it was being discarded"
+        );
+
+        // Bare string under `error`, which `error_message` also accepts.
+        let mut outcome = super::TurnOutcome::default();
+        super::CodexProvider::absorb(&mut outcome, "error", &json!({ "error": reason }));
+        assert_eq!(outcome.failure.as_deref(), Some(reason));
+
+        // Flat — the older shape, which must keep working.
+        let mut outcome = super::TurnOutcome::default();
+        super::CodexProvider::absorb(&mut outcome, "error", &json!({ "message": reason }));
+        assert_eq!(
+            outcome.failure.as_deref(),
+            Some(reason),
+            "the previously-handled spelling must not regress"
+        );
+
+        // Neither: the placeholder is correct only when there is nothing to say.
+        let mut outcome = super::TurnOutcome::default();
+        super::CodexProvider::absorb(&mut outcome, "error", &json!({ "willRetry": true }));
+        assert_eq!(
+            outcome.failure.as_deref(),
+            Some("the Codex app server reported an error")
+        );
+    }
+
     use super::*;
 
     #[test]

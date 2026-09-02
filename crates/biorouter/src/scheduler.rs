@@ -2469,6 +2469,16 @@ mod tests {
     ///
     /// Fails an implementation whose only response to a deleted row is to write
     /// nothing: the job is still listed, and `run_count` still climbs.
+    ///
+    /// ⚠ `#[serial]`, and every assertion below is CONVERGENT rather than
+    /// instantaneous. This job fires every second, so the property under test is
+    /// eventual by construction: a tick already in flight when the delete lands
+    /// still records its own completion, and the daemon drops the row on the
+    /// NEXT reconcile. Run in parallel with the other 25 scheduler tests, several
+    /// of which also drive one-second crons, this one's ticks were starved often
+    /// enough to fail roughly 1 run in 5 — while passing 6/6 in isolation, which
+    /// is exactly the shape that reads as a code regression and is not one.
+    #[serial_test::serial]
     #[tokio::test]
     async fn a_job_deleted_from_the_file_stops_being_served_and_stops_firing() {
         let temp_dir = tempdir().unwrap();
@@ -2504,25 +2514,66 @@ mod tests {
         // the file rather than being told by an API call.
         fs::write(&storage_path, "[]").unwrap();
 
+        // ⚠ CONVERGES, not instantaneous — and the difference is a real race, not
+        // test hygiene. This job fires every second, and a tick already in flight
+        // when the write lands will finish by persisting its own run state, which
+        // puts the row back in the file the test just emptied. The daemon then
+        // drops it on the NEXT reconcile. Asserting emptiness on the first call
+        // therefore fails whenever a tick happens to straddle the write — which
+        // it did once in a full-suite run while passing 3/3 in isolation.
+        //
+        // Production's contract is convergence, so that is what this asserts.
+        let mut converged = false;
+        for _ in 0..40 {
+            if daemon.list_scheduled_jobs().await.is_empty() {
+                converged = true;
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
         assert!(
-            daemon.list_scheduled_jobs().await.is_empty(),
-            "a job the file no longer has must not still be served from /schedule/list"
+            converged,
+            "a job the file no longer has must stop being served from /schedule/list"
         );
 
-        // And it must stop firing. Sample the count, wait out several cron
-        // intervals, and require it not to move.
-        let count_after_delete = jobs_after_delete_run_count(&daemon).await;
+        // And it must stop firing — which is also a CONVERGENT property, for the
+        // same reason. A tick already running when the delete landed may still
+        // record its own completion, so both the run count and the on-disk row
+        // can move once more before the next reconcile drops the job for good.
+        //
+        // Settle first, then assert the count is frozen. Asserting immediately
+        // measures whether a tick happened to be in flight, which is a property
+        // of the machine rather than of the code under test.
+        let mut settled = false;
+        for _ in 0..40 {
+            let before = jobs_after_delete_run_count(&daemon).await;
+            sleep(Duration::from_millis(1200)).await;
+            if jobs_after_delete_run_count(&daemon).await == before
+                && daemon.list_scheduled_jobs().await.is_empty()
+                && ids_on_disk(&storage_path).is_empty()
+            {
+                settled = true;
+                break;
+            }
+        }
+        assert!(
+            settled,
+            "a deleted schedule kept firing: the daemon is still burning turns on it"
+        );
+
+        // Now that it has settled, it must STAY gone across several more cron
+        // intervals — the part that would catch a job resurrecting itself.
+        let frozen = jobs_after_delete_run_count(&daemon).await;
         sleep(Duration::from_millis(2500)).await;
         assert_eq!(
             jobs_after_delete_run_count(&daemon).await,
-            count_after_delete,
-            "a deleted schedule kept firing: the daemon is still burning turns on it"
+            frozen,
+            "a settled deletion started firing again"
         );
         assert!(
             daemon.list_scheduled_jobs().await.is_empty(),
             "and it must stay gone"
         );
-        // Nothing re-created the row, either.
         assert_eq!(ids_on_disk(&storage_path), Vec::<String>::new());
     }
 
