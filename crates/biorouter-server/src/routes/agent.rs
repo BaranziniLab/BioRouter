@@ -2477,16 +2477,38 @@ async fn call_tool(
     // its whole time-to-live unanswerable, and then surfacing in the NEXT chat
     // turn as a question about something that happened minutes ago. Refusing
     // to park is the same reasoning as the capability above, one layer down.
-    let tool_result = match biorouter::user_surface::without_human_surface(
-        agent.extension_manager.dispatch_tool_call(
-            &payload.session_id,
-            tool_call,
-            biorouter::privacy::CallCapability::public_enforced(),
-            CancellationToken::default(),
-        ),
-    )
-    .await
-    {
+    //
+    // ⚠ The scope has to cover RUNNING the tool, not just dispatching it, and
+    // that is the same one-of-two-steps split the #152 note below describes.
+    // `dispatch_tool_call` hands back a `ToolCallResult` whose `.result` is a
+    // future; the tool body — and therefore every `park()` in it — executes when
+    // that future is awaited. Scoping only the dispatch left the run outside,
+    // where `no_human_surface()` is false, so the refusal above never fired.
+    //
+    // Measured cost: `skills__installMarketplaceSkill` and
+    // `skills__importSkillPackage` — both `requires_user_proof: true` — parked a
+    // card nobody could answer and never returned. Not a slow download: 180 s
+    // with no reply, while their `dryRun` siblings answered in 0.5 s and 9.8 s,
+    // and the daemon log showed `calling client.call_tool` with no completion.
+    let dispatched = biorouter::user_surface::without_human_surface(async {
+        let dispatch = agent
+            .extension_manager
+            .dispatch_tool_call(
+                &payload.session_id,
+                tool_call,
+                biorouter::privacy::CallCapability::public_enforced(),
+                CancellationToken::default(),
+            )
+            .await;
+        match dispatch {
+            // Awaited HERE, inside the scope, so the tool body sees the flag.
+            Ok(tool_result) => Ok(tool_result.result.await),
+            Err(error) => Err(error),
+        }
+    })
+    .await;
+
+    let awaited = match dispatched {
         Ok(result) => result,
         // Issue #56 Gate C: this used to be
         // `.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)`, which threw the
@@ -2514,7 +2536,7 @@ async fn call_tool(
     // `extension_manager.rs:2837-2840` already maps `ServiceError::McpError`
     // back to its `ErrorData`, so the awaited error downcasts correctly here —
     // the classifier was simply never asked.
-    let result = match tool_result.result.await {
+    let result = match awaited {
         Ok(result) => result,
         // No downcast needed, and that is the point: this future's error type is
         // ALREADY `ErrorData`, so the message was never ambiguous or wrapped —
@@ -4804,7 +4826,11 @@ mod gate_c_call_tool_tests {
     fn the_tool_results_own_error_is_answered_as_a_tool_error_not_a_bare_500() {
         let source = include_str!("agent.rs");
         let awaited = source
-            .split("let result = match tool_result.result.await {")
+            // ⚠ Anchor updated when the no-human-surface scope was widened to
+            // cover RUNNING the tool: the await moved inside that scope and the
+            // binding it produces is now `awaited`. The classification this
+            // test pins is unchanged — re-read #152 before touching it again.
+            .split("let result = match awaited {")
             .nth(1)
             .expect(
                 "the tool-result await must be a `match` that inspects its error; if this \

@@ -33,8 +33,18 @@ fn an_approval() -> UserActionRequest {
 }
 
 /// Stands in for whatever the dispatched tool does: it parks a decision and
-/// waits. The route wraps the real `dispatch_tool_call` in exactly the scope
-/// wrapped here.
+/// waits.
+///
+/// ⚠ This said "the route wraps the real `dispatch_tool_call` in exactly the
+/// scope wrapped here", and that was FALSE for as long as it stood. The route
+/// scoped only the dispatch, which merely BUILDS the future; the tool body ran
+/// when `.result` was awaited, outside the scope. This stand-in parks inside the
+/// scope, so it passed while the route hung — a fixture asserting the shape I
+/// believed the route had rather than the shape it did.
+///
+/// `the_route_awaits_the_tool_inside_the_no_human_surface_scope` below is the
+/// half that reads the route itself. Keep both: this one proves the refusal
+/// works, that one proves the route is inside it.
 async fn a_tool_that_asks(registry: &Arc<PendingUserActions>, session: &str) -> UserActionOutcome {
     let parked = registry.park(Some(session), None, an_approval());
     parked.wait(Duration::from_secs(30), None).await
@@ -118,4 +128,71 @@ async fn the_same_tool_outside_that_scope_still_parks_normally() {
         asking.await.unwrap(),
         UserActionOutcome::Approved { .. }
     ));
+}
+
+/// The half the stand-in above cannot see: that the ROUTE runs the tool inside
+/// the scope, not merely dispatches it inside it.
+///
+/// A source-shape pin, because the property is structural — `no_human_surface()`
+/// is a `task_local`, so what matters is which awaits happen inside the
+/// `scope()`, and no value returned by the handler records that.
+///
+/// Fails the shipped implementation, which read:
+///
+/// ```ignore
+/// let tool_result = without_human_surface(dispatch_tool_call(..)).await?;
+/// let result = tool_result.result.await;   // <- outside the scope
+/// ```
+///
+/// Measured cost of that split: `installMarketplaceSkill` and
+/// `importSkillPackage`, both `requires_user_proof: true`, parked a card nobody
+/// could answer and never returned — 180 s with no reply, while their `dryRun`
+/// siblings answered in well under 10 s.
+#[test]
+fn the_route_awaits_the_tool_inside_the_no_human_surface_scope() {
+    let source = include_str!("../src/routes/agent.rs");
+
+    // `split`, never byte indexing: `clippy::string_slice` is denied repo-wide,
+    // and slicing a string can land inside a UTF-8 character.
+    let after_open = source
+        .split("without_human_surface(async {")
+        .nth(1)
+        .expect("call_tool must open a no-human-surface scope around an async block");
+    let scoped = after_open
+        .split("\n    .await;")
+        .next()
+        .expect("the scope's await must terminate the block");
+
+    assert!(
+        scoped.contains("dispatch_tool_call"),
+        "the dispatch must happen inside the scope: {scoped}"
+    );
+    assert!(
+        scoped.contains("tool_result.result.await"),
+        "the tool must be RUN inside the scope — awaiting `.result` outside it is \
+         the defect this pins, because that is where the tool body (and every \
+         `park()` in it) actually executes: {scoped}"
+    );
+
+    // …and nothing awaits the result a second time outside the scope, which is
+    // what the previous shape did.
+    //
+    // Two filters before the search, each for a real false positive: the handler
+    // stops at this file's own tests, one of which QUOTES the expression as a
+    // string literal to anchor its #152 assertion; and comment lines are dropped
+    // because the note below the scope quotes it again while explaining it.
+    let after_scope = after_open
+        .split("\n    .await;")
+        .nth(1)
+        .expect("there must be code after the scope");
+    let handler_only = after_scope.split("#[cfg(test)]").next().unwrap_or("");
+    let after_code = handler_only
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !after_code.contains("tool_result.result.await"),
+        "`.result` must be awaited once, inside the scope"
+    );
 }
