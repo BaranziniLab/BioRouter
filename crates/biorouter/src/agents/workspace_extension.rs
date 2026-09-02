@@ -1751,7 +1751,11 @@ impl WorkspaceClient {
                  that stamps this conversation as the child's parent. placement: \
                  tab (default), split or window; focus defaults to false so the \
                  user's composer is never stolen. Headless, the session is still \
-                 created and the result says no tab was opened.",
+                 created and the result says no tab was opened. A new \
+                 conversation is for work the USER will pick up separately — it \
+                 is not a way to do your own: if you were asked for something, \
+                 answer HERE. Never open two for one request; that runs the same \
+                 work twice, which the user sees as duplicate side chats.",
                 serde_json::to_value(schema_for!(WorkspaceOpenParams)).unwrap(),
                 false,
             ),
@@ -2518,6 +2522,36 @@ impl WorkspaceClient {
         // the daemon lookup and long before `create_session`, so a refusal
         // cannot leave a half-built conversation behind.
         Self::refuse_gated_new_session_extensions(cap, new.extensions.as_ref())?;
+        // §5 bounded fan-out, and checked HERE — beside the other refusals —
+        // rather than beside the `start_detached_turn` call it actually bounds.
+        // `workspace_open { new: { prompt } }` is a session creation AND a turn
+        // injection in one call, so a cap tested after `start_session` would
+        // refuse having already minted the row: exactly the "unparented
+        // conversation nobody asked for" the paragraph above exists to prevent,
+        // reached down a different path.
+        //
+        // ⚠ Until this existed the cap bounded ONE of the two tools that inject
+        // a turn. `workspace_send_prompt` takes a slot; this path took none —
+        // so a model that reached for `workspace_open` instead fanned out with
+        // nothing counting, which is what the duplicate-side-chats report was.
+        // The guard is entered before the session exists and released by
+        // `hold_slot_until_turn_ends` on the turn's own terminal event; on every
+        // error path between here and there it drops on the way out, which is
+        // the correct release.
+        let injected_slot = if new.prompt.is_some() {
+            let (inflight, cap_guard) = InjectedTurnGuard::enter(caller_session_id);
+            if inflight > Self::injected_turn_cap() {
+                return Err(format!(
+                    "this session already has {} injected turns in flight (cap {}); \
+                     wait for one to finish before opening another conversation with a prompt",
+                    inflight - 1,
+                    Self::injected_turn_cap()
+                ));
+            }
+            Some(cap_guard)
+        } else {
+            None
+        };
         let services = workspace_services::get()
             .ok_or("starting a new session requires the BioRouter daemon")?;
         // Decision 5: the working dir DEFAULTS to the caller's. A different
@@ -2562,12 +2596,26 @@ impl WorkspaceClient {
                 working_dir.display()
             )
         });
-        if let Some(prompt) = new.prompt {
+        if let (Some(prompt), Some(cap_guard)) = (new.prompt, injected_slot) {
             let provenance = self.caller_provenance(caller_session_id).await;
             let message = crate::conversation::message::Message::user()
                 .with_text(prompt)
                 .with_provenance(provenance);
-            services.start_detached_turn(&session_id, message).await?;
+            // Subscribe BEFORE the turn starts, for the same reason the
+            // `workspace_send_prompt` path does: the service hydrates the
+            // provider and extensions between the subscribe and the start, and
+            // a short turn can finish inside that gap. A subscription opened
+            // afterwards would miss the terminal event and the slot would be
+            // released only by the `is_turn_active` poll.
+            use crate::session_events;
+            let slot_rx = session_events::subscribe(&session_id);
+            let turn_id = services.start_detached_turn(&session_id, message).await?;
+            Self::hold_slot_until_turn_ends(
+                cap_guard,
+                TurnFollower::new(slot_rx, turn_id),
+                session_id.clone(),
+                std::sync::Arc::clone(&services),
+            );
         }
         Ok(NewSession {
             session_id,
@@ -9711,6 +9759,89 @@ pub(crate) mod tests {
             accepted.is_some(),
             "the slot of a finished turn must be released"
         );
+    }
+
+    /// The fan-out cap counts BOTH tools that inject a turn, into one budget.
+    ///
+    /// Two tools start a detached turn in somebody else's conversation:
+    /// `workspace_send_prompt`, and `workspace_open { new: { prompt } }`, which
+    /// creates the conversation and seeds it in the same call. Only the first
+    /// took a slot, so the cap bounded the tool a model happened not to be
+    /// using: reach for `workspace_open` instead and the fan-out was unbounded.
+    /// That is the shape of the duplicate-side-chats report — one request, two
+    /// freshly-opened conversations, both running the same task.
+    ///
+    /// A per-tool cap would pass an assertion that only fills and refuses
+    /// through `workspace_open`, so the fill here is done through the OTHER
+    /// tool: the refusal can only come from a budget the two share.
+    ///
+    /// The last assertion is the one that stops the fix from being "refuse
+    /// opens while busy". Creating a conversation is not injecting a turn, and
+    /// a caller at its cap must still be able to open one — so the same call
+    /// minus the prompt has to succeed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(workspace_services)]
+    async fn opening_a_conversation_with_a_prompt_spends_the_same_fan_out_budget() {
+        let _services = FakeServices::with_gui(true).install();
+        let c = client();
+        let caller = unique_id("open-fanout-caller");
+        let cap = WorkspaceClient::injected_turn_cap();
+        let dir = std::env::temp_dir().join("workspace-open-fanout");
+        std::fs::create_dir_all(&dir).unwrap();
+        let new_with_prompt = serde_json::json!({ "new": {
+            "kind": "user",
+            "working_dir": dir.to_str().unwrap(),
+            "prompt": "draw the SVG",
+        }});
+
+        // Fill the budget through `workspace_send_prompt` only.
+        for i in 0..cap {
+            let target = seeded_target(&c, "open-fanout-target").await;
+            let result = send_prompt(
+                &c,
+                &caller,
+                serde_json::json!({ "session_id": target, "text": "go", "mode": "turn" }),
+            )
+            .await;
+            assert_ne!(
+                result.is_error,
+                Some(true),
+                "injection {i} of {cap} must fit under the cap; got: {}",
+                text_of(&result)
+            );
+        }
+
+        // Spend it through the other one.
+        let over = open_as(&c, &caller, new_with_prompt.clone()).await;
+        let over_text = text_of(&over);
+        assert_eq!(
+            over.is_error,
+            Some(true),
+            "opening a conversation with a prompt must spend the same budget; got: {over_text}"
+        );
+        assert!(
+            over_text.contains("in flight"),
+            "the refusal must name the fan-out cap, not some other failure; got: {over_text}"
+        );
+
+        // …but the conversation itself is not what is capped.
+        let without_prompt = open_as(
+            &c,
+            &caller,
+            serde_json::json!({ "new": {
+                "kind": "user",
+                "working_dir": dir.to_str().unwrap(),
+            }}),
+        )
+        .await;
+        assert_ne!(
+            without_prompt.is_error,
+            Some(true),
+            "a caller at its cap may still OPEN a conversation; got: {}",
+            text_of(&without_prompt)
+        );
+
+        crate::workspace_services::clear_test_override();
     }
 
     /// `mode:"turn"` delivers a FRAMED, provenance-stamped message and says so
