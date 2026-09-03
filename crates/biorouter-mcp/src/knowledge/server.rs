@@ -1819,9 +1819,20 @@ impl KnowledgeServer {
         p: Parameters<ExportArchiveParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
+        // The READ deadline. An export READS the base — the archive is written
+        // outside it — and the lock is here only to keep a writer from tearing
+        // the snapshot. Same lock and the same exclusion either way; the only
+        // thing that changes is how long this waits before giving the caller an
+        // answer. On the write deadline it parked for THIRTY MINUTES behind an
+        // open transaction, which is the same defect the merge preview had.
+        //
+        // ⚠ Still `None` for the cancellation token, because this signature has
+        // no `context` to take one from. A caller who cancels therefore waits
+        // out the deadline rather than the turn — much less bad at 45s than at
+        // 1800s, but not fixed. Threading the token here is the real repair.
         let _lock = self
             .service
-            .lock_existing_kb_cancellable(&p.kb_id, None)
+            .lock_existing_kb_for_read(&p.kb_id, None)
             .await
             .map_err(into_err)?;
         let bytes = self.service.export_brkb(&p.kb_id).map_err(into_err)?;

@@ -2077,8 +2077,30 @@ impl KnowledgeService {
         } else {
             (source_kb_id, destination_kb_id)
         };
-        let _first = self.lock_kb(first).await?;
-        let _second = self.lock_kb(second).await?;
+        // ⚠ The DEADLINE depends on `dry_run`, and this is the asymmetry #159
+        // introduced, applied to the one read path that was still missing it.
+        //
+        // `kb_merge_preview` writes nothing — the server does not even take a
+        // transaction slot for it — but it took the WRITE deadline here, which
+        // #159 raised from 120s to 1800s so a real merge could outlast a long
+        // ingest. The result was a read-only preview parking for THIRTY MINUTES
+        // behind any open transaction on either base. Found by the live tool
+        // sweep, where an earlier case left a transaction open on the
+        // destination and the preview simply never came back; the daemon log
+        // showed the same `kb_merge_preview` dispatched twice, five minutes
+        // apart, with nothing in between.
+        //
+        // A read that gives up loses nothing, so it gets the short deadline and
+        // returns a refusal the caller can act on. A write that gives up may
+        // strand half a merge, so it keeps the long one. Both still queue on the
+        // same lock in the same id order — only the patience differs.
+        let wait = if dry_run {
+            FileLockGuard::KB_READ_LOCK_WAIT
+        } else {
+            FileLockGuard::KB_WRITE_LOCK_WAIT
+        };
+        let _first = self.lock_kb_path_waiting(first, None, wait).await?;
+        let _second = self.lock_kb_path_waiting(second, None, wait).await?;
 
         // A caller can wait here while another writer raises either base and
         // commits private content. Re-authorize over the locked snapshots before
@@ -5727,6 +5749,56 @@ mod tests {
         svc.lock_kb_path_waiting(kb, None, std::time::Duration::from_millis(150))
             .await
             .expect("an uncontended read must still acquire the lock");
+    }
+
+    /// A merge PREVIEW takes the read deadline; a real merge takes the write one.
+    ///
+    /// `kb_merge_preview` writes nothing, and the server does not even take a
+    /// transaction slot for it — but `merge_bases` locked both bases at the
+    /// WRITE deadline whatever `dry_run` said. #159 had just raised that from
+    /// 120s to 1800s so a real merge could outlast a long ingest, which turned a
+    /// read-only preview into a THIRTY-MINUTE park behind any open transaction
+    /// on either base.
+    ///
+    /// Found by the live tool sweep, not by this suite: an earlier case left a
+    /// transaction open on the destination and the preview never came back. The
+    /// daemon log showed the same `kb_merge_preview` dispatched twice, five
+    /// minutes apart, with nothing in between.
+    ///
+    /// The assertion is a DURATION, because that is the whole defect. Asserting
+    /// only that the preview errors would pass against the 1800s version too —
+    /// eventually. What matters is that it gives up while someone is still
+    /// waiting for it.
+    #[tokio::test]
+    async fn a_merge_preview_gives_up_on_a_locked_base_instead_of_waiting_out_a_write() {
+        let (_dir, svc) = svc();
+        svc.create_base("dst", "Destination", None).unwrap();
+        svc.create_base("src", "Source", None).unwrap();
+
+        // Hold the destination exactly as an open transaction does.
+        let held = svc.lock_existing_kb("dst").expect("hold the destination");
+
+        // `User`, not `Model`: the point is the DEADLINE, and a Model authority
+        // would refuse at the tier barrier before ever reaching the lock.
+        let proof = crate::knowledge::merge::UserKbMerge::for_test();
+        let authority = crate::knowledge::merge::MergeAuthority::User(&proof);
+        let started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(
+            FileLockGuard::KB_READ_LOCK_WAIT + std::time::Duration::from_secs(30),
+            svc.merge_bases("dst", "src", &authority, true),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        drop(held);
+
+        let error = outcome
+            .expect("a preview must not outlast the READ deadline — it took the write one")
+            .expect_err("a preview behind a held lock must refuse, not succeed");
+        assert!(format!("{error:#}").contains("timed out"), "{error:#}");
+        assert!(
+            elapsed < FileLockGuard::KB_WRITE_LOCK_WAIT,
+            "a preview waited {elapsed:?}, i.e. the WRITE deadline; it must use the read one"
+        );
     }
 
     /// #157, the OTHER unbounded wait on the same path — the on-disk `flock`.
