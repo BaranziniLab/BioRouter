@@ -162,6 +162,16 @@ pub struct Config {
     // separate store access — on macOS that means one Keychain authorization
     // prompt per lookup until the user clicks "Always Allow".
     secrets_cache: Mutex<Option<HashMap<String, Value>>>,
+    // Single-flight gate for the COLD read above. The cache alone does not make
+    // the comment's "at most once per process" true: `all_secrets` checks the
+    // cache, releases that lock, then reads the store, so N concurrent callers
+    // on a cold cache all miss and all read. `/config/providers` is exactly that
+    // shape -- it `join_all`s ~45 providers, each calling `check_provider_configured`
+    // -- so the first settings load could issue dozens of simultaneous Keychain
+    // reads: a prompt storm, and, when some of those racing reads fail, a grid
+    // where one provider says Configured and its neighbour says not, from the
+    // same credential blob.
+    secrets_read: Mutex<()>,
     // Test-only replacement for the OS credential store, so cache and
     // chunking behavior can be exercised without touching a real keyring
     // (which would show authorization prompts on macOS).
@@ -221,6 +231,7 @@ impl Default for Config {
             secrets,
             guard: Mutex::new(()),
             secrets_cache: Mutex::new(None),
+            secrets_read: Mutex::new(()),
             #[cfg(test)]
             test_keyring_store: None,
         }
@@ -327,6 +338,7 @@ impl Config {
             },
             guard: Mutex::new(()),
             secrets_cache: Mutex::new(None),
+            secrets_read: Mutex::new(()),
             #[cfg(test)]
             test_keyring_store: None,
         })
@@ -347,6 +359,7 @@ impl Config {
             },
             guard: Mutex::new(()),
             secrets_cache: Mutex::new(None),
+            secrets_read: Mutex::new(()),
             #[cfg(test)]
             test_keyring_store: None,
         })
@@ -642,6 +655,15 @@ impl Config {
             return self.read_all_secrets_uncached();
         }
 
+        if let Some(cached) = self.secrets_cache.lock().unwrap().clone() {
+            return Ok(cached);
+        }
+        // Cold. Exactly one caller performs the store read; the rest queue here
+        // and take the cache the winner leaves behind. The re-check inside the
+        // gate is what makes that true -- without it every queued caller would
+        // proceed to read once it acquired the gate, serialising the storm
+        // rather than collapsing it.
+        let _single_flight = self.secrets_read.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(cached) = self.secrets_cache.lock().unwrap().clone() {
             return Ok(cached);
         }
@@ -2098,6 +2120,7 @@ mod tests {
             },
             guard: Mutex::new(()),
             secrets_cache: Mutex::new(None),
+            secrets_read: Mutex::new(()),
             test_keyring_store: Some(std::sync::Arc::new(PanicsOnRead)),
         };
         let overrides = HashMap::from([
@@ -2220,6 +2243,69 @@ mod tests {
     }
 
     #[test]
+    fn a_cold_cache_reads_the_credential_store_exactly_once_under_concurrency() {
+        // `/config/providers` fans out over every provider at once, and each row
+        // asks whether its keys are set. Before the single-flight gate the cache
+        // could not collapse that: all of them missed together and all of them
+        // read the store. On macOS each read is a potential Keychain prompt, and
+        // a read that loses the race returns an error -- which is how one blob
+        // produced a grid with `versa_azure` Configured and `versa_bedrock` not.
+        struct CountingStore {
+            blob: String,
+            reads: std::sync::atomic::AtomicUsize,
+        }
+        impl KeyringBlobStore for CountingStore {
+            fn get(&self, _username: &str) -> Result<String, keyring::Error> {
+                self.reads
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                // Slow enough that concurrent callers genuinely overlap; a fast
+                // fake would let them serialise by luck and pass either way.
+                std::thread::sleep(std::time::Duration::from_millis(40));
+                Ok(self.blob.clone())
+            }
+            fn set(&self, _username: &str, _value: &str) -> Result<(), keyring::Error> {
+                Ok(())
+            }
+            fn delete(&self, _username: &str) -> Result<(), keyring::Error> {
+                Ok(())
+            }
+        }
+
+        let store = std::sync::Arc::new(CountingStore {
+            blob: "{\"VERSA_AZURE_API_KEY\":\"a\",\"VERSA_BEDROCK_ACCESS_KEY_ID\":\"b\"}"
+                .to_string(),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let config_file = NamedTempFile::new().unwrap();
+        let config = std::sync::Arc::new(Config {
+            config_path: config_file.path().to_path_buf(),
+            secrets: SecretStorage::Keyring {
+                service: "biorouter-test".to_string(),
+            },
+            guard: Mutex::new(()),
+            secrets_cache: Mutex::new(None),
+            secrets_read: Mutex::new(()),
+            test_keyring_store: Some(store.clone()),
+        });
+
+        let handles: Vec<_> = (0..24)
+            .map(|_| {
+                let config = config.clone();
+                std::thread::spawn(move || config.all_secrets().map(|m| m.len()))
+            })
+            .collect();
+        for handle in handles {
+            // Every caller gets the whole blob, not just the winner.
+            assert_eq!(handle.join().unwrap().unwrap(), 2);
+        }
+        assert_eq!(
+            store.reads.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "24 concurrent cold readers must produce exactly one credential-store read"
+        );
+    }
+
+    #[test]
     fn test_secrets_cache_serves_reads_and_tracks_writes() -> Result<(), ConfigError> {
         // The cache is what collapses N keychain reads (each a potential
         // macOS authorization prompt) into a single read per process.
@@ -2232,6 +2318,7 @@ mod tests {
             },
             guard: Mutex::new(()),
             secrets_cache: Mutex::new(None),
+            secrets_read: Mutex::new(()),
             test_keyring_store: Some(store.clone()),
         };
 
