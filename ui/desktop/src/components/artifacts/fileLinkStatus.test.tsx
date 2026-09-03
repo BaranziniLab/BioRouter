@@ -231,3 +231,63 @@ describe('fileLinkStatus', () => {
     });
   });
 });
+
+describe('a path named before it exists', () => {
+  /**
+   * The commonest sequence there is, and the one the first version of this
+   * cache got wrong.
+   *
+   * The assistant streams prose that NAMES a path, and only then calls the tool
+   * that creates it. The link mounts during the prose, the bridge truthfully
+   * answers "no", and — when a verdict was cached permanently — `requestCheck`
+   * returned early for that key forever after. The file appeared a second later
+   * and the link stayed grey and inert for the life of the renderer, on a file
+   * the panel could open perfectly well. That is the module's own contract
+   * ("a link is only a link when the panel could open it") failing open in the
+   * unhelpful direction.
+   *
+   * `missing` is therefore provisional and `present` is not, and something has
+   * to actually re-ask — expiring the entry alone would leave the stale answer
+   * on screen until some unrelated link happened to mount.
+   */
+  it('becomes a link once the file the agent promised actually appears', async () => {
+    vi.useFakeTimers();
+    let exists = false;
+    const checkFilePaths = vi.fn(async (reqs: { path: string }[]) =>
+      reqs.map(() => ({ exists, isDirectory: false }))
+    );
+    Object.defineProperty(window, 'electron', { configurable: true, value: { checkFilePaths } });
+
+    const { result } = renderHook(() => useFileLinkExistence('/work/promised.py'));
+
+    // The prose mentioned it; the tool has not run yet.
+    await vi.waitFor(() => expect(result.current).toBe('missing'));
+    expect(isOpenableFileLink(result.current)).toBe(false);
+
+    // …the tool runs.
+    exists = true;
+    await vi.advanceTimersByTimeAsync(2500);
+
+    await vi.waitFor(() => expect(result.current).toBe('present'));
+    expect(isOpenableFileLink(result.current)).toBe(true);
+    expect(checkFilePaths.mock.calls.length).toBeGreaterThan(1);
+    vi.useRealTimers();
+  });
+
+  it('does not re-ask about a file it has already found', async () => {
+    vi.useFakeTimers();
+    const checkFilePaths = vi.fn(async (reqs: { path: string }[]) =>
+      reqs.map(() => ({ exists: true, isDirectory: false }))
+    );
+    Object.defineProperty(window, 'electron', { configurable: true, value: { checkFilePaths } });
+
+    const { result } = renderHook(() => useFileLinkExistence('/work/settled.py'));
+    await vi.waitFor(() => expect(result.current).toBe('present'));
+
+    // `present` is final — a file does not stop existing mid-session, and
+    // polling every extant link forever would be a cost with no payoff.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(checkFilePaths).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+});
