@@ -280,6 +280,25 @@ const REGISTRY: &[Guard] = &[
                        a second copy of that pair of conditions is how one of them goes \
                        missing",
             },
+            Site {
+                file: "crates/biorouter/src/agents/workspace_inspector.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "the one crossing whose target does not exist yet. \
+                       `workspace_open { new: { prompt } }` mints its conversation and \
+                       writes into it in a single call, so there is no row for \
+                       `needs_disclosure` to consult and no ledger entry that could make \
+                       it a SECOND crossing — a call that creates its own target is a \
+                       first crossing outright. It therefore asks the pure predicate \
+                       directly, against `Public`, which is the classification a new \
+                       conversation is born at. \
+                       ⚠ This site was ABSENT while the tool was not, which is exactly \
+                       the hole the census exists to make visible from the other \
+                       direction: a private chat could write caller-chosen text into a \
+                       new public conversation with no card and no ledger entry, while \
+                       `workspace_send_prompt` with the same text into the same session \
+                       raised one",
+            },
         ],
     },
     // ------------------------------------------------------- the HTTP reach
