@@ -543,6 +543,145 @@ pub struct HistoryOptParams {
 /// advertisement goes.
 const RETIRED_TOOL_NAMES: &[&str] = &["kb_search_raw_sources"];
 
+/// How long a caller waits for another call's transaction slot before being
+/// told the base is busy.
+///
+/// The slot is held across a KB-lock acquisition, which is bounded at
+/// `KB_WRITE_LOCK_WAIT` (1800s) — so an UNBOUNDED wait here inherits that
+/// half hour and adds no deadline of its own. Measured in a live drive: a
+/// `kb_write_page` behind an open transaction sat for twenty-one minutes
+/// with no error, no progress and nothing in the log after the dispatch
+/// line. The tool had not failed; it was queued behind a lock the caller
+/// could not see and could not cancel.
+///
+/// The read deadline, not the write one, and for the same reason #159 gave:
+/// this is a PRECONDITION CHECK, not the write itself. Giving up costs the
+/// caller a retry and tells them why; waiting out a long ingest costs them
+/// the whole turn and tells them nothing.
+const SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// Acquire a base's transaction slot, bounded and cancellable.
+///
+/// Cancellation matters as much as the bound: `Stop` in the GUI cancels the
+/// request token, and a caller parked here previously ignored it — the turn
+/// looked cancelled while the task went on waiting.
+async fn lock_transaction_slot(
+    slot: &ActiveKnowledgeTransactionSlot,
+    kb_id: &str,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<tokio::sync::OwnedMutexGuard<Option<ActiveKnowledgeTransaction>>, ErrorData> {
+    lock_transaction_slot_waiting(slot, kb_id, cancel, SLOT_WAIT).await
+}
+
+/// [`lock_transaction_slot`] with the deadline supplied, so a test can assert
+/// the WIRING without waiting out the real one.
+async fn lock_transaction_slot_waiting(
+    slot: &ActiveKnowledgeTransactionSlot,
+    kb_id: &str,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+    wait: std::time::Duration,
+) -> Result<tokio::sync::OwnedMutexGuard<Option<ActiveKnowledgeTransaction>>, ErrorData> {
+    let acquire = Arc::clone(slot).lock_owned();
+    let bounded = tokio::time::timeout(wait, acquire);
+    let guard = match cancel {
+        Some(token) => tokio::select! {
+            biased;
+            () = token.cancelled() => {
+                return Err(ErrorData::internal_error(
+                    format!("cancelled while waiting for knowledge base '{kb_id}'"),
+                    None,
+                ))
+            }
+            result = bounded => result,
+        },
+        None => bounded.await,
+    };
+    guard.map_err(|_| {
+        ErrorData::internal_error(
+            format!(
+                "knowledge base '{kb_id}' is busy with another transaction and did not \
+                 free up within {}s. Commit or abort the open transaction, then retry.",
+                SLOT_WAIT.as_secs()
+            ),
+            None,
+        )
+    })
+}
+
+#[cfg(test)]
+mod transaction_slot_bound_tests {
+    use super::*;
+
+    /// A caller waiting on a busy base gives up and says so.
+    ///
+    /// Found by DRIVING the app, not by reading it: a `kb_write_page` behind an
+    /// open transaction sat for twenty-one minutes — no error, no progress, and
+    /// nothing in the daemon log after the dispatch line. The tool had not
+    /// failed; it was queued on a slot with neither a deadline nor a cancel,
+    /// inheriting the 1800s KB-lock wait it is held across.
+    ///
+    /// The assertion is a DURATION and a MESSAGE. Asserting only that it
+    /// eventually errors would pass against the unbounded version too — after
+    /// half an hour — which is precisely the bug.
+    #[tokio::test]
+    async fn a_busy_base_refuses_instead_of_parking_for_the_write_deadline() {
+        let slot: ActiveKnowledgeTransactionSlot = Arc::new(Mutex::new(None));
+        let held = Arc::clone(&slot).lock_owned().await;
+
+        let wait = std::time::Duration::from_millis(120);
+        let started = std::time::Instant::now();
+        let outcome = lock_transaction_slot_waiting(&slot, "busy-base", None, wait).await;
+        let waited = started.elapsed();
+        drop(held);
+
+        let error = outcome.err().expect("a busy slot must refuse, not hang");
+        assert!(
+            error.message.contains("busy with another transaction"),
+            "the refusal must name the cause and the remedy: {}",
+            error.message
+        );
+        assert!(
+            waited >= wait,
+            "it must actually wait the deadline it was given"
+        );
+        // The shipped deadline is the read one, and the point of the bound is
+        // that it is far shorter than the 1800s KB write wait it is held across.
+        assert!(
+            SLOT_WAIT < std::time::Duration::from_secs(1800),
+            "SLOT_WAIT must stay well under the write deadline it exists to escape"
+        );
+    }
+
+    /// Cancelling actually cancels. `Stop` in the GUI cancels the request token,
+    /// and a caller parked here used to ignore it — the turn looked cancelled
+    /// while the task went on waiting.
+    #[tokio::test]
+    async fn cancelling_a_waiter_returns_immediately() {
+        let slot: ActiveKnowledgeTransactionSlot = Arc::new(Mutex::new(None));
+        let held = Arc::clone(&slot).lock_owned().await;
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+
+        let started = std::time::Instant::now();
+        let error = lock_transaction_slot_waiting(
+            &slot,
+            "busy-base",
+            Some(&token),
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .err()
+        .expect("a cancelled waiter must not acquire");
+        drop(held);
+
+        assert!(error.message.contains("cancelled"), "{}", error.message);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "cancellation must return at once, not wait out the deadline"
+        );
+    }
+}
+
 #[tool_router(router = tool_router)]
 impl KnowledgeServer {
     pub fn new() -> Result<Self> {
@@ -575,6 +714,10 @@ impl KnowledgeServer {
         slot: ActiveKnowledgeTransactionSlot,
         required_session_id: Option<&str>,
     ) -> (bool, Option<anyhow::Error>) {
+        // Unbounded on purpose: this is the REAPER, and it runs with no request
+        // context to cancel against and no caller to return an error to. It also
+        // cannot deadlock against the bound below — it is what frees the slot the
+        // bounded waiters are waiting on.
         let mut stored = slot.lock().await;
         if stored.as_ref().is_none_or(|active| {
             required_session_id.is_some_and(|session_id| active.session_id != session_id)
@@ -688,7 +831,7 @@ impl KnowledgeServer {
             return Ok(());
         }
         let slot = self.transactions.slot(kb_id);
-        let active = slot.lock().await;
+        let active = lock_transaction_slot(&slot, kb_id, Some(&context.ct)).await?;
         let handle = if supports_handle {
             args.and_then(|args| args.get("txn"))
                 .and_then(|txn| txn.as_str())
@@ -1284,7 +1427,7 @@ impl KnowledgeServer {
             ));
         }
         let slot = self.transactions.slot(&p.kb_id);
-        let active = slot.lock().await;
+        let active = lock_transaction_slot(&slot, &p.kb_id, None).await?;
         let txn_branch = match p.txn.as_deref() {
             Some(handle) => Some(
                 Self::active_transaction_branch(
@@ -1354,7 +1497,7 @@ impl KnowledgeServer {
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         let slot = self.transactions.slot(&p.kb_id);
-        let active = slot.lock().await;
+        let active = lock_transaction_slot(&slot, &p.kb_id, None).await?;
         let txn_branch = match p.txn.as_deref() {
             Some(handle) => Some(
                 Self::active_transaction_branch(
@@ -1445,7 +1588,7 @@ impl KnowledgeServer {
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         let slot = self.transactions.slot(&p.kb_id);
-        let active = slot.lock().await;
+        let active = lock_transaction_slot(&slot, &p.kb_id, None).await?;
         if active.is_some() {
             return Err(transaction_unavailable());
         }
@@ -1471,7 +1614,7 @@ impl KnowledgeServer {
         let p = p.0;
         let session_id = Self::transaction_session_id(&context)?;
         let slot = self.transactions.slot(&p.kb_id);
-        let mut active = slot.lock().await;
+        let mut active = lock_transaction_slot(&slot, &p.kb_id, None).await?;
         if active.is_some() {
             return Err(transaction_unavailable());
         }
@@ -1509,7 +1652,7 @@ impl KnowledgeServer {
         let p = p.0;
         let session_id = Self::transaction_session_id(&context)?;
         let slot = self.transactions.slot(&p.kb_id);
-        let mut active = slot.lock().await;
+        let mut active = lock_transaction_slot(&slot, &p.kb_id, None).await?;
         Self::active_transaction_branch(&active, &p.txn, &session_id)?;
         let active = active.take().ok_or_else(transaction_unavailable)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
@@ -1532,7 +1675,7 @@ impl KnowledgeServer {
         let p = p.0;
         let session_id = Self::transaction_session_id(&context)?;
         let slot = self.transactions.slot(&p.kb_id);
-        let mut active = slot.lock().await;
+        let mut active = lock_transaction_slot(&slot, &p.kb_id, None).await?;
         Self::active_transaction_branch(&active, &p.txn, &session_id)?;
         let active = active.take().ok_or_else(transaction_unavailable)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
@@ -1631,7 +1774,7 @@ impl KnowledgeServer {
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         let slot = self.transactions.slot(&p.kb_id);
-        let active = slot.lock().await;
+        let active = lock_transaction_slot(&slot, &p.kb_id, None).await?;
         let txn_branch = match p.txn.as_deref() {
             Some(handle) => Some(
                 Self::active_transaction_branch(
@@ -1983,7 +2126,7 @@ impl KnowledgeServer {
         let caller = CallerIdentity::from_context(Some(context));
         let transaction_slot = (!dry_run).then(|| self.transactions.slot(&p.kb_id));
         let transaction_state = match transaction_slot.as_ref() {
-            Some(slot) => Some(slot.lock().await),
+            Some(slot) => Some(lock_transaction_slot(&slot, &p.kb_id, Some(&context.ct)).await?),
             None => None,
         };
         if transaction_state
