@@ -20,9 +20,9 @@ const VERSA_BEDROCK_DEFAULTS = {
 };
 
 const VERSA_AZURE_DEFAULTS = {
-  AZURE_OPENAI_ENDPOINT: 'https://unified-api.ucsf.edu/general',
-  AZURE_OPENAI_DEPLOYMENT_NAME: 'gpt-5.5-2026-04-24',
-  AZURE_OPENAI_API_VERSION: '2025-01-01-preview',
+  VERSA_AZURE_ENDPOINT: 'https://unified-api.ucsf.edu/general',
+  VERSA_AZURE_DEPLOYMENT_NAME: 'gpt-5.5-2026-04-24',
+  VERSA_AZURE_API_VERSION: '2025-01-01-preview',
 };
 
 const TABS: { id: VersaFlavor; label: string }[] = [
@@ -50,12 +50,12 @@ export default function InstitutionalSetupCard({
     VERSA_BEDROCK_DEFAULTS.AWS_ENDPOINT_URL_BEDROCK
   );
   const [bedrockRegion, setBedrockRegion] = useState(VERSA_BEDROCK_DEFAULTS.AWS_REGION);
-  const [azureEndpoint, setAzureEndpoint] = useState(VERSA_AZURE_DEFAULTS.AZURE_OPENAI_ENDPOINT);
+  const [azureEndpoint, setAzureEndpoint] = useState(VERSA_AZURE_DEFAULTS.VERSA_AZURE_ENDPOINT);
   const [azureDeployment, setAzureDeployment] = useState(
-    VERSA_AZURE_DEFAULTS.AZURE_OPENAI_DEPLOYMENT_NAME
+    VERSA_AZURE_DEFAULTS.VERSA_AZURE_DEPLOYMENT_NAME
   );
   const [azureApiVersion, setAzureApiVersion] = useState(
-    VERSA_AZURE_DEFAULTS.AZURE_OPENAI_API_VERSION
+    VERSA_AZURE_DEFAULTS.VERSA_AZURE_API_VERSION
   );
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -84,9 +84,9 @@ export default function InstitutionalSetupCard({
         onSuccess('versa_bedrock');
       } else {
         await upsert('VERSA_AZURE_API_KEY', azureApiKey.trim(), true);
-        await upsert('AZURE_OPENAI_ENDPOINT', azureEndpoint.trim(), false);
-        await upsert('AZURE_OPENAI_DEPLOYMENT_NAME', azureDeployment.trim(), false);
-        await upsert('AZURE_OPENAI_API_VERSION', azureApiVersion.trim(), false);
+        await upsert('VERSA_AZURE_ENDPOINT', azureEndpoint.trim(), false);
+        await upsert('VERSA_AZURE_DEPLOYMENT_NAME', azureDeployment.trim(), false);
+        await upsert('VERSA_AZURE_API_VERSION', azureApiVersion.trim(), false);
         await checkProvider({ body: { provider: 'versa_azure' }, throwOnError: true });
         await upsert('BIOROUTER_PROVIDER', 'versa_azure', false);
         onSuccess('versa_azure');
@@ -214,7 +214,7 @@ export default function InstitutionalSetupCard({
             <>
               <div>
                 <label className="block text-[11px] text-text-muted mb-1">
-                  AZURE_OPENAI_ENDPOINT
+                  VERSA_AZURE_ENDPOINT
                 </label>
                 <input
                   type="text"
@@ -226,7 +226,7 @@ export default function InstitutionalSetupCard({
               </div>
               <div>
                 <label className="block text-[11px] text-text-muted mb-1">
-                  AZURE_OPENAI_DEPLOYMENT_NAME
+                  VERSA_AZURE_DEPLOYMENT_NAME
                 </label>
                 <input
                   type="text"
@@ -238,7 +238,7 @@ export default function InstitutionalSetupCard({
               </div>
               <div>
                 <label className="block text-[11px] text-text-muted mb-1">
-                  AZURE_OPENAI_API_VERSION
+                  VERSA_AZURE_API_VERSION
                 </label>
                 <input
                   type="text"

@@ -108,19 +108,65 @@ impl AuthProvider for VersaAzureAuthProvider {
     }
 }
 
+/// Resolve one endpoint override: this provider's own key first, the public
+/// Azure provider's key second, the shipped UCSF default last.
+///
+/// Pure, and split out from `from_env`, because the ORDER is the whole fix and
+/// a closure inside a function that reads global config cannot be tested.
+/// A blank stored value is treated as absent -- writing an empty string into
+/// the box in Advanced means "use the default", not "point at nowhere".
+fn resolve_override(
+    fallback: &str,
+    lookup: impl Fn(&str) -> Option<String>,
+    own_key: &str,
+    legacy_key: &str,
+) -> String {
+    [own_key, legacy_key]
+        .into_iter()
+        .filter_map(&lookup)
+        .find(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
 impl VersaAzureProvider {
     pub async fn from_env(model: ModelConfig) -> Result<Self> {
         let config = crate::config::Config::global();
 
-        let endpoint: String = config
-            .get_param("AZURE_OPENAI_ENDPOINT")
-            .unwrap_or_else(|_| VERSA_AZURE_ENDPOINT.to_string());
-        let deployment_name: String = config
-            .get_param("AZURE_OPENAI_DEPLOYMENT_NAME")
-            .unwrap_or_else(|_| VERSA_AZURE_DEPLOYMENT.to_string());
-        let api_version: String = config
-            .get_param("AZURE_OPENAI_API_VERSION")
-            .unwrap_or_else(|_| VERSA_AZURE_API_VERSION.to_string());
+        // Overrides are read from this provider's OWN namespace first, and only
+        // then from the public Azure provider's keys.
+        //
+        // ⚠ The order is the fix, not a preference. `AZURE_OPENAI_ENDPOINT` and
+        // its two siblings belong to the `azure_openai` card, and
+        // `check_provider_configured` reads exactly those to decide whether that
+        // card says Configured. While onboarding wrote them on Versa's behalf,
+        // connecting UCSF's PRIVATE Versa lit up the PUBLIC Azure OpenAI card as
+        // configured -- a provider the user never set up, sitting one click away
+        // in the same grid, and Public where Versa is Private. The legacy read
+        // stays so an install that customised those keys before this change
+        // keeps resolving to the same endpoint.
+        let param = |own: &str, legacy: &str, fallback: &str| -> String {
+            resolve_override(
+                fallback,
+                |key| config.get_param::<String>(key).ok(),
+                own,
+                legacy,
+            )
+        };
+        let endpoint = param(
+            "VERSA_AZURE_ENDPOINT",
+            "AZURE_OPENAI_ENDPOINT",
+            VERSA_AZURE_ENDPOINT,
+        );
+        let deployment_name = param(
+            "VERSA_AZURE_DEPLOYMENT_NAME",
+            "AZURE_OPENAI_DEPLOYMENT_NAME",
+            VERSA_AZURE_DEPLOYMENT,
+        );
+        let api_version = param(
+            "VERSA_AZURE_API_VERSION",
+            "AZURE_OPENAI_API_VERSION",
+            VERSA_AZURE_API_VERSION,
+        );
 
         // ⚠ `.ok()` here used to discard the REASON the key was unavailable, and
         // that is what produced the field report
@@ -412,6 +458,64 @@ impl Provider for VersaAzureProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_override_prefers_versas_own_key_then_the_legacy_one_then_the_default() {
+        let lookup = |pairs: Vec<(&'static str, &'static str)>| {
+            move |key: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| (*v).to_string())
+            }
+        };
+        // Own key wins.
+        assert_eq!(
+            resolve_override(
+                "default",
+                lookup(vec![
+                    ("VERSA_AZURE_ENDPOINT", "own"),
+                    ("AZURE_OPENAI_ENDPOINT", "legacy")
+                ]),
+                "VERSA_AZURE_ENDPOINT",
+                "AZURE_OPENAI_ENDPOINT",
+            ),
+            "own"
+        );
+        // An install that customised the shared key BEFORE the namespace existed
+        // still resolves to the endpoint it chose.
+        assert_eq!(
+            resolve_override(
+                "default",
+                lookup(vec![("AZURE_OPENAI_ENDPOINT", "legacy")]),
+                "VERSA_AZURE_ENDPOINT",
+                "AZURE_OPENAI_ENDPOINT",
+            ),
+            "legacy"
+        );
+        // Nothing stored: the shipped UCSF default, which is why onboarding never
+        // needed to write these keys at all.
+        assert_eq!(
+            resolve_override(
+                "default",
+                lookup(vec![]),
+                "VERSA_AZURE_ENDPOINT",
+                "AZURE_OPENAI_ENDPOINT",
+            ),
+            "default"
+        );
+        // Blank is absent, not "point at nowhere".
+        assert_eq!(
+            resolve_override(
+                "default",
+                lookup(vec![("VERSA_AZURE_ENDPOINT", "   ")]),
+                "VERSA_AZURE_ENDPOINT",
+                "AZURE_OPENAI_ENDPOINT",
+            ),
+            "default"
+        );
+    }
+
     use crate::providers::api_client::AuthMethod;
     use crate::providers::formats::openai::create_request;
 
