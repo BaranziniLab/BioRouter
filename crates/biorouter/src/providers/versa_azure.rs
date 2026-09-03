@@ -280,12 +280,26 @@ impl Provider for VersaAzureProvider {
             VERSA_AZURE_DEPLOYMENT,
             models,
             VERSA_AZURE_DOC_URL,
-            vec![
-                ConfigKey::new("VERSA_AZURE_API_KEY", true, true, None),
-                ConfigKey::new("AZURE_OPENAI_ENDPOINT", false, false, Some(VERSA_AZURE_ENDPOINT)),
-                ConfigKey::new("AZURE_OPENAI_DEPLOYMENT_NAME", false, false, Some(VERSA_AZURE_DEPLOYMENT)),
-                ConfigKey::new("AZURE_OPENAI_API_VERSION", false, false, Some(VERSA_AZURE_API_VERSION)),
-            ],
+            // ⚠ The API key, and NOTHING else. This provider's own description
+            // says "endpoint and deployment are pre-configured", and declaring
+            // them here contradicted it with a user-visible consequence.
+            //
+            // `AZURE_OPENAI_ENDPOINT` / `_DEPLOYMENT_NAME` / `_API_VERSION` are
+            // the generic Azure provider's namespace, and
+            // `AZURE_OPENAI_DEPLOYMENT_NAME` is the ONE key `azure_openai`
+            // requires without a default — i.e. the key its
+            // `check_provider_configured` turns on. The setup form persists a
+            // declared key's default (DefaultProviderSetupForm seeds it as a
+            // value; DefaultSubmitHandler submits it), so configuring UCSF's
+            // PRIVATE Versa lit up the PUBLIC, COMMERCIAL "Azure OpenAI" card as
+            // Configured — pointing at the UCSF endpoint while carrying the
+            // weaker Public tier. Reported from the field.
+            //
+            // Removing them costs nothing: `from_env` reads the same names with
+            // `unwrap_or_else(|_| VERSA_AZURE_*)`, so an operator who sets them
+            // in the environment or config still overrides, and an install that
+            // sets nothing still gets the UCSF gateway.
+            vec![ConfigKey::new("VERSA_AZURE_API_KEY", true, true, None)],
         )
         .with_unlisted_models()
         // The shipped endpoint is the UCSF gateway, so a default install is
@@ -631,5 +645,72 @@ mod tests {
 
         assert!(payload.get("stream").is_none());
         assert!(payload.get("stream_options").is_none());
+    }
+}
+
+#[cfg(test)]
+mod shared_namespace_tests {
+    use super::*;
+    use crate::providers::base::ProviderMetadata;
+
+    /// Configuring UCSF's PRIVATE Versa must not configure the PUBLIC Azure card.
+    ///
+    /// Reported from the field: setting up "Versa API Azure" made "Azure OpenAI"
+    /// — public, commercial, explicitly not HIPAA-compliant — show a green
+    /// Configured check. The mechanism was a shared config namespace:
+    ///
+    ///   * `azure_openai` requires `AZURE_OPENAI_DEPLOYMENT_NAME`, and it is the
+    ///     ONE required key it declares WITHOUT a default, so
+    ///     `check_provider_configured` turns on precisely that key.
+    ///   * `versa_azure` used to declare the same key (plus ENDPOINT and
+    ///     API_VERSION) with UCSF defaults, and the setup form persists a
+    ///     declared key's default — `DefaultProviderSetupForm` seeds it as a
+    ///     value and `DefaultSubmitHandler` submits it.
+    ///
+    /// So one provider's setup silently satisfied another's configured-check,
+    /// and the other was the weaker tier. This asserts the rule that prevents
+    /// it, rather than the single key that happened to leak.
+    #[test]
+    fn versa_azure_declares_no_key_that_belongs_to_the_public_azure_provider() {
+        let versa = VersaAzureProvider::metadata();
+        let public = crate::providers::azure::AzureProvider::metadata();
+
+        let public_required_without_default: Vec<&str> = public
+            .config_keys
+            .iter()
+            .filter(|key| key.required && key.default.is_none())
+            .map(|key| key.name.as_str())
+            .collect();
+        assert!(
+            !public_required_without_default.is_empty(),
+            "if the public provider stops having a deciding key this test is \
+             vacuous — re-derive it rather than deleting it"
+        );
+
+        for key in &versa.config_keys {
+            assert!(
+                !public_required_without_default.contains(&key.name.as_str()),
+                "versa_azure declares `{}`, which is what flips the PUBLIC \
+                 azure_openai provider to Configured. Two providers must not \
+                 share a config namespace when one of them is a different \
+                 privacy tier.",
+                key.name
+            );
+        }
+    }
+
+    /// …and the endpoint still resolves, because the provider falls back to its
+    /// own constants rather than to a persisted key.
+    #[test]
+    fn dropping_the_shared_keys_does_not_change_where_versa_points() {
+        assert_eq!(VERSA_AZURE_ENDPOINT, "https://unified-api.ucsf.edu/general");
+        let versa = VersaAzureProvider::metadata();
+        assert_eq!(
+            versa.config_keys.len(),
+            1,
+            "the API key, and nothing else — the description says endpoint and \
+             deployment are pre-configured"
+        );
+        assert_eq!(versa.config_keys[0].name, "VERSA_AZURE_API_KEY");
     }
 }
