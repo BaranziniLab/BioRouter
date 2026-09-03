@@ -241,8 +241,12 @@ fn sanitize_domain(raw: &str) -> Option<String> {
         None => candidate,
     };
 
+    // `split_at`, not `&rest[..index]`: `clippy::string_slice` is denied in this
+    // repo, and it is right to be — the index came from `find`, so it is a char
+    // boundary here, but the slice form invites one that is not. `split_at`
+    // keeps the leading `/` on `path`, which the indexed form also did.
     let (authority, path) = match rest.find('/') {
-        Some(index) => (&rest[..index], &rest[index..]),
+        Some(index) => rest.split_at(index),
         None => (rest, ""),
     };
 
