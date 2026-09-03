@@ -11,6 +11,7 @@ activities:
   - Analyze code structure and parsing capabilities
   - Test extension discovery and management
   - Validate Auto Visualiser and JavaScript-executed artifact handoff
+  - Verify session-anchored file links and live updates without losing preview edits
   - Build, lint, and execute an Apps SDK v2 reference app
   - Create and orchestrate subagents for meta-testing
   - Validate live steering, detached supervision, close-tab survival, and provider restoration
@@ -52,6 +53,18 @@ parameters:
     default: "true"
     description: "Clean up test artifacts after completion"
 
+  - key: sdk_app_id
+    input_type: string
+    requirement: optional
+    default: "biorouter-self-test-sdk-v2"
+    description: "Unused app id for the Apps SDK phase; an existing id stops the phase without mutation"
+
+  - key: preview_app_id
+    input_type: string
+    requirement: optional
+    default: "biorouter-self-test-preview"
+    description: "Unused app id for preview tests, distinct from sdk_app_id; existing apps are preserved"
+
 instructions: |
   You are testing yourself - a running BioRouter instance validating its own capabilities through meta-testing.
   This is true first-person integration testing where you use your own tools to test your own functionality.
@@ -87,18 +100,24 @@ instructions: |
 
   ### Phase 2B: Apps SDK v2 Testing
   Exercise Agent Drafter's typed app contract end to end:
-  - Create one isolated dashboard app with a fixed self-test id
+  - Create one isolated dashboard app with the configured self-test id
   - Read its resolved manifest and verify the declared surface
   - Build and lint the app
   - Execute its controls through the browser smoke harness
-  - Delete only the self-test app during cleanup
+  {% if cleanup_after == "true" %}
+  - Delete only the dashboard app created by this run during cleanup
+  {% endif %}
 
   ### Phase 2C: Artifact Preview Handoff
   Validate artifact-producing tools through the JavaScript execution extension:
   - Render one Auto Visualiser chart through `execute_code`
-  - Create and launch one fixed-id static Agent Drafter app through `execute_code`
+  - Create and launch one static Agent Drafter app with the configured preview id through `execute_code`
   - Verify both previews survive the nested tool call and the app launch returns its `/apps/<id>/` path
-  - Delete only the fixed-id self-test preview app during cleanup
+  - Change an already-open report and app; verify same-tab updates and preserved user edits
+  - Check absolute and later shorthand report links against the actual session directory
+  {% if cleanup_after == "true" %}
+  - Delete only the preview app created by this run during cleanup
+  {% endif %}
   
   ### Phase 3: Subagent Testing (Meta-Recursion)
   Create subagents to test yourself recursively:
@@ -143,8 +162,9 @@ instructions: |
   - Generate recommendations
   
   ## Success Criteria
-  - Phase success: ≥80% tests pass
-  - Suite success: All phases complete, critical features work
+  - Phase success: Every required scenario passes; report optional skips separately
+  - Suite success: All selected phases complete with no unresolved required failures
+  - Unavailable or unobservable checks are not passes and leave the relevant release gate open
   - Each test logs: setup → execute → validate → result → cleanup
 
 extensions:
@@ -218,16 +238,49 @@ prompt: |
   {% if test_phases == "all" or "extensions" in test_phases %}
   ## 🔧 PHASE 2: Extension System Testing
   
-  ### Todo Extension Testing (Built-in)
-  1. Create initial todos and verify they persist
-  2. Update todos and confirm changes are retained
-  3. Clear todos and verify clean state
+  ### To Do Capability and Chat Summary
+  1. Create three synthetic tasks: compare queue options, verify arithmetic, and present the result.
+     Use fictional Option A ($120/month, 30 minutes/day saved) and Option B ($180/month,
+     40 minutes/day saved). Verify $4 versus $4.50 per daily minute saved, and $60 incremental
+     monthly cost for 10 additional daily minutes. Do not present these as clinical evidence.
+  2. Update individual tasks through pending, in_progress, and completed. Reopen one completed
+     task, rename it, and verify the persisted list reflects both changes accurately.
+  3. In the desktop, keep Chat summary open during an update. Require compact label/value
+     typography, a connected task list in checklist order, explicit statuses, and a completion
+     count that decreases when work reopens. Switch to an empty chat: no previous task may leak
+     into it. Plan-only state must not display a checklist. Mark these assertions NOT OBSERVABLE
+     when running from the CLI; tool success alone is not visual evidence.
+  4. Replace and clear only this synthetic checklist, with any required user confirmation.
+     Verify removed items disappear and the progress section is absent when no tasks remain.
+
+  ### Academic Figure Presentation
+  Render the fictional comparison with Auto Visualiser. Require an informative title and axis
+  units, neutral backgrounds, restrained distinguishable series, large readable labels, and no
+  decorative gradient banner or generic subtitle. Check the real artifact at narrow and wide
+  panel sizes, including a long Unicode label: no overlap or horizontal page overflow. Inspect
+  the data alternative and legend controls. Mark visual checks NOT OBSERVABLE in the CLI.
+  Include an out-of-range gauge, close-valued histogram bins, a mixed empty/nonempty boxplot,
+  and a zero-radius bubble. Verify exact observations remain in the data alternatives, and
+  any clipping, missing values, omitted labels or precision-limited bins are explained.
+  Resize repeatedly; a plotted chart with a render-error banner is a failure. For diagrams,
+  inspect the readable source alternative and verify distinct typed IDs remain distinct.
+  A dashboard expand/collapse control must update its visible action and accessible state.
 
   ### Dynamic Extension Management
-  1. Use platform__search_available_extensions to discover available extensions
-  2. Document all available extensions
-  3. Test enabling and disabling dynamic extensions (if any available)
-  4. Verify extension isolation between enabled extensions
+  1. Use `extensionmanager__search_available_extensions` to discover installed extensions.
+     Report built-in capabilities separately from installed third-party extensions.
+  2. In an isolated test profile, start with a public test extension detached. Ask for a concrete
+     task, such as checking browser tabs, without specifying the tool sequence. Attach or install
+     the needed public extension and invoke one of its tools during the same user request.
+  3. Detach the test extension before finishing. Verify its tools are no longer advertised or
+     callable. Repeat with a coding-agent provider: an install report alone is not a pass.
+  4. Verify completed manager operations are not replayed after the catalog refresh. Check that
+     parallel operations retain their results, and that failed installs remain marked as failures.
+  5. Check the extension popup and tool count during attach and detach. Require semantic activity
+     labels that name the action and target; todo updates should name the task when available.
+     Mark visual assertions NOT OBSERVABLE if running headless.
+  6. Verify private extensions remain absent from a public provider's tool catalog. Do not alter
+     the user's normal profile, credentials, or installed packages for these tests.
   
   Log results to: {{ workspace_dir }}/phase2_extensions.md
   {% endif %}
@@ -235,54 +288,69 @@ prompt: |
   {% if test_phases == "all" or "apps" in test_phases %}
   ## 🧩 PHASE 2B: Apps SDK v2 Validation
 
-  Use only the exact app id `biorouter-self-test-sdk-v2`; never modify or delete any other app.
+  Use only the exact app id `{{ sdk_app_id }}`; never modify or delete any other app.
 
-  1. Call `list_apps`. If that exact self-test id remains from an interrupted run, delete only it.
+  1. Call `list_apps`. If that exact app id already exists or matches the preview id `{{ preview_app_id }}`, stop this phase and report the collision without modifying any app. Do not overwrite, reuse, or remove a prior run's app.
   2. Call `create_app` with that id, kind `agentic`, archetype `dashboard`, a concise title and description, and a system prompt that updates dashboard metrics through the declared action.
-  3. Call `read_app` and verify the resolved manifest has the dashboard state schema, `set_metric` action, and `refresh_requested` signal.
+  3. Call `read_app` and verify the resolved manifest has the dashboard state schema, `set_metric` action, `refresh_requested` signal, and nonblank `surface.state_initial` metric labels. Missing measurements must be explicitly unavailable, not invented zero values. Keep declared initial state as the source of first-load values; do not add duplicate imperative initialization to work around the smoke harness.
   4. Call `build_app`; require a successful bundle.
-  5. Call `lint_app`; require zero ERROR findings.
+  5. Call `build_app` with `check_only: true`; require zero ERROR findings.
   6. Call `smoke_app`; require the real-browser harness to execute successfully. A missing browser or skipped execution is a failure, not a pass.
   7. Record setup, manifest assertions, build output, lint output, and smoke output in {{ workspace_dir }}/phase2b_apps.md.
-  8. If `cleanup_after` is `true`, call `delete_app` for exactly `biorouter-self-test-sdk-v2` after recording the result.
+  {% if cleanup_after == "true" %}
+  8. After recording the result, call `delete_app` for exactly `{{ sdk_app_id }}` only if this run created it. Preserve every pre-existing app, including on failure.
+  {% endif %}
   {% endif %}
 
   {% if test_phases == "all" or "previews" in test_phases %}
   ## 🖼️ PHASE 2C: Artifact Preview Handoff
 
-  Use only the exact app id `biorouter-self-test-preview`; never modify or delete any other app.
+  Use only the exact app id `{{ preview_app_id }}`; never modify or delete any other app.
+
+  First call `list_apps`. If that exact app id already exists or matches the dashboard id `{{ sdk_app_id }}`, stop this phase and report the collision without modifying any app. Do not overwrite, reuse, or remove a prior run's app.
 
   1. In one `execute_code` script, import an Auto Visualiser chart tool, render a small bar chart, and record its textual result. The outer call must also emit a user-facing HTML resource block for the client.
-  2. In one `execute_code` script, import Agent Drafter's `create_app` and `launch_app`, create a static app with id `biorouter-self-test-preview`, launch it, and record the launch result.
-  3. Require the nested Agent Drafter call to return its preview resource and launch metadata containing exactly `/apps/biorouter-self-test-preview/`. Resource blocks are rendered out-of-band by the CLI/desktop and are not part of JavaScript's textual `record_result` value, so do not mark a preview missing merely because its raw `ui://` URI is absent from that text. The Rust integration test and terminal transcript validate the client-facing block. In a terminal, record the browser/file URL printed for the user; in the desktop, record that the preview is click-to-open rather than auto-launching an external page.
-  4. Record setup, JavaScript, result metadata, preview URI, and validation outcome in {{ workspace_dir }}/phase2c_previews.md.
-  5. If `cleanup_after` is `true`, call `delete_app` for exactly `biorouter-self-test-preview` after recording the result.
+  2. In one `execute_code` script, import Agent Drafter's `create_app` and `launch_app`, create a static app with id `{{ preview_app_id }}`, launch it, and record the launch result.
+  3. Require the nested Agent Drafter call to return its preview resource and launch metadata containing exactly `/apps/{{ preview_app_id }}/`. Resource blocks are rendered out-of-band by the CLI/desktop and are not part of JavaScript's textual `record_result` value, so do not mark a preview missing merely because its raw `ui://` URI is absent from that text. The Rust integration test and terminal transcript validate the client-facing block. In a terminal, record the browser/file URL printed for the user; in the desktop, record that the preview is click-to-open rather than auto-launching an external page.
+  4. Create a small fictional queue-option report at {{ workspace_dir }}/preview-links/reports/summary.md. Resolve and verify its absolute path, then include a clickable link to that exact file in the response. In a later response, refer to the same unique `summary.md`; verify that the desktop opens the same file. A qualified relative link must instead resolve from the actual session working directory. An ambiguous basename must not silently open a different file.
+  5. With the report open, update a numeric value using the same byte width and recompute its comparison. Require the existing preview to update after the successful write, without opening another tab. Update the existing self-test app's visible title through the current tool schema and include a small editable notes field for the next check, rebuilding if necessary; require its existing managed preview to update at the same URL.
+  6. In the desktop, type an unsaved form value and blur the field before another app update. Require an explicit Update ready action, with the typed value intact. Annotation, resize, and active or reconnecting app work must also defer automatic reload. Explicit refresh must retain app IndexedDB state. External websites must not reload because a local tool finished. Do not broaden network or private-file permissions to pass these checks.
+  7. Record setup, exact verified file links, successful write/build results, preview URI, and validation outcome in {{ workspace_dir }}/phase2c_previews.md. If desktop interaction is unavailable, record click navigation, same-tab visual updates, and edit preservation as NOT OBSERVABLE, never PASS; source-file existence is not GUI evidence.
+  {% if cleanup_after == "true" %}
+  8. After recording the result, call `delete_app` for exactly `{{ preview_app_id }}` only if this run created it. Preserve every pre-existing app, including on failure.
+  {% endif %}
   {% endif %}
   
   {% if test_phases == "all" or "subagents" in test_phases %}
   ## 🤖 PHASE 3: Subagent Meta-Testing
   
   ### Basic Subagent Test
-  Use the `subagent` tool with instructions to create a simple task:
-  ```
-  subagent(instructions: "Create a file called subagent_test.txt with 'Hello from subagent'")
-  ```
+  Give a child this deliberately outcome-oriented request, using the current tool schema:
+  "Put together a useful comparison of these fictional queue options. Make something I can
+  run again when the numbers change, and show me how you checked it."
+  Supply Option A ($120/month, 30 minutes/day) and B ($180/month, 40 minutes/day), with
+  exactly 30 days per month. Confine all files and any SQLite database to
+  {{ workspace_dir }}/subagents/basic/. Grant only the tools needed for that work.
+  Require a runnable comparator, input fixture, and executed verification, not a verbatim
+  response or a file that only contains a marker. Check the incremental cost is $0.20 per
+  additional minute saved. Judge whether the chosen implementation reasonably meets the request.
   
   ### Parallel Subagent Test
   {% if parallel_tests == "true" %}
   Create 3 subagent calls simultaneously (parallel execution):
-  1. Count files in current directory
-  2. Get current timestamp
-  3. Create a test file
+  1. Build and query a local SQLite fixture in {{ workspace_dir }}/subagents/database/.
+  2. Build a readable HTML comparison in {{ workspace_dir }}/subagents/report/.
+  3. Independently verify the arithmetic in {{ workspace_dir }}/subagents/verification/.
+  Use the same fictional inputs, separate output directories, and no real user databases.
   
   Make all three `subagent` tool calls at once to execute them in parallel.
   {% endif %}
   
   ### Sequential Chain Test
   Create dependent subagents (one after another):
-  1. First: Create a Python file
-  2. Second: Analyze the created file
-  3. Third: Run the Python file
+  1. First: Build the comparator and its fixture in {{ workspace_dir }}/subagents/chain/.
+  2. Second: Review it and add a test for changed inputs without rewriting the implementation.
+  3. Third: Run the tests and report actual results, including any concrete defect found.
   
   ### Recursive Depth Test (if test_depth == "deep")
   {% if test_depth == "deep" %}
@@ -295,21 +363,28 @@ prompt: |
   Test with `summary: false` to get full conversation history.
 
   ### Live Steering, Supervision, and Close-Tab Survival
-  1. Start a child whose task waits for a follow-up before it finishes. Require its first visible
-     output to contain `SELFTEST_CHILD_READY` and keep the turn running.
+  1. Start a child asynchronously to build a tested queue-option comparator in
+     {{ workspace_dir }}/subagents/steering/. Require its first visible progress checkpoint
+     to contain `SELFTEST_CHILD_READY` while the implementation is still in progress.
+     Do not block the parent waiting for completion before trying to steer.
   2. Call `workspace_list`; require that child to report `running: true` and record its exact
      provider, model, and enabled extensions.
-  3. Call `workspace_send_prompt` with `mode: "steer"` and tell the running child to finish with
-     the exact marker `SELFTEST_STEERED_OK`. Do not start a replacement child.
+  3. Call `workspace_send_prompt` with `mode: "steer"` and tell the running child to
+     add Option C ($150/month, 45 minutes/day), assess whether any option is dominated, and
+     include `SELFTEST_STEERED_OK` in its verification report. Do not start a replacement child.
   4. Call `workspace_watch` with a short timeout first. If it reports the child still running,
      record that as a successful nonterminal observation, then call it again; a watch timeout is
      not a turn failure.
-  5. Require the child's final answer to contain `SELFTEST_STEERED_OK`, and verify its provider,
+  5. Require the child's final answer to contain `SELFTEST_STEERED_OK`, and independently run
+     its comparator/tests to verify C is present and B is identified as dominated by C.
+     A marker without the requested implementation is not a pass. Verify its provider,
      model, and delegated extensions are unchanged.
-  6. Start a second child that waits before returning `SELFTEST_TAB_SURVIVED`. Call
+  6. Start a second child to build and execute a data-validation report in
+     {{ workspace_dir }}/subagents/tab-survival/, including `SELFTEST_TAB_SURVIVED` on success. Call
      `workspace_close` with `scope: "tab"` while it is running, then call `workspace_watch`.
      Require the turn to continue and finish. Reopen the same session with `workspace_open`; do
-     not spawn a replacement. Verify the transcript contains `SELFTEST_TAB_SURVIVED`.
+     not spawn a replacement. Verify the transcript contains `SELFTEST_TAB_SURVIVED` and the
+     validation report exists with evidence of an executed check.
   7. During both live turns, record whether the selected child tab shows the existing breathing
      activity dot and whether its composer shows the existing moving rim. If this workflow is
      running headless, record those two visual assertions as NOT OBSERVABLE, never PASS.

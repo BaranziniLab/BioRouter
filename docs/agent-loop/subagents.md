@@ -408,7 +408,7 @@ re-enabling the feature never revisits an existing row.
 
 ## Related documentation
 
-- [Workspace Control extension](../extensions/built-in/workspace.md) — the extension that advertises the spawn tool, plus the cross-session tools this page's migration table points at.
+- [Workspace Control capability](../extensions/built-in/workspace.md) — the extension that advertises the spawn tool, plus the cross-session tools this page's migration table points at.
 - [Subworkflows](../workflows/subworkflows.md) — the workflow-driven counterpart to subagents, registered via `sub_workflows` and exposed as tools.
 - [Workflows](../workflows/README.md) — how to author the workflow files a subagent can be configured from.
 - [Workflow schema reference](../workflows/workflow-schema-reference.md) — every field available in a workflow file, including where workflows are discovered.

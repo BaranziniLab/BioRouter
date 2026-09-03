@@ -967,6 +967,8 @@ Flat. A hairline. No gradient, no shadow, no card wrapper. Primary action, if an
 
 `--background-default`, 1px `--border-subtle`, `--radius-lg` (12px), 20px padding, **no shadow**. Hover (only if the card is a link): border → `--border-strong`. Metric tiles: 30px mono-light value over an 11px caps label in `--text-muted`.
 
+Contextual summaries are not dashboard metric tiles. The chat-summary popover uses 12px sentence-case labels and 14px medium-weight values with tabular numerals, the standard compact controls, and no nested filled cards. Its To Do section is an ordered, connected step list with explicit statuses and a completion count; it is omitted when no checklist exists, including plan-only chats. Connections show checklist order, not inferred dependencies.
+
 **Today.** The base `Card` component ships `[box-shadow:var(--shadow-default)]` ([`card.tsx:10`](ui/desktop/src/components/ui/card.tsx#L10)) — every card is elevated by default, and callers must manually cancel it. This directly contradicts the flat-surface rule. `DR-47`
 
 `.biorouter-page-block` adds `box-shadow: 0 16px 34px -28px …, inset 0 1px 0 rgba(255,255,255,.44)` with no dark override. `DR-12`

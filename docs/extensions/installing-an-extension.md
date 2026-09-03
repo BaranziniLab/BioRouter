@@ -28,7 +28,9 @@ The states an install can end in are all reportable, to a person and to a model:
 
 Rollback is scoped to the run's own work. A tree that already existed is not deleted — a failed upgrade that removes a working extension is worse than a failed upgrade — and a credential the machine already held is not revoked, because other extensions may share it.
 
-> **A cancelled credential step keeps the expensive half.** The extracted tree and its built Python environment survive as a resume record ([`ResumableInstalls`](../../crates/biorouter/src/extension_install/transaction.rs)), holding the extension's name and which keys are still needed — and no values. Retrying does not re-download or rebuild.
+> **A cancelled credential step leaves a claim on disk, and the claim is what makes it findable again.** The extracted tree and its built Python environment survive, and beside them — in `extension-installs/`, a *sibling* of the extensions directory so a bundle cannot forge one — sits an [`InstallClaim`](../../crates/biorouter/src/extension_install/claim.rs) naming the extension, its install directory, and which keys are still needed. No values, ever.
+>
+> ⚠ **This used to say the record lived in a process-global map and that "retrying does not re-download or rebuild". Both were wrong.** The map was write-only and died with the process, so quitting the app left the tree unreachable and invisible on every surface — which is the whole reason the claim is now written to disk. And a resume *does* re-download and re-extract; what survives the round trip is the built `.venv`, which is the expensive part. Finish a claimed install with `biorouter extension configure <name>`, which prompts with echo off.
 
 ---
 
@@ -115,9 +117,17 @@ Already-configured keys are listed **by name** and never read back to pre-fill a
 
 ### From a chat
 
-The agent calls `install_extension` with the BAAM registry id and download URL. It never shells out, never sees a credential, and is told in its own tool description that a value in a chat message cannot configure anything and would expose it.
+The agent calls `install_extension` with an exact trusted BAAM registry id.
+BioRouter resolves the download URL itself, validates the model's eligibility and
+asks for approval of that exact package descriptor. It never accepts an
+agent-supplied download URL or shells out to install. Credentials are entered in
+BioRouter's own dialog; the agent receives key names and status, never values.
 
-Privacy Gate F1 lands on the **attach**, not on the install: installing is the user's explicit request and writes to disk, while attaching loads the server into this chat, which is what a public model may not do to a private extension. A refused attach still leaves the extension correctly installed for a session that may use it.
+A public-model chat cannot install a private connector through this tool: it is
+refused before approval or download, independently of the diagnostic privacy
+toggle. Attach performs its own reach checks as well. For otherwise authorized
+installs, an attach failure is reported separately from installation; an
+installed-only result is not evidence that the extension's tools are callable.
 
 ---
 

@@ -18,7 +18,7 @@ use biorouter::scheduler::get_default_scheduled_workflows_dir;
 use biorouter::workflow::local_workflows::get_workflow_library_dir;
 use biorouter::workflow::WORKFLOW_FILE_EXTENSIONS;
 use biorouter_mcp::agent_drafter::{default_root, store::ArtifactStore};
-use biorouter_mcp::knowledge::service::KnowledgeService;
+use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
 use biorouter_mcp::knowledge::types::KbFormat;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -122,6 +122,7 @@ fn reset_knowledge(service: &KnowledgeService, memory_root: &Path) -> Result<u64
         service.delete_base(&base.id)?;
     }
     service.create_base_in(SOUL_KB_ID, SOUL_KB_NAME, Some(SOUL_COLOR), KbFormat::Okf)?;
+    service.set_selection(None, None, PrimaryUpdate::Inherit)?;
     if memory_root.exists() {
         fs::remove_dir_all(memory_root)?;
     }
@@ -131,6 +132,17 @@ fn reset_knowledge(service: &KnowledgeService, memory_root: &Path) -> Result<u64
 fn reset_extensions(extensions_root: &Path) -> Result<u64> {
     if extensions_root.exists() {
         fs::remove_dir_all(extensions_root)?;
+    }
+    // ⚠ The install claims are a SIBLING of the extensions root — deliberately,
+    // so a bundle cannot forge one through `extract_to` — which means
+    // `remove_dir_all(extensions_root)` does not reach them. A factory reset
+    // that left them would leave every claim pointing at a tree that no longer
+    // exists. `read_claims` self-cleans such a claim on its next read, so this
+    // is tidiness rather than correctness; doing it here is what stops a reset
+    // reporting "done" while the state it was asked to clear is still on disk.
+    let claims = biorouter::extension_install::claim::claims_dir();
+    if claims.exists() {
+        fs::remove_dir_all(&claims)?;
     }
     Ok(biorouter::config::extensions::reset_to_bundled_extensions()? as u64)
 }
@@ -419,6 +431,10 @@ mod tests {
         let bases = service.list_bases().unwrap();
         assert_eq!(bases.len(), 1);
         assert_eq!(bases[0].id, SOUL_KB_ID);
+        assert_eq!(
+            service.primary_for_session(None).unwrap().as_deref(),
+            Some(SOUL_KB_ID)
+        );
         assert!(!memory.exists());
     }
 }

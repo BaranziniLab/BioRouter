@@ -186,9 +186,67 @@ struct ActiveKnowledgeTransaction {
     session_id: String,
     txn: crate::knowledge::git::Txn,
     _write_guard: crate::knowledge::service::KnowledgeWriteGuard,
+    /// When this transaction was opened or last used (#157).
+    ///
+    /// An open transaction holds the base's WRITE LOCK — the in-process mutex
+    /// and the on-disk `flock` both — for its whole lifetime, so an abandoned
+    /// one makes every later operation on that base, from any other session,
+    /// block forever. Measured: `kb_begin_txn` and nothing else leaves an
+    /// outside `flock(LOCK_EX|LOCK_NB)` refused, and a second session's
+    /// `kb_get_graph` and `kb_lint` on that base never return while another
+    /// base answers in 8 ms.
+    ///
+    /// The two reapers that existed both fire on TEARDOWN — session end,
+    /// connection end — so a transaction abandoned while its session is still
+    /// alive was never released. That is the ordinary case: a model opens one,
+    /// then the turn errors, is cancelled, or simply moves on.
+    touched_at: std::time::Instant,
 }
 
+/// How long an open knowledge transaction may sit untouched before it is
+/// treated as abandoned and rolled back (#157).
+///
+/// ⚠ Longer than the longest LEGITIMATE quiet stretch inside one, which is a
+/// macro's own wall-clock budget (`SubAgentBounds::max_wall` — 300 s by default,
+/// 900 s as `biorouter-cli` builds it): a macro opens a transaction and can go
+/// quiet for a whole model call inside it. Reaping a live transaction would
+/// roll back work in progress, which is worse than the hang this prevents, so
+/// the threshold is deliberately generous. It only has to be FINITE — the bug
+/// is that an abandoned transaction was held until the process exited.
+const ABANDONED_TRANSACTION_IDLE: std::time::Duration = std::time::Duration::from_secs(1800);
+
 impl KnowledgeTransactionCoordinator {
+    /// Slots whose transaction has been untouched for longer than
+    /// [`ABANDONED_TRANSACTION_IDLE`].
+    async fn abandoned(&self) -> Vec<(String, ActiveKnowledgeTransactionSlot)> {
+        self.abandoned_after(ABANDONED_TRANSACTION_IDLE).await
+    }
+
+    /// [`Self::abandoned`] with the threshold supplied, so a test can drive the
+    /// reaper without waiting out the shipped 30 minutes.
+    async fn abandoned_after(
+        &self,
+        idle: std::time::Duration,
+    ) -> Vec<(String, ActiveKnowledgeTransactionSlot)> {
+        let mut out = Vec::new();
+        for (kb_id, slot) in self.slots() {
+            // `try_lock`, never `lock().await`: a slot held by a transaction
+            // that is being committed right now is BUSY, not abandoned, and
+            // waiting for it here would put the reaper behind the very work it
+            // is meant to be checking on.
+            let is_abandoned = match slot.try_lock() {
+                Ok(active) => active
+                    .as_ref()
+                    .is_some_and(|txn| txn.touched_at.elapsed() >= idle),
+                Err(_) => false,
+            };
+            if is_abandoned {
+                out.push((kb_id, slot));
+            }
+        }
+        out
+    }
+
     fn slot(&self, kb_id: &str) -> ActiveKnowledgeTransactionSlot {
         self.active
             .entry(kb_id.to_string())
@@ -412,8 +470,9 @@ pub struct SearchParams {
     pub query: String,
     #[serde(default = "default_search_limit")]
     pub limit: usize,
+    /// Which corpus to search. Defaults to the curated knowledge pages.
     #[serde(default)]
-    pub include_raw_sources: bool,
+    pub scope: SearchScope,
 }
 
 fn default_search_limit() -> usize {
@@ -473,6 +532,16 @@ pub struct HistoryOptParams {
     #[serde(default = "default_limit")]
     pub limit: usize,
 }
+
+/// Registered so the name keeps dispatching, but never advertised.
+///
+/// A retired tool is one whose job another tool already does through an
+/// argument — `kb_search_raw_sources` is `kb_search { scope: "raw_sources" }`.
+/// Dropping the ROUTE as well as the declaration would turn a stored
+/// `always allow` grant and every persisted transcript's retry into an
+/// unknown-tool error the caller cannot act on, so the route stays and only the
+/// advertisement goes.
+const RETIRED_TOOL_NAMES: &[&str] = &["kb_search_raw_sources"];
 
 #[tool_router(router = tool_router)]
 impl KnowledgeServer {
@@ -587,6 +656,23 @@ impl KnowledgeServer {
             .ok_or_else(transaction_unavailable)
     }
 
+    /// Mark a transaction as still in use, so the reaper measures IDLE time
+    /// rather than total age. Without this a macro that legitimately runs
+    /// longer than [`ABANDONED_TRANSACTION_IDLE`] would have its work rolled
+    /// back underneath it.
+    fn touch_active_transaction(
+        active: &mut Option<ActiveKnowledgeTransaction>,
+        handle: &str,
+        session_id: &str,
+    ) {
+        if let Some(txn) = active
+            .as_mut()
+            .filter(|txn| txn.handle == handle && txn.session_id == session_id)
+        {
+            txn.touched_at = std::time::Instant::now();
+        }
+    }
+
     async fn assert_transaction_admission(
         &self,
         tool: &str,
@@ -611,11 +697,11 @@ impl KnowledgeServer {
         };
         match handle {
             Some(handle) => {
-                Self::active_transaction_branch(
-                    &active,
-                    handle,
-                    &Self::transaction_session_id(context)?,
-                )?;
+                let session_id = Self::transaction_session_id(context)?;
+                Self::active_transaction_branch(&active, handle, &session_id)?;
+                // Still in use, so the reaper's clock restarts here.
+                let mut active = active;
+                Self::touch_active_transaction(&mut active, handle, &session_id);
                 Ok(())
             }
             None if active.is_some() => Err(transaction_unavailable()),
@@ -1120,9 +1206,13 @@ impl KnowledgeServer {
         // provider and therefore have a tier to ratchet with.
         let caller = CallerIdentity::from_context(Some(&context));
         let cancel = context.ct;
+        // #159: a READ deadline. Lint queues for fairness — so a stream of lints
+        // cannot starve a macro — but it must not queue forever behind an OPEN
+        // TRANSACTION, which holds this lock for as long as somebody leaves it
+        // open. A lint that gives up loses nothing and can be retried.
         let lock = self
             .service
-            .lock_existing_kb_cancellable(&kb_id, Some(&cancel))
+            .lock_existing_kb_for_read(&kb_id, Some(&cancel))
             .await
             .map_err(into_err)?;
         // CP1 ran before this potentially long lock wait. A private writer can
@@ -1402,6 +1492,7 @@ impl KnowledgeServer {
             session_id,
             txn,
             _write_guard: write_guard,
+            touched_at: std::time::Instant::now(),
         });
         ok_json(&serde_json::json!({ "txn": handle }))
     }
@@ -1452,7 +1543,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_search",
-        description = "BM25 full-text search over curated knowledge pages. Omit kb_id to search all visible knowledge bases. Set include_raw_sources=true only when the user explicitly asks to inspect/search original raw sources."
+        description = "BM25 full-text search over a knowledge base. Omit kb_id to search all visible knowledge bases. `scope` chooses the corpus: \"knowledge\" (the default) searches the curated pages; \"raw_sources\" searches the original source markdown only, and is for the rare case where the user specifically asks for raw/original/source-document evidence instead of the curated graph; \"all\" searches both."
     )]
     pub async fn kb_search(
         &self,
@@ -1460,11 +1551,7 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let scope = if p.include_raw_sources {
-            SearchScope::All
-        } else {
-            SearchScope::Knowledge
-        };
+        let scope = p.scope;
         let hits = if let Some(kb_id) = p.kb_id {
             let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
             crate::knowledge::store::search_with_scope(&kb_root, &p.query, p.limit, scope)
@@ -1489,9 +1576,14 @@ impl KnowledgeServer {
         ok_json(&hits)
     }
 
+    /// ⚠ **Registered but not advertised** — see [`RETIRED_TOOL_NAMES`]. It was
+    /// `kb_search` with `scope` pinned, and it advertised an
+    /// `include_raw_sources` field it then ignored. The route stays so persisted
+    /// transcripts and stored grants keep working; new calls go through
+    /// `kb_search { scope: "raw_sources" }`.
     #[tool(
         name = "kb_search_raw_sources",
-        description = "BM25 full-text search over original raw source markdown only. Use this rarely, when the user specifically asks for raw/original/source-document evidence instead of the curated knowledge graph."
+        description = "Retired: call kb_search with scope=\"raw_sources\" instead."
     )]
     pub async fn kb_search_raw_sources(
         &self,
@@ -1727,9 +1819,20 @@ impl KnowledgeServer {
         p: Parameters<ExportArchiveParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
+        // The READ deadline. An export READS the base — the archive is written
+        // outside it — and the lock is here only to keep a writer from tearing
+        // the snapshot. Same lock and the same exclusion either way; the only
+        // thing that changes is how long this waits before giving the caller an
+        // answer. On the write deadline it parked for THIRTY MINUTES behind an
+        // open transaction, which is the same defect the merge preview had.
+        //
+        // ⚠ Still `None` for the cancellation token, because this signature has
+        // no `context` to take one from. A caller who cancels therefore waits
+        // out the deadline rather than the turn — much less bad at 45s than at
+        // 1800s, but not fixed. Threading the token here is the real repair.
         let _lock = self
             .service
-            .lock_existing_kb_cancellable(&p.kb_id, None)
+            .lock_existing_kb_for_read(&p.kb_id, None)
             .await
             .map_err(into_err)?;
         let bytes = self.service.export_brkb(&p.kb_id).map_err(into_err)?;
@@ -1928,7 +2031,12 @@ impl ServerHandler for KnowledgeServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
         Ok(rmcp::model::ListToolsResult {
-            tools: self.tool_router.list_all(),
+            tools: self
+                .tool_router
+                .list_all()
+                .into_iter()
+                .filter(|tool| !RETIRED_TOOL_NAMES.contains(&tool.name.as_ref()))
+                .collect(),
             meta: None,
             next_cursor: None,
         })
@@ -1952,6 +2060,36 @@ impl ServerHandler for KnowledgeServer {
         // value so a callee cannot ask half the question.
         let caller = CallerIdentity::from_context(Some(&context));
         let name = request.name.to_string();
+
+        // #157. Roll back transactions nothing has touched for a long time,
+        // BEFORE this call goes looking for a lock. An open transaction holds
+        // the base's write lock, and the only two reapers that existed fired on
+        // teardown, so one abandoned by a live session held its base until the
+        // process exited. Doing it here rather than on a timer means no
+        // background task to own, and the check runs exactly when it matters:
+        // just before somebody would otherwise queue behind it.
+        //
+        // Cheap in the normal case — `abandoned()` walks the open transactions,
+        // which is almost always none, and never blocks on a busy slot.
+        let abandoned = self.transactions.abandoned().await;
+        if !abandoned.is_empty() {
+            let ids: Vec<String> = abandoned.iter().map(|(kb_id, _)| kb_id.clone()).collect();
+            match self.abort_transaction_slots(abandoned, None).await {
+                Ok(released) if released > 0 => tracing::warn!(
+                    "knowledge: rolled back {released} abandoned transaction(s) on {ids:?} \
+                     after {}s idle; the base(s) were holding a write lock (see issue #157)",
+                    ABANDONED_TRANSACTION_IDLE.as_secs()
+                ),
+                Ok(_) => {}
+                // Never fail the caller's tool because cleanup of somebody
+                // else's transaction failed; it will be retried next call.
+                Err(error) => {
+                    tracing::warn!(
+                        "knowledge: could not roll back an abandoned transaction: {error:#}"
+                    )
+                }
+            }
+        }
 
         if let Some(kb_id) = self.gated_kb_id(&name, request.arguments.as_ref(), Some(&context))? {
             // Issue #56, Task 10C. The read half of the ruling, and the reason
@@ -2539,6 +2677,76 @@ mod tests {
             "commit_message": "write A",
             "txn": txn,
         })
+    }
+
+    /// #157, the root cause. An open transaction holds the base's write lock —
+    /// the in-process mutex AND the on-disk `flock` — for its whole lifetime, so
+    /// one that is never committed made every later operation on that base, from
+    /// any session, block until the process exited.
+    ///
+    /// The two reapers that existed both fired on TEARDOWN, which is exactly the
+    /// case this is not: the session is alive and simply never comes back to the
+    /// transaction.
+    #[tokio::test]
+    async fn a_transaction_nobody_touches_is_rolled_back_and_releases_its_base() {
+        let (server, _tmp, _root) = migrated_server_with_bases(&["kb", "other"]);
+        let _handle = begin_transaction_handle(&server, "kb", "session-a").await;
+
+        // Precondition, and the property the whole bug rests on: an open
+        // transaction really is holding the base's lock. Without this assertion
+        // the test below could pass against a build where a transaction holds
+        // nothing at all.
+        assert!(
+            server.service.kb_queue_is_occupied("kb"),
+            "precondition: an open transaction holds the base's write lock"
+        );
+
+        // Nothing is abandoned yet — a transaction opened a moment ago must not
+        // be reaped, or a live macro would have its work rolled back under it.
+        assert!(
+            server
+                .transactions
+                .abandoned_after(std::time::Duration::from_secs(3600))
+                .await
+                .is_empty(),
+            "a transaction opened just now is in use, not abandoned"
+        );
+
+        // …and once it has been idle past the threshold, it is.
+        let stale = server
+            .transactions
+            .abandoned_after(std::time::Duration::ZERO)
+            .await;
+        assert_eq!(stale.len(), 1, "the idle transaction must be reaped");
+        assert_eq!(stale[0].0, "kb");
+
+        let released = server
+            .abort_transaction_slots(stale, None)
+            .await
+            .expect("rolling back an abandoned transaction");
+        assert_eq!(released, 1);
+
+        // The lock is free again, which is the whole point: the base is usable
+        // without restarting the process.
+        assert!(
+            !server.service.kb_queue_is_occupied("kb"),
+            "rolling the transaction back must release the base's write lock"
+        );
+
+        // And the base really does take writes again.
+        let after = call_tool_as_session(
+            &server,
+            "kb_write_page",
+            transaction_write_args("kb", None),
+            Some("session-b"),
+            Private,
+        )
+        .await;
+        let after = after.expect("the write must reach the tool, not be refused upstream");
+        assert!(
+            !after.is_error.unwrap_or(false),
+            "the base must accept writes after the abandoned transaction is rolled back: {after:?}"
+        );
     }
 
     #[tokio::test]

@@ -620,6 +620,10 @@ impl BioRouterAcpAgent {
                                 &biorouter_session_id,
                                 request_id,
                                 outcome_to_confirmation(&response.outcome),
+                                // The protocol cannot distinguish an editor's
+                                // click from an auto-allow policy, so it cannot
+                                // claim a person acted.
+                                biorouter::pending_user_action::DecisionAuthority::unproven(),
                             )
                             .await;
                         Ok(())
@@ -634,6 +638,10 @@ impl BioRouterAcpAgent {
                                     principal_type: PrincipalType::Tool,
                                     permission: Permission::Cancel,
                                 },
+                                // A cancellation, so the gate is inert — but
+                                // naming the truth is what keeps the audit of
+                                // privileged call sites able to see this file.
+                                biorouter::pending_user_action::DecisionAuthority::unproven(),
                             )
                             .await;
                         Ok(())

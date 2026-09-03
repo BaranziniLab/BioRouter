@@ -7,29 +7,29 @@
     {{ASSETS}}
     <script>{{COMMON}}</script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; }
-        .header { padding: 24px 30px 0; text-align: center; }
-        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
-        .chart-wrap { padding: 24px 30px 30px; position: relative; height: 500px; }
+        .chart-wrap { position: relative; height: 480px; }
     </style>
 </head>
 <body>
     <div class="viz-root">
         <div class="container">
             <div class="header"><h1 id="title">Manhattan Plot</h1></div>
-            <div class="chart-wrap"><canvas id="chart"></canvas></div>
+            <p class="figure-description" id="thresholdDescription"></p>
+            <div class="figure-scroll" tabindex="0" role="region" aria-label="Manhattan plot"><div class="chart-wrap" id="chartHost"><canvas id="chart" role="img" aria-label="Manhattan plot; exact chromosome positions and values follow in the figure data"></canvas></div></div>
         </div>
     </div>
+    <details class="figure-data"><summary>View figure data</summary><div class="table-scroll" tabindex="0" role="region" aria-label="Figure data"><table id="figureData"></table></div></details>
     <script>
         const manhattanData = {{MANHATTAN_DATA}};
         BioRouterViz.autoResize();
         BioRouterViz.guard(function () {
-            BioRouterViz.applyPageTheme();
+            BioRouterViz.applyScientificStyles();
             BioRouterViz.applyChartDefaults();
             if (manhattanData.title) document.getElementById('title').textContent = manhattanData.title;
 
             const sigLine = (typeof manhattanData.significanceLine === 'number') ? manhattanData.significanceLine : 7.301;
+            const thresholdNote = 'Dashed line: −log₁₀(p) = ' + sigLine + '. Chromosomes are concatenated across their observed position ranges.';
+            document.getElementById('thresholdDescription').textContent = thresholdNote;
 
             // Natural chromosome order: 1..22, X, Y, MT, then anything else.
             function chromRank(c) {
@@ -41,20 +41,21 @@
                 if (/^(mt|m)$/i.test(c)) return 25;
                 return 99;
             }
-            const byChrom = {};
+            const byChrom = new Map();
             manhattanData.points.forEach(function (p) {
                 const k = String(p.chrom).replace(/^chr/i, '');
-                (byChrom[k] = byChrom[k] || []).push(p);
+                if (!byChrom.has(k)) byChrom.set(k, []);
+                byChrom.get(k).push(p);
             });
-            const chroms = Object.keys(byChrom).sort(function (a, b) { return chromRank(a) - chromRank(b) || (a < b ? -1 : 1); });
+            const chroms = Array.from(byChrom.keys()).sort(function (a, b) { return chromRank(a) - chromRank(b) || (a < b ? -1 : 1); });
 
             // Lay chromosomes side by side on a cumulative axis.
             let offset = 0;
             const datasets = [];
             const tickPositions = [];
-            const colA = '#4f7cff', colB = '#16a085';
+            const colA = BioRouterViz.palette[0], colB = BioRouterViz.palette[1];
             chroms.forEach(function (chrom, ci) {
-                const pts = byChrom[chrom].slice().sort(function (a, b) { return a.pos - b.pos; });
+                const pts = byChrom.get(chrom).slice().sort(function (a, b) { return a.pos - b.pos; });
                 const minPos = pts.length ? pts[0].pos : 0;
                 const maxPos = pts.length ? pts[pts.length - 1].pos : 0;
                 const span = (maxPos - minPos) || 1;
@@ -77,7 +78,8 @@
                     const ctx = chart.ctx, ys = chart.scales.y, xs = chart.scales.x;
                     const py = ys.getPixelForValue(sigLine);
                     ctx.save();
-                    ctx.strokeStyle = '#e74c3c';
+                    ctx.beginPath(); ctx.rect(xs.left, ys.top, xs.right - xs.left, ys.bottom - ys.top); ctx.clip();
+                    ctx.strokeStyle = BioRouterViz.colors.muted;
                     ctx.setLineDash([6, 4]);
                     ctx.beginPath(); ctx.moveTo(xs.left, py); ctx.lineTo(xs.right, py); ctx.stroke();
                     ctx.restore();
@@ -93,7 +95,7 @@
                         legend: { display: false },
                         tooltip: { callbacks: { label: function (ctx) {
                             const p = ctx.raw;
-                            return (p._label ? p._label + ' — ' : '') + 'chr' + p._chrom + ':' + p._pos + ', -log10p=' + p.y;
+                            return BioRouterViz.wrapChartTooltip((p._label ? p._label + ' — ' : '') + 'chr' + p._chrom + ':' + p._pos + ', -log10p=' + p.y, ctx.chart);
                         } } }
                     },
                     scales: {
@@ -101,7 +103,8 @@
                             title: { display: true, text: 'Chromosome' },
                             grid: { display: false },
                             ticks: {
-                                autoSkip: false,
+                                autoSkip: true,
+                                maxRotation: 0,
                                 callback: function (val) {
                                     let best = null, bestD = Infinity;
                                     tickPositions.forEach(function (t) { const dd = Math.abs(t.mid - val); if (dd < bestD) { bestD = dd; best = t; } });
@@ -110,11 +113,15 @@
                             },
                             afterBuildTicks: function (axis) { axis.ticks = tickPositions.map(function (t) { return { value: t.mid }; }); }
                         },
-                        y: { title: { display: true, text: '-log10(p)' }, beginAtZero: true, grid: { color: BioRouterViz.colors.grid } }
+                        y: { title: { display: true, text: '−log₁₀(p)' }, suggestedMax: sigLine, beginAtZero: true, grid: { color: BioRouterViz.colors.grid } }
                     }
                 },
                 plugins: [sig]
             });
+            function* rows() {
+                for (const dataset of datasets) for (const point of dataset.data) yield [point._label || '—', point._chrom, point._pos, point.y];
+            }
+            BioRouterViz.renderFigureData(document.getElementById('figureData'), ['Feature', 'Chromosome', 'Position', '−log₁₀(p)'], rows(), thresholdNote, manhattanData.points.length);
             BioRouterViz.reportSize();
         });
     </script>

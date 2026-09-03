@@ -298,9 +298,15 @@ fn settle_query(
 
 pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResult> {
     let cancel = args.cancel.clone();
-    let _lock = svc
-        .lock_kb_cancellable(&args.kb_id, cancel.as_ref())
-        .await?;
+    // Only `file_as_page` writes; a plain query reads. Same reasoning as
+    // `lint`'s `autofix` above — the deadline follows what the call will do.
+    let _lock = if args.file_as_page {
+        svc.lock_kb_cancellable(&args.kb_id, cancel.as_ref())
+            .await?
+    } else {
+        svc.lock_kb_cancellable_for_read(&args.kb_id, cancel.as_ref())
+            .await?
+    };
     let PreparedQuery {
         kb_root,
         txn_branch,

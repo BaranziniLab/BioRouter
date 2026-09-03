@@ -91,6 +91,16 @@ const THEME_CSS = await readFile(
   "utf8"
 ).catch(() => "");
 
+let manifest = {};
+try {
+  manifest = JSON.parse(await readFile(join(APP, "manifest.json"), "utf8"));
+} catch (error) {
+  if (error.code !== "ENOENT") fail(2, "could not read the app manifest");
+}
+if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+  fail(2, "the app manifest must be a JSON object");
+}
+
 function encodeFrame(text) {
   const payload = Buffer.from(text, "utf8");
   const len = payload.length;
@@ -172,7 +182,11 @@ const server = createServer(async (req, res) => {
       let html = body.toString("utf8");
       const inject = [];
       if (!html.includes("biorouter-app-config")) {
-        const cfg = JSON.stringify({ appId: APP_ID, endpoint: `ws://127.0.0.1:${PORT_ACTUAL}` })
+        const config = { appId: APP_ID, endpoint: `ws://127.0.0.1:${PORT_ACTUAL}` };
+        if (manifest.surface?.state_initial != null) {
+          config.stateInitial = manifest.surface.state_initial;
+        }
+        const cfg = JSON.stringify(config)
           .replace(/</g, "\\u003c");
         inject.push(
           `<script type="application/json" id="biorouter-app-config">${cfg}</script>`

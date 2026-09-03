@@ -47,11 +47,10 @@
 //! empty. Lint now asks `graph::bundle_links`, so its two link-shaped rules read
 //! precisely the edge set the graph draws — which is the stronger form of the
 //! property this module exists for: not "the same resolver" but "the same
-//! edges". The cost is the one predicted here — a source page whose body links
-//! to `../raw/pmid-1/original.pdf` puts that path in `missing_concept_pages` —
-//! and it is the right trade, because the deriver already draws that link as an
-//! `external` node and a lint that disagreed with the picture beside it is the
-//! bug being fixed.
+//! edges". Raw evidence remains an `external` graph node, not a concept page.
+//! Lint separately checks whether such a target names an existing, confined
+//! file under `raw/` before warning: a valid source citation is not a missing
+//! concept. Missing files and unsafe paths still produce warnings.
 //!
 //! `macros/query.rs` now reads native Markdown citations directly, but only
 //! accepts bundle page targets under `knowledge/` and rejects parent traversal.

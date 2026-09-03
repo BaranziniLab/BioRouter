@@ -138,6 +138,16 @@ impl ActionRequiredManager {
         timeout_duration: Duration,
         session_id: Option<&str>,
     ) -> Result<Option<Value>> {
+        // ⚠ The unbounded half of the same refusal `PendingUserActions::park`
+        // makes. Any MCP server can reach here through `create_elicitation`, so
+        // the set of calls that might ask a question is not enumerable — which
+        // is precisely why the rule is about the CALLER's surface rather than a
+        // list of tools. `Ok(None)` is already this function's cancellation
+        // shape, so no caller learns a new outcome.
+        if crate::user_surface::no_human_surface() {
+            return Ok(None);
+        }
+
         let id = Uuid::new_v4().to_string();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let pending_request = PendingRequest {
@@ -295,15 +305,24 @@ impl ActionRequiredManager {
                 Some(data) => UserActionOutcome::Provided { data },
                 None => UserActionOutcome::Cancelled,
             };
+            // ⚠ `unproven()`, and the arm below is not dead code. This relay
+            // only ever carries `Provided`/`Cancelled`, neither of which trips
+            // the gate — but it is reachable from any user message carrying an
+            // elicitation response, INCLUDING one typed into an app page, so
+            // the honest word here is the one that assumes nothing.
             return match PendingUserActions::global().resolve_in_session(
                 session_id,
                 &request_id,
                 relayed,
+                crate::pending_user_action::DecisionAuthority::unproven(),
             ) {
                 ResolveOutcome::Delivered => Ok(()),
                 ResolveOutcome::Rejected => Err(anyhow::anyhow!(
                     "Request {} does not accept that answer",
                     request_id
+                )),
+                ResolveOutcome::Unproven => Err(anyhow::anyhow!(
+                    "Request {request_id} needs a person's approval"
                 )),
                 ResolveOutcome::Unknown => Err(anyhow::anyhow!("Request not found")),
             };

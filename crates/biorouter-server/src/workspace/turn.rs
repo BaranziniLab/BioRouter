@@ -1163,8 +1163,14 @@ where
                 // as a completed turn — and, with `classify_abort`, what keeps
                 // it recoverable.
                 if let AgentEvent::TurnAborted { code, message } = &event {
-                    tracing::error!(abort = code.wire_code(), "Turn aborted: {message}");
                     let (scope, retryable, provider_kind) = classify_abort(code);
+                    tracing::error!(
+                        abort = code.wire_code(),
+                        scope = scope.wire_value(),
+                        retryable,
+                        provider_kind = provider_kind.as_deref().unwrap_or("none"),
+                        "Turn aborted"
+                    );
                     publish_turn_error(
                         session_id,
                         message.clone(),
@@ -1284,6 +1290,20 @@ async fn emit_completion_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct DiagnosticCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for DiagnosticCapture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     /// D2, the turn half. Every interactive turn funnels through `setup`, and
     /// it must await this session's pending extension load before it takes the
@@ -2125,6 +2145,76 @@ mod tests {
         assert_eq!(
             provider_kind.as_deref(),
             Some(ProviderErrorKind::RateLimit.wire_code())
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_abort_keeps_private_details_off_diagnostics_but_on_bus() {
+        use biorouter::agents::TurnAbortCode;
+        use biorouter::providers::errors::ProviderErrorKind;
+        use tracing::instrument::WithSubscriber;
+
+        const SENTINEL: &str = "PRIVATE_PROVIDER_ABORT_2f58c9";
+        let sid = "br71-private-provider-abort-log";
+        let mut rx = session_events::subscribe(sid);
+        let mut all = Conversation::new_unvalidated(Vec::new());
+        let mut stream = futures::stream::iter(vec![Ok(AgentEvent::TurnAborted {
+            code: TurnAbortCode::ProviderFailure {
+                kind: ProviderErrorKind::InvalidRequest,
+            },
+            message: format!("Bad request from private provider: {SENTINEL}"),
+        })]);
+        let capture = DiagnosticCapture::default();
+        let writer = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(true)
+            .with_level(true)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || writer.clone())
+            .finish();
+
+        let terminal_error =
+            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all, None)
+                .with_subscriber(subscriber)
+                .await;
+        assert!(terminal_error, "a provider abort ends the turn on an error");
+
+        let seen = drain(&mut rx).await;
+        let terminal = seen
+            .iter()
+            .find(|event| matches!(event, SessionBusEvent::TurnError { .. }))
+            .expect("the user-facing bus must retain the classified provider error");
+        let SessionBusEvent::TurnError {
+            message,
+            code,
+            scope,
+            retryable,
+            provider_kind,
+        } = terminal
+        else {
+            unreachable!();
+        };
+        assert!(message.contains(SENTINEL));
+        assert_eq!(code, "provider_failure");
+        assert_eq!(scope, "provider");
+        assert!(!retryable);
+        assert_eq!(provider_kind.as_deref(), Some("invalid_request"));
+
+        let diagnostics = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(diagnostics.contains("ERROR"));
+        assert!(diagnostics.contains("workspace::turn"));
+        assert!(diagnostics.lines().any(|line| {
+            line.contains("Turn aborted")
+                && line.contains("provider_failure")
+                && line.contains("provider")
+                && line.contains("invalid_request")
+                && line.contains("retryable=false")
+        }));
+        assert!(
+            !diagnostics.contains(SENTINEL),
+            "private provider abort detail leaked into diagnostics: {diagnostics}"
         );
     }
 

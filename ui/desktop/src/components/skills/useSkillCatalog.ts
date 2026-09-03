@@ -49,6 +49,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { CatalogBundle, CatalogSkill, CatalogView, SkillRoot } from '../../api';
 import { refreshSkillCatalog, setSessionSkills, skillCatalogHandler } from '../../api';
+import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
 import { isContextBundle, isContextSkill } from '../settings/contexts/contexts';
 import {
   loadSkillOverrides,
@@ -63,6 +64,16 @@ export type SkillMutationResult = { ok: true } | { ok: false; error: string };
 export type SkillCatalogEntry =
   | { kind: 'single'; key: string; skill: CatalogSkill; enabled: boolean }
   | { kind: 'bundle'; key: string; bundle: CatalogBundle; enabled: boolean };
+
+/** Physical row identity. Bundle names are only logical toggle identities. */
+export function bundleCatalogEntryKey(bundle: CatalogBundle): string {
+  return JSON.stringify([bundle.sourceRoot, bundle.name]);
+}
+
+/** The backend intentionally applies a bundle-name toggle across every source. */
+export function skillCatalogToggleKey(entry: SkillCatalogEntry): string {
+  return entry.kind === 'single' ? entry.skill.name : entry.bundle.name;
+}
 
 export interface SkillCatalogState {
   /** Rows for the picker: bundles first, then standalone skills, each sorted. */
@@ -105,11 +116,13 @@ export interface SkillCatalogState {
 const EMPTY: CatalogView = { generation: 0, roots: [], skills: [], bundles: [] };
 
 /**
- * The machine-wide inventory-changed signal (#112). Named here as a constant so
- * the string is not spelled twice, and so a grep for the name finds the
- * consumer as well as the producer.
+ * The machine-wide inventory-changed signal (#112). Owned by
+ * `utils/catalogSubscription`, which is the module that *dispatches* it — this
+ * file used to declare its own `'catalog:changed'` literal, so one contract had
+ * two declarations that were equal only by luck. Re-exported rather than merely
+ * imported because `useSkillCatalog.test.ts` reads the name from here.
  */
-export const CATALOG_CHANGED_EVENT = 'catalog:changed';
+export { CATALOG_CHANGED_EVENT };
 
 function errorText(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -288,7 +301,7 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
     const bundles: SkillCatalogEntry[] = pickerBundles(view)
       .map((bundle) => ({
         kind: 'bundle' as const,
-        key: bundle.name,
+        key: bundleCatalogEntryKey(bundle),
         bundle,
         enabled: bundle.state.effective,
       }))

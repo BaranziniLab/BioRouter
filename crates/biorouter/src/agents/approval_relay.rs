@@ -598,6 +598,12 @@ async fn deliver(origin_agent: &Agent, origin: &AskId, permission: Permission) {
                 principal_type: PrincipalType::Tool,
                 permission,
             },
+            // An ancestor AGENT decided. That is a model, by definition, so
+            // the honest word is `unproven()` — even though no behaviour
+            // changes today, because `register_confirmation` runs before
+            // `begin_delegated_approval` and this therefore reaches the
+            // `pending_confirmations` map rather than the registry.
+            crate::pending_user_action::DecisionAuthority::unproven(),
         )
         .await;
 }

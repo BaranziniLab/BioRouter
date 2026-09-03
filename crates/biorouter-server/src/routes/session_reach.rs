@@ -818,8 +818,8 @@ mod tests {
                 session_rs,
                 "async fn get_session(",
                 "session_reach(",
-                "get_session(&session_id, true)",
-                "the transcript read",
+                ".get_session(&session_id,",
+                "the session read, with or without conversation history",
             ),
             (
                 session_rs,
@@ -967,6 +967,65 @@ mod bypass_tests {
         let status = res.status();
         let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
         (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn session_metadata_read_omits_history_without_weakening_private_reach() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let private = seed_private_chat(&state, "Metadata-only synthetic fixture").await;
+        let mut session = state
+            .session_manager()
+            .get_session(private.id(), false)
+            .await
+            .unwrap();
+        session.extension_data.set_extension_state(
+            "todo",
+            "v1",
+            serde_json::json!({
+                "items": [{"id":"1", "text":"Inspect synthetic summary", "status":"pending"}]
+            }),
+        );
+        state
+            .session_manager()
+            .update(private.id())
+            .extension_data(session.extension_data)
+            .apply()
+            .await
+            .unwrap();
+
+        for query in ["", "?metadata_only=false", "?metadata_only=true"] {
+            let path = format!("{}{query}", private.id());
+            let (status, body) =
+                get_session_with(state.clone(), &path, Some(TEST_USER_ACTION_KEY)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                body.contains(MARKER_IN_THE_TRANSCRIPT),
+                query != "?metadata_only=true"
+            );
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(json["id"], private.id());
+            assert_eq!(
+                json["extension_data"]["todo.v1"]["items"][0]["text"],
+                "Inspect synthetic summary"
+            );
+        }
+        let path = format!("{}?metadata_only=true", private.id());
+        let (status, body) = get_session_with(state.clone(), &path, None).await;
+        let (missing_status, missing_body) =
+            get_session_with(state.clone(), "29990101_99999?metadata_only=true", None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(status, missing_status);
+        assert_eq!(body, missing_body);
+        assert!(!body.contains("Inspect synthetic summary"));
+        let (status, _) = get_session_with(
+            state,
+            &format!("{}?metadata_only=invalid", private.id()),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     /// `GET /sessions/{id}/export` — the same transcript as

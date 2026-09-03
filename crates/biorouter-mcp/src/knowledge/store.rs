@@ -38,6 +38,21 @@ pub(crate) fn logical_path(prefix: &str, relative: &Path) -> String {
 }
 
 pub fn list_pages(kb_root: &Path, prefix: Option<&str>) -> Result<Vec<PageRef>> {
+    // #158: "this base has no pages yet" and "this base is not on disk" are
+    // different answers, and returning `[]` for both makes them indistinguishable
+    // to every caller. An agent asked to summarise a base whose directory has
+    // gone would then report, truthfully as far as it can tell, that the base is
+    // empty. A base with a registry row but no directory is exactly that case.
+    //
+    // The base's own root missing is an error; `knowledge/` missing under a real
+    // root is a legitimately empty base, which is what a freshly created one is.
+    if !kb_root.exists() {
+        anyhow::bail!(
+            "knowledge base directory is missing at {} — the base is registered but not on \
+             disk, so it can be neither read nor re-created under that id",
+            kb_root.display()
+        );
+    }
     let knowledge_dir = kb_root.join("knowledge");
     if !knowledge_dir.exists() {
         return Ok(Vec::new());
@@ -152,6 +167,20 @@ pub(crate) fn write_atomically(path: &Path, content: &[u8]) -> Result<()> {
 
 /// Path is readable: `knowledge/`, `raw/`, or top-level `index.md` / `schema.md` / `log.md`.
 pub(crate) fn resolve_readable_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf> {
+    // FIRST, ahead of the prefix test, because that test MISDIAGNOSES this
+    // input: it would tell a developer whose path is `raw\evidence\source.md`
+    // that it "must start with raw/", which it plainly does. A KB logical path
+    // is slash-separated on every platform; a backslash means an OS `Path` was
+    // stringified and handed over instead. That is not a near miss but a silent
+    // wrong answer — the prefix test fails and a file that is really there is
+    // reported absent, which is exactly how this survived as a Windows-only lint
+    // bug, invisible on POSIX for the obvious reason.
+    if logical.contains('\\') {
+        anyhow::bail!(
+            "page path must be slash-separated; `{logical}` looks like an OS path, not a \
+             knowledge-base path"
+        );
+    }
     let ok = logical.starts_with("knowledge/")
         || logical.starts_with("raw/")
         || matches!(logical, "index.md" | "schema.md" | "log.md");
@@ -194,6 +223,20 @@ pub(crate) const WRITE_PATH_RECOVERY: &str = "raw/ holds immutable ingested sour
 /// Path is writable: `knowledge/` pages plus `index.md`, `schema.md`, and `log.md`.
 /// `raw/` is read-only — the raw source tree is immutable by design.
 fn resolve_writable_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf> {
+    // FIRST, ahead of the prefix test, because that test MISDIAGNOSES this
+    // input: it would tell a developer whose path is `raw\evidence\source.md`
+    // that it "must start with raw/", which it plainly does. A KB logical path
+    // is slash-separated on every platform; a backslash means an OS `Path` was
+    // stringified and handed over instead. That is not a near miss but a silent
+    // wrong answer — the prefix test fails and a file that is really there is
+    // reported absent, which is exactly how this survived as a Windows-only lint
+    // bug, invisible on POSIX for the obvious reason.
+    if logical.contains('\\') {
+        anyhow::bail!(
+            "page path must be slash-separated; `{logical}` looks like an OS path, not a \
+             knowledge-base path"
+        );
+    }
     if !is_writable_page_path(logical) {
         anyhow::bail!(
             "write path must start with knowledge/ or be index.md/schema.md/log.md; \
@@ -274,8 +317,18 @@ pub struct SearchHit {
     pub snippet: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Which corpus a search reads.
+///
+/// ⚠ **No doc comment on any variant.** schemars splits a documented variant
+/// into `oneOf` + `const`, and `providers/formats/google.rs` strips both — a
+/// Gemini-bound model would receive this field with no accepted values at all.
+/// The per-value steer therefore lives in the TOOL's description, not here.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Deserialize, rmcp::schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum SearchScope {
+    #[default]
     Knowledge,
     RawSources,
     All,
@@ -606,6 +659,42 @@ mod tests {
             .unwrap());
     }
 
+    /// #158. `[]` must mean "this base has no pages", never "this base is not
+    /// on disk". A registry row whose directory has gone produced the second
+    /// while looking like the first, so an agent asked to summarise the base
+    /// would report it empty — truthfully, as far as it could tell.
+    ///
+    /// The mutation that exposed this: reverting the guard left all 19 store
+    /// tests green, because nothing covered a missing base root.
+    #[test]
+    fn a_missing_base_root_is_an_error_not_an_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // A real base with no pages yet — legitimately empty.
+        let fresh = dir.path().join("fresh");
+        std::fs::create_dir_all(&fresh).unwrap();
+        assert!(
+            super::list_pages(&fresh, None)
+                .expect("a real base must read")
+                .is_empty(),
+            "a base with no knowledge/ directory is empty, not an error"
+        );
+
+        // A base root that is not there at all.
+        let gone = dir.path().join("gone");
+        let err = super::list_pages(&gone, None)
+            .expect_err("a base whose directory is missing must not read as empty");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing"),
+            "the error must say the base is missing: {msg}"
+        );
+        assert!(
+            msg.contains("gone"),
+            "and name the path so the caller can act: {msg}"
+        );
+    }
+
     #[test]
     fn list_pages_sorted_and_filtered() {
         let (_dir, kb) = fresh();
@@ -764,6 +853,43 @@ mod tests {
         let path = resolve_readable_path(&kb, "knowledge/notes/missing.md").unwrap();
         assert_eq!(path, kb.join("knowledge/notes/missing.md"));
         assert!(!path.exists());
+    }
+
+    /// An OS path is refused where a knowledge-base path is required.
+    ///
+    /// This is the POSIX-testable half of a bug that could only FAIL on Windows.
+    /// `is_existing_raw_evidence` in the lint built an OS `PathBuf` and handed
+    /// over `to_str()`, so on Windows the resolver received
+    /// `raw\evidence\source.md`. The prefix test wants a literal `raw/`, so the
+    /// call bailed, `is_file()` was never reached, and a source page's links to
+    /// evidence that was really on disk came back as `missing_concept_pages` —
+    /// on Windows only, with a symptom that reads as a linting bug rather than a
+    /// path bug.
+    ///
+    /// A test of the CALLER cannot catch that from here: on POSIX the buggy and
+    /// the fixed spellings produce byte-identical strings. This can, because it
+    /// feeds the resolver the exact value Windows produced. It is asserted on
+    /// both resolvers because both carry the same prefix contract, and the write
+    /// side would have failed the same way the moment a caller made the same
+    /// mistake.
+    #[test]
+    fn a_backslash_separated_path_is_not_a_knowledge_base_path() {
+        let (_dir, kb) = fresh();
+        for logical in ["raw\\evidence\\source.md", "knowledge\\notes\\a.md"] {
+            let read = resolve_readable_path(&kb, logical).unwrap_err();
+            assert!(
+                read.to_string().contains("slash-separated"),
+                "read path `{logical}`: {read:#}"
+            );
+            let write = resolve_writable_path(&kb, logical).unwrap_err();
+            assert!(
+                write.to_string().contains("slash-separated"),
+                "write path `{logical}`: {write:#}"
+            );
+        }
+        // …and the slash spelling of the same page is still accepted, so the
+        // refusal is about the separator and not about the path.
+        resolve_readable_path(&kb, "raw/evidence/source.md").unwrap();
     }
 
     #[test]

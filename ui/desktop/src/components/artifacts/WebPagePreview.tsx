@@ -13,6 +13,7 @@ import { cn } from '../../utils';
 export type EmbeddedBrowserState = {
   url: string;
   title: string;
+  managedApp?: boolean;
   sourceRevision: string;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -47,13 +48,17 @@ export type LiveBrowserShare = {
  */
 export default function WebPagePreview({
   url,
+  requireManagedApp = false,
   isSuspended = false,
   snapshotDataUrl,
   onOpenExternal,
   onViewIdChange,
   onAgentShareChange,
+  refreshRevision = 0,
 }: {
   url: string;
+  /** Fail closed if this URL is no longer owned by the active BioRouter daemon. */
+  requireManagedApp?: boolean;
   /** Hide the native view because something must paint above it. */
   isSuspended?: boolean;
   /** A compositor snapshot shown while the native view is hidden for annotation. */
@@ -61,6 +66,7 @@ export default function WebPagePreview({
   onOpenExternal: (url: string) => void;
   onViewIdChange?: (viewId: string | null) => void;
   onAgentShareChange?: (share: LiveBrowserShare | null) => void;
+  refreshRevision?: number;
 }) {
   const slotRef = useRef<HTMLDivElement | null>(null);
   const reactId = useId();
@@ -70,6 +76,10 @@ export default function WebPagePreview({
   const [isEditingAddress, setIsEditingAddress] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const [sharedWithAgent, setSharedWithAgent] = useState(false);
+  const [updateReady, setUpdateReady] = useState(false);
+  const refreshRef = useRef({ url, consumed: refreshRevision, generation: 0 });
+  const latestRevision = useRef(refreshRevision);
+  latestRevision.current = refreshRevision;
 
   const viewId = viewIdRef.current;
   const browser = window.electron?.embeddedBrowser;
@@ -84,12 +94,22 @@ export default function WebPagePreview({
     let disposed = false;
     setUnavailable(false);
     setSharedWithAgent(false);
+    setState(null);
+    setUpdateReady(false);
+    refreshRef.current = {
+      url,
+      consumed: latestRevision.current,
+      generation: refreshRef.current.generation + 1,
+    };
 
     const stopListening = browser.onState((payload) => {
       if (payload.viewId === viewId && !disposed) setState(payload.state);
     });
 
-    void browser.create(viewId, url).then((initial) => {
+    const creation = requireManagedApp
+      ? browser.create(viewId, url, true)
+      : browser.create(viewId, url);
+    void creation.then((initial) => {
       if (disposed) return;
       if (!initial) {
         setUnavailable(true);
@@ -101,12 +121,33 @@ export default function WebPagePreview({
 
     return () => {
       disposed = true;
+      refreshRef.current.generation += 1;
       stopListening();
       onViewIdChange?.(null);
       onAgentShareChange?.(null);
       void browser.destroy(viewId);
     };
-  }, [browser, onAgentShareChange, onViewIdChange, url, viewId]);
+  }, [browser, onAgentShareChange, onViewIdChange, requireManagedApp, url, viewId]);
+
+  useEffect(() => {
+    const current = refreshRef.current;
+    if (!browser || !state || unavailable || current.consumed === refreshRevision) return;
+    if (!state.managedApp) {
+      current.consumed = refreshRevision;
+      return;
+    }
+    if (isSuspended || isEditingAddress || state.isLoading) return;
+    current.consumed = refreshRevision;
+    const generation = ++current.generation;
+    void browser
+      .control(viewId, 'reload-if-idle')
+      .then((reloaded) => {
+        if (refreshRef.current.generation === generation) setUpdateReady(!reloaded);
+      })
+      .catch(() => {
+        if (refreshRef.current.generation === generation) setUpdateReady(true);
+      });
+  }, [browser, isEditingAddress, isSuspended, refreshRevision, state, unavailable, viewId]);
 
   useEffect(() => {
     onAgentShareChange?.(sharedWithAgent && !unavailable && state ? { viewId, state } : null);
@@ -167,9 +208,14 @@ export default function WebPagePreview({
 
   const control = useCallback(
     (action: 'back' | 'forward' | 'reload' | 'stop') => {
+      if (action === 'reload') {
+        refreshRef.current.generation += 1;
+        refreshRef.current.consumed = refreshRevision;
+        setUpdateReady(false);
+      }
       if (browser) void browser.control(viewId, action);
     },
-    [browser, viewId]
+    [browser, refreshRevision, viewId]
   );
 
   const submitAddress = useCallback(
@@ -237,6 +283,7 @@ export default function WebPagePreview({
             aria-label="Address"
             value={addressDraft}
             spellCheck={false}
+            onFocus={() => setIsEditingAddress(true)}
             onChange={(event) => {
               setAddressDraft(event.target.value);
               setIsEditingAddress(true);
@@ -245,6 +292,16 @@ export default function WebPagePreview({
             className="w-full min-w-0 truncate rounded-element bg-background-muted px-2 py-1 text-supporting text-text-default outline-none focus:bg-background-medium"
           />
         </form>
+        {updateReady && (
+          <button
+            type="button"
+            disabled={busy || isSuspended}
+            onClick={() => control('reload')}
+            className="shrink-0 rounded-element px-2 py-1 text-supporting text-text-muted hover:bg-overlay-hover"
+          >
+            Update ready
+          </button>
+        )}
         <ToolbarButton
           label={sharedWithAgent ? 'Stop sharing with agent' : 'Share with agent'}
           onClick={() => setSharedWithAgent((current) => !current)}

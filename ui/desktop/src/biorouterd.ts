@@ -223,6 +223,7 @@ export const createStderrLineReader = (onLine: (line: string) => void): StderrLi
 
 export interface BiorouterdResult {
   baseUrl: string;
+  managed: boolean;
   workingDir: string;
   process: ChildProcess;
   errorLog: string[];
@@ -262,7 +263,7 @@ const connectToExternalBackend = (workingDir: string, url: string): BiorouterdRe
     },
   } as ChildProcess;
 
-  return { baseUrl: url, workingDir, process: mockProcess, errorLog: [] };
+  return { baseUrl: url, managed: false, workingDir, process: mockProcess, errorLog: [] };
 };
 
 // ⚠ Issue #56 DR-16: this interface gains NOTHING for the user-action key, and
@@ -489,6 +490,7 @@ export const startBiorouterd = async (
   );
   return {
     baseUrl: `http://127.0.0.1:${port}`,
+    managed: true,
     workingDir: dir,
     process: biorouterdProcess,
     errorLog: stderrLines,

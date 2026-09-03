@@ -6,29 +6,26 @@
     <title>Word Cloud</title>
     {{ASSETS}}
     <script>{{COMMON}}</script>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
-        .container { max-width: 960px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; }
-        .header { padding: 20px 30px 0; text-align: center; }
-        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
-        #chart { display: block; margin: 0 auto; }
-        .tooltip { position: absolute; background: var(--text); color: var(--surface); padding: 6px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; opacity: 0; z-index: 10; }
-    </style>
+    <style>.tooltip{position:absolute;opacity:0;pointer-events:none;}#chart{display:block;}#layoutNote{overflow-wrap:anywhere;}</style>
 </head>
 <body>
     <div class="viz-root">
         <div class="container">
             <div class="header"><h1 id="title">Word Cloud</h1></div>
-            <svg id="chart"></svg>
+            <div class="figure-scroll" tabindex="0" role="region" aria-label="Scientific figure"><svg id="chart" role="img" aria-label="Scientific figure; exact values follow in the data table"></svg></div>
+            <p class="figure-description" id="layoutNote"></p>
         </div>
     </div>
     <div class="tooltip" id="tooltip"></div>
+    <details class="figure-data"><summary>View figure data</summary>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Figure data"><table id="figureData"></table></div>
+    </details>
     <script>
         // Self-contained spiral word-cloud layout (no external d3-cloud dependency).
         const wordcloudData = {{WORDCLOUD_DATA}};
         BioRouterViz.autoResize();
         BioRouterViz.guard(function () {
-            BioRouterViz.applyPageTheme();
+            BioRouterViz.applyScientificStyles();
             if (wordcloudData.title) document.getElementById('title').textContent = wordcloudData.title;
 
             const W = 900, H = 520;
@@ -36,51 +33,79 @@
             const g = svg.append('g').attr('transform', 'translate(' + W / 2 + ',' + H / 2 + ')');
             const tooltip = d3.select('#tooltip');
 
-            const words = wordcloudData.words.filter(function (w) { return w.text && isFinite(w.weight); })
-                .slice().sort(function (a, b) { return b.weight - a.weight; });
+            const words = wordcloudData.words.slice().sort(function (a, b) { return b.weight - a.weight; });
+            if (words.some(function (word) { return !word.text.trim() || !Number.isFinite(word.weight) || word.weight < 0; })) throw new Error('Word cloud terms must be non-blank and weights finite and non-negative.');
             if (!words.length) throw new Error('No valid words.');
             const wmin = d3.min(words, function (w) { return w.weight; });
             const wmax = d3.max(words, function (w) { return w.weight; });
-            const fs = d3.scaleSqrt().domain([wmin, wmax]).range([13, 64]);
+            const fs = d3.scaleSqrt().domain([wmin, wmax]).range([14, 64]);
 
             const ctx = document.createElement('canvas').getContext('2d');
+            const fontFamily = getComputedStyle(document.getElementById('chart')).fontFamily;
             const placed = [];
+            const buckets = new Map();
+            const bucketSize = 64;
+            function keys(box) {
+                const result = [];
+                for (let row = Math.floor((box.y - box.h / 2) / bucketSize); row <= Math.floor((box.y + box.h / 2) / bucketSize); row++) {
+                    for (let column = Math.floor((box.x - box.w / 2) / bucketSize); column <= Math.floor((box.x + box.w / 2) / bucketSize); column++) result.push(row + ':' + column);
+                }
+                return result;
+            }
             function collides(box) {
-                for (let i = 0; i < placed.length; i++) {
-                    const p = placed[i];
-                    if (Math.abs(box.x - p.x) * 2 < (box.w + p.w) && Math.abs(box.y - p.y) * 2 < (box.h + p.h)) return true;
+                for (const key of keys(box)) {
+                    for (const p of buckets.get(key) || []) {
+                        if (Math.abs(box.x - p.x) * 2 < (box.w + p.w) && Math.abs(box.y - p.y) * 2 < (box.h + p.h)) return true;
+                    }
                 }
                 return false;
             }
             words.forEach(function (w, i) {
-                const size = fs(w.weight);
-                ctx.font = '600 ' + size + 'px sans-serif';
-                const tw = ctx.measureText(w.text).width + 6;
-                const th = size + 4;
+                const size = w.weight === 0 ? 14 : fs(w.weight);
+                ctx.font = '600 ' + size + 'px ' + fontFamily;
+                const metrics = ctx.measureText(w.text);
+                const ascent = metrics.fontBoundingBoxAscent ?? size;
+                const descent = metrics.fontBoundingBoxDescent ?? size * 0.25;
+                const tw = metrics.width + 6;
+                const th = ascent + descent + 4;
+                w.placed = false;
+                if (tw > W || th > H) return;
                 // Archimedean spiral search for a non-overlapping spot.
                 let angle = 0, x = 0, y = 0, found = false;
                 for (let step = 0; step < 4000; step++) {
                     const r = 2 + 4 * angle;
+                    if (r > Math.hypot(W - tw, H - th) / 2) break;
                     x = r * Math.cos(angle);
                     y = r * Math.sin(angle);
                     angle += 0.18;
                     const box = { x: x, y: y, w: tw, h: th };
                     if (Math.abs(x) + tw / 2 > W / 2 || Math.abs(y) + th / 2 > H / 2) continue;
-                    if (!collides(box)) { placed.push(box); found = true; break; }
+                    if (!collides(box)) {
+                        placed.push(box);
+                        keys(box).forEach(function (key) { if (!buckets.has(key)) buckets.set(key, []); buckets.get(key).push(box); });
+                        found = true; break;
+                    }
                 }
                 if (!found) return;
+                w.placed = true;
                 g.append('text')
-                    .attr('x', x).attr('y', y).attr('text-anchor', 'middle').attr('dy', '0.35em')
-                    .style('font-size', size + 'px').style('font-weight', 600)
+                    .attr('x', x).attr('y', y).attr('text-anchor', 'middle').attr('dy', (ascent - descent) / 2)
+                    .style('font-size', size + 'px').style('font-weight', 600).style('font-family', fontFamily)
                     .style('fill', BioRouterViz.palette[i % BioRouterViz.palette.length])
                     .style('cursor', 'default')
                     .text(w.text)
                     .on('mouseover', function (event) {
-                        tooltip.style('opacity', 1).html('<strong>' + w.text + '</strong>: ' + w.weight)
+                        tooltip.style('opacity', 1).text(w.text + '\nWeight: ' + w.weight)
                             .style('left', (event.pageX + 12) + 'px').style('top', (event.pageY - 10) + 'px');
                     })
                     .on('mouseout', function () { tooltip.style('opacity', 0); });
             });
+            const omitted = words.length - placed.length;
+            document.getElementById('layoutNote').textContent = placed.length + ' of ' + words.length + ' terms placed; ' + omitted + ' omitted from the cloud because they did not fit. Exact terms and weights remain in the bounded data table.';
+            BioRouterViz.renderFigureData(document.getElementById('figureData'), ['Term', 'Weight', 'Placed in cloud'],
+                words.map(function (word) { return [word.text, word.weight, word.placed ? 'Yes' : 'No']; }),
+                'Terms are ordered by weight. Font size is a square-root scale with a 14px minimum; zero weights remain legitimate observations.');
+            if (!placed.length) document.getElementById('chart').style.display = 'none';
             BioRouterViz.reportSize();
         });
     </script>

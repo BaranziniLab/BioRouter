@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyOptimistically,
+  bundleCatalogEntryKey,
   CATALOG_CHANGED_EVENT,
   pickerBundles,
+  skillCatalogToggleKey,
   standaloneSkills,
 } from './useSkillCatalog';
 import type { CatalogBundle, CatalogSkill, CatalogView } from '../../api';
@@ -78,6 +80,41 @@ describe('applyOptimistically', () => {
     const before = JSON.stringify(view);
     applyOptimistically(view, ['hyperframes', 'solo'], false, true);
     expect(JSON.stringify(view)).toBe(before);
+  });
+
+  it('keeps a same-named bundle toggle shared across physical roots', () => {
+    const duplicate = {
+      ...view,
+      bundles: [
+        bundle('pack', ['alpha']),
+        { ...bundle('pack', ['beta']), sourceRoot: '/project/.biorouter/skills' },
+      ],
+    };
+
+    const next = applyOptimistically(duplicate, ['pack'], false, true);
+    expect(next.bundles.map((entry) => entry.state.effective)).toEqual([false, false]);
+  });
+});
+
+describe('same-named bundle identities', () => {
+  it('uses distinct physical row keys but keeps one shared toggle key', () => {
+    const first = bundle('pack', ['alpha']);
+    const second = {
+      ...bundle('pack', ['beta']),
+      sourceRoot: '/project/.biorouter/skills',
+    };
+
+    expect(bundleCatalogEntryKey(first)).not.toBe(bundleCatalogEntryKey(second));
+    expect(
+      [first, second].map((entry) =>
+        skillCatalogToggleKey({
+          kind: 'bundle',
+          key: bundleCatalogEntryKey(entry),
+          bundle: entry,
+          enabled: true,
+        })
+      )
+    ).toEqual(['pack', 'pack']);
   });
 });
 

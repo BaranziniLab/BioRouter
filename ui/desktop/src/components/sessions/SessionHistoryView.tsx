@@ -46,7 +46,13 @@ const isUserMessage = (message: Message): boolean => {
   if (message.role === 'assistant') {
     return false;
   }
-  return !message.content.every((c) => c.type === 'toolConfirmationRequest');
+  // ⚠ Third spelling of the same dead variant. Nothing in `crates/` constructs
+  // `toolConfirmationRequest`; a real card is an `actionRequired` whose
+  // `actionType` is `toolConfirmation`. Leaving one copy of the dead name in
+  // the tree is how the next divergence gets written.
+  return !message.content.every(
+    (c) => c.type === 'actionRequired' && c.data.actionType === 'toolConfirmation'
+  );
 };
 
 const filterMessagesForDisplay = (messages: Message[]): Message[] => {

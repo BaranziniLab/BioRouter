@@ -9,6 +9,6 @@ The user is interacting with you through a graphical user interface with the fol
 The application has a left sidebar for navigating between Chat, History (past sessions),
 Workflows, Scheduler, Extensions, Skills, Knowledge (personal knowledge bases), Apps, and Settings.
 
-The user can manage extensions from the "Extensions" page in the sidebar. Some extensions are
-builtin, such as Developer, Memory, and Knowledge, while 3rd party extensions can be browsed
-at <http://biorouter.ucsf.edu/baam>.
+The user manages Biorouter's shipped capabilities, such as Developer, Memory, and Knowledge, in
+Settings under Capabilities. Third-party extensions are separate and can be managed from the
+Extensions page or browsed at <http://biorouter.ucsf.edu/baam>.

@@ -93,8 +93,8 @@ interface KnowledgeContextType {
    * The machine-wide default primary — what a chat that has chosen nothing
    * shows. Read lazily by whoever offers the way back to it, since it is the
    * only thing that needs it; `null` until `refreshDefaultPrimary` has run, at
-   * machine scope (there is nothing above to inherit), and when it names a base
-   * that is not installed.
+   * machine scope (where this chat-only affordance is irrelevant), and when it
+   * names a base that is not installed.
    */
   defaultPrimaryKb: KbListEntry | null;
   /**
@@ -311,9 +311,9 @@ export function KnowledgeProvider({
    * report the identical selection.
    */
   const refreshDefaultPrimary = useCallback(async () => {
-    // At machine scope there is nothing above to inherit, so "the default" and
-    // "this scope's own pointer" are the same value and the distinction the
-    // caller wants to draw does not exist.
+    // This state only drives a chat's "follow the default" affordance. At
+    // machine scope the active response already resolves the product default
+    // (Soul), and there is no chat override to compare with it.
     if (!sessionId) {
       setDefaultPrimaryKbId(null);
       return;
@@ -329,9 +329,9 @@ export function KnowledgeProvider({
   }, [sessionId]);
 
   const followDefaultPrimary = useCallback(() => {
-    // At machine scope `inherit` coincides with `clear` — a different and
-    // destructive gesture — so this one only exists inside a chat. The
-    // affordance is gated on `canFollowDefaultPrimary`; this is the backstop.
+    // This control only drops a chat override. Restoring the product default at
+    // machine scope is a separate settings/CLI/API gesture, so this chat-only
+    // affordance remains gated on `canFollowDefaultPrimary`.
     if (!sessionId) return;
     // The set travels separately and is deliberately left alone: a gesture that
     // means "stop overriding the pointer here" must not install a set override

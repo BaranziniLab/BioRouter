@@ -203,6 +203,50 @@ pub async fn apply(
     decode(stored)
 }
 
+/// Drop `names` from BOTH halves of the session's override, and persist.
+///
+/// The sibling of [`apply`], which can only ever add a name. Called when a
+/// package is uninstalled from a conversation that had an opinion about it:
+/// without this the entry outlives the skill, and a later reinstall silently
+/// inherits a revocation the user made about a package that no longer existed.
+///
+/// ⚠ **`forget` is hygiene, not the correctness fix, and the distinction is
+/// load-bearing.** Chat A revokes `media-use`; chat B uninstalls the package.
+/// Pruning chat B's override does nothing for chat A — which is the chat that
+/// will later be told the reinstalled skill is usable. Only reporting the
+/// truth at install time covers that, which is why the reporting half ships
+/// independently of this one. `workspace_extension`'s writers make the gap
+/// permanent rather than incidental: they write an override into *another*
+/// session, so no prune on any remove path can ever be complete.
+///
+/// The caller decides what to forget. This function deliberately does NOT
+/// sweep "names the catalog no longer lists": catalog membership is not a
+/// stable function of the machine (working-directory-relative roots come and
+/// go, an extension's skills root vanishes with the extension, a broken
+/// frontmatter drops a skill out of discovery), and the asymmetry is decisive
+/// — dropping an `add` fails closed, dropping a `remove` fails OPEN, silently
+/// restoring a skill this conversation revoked.
+pub async fn forget(
+    session_manager: &SessionManager,
+    session_id: &str,
+    names: &[String],
+) -> Result<SessionSkillOverride> {
+    let names = names.to_vec();
+    let stored = session_manager
+        .update_extension_state(session_id, STATE_KEY, STATE_VERSION, move |current| {
+            let mut base = match current {
+                Some(value) => decode(value.clone())?,
+                None => SessionSkillOverride::default(),
+            };
+            base.add.retain(|s| !names.contains(s));
+            base.remove.retain(|s| !names.contains(s));
+            Ok(serde_json::to_value(base)?)
+        })
+        .await?
+        .with_context(|| format!("session '{session_id}' not found"))?;
+    decode(stored)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +262,51 @@ mod tests {
             .await
             .unwrap();
         (sm, session.id)
+    }
+
+    #[tokio::test]
+    async fn forget_drops_only_the_names_it_is_given_from_both_halves() {
+        // Catches both prune failure modes at once: a no-op `forget`, and a
+        // `forget` that clears the whole override. `gamma` stands for a name
+        // this call did not delete — another package's, or an entry written by
+        // a different conversation — and losing it would silently restore a
+        // skill this chat revoked.
+        let temp = tempfile::tempdir().unwrap();
+        let (sm, session) = manager_and_session(&temp, "forget").await;
+
+        apply(
+            &sm,
+            &session,
+            &["alpha".into()],
+            &["beta".into(), "gamma".into()],
+        )
+        .await
+        .unwrap();
+
+        let after = forget(&sm, &session, &["alpha".to_string(), "beta".to_string()])
+            .await
+            .unwrap();
+        assert!(
+            after.add.is_empty(),
+            "an `add` entry must go too: {after:?}"
+        );
+        assert_eq!(after.remove, vec!["gamma".to_string()]);
+
+        // Persisted, not just returned.
+        let reread = for_session(&sm, &session).await.unwrap();
+        assert_eq!(reread, after);
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_name_nobody_wrote_is_a_no_op() {
+        let temp = tempfile::tempdir().unwrap();
+        let (sm, session) = manager_and_session(&temp, "forget-noop").await;
+
+        apply(&sm, &session, &[], &["beta".into()]).await.unwrap();
+        let after = forget(&sm, &session, &["never-installed".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(after.remove, vec!["beta".to_string()]);
     }
 
     #[test]

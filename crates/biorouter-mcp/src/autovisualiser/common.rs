@@ -398,7 +398,8 @@ pub fn debug_dump(name: &str, html: &str) {
 
 /// Build the standard two-part tool result: a `ui://` HTML resource for the user
 /// and an assistant-audience text confirmation (so the model gets a non-empty
-/// result and does not loop retrying).
+/// result and does not loop retrying). The compact structured receipt also serves
+/// clients that prefer structured content but do not honor audience annotations.
 pub fn finish(uri: &str, debug_name: &str, label: &str, html: String) -> CallToolResult {
     debug_dump(debug_name, &html);
     let blob = STANDARD.encode(html.as_bytes());
@@ -408,10 +409,17 @@ pub fn finish(uri: &str, debug_name: &str, label: &str, html: String) -> CallToo
         blob,
         meta: None,
     };
-    CallToolResult::success(vec![
+    let mut result = CallToolResult::success(vec![
         Content::resource(resource).with_audience(vec![Role::User]),
         Content::text(label.to_string()).with_audience(vec![Role::Assistant]),
-    ])
+    ]);
+    result.structured_content = Some(serde_json::json!({
+        "status": "created",
+        "uri": uri,
+        "mimeType": "text/html",
+        "summary": label.chars().take(512).collect::<String>(),
+    }));
+    result
 }
 
 /// Recover the HTML document from a `CallToolResult` produced by [`finish`].

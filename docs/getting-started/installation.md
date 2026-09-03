@@ -135,9 +135,9 @@ If Biorouter responds, the setup is complete.
 
 Extensions give Biorouter access to tools like file operations, web search, databases, and more.
 
-The **Developer** extension is enabled by default and provides core capabilities (reading/writing files, running shell commands, etc.).
+The **Developer** capability is enabled by default and provides file, shell, editing, and code-analysis tools.
 
-### Enable built-in extensions
+### Enable built-in capabilities
 
 **Desktop:** Sidebar > Extensions > toggle the extension on.
 
@@ -148,7 +148,7 @@ biorouter configure
 # Select "Add Extension" > "Built-in Extension"
 ```
 
-Available built-in extensions: Developer (default), Computer Controller, Memory, Tutorial, Auto Visualiser, Chat Recall, Code Execution, Extension Manager (default), Skills (default), Todo (default).
+Available built-in capabilities: Developer, Computer Controller, Memory, Auto Visualiser, Knowledge, Agent Drafter, Code Execution, Extension Manager, Skills, Todo, and Workspace Control are enabled by default. Chat Recall ships disabled by default. You can change any of these choices in Settings → Chat → Capabilities.
 
 ### Add external MCP servers
 

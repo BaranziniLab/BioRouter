@@ -69,17 +69,11 @@ pub struct ExtensionClassification {
 ///
 /// Reversing ruling (ii) later is a one-line change here, by design.
 ///
-/// **The second term of the design's union is not here, and that is not an
-/// oversight.** §10.2 states `private_set = PRIVATE_EXTENSIONS ∪
-/// private(last_good_fetch)` — freshness raises, never lowers. The last-good
-/// fetch is written and read entirely on the Electron side (the `registry:fetch`
-/// handler in `main.ts` and `components/baam/registry.ts`); no task in this
-/// series gives the CLI or the daemon a reader for it, and inventing an
-/// always-empty one here would read as enforcement that does not exist. In Rust
-/// the compiled baseline governs alone — which is exactly the documented
-/// first-run-after-upgrade behaviour (§15.4), and can only *under*-report
-/// private, never over-report public. Adding the union is a one-line change at
-/// the `is_private_key` below once a Rust-side reader exists.
+/// The daemon-owned marketplace reader supplies the second term of the design's
+/// union: `PRIVATE_EXTENSIONS ∪ private(last_good_fetch)`. A valid live,
+/// last-good, or embedded catalog may add private identities and tighten their
+/// affiliation, while [`super::registry_live`] persists those additions and
+/// never accepts a downgrade.
 ///
 /// # Unioned, never replaced — Task 43, DR-23
 ///
@@ -104,11 +98,10 @@ pub struct ExtensionClassification {
 ///    guarding it — and it is the same "raises and never lowers" rule Task 37
 ///    states for registry freshness.
 ///
-/// ⚠ **A stale or absent registry never lowers anything either**, and here that
-/// holds by construction rather than by a retention cache: there is no network
-/// path to BAAM from Rust, so the registry this consults IS the compiled
-/// snapshot above, linked into the binary. A recorded id the snapshot does not
-/// publish leaves the name-derived answer standing.
+/// ⚠ **A stale or absent registry never lowers anything either.** The compiled
+/// snapshot remains the baseline, and the daemon's last-good/private-authority
+/// records only add reasons to classify an identity as Private. A recorded id
+/// no retained source publishes leaves the name-derived answer standing.
 ///
 /// ⚠ **A caller holding an `ExtensionConfig` must use
 /// [`classify_extension_entry`] instead.** This name-only form cannot find a
@@ -157,15 +150,35 @@ pub fn resolve_extension(
     key: &str,
     config: Option<&crate::agents::extension::ExtensionConfig>,
 ) -> ExtensionClassification {
-    resolve_in(&REGISTRY, key, config)
+    let identities = identities(key, config);
+    let compiled = resolve_identities_in(&REGISTRY, &identities);
+    let Some(live_affiliation) = super::registry_live::resolve(&identities) else {
+        return compiled;
+    };
+    ExtensionClassification {
+        tier: ProviderTier::Private,
+        affiliation: if compiled.tier == ProviderTier::Private {
+            restrict_affiliation(compiled.affiliation, live_affiliation)
+        } else {
+            live_affiliation
+        },
+    }
 }
 
+#[cfg(test)]
 fn resolve_in(
     registry: &RegistrySnapshot,
     key: &str,
     config: Option<&crate::agents::extension::ExtensionConfig>,
 ) -> ExtensionClassification {
     let identities = identities(key, config);
+    resolve_identities_in(registry, &identities)
+}
+
+fn resolve_identities_in(
+    registry: &RegistrySnapshot,
+    identities: &[String],
+) -> ExtensionClassification {
     let tier = if identities.iter().any(|k| is_private_key(registry, k)) {
         ProviderTier::Private
     } else {
@@ -173,7 +186,22 @@ fn resolve_in(
     };
     ExtensionClassification {
         tier,
-        affiliation: affiliation_for(registry, &identities),
+        affiliation: affiliation_for(registry, identities),
+    }
+}
+
+fn restrict_affiliation(
+    compiled: ExtensionAffiliation,
+    live: ExtensionAffiliation,
+) -> ExtensionAffiliation {
+    match (compiled, live) {
+        (ExtensionAffiliation::Any, affiliation) | (affiliation, ExtensionAffiliation::Any) => {
+            affiliation
+        }
+        (
+            ExtensionAffiliation::Institutions(compiled),
+            ExtensionAffiliation::Institutions(live),
+        ) => ExtensionAffiliation::Institutions(compiled.intersection(&live).copied().collect()),
     }
 }
 
@@ -350,8 +378,8 @@ mod tests {
     #[test]
     fn the_private_set_is_exactly_the_two_the_registry_publishes() {
         use crate::privacy::ProviderTier::{Private, Public};
-        assert_eq!(classify_extension("ucsfomopagent"), Private);
-        assert_eq!(classify_extension("cdwagent"), Private);
+        assert_eq!(resolve_in(&REGISTRY, "ucsfomopagent", None).tier, Private);
+        assert_eq!(resolve_in(&REGISTRY, "cdwagent", None).tier, Private);
 
         // R11(ii): anything not on BAAM is PUBLIC. Fail-open, by operator ruling.
         // `medcp` is enabled on the operator's own machine with CLINICAL_RECORDS_*
@@ -367,7 +395,6 @@ mod tests {
             "knowledge",
             "autovisualiser",
             "computercontroller",
-            "tutorial",
             "agent_drafter",
             "todo",
             "chatrecall",
@@ -381,8 +408,26 @@ mod tests {
             "evidence",
             "something-nobody-has-published",
         ] {
-            assert_eq!(classify_extension(name), Public, "{name}");
+            assert_eq!(resolve_in(&REGISTRY, name, None).tier, Public, "{name}");
         }
+    }
+
+    #[test]
+    fn live_registry_authority_can_raise_but_never_lower_classification() {
+        super::super::registry_live::insert_test_authority(
+            "live-private-fixture",
+            Some(BTreeSet::from(["ucsf".to_owned()])),
+        );
+        let classification = resolve_extension("live-private-fixture", None);
+        assert_eq!(classification.tier, ProviderTier::Private);
+        assert_eq!(classification.affiliation, owned_by(&["ucsf"]));
+
+        super::super::registry_live::insert_test_authority("live-private-fixture", None);
+        assert_eq!(
+            resolve_extension("live-private-fixture", None),
+            classification,
+            "an unconstrained or public-looking refresh cannot lower learned authority"
+        );
     }
 
     #[test]

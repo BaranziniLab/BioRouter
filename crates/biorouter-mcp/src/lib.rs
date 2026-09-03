@@ -23,7 +23,6 @@ mod memory;
 pub mod paths;
 pub mod privacy_toggle;
 pub mod secret_guard;
-pub mod tutorial;
 
 /// Sandbox-helper entry point (BR-69). Call this as the **first line of
 /// `main()`** in every binary that may wrap a shell command (`biorouter`,
@@ -54,7 +53,6 @@ pub use memory::{
 // The barrier every generic file tool owes the machine-wide store
 // (#63 review, finding 2).
 pub use memory::{global_memory_store_refusal, is_in_global_memory_store, GlobalMemoryConsent};
-pub use tutorial::TutorialServer;
 
 /// Spawns a builtin MCP server onto the given duplex transport. The optional
 /// `working_dir` is the session's working directory; builtins that run shell
@@ -161,15 +159,17 @@ pub static BUILTIN_EXTENSIONS: Lazy<HashMap<&'static str, BuiltinDef>> = Lazy::n
                     fn spawn(
                         r: tokio::io::DuplexStream,
                         w: tokio::io::DuplexStream,
-                        _working_dir: Option<std::path::PathBuf>,
+                        working_dir: Option<std::path::PathBuf>,
                     ) {
-                        spawn_and_serve("memory", MemoryServer::behind_consent_gate(), (r, w));
+                        let server = working_dir
+                            .map(MemoryServer::behind_consent_gate_in)
+                            .unwrap_or_else(MemoryServer::behind_consent_gate);
+                        spawn_and_serve("memory", server, (r, w));
                     }
                     spawn
                 },
             },
         ),
-        builtin!(tutorial, TutorialServer),
         builtin!(agent_drafter, AgentDrafterServer),
         (
             "knowledge",

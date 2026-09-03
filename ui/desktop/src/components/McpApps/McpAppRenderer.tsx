@@ -235,7 +235,8 @@ export default function McpAppRenderer({
           height: '100%',
           border: 'none',
         }}
-        sandbox="allow-scripts allow-same-origin"
+        // See the inline-mode frame below for why `allow-same-origin` is absent.
+        sandbox="allow-scripts"
       />
     ) : (
       <div
@@ -269,7 +270,19 @@ export default function McpAppRenderer({
             border: 'none',
             overflow: 'hidden',
           }}
-          sandbox="allow-scripts allow-same-origin"
+          // `allow-same-origin` is deliberately absent, here and in the
+          // fullscreen frame above. This document is only a shell: it holds no
+          // credential (the daemon secret is no longer in its URL -- see
+          // `fetchMcpAppProxyUrl`) and it talks to the host purely over
+          // postMessage, so it has no use for the daemon's origin. Withholding
+          // it caps what the *guest* frame inside can be granted: a nested
+          // frame cannot regain a sandbox flag its ancestor lacks, so the
+          // untrusted extension HTML stays origin-isolated even if the inner
+          // `sandbox` attribute is ever loosened. Measured in Chromium with
+          // this off: the guest still loads a script from `'self'`, because a
+          // `srcdoc` frame inherits the *policy*, whose `'self'` was resolved
+          // when the policy was created.
+          sandbox="allow-scripts"
         />
       ) : (
         <div className="flex items-center justify-center p-4" style={{ minHeight: '200px' }}>

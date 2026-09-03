@@ -6,43 +6,43 @@
     <title>Heatmap</title>
     {{ASSETS}}
     <script>{{COMMON}}</script>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: auto; }
-        .header { padding: 20px 30px 0; text-align: center; }
-        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
-        #chart { display: block; margin: 10px auto; }
-        text { fill: var(--text); }
-        .tooltip { position: absolute; background: var(--text); color: var(--surface); padding: 6px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; opacity: 0; transition: opacity .15s; z-index: 10; }
-    </style>
+    <style>.tooltip{position:absolute;opacity:0;pointer-events:none;}</style>
 </head>
 <body>
     <div class="viz-root">
         <div class="container">
             <div class="header"><h1 id="title">Heatmap</h1></div>
-            <svg id="chart"></svg>
+            <p class="figure-description" id="axisDescription"></p>
+            <div class="figure-scroll" tabindex="0" role="region" aria-label="Scientific figure"><svg id="chart" role="img" aria-label="Scientific figure; exact values follow in the data table"></svg></div>
         </div>
     </div>
     <div class="tooltip" id="tooltip"></div>
+    <details class="figure-data">
+        <summary>View figure data</summary>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Figure data"><table id="figureData"></table></div>
+    </details>
     <script>
         const heatmapData = {{HEATMAP_DATA}};
         BioRouterViz.autoResize();
         BioRouterViz.guard(function () {
-            BioRouterViz.applyPageTheme();
+            BioRouterViz.applyScientificStyles();
             if (heatmapData.title) document.getElementById('title').textContent = heatmapData.title;
 
             const xs = heatmapData.xLabels, ys = heatmapData.yLabels, vals = heatmapData.values;
             const cell = 38;
-            const margin = { top: 70, right: 80, bottom: 30, left: 110 };
+            const margin = { top: 40, right: 220, bottom: 30, left: 220 };
             const w = margin.left + xs.length * cell + margin.right;
             const h = margin.top + ys.length * cell + margin.bottom;
             const svg = d3.select('#chart').attr('width', w).attr('height', h);
             const tooltip = d3.select('#tooltip');
 
             let flat = [];
-            vals.forEach(function (row) { row.forEach(function (v) { if (isFinite(v)) flat.push(v); }); });
+            vals.forEach(function (row) { row.forEach(function (v) { if (Number.isFinite(v)) flat.push(v); }); });
             const vmin = d3.min(flat), vmax = d3.max(flat);
-            const span = (vmax - vmin) || 1;
+            const span = vmax - vmin;
+            const color = (value) => BioRouterViz.sequential(span ? (value - vmin) / span : 0.5);
+            document.getElementById('axisDescription').textContent = 'Rows: ' + (heatmapData.yAxisLabel || 'features') +
+                '. Columns: ' + (heatmapData.xAxisLabel || 'samples') + '. Numbered columns match the data table.';
 
             const g = svg.append('g').attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
             ys.forEach(function (yl, r) {
@@ -51,33 +51,42 @@
                     g.append('rect')
                         .attr('x', c * cell).attr('y', r * cell).attr('width', cell - 2).attr('height', cell - 2)
                         .attr('rx', 3)
-                        .attr('fill', isFinite(v) ? BioRouterViz.sequential((v - vmin) / span) : '#888')
+                        .attr('fill', Number.isFinite(v) ? color(v) : BioRouterViz.colors.muted)
                         .on('mouseover', function (event) {
-                            tooltip.style('opacity', 1).html('<strong>' + yl + ' × ' + xl + '</strong><br/>' + v)
+                            tooltip.style('opacity', 1).text(yl + ' × ' + xl + '\n' + v)
                                 .style('left', (event.pageX + 12) + 'px').style('top', (event.pageY - 10) + 'px');
                         })
                         .on('mouseout', function () { tooltip.style('opacity', 0); });
                 });
             });
-            // Column labels (rotated) and row labels.
             xs.forEach(function (xl, c) {
                 g.append('text').attr('x', c * cell + cell / 2).attr('y', -8)
-                    .attr('text-anchor', 'start').attr('transform', 'rotate(-45,' + (c * cell + cell / 2) + ',-8)')
-                    .style('font-size', '11px').text(xl);
+                    .attr('text-anchor', 'middle').text(c + 1);
             });
             ys.forEach(function (yl, r) {
                 g.append('text').attr('x', -8).attr('y', r * cell + cell / 2).attr('dy', 4)
-                    .attr('text-anchor', 'end').style('font-size', '11px').text(yl);
+                    .attr('text-anchor', 'end').text(yl)
+                    .each(function () { BioRouterViz.fitSvgLabel(this, yl, margin.left - 20); });
             });
             // Simple legend.
             const lg = svg.append('g').attr('transform', 'translate(' + (margin.left + xs.length * cell + 16) + ',' + margin.top + ')');
-            const steps = 40, lh = Math.min(180, ys.length * cell);
+            const steps = span ? 40 : 1, lh = Math.min(180, ys.length * cell);
             for (let i = 0; i < steps; i++) {
                 lg.append('rect').attr('x', 0).attr('y', (lh * i) / steps).attr('width', 14).attr('height', lh / steps + 1)
-                    .attr('fill', BioRouterViz.sequential(1 - i / steps));
+                    .attr('fill', BioRouterViz.sequential(span ? 1 - i / (steps - 1) : 0.5));
             }
-            lg.append('text').attr('x', 18).attr('y', 6).style('font-size', '10px').text(vmax.toFixed(2));
-            lg.append('text').attr('x', 18).attr('y', lh).style('font-size', '10px').text(vmin.toFixed(2));
+            const legendLabels = BioRouterViz.formatScaleValues([vmin, vmax]);
+            lg.append('text').attr('x', 20).attr('y', span ? 6 : lh / 2).text(legendLabels[1]);
+            if (span) lg.append('text').attr('x', 20).attr('y', lh).text(legendLabels[0]);
+            function* cellRows() {
+                for (let row = 0; row < ys.length; row++) {
+                    for (let column = 0; column < xs.length; column++) {
+                        yield [row + 1, column + 1, ys[row], xs[column], vals[row][column]];
+                    }
+                }
+            }
+            BioRouterViz.renderFigureData(document.getElementById('figureData'), ['Row', 'Column', 'Row label', 'Column label', 'Value'],
+                cellRows(), 'Values are in row-major order. Numbered columns identify the horizontal axis.', ys.length * xs.length);
 
             BioRouterViz.reportSize();
         });

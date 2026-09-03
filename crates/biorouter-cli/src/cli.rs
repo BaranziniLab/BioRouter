@@ -3,7 +3,7 @@ use biorouter::config::Config;
 use biorouter::workflow::Workflow;
 use biorouter_mcp::mcp_server_runner::{serve, McpCommand};
 use biorouter_mcp::{
-    AutoVisualiserRouter, ComputerControllerServer, DeveloperServer, MemoryServer, TutorialServer,
+    AutoVisualiserRouter, ComputerControllerServer, DeveloperServer, MemoryServer,
 };
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell as ClapShell};
@@ -1064,7 +1064,7 @@ enum KnowledgeCommand {
         format: String,
     },
 
-    /// Show, set, or clear the primary knowledge base
+    /// Show, set, clear, or restore the default primary knowledge base
     #[command(about = "Show or set the primary knowledge base (the --kb-less write target)")]
     Active {
         #[arg(
@@ -1082,9 +1082,8 @@ enum KnowledgeCommand {
         clear: bool,
         #[arg(
             long = "inherit",
-            requires = "session",
-            help = "Drop a chat's own primary so it follows the machine-wide one again \
-                    (needs --session)"
+            help = "Drop this scope's preference: a chat follows the machine-wide choice; \
+                    machine scope restores Soul"
         )]
         inherit: bool,
         #[arg(
@@ -1719,7 +1718,6 @@ async fn handle_mcp_command(server: McpCommand) -> Result<()> {
         McpCommand::AutoVisualiser => serve(AutoVisualiserRouter::new()).await?,
         McpCommand::ComputerController => serve(ComputerControllerServer::new()).await?,
         McpCommand::Memory => serve(MemoryServer::new()).await?,
-        McpCommand::Tutorial => serve(TutorialServer::new()).await?,
         McpCommand::Developer => serve(DeveloperServer::new()).await?,
     }
     Ok(())

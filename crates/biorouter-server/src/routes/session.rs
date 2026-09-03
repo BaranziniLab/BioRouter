@@ -404,11 +404,18 @@ async fn list_sidebar_sessions(
     }))
 }
 
+#[derive(Default, Deserialize)]
+struct SessionReadQuery {
+    #[serde(default)]
+    metadata_only: bool,
+}
+
 #[utoipa::path(
     get,
     path = "/sessions/{session_id}",
     params(
-        ("session_id" = String, Path, description = "Unique identifier for the session")
+        ("session_id" = String, Path, description = "Unique identifier for the session"),
+        ("metadata_only" = Option<bool>, Query, description = "Omit conversation history when only session metadata is needed")
     ),
     responses(
         (status = 200, description = "Session history retrieved successfully", body = Session),
@@ -428,6 +435,7 @@ async fn list_sidebar_sessions(
 async fn get_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    Query(query): Query<SessionReadQuery>,
     headers: axum::http::HeaderMap,
 ) -> Response {
     // Syntax only, and deliberately ahead of the gate: an id this rejects cannot
@@ -436,17 +444,20 @@ async fn get_session(
     if !is_valid_session_id(&session_id) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    // Issue #56 Task 58 / #47. Before the transcript read — this route's whole
-    // output is the conversation, so a gate placed after it would have already
-    // loaded what it is refusing. `session_id` is a request parameter, not a
-    // credential; see `routes::session_reach`.
+    // Issue #56 Task 58 / #47. Both metadata and history disclose session content,
+    // so authorization must precede either read. `session_id` is a request
+    // parameter, not a credential; see `routes::session_reach`.
     if let Err(refusal) =
         crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
             .await
     {
         return refusal.into_response();
     }
-    let Ok(session) = state.session_manager().get_session(&session_id, true).await else {
+    let Ok(session) = state
+        .session_manager()
+        .get_session(&session_id, !query.metadata_only)
+        .await
+    else {
         return StatusCode::NOT_FOUND.into_response();
     };
 
@@ -676,9 +687,27 @@ async fn update_session_user_workflow_values(
                     message: format!("Failed to get agent: {}", status),
                     status,
                 })?;
-            if let Some(prompt) = apply_workflow_to_agent(&agent, &workflow, false).await {
-                agent.extend_system_prompt(prompt).await;
-            }
+            // ⚠ The returned prompt is deliberately DROPPED.
+            // `apply_workflow_to_agent` already committed it, through
+            // `workflow::runtime::apply_prepared_to_agent` ->
+            // `Agent::set_session_context_prompt`, into the single named
+            // `session_context` slot — re-applying replaces, it does not stack.
+            // Feeding it a second time to `extend_system_prompt` (which is
+            // `Vec::push` on `system_prompt_extras`, with no dedup) appended
+            // another full copy of the workflow block on EVERY
+            // `PUT /sessions/{id}/user_workflow_values`, and since
+            // `prepare_prompt` now inlines each declared skill's whole
+            // `SKILL.md`, a copy is kilobytes. The two call sites in
+            // `routes/agent.rs` were converted to the named-slot form; this one
+            // was missed. See `configure_agent` in `routes/apps.rs` for the
+            // same mechanism on the app socket.
+            let _committed_by_apply_workflow_to_agent =
+                apply_workflow_to_agent(&agent, &session_id, &workflow, false)
+                    .await
+                    .map_err(|e| ErrorResponse {
+                        message: e.to_string(),
+                        status: StatusCode::BAD_REQUEST,
+                    })?;
             Ok(Json(UpdateSessionUserWorkflowValuesResponse { workflow }))
         }
         Ok(None) => Err(ErrorResponse {

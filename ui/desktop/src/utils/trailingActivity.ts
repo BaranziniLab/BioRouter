@@ -1,6 +1,12 @@
 import { Message } from '../api';
 import { ChatState } from '../types/chatState';
-import { getToolRequests, getToolResponses } from '../types/message';
+import {
+  getElicitationContent,
+  getSecretRequestContent,
+  getToolConfirmationContent,
+  getToolRequests,
+  getToolResponses,
+} from '../types/message';
 
 export type TrailingPhase = 'thinking' | 'running' | 'compacting' | 'steering';
 
@@ -51,16 +57,19 @@ const isToolResponseOnly = (m: Message) =>
 const hasVisibleText = (m: Message) =>
   m.content.some((c) => c.type === 'text' && c.text.trim().length > 0);
 
+// ⚠ The `toolConfirmationRequest` arm this replaced was DEAD — nothing in
+// `crates/` constructs that variant — so an approval card never satisfied this
+// predicate, the guard below never fired, and a card-carrying message (no tool
+// requests, no visible text) fell through to "Thinking". The result was a
+// running clock under an approval card for the whole of its TTL.
+//
+// Issue #117: a credential card parks the turn exactly as an elicitation does.
+// Omitting it would leave the composer reporting "still working" while the
+// install sits waiting on a dialog.
 const awaitsToolConfirmation = (m: Message) =>
-  m.content.some(
-    (c) =>
-      c.type === 'toolConfirmationRequest' ||
-      (c.type === 'actionRequired' &&
-        // Issue #117: a credential card parks the turn exactly as an
-        // elicitation does. Omitting it would leave the composer reporting
-        // "still working" while the install sits waiting on a dialog.
-        (c.data.actionType === 'elicitation' || c.data.actionType === 'secretRequest'))
-  );
+  getToolConfirmationContent(m) !== undefined ||
+  getElicitationContent(m) !== undefined ||
+  getSecretRequestContent(m) !== undefined;
 
 /**
  * Derives the trailing "still working" indicator from facts alone.

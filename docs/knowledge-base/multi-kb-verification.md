@@ -54,8 +54,9 @@ The defects that mattered:
 | Renderer | Five sync defects, including a prune effect that erased the hidden set whenever a base-list fetch failed. |
 
 Each fix is its own commit. The service layer gained a private tri-state
-`StoredPrimary { Inherit | Pinned | NoPrimary }` — absent file means inherit, a bare id
-means pinned, a **blank** file means explicitly no primary — because the previous
+`StoredPrimary { Inherit | Pinned | NoPrimary }` — an absent session file means inherit
+the machine preference, an absent machine file resolves to Soul, a bare id means pinned,
+and a **blank** file means explicitly no primary — because the previous
 two-state encoding could not distinguish "never chose" from "chose nothing", and clearing
 a session's primary therefore handed it the machine default straight back.
 

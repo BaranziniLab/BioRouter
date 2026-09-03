@@ -1,10 +1,10 @@
-# Computer Controller extension
+# Computer Controller capability
 
-> **What this is.** User guide to the built-in Computer Controller extension: how to enable it, which tools it provides, and a worked example combining web research with macOS system automation.
+> **What this is.** User guide to the built-in Computer Controller capability: how to enable it, which tools it provides, and a worked example combining web research with macOS system automation.
 > **Status:** Current. `crates/biorouter-mcp/src/computercontroller/` ships in the product and the tools described below are real. The worked example is macOS-specific.
 > **Audience:** end users.
 
-The Computer Controller extension automates everyday computer tasks and web interactions — searching the web, controlling system settings, processing data files, and driving applications — without you having to write code. It is the highest-blast-radius built-in extension, because it acts on your actual desktop rather than on a sandboxed workspace.
+The Computer Controller capability automates everyday computer tasks and web interactions — searching the web, controlling system settings, processing data files, and driving applications — without you having to write code. It is the highest-blast-radius built-in capability, because it acts on your actual desktop rather than on a sandboxed workspace.
 
 > **Warning.** `computer_control` drives your real machine: it can launch and quit applications, click buttons, type text, change system settings, and reorganize files. Before running an unattended automation, decide whether you want BioRouter to ask first — see [permission modes](../../security/permission-modes.md) for how to switch out of Autonomous mode, and the [security guide](../../security/README.md) for the wider picture.
 
@@ -39,7 +39,7 @@ The `automation_script` tool runs PowerShell or Batch scripts on Windows. The wo
    ◇  What would you like to configure?
    │  Toggle Extensions
    │
-   ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
+   ◆  Enable capabilities and extensions: (use "space" to toggle and "enter" to submit)
    │  ● computercontroller
    └  Extension settings updated successfully
    ```
@@ -68,7 +68,7 @@ To follow along, either open a new session in BioRouter Desktop, or start one fr
 biorouter session
 ```
 
-> **Note.** This transcript was produced with Anthropic's Claude 4 Sonnet. Any tool-capable model can drive the extension; the exact wording of the response will differ by model.
+> **Note.** This transcript was produced with Anthropic's Claude 4 Sonnet. Any tool-capable model can drive the capability; the exact wording of the response will differ by model.
 
 ### BioRouter prompt
 
@@ -144,7 +144,7 @@ The run produced `drug-candidates-comparison.csv` on the desktop and opened it i
 
 ## Related documentation
 
-- [Developer extension](developer.md) — the other high-privilege built-in extension, and the fullest description of BioRouter's layered access controls.
+- [Developer capability](developer.md) — the other high-privilege built-in capability, and the fullest description of BioRouter's layered access controls.
 - [Permission modes](../../security/permission-modes.md) — how to make BioRouter ask before it acts on your machine.
 - [Security guide](../../security/README.md) — using BioRouter safely, including what a high-privilege extension implies.
 - [Computer Controller hardening: test plan and root causes](../../history/computer-controller-hardening/test-plan-and-root-causes.md) — the historical campaign that exercised these tools and the failure modes it found.

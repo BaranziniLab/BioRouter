@@ -81,7 +81,7 @@ Asserts the first key is `XIAOMI_MIMO_API_KEY`, required and secret. Passed on
 ### Live completion through the provider stack
 
 ```bash
-XIAOMI_MIMO_API_KEY=<key> cargo test -p biorouter --test providers test_xiaomi_mimo_provider -- --nocapture
+XIAOMI_MIMO_API_KEY=<key> cargo test -p biorouter --test providers test_xiaomi_mimo_provider -- --ignored --exact --nocapture
 ```
 
 Exercises factory → `XiaomiMimoProvider::from_env` → live HTTP.

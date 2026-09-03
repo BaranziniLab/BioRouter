@@ -227,10 +227,13 @@ impl TodoClient {
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let args = arguments.as_ref().ok_or("Missing arguments")?;
-        let id = args
+        let displayed_id = args
             .get("id")
             .and_then(|v| v.as_str())
-            .ok_or("Missing required parameter: id")?
+            .ok_or("Missing required parameter: id")?;
+        let id = displayed_id
+            .strip_prefix('#')
+            .unwrap_or(displayed_id)
             .to_string();
 
         let status = match args.get("status").and_then(|v| v.as_str()) {
@@ -251,7 +254,11 @@ impl TodoClient {
         let message = self
             .with_state(session_id, move |state| {
                 if state.update_item(&id, status, text) {
-                    Ok(format!("Updated item #{id}"))
+                    Ok(serde_json::json!({
+                        "message": format!("Updated item #{id}"),
+                        "task": state.items.iter().find(|item| item.id == id),
+                    })
+                    .to_string())
                 } else {
                     Err(format!("No todo item with id #{id}"))
                 }
@@ -443,5 +450,184 @@ impl McpClientTrait for TodoClient {
             return None;
         }
         Some(format!("Current tasks and notes:\n{}", state.render()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::privacy::{CallCapability, ProviderTier};
+    use crate::session::{SessionManager, SessionType};
+
+    fn meta(session_id: &str) -> McpMeta {
+        McpMeta::new(
+            session_id,
+            CallCapability::for_test(ProviderTier::Public, true),
+        )
+    }
+
+    async fn call(
+        client: &TodoClient,
+        session_id: &str,
+        name: &str,
+        args: serde_json::Value,
+    ) -> CallToolResult {
+        client
+            .call_tool(
+                name,
+                args.as_object().cloned(),
+                meta(session_id),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap()
+    }
+
+    fn text(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|content| content.as_text().map(|text| text.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test]
+    async fn all_advertised_todo_tools_dispatch_and_reinject_their_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SessionManager::new(temp.path().join("sessions")));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "todo dispatch".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let client = TodoClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: Arc::clone(&manager),
+        })
+        .unwrap();
+
+        let listed = client
+            .list_tools(None, CancellationToken::default())
+            .await
+            .unwrap();
+        let mut names = listed
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            ["plan_write", "todo_add", "todo_update", "todo_write"]
+        );
+
+        assert!(text(
+            &call(
+                &client,
+                &session.id,
+                "plan_write",
+                serde_json::json!({"plan": "Build, verify, report"}),
+            )
+            .await
+        )
+        .contains("Plan updated"));
+        assert!(text(
+            &call(
+                &client,
+                &session.id,
+                "todo_write",
+                serde_json::json!({"content": "- [ ] build\n- [ ] verify"}),
+            )
+            .await
+        )
+        .contains("2 item"));
+        assert!(text(
+            &call(
+                &client,
+                &session.id,
+                "todo_add",
+                serde_json::json!({"items": ["report"]}),
+            )
+            .await
+        )
+        .contains("#3"));
+        assert!(text(
+            &call(
+                &client,
+                &session.id,
+                "todo_update",
+                serde_json::json!({"id": "1", "status": "completed"}),
+            )
+            .await
+        )
+        .contains("#1"));
+
+        let reinjected = client.get_moim(&session.id).await.unwrap();
+        assert!(reinjected.contains("Build, verify, report"), "{reinjected}");
+        assert!(reinjected.contains("build"), "{reinjected}");
+        assert!(reinjected.contains("report"), "{reinjected}");
+        assert!(reinjected.contains("[x]"), "{reinjected}");
+
+        let invalid = call(
+            &client,
+            &session.id,
+            "todo_update",
+            serde_json::json!({"id": "999", "status": "completed"}),
+        )
+        .await;
+        assert_eq!(invalid.is_error, Some(true));
+        assert!(text(&invalid).contains("No todo item"));
+    }
+
+    #[tokio::test]
+    async fn todo_update_accepts_the_displayed_hash_prefixed_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SessionManager::new(temp.path().join("sessions")));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "todo displayed id".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let client = TodoClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: Arc::clone(&manager),
+        })
+        .unwrap();
+
+        call(
+            &client,
+            &session.id,
+            "todo_write",
+            serde_json::json!({"content": "- [ ] verify displayed id"}),
+        )
+        .await;
+        let updated = call(
+            &client,
+            &session.id,
+            "todo_update",
+            serde_json::json!({"id": "#1", "status": "completed"}),
+        )
+        .await;
+
+        assert_eq!(updated.is_error, Some(false), "{}", text(&updated));
+        assert!(text(&updated).contains("Updated item #1"));
+        let result: serde_json::Value = serde_json::from_str(&text(&updated)).unwrap();
+        assert_eq!(result["task"]["id"], "1");
+        assert_eq!(result["task"]["text"], "verify displayed id");
+        assert_eq!(result["task"]["status"], "completed");
+        let reinjected = client.get_moim(&session.id).await.unwrap();
+        assert!(
+            reinjected.contains("- [x] (#1) verify displayed id"),
+            "{reinjected}"
+        );
     }
 }

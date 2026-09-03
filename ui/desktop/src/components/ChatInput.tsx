@@ -18,6 +18,7 @@ import { BottomMenuSkillSelection } from './bottom_menu/BottomMenuSkillSelection
 import { BottomMenuKnowledgeSelection } from './bottom_menu/BottomMenuKnowledgeSelection';
 import { BottomMenuReasoningEffort } from './bottom_menu/BottomMenuReasoningEffort';
 import { AlertType, useAlerts } from './alerts';
+import { toolCountWarning } from './alerts/toolCountWarning';
 import { useConfig } from './ConfigContext';
 import { useModelAndProvider } from './ModelAndProviderContext';
 import MentionPopover, { DisplayItemWithMatch } from './MentionPopover';
@@ -93,7 +94,6 @@ const MAX_IMAGE_SIZE_MB = 3;
 
 // Constants for token and tool alerts
 const TOKEN_LIMIT_DEFAULT = 128000; // fallback for custom models that the backend doesn't know about
-const TOOLS_MAX_SUGGESTED = 60; // max number of tools before we show a warning
 
 // Manual compact trigger message - must match backend constant
 const MANUAL_COMPACT_TRIGGER = '/compact';
@@ -1173,20 +1173,12 @@ export default function ChatInput({
     }
 
     // Add tool count alert if we have the data
-    if (toolCount !== null && toolCount > TOOLS_MAX_SUGGESTED) {
-      addAlert({
-        type: AlertType.Warning,
-        message: `Too many tools can degrade performance.\nTool count: ${toolCount} (recommend: ${TOOLS_MAX_SUGGESTED})`,
-        action: {
-          text: 'View extensions',
-          onClick: () => setView('extensions'),
-        },
-        autoShow: false, // Don't auto-show tool count warnings
-      });
-    }
-    // We intentionally omit setView as it shouldn't trigger a re-render of alerts
+    const countWarning = toolCountWarning(toolCount, sessionId);
+    if (countWarning) addAlert(countWarning);
+    // `handleSubmit` changes with composer state; alerts should refresh from
+    // their metrics, not every time the submit callback is rebuilt.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [totalTokens, toolCount, tokenLimit, isTokenLimitLoaded, addAlert, clearAlerts]);
+  }, [totalTokens, toolCount, tokenLimit, isTokenLimitLoaded, sessionId, addAlert, clearAlerts]);
 
   // Cleanup effect for component unmount - prevent memory leaks
   useEffect(() => {

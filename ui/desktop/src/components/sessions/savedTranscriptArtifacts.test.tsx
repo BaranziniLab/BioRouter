@@ -120,6 +120,30 @@ const figureToolResponse = {
 } as unknown as Message;
 
 const transcript: Message[] = [assistantWithFigureCall, figureToolResponse];
+function linkedFileTranscript(fromSessionId?: string): Message[] {
+  return [
+    {
+      id: 'file-prior',
+      role: 'assistant',
+      created: 1_700_000_002,
+      metadata: {
+        userVisible: true,
+        agentVisible: true,
+        ...(fromSessionId
+          ? { provenance: { kind: 'agent_injection' as const, fromSessionId } }
+          : {}),
+      },
+      content: [{ type: 'text', text: 'Created `/tmp/project/results/report.md`.' }],
+    },
+    {
+      id: 'file-current',
+      role: 'assistant',
+      created: 1_700_000_003,
+      metadata: { userVisible: true, agentVisible: true },
+      content: [{ type: 'text', text: '[Open report](report.md)' }],
+    },
+  ];
+}
 
 /**
  * The panel reads a file and prepares HTML through the main process. Stubbed
@@ -148,15 +172,18 @@ function artifactPanel(): Element | null {
   return document.querySelector(`[${ARTIFACT_PANEL_ATTR}]`);
 }
 
-function sharedSession(): SharedSessionDetails {
+function sharedSession(
+  messages: Message[] = transcript,
+  shareToken = 'token-1'
+): SharedSessionDetails {
   return {
-    share_token: 'token-1',
+    share_token: shareToken,
     created_at: 1_700_000_000,
     base_url: 'https://share.test',
     description: 'Cohort volcano plot',
     working_dir: '/tmp/project',
-    messages: transcript,
-    message_count: transcript.length,
+    messages,
+    message_count: messages.length,
     total_tokens: null,
   };
 }
@@ -181,12 +208,12 @@ beforeEach(() => {
 });
 
 describe('a shared transcript', () => {
-  function renderShared() {
-    return render(
+  function sharedView(messages: Message[] = transcript, shareToken = 'token-1') {
+    return (
       <ThemeProvider>
         <MemoryRouter>
           <SharedSessionView
-            session={sharedSession()}
+            session={sharedSession(messages, shareToken)}
             isLoading={false}
             error={null}
             onRetry={vi.fn()}
@@ -194,6 +221,10 @@ describe('a shared transcript', () => {
         </MemoryRouter>
       </ThemeProvider>
     );
+  }
+
+  function renderShared(messages: Message[] = transcript, shareToken = 'token-1') {
+    return render(sharedView(messages, shareToken));
   }
 
   it('shows a figure as a card and never as an inline frame', () => {
@@ -218,6 +249,44 @@ describe('a shared transcript', () => {
     // The panel renders the document in its own sandboxed srcdoc frame, so the
     // inline path stays absent even once the figure is on screen.
     expect(screen.queryByTestId('mcp-ui-frame')).not.toBeInTheDocument();
+  });
+
+  it('resolves a basename link from earlier same-session file provenance', async () => {
+    renderShared(linkedFileTranscript());
+    fireEvent.click(await screen.findByRole('button', { name: 'Open report' }));
+    await waitFor(() =>
+      expect(window.electron.readArtifactFile).toHaveBeenCalledWith(
+        '/tmp/project/results/report.md'
+      )
+    );
+  });
+
+  it('does not reuse foreign-origin file provenance', async () => {
+    renderShared(linkedFileTranscript('foreign-session'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open report' }));
+    await waitFor(() =>
+      expect(window.electron.readArtifactFile).toHaveBeenCalledWith('/tmp/project/report.md')
+    );
+  });
+
+  it('isolates provenance when the same transcript is rerendered under another share token', async () => {
+    const messages = linkedFileTranscript('shared:token-1');
+    const { rerender } = renderShared(messages, 'token-1');
+    fireEvent.click(await screen.findByRole('button', { name: 'Open report' }));
+    await waitFor(() =>
+      expect(window.electron.readArtifactFile).toHaveBeenCalledWith(
+        '/tmp/project/results/report.md'
+      )
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close preview panel' }));
+    await waitFor(() => expect(artifactPanel()).toBeNull());
+    vi.mocked(window.electron.readArtifactFile).mockClear();
+    rerender(sharedView(messages, 'token-2'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open report' }));
+    await waitFor(() =>
+      expect(window.electron.readArtifactFile).toHaveBeenCalledWith('/tmp/project/report.md')
+    );
   });
 });
 
@@ -268,5 +337,16 @@ describe('a saved transcript', () => {
       expect.objectContaining({ sessionId: 'session-preview' })
     );
     expect(container.innerHTML).not.toContain('session-preview');
+  });
+
+  it('resolves a basename link from earlier same-session file provenance', async () => {
+    const messages = linkedFileTranscript('20260814_120000');
+    renderSaved({ conversation: messages, message_count: messages.length });
+    fireEvent.click(await screen.findByRole('button', { name: 'Open report' }));
+    await waitFor(() =>
+      expect(window.electron.readArtifactFile).toHaveBeenCalledWith(
+        '/tmp/project/results/report.md'
+      )
+    );
   });
 });

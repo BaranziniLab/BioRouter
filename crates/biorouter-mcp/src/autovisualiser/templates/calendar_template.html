@@ -6,58 +6,59 @@
     <title>Calendar Heatmap</title>
     {{ASSETS}}
     <script>{{COMMON}}</script>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: auto; }
-        .header { padding: 20px 30px 0; text-align: center; }
-        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
-        #chart { display: block; margin: 10px auto; }
-        text { fill: var(--text); }
-        .tooltip { position: absolute; background: var(--text); color: var(--surface); padding: 6px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; opacity: 0; z-index: 10; }
-    </style>
+    <style>.tooltip{position:absolute;opacity:0;pointer-events:none;}</style>
 </head>
 <body>
     <div class="viz-root">
         <div class="container">
             <div class="header"><h1 id="title">Calendar Heatmap</h1></div>
-            <svg id="chart"></svg>
+            <div class="figure-scroll" tabindex="0" role="region" aria-label="Scientific figure"><svg id="chart" role="img" aria-label="Scientific figure; exact values follow in the data table"></svg></div>
+            <div class="figure-legend" id="valueLegend"></div>
         </div>
     </div>
     <div class="tooltip" id="tooltip"></div>
+    <details class="figure-data">
+        <summary>View figure data</summary>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Figure data"><table id="figureData"></table></div>
+    </details>
     <script>
         const calendarData = {{CALENDAR_DATA}};
         BioRouterViz.autoResize();
         BioRouterViz.guard(function () {
-            BioRouterViz.applyPageTheme();
+            BioRouterViz.applyScientificStyles();
             if (calendarData.title) document.getElementById('title').textContent = calendarData.title;
 
-            const cell = 15, pad = 3;
+            const cell = 22, pad = 4;
             const parsed = calendarData.values
-                .map(function (d) { return { date: new Date(d.date + 'T00:00:00'), value: d.value }; })
-                .filter(function (d) { return !isNaN(d.date.getTime()); })
+                .map(function (d) { return { key: d.date, date: new Date(d.date + 'T00:00:00Z'), value: d.value }; })
+                .filter(function (d) { return /^\d{4}-\d{2}-\d{2}$/.test(d.key) && !isNaN(d.date.getTime()) && d.date.toISOString().slice(0, 10) === d.key; })
                 .sort(function (a, b) { return a.date - b.date; });
             if (!parsed.length) throw new Error('No valid dates (use YYYY-MM-DD).');
 
             const byKey = {};
             parsed.forEach(function (d) { byKey[d.date.toISOString().slice(0, 10)] = d.value; });
-            const vmin = d3.min(parsed, function (d) { return d.value; });
-            const vmax = d3.max(parsed, function (d) { return d.value; });
-            const span = (vmax - vmin) || 1;
+            const observations = Object.values(byKey);
+            const vmin = d3.min(observations, function (value) { return value; });
+            const vmax = d3.max(observations, function (value) { return value; });
+            const span = vmax - vmin;
+            const color = (value) => BioRouterViz.sequential(span ? (value - vmin) / span : 0.5);
 
             const start = parsed[0].date, end = parsed[parsed.length - 1].date;
+            const dayCount = Math.round((end - start) / 864e5) + 1;
+            if (dayCount > 3660) throw new Error('Calendar date range exceeds 3,660 days. Choose a shorter range; no dates were silently omitted.');
             // Anchor weeks to the Sunday before the first date.
-            const anchor = new Date(start); anchor.setDate(anchor.getDate() - anchor.getDay());
+            const anchor = new Date(start); anchor.setUTCDate(anchor.getUTCDate() - anchor.getUTCDay());
             function weekIndex(d) { return Math.floor((d - anchor) / (7 * 864e5)); }
             const weeks = weekIndex(end) + 1;
-            const margin = { top: 24, left: 36, right: 20, bottom: 20 };
+            const margin = { top: 24, left: 48, right: 20, bottom: 20 };
             const width = margin.left + weeks * (cell + pad) + margin.right;
             const height = margin.top + 7 * (cell + pad) + margin.bottom;
             const svg = d3.select('#chart').attr('width', Math.max(width, 320)).attr('height', height);
             const g = svg.append('g').attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
             const tooltip = d3.select('#tooltip');
-            const days = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+            const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
             days.forEach(function (dn, i) {
-                g.append('text').attr('x', -8).attr('y', i * (cell + pad) + cell - 3).attr('text-anchor', 'end').style('font-size', '9px').text(dn);
+                g.append('text').attr('x', -8).attr('y', i * (cell + pad) + cell - 3).attr('text-anchor', 'end').text(dn);
             });
 
             let d = new Date(start);
@@ -65,18 +66,32 @@
                 const key = d.toISOString().slice(0, 10);
                 const has = Object.prototype.hasOwnProperty.call(byKey, key);
                 const v = byKey[key];
-                const wi = weekIndex(d), wd = d.getDay();
+                const wi = weekIndex(d), wd = d.getUTCDay();
                 g.append('rect')
                     .attr('x', wi * (cell + pad)).attr('y', wd * (cell + pad))
                     .attr('width', cell).attr('height', cell).attr('rx', 2)
-                    .attr('fill', has ? BioRouterViz.sequential((v - vmin) / span) : (BioRouterViz.dark ? '#2c333f' : '#ebedf0'))
+                    .attr('fill', has ? color(v) : (BioRouterViz.dark ? '#454541' : '#e4e4e0'))
                     .on('mouseover', function (event) {
-                        tooltip.style('opacity', 1).html('<strong>' + key + '</strong><br/>' + (has ? v : 'no data'))
+                        tooltip.style('opacity', 1).text(key + '\n' + (has ? v : 'No data'))
                             .style('left', (event.pageX + 12) + 'px').style('top', (event.pageY - 10) + 'px');
                     })
                     .on('mouseout', function () { tooltip.style('opacity', 0); });
                 d = new Date(d.getTime() + 864e5);
             }
+            const legendValues = span ? [vmin, (vmin + vmax) / 2, vmax] : [vmin];
+            const legendLabels = BioRouterViz.formatScaleValues(legendValues);
+            BioRouterViz.renderFigureLegend(document.getElementById('valueLegend'), [
+                ...legendValues.map((value, index) => ({ label: legendLabels[index], color: color(value) })),
+                { label: 'No data', color: BioRouterViz.dark ? '#454541' : '#e4e4e0' }
+            ]);
+            function* dayRows() {
+                for (let date = new Date(start); date <= end; date = new Date(date.getTime() + 864e5)) {
+                    const key = date.toISOString().slice(0, 10);
+                    yield [key, byKey[key]];
+                }
+            }
+            BioRouterViz.renderFigureData(document.getElementById('figureData'), ['Date', 'Value'], dayRows(),
+                'Calendar dates are timezone-independent. For duplicate dates, the last supplied value is used. A dash means no supplied observation, not zero.', dayCount);
             BioRouterViz.reportSize();
         });
     </script>

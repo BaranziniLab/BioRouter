@@ -403,6 +403,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::agent::restart_agent,
         super::routes::agent::update_working_dir,
         super::routes::agent::get_tools,
+        super::routes::agent::get_callable_tool_count,
         super::routes::agent::read_resource,
         super::routes::agent::call_tool,
         super::routes::agent::list_apps,
@@ -759,6 +760,8 @@ impl utoipa::Modify for ApiKeySecurity {
         // renderer's repair card to switch on.
         super::routes::agent::PrivacyBarrierBody,
         super::routes::agent::GetToolsQuery,
+        super::routes::agent::CallableToolCountQuery,
+        super::routes::agent::CallableToolCountResponse,
         super::routes::agent::ReadResourceRequest,
         super::routes::agent::ReadResourceResponse,
         super::routes::agent::CallToolRequest,

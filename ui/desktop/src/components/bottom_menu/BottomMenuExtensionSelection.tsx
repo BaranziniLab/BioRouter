@@ -25,6 +25,10 @@ import { extensionPairingRefused } from '../settings/extensions/extensionPrivacy
 import { useBoundProviderTier } from '../privacy/useBoundProviderTier';
 import { setExtensionOverride, getExtensionOverrides } from '../../store/extensionOverrides';
 import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
+import {
+  OPEN_CURRENT_CHAT_EXTENSIONS_EVENT,
+  type SessionToolEventDetail,
+} from '../../utils/sessionToolEvents';
 
 /** §14.5's reason, in the composer's own words. Public model → private tool. */
 const PAIRING_REFUSED_REASON =
@@ -71,6 +75,7 @@ export const BottomMenuExtensionSelection = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [sessionExtensions, setSessionExtensions] = useState<ExtensionConfig[]>([]);
+  const [sessionExtensionsLoaded, setSessionExtensionsLoaded] = useState(false);
   const [hubUpdateTrigger, setHubUpdateTrigger] = useState(0);
   const [sessionOverrides, setSessionOverrides] = useState<Map<string, boolean>>(new Map());
   const [pendingExtensionNames, setPendingExtensionNames] = useState<Set<string>>(new Set());
@@ -109,13 +114,26 @@ export const BottomMenuExtensionSelection = ({
   }, []);
 
   useEffect(() => {
+    const openForCurrentChat = (event: Event) => {
+      const detail = (event as CustomEvent<SessionToolEventDetail>).detail;
+      if (detail?.sessionId === sessionId) setIsOpen(true);
+    };
+    window.addEventListener(OPEN_CURRENT_CHAT_EXTENSIONS_EVENT, openForCurrentChat);
+    return () => window.removeEventListener(OPEN_CURRENT_CHAT_EXTENSIONS_EVENT, openForCurrentChat);
+  }, [sessionId]);
+
+  useEffect(() => {
     sessionToggleChainsRef.current.clear();
+    setSessionExtensions([]);
+    setSessionExtensionsLoaded(false);
     setSessionOverrides(new Map());
     setPendingExtensionNames(new Set());
   }, [sessionId]);
 
   // Fetch session-specific extensions or use global defaults
   useEffect(() => {
+    let current = true;
+
     const fetchExtensions = async () => {
       if (!sessionId) {
         return;
@@ -126,8 +144,9 @@ export const BottomMenuExtensionSelection = ({
           path: { session_id: sessionId },
         });
 
-        if (response.data?.extensions) {
+        if (current && response.data?.extensions) {
           setSessionExtensions(response.data.extensions);
+          setSessionExtensionsLoaded(true);
         }
       } catch (error) {
         console.error('Failed to fetch session extensions:', error);
@@ -135,6 +154,10 @@ export const BottomMenuExtensionSelection = ({
     };
 
     fetchExtensions();
+
+    return () => {
+      current = false;
+    };
   }, [sessionId, isOpen, refreshTrigger]);
 
   const handleToggle = useCallback(
@@ -193,7 +216,10 @@ export const BottomMenuExtensionSelection = ({
         try {
           const response = await getSessionExtensions({ path: { session_id: sessionId } });
           if (sessionToggleChainsRef.current.get(name) !== operation) return;
-          if (response.data?.extensions) setSessionExtensions(response.data.extensions);
+          if (response.data?.extensions) {
+            setSessionExtensions(response.data.extensions);
+            setSessionExtensionsLoaded(true);
+          }
         } catch {
           toastService.error({
             title: 'Extension refresh error',
@@ -314,13 +340,9 @@ export const BottomMenuExtensionSelection = ({
     // same predicate the menu already filters its own contents by, so the chip
     // and the list it labels can never disagree about what an extension is.
     //
-    // A session extension the config does not know about is counted rather than
-    // hidden: unknown means "not a shipped capability" here, and the safe
-    // direction for a count of the user's own things is to show it.
-    const isShippedCapability = (name: string) => {
-      const known = allExtensions.find((e) => e.name === name);
-      return known ? isCapabilityExtension(known) : false;
-    };
+    // Session data may arrive before the global catalog; capability identity
+    // must not depend on that fetch completing.
+    const isShippedCapability = (name: string) => isCapabilityExtension({ name });
 
     if (isHubView) {
       return allExtensions.filter(
@@ -331,7 +353,7 @@ export const BottomMenuExtensionSelection = ({
     }
 
     const enabled = new Set(
-      sessionExtensions.length > 0
+      sessionExtensionsLoaded
         ? sessionExtensions.map((ext) => ext.name)
         : allExtensions.filter((ext) => ext.enabled).map((ext) => ext.name)
     );
@@ -342,7 +364,14 @@ export const BottomMenuExtensionSelection = ({
     return [...enabled].filter((name) => !isShippedCapability(name)).length;
     // hubUpdateTrigger re-reads the hub override map, which mutates in place.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allExtensions, sessionExtensions, sessionOverrides, isHubView, hubUpdateTrigger]);
+  }, [
+    allExtensions,
+    sessionExtensions,
+    sessionExtensionsLoaded,
+    sessionOverrides,
+    isHubView,
+    hubUpdateTrigger,
+  ]);
 
   const visibleEnabledCount = useMemo(
     () => toggleableExtensions.filter((ext) => ext.enabled).length,
@@ -397,7 +426,10 @@ export const BottomMenuExtensionSelection = ({
         )
       );
       const response = await getSessionExtensions({ path: { session_id: sessionId } });
-      if (response.data?.extensions) setSessionExtensions(response.data.extensions);
+      if (response.data?.extensions) {
+        setSessionExtensions(response.data.extensions);
+        setSessionExtensionsLoaded(true);
+      }
 
       toastService.success({
         title: 'Extensions updated',

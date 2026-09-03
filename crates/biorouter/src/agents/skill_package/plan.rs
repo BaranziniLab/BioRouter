@@ -121,7 +121,27 @@ pub fn plan_from_entries(
 
     let ambiguity = ambiguity_for(&facts, &components, &components_root);
 
+    // A manifest-defined component root is meaningful package layout.  A
+    // structurally inferred named parent is instead the package directory the
+    // installer is about to create, so carrying it would duplicate the package
+    // name (`pack/pack/member`).  `skills/` is the conventional meaningful
+    // exception even when inferred from an archive without a manifest.
+    let source_package_root = (facts.components_root.is_none()
+        && components_root != "skills"
+        && !components_root.ends_with("/skills"))
+    .then_some(components_root.as_str())
+    .filter(|root| !root.is_empty());
+    let files = keep_bundle_files(&entries, &components, source_package_root);
+    let components = components
+        .into_iter()
+        .map(|mut component| {
+            component.directory = package_relative_path(&component.directory, source_package_root);
+            component
+        })
+        .collect();
+
     Ok(ImportPlan {
+        origin: None,
         kind: ImportKind::Bundle,
         id,
         display_name,
@@ -131,21 +151,8 @@ pub fn plan_from_entries(
         evidence,
         ambiguity,
         shadows: Vec::new(),
-        files: components
-            .iter()
-            .flat_map(|component| {
-                keep_files(&entries, &component.directory)
-                    .into_iter()
-                    .map(|(path, data)| (format!("{}/{path}", leaf(&component.directory)), data))
-            })
-            .collect(),
-        components: components
-            .into_iter()
-            .map(|component| PlannedSkill {
-                directory: leaf(&component.directory),
-                ..component
-            })
-            .collect(),
+        files,
+        components,
         source,
     })
 }
@@ -229,6 +236,7 @@ fn single_plan(
         .or_else(|| id_hints.iter().find_map(|hint| sanitize_package_id(hint)))
         .ok_or_else(|| anyhow::anyhow!("could not derive a folder name for this skill"))?;
     Ok(ImportPlan {
+        origin: None,
         kind: ImportKind::Single,
         display_name: component.name.clone(),
         id,
@@ -465,16 +473,141 @@ fn keep_files(entries: &[Entry], directory: &str) -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
-/// The last path component — the directory name a component keeps on disk.
-///
-/// ⚠ **This preserves the source's own folder name**, `media-use` and
-/// `slideshow` included. No package prefix is added: several of HyperFrames'
-/// members do not start with `hyperframes-`, so a prefix would be both a lie
-/// about their identity and useless as a detector.
-fn leaf(directory: &str) -> String {
-    directory
-        .rsplit('/')
-        .next()
-        .unwrap_or(directory)
+/// Preserve a bundle's declared component directories plus the small set of
+/// shared package roots skill ecosystems conventionally reference.  Root
+/// installers and arbitrary repository files remain outside the import plan.
+fn keep_bundle_files(
+    entries: &[Entry],
+    components: &[PlannedSkill],
+    source_package_root: Option<&str>,
+) -> Vec<(String, Vec<u8>)> {
+    const SHARED_ROOTS: &[&str] = &["assets", "references", "scripts"];
+
+    entries
+        .iter()
+        .filter(|entry| !MANIFEST_FILES.contains(&entry.name.as_str()))
+        // ⚠ Compare the BASENAME, not the full archive path. `entry.name` is the
+        // path as it sits in the archive, so an equality test against
+        // `PACKAGE_RECORD_FILE` matches only a record at the archive ROOT — and
+        // this function's predecessor rebased names before comparing, which is
+        // why its doc comment could say "Never carry a nested package record
+        // into a component's directory" and mean it.
+        //
+        // A record at `<component>/biorouter-package.json` therefore survived
+        // the filter, and `into_individual` then strips the component prefix —
+        // depositing it at the installed skill's own root, where the catalog
+        // reads it as a package record and the skill goes missing.
+        .filter(|entry| {
+            entry.name.rsplit('/').next() != Some(crate::agents::skill_catalog::PACKAGE_RECORD_FILE)
+        })
+        .filter(|entry| {
+            components.iter().any(|component| {
+                entry.name == format!("{}/SKILL.md", component.directory)
+                    || entry.name.starts_with(&format!("{}/", component.directory))
+            }) || {
+                source_package_relative(&entry.name, source_package_root).is_some_and(|relative| {
+                    SHARED_ROOTS
+                        .iter()
+                        .any(|root| relative.starts_with(&format!("{root}/")))
+                })
+            }
+        })
+        .map(|entry| {
+            (
+                package_relative_path(&entry.name, source_package_root),
+                entry.data.clone(),
+            )
+        })
+        .collect()
+}
+
+fn package_relative_path(path: &str, source_package_root: Option<&str>) -> String {
+    source_package_relative(path, source_package_root)
+        .unwrap_or(path)
         .to_string()
+}
+
+fn source_package_relative<'a>(
+    path: &'a str,
+    source_package_root: Option<&str>,
+) -> Option<&'a str> {
+    match source_package_root {
+        Some(root) => path.strip_prefix(&format!("{root}/")),
+        None => Some(path),
+    }
+}
+
+fn leaf(directory: &str) -> &str {
+    directory.rsplit('/').next().unwrap_or(directory)
+}
+
+#[cfg(test)]
+mod nested_record_tests {
+    use super::*;
+    use crate::agents::skill_package::archive::Entry;
+
+    fn entry(name: &str, body: &str) -> Entry {
+        Entry {
+            name: name.to_string(),
+            data: body.as_bytes().to_vec(),
+        }
+    }
+
+    fn skill(name: &str) -> String {
+        format!("---\nname: {name}\ndescription: a fixture skill for {name}\n---\n\nbody\n")
+    }
+
+    /// A package record one level down used to survive the bundle filter, and
+    /// `into_individual` then strips the component prefix — depositing it at the
+    /// installed skill's own root, where the catalog reads it as a package
+    /// record and the skill itself goes missing.
+    ///
+    /// The predecessor of `keep_bundle_files` rebased names before comparing,
+    /// which is why its doc comment could promise "Never carry a nested package
+    /// record into a component's directory". The promise outlived the code.
+    #[test]
+    fn a_nested_package_record_never_reaches_a_component() {
+        let entries = vec![
+            entry("alpha/SKILL.md", &skill("alpha")),
+            entry("alpha/biorouter-package.json", r#"{"id":"alpha"}"#),
+            entry("alpha/references/notes.md", "keep me"),
+            entry("beta/SKILL.md", &skill("beta")),
+            entry(
+                crate::agents::skill_catalog::PACKAGE_RECORD_FILE,
+                r#"{"id":"pkg"}"#,
+            ),
+        ];
+        let plan = plan_from_entries(entries, &["pkg".to_string()], Default::default())
+            .expect("a two-component bundle plans");
+
+        for (path, _) in &plan.files {
+            assert!(
+                path.rsplit('/').next() != Some(crate::agents::skill_catalog::PACKAGE_RECORD_FILE),
+                "a package record survived at {path}"
+            );
+        }
+
+        // And the component's own supporting files are still there — the filter
+        // must drop the record, not the directory.
+        assert!(
+            plan.files
+                .iter()
+                .any(|(path, _)| path.ends_with("references/notes.md")),
+            "the filter took a supporting file with it: {:?}",
+            plan.files.iter().map(|(p, _)| p).collect::<Vec<_>>()
+        );
+
+        // The shape the bug actually produced: after the component prefix is
+        // stripped, the record would sit at the installed skill's root.
+        let individual = plan.into_individual(&["alpha".to_string()]);
+        let alpha = individual.first().expect("alpha plans on its own");
+        assert!(
+            !alpha
+                .files
+                .iter()
+                .any(|(path, _)| path == crate::agents::skill_catalog::PACKAGE_RECORD_FILE),
+            "an individually-installed skill carries a package record at its root: {:?}",
+            alpha.files.iter().map(|(p, _)| p).collect::<Vec<_>>()
+        );
+    }
 }

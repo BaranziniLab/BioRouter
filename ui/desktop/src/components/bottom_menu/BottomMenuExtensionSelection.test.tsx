@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BottomMenuExtensionSelection } from './BottomMenuExtensionSelection';
+import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
 
 const mocks = vi.hoisted(() => ({
   overrides: new Map<string, boolean>(),
@@ -141,6 +142,29 @@ describe('BottomMenuExtensionSelection', () => {
     mocks.removeFromAgent.mockResolvedValue(undefined as never);
   });
 
+  it('opens this chat menu when the tool-count warning asks to manage it', async () => {
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+
+    act(() =>
+      window.dispatchEvent(
+        new CustomEvent('current-chat-extensions:open', {
+          detail: { sessionId: 'another-session' },
+        })
+      )
+    );
+    expect(screen.queryByPlaceholderText('Search extensions...')).not.toBeInTheDocument();
+
+    act(() =>
+      window.dispatchEvent(
+        new CustomEvent('current-chat-extensions:open', {
+          detail: { sessionId: 'session-1' },
+        })
+      )
+    );
+
+    expect(await screen.findByPlaceholderText('Search extensions...')).toBeInTheDocument();
+  });
+
   it('keeps an immediate hub toggle when the menu closes and reopens', async () => {
     render(<BottomMenuExtensionSelection sessionId={null} />);
     const trigger = screen.getByLabelText(/Manage extensions/);
@@ -241,6 +265,9 @@ describe('BottomMenuExtensionSelection', () => {
     mocks.getSessionExtensions.mockReturnValue(new Promise(() => {}) as never);
 
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
 
     // Four extensions are enabled in the fixture. Two are capabilities
     // (autovisualiser, code_execution) and do not count; two are the user's own
@@ -279,7 +306,141 @@ describe('BottomMenuExtensionSelection', () => {
     await waitFor(() =>
       expect(screen.getByLabelText('Manage extensions (2 enabled)')).toBeInTheDocument()
     );
-    resolveEnable?.();
+    await act(async () => {
+      resolveEnable?.();
+      await Promise.resolve();
+    });
+  });
+
+  it('excludes capabilities absent from the global catalog snapshot', async () => {
+    mocks.getSessionExtensions.mockResolvedValue({
+      data: {
+        extensions: [
+          { type: 'platform', name: 'todo' },
+          { type: 'builtin', name: 'developer' },
+          { type: 'platform', name: 'Workspace' },
+          { type: 'stdio', name: 'not-in-global-catalog' },
+        ],
+      },
+    } as never);
+    render(<BottomMenuExtensionSelection sessionId="catalog-still-loading" />);
+    await waitFor(() =>
+      expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument()
+    );
+    expect(screen.queryByLabelText('Manage extensions (4 enabled)')).not.toBeInTheDocument();
+  });
+
+  it('refetches and refreshes this chat when the catalog changes', async () => {
+    mocks.getSessionExtensions.mockResolvedValue({ data: { extensions: [] } } as never);
+
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
+      button: 0,
+      ctrlKey: false,
+    });
+
+    const example = await screen.findByRole('menuitemcheckbox', { name: 'example' });
+    expect(example).toHaveAttribute('aria-checked', 'false');
+    await waitFor(() => expect(mocks.getSessionExtensions).toHaveBeenCalledTimes(2));
+    const callsBeforeChange = mocks.getSessionExtensions.mock.calls.length;
+
+    mocks.getSessionExtensions.mockResolvedValue({
+      data: { extensions: [{ type: 'stdio', name: 'example' }] },
+    } as never);
+    window.dispatchEvent(new CustomEvent(CATALOG_CHANGED_EVENT, { detail: { revision: 1 } }));
+
+    await waitFor(
+      () => expect(mocks.getSessionExtensions.mock.calls.length).toBeGreaterThan(callsBeforeChange),
+      { timeout: 1_500 }
+    );
+    expect(mocks.getSessionExtensions).toHaveBeenLastCalledWith({
+      path: { session_id: 'session-1' },
+    });
+    await waitFor(() => expect(example).toHaveAttribute('aria-checked', 'true'));
+    expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument();
+
+    const callsBeforeDetach = mocks.getSessionExtensions.mock.calls.length;
+    mocks.getSessionExtensions.mockResolvedValue({ data: { extensions: [] } } as never);
+    window.dispatchEvent(new CustomEvent(CATALOG_CHANGED_EVENT, { detail: { revision: 2 } }));
+
+    await waitFor(
+      () => expect(mocks.getSessionExtensions.mock.calls.length).toBeGreaterThan(callsBeforeDetach),
+      { timeout: 1_500 }
+    );
+    await waitFor(() => expect(example).toHaveAttribute('aria-checked', 'false'));
+    expect(screen.getByLabelText('Manage extensions (0 enabled)')).toBeInTheDocument();
+  });
+
+  /**
+   * ⚠ **The popup is not the only consumer, and it is usually CLOSED.** The
+   * refetch above is exercised with the dropdown open, which a refactor that
+   * moved it inside an `isOpen` guard would still satisfy — while the count on
+   * the closed chip, a second window and `useToolCount` in another pane all
+   * went stale. That is the exact shape of "did not change with the popup
+   * open", so it is asserted without ever opening it.
+   */
+  it('refetches after a catalog change while the dropdown is closed', async () => {
+    mocks.getSessionExtensions.mockResolvedValue({ data: { extensions: [] } } as never);
+
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    await waitFor(() =>
+      expect(screen.getByLabelText('Manage extensions (0 enabled)')).toBeInTheDocument()
+    );
+    expect(screen.queryByRole('menuitemcheckbox')).not.toBeInTheDocument();
+    const callsBeforeChange = mocks.getSessionExtensions.mock.calls.length;
+
+    mocks.getSessionExtensions.mockResolvedValue({
+      data: { extensions: [{ type: 'stdio', name: 'example' }] },
+    } as never);
+    window.dispatchEvent(new CustomEvent(CATALOG_CHANGED_EVENT, { detail: { revision: 7 } }));
+
+    await waitFor(
+      () => expect(mocks.getSessionExtensions.mock.calls.length).toBeGreaterThan(callsBeforeChange),
+      { timeout: 1_500 }
+    );
+    expect(mocks.getSessionExtensions).toHaveBeenLastCalledWith({
+      path: { session_id: 'session-1' },
+    });
+    await waitFor(() =>
+      expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument()
+    );
+  });
+
+  it('does not let a late response from the previous chat replace the current count', async () => {
+    let resolvePrevious:
+      | ((value: { data: { extensions: Array<{ type: string; name: string }> } }) => void)
+      | undefined;
+    mocks.getSessionExtensions
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolvePrevious = resolve;
+          }) as never
+      )
+      .mockResolvedValue({
+        data: { extensions: [{ type: 'stdio', name: 'example' }] },
+      } as never);
+
+    const { rerender } = render(<BottomMenuExtensionSelection sessionId="previous-chat" />);
+    rerender(<BottomMenuExtensionSelection sessionId="current-chat" />);
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument()
+    );
+
+    await act(async () => {
+      resolvePrevious?.({
+        data: {
+          extensions: [
+            { type: 'stdio', name: 'spoke' },
+            { type: 'stdio', name: 'notetaker' },
+          ],
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument();
   });
 
   /**

@@ -27,7 +27,7 @@
     </style>
   </head>
   <body>
-    <script>
+    <script nonce="{{SCRIPT_NONCE}}">
       (function () {
         'use strict';
 
@@ -40,11 +40,20 @@
 
           guestIframe = document.createElement('iframe');
 
-          // Sandbox permissions for the Guest UI
-          // allow-scripts: needed for the app to run
-          // allow-same-origin: needed for localStorage, cookies, etc.
-          // allow-forms: needed if the app has forms
-          guestIframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms');
+          // Sandbox permissions for the Guest UI.
+          //
+          // allow-scripts: needed for the app to run.
+          // allow-forms: needed if the app has forms.
+          //
+          // allow-same-origin is deliberately NOT granted, and it is the one
+          // flag that matters here. A `srcdoc` frame inherits its embedder's
+          // origin, so granting it would make untrusted extension HTML
+          // same-origin with the daemon: it could read `parent.location` (which
+          // is how the daemon secret used to leak), read this document's DOM for
+          // the CSP nonce, and call the REST API. Without it the guest gets an
+          // opaque origin and can only talk through the postMessage bridge
+          // below -- which is the entire protocol it is supposed to use.
+          guestIframe.setAttribute('sandbox', 'allow-scripts allow-forms');
 
           guestIframe.srcdoc = html;
           guestIframe.style.cssText = 'width:100%; height:100%; border:none;';

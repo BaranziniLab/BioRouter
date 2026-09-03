@@ -12,6 +12,7 @@ pub const DEFAULT_EXTENSION_TIMEOUT: u64 = 300;
 pub const DEFAULT_EXTENSION_DESCRIPTION: &str = "";
 pub const DEFAULT_DISPLAY_NAME: &str = "Developer";
 const EXTENSIONS_CONFIG_KEY: &str = "extensions";
+const RETIRED_BUILTIN_EXTENSIONS: &[&str] = &["tutorial"];
 
 #[derive(Debug, Deserialize, Serialize, Clone, ToSchema)]
 pub struct ExtensionEntry {
@@ -41,6 +42,7 @@ fn get_extensions_map() -> IndexMap<String, ExtensionEntry> {
     let mut extensions_map = IndexMap::with_capacity(raw.len());
     for (k, v) in raw {
         match (k, serde_yaml::from_value::<ExtensionEntry>(v)) {
+            (serde_yaml::Value::String(_), Ok(entry)) if is_retired_builtin_extension(&entry) => {}
             (serde_yaml::Value::String(key), Ok(entry)) => {
                 extensions_map.insert(key, entry);
             }
@@ -56,6 +58,14 @@ fn get_extensions_map() -> IndexMap<String, ExtensionEntry> {
 
     inject_platform_extensions(&mut extensions_map);
     extensions_map
+}
+
+fn is_retired_builtin_extension(entry: &ExtensionEntry) -> bool {
+    matches!(
+        &entry.config,
+        ExtensionConfig::Builtin { name, .. }
+            if RETIRED_BUILTIN_EXTENSIONS.contains(&name_to_key(name).as_str())
+    )
 }
 
 fn inject_platform_extensions(extensions: &mut IndexMap<String, ExtensionEntry>) {
@@ -310,6 +320,79 @@ pub fn remove_extension(key: &str) {
     );
 }
 
+/// Remove an extension only when the persisted entry is still the exact entry
+/// that a destructive operation validated. A concurrent replacement is left
+/// untouched.
+pub fn remove_extension_if_matches(
+    key: &str,
+    expected: &ExtensionEntry,
+) -> Result<bool, super::base::ConfigError> {
+    use crate::catalog::{CatalogChangeReason, CatalogEntryChange};
+    let expected = expected.clone();
+    let removed = Config::global().update_param::<IndexMap<String, ExtensionEntry>, _, _>(
+        EXTENSIONS_CONFIG_KEY,
+        |extensions| remove_matching_extension(extensions, key, &expected),
+    )?;
+    let Some(removed) = removed else {
+        return Ok(false);
+    };
+    let row = change_row(key, Some(&removed), CatalogEntryChange::Removed);
+    announce(
+        CatalogChangeReason::Uninstall,
+        crate::catalog::CatalogExtensionChange {
+            config: None,
+            enabled: false,
+            ..row
+        },
+    );
+    Ok(true)
+}
+
+fn remove_matching_extension(
+    extensions: &mut IndexMap<String, ExtensionEntry>,
+    key: &str,
+    expected: &ExtensionEntry,
+) -> Option<ExtensionEntry> {
+    let matches = extensions.get(key).is_some_and(|current| {
+        current.enabled == expected.enabled && current.config == expected.config
+    });
+    matches.then(|| extensions.shift_remove(key)).flatten()
+}
+
+/// Restore a removed entry only when no concurrent writer has already filled
+/// its key. This is the rollback counterpart of
+/// [`remove_extension_if_matches`].
+pub fn restore_extension_if_absent(
+    entry: ExtensionEntry,
+) -> Result<bool, super::base::ConfigError> {
+    use crate::catalog::{CatalogChangeReason, CatalogEntryChange};
+    let key = entry.config.key();
+    let restored = Config::global().update_param::<IndexMap<String, ExtensionEntry>, _, _>(
+        EXTENSIONS_CONFIG_KEY,
+        |extensions| insert_extension_if_absent(extensions, key.clone(), entry.clone()),
+    )?;
+    if restored {
+        announce(
+            CatalogChangeReason::Install,
+            change_row(&key, Some(&entry), CatalogEntryChange::Added),
+        );
+    }
+    Ok(restored)
+}
+
+fn insert_extension_if_absent(
+    extensions: &mut IndexMap<String, ExtensionEntry>,
+    key: String,
+    entry: ExtensionEntry,
+) -> bool {
+    if extensions.contains_key(&key) {
+        false
+    } else {
+        extensions.insert(key, entry);
+        true
+    }
+}
+
 pub fn set_extension_enabled(key: &str, enabled: bool) {
     use crate::catalog::{CatalogChangeReason, CatalogEntryChange};
     let mut extensions = get_extensions_map();
@@ -405,6 +488,48 @@ mod persisted_provenance_tests {
 
     fn raw_mapping(yaml: &str) -> Mapping {
         serde_yaml::from_str(yaml).expect("valid yaml mapping")
+    }
+
+    fn stdio_entry(name: &str, command: &str) -> ExtensionEntry {
+        ExtensionEntry {
+            enabled: true,
+            config: ExtensionConfig::stdio(name, command, "fixture", 30_u64),
+        }
+    }
+
+    #[test]
+    fn conditional_removal_never_deletes_a_replacement_and_rollback_never_overwrites_one() {
+        let approved = stdio_entry("package", "approved-command");
+        let replacement = stdio_entry("package", "replacement-command");
+        let mut extensions = IndexMap::from([("package".to_owned(), replacement.clone())]);
+
+        assert!(remove_matching_extension(&mut extensions, "package", &approved).is_none());
+        assert_eq!(
+            extensions.get("package").unwrap().config,
+            replacement.config
+        );
+        assert!(!insert_extension_if_absent(
+            &mut extensions,
+            "package".to_owned(),
+            approved.clone(),
+        ));
+        assert_eq!(
+            extensions.get("package").unwrap().config,
+            replacement.config
+        );
+
+        assert_eq!(
+            remove_matching_extension(&mut extensions, "package", &replacement)
+                .unwrap()
+                .config,
+            replacement.config
+        );
+        assert!(insert_extension_if_absent(
+            &mut extensions,
+            "package".to_owned(),
+            approved.clone(),
+        ));
+        assert_eq!(extensions.get("package").unwrap().config, approved.config);
     }
 
     // #42: provenance must come from the raw persisted mapping, not the
@@ -568,5 +693,41 @@ mod reset_tests {
         assert_eq!(retain_bundled_extensions(&mut extensions), 1);
         assert_eq!(extensions.len(), 1);
         assert!(extensions["developer"].config.is_bundled());
+    }
+}
+
+#[cfg(test)]
+mod retired_builtin_tests {
+    use super::*;
+
+    fn entry(config: ExtensionConfig) -> ExtensionEntry {
+        ExtensionEntry {
+            enabled: true,
+            config,
+        }
+    }
+
+    #[test]
+    fn only_the_retired_tutorial_builtin_is_filtered() {
+        let tutorial = entry(ExtensionConfig::Builtin {
+            name: "Tutorial".into(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        });
+        let external_tutorial = entry(ExtensionConfig::stdio(
+            "tutorial",
+            "external-tutorial",
+            "External tutorial",
+            30_u64,
+        ));
+
+        assert!(is_retired_builtin_extension(&tutorial));
+        assert!(!is_retired_builtin_extension(&external_tutorial));
+        assert!(!is_retired_builtin_extension(&entry(
+            ExtensionConfig::default()
+        )));
     }
 }

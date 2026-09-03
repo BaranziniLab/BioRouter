@@ -122,8 +122,15 @@ pub struct ScreenCaptureParams {
     pub display: Option<u64>,
 
     /// Optional: the title (or any substring of it, case-insensitive) of the
-    /// window to capture. Use the list_windows tool to find available windows.
+    /// window to capture. Set `list_only: true` first to see the available
+    /// titles.
     pub window_title: Option<String>,
+
+    /// Return the available window titles and connected displays as text, and
+    /// capture nothing. Use it to discover what to pass to `window_title` or
+    /// `display`; when true, both of those are ignored.
+    #[serde(default)]
+    pub list_only: bool,
 }
 
 /// Produce a compact, agent-readable description of every connected display:
@@ -322,11 +329,11 @@ pub struct ShellParams {
     /// Run the command in the background instead of waiting for it to finish.
     /// Use this for long-lived commands (dev servers, builds, test suites,
     /// training runs) you need to keep running and observe. Returns a job_id
-    /// immediately; then use shell_wait / shell_output / shell_kill. Do NOT
+    /// immediately; then use shell_status / shell_kill. Do NOT
     /// append `&` yourself for this — set background=true.
     #[serde(default)]
     pub background: Option<bool>,
-    /// Optional short label for a background job, shown by shell_output/wait.
+    /// Optional short label for a background job, shown by shell_status.
     #[serde(default)]
     pub label: Option<String>,
 }
@@ -338,15 +345,26 @@ pub struct JobIdParams {
     pub job_id: String,
 }
 
-/// Parameters for the shell_wait tool.
+/// Parameters for the `shell_status` tool.
+///
+/// ⚠ Both fields optional and both plain scalars — no `oneOf`, no tagged
+/// variant. `providers/formats/google.rs` strips a discriminated union to
+/// nothing, so a merged tool that used one would reach Gemini with no usable
+/// parameters at all.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct ShellWaitParams {
-    /// The job_id returned by `shell` when run with background=true.
-    pub job_id: String,
-    /// Maximum seconds to watch before returning. Returns earlier the moment
-    /// the job exits. Default 120, capped at 600. If the job is still running
-    /// when the timeout elapses, the result says so; call shell_wait again to
-    /// keep watching. The job is never killed by waiting.
+pub struct ShellStatusParams {
+    /// The job_id returned by `shell` when run with background=true. Omit it to
+    /// list every background job instead — id, label, status, runtime, whether
+    /// unread output is waiting, and the command. Listing never consumes
+    /// output, so use it to rediscover a job_id you have lost.
+    #[serde(default)]
+    pub job_id: Option<String>,
+    /// Only meaningful with job_id. Omit it for an instant, non-blocking check
+    /// that returns the job's status and any output produced since the last
+    /// look. Give it to BLOCK instead, returning the moment the job exits or
+    /// when the seconds are up — default 120, capped at 600. If the job is
+    /// still running when the time elapses the result says so; call again to
+    /// keep watching. Waiting never kills the job.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
 }
@@ -482,7 +500,7 @@ impl ServerHandler for DeveloperServer {
 
         let base_instructions = match os {
             "windows" => formatdoc! {r#"
-                The developer extension gives you the capabilities to edit code files and run shell commands,
+                The Developer capability lets you edit files and run shell commands,
                 and can be used to solve a wide range of problems.
 
                 You can use the shell tool to run Windows commands (PowerShell or CMD).
@@ -490,15 +508,14 @@ impl ServerHandler for DeveloperServer {
 
                 Use the shell tool as needed to locate files or interact with the project.
 
-                This extension is the default, first-choice tool for everyday file and system work: use `shell`
+                This capability is the default, first-choice tool for everyday file and system work: use `shell`
                 to list, copy, move, delete, or find files and to run commands, and use `text_editor` to read
                 (`view`), create/overwrite (`write`), and edit (`str_replace`, `insert`) files. Prefer these
                 direct tools over routing a simple file or shell operation through a code-execution script or
-                another extension. Reach for those only when a task needs real computation, control flow, or a
+                another capability or extension. Reach for those only when a task needs real computation, control flow, or a
                 specialized capability.
 
-                Leverage `analyze` through `return_last_only=true` subagents for deep codebase understanding with lean context
-                - delegate analysis, retain summaries
+                Use `analyze` for delegated codebase understanding when it is in the effective tool roster; retain its summary.
 
                 Your windows/screen tools can be used for visual debugging. You should not use these tools unless
                 prompted to, but you can mention they are available if they are relevant.
@@ -515,22 +532,21 @@ impl ServerHandler for DeveloperServer {
                 let shell_info = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
 
                 formatdoc! {r#"
-                The developer extension gives you the capabilities to edit code files and run shell commands,
+                The Developer capability lets you edit files and run shell commands,
                 and can be used to solve a wide range of problems.
 
             You can use the shell tool to run any command that would work on the relevant operating system.
             Use the shell tool as needed to locate files or interact with the project.
 
-            This extension is the default, first-choice tool for everyday file and system work: use `shell`
+            This capability is the default, first-choice tool for everyday file and system work: use `shell`
             to list, copy, move, delete, or find files (`ls`, `cp`, `mv`, `rm`, `mkdir`, `rg`) and to run
             commands, and use `text_editor` to read (`view`), create/overwrite (`write`), and edit
             (`str_replace`, `insert`) files. Prefer these direct tools over routing a simple file or shell
-            operation through a code-execution script or another extension. Reach for those only when a task
+            operation through a code-execution script or another capability or extension. Reach for those only when a task
             needs real computation, control flow, or a specialized capability. When you just need a file's
             contents, use `text_editor` view rather than `cat`/`head` in shell.
 
-            Leverage `analyze` through `return_last_only=true` subagents for deep codebase understanding with lean context
-            - delegate analysis, retain summaries
+            Use `analyze` for delegated codebase understanding when it is in the effective tool roster; retain its summary.
 
             Your windows/screen tools can be used for visual debugging. You should not use these tools unless
             prompted to, but you can mention they are available if they are relevant.
@@ -625,7 +641,7 @@ impl ServerHandler for DeveloperServer {
             A command run in the foreground has a wall-clock budget (240 seconds by default). When it
             expires the command's whole process group is killed and the call fails, and nothing is left
             running. Work that may legitimately take longer belongs in background=true, where
-            shell_wait / shell_output / shell_kill let you watch it without blocking the turn.
+            shell_status / shell_kill let you watch it without blocking the turn.
 
             Use this shell tool directly for filesystem operations (ls, cp, mv, rm, mkdir, rg) rather than
             wrapping them in a code-execution script. To read or write a file's contents, prefer the
@@ -662,9 +678,9 @@ impl ServerHandler for DeveloperServer {
         let unix_specific = indoc! {r#"
             For a long-lived command (dev server, build, test suite, training run) that you need to
             keep running and observe, run shell with `background=true` rather than appending `&`. That
-            returns a job_id and keeps the process alive across tool calls; then call `shell_wait` to
+            returns a job_id and keeps the process alive across tool calls; then call `shell_status` to
             wait for it to finish (it returns the moment it exits, or after a timeout still running, so
-            it never blocks your turn or kills the job), `shell_output` to peek at new output, and
+            it never blocks your turn or kills the job), `shell_status` with no timeout to peek at new output, and
             `shell_kill` to stop it. Completion is decided by the command's exit status.
 
             **Important**: Use ripgrep - `rg` - exclusively when you need to locate a file or a code reference,
@@ -1077,13 +1093,14 @@ impl DeveloperServer {
         }
     }
 
-    /// List all available windows that can be used with screen_capture.
-    /// Returns a list of window titles that can be used with the window_title parameter
-    /// of the screen_capture tool.
-    #[tool(
-        name = "list_windows",
-        description = "List all available window titles that can be used with screen_capture. Returns a list of window titles that can be used with the window_title parameter of the screen_capture tool."
-    )]
+    /// The window/display inventory, reachable as
+    /// `screen_capture { list_only: true }`.
+    ///
+    /// ⚠ **Not a declared tool any more.** `list_windows` returned a listing
+    /// `screen_capture` already computes and returns on a no-match — two tools
+    /// for one answer, and the model had to know the first one existed to use
+    /// the second. The function stays because the body is shared and because
+    /// the retired name still dispatches.
     pub async fn list_windows(&self) -> Result<CallToolResult, ErrorData> {
         // Before the list, not after: without the permission every title is
         // empty, so the honest answer is about the permission, not the windows.
@@ -1099,6 +1116,15 @@ impl DeveloperServer {
         let window_titles: Vec<String> =
             windows.into_iter().filter_map(|w| w.title().ok()).collect();
 
+        // ⚠ Byte-identical to what the retired `list_windows` returned, and
+        // deliberately so. Folding in the display list looked like an
+        // improvement — a model asking "what can I capture?" learns both halves
+        // — but it made the output depend on the machine's monitors, and this
+        // exchange is replayed from a recorded cassette
+        // (tests/mcp_replays/…mcpdeveloper). A consolidation moves the entry
+        // point; it does not quietly change what comes back. The display list
+        // is already reported on every display capture, which is where a model
+        // meets it.
         let content_text = format!("Available windows:\n{}", window_titles.join("\n"));
 
         Ok(CallToolResult::success(vec![
@@ -1117,7 +1143,7 @@ impl DeveloperServer {
     /// Only one of display or window_title should be specified.
     #[tool(
         name = "screen_capture",
-        description = "Capture a screenshot of a display or a window. Capture either: 1. a full display via the 0-based `display` index (omit it to capture the primary display; the result lists every connected display with its index so you can target other monitors), or 2. a specific window via `window_title` (case-insensitive substring match; on no match the result lists the open window titles). Specify only one of `display` or `window_title`. Works across macOS, Windows, and Linux."
+        description = "Capture a screenshot of a display or a window, or list what is available to capture. Pass `list_only: true` to get the open window titles and connected displays as text, capturing nothing. Otherwise capture either: 1. a full display via the 0-based `display` index (omit it to capture the primary display; the result lists every connected display with its index so you can target other monitors), or 2. a specific window via `window_title` (case-insensitive substring match; on no match the result lists the open window titles). Specify only one of `display` or `window_title`. Works across macOS, Windows, and Linux."
     )]
     pub async fn screen_capture(
         &self,
@@ -1129,6 +1155,14 @@ impl DeveloperServer {
         // error — it returns a real PNG of an empty desktop — so there is no
         // later point at which this can be detected from the result.
         ensure_screen_capture_permitted()?;
+
+        // The inventory branch, absorbed from the retired `list_windows`. It
+        // sits AFTER the permission check for the same reason that check exists
+        // at all: without Screen Recording every window title comes back empty,
+        // so the honest answer is about the permission, not the windows.
+        if params.list_only {
+            return self.list_windows().await;
+        }
 
         // Human/agent-readable note describing what was captured and, for
         // display captures, the full multi-monitor topology. Reporting the
@@ -1436,10 +1470,10 @@ impl DeveloperServer {
     ///
     /// Avoid commands that produce a large amount of output, and consider piping those outputs to files.
     /// For long-lived commands (dev servers, builds, test suites), set `background=true` instead of
-    /// appending `&`; this returns a job_id you can watch with shell_wait / shell_output / shell_kill.
+    /// appending `&`; this returns a job_id you can watch with shell_status / shell_kill.
     #[tool(
         name = "shell",
-        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id immediately, and you then use shell_wait to wait for it, shell_output to peek, or shell_kill to stop it. A foreground command has a wall-clock budget (240s by default): if it exceeds it, its whole process group is killed and the call fails, so anything that may run longer belongs in background=true."
+        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id immediately, and you then use shell_status to peek or wait, or shell_kill to stop it. A foreground command has a wall-clock budget (240s by default): if it exceeds it, its whole process group is killed and the call fails, so anything that may run longer belongs in background=true."
     )]
     pub async fn shell(
         &self,
@@ -1481,7 +1515,7 @@ impl DeveloperServer {
                 .await
                 .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e, None))?;
             return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Started background job {id}. It keeps running across tool calls. Use shell_wait with this job_id to watch for completion, shell_output to peek, shell_kill to stop it, or shell_list to see every background job."
+                "Started background job {id}. It keeps running across tool calls. Use shell_status with this job_id to peek at new output, add timeout_secs to wait for completion, omit job_id to see every background job, or shell_kill to stop it."
             ))]));
         }
 
@@ -1581,39 +1615,39 @@ impl DeveloperServer {
     }
 
     #[tool(
-        name = "shell_wait",
-        description = "Wait for a background shell job (started by shell with background=true) for up to timeout_secs (default 120, max 600). Returns the moment the job exits, or at the timeout with status: running (the job is NOT killed; call again to keep watching). Use this to wait for background work without ending your turn or busy-looping."
+        name = "shell_status",
+        description = "Look at background shell jobs (started by `shell` with background=true). Omit job_id to list every job with its id, label, status, runtime and command. Give job_id for one job's status and the output produced since your last look. Add timeout_secs to that to BLOCK until it exits instead of peeking — up to 600 seconds, and the job is never killed by waiting."
     )]
-    pub async fn shell_wait(
+    pub async fn shell_status(
         &self,
-        params: Parameters<ShellWaitParams>,
+        params: Parameters<ShellStatusParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
-        let dur = p
-            .timeout_secs
-            .unwrap_or(super::background::DEFAULT_WAIT_SECS)
-            .min(super::background::MAX_WAIT_SECS);
-        let out = self
-            .background_jobs
-            .wait(&p.job_id, dur)
-            .await
-            .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
-        Ok(CallToolResult::success(vec![Content::text(out)]))
-    }
-
-    #[tool(
-        name = "shell_output",
-        description = "Non-blocking peek at a background shell job: returns its status and only the output produced since the last check. Omit to wait; use shell_wait instead when you want to block until it finishes."
-    )]
-    pub async fn shell_output(
-        &self,
-        params: Parameters<JobIdParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let out = self
-            .background_jobs
-            .snapshot(&params.0.job_id)
-            .await
-            .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
+        // ⚠ Three tools became one because they were three READS of one
+        // registry: list, peek, and block-until-exit. The arguments already
+        // distinguished them — `shell_list` took none, `shell_output` took a
+        // job_id, `shell_wait` took a job_id and a timeout — so the
+        // discriminator was there and only the tool count was wrong.
+        // `shell_kill` stays separate: it MUTATES, and folding a destructive
+        // verb into a read would let one permission grant cover both.
+        let Some(job_id) = p
+            .job_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                self.background_jobs.list().await,
+            )]));
+        };
+        let out = match p.timeout_secs {
+            Some(timeout_secs) => {
+                let dur = timeout_secs.min(super::background::MAX_WAIT_SECS);
+                self.background_jobs.wait(job_id, dur).await
+            }
+            None => self.background_jobs.snapshot(job_id).await,
+        }
+        .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
         Ok(CallToolResult::success(vec![Content::text(out)]))
     }
 
@@ -1630,15 +1664,6 @@ impl DeveloperServer {
             .kill(&params.0.job_id)
             .await
             .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
-        Ok(CallToolResult::success(vec![Content::text(out)]))
-    }
-
-    #[tool(
-        name = "shell_list",
-        description = "List every background shell job (started by shell with background=true) with its job_id, label, status (running or the exit result), runtime, whether it has unread output, and the command. Use this to rediscover a job_id you've lost or to see everything you have running before you shell_wait/shell_output/shell_kill."
-    )]
-    pub async fn shell_list(&self) -> Result<CallToolResult, ErrorData> {
-        let out = self.background_jobs.list().await;
         Ok(CallToolResult::success(vec![Content::text(out)]))
     }
 

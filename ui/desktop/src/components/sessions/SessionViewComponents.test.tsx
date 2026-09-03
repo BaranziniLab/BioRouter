@@ -37,6 +37,7 @@ describe('SessionMessages provenance (BR-71 §5)', () => {
     render(
       <SessionMessages
         messages={[injected]}
+        sessionId="provenance-session"
         isLoading={false}
         error={null}
         onRetry={vi.fn()}
@@ -51,6 +52,7 @@ describe('SessionMessages provenance (BR-71 §5)', () => {
     render(
       <SessionMessages
         messages={[userMessage]}
+        sessionId="provenance-session"
         isLoading={false}
         error={null}
         onRetry={vi.fn()}

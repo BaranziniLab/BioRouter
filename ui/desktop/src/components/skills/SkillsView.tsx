@@ -15,7 +15,7 @@ import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { removeSkillPackage } from '../../api';
 import type { CatalogBundle, CatalogSkill } from '../../api';
-import { useSkillCatalog, type SkillCatalogEntry } from './useSkillCatalog';
+import { skillCatalogToggleKey, useSkillCatalog, type SkillCatalogEntry } from './useSkillCatalog';
 
 /**
  * Settings → Skills.
@@ -53,7 +53,7 @@ export default function SkillsView() {
 
   const toggle = useCallback(
     async (entry: SkillCatalogEntry, enabled: boolean) => {
-      const result = await setEnabled([entry.key], enabled);
+      const result = await setEnabled([skillCatalogToggleKey(entry)], enabled);
       if (!result.ok) {
         toastError({
           title: displayNameOf(entry),
@@ -395,7 +395,13 @@ function BundleRow({
   onDelete,
   onToggle,
 }: BundleRowProps) {
-  const members = skills.filter((skill) => skill.bundle === bundle.name);
+  const declaredMembers = new Set(bundle.skills);
+  const members = skills.filter(
+    (skill) =>
+      skill.sourceRoot === bundle.sourceRoot &&
+      skill.bundle === bundle.name &&
+      declaredMembers.has(skill.name)
+  );
   const entryPoint = bundle.package?.entryPoint ?? null;
   // ⚠ From the daemon, not from a list here. Rust owns the seeder, so Rust owns
   // the answer — the same rule `SkillItem` follows for a skill row. A bundle
@@ -444,7 +450,18 @@ function BundleRow({
             <p className="text-supporting text-text-subtle mt-0.5">entry point: {entryPoint}</p>
           )}
           {!expanded && (
-            <p className="text-supporting text-text-subtle mt-1 font-mono truncate">
+            // ⚠ NOT `font-mono`. These are skill NAMES, and `entryPoint` three
+            // lines above is one of them — so a collapsed package card printed
+            // the same string ("hyperframes") twice, in two typefaces, both
+            // visible at once. Expanding the row rendered those same names in
+            // the body font again (the <li>s below), so the face also flipped
+            // on expand.
+            // D-31 in styles/main.css settles it: "mono keeps the jobs it
+            // EARNS — code, the terminal, paths, figures where columns must
+            // align… Mono for data, sans for chrome." A skill name is a name,
+            // and every other skill-name render in the app (SkillItem, the
+            // composer picker, the @-mention list, BrowseSkillsModal) is body.
+            <p className="text-supporting text-text-subtle mt-1 truncate">
               {bundle.skills.join(' · ')}
             </p>
           )}

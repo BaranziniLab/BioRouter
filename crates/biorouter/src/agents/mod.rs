@@ -43,6 +43,10 @@ pub mod resource_refs;
 pub mod retry;
 mod schedule_tool;
 mod session_blob_tool;
+// The session-row write for `enabled_extensions.v0`, plus the classifier that
+// says which catalog tools require it. `pub` because `agents::agent` is
+// `pub(crate)` and `biorouter-server`'s `/agent/call_tool` needs both.
+pub mod session_extensions;
 // BR-71 decision (c): per-session skill enablement, kept strictly out of the
 // machine-wide `skills-config.json`.
 pub mod session_skills;

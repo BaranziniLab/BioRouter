@@ -10,9 +10,12 @@
 //! bundle so simple apps still work. The stripper is intentionally conservative;
 //! complex TypeScript should be built where esbuild is present.
 
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use crate::agent_drafter::store::{ArtifactKind, Manifest};
 
@@ -41,7 +44,7 @@ pub struct LintFinding {
 }
 
 /// Validate a built app's authored files against the harness guardrails.
-/// Returns findings (Errors block readiness; Warns are nudges). Pure string
+/// Returns findings (Errors block readiness; Warns are nudges). Static source
 /// analysis — safe to run on every build/preview.
 #[allow(clippy::too_many_lines)]
 pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
@@ -161,20 +164,24 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
             );
         }
     }
-    let calls_agent = main.contains("br.run")
-        || main.contains(".prompt(")
-        || main.contains(".ask(")
-        || main.contains("autoChat");
+    let WiringAnalysis {
+        source: wiring,
+        auto_chat,
+    } = analyze_wiring(&main);
+    let calls_agent = wiring.contains("br.run")
+        || wiring.contains(".prompt(")
+        || wiring.contains(".ask(")
+        || auto_chat.may_call_agent();
     if is_agentic && !calls_agent {
         out.push(LintFinding {
             level: LintLevel::Warn,
-            msg: "src/main.ts never calls the agent (br.run / br.prompt / br.ask) and doesn't enable autoChat. Wire a control to br.run(prompt, \"#out\").".into(),
+            msg: "src/main.ts never calls the agent (br.run / br.prompt / br.ask) and doesn't enable autoChat. If agent work is intended, wire a control to br.run(prompt, \"#out\"). Intentional local-only apps may omit agent calls.".into(),
         });
     }
-    let has_progress_surface = main.contains("br.run")
-        || main.contains("autoChat: true")
-        || main.contains("createApp();")
-        || main.contains("mountTimeline")
+    let has_progress_surface = wiring.contains("br.run")
+        || (auto_chat.enabled && !auto_chat.unknown)
+        || wiring.contains("createApp();")
+        || wiring.contains("mountTimeline")
         || il.contains("data-br-progress")
         || il.contains("br-run-status")
         || il.contains("data-br-chat");
@@ -201,9 +208,9 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
         || il.contains("br-dropzone")
         || il.contains("br-tab");
     if has_controls
-        && !main.contains("addEventListener")
-        && !main.contains("autoChat")
-        && !main.contains("onclick")
+        && !wiring.contains("addEventListener")
+        && !auto_chat.may_call_agent()
+        && !wiring.contains("onclick")
     {
         out.push(LintFinding {
             level: LintLevel::Warn,
@@ -756,6 +763,135 @@ fn strip_js_comments(source: &str) -> String {
     out
 }
 
+struct WiringAnalysis {
+    source: String,
+    auto_chat: AutoChatUsage,
+}
+
+fn analyze_wiring(source: &str) -> WiringAnalysis {
+    let mut parser = tree_sitter::Parser::new();
+    let tree = parser
+        .set_language(&tree_sitter_javascript::LANGUAGE.into())
+        .ok()
+        .and_then(|()| parser.parse(source, None));
+    let Some(tree) = tree else {
+        return WiringAnalysis {
+            source: source.to_string(),
+            auto_chat: AutoChatUsage {
+                enabled: false,
+                unknown: source.contains("autoChat"),
+            },
+        };
+    };
+    let source = mask_wiring_comments(source, tree.root_node());
+    let auto_chat = auto_chat_usage(&source, tree.root_node());
+    WiringAnalysis { source, auto_chat }
+}
+
+fn mask_wiring_comments(source: &str, root: tree_sitter::Node<'_>) -> String {
+    let mut masked = source.as_bytes().to_vec();
+    let mut nodes = vec![root];
+    while let Some(node) = nodes.pop() {
+        if node.kind() == "comment" {
+            for byte in &mut masked[node.byte_range()] {
+                if !matches!(*byte, b'\n' | b'\r') {
+                    *byte = b' ';
+                }
+            }
+        } else {
+            // TypeScript may produce error nodes; only actual comment nodes are masked.
+            let mut cursor = node.walk();
+            nodes.extend(node.children(&mut cursor));
+        }
+    }
+    String::from_utf8(masked).unwrap_or_else(|_| source.to_string())
+}
+
+#[derive(Default)]
+struct AutoChatUsage {
+    enabled: bool,
+    unknown: bool,
+}
+
+impl AutoChatUsage {
+    fn may_call_agent(&self) -> bool {
+        self.enabled || self.unknown
+    }
+}
+
+fn auto_chat_usage(source: &str, root: tree_sitter::Node<'_>) -> AutoChatUsage {
+    let mut usage = AutoChatUsage::default();
+    for (offset, name) in source.match_indices("autoChat") {
+        match literal_auto_chat_value(source, root, offset, name.len()) {
+            Some(false) => {}
+            Some(true) => usage.enabled = true,
+            None => usage.unknown = true,
+        }
+    }
+    usage
+}
+
+fn literal_auto_chat_value(
+    source: &str,
+    root: tree_sitter::Node<'_>,
+    offset: usize,
+    name_len: usize,
+) -> Option<bool> {
+    let mut key = root.descendant_for_byte_range(offset, offset + name_len)?;
+    if key.kind() == "string_fragment" {
+        key = key.parent()?;
+    }
+    let pair = key.parent()?;
+    if pair.kind() != "pair"
+        || pair.child_by_field_name("key")? != key
+        || !matches!(
+            source.get(key.byte_range())?,
+            "autoChat" | "\"autoChat\"" | "'autoChat'"
+        )
+    {
+        return None;
+    }
+    let object = pair.parent()?;
+    if object.kind() != "object" || object_has_ambiguous_auto_chat(source, object) {
+        return None;
+    }
+    let value = pair.child_by_field_name("value")?;
+    match (value.kind(), source.get(value.byte_range())?) {
+        ("false", "false") => Some(false),
+        ("true", "true") => Some(true),
+        _ => None,
+    }
+}
+
+fn object_has_ambiguous_auto_chat(source: &str, object: tree_sitter::Node<'_>) -> bool {
+    let mut auto_chat_keys = 0;
+    let mut cursor = object.walk();
+    for member in object.named_children(&mut cursor) {
+        if member.kind() == "spread_element" {
+            return true;
+        }
+        let Some(key) = member
+            .child_by_field_name("key")
+            .or_else(|| member.child_by_field_name("name"))
+        else {
+            continue;
+        };
+        if key.kind() == "computed_property_name" {
+            return true;
+        }
+        let Some(key_source) = source.get(key.byte_range()) else {
+            return true;
+        };
+        if matches!(key_source, "autoChat" | "\"autoChat\"" | "'autoChat'") {
+            auto_chat_keys += 1;
+            if auto_chat_keys > 1 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Format findings for inclusion in a tool result.
 pub fn format_lint(findings: &[LintFinding]) -> String {
     if findings.is_empty() {
@@ -786,6 +922,8 @@ pub struct BuildReport {
 }
 
 static NPX_ESBUILD_LOCK: Mutex<()> = Mutex::new(());
+static NPX_ESBUILD_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
+const ESBUILD_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn lock_npx_esbuild(program: &str) -> Option<MutexGuard<'static, ()>> {
     let is_npx = Path::new(program)
@@ -827,7 +965,7 @@ fn find_esbuild() -> Option<(String, Vec<String>)> {
     if which("esbuild") {
         return Some(("esbuild".to_string(), vec![]));
     }
-    if which("npx") {
+    if !NPX_ESBUILD_UNAVAILABLE.load(AtomicOrdering::Acquire) && which("npx") {
         return Some(("npx".to_string(), vec!["--yes".into(), "esbuild".into()]));
     }
     None
@@ -922,7 +1060,7 @@ pub fn build_app(project_dir: &Path) -> std::io::Result<BuildReport> {
             Err(e) => {
                 // esbuild could not be spawned; fall through to the stripper.
                 let mut report = fallback_bundle(project_dir, &out)?;
-                report.log = format!("esbuild spawn failed ({e}); used fallback.\n{}", report.log);
+                report.log = format!("esbuild unavailable ({e}); used fallback.\n{}", report.log);
                 return Ok(note(report));
             }
         }
@@ -948,6 +1086,37 @@ fn run_esbuild(
     entry: &Path,
     out: &Path,
 ) -> std::io::Result<BuildReport> {
+    run_esbuild_with_timeout(program, lead, entry, out, ESBUILD_TIMEOUT)
+}
+
+fn terminate_esbuild(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as i32;
+        // The command is its own process-group leader, so this also reaps an
+        // `npx`-spawned compiler or package lifecycle child.
+        if unsafe { libc::kill(-pid, libc::SIGKILL) } != 0 {
+            let _ = child.kill();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn join_output(reader: std::thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
+    reader
+        .join()
+        .map_err(|_| io::Error::other("esbuild output reader panicked"))?
+}
+
+fn run_esbuild_with_timeout(
+    program: &str,
+    lead: &[String],
+    entry: &Path,
+    out: &Path,
+    timeout: Duration,
+) -> std::io::Result<BuildReport> {
     let npx_guard = lock_npx_esbuild(program);
     let mut cmd = Command::new(program);
     if npx_guard.is_some() {
@@ -963,15 +1132,75 @@ fn run_esbuild(
     cmd.arg("--log-level=warning");
     // Last, so nothing set above can leave a daemon credential in the child.
     super::prepare_agent_drafter_child(&mut cmd);
-    let output = cmd.output()?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .expect("piped esbuild stdout must be available");
+    let mut stderr = child
+        .stderr
+        .take()
+        .expect("piped esbuild stderr must be available");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    });
+
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Ok(None) => {
+                terminate_esbuild(&mut child);
+                let _ = join_output(stdout_reader);
+                let _ = join_output(stderr_reader);
+                if npx_guard.is_some() {
+                    NPX_ESBUILD_UNAVAILABLE.store(true, AtomicOrdering::Release);
+                }
+                drop(npx_guard);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "esbuild exceeded its {} second limit",
+                        timeout.as_secs_f64()
+                    ),
+                ));
+            }
+            Err(error) => {
+                terminate_esbuild(&mut child);
+                let _ = join_output(stdout_reader);
+                let _ = join_output(stderr_reader);
+                drop(npx_guard);
+                return Err(error);
+            }
+        }
+    };
+    let stdout = join_output(stdout_reader)?;
+    let stderr = join_output(stderr_reader)?;
     drop(npx_guard);
     let log = format!(
         "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
     );
     Ok(BuildReport {
-        ok: output.status.success() && out.exists(),
+        ok: status.success() && out.exists(),
         used: "esbuild".into(),
         log,
     })
@@ -1532,6 +1761,51 @@ mod tests {
         assert!(lock_npx_esbuild("esbuild").is_none());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_timed_out_esbuild_reaps_its_whole_process_group() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let shim = dir.path().join("esbuild-shim");
+        let descendant_pid = dir.path().join("descendant.pid");
+        std::fs::write(
+            &shim,
+            "#!/bin/sh\npidfile=\"$1\"\nsleep 30 &\necho \"$!\" > \"$pidfile\"\nwait\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&shim).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&shim, permissions).unwrap();
+
+        let entry = dir.path().join("main.ts");
+        let out = dir.path().join("app.js");
+        std::fs::write(&entry, "const ok = true;").unwrap();
+        let started = Instant::now();
+        let error = run_esbuild_with_timeout(
+            shim.to_str().unwrap(),
+            &[descendant_pid.to_string_lossy().into_owned()],
+            &entry,
+            &out,
+            Duration::from_secs(1),
+        )
+        .expect_err("the hung compiler must time out");
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(3));
+        let pid: i32 = std::fs::read_to_string(descendant_pid)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "the compiler's descendant survived the timeout"
+        );
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    }
+
     #[test]
     fn build_app_bundles_with_available_toolchain() {
         // Uses esbuild if present, else the fallback — either way dist/app.js
@@ -1710,6 +1984,243 @@ document.getElementById("run")!.addEventListener("click", () => br.run("visualiz
             std::fs::write(dir.path().join("manifest.json"), m).unwrap();
         }
         format_lint(&lint_app(dir.path()))
+    }
+
+    const NO_PROGRESS_INDEX: &str =
+        r#"<main class="br-container"><div id="out" class="br-output"></div></main>"#;
+    const UNWIRED_CONTROL_INDEX: &str = r#"<main class="br-container">
+        <button id="edit" class="br-btn">Edit local row</button>
+        <div id="out" class="br-output"></div></main>"#;
+
+    #[test]
+    fn lint_autochat_literal_false_does_not_require_progress() {
+        for setting in [
+            "autoChat: false",
+            "autoChat:false",
+            "autoChat \n : \t false",
+            "\"autoChat\": false",
+            "'autoChat' : false",
+            "autoChat /* local-only */ : /* disabled */ false",
+            "autoChat: false /* keep disabled */, ui: false",
+            "autoChat: // local-only\n false",
+        ] {
+            let main = format!(
+                "import {{ createApp }} from \"./sdk\";\nconst br = createApp({{ {setting} }});"
+            );
+            let out = lint_with(NO_PROGRESS_INDEX, &main, None);
+            assert!(!out.contains("visible step progress"), "{setting}: {out}");
+            assert!(!out.contains("ERROR"), "{setting}: {out}");
+            assert!(out.contains("never calls the agent"), "{setting}: {out}");
+            assert!(
+                out.contains("Intentional local-only apps may omit agent calls"),
+                "{setting}: {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn lint_autochat_comments_do_not_enable_agent_work() {
+        let main = r#"import { createApp } from "./sdk";
+const br = createApp({ autoChat: false });
+// br.prompt("not an executed call");
+/* Other example: createApp({ autoChat: true }); br.ask("not executed"); */
+"#;
+        let out = lint_with(NO_PROGRESS_INDEX, main, None);
+        assert!(!out.contains("visible step progress"), "{out}");
+        assert!(out.contains("never calls the agent"), "{out}");
+    }
+
+    #[test]
+    fn lint_autochat_dynamic_values_still_require_progress() {
+        for setting in [
+            "autoChat: enabled",
+            "autoChat",
+            "\"autoChat\": enabled",
+            "'autoChat': false || enabled",
+            "autoChat: false /* not a literal value */ || enabled",
+            "autoChat: false ? false : enabled",
+            "autoChat: enabled ? false : true",
+            "autoChat: Boolean(false)",
+            "autoChat: true || enabled",
+            "autoChat: true ? enabled : false",
+            "autoChat: false, ...options",
+            "...options, autoChat: false",
+            "autoChat: true, ...options",
+        ] {
+            let main = format!(
+                "import {{ createApp }} from \"./sdk\";\nconst br = createApp({{ {setting} }});"
+            );
+            let out = lint_with(NO_PROGRESS_INDEX, &main, None);
+            assert!(out.contains("visible step progress"), "{setting}: {out}");
+            assert!(!out.contains("never calls the agent"), "{setting}: {out}");
+        }
+    }
+
+    #[test]
+    fn lint_autochat_false_does_not_hide_another_enabled_setting() {
+        for settings in [
+            ["autoChat: false", "autoChat: true"],
+            ["autoChat: true", "autoChat: false"],
+            ["'autoChat': false", "\"autoChat\": enabled"],
+        ] {
+            let main = format!(
+                "import {{ createApp }} from \"./sdk\";\nconst br = createApp({{ {} }});\nconst other = createApp({{ {} }});",
+                settings[0], settings[1]
+            );
+            let out = lint_with(NO_PROGRESS_INDEX, &main, None);
+            assert!(
+                !out.contains("never calls the agent"),
+                "{settings:?}: {out}"
+            );
+            if settings[1].contains("enabled") {
+                assert!(out.contains("visible step progress"), "{settings:?}: {out}");
+            }
+        }
+    }
+
+    #[test]
+    fn lint_autochat_duplicate_keys_do_not_prove_progress_for_manual_calls() {
+        for setting in [
+            "autoChat: true, autoChat: false",
+            "autoChat: false, autoChat: true",
+            "'autoChat': true, \"autoChat\": false",
+            "\"autoChat\": false, 'autoChat': true",
+        ] {
+            let main = format!(
+                "import {{ createApp }} from \"./sdk\";\nconst br = createApp({{ {setting} }});\nbr.prompt(\"analyze\");"
+            );
+            let out = lint_with(NO_PROGRESS_INDEX, &main, None);
+            assert!(out.contains("visible step progress"), "{setting}: {out}");
+            assert!(!out.contains("never calls the agent"), "{setting}: {out}");
+        }
+    }
+
+    #[test]
+    fn lint_autochat_computed_keys_do_not_prove_progress_for_manual_calls() {
+        for setting in [
+            "autoChat: true, [['auto', 'Chat'].join('')]: false",
+            "[['auto', 'Chat'].join('')]: false, autoChat: true",
+            "autoChat: true, [setting]: false",
+            "[setting]: false, autoChat: true",
+            "autoChat: true, get [setting]() { return false; }",
+            "get [setting]() { return false; }, autoChat: true",
+        ] {
+            let main = format!(
+                "import {{ createApp }} from \"./sdk\";\nconst br = createApp({{ {setting} }});\nbr.ask(\"analyze\");"
+            );
+            let out = lint_with(NO_PROGRESS_INDEX, &main, None);
+            assert!(out.contains("visible step progress"), "{setting}: {out}");
+            assert!(!out.contains("never calls the agent"), "{setting}: {out}");
+        }
+    }
+
+    #[test]
+    fn lint_autochat_false_does_not_exempt_manual_agent_calls() {
+        for call in [
+            "br.prompt(\"analyze\");",
+            "br.ask(\"analyze\");",
+            "for (const step of steps) { br.prompt(step); }",
+        ] {
+            let main = format!(
+                "import {{ createApp }} from \"./sdk\";\nconst br = createApp({{ autoChat: false }});\n{call}"
+            );
+            let out = lint_with(NO_PROGRESS_INDEX, &main, None);
+            assert!(out.contains("visible step progress"), "{call}: {out}");
+            assert!(!out.contains("never calls the agent"), "{call}: {out}");
+        }
+    }
+
+    #[test]
+    fn lint_autochat_false_does_not_hide_unwired_controls() {
+        let main =
+            "import { createApp } from \"./sdk\";\nconst br = createApp({ autoChat: false });";
+        let out = lint_with(UNWIRED_CONTROL_INDEX, main, None);
+        assert!(out.contains("interactive controls"), "{out}");
+        assert!(!out.contains("visible step progress"), "{out}");
+    }
+
+    #[test]
+    fn lint_autochat_true_retains_existing_chat_wiring() {
+        for setting in [
+            "autoChat: true",
+            "autoChat:true",
+            "autoChat \n : \t true",
+            "\"autoChat\": true",
+            "'autoChat' : true",
+            "autoChat /* chat */ : /* enabled */ true",
+            "autoChat: true, ui: true, options: { label: 'local' }",
+        ] {
+            let main = format!(
+                "import {{ createApp }} from \"./sdk\";\nconst br = createApp({{ {setting} }});"
+            );
+            let out = lint_with(UNWIRED_CONTROL_INDEX, &main, None);
+            assert!(!out.contains("interactive controls"), "{setting}: {out}");
+            assert!(!out.contains("never calls the agent"), "{setting}: {out}");
+            assert!(!out.contains("visible step progress"), "{setting}: {out}");
+        }
+    }
+
+    #[test]
+    fn lint_autochat_comment_mask_preserves_strings_urls_and_template_calls() {
+        for call in [
+            "const url = \"https://example.invalid\"; br.prompt(url);",
+            "const marker = '/* not a comment */'; br.ask(marker);",
+            "const marker = '// not a comment'; br.prompt(marker);",
+            "const url: string = \"https://example.invalid\"; br.prompt(url);",
+            "const result = `prefix ${br.prompt(\"analyze\")} suffix`;",
+            "const result = `https://example.invalid/${br.ask(\"analyze\")}`;",
+        ] {
+            let main = format!(
+                "import {{ createApp }} from \"./sdk\";\nconst br = createApp({{ autoChat: false }});\n{call}"
+            );
+            let out = lint_with(NO_PROGRESS_INDEX, &main, None);
+            assert!(out.contains("visible step progress"), "{call}: {out}");
+            assert!(!out.contains("never calls the agent"), "{call}: {out}");
+        }
+    }
+
+    #[test]
+    fn lint_autochat_comment_mask_changes_only_comment_bytes() {
+        let source = "const url: string = 'https://example.invalid'; /* 中文 */\n\
+                      const br = createApp({ autoChat: false }); // br.prompt('not run');\n\
+                      const result = `url://${br.ask('run')}`;";
+        let masked = analyze_wiring(source).source;
+        assert_eq!(masked.len(), source.len());
+        assert!(masked.contains("'https://example.invalid'"));
+        assert!(masked.contains("`url://${br.ask('run')}`"));
+        assert!(masked.contains("const br = createApp({ autoChat: false });"));
+        assert!(!masked.contains("中文"));
+        assert!(!masked.contains("br.prompt('not run')"));
+    }
+
+    #[test]
+    fn lint_autochat_quoted_true_examples_do_not_prove_progress() {
+        for example in [
+            r#"const example = '{ "autoChat": true }';"#,
+            r#"const example = "{ 'autoChat': true }";"#,
+            r#"const example = `{ "autoChat": true }`;"#,
+            r#"const example = '{ autoChat: true }';"#,
+        ] {
+            let main = format!(
+                "import {{ createApp }} from \"./sdk\";\nconst br = createApp({{ autoChat: false }});\n{example}\nbr.prompt(\"analyze\");"
+            );
+            let out = lint_with(NO_PROGRESS_INDEX, &main, None);
+            assert!(out.contains("visible step progress"), "{example}: {out}");
+        }
+    }
+
+    #[test]
+    fn lint_autochat_false_accepts_local_control_handlers() {
+        let main = r#"import { createApp } from "./sdk";
+const br = createApp({ autoChat: false });
+document.getElementById("edit")!.addEventListener("click", () => {
+  document.getElementById("out")!.textContent = "Local row updated";
+});
+"#;
+        let out = lint_with(UNWIRED_CONTROL_INDEX, main, None);
+        assert!(!out.contains("interactive controls"), "{out}");
+        assert!(!out.contains("visible step progress"), "{out}");
+        assert!(!out.contains("ERROR"), "{out}");
     }
 
     fn manifest_json(system_prompt: &str, ui_enabled: bool) -> String {

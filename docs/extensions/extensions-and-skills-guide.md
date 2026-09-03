@@ -1,50 +1,43 @@
-# Extensions, skills, and MCP agents
+# Capabilities, extensions, skills, and MCP agents
 
-> **What this is.** The end-user guide to the three ways Biorouter is extended — MCP extensions (tools), platform extensions (built-in agent capabilities), and skills (reusable instruction sets) — covering how to add, configure, and author each.
+> **What this is.** The end-user guide to built-in capabilities, installed MCP extensions, and reusable skills, including how to configure, install, and author them.
 > **Status:** Current.
 > **Audience:** end users.
 
-Biorouter connects to databases, APIs, file systems, and custom workflows through pluggable parts rather than built-in special cases. Extensions add *tools* the agent can call; skills add *procedural knowledge* telling the agent how to use them. MCP — the [Model Context Protocol](https://github.com/modelcontextprotocol) — is the open standard that extensions speak, so any MCP server written by anyone can become a Biorouter extension. Read the extension sections if you want new capabilities; read the skills sections if the capabilities already exist and you want Biorouter to apply them consistently.
+Biorouter's capabilities ship with the product and may be enabled or disabled by the user. Extensions are installed MCP connectors that add tools; skills add procedural knowledge without adding tools. MCP — the [Model Context Protocol](https://github.com/modelcontextprotocol) — is the open standard extensions speak, so any compatible third-party server can become a Biorouter extension.
 
 ---
 
-## Extensions (MCP servers)
+## Installed extensions (MCP connectors)
 
 Extensions are add-ons based on MCP. Each extension is an MCP server that exposes a set of tools Biorouter can invoke. Biorouter automatically scans extensions for known malware before activating them.
 
-### Built-in MCP extensions
+## Built-in capabilities
 
-These extensions ship with Biorouter and are available immediately:
+These capabilities ship with Biorouter. Some are backed by bundled MCP servers and others run in the agent process; that implementation detail does not make them installed extensions.
 
-| Extension | Description | Default state |
+| Capability | Description | Default state |
 |---|---|---|
 | **Developer** | File operations, shell commands, text editing, code search — essential for software development | Enabled |
-| **Computer Controller** | Web scraping, file caching, browser automation | Disabled |
-| **Memory** | Remembers user preferences across sessions | Disabled |
-| **Tutorial** | Interactive tutorials for learning Biorouter | Disabled |
-| **Auto Visualiser** | Automatically generates data visualizations in conversations | Disabled |
+| **Computer Controller** | Web scraping, file caching, browser automation | Enabled |
+| **Memory** | Remembers user preferences across sessions | Enabled |
+| **Auto Visualiser** | Automatically generates data visualizations in conversations | Enabled |
 | **Knowledge** | Personal, LLM-maintained knowledge bases backed by markdown and git history | Enabled |
 | **Agent Drafter** | Builds interactive artifacts and exports them as standalone projects | Enabled |
 
-> **Note.** The default-state column in this table, and in the platform-extension table
-> below, predates the current capability defaults in
-> `ui/desktop/src/components/settings/capabilities/capabilities.ts` and is out of date in
-> several rows — check that file, or Settings → Chat → Capabilities in the desktop app,
-> for what your build actually ships enabled.
+The table follows the current capability registry in
+`ui/desktop/src/components/settings/capabilities/capabilities.ts`.
 
-Most built-ins have their own reference page in this folder — for example [Developer](built-in/developer.md), [Computer Controller](built-in/computer-controller.md), [Memory](built-in/memory.md), [Auto Visualiser](built-in/auto-visualiser.md), and [Tutorial](built-in/tutorial.md).
+Additional in-process capabilities:
 
-### Built-in platform extensions
-
-Platform extensions provide global agent capabilities and run inside the agent process:
-
-| Extension | Description | Default state |
+| Capability | Description | Default state |
 |---|---|---|
 | **Todo** | Manage task lists and track progress across sessions | Enabled |
 | **Skills** | Load and use agent skills from skill directories | Enabled |
 | **Extension Manager** | Discover, enable, and disable extensions during a session | Enabled |
 | **Chat Recall** | Search conversation content across all session history | Disabled |
-| **Code Execution** | Execute JavaScript in a sandboxed environment for tool discovery and calling | Disabled |
+| **Code Execution** | Execute JavaScript in a sandboxed environment for tool discovery and calling | Enabled |
+| **Workspace Control** | Work across conversations and delegate to visible subagents | Enabled |
 
 ### Adding an external extension
 
@@ -92,7 +85,7 @@ extensions:
 |---|---|
 | `stdio` | Standard I/O process (most common — Node/Python MCP servers) |
 | `builtin` | Bundled with the Biorouter MCP server binary |
-| `platform` | Runs in the agent process (platform extensions) |
+| `platform` | Legacy config shape for a built-in capability that runs in the agent process |
 | `streamable_http` | Remote server over HTTP |
 | `inline_python` | Inline Python code executed via `uvx` |
 
@@ -132,7 +125,7 @@ Once built, add it to Biorouter as a `stdio` or `streamable_http` extension.
 
 Skills are reusable instruction sets that teach Biorouter how to perform specific workflows. Unlike extensions (which add tools), skills add domain expertise and procedural knowledge — checklists, deployment procedures, API guides, and the like.
 
-The **Skills platform extension** must be enabled (it is by default) for skills to work.
+The **Skills capability** must be enabled (it is by default) for skills to work.
 
 ### How skills work
 
@@ -207,7 +200,7 @@ A skill directory can include helper scripts, templates, or config files:
         └── config.template.json
 ```
 
-Biorouter can access these supporting files when executing the skill, via the Developer extension's file tools.
+Biorouter can access these supporting files when executing the skill, via the Developer capability's file tools.
 
 ### Best practices for skills
 
@@ -256,7 +249,7 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
 
 ## Related documentation
 
-- [Developer extension reference](built-in/developer.md) — the default-enabled extension most sessions actually use
+- [Developer capability reference](built-in/developer.md) — the default-enabled extension most sessions actually use
 - [Skills platform extension reference](built-in/skills.md) — the mechanics behind the skill loading described above
 - [Config file reference](../configuration/config-file-reference.md) — the full schema for the `extensions:` block shown above
 - [Secret storage](../security/secret-storage.md) — where extension tokens such as `GITHUB_PERSONAL_ACCESS_TOKEN` are kept, and how to avoid plaintext

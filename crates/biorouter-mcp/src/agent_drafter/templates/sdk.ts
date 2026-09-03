@@ -124,9 +124,17 @@ export type AgentEvent =
   | { type: "error"; message: string }
   // ── BRSDK protocol v2 (additive; gated by the ready frame's capabilities) ──
   | { type: "output"; callId?: string; schema?: unknown; value: unknown }
+  // The server reprompts when a structured result misses its schema. Shown so a
+  // retry reads as work in progress rather than as a stall.
+  | { type: "output_retry"; attempt?: number; errors?: unknown }
   | { type: "usage"; inputTokens?: number; outputTokens?: number; totalTokens?: number; model?: string }
   | { type: "guardrail"; stage?: string; name?: string; blocked?: boolean; reason?: string }
   | { type: "approval"; requestId: string; tool: string; args?: unknown; prompt?: string | null }
+  // A decision this surface may not grant: the approval needs proof that a
+  // *person* decided and an app page cannot supply it, so the server denied the
+  // tool and the turn moved on. With no consumer the page simply stopped saying
+  // anything, which reads as a hang (issue #143).
+  | { type: "approval_refused"; requestId: string; reason?: string }
   | { type: "tool_call"; id: string; name: string; args?: unknown }
   | { type: "handoff"; from?: string; to?: string }
   | { type: "compaction"; phase: string; trigger?: string; before?: number; after?: number }
@@ -134,6 +142,14 @@ export type AgentEvent =
   | { type: "context"; used?: number; limit?: number; ratio?: number }
   | { type: "history"; messages?: Array<{ role: string; text: string }> }
   | { type: "model"; ok: boolean; provider?: string; model?: string }
+  // Sent once on socket open, and ONLY when the report is degraded — which is
+  // broader than "not installed". The daemon's `CapabilityReport::degraded()` is
+  // true when any named skill is absent, when the knowledge base is absent OR
+  // present but refused to this agent by the privacy barrier (the report omits a
+  // base it may not reach rather than confirming it exists), or when any
+  // declared `requires` entry is unmet. `degraded` is therefore always `true` on
+  // the wire; see `eventSummary`'s arm.
+  | { type: "capability_report"; degraded?: boolean; report?: CapabilityReportBody }
   | { type: "widget"; id: string; tree: unknown }
   // ── SDK v2 Phase 4 (br.kb + model status; additive, gated by capabilities) ──
   | { type: "kb_result"; reqId?: string; result?: unknown; error?: string }
@@ -145,11 +161,86 @@ export type AgentEvent =
 
 type EventKind = AgentEvent["type"];
 type Listener = (ev: AgentEvent) => void;
+
 // Named aliases so the no-esbuild fallback type-stripper can remove these
 // annotations (it keys off an uppercase/primitive leading type token, which a
 // bare `(() => void)` annotation lacks).
 type ResolveFn = () => void;
 type RejectFn = (e: Error) => void;
+
+/** The `capability_report` frame's body (the server's `CapabilityReport`).
+ *  Named so the field reads survive the no-esbuild fallback stripper. */
+export interface CapabilityReportBody {
+  configured_skills?: string[];
+  granted_skills?: string[];
+  missing_skills?: string[];
+  configured_knowledge_base?: string | null;
+  granted_knowledge_base?: string | null;
+  missing_knowledge_base?: string | null;
+  unmet_requirements?: unknown[];
+}
+
+/** Wildcard listener bucket (see `onAny`). Not a valid `EventKind`, so it can
+ *  never collide with a real frame type. */
+const ANY_EVENT = "*";
+
+/**
+ * Every frame `type` this SDK version understands.
+ *
+ * It exists because an unknown TOP-LEVEL frame used to reach `emit`, find an
+ * empty listener bucket and vanish without a trace — which is exactly how
+ * `approval_refused` shipped with no consumer and left the page looking hung
+ * while the agent had already been denied and moved on (issue #143). A frame
+ * whose type is not listed here is now warned about once and drawn as a visible
+ * "Unrecognized event" row, so the NEXT frame the daemon grows degrades loudly.
+ *
+ * ⚠ It is **`Record<EventKind, true>`, not `string[]`**, and that is the whole
+ * point: a hand-kept array can silently omit a real frame type, which turns a
+ * genuine daemon frame into a red "Unrecognized event" row in EVERY app — the
+ * exact inverse of the bug this list exists to fix. As a `Record` keyed by the
+ * `AgentEvent` union, a missing key and a misspelt one are both type errors:
+ * `Record` requires every member of the union, and the object literal's excess
+ * property check rejects a name the union does not have.
+ *
+ * The `string[]` view is derived with `Object.keys`, never written out twice.
+ * (The declaration shape is also what the no-esbuild fallback stripper can
+ * handle: `: Record<…>` and `: string[]` both lead with a token it recognises —
+ * see the note at the `ResolveFn`/`RejectFn` aliases above.)
+ */
+const KNOWN_EVENT_KINDS_MAP: Record<EventKind, true> = {
+  ready: true,
+  message: true,
+  thought: true,
+  tool: true,
+  done: true,
+  error: true,
+  output: true,
+  output_retry: true,
+  usage: true,
+  guardrail: true,
+  approval: true,
+  approval_refused: true,
+  capability_report: true,
+  tool_call: true,
+  handoff: true,
+  compaction: true,
+  trace: true,
+  context: true,
+  history: true,
+  model: true,
+  widget: true,
+  kb_result: true,
+  kb_progress: true,
+  model_status: true,
+  ui: true,
+};
+
+const KNOWN_EVENT_KINDS: string[] = Object.keys(KNOWN_EVENT_KINDS_MAP);
+
+/** Whether this SDK version knows the frame type at all. */
+function isKnownEventKind(kind: string): boolean {
+  return KNOWN_EVENT_KINDS.indexOf(kind) >= 0;
+}
 
 // ── SDK v2 §3.8: multi-agent client facade ───────────────────────────────────
 /** The optional `agent` routing field any v2 frame (client→server prompt/call,
@@ -651,6 +742,8 @@ export class BioRouterClient {
   // Lazily-populated so new/unknown event kinds (BRSDK v2, future frames) work
   // without enumerating every key — `on()` seeds buckets on demand.
   private listeners: Record<string, Listener[]> = {};
+  // Frame types we have already warned about (see `noteUnknownFrame`).
+  private unknownKinds: Record<string, boolean> = {};
   // Capabilities advertised by the server in the `ready` frame (deny-by-default).
   private capabilities: string[] = [];
   // Durable-session info latched from the `ready` frame.
@@ -728,12 +821,45 @@ export class BioRouterClient {
   }
 
   private emit(ev: AgentEvent): void {
-    for (const fn of this.listeners[ev.type] || []) {
+    this.fire(this.listeners[ev.type], ev);
+    // Wildcard listeners see EVERY frame, including one whose `type` no per-kind
+    // bucket can ever match because this SDK has never heard of it.
+    this.fire(this.listeners[ANY_EVENT], ev);
+  }
+
+  private fire(bucket: Listener[] | undefined, ev: AgentEvent): void {
+    for (const fn of bucket || []) {
       try {
         fn(ev);
       } catch {
         /* listener errors are non-fatal */
       }
+    }
+  }
+
+  /** Warn once per unrecognized frame type. Once, because a daemon that sends
+   *  one such frame usually sends many, and a warning per frame is noise nobody
+   *  reads. */
+  private noteUnknownFrame(kind: string): void {
+    if (this.unknownKinds[kind]) return;
+    this.unknownKinds[kind] = true;
+    try {
+      // ⚠ The "rebuild" half applies to an EXPORTED standalone app only. An app
+      // served by the daemon is rebuilt on SDK drift before its index is
+      // returned (`routes/apps.rs::serve_index` → `bundle_is_stale` →
+      // `rebuild_and_stamp`), so its vendored sdk.ts can only lag the daemon
+      // when that build FAILED — which the daemon logs as "on-demand build
+      // failed". An exported copy has no such rebuild and is the case that
+      // really does need re-exporting.
+      console.warn(
+        "[Biorouter] unrecognized agent frame: " +
+          kind +
+          " — this app's vendored sdk.ts is older than the daemon. If this is an exported " +
+          "standalone app, re-export it; if it is served by Biorouter, check the daemon log " +
+          "for a failed on-demand build."
+      );
+    } catch {
+      /* a console-less host must not break the socket */
     }
   }
 
@@ -892,6 +1018,19 @@ export class BioRouterClient {
         }
       }
     }
+    // ── A top-level frame this SDK version does not understand ──────────────
+    // ⚠ NOT a default arm, and not a residue of the branches above. `handleFrame`
+    // is a sequence of INDEPENDENT `if`s, and most known kinds — `approval`,
+    // `approval_refused`, `capability_report`, `tool`, `usage`, `guardrail`, … —
+    // have no branch here at all; they are delivered by `emit` to listeners and
+    // to the timeline. So this is an independent lookup into a hand-maintained
+    // list (`KNOWN_EVENT_KINDS_MAP`), and the list is what decides, not control
+    // flow. Before it, an unknown frame fell through to `emit`, found an empty
+    // listener bucket and vanished — the silence that made `approval_refused`
+    // look like a hang (issue #143). Warn once here, and let the wildcard
+    // listeners draw it (`eventSummary`'s own default arm turns it into a
+    // visible "Unrecognized event" row).
+    if (!isKnownEventKind(msg.type)) this.noteUnknownFrame(msg.type);
     // Global listeners fire for ALL frames (back-compat); the facade adds the
     // filtered routing so `br.agent(x).on()` sees only x's frames (§3.8).
     this.emit(msg);
@@ -1557,6 +1696,31 @@ export class BioRouterClient {
   /** Remove a previously-registered listener. */
   off(kind: EventKind, fn: Listener): this {
     const arr = this.listeners[kind];
+    if (arr) {
+      const i = arr.indexOf(fn);
+      if (i >= 0) arr.splice(i, 1);
+    }
+    return this;
+  }
+
+  /** Register a listener that fires for EVERY frame — including one whose type
+   *  this SDK version does not know.
+   *
+   *  ⚠ `on()` is not structurally blind to an unknown kind — it seeds buckets on
+   *  demand, so `on("quantum_frame" as EventKind, fn)` really would receive one.
+   *  What is impossible is subscribing to a name you do not know YET: a caller
+   *  cannot enumerate the frame types a future daemon will grow, so a per-kind
+   *  subscription list can never cover them and the frame is dropped in silence.
+   *  That is why `mountTimeline` takes ONE wildcard rather than a list of kinds.
+   *  Returns `this` for chaining. */
+  onAny(fn: Listener): this {
+    (this.listeners[ANY_EVENT] ||= []).push(fn);
+    return this;
+  }
+
+  /** Remove a wildcard listener registered with `onAny`. */
+  offAny(fn: Listener): this {
+    const arr = this.listeners[ANY_EVENT];
     if (arr) {
       const i = arr.indexOf(fn);
       if (i >= 0) arr.splice(i, 1);
@@ -2941,6 +3105,52 @@ function eventSummary(ev: AgentEvent): TimelineSummary | null {
       };
     case "approval":
       return { label: "Approval needed", detail: ev.tool, state: "active" };
+    case "approval_refused": {
+      // Say what happened AND what it means for the run: the tool was denied, so
+      // the turn is continuing without it. A bare "refused" would leave the user
+      // waiting for something that is never coming.
+      // `"timeout"` is the daemon's bounded wait (`APP_APPROVAL_WAIT`) giving
+      // up: nobody answered, so it denied on the page's behalf rather than
+      // holding the socket's only reader open forever. Naming that is the whole
+      // point — a bare "timeout" reads as a network fault, not as a decision.
+      const why =
+        ev.reason === "unproven"
+          ? "this app page may not grant tool approvals"
+          : ev.reason === "timeout"
+            ? "nobody answered in time, so Biorouter answered for you"
+            : ev.reason || "the approval was not applied";
+      return { label: "Approval refused", detail: why + " — the tool was denied", state: "error" };
+    }
+    case "capability_report": {
+      // Typed, not `{}`: an untyped empty-object fallback made every `rep.*`
+      // read below a type error that no `tsc` in this repo is watching for.
+      const rep: CapabilityReportBody = ev.report || {};
+      const missing = (rep.missing_skills || []).slice();
+      if (rep.missing_knowledge_base) missing.push("knowledge base " + rep.missing_knowledge_base);
+      const unmet = (rep.unmet_requirements || []).length;
+      if (unmet) missing.push(unmet + " unmet requirement" + (unmet === 1 ? "" : "s"));
+      // There is no healthy report to draw. The daemon sends this frame only
+      // inside `if capability_report.degraded()` and hardcodes
+      // `"degraded": true` in the payload, so an "everything this app asked for
+      // is available" row was unreachable — a branch that reads as a tested
+      // state and is not one. If the daemon ever starts sending a non-degraded
+      // report, this arm has to grow the branch back rather than mislabel it.
+      return {
+        label: "Capabilities missing",
+        detail: missing.length
+          ? missing.join(", ")
+          : "some of what this app asked for is unavailable",
+        state: "error",
+      };
+    }
+    case "output_retry": {
+      const n = typeof ev.attempt === "number" ? ev.attempt : 0;
+      return {
+        label: "Retrying structured output",
+        detail: n ? "attempt " + n : "the last result did not match the schema",
+        state: "active",
+      };
+    }
     case "handoff":
       return {
         label: "Agent handoff",
@@ -2972,7 +3182,90 @@ function eventSummary(ev: AgentEvent): TimelineSummary | null {
     case "error":
       return { label: "Run error", detail: ev.message, state: "error" };
     default:
-      return null;
+      // Two very different things land here, and collapsing them is the bug this
+      // arm exists to prevent. A KNOWN kind that simply has no timeline row
+      // (`message`, `thought`, `usage`, `ui`, …) draws nothing — otherwise every
+      // streamed delta would push a row. A kind this SDK has never heard of is
+      // drawn, loudly: silence is what made `approval_refused` look like a hang.
+      return isKnownEventKind(ev.type)
+        ? null
+        : { label: "Unrecognized event", detail: String(ev.type), state: "error" };
+  }
+}
+
+/**
+ * Approve / reject buttons for one pending tool, appended to its timeline row.
+ *
+ * ⚠ Without these, NOTHING in this SDK ever called `br.approve` / `br.reject`.
+ * The `approval` row said "Approval needed" and offered no way to answer it,
+ * while on the daemon side `handle_action_required` parked the app socket's ONLY
+ * reader on the decision — so an ordinary tool approval froze the whole
+ * connection: the run, every later prompt, `ui_ask` replies and even cancel.
+ * `approval_refused` (issue #143) covered the case the daemon *denied*; this is
+ * the far commoner one where nobody answered at all. The daemon now also bounds
+ * that wait (`APP_APPROVAL_WAIT`, 120 s → an `approval_refused` with reason
+ * `"timeout"`), which is the floor under the freeze; these buttons are what make
+ * answering it possible in the first place.
+ *
+ * An app that builds its own approval interface simply does not mount the
+ * timeline — `br.approve`/`br.reject` are public and take the same `requestId`.
+ */
+function mountApprovalControls(
+  client: BioRouterClient,
+  row: HTMLElement,
+  requestId: string
+): void {
+  if (!requestId) return;
+  const actions = document.createElement("span");
+  actions.className = "br-run-step__actions";
+  actions.setAttribute("data-br-approval", requestId);
+  // ⚠ Sized inline, deliberately. `.br-run-step` is a TWO-column grid and a
+  // third child lands in a new row, and `theme.css` — which this file does not
+  // own — has no `.br-run-step__actions` rule and sizes `.br-btn` at 36px, which
+  // is oversized inside a 0.75rem timeline row. The colours, radius and press
+  // still come from the theme's `.br-btn` / `.br-btn--ghost`; only the geometry
+  // is here. Moving these five lines into `theme.css` is a clean follow-up.
+  actions.style.gridColumn = "1 / -1";
+  actions.style.display = "flex";
+  actions.style.gap = "6px";
+  actions.style.marginTop = "2px";
+  const settle = (verdict: string) => {
+    // Replacing the children removes both buttons, so a second click cannot
+    // send a second decision for a request the daemon has already resolved.
+    actions.textContent = verdict;
+    actions.setAttribute("data-br-approval-settled", verdict);
+  };
+  const button = (label: string, kind: string, verdict: string, pick: ResolveFn) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    // Reject is the quiet one: the theme's ghost variant, so the accented
+    // button is the one that grants a tool rather than the one that refuses.
+    b.className = "br-btn br-btn--" + kind + (kind === "reject" ? " br-btn--ghost" : "");
+    b.textContent = label;
+    b.setAttribute("data-br-approval-action", kind);
+    b.style.height = "24px";
+    b.style.padding = "0 10px";
+    b.style.fontSize = "0.75rem";
+    b.addEventListener("click", () => {
+      settle(verdict);
+      pick();
+    });
+    return b;
+  };
+  actions.appendChild(button("Approve", "approve", "Approved", () => client.approve(requestId)));
+  actions.appendChild(button("Reject", "reject", "Rejected", () => client.reject(requestId)));
+  row.appendChild(actions);
+}
+
+/** Retire the buttons for a request the daemon has already decided — a refusal,
+ *  including the bounded-wait timeout. Leaving them live invites a click that
+ *  sends a decision for a request that no longer exists. */
+function settleApprovalControls(host: HTMLElement, requestId: string, verdict: string): void {
+  if (!requestId) return;
+  const actions = host.querySelector('[data-br-approval="' + cssEscape(requestId) + '"]');
+  if (actions && !actions.getAttribute("data-br-approval-settled")) {
+    actions.textContent = verdict;
+    actions.setAttribute("data-br-approval-settled", verdict);
   }
 }
 
@@ -3013,6 +3306,13 @@ export function mountTimeline(
       detail.textContent = s.detail;
       row.appendChild(detail);
     }
+    // An `approval` is the one frame that needs an ACTION and not just a row.
+    if (ev.type === "approval") mountApprovalControls(client, row, ev.requestId);
+    // …and the one the daemon can answer on the user's behalf: once it has, the
+    // buttons on the earlier row are stale.
+    if (ev.type === "approval_refused") {
+      settleApprovalControls(host, ev.requestId, "Refused");
+    }
     host.appendChild(row);
     entries.push(row);
     while (entries.length > maxItems) {
@@ -3020,23 +3320,15 @@ export function mountTimeline(
       if (old) old.remove();
     }
   };
-  const kinds: EventKind[] = [
-    "ready",
-    "tool",
-    "tool_call",
-    "guardrail",
-    "approval",
-    "handoff",
-    "compaction",
-    "context",
-    "model",
-    "widget",
-    "done",
-    "error",
-  ];
-  for (const kind of kinds) client.on(kind, add);
+  // ONE wildcard subscription, not a hand-kept list of kinds, so `eventSummary`
+  // is the single place that decides what a frame looks like. The parallel
+  // `kinds` array this replaces could fall out of step with `eventSummary` — and
+  // a subscription list is structurally incapable of naming a frame type the SDK
+  // does not know yet, so an unrecognized frame could never reach the timeline
+  // at all. That is the `approval_refused` silence, one layer down.
+  client.onAny(add);
   return () => {
-    for (const kind of kinds) client.off(kind, add);
+    client.offAny(add);
     PROGRESS_SINKS.delete(host);
   };
 }

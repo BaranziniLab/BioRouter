@@ -153,6 +153,20 @@ pub struct ImportPlan {
     pub evidence: Evidence,
     pub ambiguity: Option<Ambiguity>,
     pub source: SourceProvenance,
+    /// The approval card's rendering of where this came from — exactly the JSON
+    /// `fresh_import_source` builds, carried through a parked plan.
+    ///
+    /// ⚠ It exists because `SourceProvenance` cannot answer for a local
+    /// archive: that variant carries no path, so the card for a file import
+    /// rendered `{"url":null,"reference":null,"resolvedCommit":null,
+    /// "installer":"archive"}` — four fields, three null, naming nothing the
+    /// user could recognise. On the `dry_run` → `needsChoice` → `plan_id` path
+    /// that is the ONLY approval anyone sees.
+    ///
+    /// Deliberately NOT a `SourceProvenance` change: that type is
+    /// `utoipa::ToSchema` and rides in `ImportPreview`, so widening it would
+    /// force an OpenAPI and TypeScript-client regeneration for a card's label.
+    pub origin: Option<serde_json::Value>,
     /// Component names this package would shadow, or be shadowed by, elsewhere
     /// on the machine. A warning, not a refusal: later roots already shadow
     /// earlier ones by design.
@@ -236,6 +250,10 @@ impl ImportPlan {
                     })
                     .collect();
                 Some(ImportPlan {
+                    // ⚠ Copied, not defaulted. A flattening answer is still
+                    // the same import, and the second approval card must name
+                    // the same source the first one did.
+                    origin: self.origin.clone(),
                     kind: ImportKind::Single,
                     id: sanitize_package_id(&component.name)?,
                     display_name: component.name.clone(),

@@ -62,7 +62,6 @@ async fn manager_with_the_bundled_extensions() -> (Arc<ExtensionManager>, Vec<&'
         "memory",
         "knowledge",
         "agent_drafter",
-        "tutorial",
     ] {
         if manager
             .add_extension(ExtensionConfig::Builtin {
@@ -173,9 +172,15 @@ async fn every_bundled_tool_is_callable_through_every_documented_import_form() {
     // ⚠ Assert on the TOOL count, not the server count. The bundled builtins
     // carry the overwhelming majority of the tools, and a threshold set at the
     // number of servers is met by the handful that cannot fail to load.
+    //
+    // The floor moved 90 -> 80 when the built-in surface was consolidated
+    // (Auto Visualiser 33 -> 3, plus six overlap merges). It is a
+    // fixture-did-not-load guard, not a budget: it must sit BELOW the real
+    // count and follow it down, or it stops asking its question and starts
+    // failing every deliberate reduction.
     let tool_total: usize = by_server.values().map(Vec::len).sum();
     assert!(
-        by_server.len() >= 10 && tool_total >= 90,
+        by_server.len() >= 10 && tool_total >= 80,
         "the matrix collapsed to {} servers / {tool_total} tools — the fixture stopped loading \
          extensions, so a green result here would prove nothing: {:?}",
         by_server.len(),

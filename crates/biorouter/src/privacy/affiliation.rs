@@ -362,6 +362,29 @@ impl ExtensionAffiliation {
     }
 }
 
+/// Keep only the institutions permitted by both extension-side authorities.
+///
+/// This is a conservative merge of two descriptions of the same extension,
+/// not the model-to-extension reach decision implemented by [`compatible`].
+/// `Any` contributes no restriction; two allowlists intersect, including to an
+/// empty set that permits no institution.
+pub fn restrict_extension_affiliation(
+    current: ExtensionAffiliation,
+    authority: ExtensionAffiliation,
+) -> ExtensionAffiliation {
+    match (current, authority) {
+        (ExtensionAffiliation::Any, affiliation) | (affiliation, ExtensionAffiliation::Any) => {
+            affiliation
+        }
+        (
+            ExtensionAffiliation::Institutions(current),
+            ExtensionAffiliation::Institutions(authority),
+        ) => {
+            ExtensionAffiliation::Institutions(current.intersection(&authority).copied().collect())
+        }
+    }
+}
+
 /// **The** affiliation comparison. Is extension `ext` reachable from a session
 /// bound to model affiliation `model`, without a cross-affiliation grant?
 ///
@@ -1091,6 +1114,23 @@ mod tests {
 
     fn bound(s: &str) -> ModelAffiliation {
         ModelAffiliation::institution(inst(s))
+    }
+
+    #[test]
+    fn extension_authority_restriction_intersects_without_becoming_reach_logic() {
+        let declared = ExtensionAffiliation::institutions([inst("ucsf"), inst("stanford")]);
+        let authority = ExtensionAffiliation::institutions([inst("ucsf"), inst("mit")]);
+        assert_eq!(
+            restrict_extension_affiliation(declared, authority),
+            ExtensionAffiliation::institution(inst("ucsf"))
+        );
+        assert_eq!(
+            restrict_extension_affiliation(
+                ExtensionAffiliation::Any,
+                ExtensionAffiliation::institution(inst("ucsf"))
+            ),
+            ExtensionAffiliation::institution(inst("ucsf"))
+        );
     }
 
     /// A model covered by several institutions at once — what a lead/worker pair

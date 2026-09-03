@@ -224,6 +224,7 @@ export const SwitchModelModal = ({
   const [predefinedModels, setPredefinedModels] = useState<Model[]>([]);
   const [loadingModels, setLoadingModels] = useState<boolean>(false);
   const [userClearedModel, setUserClearedModel] = useState(false);
+  const [providerInputValue, setProviderInputValue] = useState('');
   const [modelInputValue, setModelInputValue] = useState('');
   const loadedProvidersRef = useRef(false);
 
@@ -390,6 +391,10 @@ export const SwitchModelModal = ({
     // different providers through `/config/set_provider` and leave whichever
     // landed second as the global default.
     if (switching) return;
+    if (providerInputValue.trim()) {
+      setSubmitError('Choose a provider from the filtered results before continuing.');
+      return;
+    }
     setAttemptedSubmit(true);
     setSubmitError(null);
     const isFormValid = validateForm();
@@ -790,8 +795,18 @@ export const SwitchModelModal = ({
                 <Select
                   options={providerOptions}
                   value={providerSelectValue}
+                  inputValue={providerInputValue}
+                  onInputChange={(inputValue: string, actionMeta?: { action?: string }) => {
+                    if (!actionMeta || actionMeta.action === 'input-change') {
+                      setProviderInputValue(inputValue);
+                    } else if (actionMeta.action === 'menu-close') {
+                      setProviderInputValue('');
+                    }
+                    return inputValue;
+                  }}
                   onChange={(newValue: unknown) => {
                     const option = newValue as { value: string; label: string } | null;
+                    setProviderInputValue('');
                     if (option?.value === 'configure_providers') {
                       // Navigate to ConfigureProviders view
                       setView('ConfigureProviders');
@@ -918,7 +933,16 @@ export const SwitchModelModal = ({
             <Button variant="outline" onClick={handleClose} type="button">
               Cancel
             </Button>
-            <Button onClick={handleSubmit} disabled={!isValid || hostManaged || switching}>
+            <Button
+              onClick={handleSubmit}
+              disabled={
+                !isValid ||
+                (!usePredefinedModels && (!provider || !model)) ||
+                hostManaged ||
+                switching ||
+                providerInputValue.trim().length > 0
+              }
+            >
               {switching ? 'Switching\u2026' : 'Select model'}
             </Button>
           </div>

@@ -32,7 +32,7 @@
 //! park(session, owner, request)  ->  PendingUserAction   (publishes the card)
 //!        .wait(ttl, cancel)      ->  UserActionOutcome    (approve/deny/data/
 //!                                                          secrets/cancel/timeout)
-//! resolve_in_session(session, id, outcome) <- the session surface that showed it
+//! resolve_in_session(session, id, outcome, DecisionAuthority::unproven()) <- the session surface that showed it
 //! ```
 //!
 //! Publication deliberately reuses [`crate::action_required_manager`]'s
@@ -96,6 +96,10 @@ pub struct ToolApprovalRequest {
     /// BR-63's preview — the resolved command, the diff — so the decision is
     /// informed rather than a name and a shrug.
     pub preview: Option<ToolPreview>,
+    /// The answering HTTP request must carry the desktop's proof that a person
+    /// clicked the card. Use this for install/delete and other authorization
+    /// decisions a model must never be able to approve through daemon HTTP.
+    pub requires_user_proof: bool,
 }
 
 /// An ordinary MCP elicitation: free-form data described by a JSON schema.
@@ -234,6 +238,74 @@ pub enum ResolveOutcome {
     /// today, a data-bearing answer to a secrets card. The caller stays parked;
     /// the surface has a bug.
     Rejected,
+    /// The id exists and the outcome is one it accepts, but the answering
+    /// surface cannot prove a PERSON decided, and this approval requires that.
+    /// The caller stays parked.
+    ///
+    /// ⚠ Distinct from [`Self::Unknown`] on purpose. A door that cannot tell
+    /// "nobody is waiting" from "you may not answer this" cannot follow up
+    /// correctly — and the follow-up matters: an approval left parked after a
+    /// refusal sits for its full time-to-live with no card anywhere.
+    Unproven,
+}
+
+/// Who is answering, as far as the process can tell.
+///
+/// ⚠ **A newtype with a private field, not an enum.** The property this type
+/// exists to have is that the privileged answers can only be minted at a small,
+/// auditable set of call sites — and an enum variant is a literal any crate can
+/// write, which would make that property unenforceable. A foreign crate must go
+/// through a named constructor here, the same shape `UserKbTierChange` uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecisionAuthority(Authority);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Authority {
+    /// `auth::user_action_proof` returned `Proven` for THIS request.
+    Proven,
+    /// A person answered at a surface this process owns and a model cannot
+    /// author — the terminal prompt, the TUI modal.
+    LocalHuman,
+    /// Everything else, and the default reading of an unknown door: page
+    /// JavaScript an agent wrote, an agent deciding for an agent, a transport
+    /// with no proof channel at all.
+    Unproven,
+}
+
+impl DecisionAuthority {
+    /// Mint ONLY after `auth::user_action_proof` returned `Proven` for the
+    /// request being answered.
+    pub fn from_user_action_proof() -> Self {
+        Self(Authority::Proven)
+    }
+
+    /// A person acted at a surface this process owns.
+    pub fn from_local_human_surface() -> Self {
+        Self(Authority::LocalHuman)
+    }
+
+    /// No preconditions. The honest answer for every door that cannot tell a
+    /// person from a model.
+    pub fn unproven() -> Self {
+        Self(Authority::Unproven)
+    }
+
+    /// Stand in for a proven surface, in a test that is exercising something
+    /// else and simply needs the desktop dialog's answer to land.
+    ///
+    /// ⚠ `#[cfg(test)]` is what keeps this honest: the compiler, not a
+    /// convention, is what stops it appearing in production code — so the audit
+    /// of the two privileged constructors stays a statement about the real
+    /// doors. A test that is exercising the GATE ITSELF must use the production
+    /// constructors instead, and the tests in this module do.
+    #[cfg(test)]
+    pub(crate) fn for_test_proven() -> Self {
+        Self(Authority::Proven)
+    }
+
+    fn may_grant_proof_backed(self) -> bool {
+        matches!(self.0, Authority::Proven | Authority::LocalHuman)
+    }
 }
 
 struct Entry {
@@ -252,6 +324,37 @@ struct Entry {
 #[derive(Default)]
 pub struct PendingUserActions {
     entries: Mutex<HashMap<String, Entry>>,
+}
+
+/// Can THIS process obtain a person's proof at all?
+///
+/// The daemon is handed a proof-of-user key on stdin at startup and every
+/// approval that sets `requires_user_proof` is answered against it. `biorouter
+/// serve` spawns its daemon with `Stdio::null()` DELIBERATELY — that is the same
+/// property that stops a browser session changing the model — so it holds no
+/// key, and every such approval refuses forever.
+///
+/// A tool whose approval can never be granted must not be OFFERED. Reporting the
+/// refusal honestly is necessary but not sufficient: a model that is offered an
+/// installer will propose an install, and the user then meets a card whose three
+/// buttons cannot work.
+///
+/// Defaults to `true`, and the daemon sets it from the key it actually received.
+/// The direction is deliberate: an embedder that never calls this keeps today's
+/// behaviour, and the cost of being wrong is a tool that is advertised and then
+/// refused — never an approval that is skipped.
+static USER_PROOF_AVAILABLE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// Published once at daemon startup, beside `install_user_action_digest`.
+pub fn set_user_proof_available(available: bool) {
+    USER_PROOF_AVAILABLE.store(available, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether a proof-backed approval can be granted in this process. Tools that
+/// require one ask this before advertising themselves.
+pub fn user_proof_available() -> bool {
+    USER_PROOF_AVAILABLE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 impl PendingUserActions {
@@ -295,6 +398,26 @@ impl PendingUserActions {
         request: UserActionRequest,
     ) -> PendingUserAction {
         let id = Uuid::new_v4().to_string();
+
+        // ⚠ Refuse to park where there is nobody to answer. A card raised
+        // beneath `POST /agent/call_tool` has no admitted turn and no stream to
+        // draw on, so it would sit in a queue only the agent loop drains — for
+        // its whole time-to-live, unanswerable — and the NEXT chat turn would
+        // then surface it, as a question about something that happened minutes
+        // ago. Registering nothing is what makes that resurrection impossible.
+        //
+        // The returned handle answers `Cancelled` immediately, which every
+        // caller already handles: it is the same outcome a dismissal produces.
+        if crate::user_surface::no_human_surface() {
+            return PendingUserAction {
+                id,
+                request,
+                rx: None,
+                declined: true,
+                registry: Arc::clone(self),
+            };
+        }
+
         let (tx, rx) = oneshot::channel();
         self.lock().insert(
             id.clone(),
@@ -313,6 +436,7 @@ impl PendingUserActions {
             id,
             request,
             rx: Some(rx),
+            declined: false,
             registry: Arc::clone(self),
         }
     }
@@ -328,8 +452,9 @@ impl PendingUserActions {
         session_id: &str,
         id: &str,
         outcome: UserActionOutcome,
+        authority: DecisionAuthority,
     ) -> ResolveOutcome {
-        self.resolve_matching(id, outcome, |entry| {
+        self.resolve_matching(id, outcome, authority, |entry| {
             entry.session_id.as_deref() == Some(session_id)
         })
     }
@@ -345,7 +470,12 @@ impl PendingUserActions {
         id: &str,
         outcome: UserActionOutcome,
     ) -> ResolveOutcome {
-        self.resolve_matching(id, outcome, |entry| {
+        // The gate below fires only on a `ToolApproval`, so the value is inert
+        // here — and this function's own door checks proof unconditionally,
+        // before any branch. Naming `unproven()` keeps the privileged
+        // constructors out of this file, so the audit that counts their call
+        // sites stays honest.
+        self.resolve_matching(id, outcome, DecisionAuthority::unproven(), |entry| {
             matches!(&entry.request, UserActionRequest::Secrets(_))
         })
     }
@@ -354,6 +484,7 @@ impl PendingUserActions {
         &self,
         id: &str,
         outcome: UserActionOutcome,
+        authority: DecisionAuthority,
         scope_matches: impl FnOnce(&Entry) -> bool,
     ) -> ResolveOutcome {
         let mut entries = self.lock();
@@ -371,6 +502,27 @@ impl PendingUserActions {
                 entry.request.describe()
             );
             return ResolveOutcome::Rejected;
+        }
+        // ⚠ The gate sits HERE, above `tx.take()` and `entries.remove(id)`, and
+        // inside the same critical section as the scope check. Refusing after
+        // either would destroy the park while refusing the poster: the tool
+        // would fail as cancelled, and the door's deny follow-up would have
+        // nothing left to deny.
+        //
+        // Keyed on `is_allowed()` and the request's own flag, never on the
+        // variant. Denials, cancellations and every approval that does not
+        // require proof must pass from any surface — a gate on
+        // `ToolApproval(_)` would kill every bridged coding-agent approval on
+        // the desktop, and one that also caught denials would strand every
+        // Reject and every socket close for the full time-to-live.
+        if outcome.is_allowed()
+            && !authority.may_grant_proof_backed()
+            && matches!(
+                &entry.request,
+                UserActionRequest::ToolApproval(r) if r.requires_user_proof
+            )
+        {
+            return ResolveOutcome::Unproven;
         }
         let Some(tx) = entry.tx.take() else {
             return ResolveOutcome::Unknown;
@@ -404,6 +556,45 @@ impl PendingUserActions {
     /// honestly instead of pretending it resolved something.
     pub fn is_pending(&self, id: &str) -> bool {
         self.lock().contains_key(id)
+    }
+
+    /// The ephemeral cards this session still has parked, as the messages they
+    /// were published as.
+    ///
+    /// For a late-joining observer on the session event stream. An ephemeral
+    /// card is deliberately never stored — a resolved approval must not
+    /// reappear in a transcript — so a reader that attaches after the card was
+    /// published has no other way to learn of it, and sees a turn that is
+    /// running and apparently stuck.
+    ///
+    /// ⚠ Rendered through `request_message`, the same function that published
+    /// the original, so the replay is byte-identical BY CONSTRUCTION rather
+    /// than by a second hand-written renderer that could drift. And it reads
+    /// the live map, which is what makes an already-answered card
+    /// unrepresentable here: resolution removes the entry.
+    ///
+    /// Elicitations are excluded by `is_ephemeral_card` and that is correct —
+    /// they are persisted, so an observer's conversation snapshot already
+    /// carries them.
+    pub fn pending_cards_for_session(&self, session_id: &str) -> Vec<Message> {
+        self.lock()
+            .iter()
+            .filter(|(_, entry)| entry.session_id.as_deref() == Some(session_id))
+            .map(|(id, entry)| request_message(id, &entry.request))
+            .filter(is_ephemeral_card)
+            .collect()
+    }
+
+    /// Whether this exact session-scoped approval requires proof of a human
+    /// action. A foreign session learns nothing and cannot satisfy the check.
+    pub fn requires_user_proof_in_session(&self, session_id: &str, id: &str) -> bool {
+        self.lock().get(id).is_some_and(|entry| {
+            entry.session_id.as_deref() == Some(session_id)
+                && matches!(
+                    &entry.request,
+                    UserActionRequest::ToolApproval(request) if request.requires_user_proof
+                )
+        })
     }
 
     /// The request parked under `id`, if any. A surface uses this to decide
@@ -460,6 +651,13 @@ pub struct PendingUserAction {
     id: String,
     request: UserActionRequest,
     rx: Option<oneshot::Receiver<UserActionOutcome>>,
+    /// Nothing was registered: `park` refused because no person could answer.
+    ///
+    /// Distinct from `rx: None` alone, which also means "already awaited" —
+    /// and the two must produce different outcomes. A declined park is
+    /// `Cancelled`, the fail-safe every caller handles; an already-awaited
+    /// handle is `Failed`, which names a bug in the caller.
+    declined: bool,
     registry: Arc<PendingUserActions>,
 }
 
@@ -490,6 +688,9 @@ impl PendingUserAction {
         ttl: Duration,
         cancel: Option<&CancellationToken>,
     ) -> UserActionOutcome {
+        if self.declined {
+            return UserActionOutcome::Cancelled;
+        }
         let Some(rx) = self.rx.take() else {
             return UserActionOutcome::Failed {
                 reason: "this request was already awaited".to_string(),
@@ -608,6 +809,7 @@ mod tests {
             prompt: None,
             risk: None,
             preview: None,
+            requires_user_proof: false,
         })
     }
 
@@ -635,7 +837,8 @@ mod tests {
                 &id,
                 UserActionOutcome::Approved {
                     permission: Permission::AllowOnce
-                }
+                },
+                DecisionAuthority::unproven(),
             ),
             ResolveOutcome::Delivered
         );
@@ -660,6 +863,7 @@ mod tests {
                 UserActionOutcome::Approved {
                     permission: Permission::AllowOnce,
                 },
+                DecisionAuthority::unproven(),
             ),
             ResolveOutcome::Unknown
         );
@@ -675,6 +879,7 @@ mod tests {
                 UserActionOutcome::Denied {
                     permission: Permission::DenyOnce,
                 },
+                DecisionAuthority::unproven(),
             ),
             ResolveOutcome::Delivered
         );
@@ -710,6 +915,7 @@ mod tests {
                 UserActionOutcome::Denied {
                     permission: Permission::DenyOnce,
                 },
+                DecisionAuthority::unproven(),
             ),
             ResolveOutcome::Delivered
         );
@@ -733,6 +939,7 @@ mod tests {
             UserActionOutcome::Denied {
                 permission: Permission::DenyOnce,
             },
+            DecisionAuthority::unproven(),
         );
 
         assert_eq!(
@@ -817,7 +1024,8 @@ mod tests {
                 &id,
                 UserActionOutcome::Provided {
                     data: serde_json::json!({ "SPOKEAGENT_PASSCODE": "hunter2" })
-                }
+                },
+                DecisionAuthority::unproven(),
             ),
             ResolveOutcome::Rejected
         );
@@ -829,7 +1037,8 @@ mod tests {
                 &id,
                 UserActionOutcome::SecretsConfigured {
                     configured_keys: vec!["SPOKEAGENT_PASSCODE".to_string()]
-                }
+                },
+                DecisionAuthority::unproven(),
             ),
             ResolveOutcome::Delivered
         );
@@ -867,7 +1076,8 @@ mod tests {
                 parked.id(),
                 UserActionOutcome::Provided {
                     data: serde_json::json!({})
-                }
+                },
+                DecisionAuthority::unproven(),
             ),
             ResolveOutcome::Rejected
         );
@@ -925,6 +1135,7 @@ mod tests {
                 UserActionOutcome::Approved {
                     permission: Permission::AllowOnce,
                 },
+                DecisionAuthority::unproven(),
             ),
             ResolveOutcome::Unknown
         );
@@ -936,6 +1147,7 @@ mod tests {
                 UserActionOutcome::Approved {
                     permission: Permission::AllowOnce,
                 },
+                DecisionAuthority::unproven(),
             ),
             ResolveOutcome::Delivered
         );
@@ -946,7 +1158,12 @@ mod tests {
     async fn a_decision_for_an_unknown_id_is_dropped() {
         let registry = Arc::new(PendingUserActions::default());
         assert_eq!(
-            registry.resolve_in_session("s", "no-such-request", UserActionOutcome::Cancelled),
+            registry.resolve_in_session(
+                "s",
+                "no-such-request",
+                UserActionOutcome::Cancelled,
+                DecisionAuthority::unproven()
+            ),
             ResolveOutcome::Unknown
         );
     }
@@ -964,7 +1181,8 @@ mod tests {
                 &id,
                 UserActionOutcome::Approved {
                     permission: Permission::AllowOnce
-                }
+                },
+                DecisionAuthority::unproven(),
             ),
             ResolveOutcome::Delivered
         );
@@ -974,7 +1192,8 @@ mod tests {
                 &id,
                 UserActionOutcome::Approved {
                     permission: Permission::AlwaysAllow
-                }
+                },
+                DecisionAuthority::unproven(),
             ),
             ResolveOutcome::Unknown
         );
@@ -1014,5 +1233,310 @@ mod tests {
                 "{detail:?} invites an answer that cannot land"
             );
         }
+    }
+}
+
+/// F-15 Gap A: a decision raised where nobody can answer it must be refused,
+/// not parked. The failure it prevents is not a hang — it is a card that waits
+/// out its whole TTL unanswerable and is then resurrected by the NEXT chat
+/// turn, as a question about something that happened minutes ago.
+#[cfg(test)]
+mod no_human_surface_tests {
+    use super::*;
+
+    fn an_approval() -> UserActionRequest {
+        UserActionRequest::ToolApproval(ToolApprovalRequest {
+            tool_name: "developer__shell".to_string(),
+            arguments: serde_json::Map::new(),
+            prompt: None,
+            risk: None,
+            preview: None,
+            requires_user_proof: false,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_park_with_no_human_surface_registers_nothing_and_cancels() {
+        let registry = Arc::new(PendingUserActions::default());
+        let (id, outcome) = crate::user_surface::without_human_surface(async {
+            let parked = registry.park(Some("call-tool-session"), None, an_approval());
+            let id = parked.id().to_string();
+            // Must not block: there is nobody to answer, so the outcome is
+            // available immediately.
+            let outcome = parked.wait(Duration::from_secs(30), None).await;
+            (id, outcome)
+        })
+        .await;
+
+        assert!(
+            matches!(outcome, UserActionOutcome::Cancelled),
+            "{outcome:?}"
+        );
+        // ⚠ The registration is the half that matters. A refusal that still
+        // inserted would leave the entry for the next turn to surface, which is
+        // the exact bug — and `wait` returning promptly would hide it.
+        assert!(
+            !registry.is_pending(&id),
+            "a refused park must leave nothing behind for a later turn to find"
+        );
+        assert!(registry
+            .pending_cards_for_session("call-tool-session")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_park_is_untouched() {
+        // Catches a guard whose default is inverted, which would silently
+        // cancel every approval card in every normal turn.
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some("chat-session"), None, an_approval());
+        let id = parked.id().to_string();
+        assert!(registry.is_pending(&id));
+        assert_eq!(registry.pending_cards_for_session("chat-session").len(), 1);
+        assert!(registry
+            .pending_cards_for_session("another-session")
+            .is_empty());
+
+        assert_eq!(
+            registry.resolve_in_session(
+                "chat-session",
+                &id,
+                UserActionOutcome::Approved {
+                    permission: crate::permission::Permission::AllowOnce,
+                },
+                DecisionAuthority::unproven(),
+            ),
+            ResolveOutcome::Delivered
+        );
+        // A resolved card is unrepresentable: resolution removed the entry, so
+        // a late observer can never be shown one that was already answered.
+        assert!(registry
+            .pending_cards_for_session("chat-session")
+            .is_empty());
+        let _ = parked.wait(Duration::from_secs(5), None).await;
+    }
+
+    #[tokio::test]
+    async fn an_already_awaited_handle_still_reports_a_caller_bug() {
+        // The `declined` flag must not collapse into `rx: None`: a declined
+        // park is the fail-safe `Cancelled`, while awaiting twice names a bug.
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some("chat-session"), None, an_approval());
+        let id = parked.id().to_string();
+        registry.cancel_session(&id);
+        let mut parked = parked;
+        parked.rx = None;
+        assert!(matches!(
+            parked.wait(Duration::from_millis(50), None).await,
+            UserActionOutcome::Failed { .. }
+        ));
+    }
+}
+
+/// F-12: an Agent Drafter app page resolved a proof-backed approval with no
+/// proof at all. The page's JavaScript is written by the agent, so the app
+/// socket's `Approve` frame is a model approving its own request — and the only
+/// proof check lived in one HTTP route the socket does not pass through.
+#[cfg(test)]
+mod decision_authority_tests {
+    use super::*;
+
+    fn a_proof_backed_approval() -> UserActionRequest {
+        UserActionRequest::ToolApproval(ToolApprovalRequest {
+            tool_name: "skills__removeSkillPackage".to_string(),
+            arguments: serde_json::Map::new(),
+            prompt: None,
+            risk: None,
+            preview: None,
+            requires_user_proof: true,
+        })
+    }
+
+    fn an_ordinary_approval() -> UserActionRequest {
+        UserActionRequest::ToolApproval(ToolApprovalRequest {
+            tool_name: "developer__shell".to_string(),
+            arguments: serde_json::Map::new(),
+            prompt: None,
+            risk: None,
+            preview: None,
+            requires_user_proof: false,
+        })
+    }
+
+    fn allow() -> UserActionOutcome {
+        UserActionOutcome::Approved {
+            permission: crate::permission::Permission::AllowOnce,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refusal_parks_the_caller_rather_than_cancelling_it() {
+        // ⚠ Catches a gate written after `entry.tx.take()` or
+        // `entries.remove(id)`. That version refuses the poster while
+        // DESTROYING the park: the tool then fails as cancelled, and the
+        // refusing door's deny follow-up has nothing left to deny.
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some("app"), None, a_proof_backed_approval());
+        let id = parked.id().to_string();
+
+        assert_eq!(
+            registry.resolve_in_session("app", &id, allow(), DecisionAuthority::unproven()),
+            ResolveOutcome::Unproven
+        );
+        assert!(
+            registry.is_pending(&id),
+            "a refused approval must stay parked for a surface that could answer it"
+        );
+        drop(parked);
+    }
+
+    #[tokio::test]
+    async fn a_denial_lands_from_any_surface() {
+        // Catches the over-correction "no proof, no resolution", which would
+        // strand every app-page Reject and every socket close for the full
+        // time-to-live — and would break the deny follow-up that makes the
+        // refusal fast instead of a 570-second hang.
+        for outcome in [
+            UserActionOutcome::Denied {
+                permission: crate::permission::Permission::DenyOnce,
+            },
+            UserActionOutcome::Cancelled,
+        ] {
+            let registry = Arc::new(PendingUserActions::default());
+            let parked = registry.park(Some("app"), None, a_proof_backed_approval());
+            let id = parked.id().to_string();
+            assert_eq!(
+                registry.resolve_in_session(
+                    "app",
+                    &id,
+                    outcome.clone(),
+                    DecisionAuthority::unproven()
+                ),
+                ResolveOutcome::Delivered,
+                "{outcome:?} must land from an unproven surface"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_approval_is_untouched_by_the_gate() {
+        // ⚠ Catches a gate keyed on `ToolApproval(_)` rather than on the flag.
+        // That version kills every bridged Claude Code / Codex approval on the
+        // desktop, which sets `requires_user_proof: false` in production.
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some("chat"), None, an_ordinary_approval());
+        let id = parked.id().to_string();
+        assert_eq!(
+            registry.resolve_in_session("chat", &id, allow(), DecisionAuthority::unproven()),
+            ResolveOutcome::Delivered
+        );
+        let _ = parked.wait(Duration::from_secs(5), None).await;
+    }
+
+    #[tokio::test]
+    async fn the_two_privileged_authorities_grant_it() {
+        for authority in [
+            DecisionAuthority::from_user_action_proof(),
+            DecisionAuthority::from_local_human_surface(),
+        ] {
+            let registry = Arc::new(PendingUserActions::default());
+            let parked = registry.park(Some("desktop"), None, a_proof_backed_approval());
+            let id = parked.id().to_string();
+            assert_eq!(
+                registry.resolve_in_session("desktop", &id, allow(), authority),
+                ResolveOutcome::Delivered,
+                "{authority:?} must still be able to approve, or the desktop is broken"
+            );
+        }
+    }
+
+    /// The property the newtype exists to have: the privileged words can only
+    /// be spoken in a small, named set of places.
+    ///
+    /// ⚠ Three mechanics, and without all three this is theatre. (a) The
+    /// needles are COMPOSED, so this file does not match its own audit. (b) The
+    /// defining file is skipped, since it names all three constructors. (c) A
+    /// negative control asserts the app socket says `unproven` and neither
+    /// privileged word — without it, a needle that stopped matching would make
+    /// every assertion pass vacuously.
+    #[test]
+    fn the_privileged_authorities_are_minted_in_exactly_the_expected_places() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let crates = root.join("crates");
+        assert!(
+            crates.is_dir(),
+            "the audit walks {}; if that path is wrong every assertion below \
+             passes for the wrong reason",
+            crates.display()
+        );
+
+        let proven = concat!("from_user_", "action_proof(");
+        let local = concat!("from_local_", "human_surface(");
+        let unproven = concat!("Decision", "Authority::unproven(");
+
+        let mut proven_files: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut local_files: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut app_socket = None;
+        let mut scanned = 0usize;
+        for entry in walkdir::WalkDir::new(&crates) {
+            let entry = entry.expect("the audit must not silently skip an unreadable directory");
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let rel = p
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            // This file defines all three constructors and exercises them.
+            if rel == "crates/biorouter/src/pending_user_action.rs" {
+                continue;
+            }
+            let body = std::fs::read_to_string(p).unwrap();
+            scanned += 1;
+            let p_count = body.matches(proven).count();
+            let l_count = body.matches(local).count();
+            if p_count > 0 {
+                proven_files.insert(rel.clone(), p_count);
+            }
+            if l_count > 0 {
+                local_files.insert(rel.clone(), l_count);
+            }
+            if rel == "crates/biorouter-server/src/routes/apps.rs" {
+                app_socket = Some((body.matches(unproven).count(), p_count, l_count));
+            }
+        }
+        assert!(scanned > 100, "the walk found only {scanned} files");
+
+        assert_eq!(
+            proven_files.keys().cloned().collect::<Vec<_>>(),
+            vec!["crates/biorouter-server/src/routes/action_required.rs".to_string()],
+            "a new door is claiming a user's own proof: {proven_files:?}"
+        );
+        assert_eq!(
+            local_files.keys().cloned().collect::<Vec<_>>(),
+            vec![
+                "crates/biorouter-cli/src/session/mod.rs".to_string(),
+                "crates/biorouter-cli/src/session/tui/mod.rs".to_string(),
+            ],
+            "a new door is claiming a local human surface: {local_files:?}"
+        );
+
+        // The negative control. If the needles ever stop matching, this fails
+        // rather than letting the two assertions above pass on empty maps.
+        let (unproven_hits, proven_hits, local_hits) =
+            app_socket.expect("the app socket file must exist");
+        assert!(
+            unproven_hits > 0,
+            "the app socket must name `unproven` — if it does not, the needle is wrong \
+             and this whole audit is vacuous"
+        );
+        assert_eq!((proven_hits, local_hits), (0, 0));
     }
 }

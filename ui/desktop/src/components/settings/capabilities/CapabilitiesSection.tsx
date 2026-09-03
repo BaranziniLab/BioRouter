@@ -68,6 +68,7 @@ export const CapabilitiesSection = () => {
         toggle: entry.enabled ? 'toggleOff' : 'toggleOn',
         extensionConfig: entry,
         addToConfig: addExtension,
+        itemKind: 'capability',
       });
       await getExtensions(true);
     },

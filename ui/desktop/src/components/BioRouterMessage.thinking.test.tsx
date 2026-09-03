@@ -17,8 +17,9 @@ function thinkingMessage(): Message {
     id: 'm1',
     role: 'assistant',
     created: 1700000000000,
+    metadata: { userVisible: true, agentVisible: true },
     content: [{ type: 'text', text: '<think>weighing two options</think>Here is the answer.' }],
-  } as unknown as Message;
+  };
 }
 
 describe('BioRouterMessage chain-of-thought disclosure', () => {

@@ -30,6 +30,23 @@ fn default_overall_timeout_secs() -> u64 {
         .unwrap_or(1800)
 }
 
+fn redirect_matches_initial_origin(destination: &url::Url, previous: &[url::Url]) -> bool {
+    previous
+        .first()
+        .is_some_and(|initial| initial.origin() == destination.origin())
+}
+
+fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
+    let limit = reqwest::redirect::Policy::limited(10);
+    reqwest::redirect::Policy::custom(move |attempt| {
+        // Custom API-key headers are not removed by reqwest's cross-origin redirect handling.
+        if !redirect_matches_initial_origin(attempt.url(), attempt.previous()) {
+            return attempt.error("cross-origin API redirect blocked");
+        }
+        limit.redirect(attempt)
+    })
+}
+
 /// Connection-reuse + timeout tuning shared by every `ApiClient`:
 /// - `connect_timeout`: fail fast on a black-holed connect instead of hanging
 ///   toward the overall timeout, so a retry can open a fresh connection (SW3).
@@ -68,6 +85,7 @@ fn tune_client_builder(
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| 300.max(timeout.as_secs()));
     builder
+        .redirect(same_origin_redirect_policy())
         .timeout(timeout)
         .connect_timeout(Duration::from_secs(connect))
         .read_timeout(Duration::from_secs(read))
@@ -402,12 +420,6 @@ impl<'a> ApiRequestBuilder<'a> {
     }
 
     pub async fn response_post(self, payload: &Value) -> Result<Response> {
-        // Log the JSON payload being sent to the LLM
-        tracing::debug!(
-            "LLM_REQUEST: {}",
-            serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_string())
-        );
-
         let request = self.send_request(|url, client| client.post(url)).await?;
         Ok(request.json(payload).send().await?)
     }
@@ -467,6 +479,92 @@ impl fmt::Debug for ApiClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_client_redirect_origin_matrix_uses_scheme_host_and_effective_port() {
+        for (initial, destination, allowed) in [
+            (
+                "https://example.test/start",
+                "https://example.test/finish",
+                true,
+            ),
+            (
+                "https://example.test/start",
+                "https://example.test:443/finish",
+                true,
+            ),
+            (
+                "https://example.test:443/start",
+                "https://example.test/finish",
+                true,
+            ),
+            (
+                "http://example.test/start",
+                "http://example.test:80/finish",
+                true,
+            ),
+            (
+                "https://EXAMPLE.test/start",
+                "https://example.test/finish",
+                true,
+            ),
+            (
+                "https://example.test:8443/start",
+                "https://example.test:8443/finish",
+                true,
+            ),
+            (
+                "https://example.test/start",
+                "https://other.test/finish",
+                false,
+            ),
+            (
+                "https://example.test/start",
+                "https://sub.example.test/finish",
+                false,
+            ),
+            (
+                "https://example.test/start",
+                "http://example.test/finish",
+                false,
+            ),
+            (
+                "https://example.test/start",
+                "http://example.test:443/finish",
+                false,
+            ),
+            (
+                "http://example.test/start",
+                "https://example.test/finish",
+                false,
+            ),
+            (
+                "https://example.test/start",
+                "https://example.test:8443/finish",
+                false,
+            ),
+        ] {
+            let original = url::Url::parse(initial).unwrap();
+            let destination = url::Url::parse(destination).unwrap();
+            assert_eq!(
+                redirect_matches_initial_origin(&destination, &[original]),
+                allowed,
+                "origin decision for {initial} to {destination}"
+            );
+        }
+    }
+
+    #[test]
+    fn api_client_redirect_origin_is_bound_to_first_request_not_latest_hop() {
+        let original = url::Url::parse("https://original.test/start").unwrap();
+        let other = url::Url::parse("https://other.test/hop").unwrap();
+        let destination = url::Url::parse("https://other.test/finish").unwrap();
+        assert!(!redirect_matches_initial_origin(&destination, &[]));
+        assert!(!redirect_matches_initial_origin(
+            &destination,
+            &[original, other]
+        ));
+    }
 
     #[tokio::test]
     async fn test_session_id_header_injection() {

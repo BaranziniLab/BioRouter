@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails, ProviderTier } from '../../../../api';
 import { SwitchModelModal } from './SwitchModelModal';
@@ -202,6 +202,87 @@ describe('SwitchModelModal — pre-flight, not post-refusal', () => {
     const row = await screen.findByTestId('switch-model-affiliation');
     expect(row).toHaveTextContent('UCSF');
     expect(row).toHaveTextContent(/compliance does not transfer/i);
+  });
+
+  it('does not submit the old model while a different provider search is uncommitted', async () => {
+    mocks.getProviders.mockResolvedValue([
+      provider('versa_azure', 'private', 'Versa API Azure', {
+        kind: 'institutions',
+        institutions: [{ id: 'ucsf', display_name: 'UCSF' }],
+      }),
+      provider('codex', 'public', 'Codex'),
+    ]);
+    mocks.getProviderModels.mockResolvedValue(['gpt-5.5-2026-04-24']);
+
+    render(
+      <SwitchModelModal
+        sessionId="s1"
+        privacyTier="public"
+        initialProvider="versa_azure"
+        initialModel="gpt-5.5-2026-04-24"
+        onClose={vi.fn()}
+        setView={vi.fn()}
+      />
+    );
+
+    expect(await screen.findByTestId('switch-model-affiliation')).toHaveTextContent('UCSF');
+    const providerInput = screen.getAllByRole('combobox')[0];
+    fireEvent.change(providerInput, { target: { value: 'Codex' } });
+    expect(await screen.findByRole('option', { name: 'Codex' })).toBeInTheDocument();
+
+    const confirm = screen.getByRole('button', { name: 'Select model' });
+    expect(confirm).toBeDisabled();
+    fireEvent.click(confirm);
+    expect(mocks.changeModel).not.toHaveBeenCalled();
+  });
+
+  it('submits the exact provider and model after the filtered provider is committed', async () => {
+    mocks.getProviders.mockResolvedValue([
+      provider('versa_azure', 'private', 'Versa API Azure', {
+        kind: 'institutions',
+        institutions: [{ id: 'ucsf', display_name: 'UCSF' }],
+      }),
+      provider('codex', 'public', 'Codex'),
+    ]);
+    let resolveCodex!: (models: string[]) => void;
+    mocks.getProviderModels.mockImplementation((providerName: string) => {
+      if (providerName !== 'codex') return Promise.resolve(['gpt-5.5-2026-04-24']);
+      return new Promise<string[]>((resolve) => {
+        resolveCodex = resolve;
+      });
+    });
+
+    render(
+      <SwitchModelModal
+        sessionId="s1"
+        privacyTier="public"
+        initialProvider="versa_azure"
+        initialModel="gpt-5.5-2026-04-24"
+        onClose={vi.fn()}
+        setView={vi.fn()}
+      />
+    );
+
+    expect(await screen.findByTestId('switch-model-affiliation')).toHaveTextContent('UCSF');
+    const providerInput = screen.getAllByRole('combobox')[0];
+    fireEvent.change(providerInput, { target: { value: 'Codex' } });
+    fireEvent.click(await screen.findByRole('option', { name: 'Codex' }));
+
+    await waitFor(() => expect(screen.queryByTestId('switch-model-affiliation')).toBeNull());
+    const confirm = screen.getByRole('button', { name: 'Select model' });
+    expect(confirm).toBeDisabled();
+
+    await act(async () => resolveCodex(['gpt-5.6-sol']));
+    expect(await screen.findByText('gpt-5.6-sol')).toBeInTheDocument();
+    expect(confirm).toBeEnabled();
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(mocks.changeModel).toHaveBeenCalledTimes(1));
+    expect(mocks.changeModel).toHaveBeenCalledWith('s1', {
+      name: 'gpt-5.6-sol',
+      provider: 'codex',
+      subtext: 'Codex',
+    });
   });
 
   // The control case: a public provider has no affiliation at all, so the row is

@@ -18,6 +18,7 @@ import { deriveWorkingDirLocked } from './bottom_menu/DirSwitcher';
 import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
 import { useFileDrop } from '../hooks/useFileDrop';
 import { selectBilledTokens } from '../utils/billedTokens';
+import { artifactRefreshTarget } from '../utils/artifactRefresh';
 import { imageExtensionAlternation } from '../utils/imageFormats';
 import { useArtifactPanelAccess } from './artifacts/useArtifactPanelAccess';
 import { mostCompleteBilledTokens } from '../utils/usageAccounting';
@@ -34,6 +35,7 @@ import { useIsMobile } from '../hooks/use-mobile';
 import { useSidebar } from './ui/sidebar';
 import { cn } from '../utils';
 import { useChatStream } from '../hooks/useChatStream';
+import { useArtifactLiveRefresh } from '../hooks/useArtifactLiveRefresh';
 import { isRunningState } from '../hooks/chatStreamStore';
 import { useNavigation } from '../hooks/useNavigation';
 import { WorkflowHeader } from './WorkflowHeader';
@@ -47,7 +49,9 @@ import { useToolCount } from './alerts/useToolCount';
 import { Button } from './ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
-import { AlignLeft, CodeAnalysis, Pipeline, Terminal } from './icons/app-icons';
+import { AlignLeft, Terminal } from './icons/app-icons';
+import { ChatSummary } from './ChatSummary';
+import { useSessionTodos } from '../hooks/useSessionTodos';
 import { createArtifactRenderRepairMessage, getTextContent } from '../types/message';
 import ParameterInputModal from './ParameterInputModal';
 import { substituteParameters } from '../utils/providerUtils';
@@ -81,10 +85,8 @@ import {
   artifactSourceFromResource,
   basenameFromPath,
   fileArtifactPathsFromToolCall,
-  looksLikePreviewableFile,
-  pathFromArtifactHref,
-  resolveArtifactPath,
 } from './artifacts/artifactUtils';
+import { referencedFilePaths } from './artifacts/artifactFileProvenance';
 import type {
   CallToolResponse,
   Content,
@@ -114,9 +116,9 @@ const HEADER_ACTION_BUTTON_CLASS =
 // adding a format cannot leave prose discovery behind. The non-image half stays
 // a literal: it is a deliberately closed list, not a mirror of another set.
 const PREVIEWABLE_TEXT_ARTIFACT_RE = new RegExp(
-  String.raw`(?<![\w:/\\@])(?:file://|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|/|\\\\)[^\s)\]}\x60"'<>]+\.(?:` +
+  String.raw`(?<![^\s(\[{])(?:file://|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|/|\\\\)[^\s)\]}\x60"'<>]+\.(?:` +
     `html?|${imageExtensionAlternation()}|` +
-    String.raw`pdf|docx|xlsx|pptx|ipynb|sql|md|qmd|rmd|txt|log|json|csv|tsv|ya?ml|toml|xml|css|ts|tsx|js|jsx|py|r|rs|go|java|c|cpp|h|hpp)(?:[?#][^\s)\]}\x60"'<>]*)?(?![\w./\\])`,
+    String.raw`pdf|docx|xlsx|pptx|ipynb|sql|md|qmd|rmd|txt|log|json|csv|tsv|ya?ml|toml|xml|css|ts|tsx|js|jsx|py|r|rs|go|java|c|cpp|h|hpp)(?::\d+|#L\d+|%[^\s)\]}\x60"'<>.,!?;]*)?(?=$|[\s)\]},;]|[.!?](?=$|[\s)\]},;]))`,
   'gi'
 );
 
@@ -189,6 +191,18 @@ export function decideArtifactAutoOpen(params: {
 
   if (openIndex < 0) return { action: 'none' };
   return { action: 'open', openIndex, knownKeys: nextKnown };
+}
+
+export function keepCurrentLiveAppPreview(
+  current: ArtifactSource | null,
+  candidate: ArtifactSource
+): boolean {
+  const target = artifactRefreshTarget(current);
+  return (
+    candidate.kind === 'html' &&
+    target?.startsWith('app:') === true &&
+    candidate.sourceUri === `ui://agent-drafter/${target.slice(4)}`
+  );
 }
 
 /**
@@ -389,26 +403,11 @@ function artifactKey(artifact: ArtifactSource) {
 }
 
 function collectTextArtifacts(text: string, workingDir?: string): ArtifactSource[] {
-  const artifacts: ArtifactSource[] = [];
-  for (const match of text.matchAll(PREVIEWABLE_TEXT_ARTIFACT_RE)) {
-    const href = match[0];
-    if (!looksLikePreviewableFile(href)) continue;
-    const rawPath = pathFromArtifactHref(href);
-    // DROP a relative path we cannot anchor, exactly as the tool-call collector
-    // does — never fall back to the raw relative string. A `./output` kept as-is
-    // reaches the main process, which resolves it against the ELECTRON process's
-    // own cwd, not the session's — so the panel would preview whatever folder of
-    // that name happens to sit at the app's launch directory. An absolute / `~`
-    // path resolves to itself and is kept.
-    const path = resolveArtifactPath(rawPath, workingDir);
-    if (!path) continue;
-    artifacts.push({
-      kind: 'file',
-      title: basenameFromPath(path),
-      path,
-    });
-  }
-  return artifacts;
+  return referencedFilePaths(text, workingDir, PREVIEWABLE_TEXT_ARTIFACT_RE).map((path) => ({
+    kind: 'file',
+    title: basenameFromPath(path),
+    path,
+  }));
 }
 
 function toolCallOf(content: {
@@ -497,7 +496,8 @@ function disambiguateFileArtifactTitles(artifacts: ArtifactSource[]): ArtifactSo
 
 export function collectArtifactsFromMessages(
   messages: Message[],
-  workingDir?: string
+  workingDir?: string,
+  streamingTextMessageIndex?: number
 ): ArtifactSource[] {
   const artifacts: ArtifactSource[] = [];
   const seen = new Set<string>();
@@ -510,10 +510,12 @@ export function collectArtifactsFromMessages(
     artifacts.push(artifact);
   };
 
-  for (const message of messages) {
+  for (const [messageIndex, message] of messages.entries()) {
     if (message.role !== 'assistant' || message.metadata?.userVisible === false) continue;
-    for (const artifact of collectTextArtifacts(getTextContent(message), workingDir)) {
-      addArtifact(artifact);
+    if (messageIndex !== streamingTextMessageIndex) {
+      for (const artifact of collectTextArtifacts(getTextContent(message), workingDir)) {
+        addArtifact(artifact);
+      }
     }
     for (const content of message.content) {
       if (content.type !== 'toolRequest') continue;
@@ -773,12 +775,66 @@ export function formatCompactNumber(value: number) {
 // (BaseChat.artifacts.test.ts precedent).
 export { selectBilledTokens };
 
-function countToolRequests(messages: Message[]) {
-  return messages.reduce(
-    (count, message) =>
-      count + message.content.filter((content) => content.type === 'toolRequest').length,
-    0
-  );
+function metadataRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function recordedNestedToolCallCount(value: unknown): number {
+  if (!Array.isArray(value)) return 0;
+  return value.filter((candidate) => {
+    const call = metadataRecord(candidate);
+    return typeof call?.tool === 'string' && call.tool.trim().length > 0;
+  }).length;
+}
+
+function droppedNestedToolCallCount(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+export function countSessionToolCalls(messages: Message[]): number {
+  const requestsById = new Map<string, Array<{ index: number; name: unknown }>>();
+  const responsesById = new Map<string, Array<{ index: number; toolResult: unknown }>>();
+  const contents = messages.flatMap((message) => message.content);
+  let total = 0;
+
+  contents.forEach((content, index) => {
+    if (content.type === 'toolRequest') {
+      total += 1;
+      const toolCall = metadataRecord(content.toolCall);
+      const value = metadataRecord(toolCall?.value);
+      const requests = requestsById.get(content.id) ?? [];
+      requests.push({ index, name: value?.name });
+      requestsById.set(content.id, requests);
+    }
+    if (content.type === 'toolResponse') {
+      const responses = responsesById.get(content.id) ?? [];
+      responses.push({ index, toolResult: content.toolResult });
+      responsesById.set(content.id, responses);
+    }
+  });
+
+  for (const [id, requests] of requestsById) {
+    const responses = responsesById.get(id) ?? [];
+    if (requests.length !== 1 || responses.length !== 1) continue;
+    const [request] = requests;
+    const [response] = responses;
+    if (
+      !request ||
+      !response ||
+      (request.name !== 'code_execution__execute_code' &&
+        request.name !== 'multi_tool_use__execute_code') ||
+      response.index <= request.index
+    ) {
+      continue;
+    }
+    const toolResult = metadataRecord(response.toolResult);
+    const value = metadataRecord(toolResult?.value);
+    const meta = metadataRecord(value?._meta);
+    total += recordedNestedToolCallCount(meta?.['biorouter/tool-calls']);
+    total += droppedNestedToolCallCount(meta?.['biorouter/tool-calls-dropped']);
+  }
+
+  return total;
 }
 
 function visitStrings(
@@ -857,35 +913,6 @@ function collectCodeDelta(messages: Message[]) {
   }
 
   return { added, removed };
-}
-
-/**
- * A metric readout, per design.md §4.13: a 30/34 mono-light value over an
- * 11px caps label. It used to be a filled `rounded-md bg-background-medium/60`
- * tile with a 14px semibold sans value — four boxes nested inside an already
- * rounded popover, which is the "box inside a box" this pass exists to remove.
- * The fill goes; the number does the work. `children` lets a caller compose a
- * richer value (e.g. the +/- code diff) without duplicating this component.
- */
-function SummaryMetric({
-  label,
-  value,
-  children,
-}: {
-  label: string;
-  value?: string;
-  children?: React.ReactNode;
-}) {
-  return (
-    <div className="min-w-0 py-2">
-      <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-text-muted">
-        {label}
-      </div>
-      <div className="mt-0.5 truncate font-mono text-[30px] font-light leading-[34px] tracking-[-0.02em] text-text-default tabular-nums">
-        {children ?? value}
-      </div>
-    </div>
-  );
 }
 
 interface BaseChatProps {
@@ -1205,6 +1232,7 @@ function BaseChatContent({
     sessionId,
     onStreamFinish,
   });
+  const sessionTodos = useSessionTodos(sessionId, session, messages, reviewOpen);
 
   // BR-71 §4.5 — the glass-box header on a subagent's tab. Inert (and silent on
   // the wire) for an ordinary session.
@@ -1488,16 +1516,29 @@ function BaseChatContent({
   // Gated on agentReady: tools do not exist until the extensions do, and this
   // hook has no other reason to refetch.
   const toolCount = useToolCount(sessionId, agentReady);
-  const sessionWorkingDir = session?.working_dir || getInitialWorkingDir();
+  const sessionWorkingDir = session && session.id === sessionId ? session.working_dir : undefined;
+  const artifactRefreshRevision = useArtifactLiveRefresh(
+    sessionId,
+    messages,
+    presentedArtifact,
+    sessionWorkingDir,
+    session?.id === sessionId
+  );
   // Feed the terminal-dock seam declared at the top of this component. Assigned
   // on every render; only ever READ at the instant the dock opens.
   sessionWorkingDirRef.current = sessionWorkingDir;
   // The working dir anchors relative paths a tool call names (`results/plot.png`).
+  const streamingTextMessageIndex =
+    chatState !== ChatState.Idle &&
+    chatState !== ChatState.LoadingConversation &&
+    messages[messages.length - 1]?.role === 'assistant'
+      ? messages.length - 1
+      : undefined;
   const sessionArtifacts = useMemo(
-    () => collectArtifactsFromMessages(messages, sessionWorkingDir),
-    [messages, sessionWorkingDir]
+    () => collectArtifactsFromMessages(messages, sessionWorkingDir, streamingTextMessageIndex),
+    [messages, sessionWorkingDir, streamingTextMessageIndex]
   );
-  const sessionToolCallCount = useMemo(() => countToolRequests(messages), [messages]);
+  const sessionToolCallCount = useMemo(() => countSessionToolCalls(messages), [messages]);
   const codeDelta = useMemo(() => collectCodeDelta(messages), [messages]);
   // The per-model ledger can supersede live counters only when every row has a
   // certified billed total; incomplete historical rows stay visibly unknown.
@@ -1526,10 +1567,14 @@ function BaseChatContent({
         return;
       case 'open':
         knownArtifactKeysRef.current = decision.knownKeys;
+        // A rebuild's static receipt must not displace the same app's live preview.
+        if (keepCurrentLiveAppPreview(presentedArtifact, sessionArtifacts[decision.openIndex])) {
+          return;
+        }
         handleOpenArtifact(sessionArtifacts[decision.openIndex]);
         return;
     }
-  }, [handleOpenArtifact, messages.length, session, sessionArtifacts]);
+  }, [handleOpenArtifact, messages.length, presentedArtifact, session, sessionArtifacts]);
 
   // Listen for scroll-to-bottom requests (e.g. from MCP UI prompt actions).
   // Dispatched by MCPUIResourceRenderer / McpAppRenderer, both of which render
@@ -1755,57 +1800,26 @@ function BaseChatContent({
           {/* Not "Chat summary" again: the popover's own first heading already
               says that, so a tooltip repeating it tells the user nothing they
               are not about to read. It names the contents instead. */}
-          <TooltipContent>Tool calls, tokens and artifacts so far</TooltipContent>
+          <TooltipContent>Progress, tool calls, tokens and artifacts</TooltipContent>
         </Tooltip>
-        <PopoverContent side="bottom" align="end" className="w-96 p-3">
-          <div className="space-y-3">
-            <div>
-              <div className="text-sm font-medium text-text-default">Chat summary</div>
-              <div className="text-xs text-text-muted">{session?.name || 'Current chat'}</div>
-            </div>
-            <div className="grid grid-cols-2 gap-x-4">
-              <SummaryMetric label="Tool calls" value={sessionToolCallCount.toLocaleString()} />
-              <SummaryMetric
-                label="Billed tokens"
-                value={
-                  totalSessionTokens === null ? 'N/A' : formatCompactNumber(totalSessionTokens)
-                }
-              />
-              <SummaryMetric label="Artifacts" value={sessionArtifacts.length.toLocaleString()} />
-              {/* Composed rather than copy-pasted: this used to duplicate
-                  SummaryMetric's markup, so the two diverged on every edit. */}
-              <SummaryMetric label="Code">
-                <span className="text-text-success">+{codeDelta.added.toLocaleString()}</span>{' '}
-                <span className="text-text-danger">-{codeDelta.removed.toLocaleString()}</span>
-              </SummaryMetric>
-            </div>
-            {/* `secondary`, not `outline`: a 1px box drawn around the quietest
-                actions was the heaviest line in the panel. design.md §4.1
-                already specifies a fill here — outline is only for a secondary
-                action on an already-tinted ground. */}
-            <div className="flex gap-2 border-t border-border-subtle pt-3">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                className="min-w-0 flex-1 justify-center gap-1.5"
-                onClick={handleWorkflowReviewAction}
-              >
-                <Pipeline className="shrink-0" />
-                <span className="whitespace-nowrap">{workflow ? 'Workflow' : 'Make workflow'}</span>
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                className="min-w-0 flex-1 justify-center gap-1.5"
-                onClick={handleDiagnosticsReviewAction}
-              >
-                <CodeAnalysis className="shrink-0" />
-                <span className="whitespace-nowrap">Diagnostics</span>
-              </Button>
-            </div>
-          </div>
+        <PopoverContent
+          side="bottom"
+          align="end"
+          className="w-[360px] max-w-[calc(100vw-2rem)] max-h-[var(--radix-popover-content-available-height)] overflow-y-auto p-3"
+        >
+          <ChatSummary
+            name={session?.name || 'Current chat'}
+            toolCalls={sessionToolCallCount.toLocaleString()}
+            billedTokens={
+              totalSessionTokens === null ? 'N/A' : formatCompactNumber(totalSessionTokens)
+            }
+            artifacts={sessionArtifacts.length.toLocaleString()}
+            codeDelta={codeDelta}
+            todos={sessionTodos}
+            hasWorkflow={!!workflow}
+            onWorkflow={handleWorkflowReviewAction}
+            onDiagnostics={handleDiagnosticsReviewAction}
+          />
         </PopoverContent>
       </Popover>
     </div>
@@ -2327,6 +2341,7 @@ function BaseChatContent({
               onRenderError={handleArtifactRenderError}
               onLiveBrowserShareChange={setLiveBrowserShare}
               onFilePreviewRevisionChange={setFilePreviewRevision}
+              refreshRevision={artifactRefreshRevision}
               // Chat-only, for the same reason as onRenderError above: it is
               // what enables the annotate control, and a saved transcript has
               // no running conversation to attach a region to.

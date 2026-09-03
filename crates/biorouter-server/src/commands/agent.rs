@@ -128,6 +128,12 @@ pub async fn run() -> Result<()> {
              session's privacy capability, including one made by the person at the keyboard"
         );
     }
+    // A tool whose approval can never be granted must not be offered. `serve`
+    // spawns this daemon with `Stdio::null()`, so it holds no key and every
+    // proof-backed approval refuses forever — the install and delete tools take
+    // themselves off the surface rather than letting the model propose something
+    // whose card has three buttons that cannot work.
+    biorouter::pending_user_action::set_user_proof_available(user_action_digest.is_some());
     biorouter_server::auth::install_user_action_digest(user_action_digest);
 
     let app_state = state::AppState::new().await?;

@@ -54,6 +54,27 @@ pub fn convert_image(image: &ImageContent, image_format: &ImageFormat) -> Value 
 }
 
 pub fn filter_extensions_from_system_prompt(system: &str) -> String {
+    if let Some(tool_state_start) = system.find("# Current Tool State") {
+        let Some(tool_state) = system.get(tool_state_start..) else {
+            return system.to_string();
+        };
+        if let Some(next_section_pos) = tool_state.find("\n# Working on Tasks") {
+            let Some(before) = system.get(..tool_state_start) else {
+                return system.to_string();
+            };
+            let Some(after) = tool_state.get(next_section_pos..) else {
+                return system.to_string();
+            };
+            return format!("{}{}", before.trim_end(), after);
+        }
+        return system
+            .get(..tool_state_start)
+            .map(|before| before.trim_end().to_string())
+            .unwrap_or_else(|| system.to_string());
+    }
+
+    // Accept prompts generated before capabilities and extensions gained
+    // separate authoritative sections.
     let Some(extensions_start) = system.find("# Extensions") else {
         return system.to_string();
     };
@@ -80,22 +101,21 @@ pub fn filter_extensions_from_system_prompt(system: &str) -> String {
 
 fn check_context_length_exceeded(text: &str) -> bool {
     let check_phrases = [
-        "too long",
-        "context length",
         "context_length_exceeded",
-        "reduce the length",
-        "token count",
-        "exceeds",
-        "exceed context limit",
-        "input length",
-        "max_tokens",
-        "decrease input length",
-        "context limit",
+        "maximum context length",
+        "prompt is too long",
+        "prompt too long",
+        "input is too long",
+        "input too long",
     ];
     let text_lower = text.to_lowercase();
     check_phrases
         .iter()
         .any(|phrase| text_lower.contains(phrase))
+        || (text_lower.contains("exceed")
+            && ["context length", "context window", "context limit"]
+                .iter()
+                .any(|subject| text_lower.contains(subject)))
 }
 
 fn format_server_error_message(status_code: StatusCode, payload: Option<&Value>) -> String {
@@ -112,16 +132,15 @@ pub fn map_http_error_to_provider_error(
     status: StatusCode,
     payload: Option<Value>,
 ) -> ProviderError {
+    let message = payload.as_ref().and_then(|p| {
+        p.get("error")
+            .and_then(|e| e.get("message"))
+            .or_else(|| p.get("message"))
+            .and_then(Value::as_str)
+    });
     let extract_message = || -> String {
-        payload
-            .as_ref()
-            .and_then(|p| {
-                p.get("error")
-                    .and_then(|e| e.get("message"))
-                    .or_else(|| p.get("message"))
-                    .and_then(|m| m.as_str())
-                    .map(String::from)
-            })
+        message
+            .map(String::from)
             .unwrap_or_else(|| payload.as_ref().map(|p| p.to_string()).unwrap_or_default())
     };
 
@@ -138,7 +157,13 @@ pub fn map_http_error_to_provider_error(
         StatusCode::PAYLOAD_TOO_LARGE => ProviderError::ContextLengthExceeded(extract_message()),
         StatusCode::BAD_REQUEST => {
             let payload_str = extract_message();
-            if check_context_length_exceeded(&payload_str) {
+            let has_context_code = payload.as_ref().is_some_and(|payload| {
+                payload.pointer("/error/code").and_then(Value::as_str)
+                    == Some("context_length_exceeded")
+                    || payload.get("code").and_then(Value::as_str)
+                        == Some("context_length_exceeded")
+            });
+            if has_context_code || message.is_some_and(check_context_length_exceeded) {
                 ProviderError::ContextLengthExceeded(payload_str)
             } else {
                 ProviderError::RequestFailed(format!("Bad request (400): {}", payload_str))
@@ -160,10 +185,9 @@ pub fn map_http_error_to_provider_error(
 
     if !status.is_success() {
         tracing::warn!(
-            "Provider request failed with status: {}. Payload: {:?}. Returning error: {:?}",
-            status,
-            payload,
-            error
+            status = status.as_u16(),
+            error_type = error.telemetry_type(),
+            "Provider request failed"
         );
     }
 
@@ -284,7 +308,7 @@ fn parse_google_retry_delay(payload: &Value) -> Option<Duration> {
 /// Handle response from Google Gemini API-compatible endpoints.
 ///
 /// Processes HTTP responses, handling specific statuses and parsing the payload
-/// for error messages. Logs the response payload for debugging purposes.
+/// for error messages. Diagnostics retain only the response status.
 ///
 /// ### References
 /// - Error Codes: https://ai.google.dev/gemini-api/docs/troubleshooting?lang=python
@@ -317,9 +341,7 @@ pub async fn handle_response_google_compat(response: Response) -> Result<Value, 
                     }
                 }
             }
-            tracing::debug!(
-                "{}", format!("Provider request failed with status: {}. Payload: {:?}", final_status, payload)
-            );
+            tracing::debug!(status = final_status.as_u16(), "Provider request failed");
             Err(ProviderError::RequestFailed(format!("Request failed with status: {}. Message: {}", final_status, error_msg)))
         }
         StatusCode::TOO_MANY_REQUESTS => {
@@ -333,9 +355,7 @@ pub async fn handle_response_google_compat(response: Response) -> Result<Value, 
             format_server_error_message(final_status, payload.as_ref()),
         )),
         _ => {
-            tracing::debug!(
-                "{}", format!("Provider request failed with status: {}. Payload: {:?}", final_status, payload)
-            );
+            tracing::debug!(status = final_status.as_u16(), "Provider request failed");
             Err(ProviderError::RequestFailed(format!("Request failed with status: {}", final_status)))
         }
     }
@@ -500,7 +520,7 @@ pub enum PayloadPolicy {
     /// The prompt, the response and every streamed chunk are written verbatim.
     Full,
     /// Only metadata: the model config, the session, timings, token usage and
-    /// error text. No prompt, no completion, no tool arguments.
+    /// redacted errors. No prompt, completion, tool arguments, or upstream error text.
     MetadataOnly,
 }
 
@@ -652,9 +672,23 @@ impl RequestLog {
     where
         E: Display,
     {
+        if self.policy.is_metadata_only() {
+            return self.write_json(&json!({"error": "[redacted]", "error_redacted": true}));
+        }
         self.write_json(&serde_json::json!({
             "error": format!("{}", error),
         }))
+    }
+
+    pub fn provider_error(&mut self, error: &ProviderError) -> Result<()> {
+        if self.policy.is_metadata_only() {
+            return self.write_json(&json!({
+                "error": "[redacted]",
+                "error_redacted": true,
+                "error_type": error.telemetry_type(),
+            }));
+        }
+        self.error(error)
     }
 
     pub fn write<Payload>(&mut self, data: &Payload, usage: Option<&Usage>) -> Result<()>
@@ -828,6 +862,355 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn http_context_classifier_keeps_tool_array_limits_as_request_failures() {
+        let message = "Invalid 'tools': array too long. Expected at most 128 items, but got 129.";
+        let error = map_http_error_to_provider_error(
+            StatusCode::BAD_REQUEST,
+            Some(json!({"error": {
+                "message": message,
+                "code": "array_above_max_length",
+                "param": "tools"
+            }})),
+        );
+        assert_eq!(
+            error,
+            ProviderError::RequestFailed(format!("Bad request (400): {message}"))
+        );
+    }
+
+    #[test]
+    fn http_context_classifier_keeps_tool_description_limits_as_request_failures() {
+        let mut failures = Vec::new();
+        for message in [
+            "Invalid 'tools[0].function.description': string too long. Expected at most 1024 characters, but got 1200.",
+            "Invalid 'tools[0].function.description': input length exceeds 1024 characters.",
+        ] {
+            let error = map_http_error_to_provider_error(
+                StatusCode::BAD_REQUEST,
+                Some(json!({"error": {
+                    "message": message,
+                    "code": "string_above_max_length",
+                    "param": "tools[0].function.description"
+                }})),
+            );
+            if error != ProviderError::RequestFailed(format!("Bad request (400): {message}")) {
+                failures.push(format!("{message}: {error:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn http_context_classifier_keeps_output_parameter_errors_as_request_failures() {
+        let mut failures = Vec::new();
+        for (code, param, message) in [
+            (
+                "unsupported_parameter",
+                "max_tokens",
+                "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+            ),
+            (
+                "invalid_value",
+                "max_tokens",
+                "Invalid 'max_tokens': integer must be greater than or equal to 1.",
+            ),
+            (
+                "invalid_value",
+                "max_tokens",
+                "max_tokens exceeds the maximum allowed output token count of 16384.",
+            ),
+            (
+                "invalid_value",
+                "max_completion_tokens",
+                "max_completion_tokens exceeds the maximum allowed output token count of 128000.",
+            ),
+        ] {
+            let error = map_http_error_to_provider_error(
+                StatusCode::BAD_REQUEST,
+                Some(json!({"error": {
+                    "message": message,
+                    "code": code,
+                    "param": param
+                }})),
+            );
+            if error != ProviderError::RequestFailed(format!("Bad request (400): {message}")) {
+                failures.push(format!("parameter: {param}; code: {code}; error: {error:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn http_context_classifier_preserves_explicit_context_messages() {
+        let mut failures = Vec::new();
+        for message in [
+            "This model's maximum context length is 8192 tokens. Your messages resulted in 9000 tokens.",
+            "Request exceeds the model's context window.",
+            "Input length exceeds the context limit of 8192 tokens.",
+            "Prompt is too long: 9000 tokens > 8192 maximum.",
+            "Input is too long for requested model.",
+            "input is too long",
+            "The prompt is too long",
+            "Request exceeds the maximum context length.",
+            "context_length_exceeded",
+        ] {
+            let error = map_http_error_to_provider_error(
+                StatusCode::BAD_REQUEST,
+                Some(json!({"error": {"message": message}})),
+            );
+            if error != ProviderError::ContextLengthExceeded(message.to_string()) {
+                failures.push(format!("{message}: {error:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn http_context_classifier_rejects_non_overflow_context_mentions() {
+        let mut failures = Vec::new();
+        for message in [
+            "Invalid context length: must be positive.",
+            "Unsupported parameter: context_length.",
+        ] {
+            let error = map_http_error_to_provider_error(
+                StatusCode::BAD_REQUEST,
+                Some(json!({"error": {
+                    "message": message,
+                    "code": "invalid_request_error"
+                }})),
+            );
+            if error != ProviderError::RequestFailed(format!("Bad request (400): {message}")) {
+                failures.push(format!("{message}: {error:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn http_context_classifier_recognizes_structured_context_codes() {
+        let message = "Request rejected.";
+        let mut failures = Vec::new();
+        for payload in [
+            json!({"error": {
+                "code": "context_length_exceeded",
+                "message": message
+            }}),
+            json!({
+                "code": "context_length_exceeded",
+                "message": message
+            }),
+        ] {
+            let error = map_http_error_to_provider_error(StatusCode::BAD_REQUEST, Some(payload));
+            if error != ProviderError::ContextLengthExceeded(message.to_string()) {
+                failures.push(format!("{error:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn http_context_classifier_malformed_payloads_are_not_context_signals() {
+        let mut failures = Vec::new();
+        for (label, payload) in [
+            ("absent payload", None),
+            ("null payload", Some(Value::Null)),
+            ("empty payload", Some(json!({}))),
+            ("empty code", Some(json!({"error": {"code": ""}}))),
+            ("null code", Some(json!({"error": {"code": null}}))),
+            ("numeric code", Some(json!({"error": {"code": 42}}))),
+            (
+                "array code",
+                Some(json!({"error": {"code": ["context_length_exceeded"]}})),
+            ),
+            (
+                "object code",
+                Some(json!({"error": {"code": {"detail": "context_length_exceeded"}}})),
+            ),
+            (
+                "non-exact string code",
+                Some(json!({"error": {"code": "not_context_length_exceeded"}})),
+            ),
+            (
+                "top-level array code",
+                Some(json!({"code": ["context_length_exceeded"]})),
+            ),
+            (
+                "unrelated detail",
+                Some(json!({"error": {"detail": "context_length_exceeded"}})),
+            ),
+            (
+                "object message",
+                Some(json!({"error": {"message": {"detail": "context_length_exceeded"}}})),
+            ),
+            (
+                "array message",
+                Some(json!({"message": ["context_length_exceeded"]})),
+            ),
+            (
+                "nested null message retains precedence",
+                Some(json!({
+                    "error": {"message": null},
+                    "message": "context_length_exceeded"
+                })),
+            ),
+            ("string payload", Some(json!("context_length_exceeded"))),
+            (
+                "array payload",
+                Some(json!([{"code": "context_length_exceeded"}])),
+            ),
+        ] {
+            let details = payload.as_ref().map(Value::to_string).unwrap_or_default();
+            let error = map_http_error_to_provider_error(StatusCode::BAD_REQUEST, payload);
+            if error != ProviderError::RequestFailed(format!("Bad request (400): {details}")) {
+                failures.push(format!("{label}: {error:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn http_context_classifier_context_codes_without_messages_remain_context() {
+        let mut failures = Vec::new();
+        for payload in [
+            json!({"error": {"code": "context_length_exceeded"}}),
+            json!({"code": "context_length_exceeded"}),
+            json!({"error": {"code": "context_length_exceeded", "message": null}}),
+            json!({"code": "context_length_exceeded", "message": {"unexpected": true}}),
+        ] {
+            let details = payload.to_string();
+            let error = map_http_error_to_provider_error(StatusCode::BAD_REQUEST, Some(payload));
+            if error != ProviderError::ContextLengthExceeded(details.clone()) {
+                failures.push(format!("{details}: {error:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn http_context_classifier_preserves_non_bad_request_status_precedence() {
+        let message = "context length exceeded";
+        let mut failures = Vec::new();
+        for (status, expected) in [
+            (
+                StatusCode::UNAUTHORIZED,
+                ProviderError::Authentication(format!(
+                    "Authentication failed. Status: {}. Response: {message}",
+                    StatusCode::UNAUTHORIZED
+                )),
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                ProviderError::Authentication(format!(
+                    "Authentication failed. Status: {}. Response: {message}",
+                    StatusCode::FORBIDDEN
+                )),
+            ),
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                ProviderError::RateLimitExceeded {
+                    details: message.to_string(),
+                    retry_delay: None,
+                },
+            ),
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ProviderError::ServerError(format!(
+                    "Server error ({}): {message}",
+                    StatusCode::INTERNAL_SERVER_ERROR
+                )),
+            ),
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                ProviderError::ContextLengthExceeded(message.to_string()),
+            ),
+            (
+                StatusCode::NOT_FOUND,
+                ProviderError::RequestFailed(format!("Resource not found (404): {message}")),
+            ),
+        ] {
+            let error = map_http_error_to_provider_error(
+                status,
+                Some(json!({"error": {
+                    "code": "context_length_exceeded",
+                    "message": message
+                }})),
+            );
+            if error != expected {
+                failures.push(format!("status: {status}; error: {error:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[tokio::test]
+    async fn http_context_classifier_openai_wrappers_preserve_error_categories() {
+        let mut failures = Vec::new();
+        for (code, message, expected) in [
+            (
+                "array_above_max_length",
+                "Invalid 'tools': array too long. Expected at most 128 items, but got 129.",
+                ProviderError::RequestFailed(
+                    "Bad request (400): Invalid 'tools': array too long. Expected at most 128 items, but got 129.".into(),
+                ),
+            ),
+            (
+                "context_length_exceeded",
+                "This model's maximum context length is 8192 tokens. Your messages resulted in 9000 tokens.",
+                ProviderError::ContextLengthExceeded(
+                    "This model's maximum context length is 8192 tokens. Your messages resulted in 9000 tokens.".into(),
+                ),
+            ),
+        ] {
+            for streaming in [false, true] {
+                let response = axum::http::Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("content-type", "application/json")
+                    .body(json!({"error": {"code": code, "message": message}}).to_string())
+                    .unwrap();
+                let response = reqwest::Response::from(response);
+                let error = if streaming {
+                    handle_status_openai_compat(response).await.err()
+                } else {
+                    handle_response_openai_compat(response).await.err()
+                };
+                if error.as_ref() != Some(&expected) {
+                    failures.push(format!("streaming: {streaming}; code: {code}; error: {error:?}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn filter_extensions_removes_the_complete_current_tool_state_slice() {
+        let prompt = "Base\n\n# Current Tool State\n\n# Enabled Capabilities\n\n## developer\n\ndev\n\n# Loaded Extensions\n\n## custom\n\next\n\n# Working on Tasks\n\nwork";
+        let filtered = filter_extensions_from_system_prompt(prompt);
+
+        assert_eq!(filtered, "Base\n# Working on Tasks\n\nwork");
+        assert!(!filtered.contains("developer"));
+        assert!(!filtered.contains("custom"));
+    }
+
+    #[test]
+    fn filter_extensions_preserves_unicode_around_the_tool_state_slice() {
+        let prompt = "Résumé 🧬\n\n# Current Tool State\n\n## developer\n\ndev\n\n# Working on Tasks\n\nMéditation";
+
+        assert_eq!(
+            filter_extensions_from_system_prompt(prompt),
+            "Résumé 🧬\n# Working on Tasks\n\nMéditation"
+        );
+    }
+
+    #[test]
+    fn filter_extensions_still_accepts_the_legacy_prompt_section() {
+        let prompt = "Base\n\n# Extensions\n\n## custom\n\next\n\n# Working on Tasks\n\nwork";
+        assert_eq!(
+            filter_extensions_from_system_prompt(prompt),
+            "Base\n# Working on Tasks\n\nwork"
+        );
+    }
+
     // BR-57: the log buffers its lines in memory and only touches the disk when
     // it is finished (inline here, since there is no tokio runtime; on the
     // streaming path the same flush runs in `spawn_blocking`).
@@ -882,6 +1265,169 @@ mod tests {
     }
 
     #[test]
+    fn private_error_logging_redacts_upstream_echoes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = test_log(dir.path(), PayloadPolicy::MetadataOnly, json!({}));
+        log.error(ProviderError::RequestFailed(
+            "SYNTHETIC_SECRET_SENTINEL and echoed tool arguments".into(),
+        ))
+        .unwrap();
+        log.finish().unwrap();
+
+        let contents = std::fs::read_to_string(dir.path().join("llm_request.0.jsonl")).unwrap();
+        assert!(!contents.contains("SYNTHETIC_SECRET_SENTINEL"));
+        assert!(!contents.contains("echoed tool arguments"));
+        assert!(contents.contains("\"error_redacted\":true"));
+    }
+
+    #[test]
+    fn private_error_logging_never_formats_display() {
+        struct NeverFormat;
+        impl Display for NeverFormat {
+            fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                panic!("private upstream errors must not be formatted");
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = test_log(dir.path(), PayloadPolicy::MetadataOnly, json!({}));
+        log.error(NeverFormat).unwrap();
+        log.finish().unwrap();
+    }
+
+    #[test]
+    fn private_error_logging_preserves_only_trusted_provider_class() {
+        let error = ProviderError::RequestFailed("429 SYNTHETIC_SECRET_SENTINEL".into());
+        for policy in [PayloadPolicy::MetadataOnly, PayloadPolicy::Full] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut log = test_log(dir.path(), policy, json!({}));
+            log.provider_error(&error).unwrap();
+            log.finish().unwrap();
+            let contents = std::fs::read_to_string(dir.path().join("llm_request.0.jsonl")).unwrap();
+            if policy.is_metadata_only() {
+                assert!(!contents.contains("SYNTHETIC_SECRET_SENTINEL"));
+                assert!(!contents.contains("429"));
+                assert!(contents.contains("\"error_type\":\"request\""));
+                assert!(contents.contains("\"error_redacted\":true"));
+            } else {
+                assert!(contents.contains("429 SYNTHETIC_SECRET_SENTINEL"));
+                assert!(!contents.contains("error_redacted"));
+            }
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct ErrorLogCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for ErrorLogCapture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn error_log_subscriber(capture: ErrorLogCapture) -> impl tracing::Subscriber + Send + Sync {
+        tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || capture.clone())
+            .finish()
+    }
+
+    #[test]
+    fn private_error_logging_http_trace_excludes_response_payload() {
+        let capture = ErrorLogCapture::default();
+        let subscriber = error_log_subscriber(capture.clone());
+        let error = tracing::subscriber::with_default(subscriber, || {
+            map_http_error_to_provider_error(
+                StatusCode::BAD_REQUEST,
+                Some(json!({"error":{"message":"SYNTHETIC_SECRET_SENTINEL"}})),
+            )
+        });
+
+        assert!(error.to_string().contains("SYNTHETIC_SECRET_SENTINEL"));
+        let trace = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            trace.contains("400"),
+            "the control warning must be captured"
+        );
+        assert!(!trace.contains("SYNTHETIC_SECRET_SENTINEL"));
+    }
+
+    #[tokio::test]
+    async fn private_error_logging_retry_traces_exclude_upstream_echoes() {
+        use crate::providers::retry::{retry_operation, ProviderRetry, RetryConfig};
+        use tracing::instrument::WithSubscriber;
+
+        struct RetryOnce;
+        impl ProviderRetry for RetryOnce {
+            fn retry_config(&self) -> RetryConfig {
+                RetryConfig::new(1, 0, 1.0, 0)
+            }
+        }
+
+        let capture = ErrorLogCapture::default();
+        let subscriber = error_log_subscriber(capture.clone());
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let operation = || {
+            attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async {
+                Err::<(), _>(ProviderError::ServerError(
+                    "SYNTHETIC_SECRET_SENTINEL".into(),
+                ))
+            }
+        };
+        async {
+            let error = retry_operation(&RetryConfig::new(1, 0, 1.0, 0), operation)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, ProviderError::ServerError(text) if text == "SYNTHETIC_SECRET_SENTINEL"));
+            assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+            let error = RetryOnce.with_retry(operation).await.unwrap_err();
+            assert!(matches!(error, ProviderError::ServerError(text) if text == "SYNTHETIC_SECRET_SENTINEL"));
+            assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 4);
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        let trace = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(trace.matches("Request failed").count(), 2);
+        assert!(!trace.contains("SYNTHETIC_SECRET_SENTINEL"));
+    }
+
+    #[tokio::test]
+    async fn private_error_logging_google_traces_exclude_response_payload() {
+        use tracing::instrument::WithSubscriber;
+
+        let capture = ErrorLogCapture::default();
+        let subscriber = error_log_subscriber(capture.clone());
+        async {
+            for status in [400, 422] {
+                let response = axum::http::Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(json!({"error":{"message":"SYNTHETIC_SECRET_SENTINEL"}}).to_string())
+                    .unwrap();
+                handle_response_google_compat(reqwest::Response::from(response))
+                    .await
+                    .unwrap_err();
+            }
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        let trace = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(trace.contains("400"));
+        assert!(trace.contains("422"));
+        assert!(!trace.contains("SYNTHETIC_SECRET_SENTINEL"));
+    }
+
+    #[test]
     fn payload_policy_follows_the_provider_tier() {
         assert_eq!(
             PayloadPolicy::for_tier(ProviderTier::Private),
@@ -893,8 +1439,8 @@ mod tests {
         );
     }
 
-    /// The fix. A private-tier exchange leaves model, timings, tokens and error
-    /// text on disk and **no transcript** — asserted on the bytes that reach the
+    /// A private-tier exchange leaves model, timings, tokens and a redacted error
+    /// on disk and **no transcript** — asserted on the bytes that reach the
     /// file, not on the policy value that produced them.
     #[test]
     fn a_private_tier_log_writes_no_prompt_and_no_completion() {
@@ -950,7 +1496,8 @@ mod tests {
         assert!(contents.contains("gpt-4o"), "model name is metadata");
         assert!(contents.contains("\"elapsed_ms\""));
         assert!(contents.contains("\"redacted_response_chunks\":2"));
-        assert!(contents.contains("\"error\":\"upstream 429\""));
+        assert!(!contents.contains("upstream 429"));
+        assert!(contents.contains("\"error_redacted\":true"));
     }
 
     /// The other half of the same gate: Public keeps the debug log useful.

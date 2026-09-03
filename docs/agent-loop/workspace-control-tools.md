@@ -1,10 +1,10 @@
 # Workspace Control tool reference
 
-> **What this is.** The precise reference for the eight tools the Workspace Control extension puts in the model's tool list: exact name, arguments, return shape, refusal conditions, and the cases where a tool reports success it did not earn.
+> **What this is.** The precise reference for the eight tools the Workspace Control capability puts in the model's tool list: exact name, arguments, return shape, refusal conditions, and the cases where a tool reports success it did not earn.
 > **Status:** Current. Two false-success paths and one dead GUI frame are documented in place — see [`subagent`](#subagent) and [`workspace_close`](#workspace_close).
 > **Audience:** developers working on the agent loop, and anyone diagnosing a workspace tool that behaved unexpectedly.
 
-Workspace Control (`workspace`, identifier `Workspace`, display name **Workspace Control**) is a platform extension whose tools operate on BioRouter *sessions* — other conversations — rather than on files or the network. This page is the per-tool contract. It is written for the moment a tool misbehaves and you need to know what it actually promises, so it prefers exact strings and named source paths over explanation. For the user-facing account of what the extension is for, when the tiers differ, and what the confirmation cards say, read [the Workspace Control extension guide](../extensions/built-in/workspace.md) first.
+Workspace Control (`workspace`, identifier `Workspace`, display name **Workspace Control**) is a platform extension whose tools operate on BioRouter *sessions* — other conversations — rather than on files or the network. This page is the per-tool contract. It is written for the moment a tool misbehaves and you need to know what it actually promises, so it prefers exact strings and named source paths over explanation. For the user-facing account of what the extension is for, when the tiers differ, and what the confirmation cards say, read [the Workspace Control capability guide](../extensions/built-in/workspace.md) first.
 
 Everything below is read off `crates/biorouter/src/agents/workspace_extension.rs` (the seven `workspace_*` tools), `crates/biorouter/src/agents/subagent_tool.rs` (`subagent`), `crates/biorouter/src/agents/workspace_inspector.rs` (the always-confirm rule), and `ui/desktop/src/components/chatGroups/workspaceCommandPlanner.ts` (what the renderer does with a frame).
 
@@ -463,7 +463,10 @@ The check runs as the **first statement of `open_new_session`**, ahead of the ex
 - Requires the daemon: `starting a new session requires the BioRouter daemon`.
 - `working_dir` **defaults to the caller's**. A different directory is allowed but never silent — it is named in the tool result *and* in a toast, and the toast is deliberately emitted **after** placement, because a renderer that routes a session's toasts to that session's tab would drop one that arrived before the tab existed.
 - `primary_knowledge_base` absent means `Auto`, which on a brand-new session pins the first id. `workspace_open` always chooses one rather than leaving a session with bases and no write target, in which KB-less writes fail.
-- `prompt` runs as a detached turn, provenance-stamped as an agent injection from the caller.
+- `prompt` runs as a detached turn, provenance-stamped as an agent injection from the caller, and it **spends a §5 fan-out slot** — the same per-caller budget `workspace_send_prompt` spends, not a second one. Over budget the whole call is refused with `this session already has N injected turns in flight (cap M); wait for one to finish before opening another conversation with a prompt`.
+  - The cap is checked **before `start_session`**, for the same reason the `new.kind` refusal above is: a refusal that has already minted a row produces the unparented conversation the refusal exists to prevent.
+  - The budget is shared because two tools start a detached turn in someone else's conversation, and for a while only one of them counted. A model that reached for `workspace_open` instead of `workspace_send_prompt` therefore fanned out with nothing counting at all — which surfaced as a single request opening several side conversations that all ran the same task.
+  - **Creating a conversation is not what is capped.** The same call without a `prompt` still succeeds at the cap; only the injected turn is budgeted.
 - It **never** retargets an existing session's working directory; the directory is set at creation, so it takes neither post-creation writer and cannot race the turn guard those share.
 
 Opening an existing session validates that it exists first (`no such session: …`), so a dangling frame never reaches the GUI.
@@ -577,7 +580,7 @@ Two names are retired and pinned as such by `RETIRED_TOOL_NAMES`: `subagent_stat
 
 - [Session metadata contract](session-metadata-contract.md) — the ID, kind, parent and subagent-run identity every one of these tools resolves against.
 - [Workspace control](workspace-control.md) — the task-oriented guide: laying work out across tabs, panes and windows, and the caps you meet in practice.
-- [Workspace Control extension](../extensions/built-in/workspace.md) — the user-facing guide: the two tiers, how to enable the full surface, the confirmation card, focus etiquette, and the CLI capability table.
+- [Workspace Control capability](../extensions/built-in/workspace.md) — the user-facing guide: the two tiers, how to enable the full surface, the confirmation card, focus etiquette, and the CLI capability table.
 - [Subagents](subagents.md) — the glass-box tab, `human_intervened`, and what closing a child's tab does and does not do.
 - [Tool routing](tool-routing.md) — which of these tools the model should prefer, and the disambiguation against Chat Recall, Memory and the knowledge base.
 - [Agent workspace control (BR-71 design)](designs/agent-workspace-control.md) — the design of record, including the §4.3 frame vocabulary and the §5 permissions and abuse analysis.

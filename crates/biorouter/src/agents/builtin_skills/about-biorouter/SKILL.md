@@ -45,8 +45,8 @@ directly. Sessions are persisted in the **data** directory, not the config one:
 Capabilities are the tools compiled into Biorouter. **Developer**, **Computer
 Controller**, **Auto Visualiser**, **Code Execution**, **Extension Manager**,
 **Skills**, **Todo**, **Memory**, **Knowledge**, **Workspace Control**, and
-**Agent Drafter** are enabled by default. **Chat Recall** and **Tutorial** are
-disabled by default. Manage them in **Settings → Chat → Capabilities**.
+**Agent Drafter** are enabled by default. **Chat Recall** is disabled by default.
+Manage them in **Settings → Chat → Capabilities**.
 
 User-installed extensions are MCP servers added through `stdio` (external
 process), `streamable_http` (remote), or `inline_python`. Manage them from the
@@ -61,7 +61,7 @@ Skills are reusable instruction sets: a folder containing a `SKILL.md` file
 with YAML frontmatter (`name`, `description`) followed by markdown
 instructions. The always-on system prompt carries only a **count** of the
 enabled skills, not their names; the agent finds a skill with `searchSkills`,
-pages the catalog with `listSkills`, and pulls in one body with `loadSkill`.
+pages the catalog with `searchSkills` (no query), and pulls in one body with `loadSkill`.
 
 - Primary location: `~/.config/biorouter/skills/<slug>/SKILL.md`. Also
   discovered from `~/.claude/skills`, `~/.config/agents/skills`, extension
@@ -143,7 +143,7 @@ page — just stop writing new ones.
   **Knowledge** page in the sidebar, with live streaming progress. Sources are
   credibility-classified (peer-reviewed > preprint > book > gray literature >
   web > personal) via Crossref/OpenAlex lookup.
-- In chat, the Knowledge extension provides `kb_search` (BM25 over curated
+- In chat, the Knowledge capability provides `kb_search` (BM25 over curated
   pages), `kb_read_page`, `kb_write_page`, graph view, history/restore, and
   `.brkb` export/import for sharing whole KBs.
 - A graph view visualizes pages as nodes connected by those cross-references.
@@ -259,7 +259,5 @@ is `~/.local/share/biorouter/`.
 ## How to use this skill
 
 When answering questions about Biorouter, ground your answer in this document.
-If the user wants hands-on guidance, suggest enabling the **Tutorial**
-extension, which offers interactive walkthroughs (getting started, knowledge
-bases, workflows, scheduling, skills, and building MCP extensions). For
-anything not covered here, refer them to <https://biorouter.ucsf.edu/docs>.
+For hands-on guidance or anything not covered here, refer the user to
+<https://biorouter.ucsf.edu/docs>.

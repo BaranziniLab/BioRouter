@@ -4,6 +4,37 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ErrorCode, RawContent, ResourceContents, Role};
 use serde_json::json;
 
+#[tokio::test]
+async fn figure_receipt_is_small_while_the_user_keeps_the_complete_artifact() {
+    let html = format!(
+        "<html><body>{}</body></html>",
+        "synthetic-figure".repeat(20_000)
+    );
+    let (result, _) = common::render_fragment(async {
+        common::finish(
+            "ui://chart/test",
+            "receipt-test",
+            &"Δ".repeat(2_000),
+            html.clone(),
+        )
+    })
+    .await;
+    let wire = serde_json::to_value(&result).unwrap();
+    let receipt = wire.get("structuredContent").expect("model-facing receipt");
+    assert_eq!(receipt["status"], "created");
+    assert_eq!(receipt["uri"], "ui://chart/test");
+    assert_eq!(receipt["mimeType"], "text/html");
+    assert_eq!(receipt["summary"].as_str().unwrap().chars().count(), 512);
+    assert!(serde_json::to_string(receipt).unwrap().len() < 2_000);
+    assert_eq!(common::html_from_result(&result).unwrap(), html);
+    assert_eq!(result.content.len(), 2);
+    assert_eq!(result.content[0].audience().unwrap(), &vec![Role::User]);
+    assert_eq!(
+        result.content[1].audience().unwrap(),
+        &vec![Role::Assistant]
+    );
+}
+
 #[test]
 fn forced_theme_injection_preserves_unicode_document_content() {
     let html = "<!doctype html><html><head><title>Résumé</title></head><body>Δ</body></html>";
@@ -142,6 +173,10 @@ fn assert_resource_result(result: &CallToolResult, expected_uri: &str) {
         &vec![Role::Assistant]
     );
     assert!(matches!(&*result.content[1], RawContent::Text(_)));
+    if let RawContent::Text(text) = &*result.content[1] {
+        assert!(!text.text.contains("rendered inline"));
+        assert!(!text.text.contains("already displayed"));
+    }
     if let RawContent::Resource(resource) = &*result.content[0] {
         if let ResourceContents::BlobResourceContents {
             uri,
@@ -423,6 +458,56 @@ async fn test_show_chart() {
 }
 
 #[tokio::test]
+async fn academic_chart_defaults_preserve_labels_styles_and_script_escaping() {
+    let html = render_standalone_figure(
+        "show_chart",
+        json!({"data": {
+            "type": "line",
+            "title": "Δοκιμή 東京 — study outcome",
+            "subtitle": "Synthetic </script><script>bad()</script> evidence",
+            "xAxisLabel": "Follow-up (days)",
+            "yAxisLabel": "Outcome (mg/L)",
+            "labels": ["Long Unicode category — 東京 🧬", "Comparison"],
+            "datasets": [{"label": "Cohort A", "data": [1.0, 2.0],
+                "backgroundColor": "#123456", "borderColor": "#654321",
+                "borderWidth": 3.0, "tension": 0.2, "fill": true}]
+        }}),
+    )
+    .await
+    .expect("academic chart renders");
+
+    assert!(!html.contains("linear-gradient"));
+    assert!(!html.contains("Interactive data visualization"));
+    assert!(html.contains("BioRouterViz.applyChartDefaults()"));
+    assert!(html.contains("BioRouterViz.wrapLabel"));
+    assert!(html.contains("role=\"img\""));
+    assert!(html.contains("<table"));
+    assert!(html.contains("Δοκιμή 東京 — study outcome"));
+    assert!(html.contains("Outcome (mg/L)"));
+    assert!(html.contains("#123456"));
+    assert!(html.contains("#654321"));
+    assert!(html.contains("\"tension\":0.2"));
+    assert!(html.contains("\"fill\":true"));
+    assert!(!html.contains("</script><script>bad()"));
+    assert!(html.contains("\\u003c/script>\\u003cscript>bad()"));
+}
+
+#[test]
+fn academic_figure_guidance_is_part_of_the_capability_prompt() {
+    let router = AutoVisualiserRouter::new();
+    for guidance in [
+        "clean, minimal academic figure",
+        "label axes with quantities and units",
+        "largest legible text that fits without overlap",
+        "long Unicode labels",
+        "do not smooth measured line data",
+        "Do not claim visual verification",
+    ] {
+        assert!(router.instructions.contains(guidance), "{guidance}");
+    }
+}
+
+#[tokio::test]
 async fn test_render_mermaid() {
     let router = AutoVisualiserRouter::new();
     let params = Parameters(RenderMermaidParams {
@@ -525,6 +610,17 @@ async fn standalone_figure_dashboard_works() {
     assert!(!html.contains("cdn.jsdelivr.net"));
 }
 
+/// ⚠ This asserts the per-kind TOOL NAMES on purpose, and it is the one place
+/// that still should.
+///
+/// The dashboard's copy of this message was rewritten to name `render_figure`
+/// and the `kind` slugs, because a chat agent sees only three tools and cannot
+/// call `render_volcano` (#142). This door is Agent Drafter's `ui_figure`, whose
+/// own description hands the app agent exactly these names and which has neither
+/// `render_figure` nor `describe_figure` — `configure_agent` never injects
+/// autovisualiser into an app agent. Sharing one phrasing between the two doors
+/// is what created a NEW dead end here while fixing the one over there; the
+/// vocabulary is therefore chosen per call site.
 #[tokio::test]
 async fn standalone_figure_unknown_tool_errs_with_suggestions() {
     let err = render_standalone_figure("totally_made_up", json!({"data": {}}))
@@ -535,6 +631,10 @@ async fn standalone_figure_unknown_tool_errs_with_suggestions() {
     assert!(
         err.contains("render_volcano") || err.contains("show_chart"),
         "got: {err}"
+    );
+    assert!(
+        !err.contains("describe_figure"),
+        "an app agent has no describe_figure to call: {err}"
     );
 }
 
@@ -548,6 +648,41 @@ async fn standalone_figure_invalid_args_err_is_friendly() {
     .await
     .unwrap_err();
     assert!(err.contains("at least one dataset"), "got: {err}");
+}
+
+/// The same rule for a REJECTED PAYLOAD, which is the half the shared
+/// `figure_argument_error` choke point actually broke.
+///
+/// Measured before this fix: `ui_figure("render_volcano", …)` with a missing
+/// field came back as "`render_figure` arguments are invalid for kind
+/// \"volcano\": missing field `log2fc`. Call describe_figure with kind
+/// \"volcano\"…" — an app agent being told to fix a call it never made, with two
+/// tools it does not have. It must name the tool the caller named.
+#[tokio::test]
+async fn standalone_figure_invalid_args_name_the_tool_the_caller_named() {
+    let err = render_standalone_figure(
+        "render_volcano",
+        json!({"data": {"points": [{"label": "MYC", "negLog10P": 4.0}]}}),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        err.contains("log2fc"),
+        "must still say what is wrong: {err}"
+    );
+    assert!(
+        err.contains("render_volcano"),
+        "must name the tool `ui_figure` takes: {err}"
+    );
+    assert!(
+        !err.contains("render_figure"),
+        "an app agent cannot call render_figure: {err}"
+    );
+    assert!(
+        !err.contains("describe_figure"),
+        "an app agent cannot call describe_figure: {err}"
+    );
 }
 
 #[tokio::test]
@@ -579,3 +714,5 @@ async fn standalone_figure_ignores_cdn_env_flag() {
 
 include!("tests_extra.rs");
 include!("tests_dashboard.rs");
+include!("tests_distributions.rs");
+include!("tests_cartesian.rs");

@@ -53,6 +53,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
   const [scheduleError, setScheduleError] = useState<string | null>(null);
 
   const [isActionLoading, setIsActionLoading] = useState(false);
+  const [isRunPending, setIsRunPending] = useState(false);
 
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [isLoadingSession, setIsLoadingSession] = useState(false);
@@ -102,6 +103,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
 
   const handleRunNow = async () => {
     if (!scheduleId) return;
+    setIsRunPending(true);
     setIsActionLoading(true);
     try {
       const newSessionId = await runScheduleNow(scheduleId);
@@ -119,6 +121,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
         msg: errorMsg,
       });
     } finally {
+      setIsRunPending(false);
       setIsActionLoading(false);
     }
   };
@@ -344,7 +347,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                   {scheduleDetails.currently_running && scheduleDetails.current_session_id && (
                     <p className="text-sm text-text-default">
                       <span className="font-semibold">Current session ID:</span>{' '}
-                      {scheduleDetails.current_session_id}
+                      <span className="font-mono">{scheduleDetails.current_session_id}</span>
                     </p>
                   )}
                   {scheduleDetails.currently_running && scheduleDetails.process_start_time && (
@@ -431,6 +434,12 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
               )}
             </div>
 
+            {isRunPending && (
+              <p role="status" className="text-xs text-text-muted mt-2">
+                Waiting for the scheduled run to finish. This can take several minutes.
+              </p>
+            )}
+
             {scheduleDetails?.currently_running && (
               <p className="text-sm text-text-warning mt-2">
                 Cannot trigger or modify a schedule while it's already running.
@@ -471,7 +480,11 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                       className="text-sm font-semibold text-text-default truncate"
                       title={session.name || session.id}
                     >
-                      {session.name || `Session ID: ${session.id}`}
+                      {session.name || (
+                        <>
+                          Session ID: <span className="font-mono">{session.id}</span>
+                        </>
+                      )}
                     </h3>
                     <p className="text-xs text-text-muted mt-1">
                       Created:{' '}
@@ -487,7 +500,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                         className="text-xs text-text-muted mt-1 truncate"
                         title={session.workingDir}
                       >
-                        Dir: {session.workingDir}
+                        Dir: <span className="font-mono">{session.workingDir}</span>
                       </p>
                     )}
                     {session.accumulatedTotalTokens !== undefined &&

@@ -6,28 +6,25 @@
     <title>Sunburst</title>
     {{ASSETS}}
     <script>{{COMMON}}</script>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
-        .container { max-width: 820px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; }
-        .header { padding: 20px 30px 0; text-align: center; }
-        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
-        #chart { display: block; margin: 0 auto; }
-        .tooltip { position: absolute; background: var(--text); color: var(--surface); padding: 6px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; opacity: 0; z-index: 10; }
-    </style>
+    <style>.tooltip{position:absolute;opacity:0;pointer-events:none;}#chart{display:block;}#chart text{pointer-events:none;}#layoutNote{overflow-wrap:anywhere;}</style>
 </head>
 <body>
     <div class="viz-root">
         <div class="container">
             <div class="header"><h1 id="title">Sunburst</h1></div>
-            <svg id="chart"></svg>
+            <div class="figure-scroll" tabindex="0" role="region" aria-label="Scientific figure"><svg id="chart" role="img" aria-label="Scientific figure; exact values follow in the data table"></svg></div>
+            <p class="figure-description" id="layoutNote"></p>
         </div>
     </div>
     <div class="tooltip" id="tooltip"></div>
+    <details class="figure-data"><summary>View figure data</summary>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Figure data"><table id="figureData"></table></div>
+    </details>
     <script>
         const sunburstData = {{SUNBURST_DATA}};
         BioRouterViz.autoResize();
         BioRouterViz.guard(function () {
-            BioRouterViz.applyPageTheme();
+            BioRouterViz.applyScientificStyles();
             document.getElementById('title').textContent = sunburstData.name || 'Sunburst';
 
             const size = 700, radius = size / 2;
@@ -36,8 +33,21 @@
             const tooltip = d3.select('#tooltip');
 
             const root = d3.hierarchy(sunburstData)
-                .sum(function (d) { return d.value || 0; })
+                .sum(function (d) {
+                    if (d.value != null && (!Number.isFinite(d.value) || d.value < 0)) throw new Error('Sunburst values must be finite and non-negative.');
+                    return d.value || 0;
+                })
                 .sort(function (a, b) { return b.value - a.value; });
+            BioRouterViz.renderFigureData(document.getElementById('figureData'), ['Node', 'Hierarchy path', 'Category', 'Own value', 'Aggregate value'],
+                root.descendants().map(function (node) { return [node.data.name, node.ancestors().reverse().map(function (parent) { return parent.data.name; }).join(' / '), node.data.category, node.data.value, node.value]; }),
+                'Aggregate values add each node’s own supplied value and all descendant values. Internal own values are not assigned to child sectors.');
+            if (!root.value || !root.children) {
+                document.getElementById('chart').style.display = 'none';
+                const hasValues = root.descendants().some(function (node) { return node.data.value != null; });
+                document.getElementById('layoutNote').textContent = !hasValues ? 'No values supplied; no sectors to compare.' : !root.value ? 'All values are zero; no sectors to compare.' : 'A single root has no child sectors; its value is shown in the table.';
+                BioRouterViz.reportSize();
+                return;
+            }
             d3.partition().size([2 * Math.PI, radius])(root);
 
             const arc = d3.arc()
@@ -45,8 +55,8 @@
                 .innerRadius(function (d) { return d.y0; }).outerRadius(function (d) { return d.y1 - 1; });
 
             const palette = BioRouterViz.palette;
-            function topColor(d) { let n = d; while (n.depth > 1) n = n.parent; return n ? n.data.name : (d.data.name || ''); }
-            const tops = root.children ? root.children.map(function (c) { return c.data.name; }) : [];
+            function topColor(d) { let n = d; while (n.depth > 1) n = n.parent; return n; }
+            const tops = root.children || [];
 
             svg.selectAll('path').data(root.descendants().filter(function (d) { return d.depth; }))
                 .join('path')
@@ -57,24 +67,27 @@
                     const base = palette[(idx < 0 ? 0 : idx) % palette.length];
                     return base;
                 })
-                .attr('fill-opacity', function (d) { return 1 - d.depth * 0.12; })
+                .attr('fill-opacity', 1)
                 .attr('stroke', BioRouterViz.colors.surface)
                 .on('mouseover', function (event, d) {
                     const path = d.ancestors().map(function (n) { return n.data.name; }).reverse().join(' › ');
-                    tooltip.style('opacity', 1).html('<strong>' + path + '</strong><br/>' + (d.value || 0))
+                    tooltip.style('opacity', 1).text(path + '\nAggregate value: ' + d.value + '\nOwn value: ' + (d.data.value == null ? 'not supplied' : d.data.value))
                         .style('left', (event.pageX + 12) + 'px').style('top', (event.pageY - 10) + 'px');
                 })
                 .on('mouseout', function () { tooltip.style('opacity', 0); });
 
-            svg.selectAll('text').data(root.descendants().filter(function (d) { return d.depth && (d.x1 - d.x0) > 0.12; }))
+            svg.selectAll('text').data(root.descendants().filter(function (d) { return d.depth && (d.x1 - d.x0) * (d.y0 + d.y1) / 2 >= 20; }))
                 .join('text')
                 .attr('transform', function (d) {
                     const ang = (d.x0 + d.x1) / 2 * 180 / Math.PI - 90;
                     const r = (d.y0 + d.y1) / 2;
                     return 'rotate(' + ang + ') translate(' + r + ',0) rotate(' + (ang > 90 ? 180 : 0) + ')';
                 })
-                .attr('text-anchor', 'middle').attr('dy', 4).style('font-size', '10px').style('fill', '#fff')
-                .text(function (d) { return d.data.name; });
+                .attr('text-anchor', 'middle').attr('dy', 4).style('font-size', '14px').style('fill', BioRouterViz.dark ? '#171713' : '#fff')
+                .each(function (d) { BioRouterViz.fitSvgLabel(this, d.data.name, Math.max(0, d.y1 - d.y0 - 16)); });
+
+            BioRouterViz.hideOverlappingSvgLabels(document.getElementById('chart'), 'text');
+            document.getElementById('layoutNote').textContent = 'Colors distinguish top-level branches. Labels are shown where they fit. Full hierarchy paths appear in the bounded data table; its caption states any row limit.';
 
             BioRouterViz.reportSize();
         });

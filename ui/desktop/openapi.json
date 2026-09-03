@@ -54,8 +54,6 @@
         "tags": [
           "super::routes::action_required"
         ],
-        "summary": "Deliver a tool-permission decision to the prompt that is waiting for it.",
-        "description": "**Idempotent** (BR-62). The decision is routed by tool request id to that\nprompt's own channel, so a decision for an id nobody is waiting on — a\ndouble-clicked Allow, a card the user answered after the prompt expired or the\nturn was cancelled, a stale client replaying an old confirmation — is dropped\nrather than applied to whatever tool call happens to be pending now. (Before\nBR-62 confirmations went to a single per-agent channel, so a late \"allow\"\nreally could approve an unrelated later tool call.)\n\nBoth outcomes are a 200: a duplicate click is a no-op, not a failure. The\n`status` field reports which happened — `delivered` when a live prompt took\nthe decision, `unknown` when nothing was waiting on that id.",
         "operationId": "confirm_tool_action",
         "requestBody": {
           "content": {
@@ -78,6 +76,14 @@
           },
           "401": {
             "description": "Unauthorized - invalid secret key"
+          },
+          "403": {
+            "description": "Refused: `reason` is `unproven` (this request carried no proof it came from the user) or `noKeyInstalled` (this daemon can never obtain that proof)",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
           },
           "500": {
             "description": "Internal server error"
@@ -225,6 +231,43 @@
           },
           "500": {
             "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/agent/callable_tool_count": {
+      "get": {
+        "tags": [
+          "super::routes::agent"
+        ],
+        "operationId": "get_callable_tool_count",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Active session whose model-visible tools should be counted",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Model-visible callable tool count",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallableToolCountResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid secret key"
+          },
+          "424": {
+            "description": "Agent not initialized"
           }
         }
       }
@@ -4081,6 +4124,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "metadata_only",
+            "in": "query",
+            "description": "Omit conversation history when only session metadata is needed",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "nullable": true
+            }
           }
         ],
         "responses": {
@@ -6200,6 +6253,29 @@
           },
           "structured_content": {
             "nullable": true
+          }
+        }
+      },
+      "CallableToolCountQuery": {
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "CallableToolCountResponse": {
+        "type": "object",
+        "required": [
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },
@@ -8698,7 +8774,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Link targets written in source pages that name no page under\n`knowledge/` — again over all four grammars, so a typed base's `edges:`\ncitations are read."
+            "description": "Link targets written in source pages that name no page under\n`knowledge/` — again over all four grammars, so a typed base's `edges:`\ncitations are read. Existing, confined raw evidence files are not missing\nconcept pages, even though the graph represents them as external nodes."
           },
           "orphans": {
             "type": "array",
@@ -12173,7 +12249,7 @@
           },
           "inherit_primary": {
             "type": "boolean",
-            "description": "Drop this session's own primary override so it follows the machine-wide\ndefault again — the way back from `clear_primary`, and the only way out\nof the explicit \"no primary\" that deleting a session's pinned base\nleaves behind. Mutually exclusive with `primary_kb` and `clear_primary`.\n\nAt machine scope there is nothing above to inherit, so this coincides\nwith `clear_primary`."
+            "description": "Drop this scope's own primary preference. A session then follows the\nmachine-wide choice; at machine scope this restores Biorouter's shipped\nSoul default. This is the way back from `clear_primary`, and the only\nway out of the explicit \"no primary\" that deleting a session's pinned\nbase leaves behind. Mutually exclusive with `primary_kb` and\n`clear_primary`."
           },
           "kb_id": {
             "type": "string",

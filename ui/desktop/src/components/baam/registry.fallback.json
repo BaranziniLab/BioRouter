@@ -67,7 +67,7 @@
       "privacy": "public"
     },
     {
-      "id": "spokeagent-0.4.1",
+      "id": "spokeagent",
       "name": "SPOKEAgent",
       "organization": "BaranziniLab · UCSF",
       "version": "v0.4.1",
@@ -81,7 +81,8 @@
       "download": "https://github.com/BaranziniLab/SPOKEAgent/releases/download/v0.4.1/spokeagent-0.4.1.brxt",
       "filename": "spokeagent-0.4.1.brxt",
       "license": "Apache-2.0",
-      "privacy": "public"
+      "privacy": "public",
+      "extension_name": "spokeagent"
     },
     {
       "id": "codegraphagent",

@@ -145,6 +145,21 @@ beforeEach(() => {
 });
 
 describe('KnowledgeContext', () => {
+  it('renders Soul as the primary in a fresh default selection', async () => {
+    mocks.listBases.mockResolvedValue({ data: [base('soul')] });
+    daemon.session = {
+      kb_ids: ['soul'],
+      primary_kb: 'soul',
+      active_kb: 'soul',
+      hidden_kbs: [],
+    };
+
+    renderProvider();
+
+    await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('soul'));
+    expect(screen.getByTestId('visible')).toHaveTextContent('soul');
+  });
+
   it('hydrates the primary and the set from the daemon', async () => {
     renderProvider();
     await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('alpha'));
@@ -555,10 +570,9 @@ describe('KnowledgeContext', () => {
       expect(screen.getByTestId('can-follow-default').textContent).toBe('yes');
     });
 
-    // At machine scope there is nothing above to inherit, so the gesture
-    // coincides with "this scope has no primary" — a different, destructive
-    // thing. It is not offered, and asking for it writes nothing.
-    it('has nothing to inherit outside a chat', async () => {
+    // This is intentionally a chat-only affordance. Machine scope can restore
+    // Soul through settings/CLI/API, but there is no chat override to drop.
+    it('does not offer the chat-only follow control outside a chat', async () => {
       daemon.machine.primary_kb = 'beta';
       daemon.machine.active_kb = 'beta';
       await renderWithDefault(null);

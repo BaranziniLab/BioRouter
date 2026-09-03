@@ -1,10 +1,10 @@
 /**
  * extensionUpdater.ts
  *
- * On startup, scans installed extensions in ~/.config/biorouter/extensions/,
- * reads each manifest.json for version + repository, queries the GitHub
- * releases API for the latest .brxt asset, and auto-updates outdated ones
- * in the background.
+ * On startup, scans installed extensions in the Biorouter config directory's
+ * `extensions/` folder, reads each manifest.json for version + repository,
+ * queries the GitHub releases API for the latest .brxt asset, and auto-updates
+ * outdated ones in the background.
  *
  * Skips silently on network errors so offline users are unaffected.
  */
@@ -19,6 +19,7 @@ import AdmZip from 'adm-zip';
 import { safeExtractZip } from './safeZip';
 import log from './logger';
 import { runProbe } from './dependencyChecker';
+import { biorouterExtensionsDir as sharedExtensionsDir } from './biorouterPaths';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -68,7 +69,30 @@ export interface ExtensionUpdateEvent {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const EXTENSIONS_DIR = path.join(os.homedir(), '.config', 'biorouter', 'extensions');
+/**
+ * The `extensions/` directory this updater reads, writes and runs `uv sync` in.
+ *
+ * ⚠ **Resolved by `utils/biorouterPaths.ts`, per call, and never at module
+ * load.** This used to be a module-level constant built from `os.homedir()`,
+ * which made the updater ignore `BIOROUTER_PATH_ROOT`. That is not a cosmetic
+ * inconsistency: this module is a *writer* — it extracts a downloaded `.brxt`
+ * over `installDir` and then runs `uv sync` there — so a sandboxed dev build
+ * pointed at a scratch root still enumerated, and would have overwritten, the
+ * developer's real extensions 15 s after every launch. Measured live: a
+ * sandboxed build listed all nine of the developer's installed extensions.
+ *
+ * ⚠ This note used to call the updater "the one main-process module that
+ * ignored `BIOROUTER_PATH_ROOT`". It was not: `main.ts`'s two `.brxt` handlers
+ * (one of which recursively deletes) and `extensionProvenance.ts` all derived
+ * `~/.config/biorouter` themselves, and the sentence was exactly what a
+ * reviewer would use to conclude #146 was closed. It is closed now because
+ * every one of them resolves through the shared module — the fix was to remove
+ * the other derivations, not to describe them away.
+ */
+export function biorouterExtensionsDir(): string {
+  return sharedExtensionsDir();
+}
+
 const GITHUB_API_BASE = 'https://api.github.com/repos';
 
 /** Parse owner/repo from a GitHub URL. Returns null for non-GitHub URLs. */
@@ -142,17 +166,18 @@ async function downloadFile(
 async function scanInstalledExtensions(): Promise<
   Array<{ manifest: ExtensionManifest; installDir: string }>
 > {
+  const extensionsDir = biorouterExtensionsDir();
   try {
-    const entries = await fs.readdir(EXTENSIONS_DIR, { withFileTypes: true });
+    const entries = await fs.readdir(extensionsDir, { withFileTypes: true });
     const results: Array<{ manifest: ExtensionManifest; installDir: string }> = [];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const manifestPath = path.join(EXTENSIONS_DIR, entry.name, 'manifest.json');
+      const manifestPath = path.join(extensionsDir, entry.name, 'manifest.json');
       try {
         const raw = await fs.readFile(manifestPath, 'utf8');
         const manifest = JSON.parse(raw) as ExtensionManifest;
         if (manifest.name && manifest.version && manifest.repository) {
-          results.push({ manifest, installDir: path.join(EXTENSIONS_DIR, entry.name) });
+          results.push({ manifest, installDir: path.join(extensionsDir, entry.name) });
         }
       } catch {
         // skip malformed manifests
@@ -279,7 +304,9 @@ async function applyUpdate(
 // ─── Public entry point ───────────────────────────────────────────────────────
 
 export async function runExtensionUpdateCheck(): Promise<void> {
-  log.info('[ExtensionUpdater] Starting extension update check...');
+  // The directory is logged because it is now variable: when this check turns
+  // out to have touched the wrong tree, the log says which tree it was.
+  log.info(`[ExtensionUpdater] Starting extension update check in ${biorouterExtensionsDir()}`);
 
   const installed = await scanInstalledExtensions();
   if (installed.length === 0) {

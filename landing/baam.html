@@ -540,7 +540,29 @@
       </div>
 
       <!-- SPOKEAgent -->
-      <div class="ext-card" data-license="Apache-2.0">
+      <!-- This is the ONE card that has to state both of its names, because it
+           is the one card whose release asset carries a version:
+           spokeagent-0.4.1.brxt.
+
+           data-extension-name is what the extension calls ITSELF once installed.
+           Without it the descriptor falls back to the registry id, so the
+           marketplace advertised "spokeagent-0.4.1" while the extension that
+           actually installs is "spokeagent" — and a model that passed the
+           advertised name to manage_extensions got "not found".
+
+           data-registry-id is what the CATALOG calls it. Without it the id is
+           the download slug, so the version leaked into a field that is meant
+           to be a stable name: install_extension would only resolve
+           "spokeagent-0.4.1", a spelling that changes with every release.
+
+           They are two different things and they are stated separately on
+           purpose. Deriving one from the other would make id == extension_name
+           on every card in the catalog, which is exactly the condition under
+           which a generator keyed on the wrong field is indistinguishable from
+           a correct one — see the `suffixed-download` fixture. The version
+           still lives in `version` and in the asset filename, which is where a
+           version belongs. -->
+      <div class="ext-card" data-license="Apache-2.0" data-extension-name="SPOKEAgent" data-registry-id="spokeagent">
         <div class="ext-card-header">
           <div class="icon-tile">
             <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="m7 7 3 3M14 10l3-3M10 14l-3 3M14 14l3 3"/></svg>

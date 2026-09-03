@@ -407,10 +407,76 @@ pub struct ShowChartParams {
 }
 
 /// Parameters for render_mermaid tool
-#[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
+#[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
 pub struct RenderMermaidParams {
     /// The Mermaid diagram code to render
     pub mermaid_code: String,
+}
+
+/// The keys a model reaches for when it hands over a Mermaid diagram.
+///
+/// `data` is on the list because `render_figure` documents every kind's payload
+/// as `data`, and `mermaid` is the one kind whose underlying tool does not have
+/// a field by that name — so a model that followed the instructions exactly
+/// sends `{"data": "<source>"}` to a tool declaring `mermaid_code`.
+const MERMAID_SOURCE_KEYS: [&str; 5] = ["mermaid_code", "code", "source", "diagram", "data"];
+
+/// How far to dig for the source before giving up. Depth 0 is the whole payload,
+/// so `{"data": {"mermaid_code": "<source>"}}` reaches the string at depth 2 and
+/// a stringified wrapper around it adds one more. The cap is there so a
+/// self-referential or deeply nested payload cannot recurse without bound.
+const MERMAID_MAX_DEPTH: usize = 3;
+
+/// Dig the diagram source out of whatever shape it arrived in.
+///
+/// Returns `None` when there is no string anywhere the source could be, which is
+/// the only case that should be an error — rendering an empty diagram instead
+/// would look like the tool worked.
+fn mermaid_source(value: &Value, depth: usize) -> Option<String> {
+    if depth > MERMAID_MAX_DEPTH {
+        return None;
+    }
+    match value {
+        // A Mermaid source is never a JSON object, so a string that parses as
+        // one is a stringified payload (some models stringify nested tool-call
+        // arguments) rather than a diagram. Anything else is the diagram.
+        Value::String(s) => match serde_json::from_str::<Value>(s) {
+            Ok(inner @ Value::Object(_)) => mermaid_source(&inner, depth + 1),
+            _ => Some(s.clone()),
+        },
+        Value::Object(map) => MERMAID_SOURCE_KEYS
+            .iter()
+            .find_map(|key| map.get(*key))
+            .and_then(|inner| mermaid_source(inner, depth + 1)),
+        _ => None,
+    }
+}
+
+/// Accept a Mermaid diagram however the caller spelled it.
+///
+/// ⚠ This leniency lives on the parameter struct, not on one caller, because
+/// `render_mermaid` has four doors and only one of them used to reshape the
+/// payload: `render_figure` (which documents the payload as `data`), a dashboard
+/// panel naming `render_mermaid` outright, a `kind`-only dashboard panel that
+/// `DashboardFigure` resolves to `render_mermaid`, and Agent Drafter's
+/// `ui_figure`. Reshaping at a single door left the other three handing this
+/// struct a `{"data": …}` it refused, and — once the refusal was rephrased
+/// against `render_figure` — refused with advice to go and check a schema the
+/// caller had already followed.
+impl<'de> Deserialize<'de> for RenderMermaidParams {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as DeError;
+        let value = Value::deserialize(d)?;
+        mermaid_source(&value, 0)
+            .map(|mermaid_code| RenderMermaidParams { mermaid_code })
+            .ok_or_else(|| {
+                DeError::custom(
+                    "a Mermaid diagram is its source text: pass the source string itself, or an \
+                     object carrying it under `mermaid_code` (`code`, `source`, `diagram` and \
+                     `data` are accepted too)",
+                )
+            })
+    }
 }
 
 // ===========================================================================
@@ -420,7 +486,11 @@ pub struct RenderMermaidParams {
 /// An extension for automatic data visualization and UI generation
 #[derive(Clone)]
 pub struct AutoVisualiserRouter {
+    /// Advertised to the model: three tools.
     tool_router: ToolRouter<Self>,
+    /// Not advertised. The 32 single-figure tools, kept for their schemas and
+    /// worked examples so `describe_figure` reads the real declaration.
+    figure_router: ToolRouter<Self>,
     #[allow(dead_code)]
     cache_dir: PathBuf,
     instructions: String,
@@ -463,11 +533,31 @@ impl AutoVisualiserRouter {
         let _ = std::fs::create_dir_all(&cache_dir);
 
         let instructions = formatdoc! {r#"
-            This extension provides tools for automatic data visualization.
+            The Auto Visualiser capability provides tools for automatic data visualization.
             Use these tools when you are presenting data to the user which could be complemented by a visual expression.
             Choose the most appropriate chart type based on the data you have and can provide.
             Match the data format to the chart type you have chosen. The user may request a specific
             chart, or you can pick the most appropriate one and shape the data to fit it.
+
+            ## Figure design
+            Use a clean, minimal academic figure by default: neutral background, restrained
+            categorical colors, readable app-style typography, and only data-bearing decoration.
+            Do not request a gradient banner, decorative emoji, generic subtitle such as
+            "Interactive data visualization", or vivid rainbow colors unless the user asks.
+            Write an informative title, label axes with quantities and units, and name every
+            series. Use the subtitle only for meaningful context, source, sample size or uncertainty;
+            never invent these. Keep unrelated units in separate panels rather than one shared scale.
+            Prefer direct labels, distinct markers or line styles so color is not the only cue.
+            Use the largest legible text that fits without overlap. Wrap long labels, reduce tick
+            density, or choose a larger panel rather than shrinking text. Check narrow and wide
+            artifact widths, including long Unicode labels. Preserve meaningful ordering, start bar
+            charts at zero, and do not smooth measured line data unless scientifically justified.
+            The default chart colors and layout already follow this style; avoid overriding them
+            for decoration. Do not claim visual verification unless you actually inspected the figure.
+            Large diagrams retain their natural text size in a scrollable viewport; prefer a
+            full-width dashboard panel rather than compressing their labels. The diagram source
+            remains available for inspection, including when syntax fails to render. Preserve
+            explicit semantic colors and accurate node identities, relationships and ordering.
 
             ## Combining figures: read this first
             **If your answer needs more than one figure, call `render_dashboard` once instead of
@@ -478,66 +568,79 @@ impl AutoVisualiserRouter {
             numbered caption under every figure.
 
             - Two or more figures on one topic → one `render_dashboard` call.
-            - Exactly one figure, with nothing to compare it against → the plain `render_*` tool.
+            - Exactly one figure, with nothing to compare it against → `render_figure`.
             - Always write the `caption` for each panel and a `summary` for the report. The prose is
               what makes the figures mean something; a report of unlabelled charts is worse than one
               good chart. Say what the figure shows and what the reader should notice in it.
-            - `render_dashboard` takes the other tools' names and their exact arguments, so anything
-              you can render on its own can be a panel.
+            - A panel's `figure` is a `render_figure` call, so anything you can draw on its own
+              can be a panel: `{{"tool": "render_figure", "params": {{"kind": "volcano", "data": {{…}}}}}}`.
+
+            ## How to draw one figure
+            Call `render_figure` with a `kind` from the list below and that kind's payload as `data`.
+            The headings say what each kind is FOR; when you need a kind's exact argument shape, call
+            `describe_figure` with that kind — it returns the schema and a worked example.
 
             ## Statistical & comparison charts
-            - **show_chart**: line, scatter, or bar charts
-            - **render_histogram**: distribution of a single numeric variable (auto-binned)
-            - **render_boxplot**: distribution/spread comparison across groups (quartiles + outliers)
-            - **render_bubble**: 3-variable scatter (x, y, and size)
-            - **render_area**: line/area chart, optionally stacked, for composition over time
-            - **render_radar**: multi-dimensional comparison (spider chart)
-            - **render_donut**: pie/donut charts for categorical proportions (single or grid)
-            - **render_gauge**: a single KPI value against a range
+            - **chart**: line, scatter, or bar charts
+            - **histogram**: distribution of a single numeric variable (auto-binned)
+            - **boxplot**: distribution/spread comparison across groups (quartiles + outliers)
+            - **bubble**: 3-variable scatter (x, y, and size)
+            - **area**: line/area chart, optionally stacked, for composition over time
+            - **radar**: multi-dimensional comparison (spider chart)
+            - **donut**: pie/donut charts for categorical proportions (single or grid)
+            - **gauge**: a single KPI value against a range
 
             ## Scientific / biomedical
-            - **render_volcano**: differential-expression volcano plot (log2 fold-change vs -log10 p)
-            - **render_manhattan**: GWAS Manhattan plot across chromosomes
-            - **render_kaplan_meier**: survival curves (step functions, optional censoring)
-            - **render_forest**: forest plot of effect sizes with confidence intervals
+            - **volcano**: differential-expression volcano plot (log2 fold-change vs -log10 p)
+            - **manhattan**: GWAS Manhattan plot across chromosomes
+            - **kaplan_meier**: survival curves (step functions, optional censoring)
+            - **forest**: forest plot of effect sizes with confidence intervals
 
             ## Relationships, flows & hierarchies
-            - **render_network**: force-directed node-link graph (knowledge graphs, PPI, gene networks)
-            - **render_sankey**: flow diagrams between stages
-            - **render_chord**: pairwise flows between entities (square matrix)
-            - **render_heatmap**: matrix as a colour grid (expression/correlation matrices)
-            - **render_treemap**: hierarchical proportional boxes
-            - **render_sunburst**: hierarchical radial chart
-            - **render_dendrogram**: hierarchical clustering / phylogenetic tree
-            - **render_wordcloud**: term-frequency word cloud
-            - **render_calendar_heatmap**: value-per-day calendar grid
+            - **network**: force-directed node-link graph (knowledge graphs, PPI, gene networks)
+            - **sankey**: flow diagrams between stages
+            - **chord**: pairwise flows between entities (square matrix)
+            - **heatmap**: matrix as a colour grid (expression/correlation matrices)
+            - **treemap**: hierarchical proportional boxes
+            - **sunburst**: hierarchical radial chart
+            - **dendrogram**: hierarchical clustering / phylogenetic tree
+            - **wordcloud**: term-frequency word cloud
+            - **calendar_heatmap**: value-per-day calendar grid
 
             ## Diagrams (Mermaid)
-            - **render_mermaid**: any raw Mermaid syntax
-            - **render_flowchart**: typed nodes/edges → flowchart
-            - **render_gantt**: project/experiment timelines
-            - **render_sequence**: sequence diagrams
-            - **render_mindmap**: mind maps
-            - **render_timeline**: chronological timelines
-            - **render_er_diagram**: entity-relationship diagrams
-            - **render_state_diagram**: state machines
-            - **render_class_diagram**: class/UML diagrams
+            - **mermaid**: any raw Mermaid syntax
+            - **flowchart**: typed nodes/edges → flowchart
+            - **gantt**: project/experiment timelines
+            - **sequence**: sequence diagrams
+            - **mindmap**: mind maps
+            - **timeline**: chronological timelines
+            - **er_diagram**: entity-relationship diagrams
+            - **state_diagram**: state machines
+            - **class_diagram**: class/UML diagrams
 
             ## Geographic
-            - **render_map**: interactive map with location markers
-            - **render_choropleth**: value-shaded regions from GeoJSON
+            - **map**: interactive map with location markers
+            - **choropleth**: value-shaded regions from GeoJSON
 
             ## Composite
-            - **render_dashboard**: several of the above, combined into one documented report
+            - **render_dashboard**: several of the above, combined into one documented report. This
+              is its own tool, not a `kind` — it composes figures rather than being one.
         "#};
 
         Self {
-            tool_router: Self::tool_router()
+            // ⚠ **Two routers, and the split is the whole consolidation.**
+            // `tool_router` is what the model SEES — `render_figure`,
+            // `describe_figure`, `render_dashboard`. `figure_router` holds the
+            // 32 single-figure tools with their real schemas and worked
+            // examples, so `describe_figure` can hand back the genuine
+            // declaration instead of a second copy that would drift. See the
+            // block above `figure_kinds!` in tools_dashboard.rs.
+            tool_router: Self::dashboard_router() + Self::entry_router(),
+            figure_router: Self::tool_router()
                 + Self::diagrams_router()
                 + Self::charts_router()
                 + Self::d3_router()
-                + Self::geo_router()
-                + Self::dashboard_router(),
+                + Self::geo_router(),
             cache_dir,
             instructions,
         }
@@ -596,7 +699,7 @@ Example:
         render(
             "ui://sankey/diagram",
             "sankey",
-            "Sankey diagram rendered inline for the user.",
+            "Sankey diagram created for the artifact panel.",
             include_str!("templates/sankey_template.html"),
             &[Asset::D3, Asset::D3Sankey],
             &[("{{SANKEY_DATA}}", &data_json)],
@@ -647,7 +750,7 @@ Example:
         render(
             "ui://radar/chart",
             "radar",
-            "Radar chart rendered inline for the user.",
+            "Radar chart created for the artifact panel.",
             include_str!("templates/radar_template.html"),
             &[Asset::ChartJs],
             &[("{{RADAR_DATA}}", &data_json)],
@@ -699,7 +802,7 @@ Example multiple charts:
         render(
             "ui://donut/chart",
             "donut",
-            "Donut/pie chart rendered inline for the user.",
+            "Donut/pie chart created for the artifact panel.",
             include_str!("templates/donut_template.html"),
             &[Asset::ChartJs],
             &[("{{CHARTS_DATA}}", &data_json)],
@@ -745,7 +848,7 @@ Example:
         render(
             "ui://treemap/visualization",
             "treemap",
-            "Treemap rendered inline for the user.",
+            "Treemap created for the artifact panel.",
             include_str!("templates/treemap_template.html"),
             &[Asset::D3],
             &[("{{TREEMAP_DATA}}", &data_json)],
@@ -801,7 +904,7 @@ Example:
         render(
             "ui://chord/diagram",
             "chord",
-            "Chord diagram rendered inline for the user.",
+            "Chord diagram created for the artifact panel.",
             include_str!("templates/chord_template.html"),
             &[Asset::D3],
             &[("{{CHORD_DATA}}", &data_json)],
@@ -856,7 +959,7 @@ Example:
         render(
             "ui://map/visualization",
             "map",
-            "Map rendered inline for the user.",
+            "Map created for the artifact panel.",
             include_str!("templates/map_template.html"),
             &[Asset::Leaflet],
             &[("{{MAP_DATA}}", &data_json)],
@@ -893,6 +996,9 @@ graph TD;
 
 Required: type ('line', 'scatter', or 'bar'), datasets array
 Optional: labels, title, subtitle, xAxisLabel, yAxisLabel
+Use an informative title, quantity-and-unit axis labels and meaningful series names.
+The default is a minimal academic figure with readable text and restrained colors.
+Keep different units in separate figures; omit a subtitle if it adds no evidence or context.
 
 Example:
 {
@@ -915,7 +1021,7 @@ Example:
         render(
             &uri,
             "chart",
-            "Chart rendered inline for the user.",
+            "Chart created for the artifact panel.",
             include_str!("templates/chart_template.html"),
             &[Asset::ChartJs],
             &[("{{CHART_DATA}}", &data_json)],
@@ -945,7 +1051,7 @@ Example:
         render(
             "ui://mermaid/diagram",
             "mermaid",
-            "Diagram rendered inline for the user.",
+            "Diagram created for the artifact panel.",
             include_str!("templates/mermaid_template.html"),
             &[Asset::Mermaid],
             &[

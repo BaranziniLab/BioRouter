@@ -586,6 +586,87 @@ fn flush_pending_tool_contents(
     Some(message)
 }
 
+fn completed_tool_content(tool_id: String, name: String, args: &str) -> MessageContent {
+    let parsed = if args.trim().is_empty() {
+        Ok(json!({}))
+    } else {
+        serde_json::from_str::<Value>(args).map_err(|error| {
+            ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                format!("Could not interpret tool use parameters: {error}"),
+                Some(json!({"biorouterToolCallFailure":"invalid_arguments"})),
+            )
+        })
+    }
+    .and_then(|value| {
+        if value.is_object() {
+            Ok(value)
+        } else {
+            Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                "Tool arguments must be a JSON object; the call was not executed.",
+                Some(json!({"biorouterToolCallFailure":"invalid_arguments"})),
+            ))
+        }
+    });
+
+    match parsed {
+        Ok(arguments) => MessageContent::tool_request(
+            tool_id,
+            Ok(CallToolRequestParams {
+                task: None,
+                name: name.into(),
+                arguments: Some(object(arguments)),
+                meta: None,
+            }),
+        ),
+        Err(error) => MessageContent::tool_request(tool_id, Err(error)),
+    }
+}
+
+struct StreamingToolCall {
+    tool_id: String,
+    name: String,
+    args: String,
+}
+
+fn drain_incomplete_tool_contents(
+    active: &mut std::collections::HashMap<u64, StreamingToolCall>,
+    order: &std::collections::VecDeque<u64>,
+    completed: &mut std::collections::HashMap<u64, MessageContent>,
+) {
+    for index in order {
+        if let Some(tool_call) = active.remove(index) {
+            completed.insert(
+                *index,
+                MessageContent::tool_request(
+                    tool_call.tool_id,
+                    Err(ErrorData::new(
+                        ErrorCode::INTERNAL_ERROR,
+                        "Tool-call stream completion was not confirmed; the call was not executed. Emit a new, complete tool call.",
+                        Some(json!({"biorouterToolCallFailure":"incomplete_stream"})),
+                    )),
+                ),
+            );
+        }
+    }
+}
+
+fn take_ready_tool_contents(
+    order: &mut std::collections::VecDeque<u64>,
+    completed: &mut std::collections::HashMap<u64, MessageContent>,
+) -> Vec<MessageContent> {
+    let mut ready = Vec::new();
+    while let Some(index) = order.front() {
+        let Some(content) = completed.remove(index) else {
+            break;
+        };
+        order.pop_front();
+        ready.push(content);
+    }
+    ready
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn response_to_streaming_message<S>(
     mut stream: S,
@@ -606,9 +687,10 @@ where
     }
 
     try_stream! {
-        let mut accumulated_text = String::new();
-        let mut accumulated_tool_calls: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
-        let mut current_tool_id: Option<String> = None;
+        let mut active_tool_calls: std::collections::HashMap<u64, StreamingToolCall> = std::collections::HashMap::new();
+        let mut tool_call_order: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
+        let mut completed_tool_contents: std::collections::HashMap<u64, MessageContent> = std::collections::HashMap::new();
+        let mut seen_tool_indices: HashSet<u64> = HashSet::new();
         // Extended thinking. A thinking block arrives as N `thinking_delta`
         // chunks followed by one `signature_delta`; a redacted block arrives
         // whole on `content_block_start`. Both are accumulated and yielded once,
@@ -636,37 +718,26 @@ where
         // text, whichever comes first.
         let mut last_pending_emit: Option<std::time::Instant> = None;
         let mut last_pending_len: usize = 0;
-        // §6.2b: buffer completed tool_use blocks and flush them as ONE message
-        // (at the next message_delta, and again after the loop) so the agent
-        // dispatches a multi-tool turn in parallel. Off restores one message per
-        // block (serial). If the stream is dropped mid-turn (cancellation), this
-        // Vec is dropped unflushed — a cancelled stream never half-delivers.
         let batch_tool_calls = tool_call_batching_enabled();
-        let mut pending_tool_contents: Vec<MessageContent> = Vec::new();
 
         while let Some(line_result) = stream.next().await {
             let line = line_result?;
 
-            // Skip empty lines and non-data lines
-            if line.trim().is_empty() || !line.starts_with("data: ") {
+            if line.trim().is_empty() {
                 continue;
             }
 
-            let data_part = line.strip_prefix("data: ").unwrap_or(&line);
+            let Some(data_part) = line.strip_prefix("data:").map(str::trim_start) else {
+                continue;
+            };
 
             // Handle end of stream
             if data_part.trim() == "[DONE]" {
                 break;
             }
 
-            // Parse the JSON event
-            let event: StreamingEvent = match serde_json::from_str(data_part) {
-                Ok(event) => event,
-                Err(e) => {
-                    tracing::debug!("Failed to parse streaming event: {} - Line: {}", e, data_part);
-                    continue;
-                }
-            };
+            let event: StreamingEvent = serde_json::from_str(data_part)
+                .map_err(|error| anyhow!("Failed to parse Anthropic streaming event: {error}"))?;
 
             match event.event_type.as_str() {
                 "message_start" => {
@@ -696,22 +767,31 @@ where
                     // A new content block started
                     if let Some(content_block) = event.data.get("content_block") {
                         if content_block.get("type") == Some(&json!("tool_use")) {
-                            if let Some(id) = content_block.get("id").and_then(|v| v.as_str()) {
-                                current_tool_id = Some(id.to_string());
+                            if let (Some(index), Some(id)) = (
+                                event.data.get("index").and_then(Value::as_u64),
+                                content_block.get("id").and_then(Value::as_str),
+                            ) {
                                 if let Some(name) = content_block.get("name").and_then(|v| v.as_str()) {
-                                    accumulated_tool_calls.insert(id.to_string(), (name.to_string(), String::new()));
-                                    // The tool's name is known here; its arguments
-                                    // are not (and may take seconds to generate).
-                                    // Announce it now so the UI can draw a card
-                                    // immediately. NOT a Message — see
-                                    // `PendingToolCall`.
-                                    last_pending_emit = Some(std::time::Instant::now());
-                                    last_pending_len = 0;
-                                    yield (None, None, Some(PendingToolCall {
-                                        id: id.to_string(),
-                                        name: name.to_string(),
-                                        partial_args: None,
-                                    }));
+                                    if seen_tool_indices.insert(index) {
+                                        tool_call_order.push_back(index);
+                                        active_tool_calls.insert(index, StreamingToolCall {
+                                            tool_id: id.to_string(),
+                                            name: name.to_string(),
+                                            args: String::new(),
+                                        });
+                                        // The tool's name is known here; its arguments
+                                        // are not (and may take seconds to generate).
+                                        // Announce it now so the UI can draw a card
+                                        // immediately. NOT a Message — see
+                                        // `PendingToolCall`.
+                                        last_pending_emit = Some(std::time::Instant::now());
+                                        last_pending_len = 0;
+                                        yield (None, None, Some(PendingToolCall {
+                                            id: id.to_string(),
+                                            name: name.to_string(),
+                                            partial_args: None,
+                                        }));
+                                    }
                                 }
                             }
                         } else if content_block.get("type") == Some(&json!(THINKING_TYPE)) {
@@ -739,7 +819,6 @@ where
                         if delta.get("type") == Some(&json!("text_delta")) {
                             // Text content delta
                             if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
-                                accumulated_text.push_str(text);
 
                                 // Yield partial text message with the same ID from message_start
                                 let mut message = Message::new(
@@ -752,24 +831,27 @@ where
                             }
                         } else if delta.get("type") == Some(&json!("input_json_delta")) {
                             // Tool input delta
-                            if let Some(tool_id) = current_tool_id.clone() {
+                            if let Some(tool_call) = event
+                                .data
+                                .get("index")
+                                .and_then(Value::as_u64)
+                                .and_then(|index| active_tool_calls.get_mut(&index))
+                            {
                                 if let Some(partial_json) = delta.get("partial_json").and_then(|v| v.as_str()) {
                                     let mut update: Option<PendingToolCall> = None;
-                                    if let Some((name, args)) = accumulated_tool_calls.get_mut(&tool_id) {
-                                        args.push_str(partial_json);
-                                        // Throttled preview update. Never per delta.
-                                        let due_by_size = args.len().saturating_sub(last_pending_len) >= PENDING_ARGS_CHARS;
-                                        let due_by_time = last_pending_emit
-                                            .map(|t| t.elapsed() >= PENDING_ARGS_INTERVAL)
-                                            .unwrap_or(true);
-                                        if due_by_size || due_by_time {
-                                            update = Some(PendingToolCall {
-                                                id: tool_id.clone(),
-                                                name: name.clone(),
-                                                partial_args: Some(args.clone()),
-                                            });
-                                            last_pending_len = args.len();
-                                        }
+                                    tool_call.args.push_str(partial_json);
+                                    // Throttled preview update. Never per delta.
+                                    let due_by_size = tool_call.args.len().saturating_sub(last_pending_len) >= PENDING_ARGS_CHARS;
+                                    let due_by_time = last_pending_emit
+                                        .map(|t| t.elapsed() >= PENDING_ARGS_INTERVAL)
+                                        .unwrap_or(true);
+                                    if due_by_size || due_by_time {
+                                        update = Some(PendingToolCall {
+                                            id: tool_call.tool_id.clone(),
+                                            name: tool_call.name.clone(),
+                                            partial_args: Some(tool_call.args.clone()),
+                                        });
+                                        last_pending_len = tool_call.args.len();
                                     }
                                     if let Some(update) = update {
                                         last_pending_emit = Some(std::time::Instant::now());
@@ -813,43 +895,26 @@ where
                         yield (Some(message), None, None);
                     }
                     // Content block finished
-                    if let Some(tool_id) = current_tool_id.take() {
-                        // Tool call finished: build its authoritative content. The
-                        // parse-failure (INVALID_PARAMS) variant is preserved
-                        // byte-for-byte; only where it is DELIVERED changes.
-                        if let Some((name, args)) = accumulated_tool_calls.remove(&tool_id) {
-                            let parsed_args = if args.is_empty() {
-                                Some(json!({}))
-                            } else {
-                                serde_json::from_str::<Value>(&args).ok()
-                            };
-                            let content = match parsed_args {
-                                Some(parsed) => {
-                                    let tool_call = CallToolRequestParams{
-                                        task: None,
-                                        name: name.into(),
-                                        arguments: Some(object(parsed)),
-                                        meta: None,
-                                    };
-                                    MessageContent::tool_request(tool_id, Ok(tool_call))
-                                }
-                                None => {
-                                    // If parsing fails, create an error tool request
-                                    let error = ErrorData::new(
-                                        ErrorCode::INVALID_PARAMS,
-                                        format!("Could not parse tool arguments: {}", args),
-                                        None,
-                                    );
-                                    MessageContent::tool_request(tool_id, Err(error))
-                                }
-                            };
+                    if let Some((index, tool_call)) = event
+                        .data
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .and_then(|index| active_tool_calls.remove(&index).map(|call| (index, call)))
+                    {
+                        completed_tool_contents.insert(
+                            index,
+                            completed_tool_content(
+                                tool_call.tool_id,
+                                tool_call.name,
+                                &tool_call.args,
+                            ),
+                        );
 
-                            if batch_tool_calls {
-                                // §6.2b: defer — flushed as ONE message at the next
-                                // message_delta / after the loop, so a multi-tool
-                                // turn dispatches in parallel.
-                                pending_tool_contents.push(content);
-                            } else {
+                        if !batch_tool_calls {
+                            for content in take_ready_tool_contents(
+                                &mut tool_call_order,
+                                &mut completed_tool_contents,
+                            ) {
                                 let mut message = Message::new(
                                     Role::Assistant,
                                     chrono::Utc::now().timestamp(),
@@ -863,14 +928,33 @@ where
                     continue;
                 }
                 "message_delta" => {
+                    drain_incomplete_tool_contents(
+                        &mut active_tool_calls,
+                        &tool_call_order,
+                        &mut completed_tool_contents,
+                    );
+                    let mut pending_tool_contents = take_ready_tool_contents(
+                        &mut tool_call_order,
+                        &mut completed_tool_contents,
+                    );
+                    if !batch_tool_calls {
+                        for content in pending_tool_contents.drain(..) {
+                            let mut message = Message::new(
+                                Role::Assistant,
+                                chrono::Utc::now().timestamp(),
+                                vec![content],
+                            );
+                            message.id = message_id.clone();
+                            yield (Some(message), None, None);
+                        }
+                    }
                     // §6.2b: a message_delta closes the response, so every tool
                     // block that will arrive already has. Flush the batch here and
                     // yield it TOGETHER with this delta's usage snapshot below —
                     // agent.rs reads (message, usage) in one match arm.
-                    let batched_tool_message = flush_pending_tool_contents(
-                        &mut pending_tool_contents,
-                        &message_id,
-                    );
+                    let batched_tool_message = batch_tool_calls
+                        .then(|| flush_pending_tool_contents(&mut pending_tool_contents, &message_id))
+                        .flatten();
 
                     // Message metadata delta (like stop_reason) and cumulative usage
                     tracing::debug!("🔍 Anthropic message_delta event data: {}", serde_json::to_string_pretty(&event.data).unwrap_or_else(|_| format!("{:?}", event.data)));
@@ -981,14 +1065,34 @@ where
             }
         }
 
+        drain_incomplete_tool_contents(
+            &mut active_tool_calls,
+            &tool_call_order,
+            &mut completed_tool_contents,
+        );
+        let mut pending_tool_contents = take_ready_tool_contents(
+            &mut tool_call_order,
+            &mut completed_tool_contents,
+        );
+        if !batch_tool_calls {
+            for content in pending_tool_contents.drain(..) {
+                let mut message = Message::new(
+                    Role::Assistant,
+                    chrono::Utc::now().timestamp(),
+                    vec![content],
+                );
+                message.id = message_id.clone();
+                yield (Some(message), None, None);
+            }
+        }
+
         // §6.2b: a stream that ended WITHOUT a message_delta (e.g. straight to
         // message_stop / [DONE], or truncated cleanly) still has its buffered tool
         // blocks flushed here — otherwise a whole multi-tool turn would silently
         // vanish. A no-op in the common path (message_delta already drained it).
-        let batched_tool_message = flush_pending_tool_contents(
-            &mut pending_tool_contents,
-            &message_id,
-        );
+        let batched_tool_message = batch_tool_calls
+            .then(|| flush_pending_tool_contents(&mut pending_tool_contents, &message_id))
+            .flatten();
 
         // Yield final usage information if available, together with any batched
         // tool message (agent.rs reads message + usage in one match arm).

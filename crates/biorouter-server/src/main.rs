@@ -29,7 +29,7 @@ mod test_sandbox;
 use biorouter::config::paths::Paths;
 use biorouter_mcp::{
     mcp_server_runner::{serve, McpCommand},
-    AutoVisualiserRouter, ComputerControllerServer, DeveloperServer, MemoryServer, TutorialServer,
+    AutoVisualiserRouter, ComputerControllerServer, DeveloperServer, MemoryServer,
 };
 use clap::{Parser, Subcommand};
 
@@ -91,7 +91,6 @@ async fn async_main() -> anyhow::Result<()> {
                 McpCommand::AutoVisualiser => serve(AutoVisualiserRouter::new()).await?,
                 McpCommand::ComputerController => serve(ComputerControllerServer::new()).await?,
                 McpCommand::Memory => serve(MemoryServer::new()).await?,
-                McpCommand::Tutorial => serve(TutorialServer::new()).await?,
                 McpCommand::Developer => {
                     let bash_env = Paths::config_dir().join(".bash_env");
                     serve(

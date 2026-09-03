@@ -906,8 +906,8 @@ async fn case22_autovisualiser_blob_resource_is_collected_and_rendered_inline() 
         meta: None,
         name: "code_execution__execute_code".into(),
         arguments: Some(object!({ "code": r#"
-            import { show_chart } from "autovisualiser";
-            const r = show_chart({ data: { type: "bar", title: "T", labels: ["a","b"], datasets: [{ label: "x", data: [1,2] }] } });
+            import { render_figure } from "autovisualiser";
+            const r = render_figure({ kind: "chart", data: { type: "bar", title: "T", labels: ["a","b"], datasets: [{ label: "x", data: [1,2] }] } });
             record_result(r);
         "# })),
     };

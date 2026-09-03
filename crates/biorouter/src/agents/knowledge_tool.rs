@@ -7,12 +7,16 @@
 //! agent's own provider; scheduled knowledge jobs prefer the target KB's default
 //! model when one is configured.
 
+use std::sync::Arc;
+
 use rmcp::model::{Content, ErrorCode, ErrorData};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::Agent;
-use crate::knowledge::conversation_ingest::{ingest_conversation, ConversationIngestArgs};
+use crate::knowledge::conversation_ingest::{
+    ingest_conversation_with_curation_profile, ConversationIngestArgs,
+};
 use crate::knowledge::ProviderCompleter;
 use crate::mcp_utils::ToolResult;
 use crate::model::ModelConfig;
@@ -21,6 +25,7 @@ use crate::session::session_manager::{Session, SessionType};
 use biorouter_mcp::knowledge::caller::KbCaller;
 use biorouter_mcp::knowledge::service::KnowledgeService;
 use biorouter_mcp::knowledge::subagent::loop_::{Completer, SubAgentBounds};
+use biorouter_mcp::knowledge::subagent::procedures::IngestCurationProfile;
 use biorouter_mcp::knowledge::types::ModelRef;
 
 impl Agent {
@@ -30,95 +35,24 @@ impl Agent {
         session: &Session,
         cancel: Option<CancellationToken>,
     ) -> ToolResult<Vec<Content>> {
-        let svc = KnowledgeService::new_default().map_err(internal)?;
-
-        // Which sessions? Default to the current one.
-        let session_ids: Vec<String> = arguments
-            .get("session_ids")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|s| s.as_str().map(str::to_string))
-                    .collect()
-            })
-            .filter(|v: &Vec<String>| !v.is_empty())
-            .unwrap_or_else(|| vec![session.id.clone()]);
-
-        // Issue #56. The identity of the model *in this chat* — the audience of
-        // every string this handler returns, including the candidate list
-        // `resolve_target_kb` may put in its no-target error.
-        //
-        // ⚠ Audit finding 17. This used to be `p.tier()` alone, and the filter
-        // below asked the tier axis alone with it. Both axes now come off ONE
-        // sample of the provider mutex (`CallCapability::sample`), for the
-        // reason that type exists: `update_provider` can reassign the mutex with
-        // no turn lock, so two reads would gate one call on one model's tier and
-        // another model's institution. An unbound provider fails closed to
-        // Public + no affiliation — less reach, never more.
-        let chat_capability = crate::privacy::CallCapability::sample(&self.provider).await;
-
-        // Resolve target KB: explicit id → new-by-name → this session's primary.
-        let kb_id = resolve_target_kb(&svc, &arguments, &session.id, &kb_caller(chat_capability))
-            .map_err(invalid_params)?;
-
-        // Load the sessions (with messages).
-        let mut sessions = Vec::new();
-        for sid in &session_ids {
-            match self.config.session_manager.get_session(sid, true).await {
-                Ok(s) => sessions.push(s),
-                Err(e) => {
-                    return Err(invalid_params(format!("session '{sid}' not found: {e}")));
-                }
-            }
-        }
-
-        let (completer, caller_capability, caller_affiliation) = self
-            .conversation_ingest_completer(&svc, &kb_id, session, cancel.clone())
-            .await?;
-
-        let result = ingest_conversation(
-            &svc,
-            ConversationIngestArgs {
-                kb_id: kb_id.clone(),
-                // Issue #56. The tier of the provider this ingest will actually
-                // run on — the KB's default model when a scheduled job names
-                // one, otherwise this agent's own.
-                caller_capability,
-                // Issue #56 DR-26 / Task 50 Step 3. Off the SAME provider as the
-                // tier above — a cross-session ingest carries another chat's
-                // content into a base, so whose agreements cover the digesting
-                // model is exactly the question this axis asks.
-                caller_affiliation,
-                // Issue #56 DR-26 / Task 50 Step 3: the guard reads each selected
-                // chat's institutions itself — see `ConversationIngestArgs`.
-                session_manager: self.config.session_manager.clone(),
-                sessions,
-                completer,
-                focus: arguments
-                    .get("focus")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                bounds: SubAgentBounds::default(),
-                event_sink: None,
-                cancel,
-            },
+        let chat_provider = self.provider().await.ok();
+        let pinned_provider = std::sync::Arc::new(tokio::sync::Mutex::new(chat_provider.clone()));
+        let chat_capability = crate::privacy::CallCapability::sample(&pinned_provider).await;
+        handle_ingest_conversation_with_provider(
+            arguments,
+            session,
+            cancel,
+            chat_capability,
+            chat_provider,
+            Arc::clone(&self.config.session_manager),
         )
         .await
-        .map_err(internal)?;
-
-        Ok(vec![Content::text(ingest_summary(
-            session_ids.len().saturating_sub(result.refused),
-            result.refused,
-            &kb_id,
-            &result.ingested.source_id,
-            &result.ingested.commit_sha,
-            result.ingested.steps,
-        ))])
     }
 
     /// The completer this ingest will run on, **and** the tier of the provider
     /// behind it (issue #56) — from `ProviderCompleter::paired`, so the two can
     /// never come from different providers.
+    #[cfg(test)]
     async fn conversation_ingest_completer(
         &self,
         svc: &KnowledgeService,
@@ -133,40 +67,159 @@ impl Agent {
         ),
         ErrorData,
     > {
-        if should_use_knowledge_default_model(session) {
-            let manifest = svc.get_base(kb_id).map_err(internal)?;
-            if let Some(model) = manifest.default_model {
-                return build_model_ref_completer(&model, session.privacy_tier, cancel)
-                    .await
-                    .map_err(|e| {
-                        internal(format!(
-                            "the default knowledge model for '{kb_id}' could not be used: {e}"
-                        ))
-                    });
-            }
-        }
-
-        let provider = self.provider().await.map_err(|e| {
-            internal(format!(
-                "a model provider is required to digest conversations: {e}"
-            ))
-        })?;
-        let (completer, tier, affiliation) = ProviderCompleter::paired(provider);
-        let completer = match cancel {
-            Some(cancel) => completer.cancelled_by(cancel),
-            None => completer,
-        };
-        // #107 / #109: this macro runs from inside a chat, so this session's own
-        // agent loop is the surface that can draw a human-decision card and the
-        // one that will drain it. Scoping the card here is what makes an
-        // approval raised by a bridged macro tool answerable at all; a run
-        // started from the Knowledge view has no loop and leaves it unscoped.
-        Ok((
-            Box::new(completer.in_session(session.id.clone())),
-            tier,
-            affiliation,
-        ))
+        conversation_ingest_completer_with_provider(
+            svc,
+            kb_id,
+            session,
+            cancel,
+            self.provider().await.ok(),
+        )
+        .await
     }
+}
+
+pub(crate) async fn handle_ingest_conversation_with_provider(
+    arguments: Value,
+    session: &Session,
+    cancel: Option<CancellationToken>,
+    chat_capability: crate::privacy::CallCapability,
+    chat_provider: Option<Arc<dyn crate::providers::base::Provider>>,
+    session_manager: Arc<crate::session::SessionManager>,
+) -> ToolResult<Vec<Content>> {
+    let svc = KnowledgeService::new_default().map_err(internal)?;
+    let session_ids: Vec<String> = arguments
+        .get("session_ids")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .filter(|ids: &Vec<String>| !ids.is_empty())
+        .unwrap_or_else(|| vec![session.id.clone()]);
+    let kb_id = resolve_target_kb(&svc, &arguments, &session.id, &kb_caller(chat_capability))
+        .map_err(invalid_params)?;
+    let curation_profile = platform_curation_profile(session_manager.as_ref(), &session.id, &kb_id)
+        .await
+        .map_err(invalid_params)?;
+
+    let mut sessions = Vec::with_capacity(session_ids.len());
+    for session_id in &session_ids {
+        let selected = session_manager
+            .get_session(session_id, true)
+            .await
+            .map_err(|error| {
+                invalid_params(format!("session '{session_id}' not found: {error}"))
+            })?;
+        sessions.push(selected);
+    }
+    let (completer, caller_capability, caller_affiliation) =
+        conversation_ingest_completer_with_provider(
+            &svc,
+            &kb_id,
+            session,
+            cancel.clone(),
+            chat_provider,
+        )
+        .await?;
+
+    let result = ingest_conversation_with_curation_profile(
+        &svc,
+        ConversationIngestArgs {
+            kb_id: kb_id.clone(),
+            caller_capability,
+            caller_affiliation,
+            session_manager,
+            sessions,
+            completer,
+            focus: arguments
+                .get("focus")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            bounds: SubAgentBounds::default(),
+            event_sink: None,
+            cancel,
+        },
+        curation_profile,
+    )
+    .await
+    .map_err(internal)?;
+
+    Ok(vec![Content::text(ingest_summary(
+        session_ids.len().saturating_sub(result.refused),
+        result.refused,
+        &kb_id,
+        &result.ingested.source_id,
+        &result.ingested.commit_sha,
+        result.ingested.steps,
+    ))])
+}
+
+async fn conversation_ingest_completer_with_provider(
+    svc: &KnowledgeService,
+    kb_id: &str,
+    session: &Session,
+    cancel: Option<CancellationToken>,
+    chat_provider: Option<Arc<dyn crate::providers::base::Provider>>,
+) -> Result<
+    (
+        Box<dyn Completer>,
+        ProviderTier,
+        Option<crate::privacy::affiliation::ModelAffiliation>,
+    ),
+    ErrorData,
+> {
+    if biorouter_mcp::knowledge::test_mode::env_enabled() {
+        return Ok((
+            Box::new(biorouter_mcp::knowledge::test_mode::TestModeCompleter),
+            ProviderTier::Public,
+            None,
+        ));
+    }
+    if should_use_knowledge_default_model(session) {
+        let manifest = svc.get_base(kb_id).map_err(internal)?;
+        if let Some(model) = manifest.default_model {
+            return build_model_ref_completer(&model, session.privacy_tier, cancel)
+                .await
+                .map_err(|error| {
+                    internal(format!(
+                        "the default knowledge model for '{kb_id}' could not be used: {error}"
+                    ))
+                });
+        }
+    }
+    let provider = chat_provider
+        .ok_or_else(|| internal("a model provider is required to digest conversations"))?;
+    let (completer, tier, affiliation) = ProviderCompleter::paired(provider);
+    let completer = match cancel {
+        Some(cancel) => completer.cancelled_by(cancel),
+        None => completer,
+    };
+    Ok((
+        Box::new(completer.in_session(session.id.clone())),
+        tier,
+        affiliation,
+    ))
+}
+
+pub(crate) async fn platform_curation_profile(
+    session_manager: &crate::session::SessionManager,
+    session_id: &str,
+    kb_id: &str,
+) -> anyhow::Result<Option<IngestCurationProfile>> {
+    if kb_id != crate::knowledge::soul::SOUL_KB_ID {
+        return Ok(None);
+    }
+
+    let skill_instructions = crate::agents::skills_extension::workflow_skill_instructions(
+        session_manager,
+        session_id,
+        &[crate::knowledge::soul::SOUL_SKILL_DIR.to_string()],
+    )
+    .await?;
+    Ok(Some(IngestCurationProfile::Soul { skill_instructions }))
 }
 
 /// This chat's capability in the vocabulary the KB barrier owns — the ONE

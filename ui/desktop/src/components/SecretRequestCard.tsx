@@ -111,7 +111,7 @@ export default function SecretRequestCard({ isCancelledMessage, actionRequiredCo
 
   if (isCancelledMessage || status.kind === 'cancelled') {
     return (
-      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-text-default">
+      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-body text-text-default">
         Credential setup was cancelled. Nothing was installed.
       </div>
     );
@@ -119,7 +119,7 @@ export default function SecretRequestCard({ isCancelledMessage, actionRequiredCo
 
   if (status.kind === 'gone') {
     return (
-      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-text-default">
+      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-body text-text-default">
         This request is no longer waiting for an answer. Ask again to configure{' '}
         {extensionName ?? 'the extension'}.
       </div>
@@ -128,7 +128,7 @@ export default function SecretRequestCard({ isCancelledMessage, actionRequiredCo
 
   if (status.kind === 'configured') {
     return (
-      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-text-default">
+      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-body text-text-default">
         <div className="flex items-center gap-2">
           <Check className="w-5 h-5 text-text-muted" />
           {/* Names, never values — this line is part of the transcript. */}
@@ -190,13 +190,13 @@ export default function SecretRequestCard({ isCancelledMessage, actionRequiredCo
 
   return (
     <div className="flex flex-col">
-      <div className="biorouter-message-content bg-background-muted rounded-2xl rounded-b-none px-4 py-2 text-text-default">
+      <div className="biorouter-message-content bg-background-muted rounded-2xl rounded-b-none px-4 py-2 text-body text-text-default">
         <div className="flex items-center gap-2">
           <Lock className="w-4 h-4 text-text-muted shrink-0" />
           <span>{prompt || 'Biorouter needs some credentials.'}</span>
         </div>
       </div>
-      <div className="biorouter-message-content bg-background-default border border-border-subtle rounded-b-2xl px-4 py-3 space-y-3">
+      <div className="biorouter-message-content bg-background-default border border-border-subtle rounded-b-2xl px-4 py-3 text-body space-y-3">
         <p className="text-[11px] text-text-muted leading-relaxed">
           These go straight to this machine's credential store. They are not added to the
           conversation and the model never sees them.

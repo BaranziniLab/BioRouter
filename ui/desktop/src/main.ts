@@ -146,8 +146,18 @@ import {
   type EmbeddedBrowserBounds,
 } from './utils/embeddedBrowser';
 import { heicToPng } from './utils/heicConvert';
+import { bindManagedAppPreviewBackend } from './utils/managedAppPreviewBackend';
+import {
+  managedAppPreviewScope,
+  type ManagedAppPreviewBackend,
+} from './utils/managedAppPreviewPolicy';
 import { IMAGE_BLOB_URL_THRESHOLD_BYTES, IMAGE_MIME_TYPES } from './utils/imageFormats';
 import { recordExtensionProvenance } from './utils/extensionProvenance';
+import {
+  biorouterConfigDir,
+  biorouterExtensionsDir,
+  unsandboxedConfigDirCandidates,
+} from './utils/biorouterPaths';
 import { fetchRegistryWithLastGood } from './utils/registryCache';
 import { readArtifactDirectoryTree } from './utils/artifactDirectory';
 import {
@@ -186,11 +196,16 @@ function expandBiorouterPath(filePath: string): string {
     fsSync.existsSync(candidate)
   );
   const pathRoot = process.env.BIOROUTER_PATH_ROOT;
-  if (!pathRoot) return expandedPath;
+  if (!pathRoot || !pathRoot.trim()) return expandedPath;
 
-  const defaultConfigDir = path.join(os.homedir(), '.config', 'biorouter');
-  if (expandedPath === defaultConfigDir || expandedPath.startsWith(defaultConfigDir + path.sep)) {
-    return path.join(pathRoot, 'config', path.relative(defaultConfigDir, expandedPath));
+  // Both spellings of "the real config directory" are redirected — see
+  // `unsandboxedConfigDirCandidates`. Under a default XDG setup they are one
+  // and the same, so this loop runs once and behaves exactly as the single
+  // hardcoded join it replaced.
+  for (const configDir of unsandboxedConfigDirCandidates()) {
+    if (expandedPath === configDir || expandedPath.startsWith(configDir + path.sep)) {
+      return path.join(pathRoot, 'config', path.relative(configDir, expandedPath));
+    }
   }
   return expandedPath;
 }
@@ -219,14 +234,12 @@ export function allowedFileRoots(sessionWorkingDir?: string): string[] {
   });
 }
 
-/** The biorouter config.yaml path in the main process (honours the test-only
- *  BIOROUTER_PATH_ROOT redirect used by expandBiorouterPath). */
+/** The biorouter config.yaml path in the main process. Resolved by
+ *  `utils/biorouterPaths.ts`, which is the ONE derivation in this process —
+ *  it honours the BIOROUTER_PATH_ROOT redirect and, unlike the hardcoded join
+ *  that used to sit here, `XDG_CONFIG_HOME` and the Windows layout too. */
 function biorouterConfigYamlPath(): string {
-  const pathRoot = process.env.BIOROUTER_PATH_ROOT;
-  const dir = pathRoot
-    ? path.join(pathRoot, 'config')
-    : path.join(os.homedir(), '.config', 'biorouter');
-  return path.join(dir, 'config.yaml');
+  return path.join(biorouterConfigDir(), 'config.yaml');
 }
 
 // The preview allowlist must know the permission mode, but MUST read it from the
@@ -287,6 +300,67 @@ const windowWorkingDirs = new Map<number, string>();
 export function workingDirForSender(event: { sender: Electron.WebContents }): string | undefined {
   const win = BrowserWindow.fromWebContents(event.sender);
   return win ? windowWorkingDirs.get(win.id) : undefined;
+}
+
+/**
+ * True only for a directory that is genuinely a *folder* — something a file
+ * manager opens and nothing else.
+ *
+ * `stats.isDirectory()` on its own is not that test. A macOS package
+ * (`.app`, `.pkg`, `.workflow`, `.rtfd`, …) stats as a directory, and `open`ing
+ * one LAUNCHES or installs it, so a bare `isDirectory()` waves every bundle
+ * straight through to execution. Rather than carry a list of package
+ * extensions — a denylist, which fails open on the one nobody thought of —
+ * anything carrying an extension is treated as not-a-plain-folder and takes the
+ * confirmation below. The folders this handler actually opens (a working
+ * directory, a skill directory, a knowledge base) have no extension, so the
+ * common path is unchanged.
+ */
+async function isPlainDirectory(resolvedPath: string): Promise<boolean> {
+  try {
+    const stats = await fs.stat(resolvedPath);
+    return stats.isDirectory() && path.extname(resolvedPath) === '';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Native confirmation before a path is handed to the OS's default handler.
+ *
+ * The asymmetry this removes: `open-external` will not let a URL reach the
+ * system browser without `validateExternalBrowserTarget` AND a dialog naming
+ * the destination, while a FILE reached the system browser — or a shell, or an
+ * installer — with no check at all. Once handed over, a generated `.html` runs
+ * as `file://` with no CSP and no sandbox, which is precisely what the artifact
+ * panel's own iframe exists to prevent. The path is chosen by the agent, so the
+ * user is the one who decides.
+ *
+ * Same shape as `confirmPublicExternalNavigation`: name the exact target,
+ * default to Cancel.
+ */
+async function confirmSystemHandlerOpen(
+  event: { sender: Electron.WebContents },
+  resolvedPath: string
+): Promise<boolean> {
+  const options: Electron.MessageBoxOptions = {
+    type: 'question',
+    buttons: ['Cancel', 'Open'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    message: 'Open this with the app your system uses for it?',
+    detail:
+      `${resolvedPath}\n\n` +
+      'Biorouter hands this to your operating system, which decides what runs. ' +
+      'A web page opened this way runs outside the app sandbox.',
+  };
+  const window = BrowserWindow.fromWebContents(event.sender);
+  const result =
+    window && !window.isDestroyed()
+      ? await dialog.showMessageBox(window, options)
+      : await dialog.showMessageBox(options);
+  return result.response === 1;
 }
 
 /**
@@ -1135,6 +1209,7 @@ let appConfig = {
 
 const windowMap = new Map<number, BrowserWindow>();
 const biorouterdClients = new Map<number, Client>();
+const managedAppPreviewBackends = new Map<number, ManagedAppPreviewBackend>();
 
 const trackArtifactPreviewFrames = (contents: Electron.WebContents) => {
   const frameIds = new Set<string>();
@@ -1357,6 +1432,8 @@ const createChat = async (
     })
   );
   biorouterdClients.set(mainWindow.id, biorouterdClient);
+  const managedPreviewBackend = bindManagedAppPreviewBackend(biorouterdResult, mainWindow);
+  if (managedPreviewBackend) managedAppPreviewBackends.set(mainWindow.id, managedPreviewBackend);
   // With a shared daemon the backend is app-lifetime (killed only in
   // startBiorouterd's own `will-quit` sweep), so windows must NOT ref-count it —
   // closing one window must not tear the daemon out from under the others. The
@@ -1664,6 +1741,7 @@ const createChat = async (
   // Handle window closure
   mainWindow.on('closed', () => {
     windowMap.delete(windowId);
+    managedAppPreviewBackends.delete(windowId);
     windowWorkingDirs.delete(windowId);
     // A closed window stops being a merge target on the very next pointermove
     // (design §6), and cannot be left holding a caret nobody will clear.
@@ -3116,15 +3194,36 @@ ipcMain.handle(
 // Every handler resolves the owning window from the *event sender*. The main
 // registry keys renderer view ids by that owner, so an identical React id in a
 // second window cannot drive, read, capture, or destroy the first window's view.
-ipcMain.handle('embedded-browser:create', (event, payload: { viewId: string; url: string }) => {
+ipcMain.handle('embedded-browser:is-managed-app-url', (event, payload: { url: string }) => {
   const window = BrowserWindow.fromWebContents(event.sender);
-  if (!window || typeof payload?.viewId !== 'string') return null;
-  return createEmbeddedBrowser(window, payload.viewId, payload.url, (state) => {
-    if (!event.sender.isDestroyed()) {
-      event.sender.send('embedded-browser:state', { viewId: payload.viewId, state });
-    }
-  });
+  if (!window || typeof payload?.url !== 'string') return false;
+  return Boolean(managedAppPreviewScope(payload.url, managedAppPreviewBackends.get(window.id)));
 });
+
+ipcMain.handle(
+  'embedded-browser:create',
+  (event, payload: { viewId: string; url: string; managedOnly?: boolean }) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (
+      !window ||
+      typeof payload?.viewId !== 'string' ||
+      (payload.managedOnly !== undefined && typeof payload.managedOnly !== 'boolean')
+    )
+      return null;
+    return createEmbeddedBrowser(
+      window,
+      payload.viewId,
+      payload.url,
+      (state) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('embedded-browser:state', { viewId: payload.viewId, state });
+        }
+      },
+      managedAppPreviewBackends.get(window.id),
+      payload.managedOnly === true
+    );
+  }
+);
 
 ipcMain.handle(
   'embedded-browser:set-bounds',
@@ -3149,7 +3248,10 @@ ipcMain.handle('embedded-browser:navigate', (event, payload: { viewId: string; u
 
 ipcMain.handle(
   'embedded-browser:control',
-  (event, payload: { viewId: string; action: 'back' | 'forward' | 'reload' | 'stop' }) => {
+  (
+    event,
+    payload: { viewId: string; action: 'back' | 'forward' | 'reload' | 'stop' | 'reload-if-idle' }
+  ) => {
     const window = BrowserWindow.fromWebContents(event.sender);
     return window ? controlEmbeddedBrowser(window, payload.viewId, payload.action) : false;
   }
@@ -3385,6 +3487,122 @@ ipcMain.handle('read-artifact-file', async (event, filePath: string) => {
       found: false,
     };
   }
+});
+
+// --- Does a linked file actually exist? --------------------------------------
+//
+// The assistant names paths it never created, and the renderer used to paint
+// every one of them as a clickable accent-coloured link. These few helpers
+// answer the one question that separates a real file from a described one, and
+// they are written so the answer holds on any host OS: no `/` is assumed
+// anywhere, every join goes through `node:path`, and the Windows drive-letter
+// and UNC forms `parseFileLink` accepts in the renderer are recognised here too.
+
+/** `C:\…`, `C:/…` and `\\server\share\…`. Recognised on EVERY platform, so a
+ *  Windows path is never quietly grafted onto a POSIX working directory. */
+const WINDOWS_ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/;
+
+function isAbsoluteOnAnyPlatform(candidate: string): boolean {
+  return (
+    path.isAbsolute(candidate) || candidate.startsWith('/') || WINDOWS_ABSOLUTE_PATH.test(candidate)
+  );
+}
+
+/**
+ * The user's home directory, environment first: `$HOME` on posix,
+ * `%USERPROFILE%` on win32, and the OS's own record when neither is set.
+ */
+function homeDirectory(): string {
+  const fromEnvironment = process.platform === 'win32' ? process.env.USERPROFILE : process.env.HOME;
+  if (fromEnvironment && fromEnvironment.trim()) return fromEnvironment;
+  try {
+    return os.homedir();
+  } catch {
+    return '';
+  }
+}
+
+/** Expand a leading `~`, `~/` or `~\` against {@link homeDirectory}. */
+function expandHomePrefix(candidate: string): string {
+  if (candidate === '~') return homeDirectory() || candidate;
+  if (!candidate.startsWith('~/') && !candidate.startsWith('~\\')) return candidate;
+  const home = homeDirectory();
+  return home ? path.join(home, candidate.slice(2)) : candidate;
+}
+
+/**
+ * The absolute path the preview panel would read for this link, or null when it
+ * cannot be located at all.
+ *
+ * The composition matters more than any single step: `expandHomePrefix` +
+ * `reinterpretTildeAsAbsolute` + `expandBiorouterPath` is exactly what
+ * `expandBiorouterPath` alone does to the same string in `read-artifact-file`,
+ * with the home reading taken from the environment rather than straight from
+ * `os.homedir()`. Agreement with that handler is the whole point — an "exists"
+ * verdict reached down a *different* resolution than the click will take is
+ * worse than no verdict, because it paints an orange link onto a file the panel
+ * then fails to open.
+ */
+function resolveCheckedFilePath(rawPath: unknown, rawWorkingDir: unknown): string | null {
+  if (typeof rawPath !== 'string') return null;
+  const candidate = rawPath.trim();
+  if (!candidate || candidate.includes('\0')) return null;
+
+  const expanded = expandBiorouterPath(
+    reinterpretTildeAsAbsolute(candidate, expandHomePrefix(candidate), (probe) =>
+      fsSync.existsSync(probe)
+    )
+  );
+
+  if (WINDOWS_ABSOLUTE_PATH.test(expanded)) {
+    // Only a Windows host can say anything about a drive-letter or UNC path.
+    // Elsewhere `path.resolve` would silently graft it onto the process cwd and
+    // stat something unrelated, so answer "cannot locate" instead.
+    return process.platform === 'win32' ? path.resolve(expanded) : null;
+  }
+  if (isAbsoluteOnAnyPlatform(expanded)) return path.resolve(expanded);
+
+  const workingDir = typeof rawWorkingDir === 'string' ? rawWorkingDir.trim() : '';
+  if (!workingDir) return null;
+  const base = expandBiorouterPath(expandHomePrefix(workingDir));
+  if (!isAbsoluteOnAnyPlatform(base)) return null;
+  if (WINDOWS_ABSOLUTE_PATH.test(base) && process.platform !== 'win32') return null;
+  return path.resolve(base, expanded);
+}
+
+/** A message can name a lot of paths; it cannot name an unbounded number. */
+const MAX_FILE_PATH_CHECKS = 512;
+const FILE_PATH_CHECK_MISS = { exists: false, isDirectory: false };
+
+/**
+ * Existence of a batch of paths, one answer per request, in order.
+ *
+ * The reply is two booleans and nothing else — no contents, no directory
+ * listing, no error text — so it cannot serve as a weaker read channel beside
+ * `read-artifact-file`. "Exists" deliberately means *"the preview panel could
+ * show this"*, which is the question a link is really asking: a path the
+ * allowlist denies and a path that was deleted both answer no, and a symlink
+ * answers no because `read-artifact-file` refuses to preview one. That also
+ * stops this becoming an existence oracle for `~/.ssh` and friends.
+ */
+ipcMain.handle('check-file-paths', async (event, requests: unknown) => {
+  if (!Array.isArray(requests)) return [];
+  const sessionWorkingDir = workingDirForSender(event);
+  return Promise.all(
+    requests.slice(0, MAX_FILE_PATH_CHECKS).map(async (request) => {
+      const entry = (request ?? {}) as { path?: unknown; workingDir?: unknown };
+      const resolvedPath = resolveCheckedFilePath(entry.path, entry.workingDir);
+      if (!resolvedPath) return FILE_PATH_CHECK_MISS;
+      if (!isAllowedFilePath(resolvedPath, sessionWorkingDir)) return FILE_PATH_CHECK_MISS;
+      try {
+        const stats = await fs.lstat(resolvedPath);
+        if (stats.isSymbolicLink()) return FILE_PATH_CHECK_MISS;
+        return { exists: stats.isFile() || stats.isDirectory(), isDirectory: stats.isDirectory() };
+      } catch {
+        return FILE_PATH_CHECK_MISS;
+      }
+    })
+  );
 });
 
 ipcMain.handle('write-file', async (_event, filePath, content) => {
@@ -3790,13 +4008,32 @@ ipcMain.handle(
     }
   ) => {
     try {
-      const installDir = path.join(
-        os.homedir(),
-        '.config',
-        'biorouter',
-        'extensions',
-        extensionName
-      );
+      // ⚠ `extensionName` is the BUNDLE's own `manifest.name`, handed straight
+      // through from `BrxtInstallModal.tsx` — so the archive names the
+      // directory it is written into. Without this check a bundle declaring
+      // `"name": "../../evil"` escapes the extensions root, and the desktop is
+      // the third installer: the Rust transaction and `routes::shell` both
+      // validate, and the `brxt:uninstall` handler below performs exactly this
+      // check on exactly this string.
+      if (
+        !extensionName ||
+        /[/\\]/.test(extensionName) ||
+        extensionName === '..' ||
+        extensionName === '.'
+      ) {
+        return { error: 'Invalid extension name.' };
+      }
+      // ⚠ Resolved, not hardcoded (#146). This handler creates a directory,
+      // extracts an archive over it and runs `uv sync` in it; deriving the base
+      // from `os.homedir()` meant a sandboxed dev build did all three inside
+      // the developer's real extensions tree. `biorouterExtensionsDir` is the
+      // one derivation in this process and the uninstall handler below reads
+      // the same one, which is what makes the containment check meaningful.
+      const extensionsBase = biorouterExtensionsDir();
+      const installDir = path.join(extensionsBase, extensionName);
+      if (!installDir.startsWith(extensionsBase + path.sep)) {
+        return { error: 'Invalid extension name.' };
+      }
 
       // Create install directory
       fsSync.mkdirSync(installDir, { recursive: true });
@@ -3869,8 +4106,13 @@ ipcMain.handle('brxt:uninstall', async (_event, { extensionName }: { extensionNa
     ) {
       return { error: 'Invalid extension name.' };
     }
-    const installDir = path.join(os.homedir(), '.config', 'biorouter', 'extensions', extensionName);
-    const extensionsBase = path.join(os.homedir(), '.config', 'biorouter', 'extensions');
+    // ⚠ The worst of the #146 sites, and the reason there is now exactly one
+    // resolver: `installDir` is handed straight to a recursive, forced
+    // `rmSync`. Derived from `os.homedir()`, a sandboxed dev build deleted out
+    // of the developer's REAL extensions tree. Resolved once and used for both
+    // the target and the containment base, so the two can never disagree.
+    const extensionsBase = biorouterExtensionsDir();
+    const installDir = path.join(extensionsBase, extensionName);
     if (!installDir.startsWith(extensionsBase + path.sep)) {
       return { error: 'Invalid extension name.' };
     }
@@ -5571,9 +5813,39 @@ async function appMain() {
     event.returnValue = app.getVersion();
   });
 
-  ipcMain.handle('open-directory-in-explorer', async (_event, dirPath: string) => {
+  ipcMain.handle('open-directory-in-explorer', async (event, dirPath: string) => {
     try {
+      if (typeof dirPath !== 'string' || dirPath.trim() === '') return false;
       const expanded = path.resolve(expandBiorouterPath(dirPath));
+
+      // The same containment `read-artifact-file` takes, and for the same
+      // reason. Without it this handler was strictly MORE permissive than the
+      // preview reader beside it: the panel refused to *show* a file it would
+      // happily hand to the OS — same panel, same file, two answers. The path
+      // is named by the agent, so it is not trusted input.
+      if (!isAllowedFilePath(expanded, workingDirForSender(event))) {
+        console.error(
+          `open-directory-in-explorer blocked: '${expanded}' is outside allowed directories`
+        );
+        return false;
+      }
+
+      // A plain directory opens a file manager and that is the end of it. Any
+      // other target is handed to whatever the OS has registered for it, and
+      // that is a different act: a generated `.html` opens in the default
+      // browser as `file://` with no CSP and no sandbox, and a `.command`,
+      // `.exe`, `.desktop` or `.app` bundle is *executed*. Those get the same
+      // treatment `open-external` gives a URL — a native dialog naming the
+      // target, defaulting to Cancel — because containment alone does not
+      // distinguish "show me this folder" from "run this".
+      //
+      // The extension test is what keeps macOS package bundles out of the
+      // no-dialog path: `/Applications/Anything.app` is a directory.
+      if (!(await isPlainDirectory(expanded))) {
+        const confirmed = await confirmSystemHandlerOpen(event, expanded);
+        if (!confirmed) return false;
+      }
+
       const err = await shell.openPath(expanded);
       // shell.openPath returns an empty string on success, error message on failure
       if (err) console.error('Error opening directory in explorer:', err);
@@ -5626,8 +5898,7 @@ async function appMain() {
     ) {
       return null;
     }
-    const title =
-      typeof value.title === 'string' ? sanitizeUntrustedLabel(value.title) : undefined;
+    const title = typeof value.title === 'string' ? sanitizeUntrustedLabel(value.title) : undefined;
     const finiteDimension = (dimension: unknown) =>
       typeof dimension === 'number' && Number.isFinite(dimension) ? dimension : undefined;
     return {

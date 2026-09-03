@@ -1,7 +1,15 @@
 //! End-to-end tests for reaching `chatrecall` **through the `code_execution` JS
 //! sandbox** — the only route the model has once `code_execution` is enabled
-//! (`reply_parts::survives_code_execution_filter` strips every other tool from
-//! the model's list, and `code_execution` is `default_enabled: true`).
+//! (`reply_parts::survives_code_execution_filter` drops every ordinary
+//! extension tool from the model's list, `chatrecall` included, and
+//! `code_execution` is `default_enabled: true`).
+//!
+//! "Every other tool" would be wrong: that filter keeps the families a script
+//! cannot express — the spawn tool, `workspace__*`, the `platform__*` tools,
+//! `workflow__final_output` and the interface's frontend tools — because they
+//! are absent from the importable-module catalogue and would otherwise be
+//! reachable from nowhere. `chatrecall` is not one of them; it is in the
+//! catalogue, which is exactly why this file exists.
 //!
 //! Issue #93: `chatrecall` is the one built-in whose extension key equals its
 //! own tool name, so `create_server_module`'s server-name export landed on the

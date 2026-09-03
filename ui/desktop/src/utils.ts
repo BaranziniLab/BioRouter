@@ -99,3 +99,9 @@ export function snakeToTitleCase(snake: string): string {
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(' ');
 }
+
+export function toolIdentifierToTitleCase(identifier: string): string {
+  return snakeToTitleCase(
+    identifier.replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[-.]/g, '_')
+  ).replace(/\b(Api|Baam|Id|Mcp|Okf|Omop|Sql|Ucsf|Url)\b/g, (word) => word.toUpperCase());
+}

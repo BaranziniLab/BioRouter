@@ -62,19 +62,18 @@
   var theme = resolveTheme();
   var dark = theme === 'dark';
 
-  var palette = [
-    '#4f7cff', '#ff6b6b', '#16c79a', '#ff9f40', '#9b59b6',
-    '#f6c945', '#2ecc71', '#e74c3c', '#3498db', '#e67e22',
-    '#1abc9c', '#e84393', '#00b894', '#6c5ce7', '#fab1a0',
-  ];
+  // Restrained categorical inks; the first pair remains distinct without red/green.
+  var palette = dark
+    ? ['#8bb4ca', '#d4a17b', '#93b6a5', '#b5a4ca', '#c9b877', '#b7b9b5']
+    : ['#416b80', '#a46d48', '#527967', '#78658d', '#8a783c', '#656761'];
 
   var colors = {
-    bg: dark ? '#1c1f26' : '#f5f7fa',
-    surface: dark ? '#262b35' : '#ffffff',
-    text: dark ? '#e8eaed' : '#2b2f36',
-    muted: dark ? '#9aa0a6' : '#6b7280',
-    grid: dark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.1)',
-    border: dark ? '#3a4150' : '#e5e7eb',
+    bg: dark ? '#1b1b19' : '#ffffff',
+    surface: dark ? '#1b1b19' : '#ffffff',
+    text: dark ? '#f4f0e6' : '#2a2520',
+    muted: dark ? '#b2aaa0' : '#635c54',
+    grid: dark ? 'rgba(231,226,218,0.12)' : 'rgba(42,37,32,0.09)',
+    border: dark ? '#302f2c' : '#e4e4e0',
     tooltipBg: dark ? 'rgba(20,22,28,0.95)' : 'rgba(0,0,0,0.82)',
     tooltipText: '#ffffff',
   };
@@ -95,6 +94,17 @@
   }
 
   function reportSize() {
+    document.querySelectorAll('.figure-scroll, .table-scroll').forEach(function (container) {
+      var hint = container.previousElementSibling;
+      if (!hint || !hint.classList.contains('figure-scroll-hint')) {
+        hint = document.createElement('p');
+        hint.className = 'figure-scroll-hint';
+        hint.style.cssText = 'margin:6px 0;color:var(--muted);font-size:12px;';
+        hint.textContent = 'Scroll horizontally to view the full figure or table.';
+        container.before(hint);
+      }
+      hint.hidden = container.scrollWidth <= container.clientWidth + 1;
+    });
     var h = Math.max(
       document.body ? document.body.scrollHeight : 0,
       document.body ? document.body.offsetHeight : 0,
@@ -110,14 +120,23 @@
   }
 
   function autoResize() {
-    setTimeout(reportSize, 80);
-    setTimeout(reportSize, 400);
+    var pending = false;
+    function queueReport() {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(function () {
+        pending = false;
+        reportSize();
+      });
+    }
+    setTimeout(queueReport, 80);
+    setTimeout(queueReport, 400);
     if (typeof ResizeObserver !== 'undefined') {
-      var ro = new ResizeObserver(function () { reportSize(); });
+      var ro = new ResizeObserver(queueReport);
       ro.observe(document.body);
       ro.observe(document.documentElement);
     }
-    window.addEventListener('resize', reportSize);
+    window.addEventListener('resize', queueReport);
   }
 
   function normalizeErrorDetail(detail) {
@@ -202,6 +221,9 @@
     C.defaults.font = C.defaults.font || {};
     C.defaults.font.family =
       '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+    C.defaults.font.size = 14;
+    C.defaults.font.lineHeight = 1.3;
+    C.defaults.animation = false;
     applyChartTooltipDefaults();
   }
 
@@ -219,14 +241,225 @@
     tooltipDefaults.caretSize = 0;
     tooltipDefaults.titleFont = {
       family: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
-      size: 12,
+      size: 14,
       weight: '600',
     };
     tooltipDefaults.bodyFont = {
       family: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
-      size: 12,
+      size: 14,
       weight: '400',
     };
+  }
+
+  // Measure glyphs rather than guessing from string length (CJK and Unicode).
+  function wrapLabel(value, maxWidth, measure) {
+    var text = String(value == null ? '' : value);
+    var glyphs = typeof Intl !== 'undefined' && Intl.Segmenter
+      ? Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text), function (part) { return part.segment; })
+      : Array.from(text);
+    var lines = [];
+    var line = '';
+    glyphs.forEach(function (glyph) {
+      if (glyph === '\n') {
+        lines.push(line);
+        line = '';
+      } else if (line && measure(line + glyph) > maxWidth) {
+        var space = line.lastIndexOf(' ');
+        if (space > line.length / 2 && measure(line.slice(space + 1) + glyph) <= maxWidth) {
+          lines.push(line.slice(0, space));
+          line = line.slice(space + 1) + glyph;
+        } else {
+          lines.push(line);
+          line = glyph;
+        }
+      } else {
+        line += glyph;
+      }
+    });
+    if (line || !lines.length) lines.push(line);
+    return lines;
+  }
+
+  function renderFigureData(table, headers, rows, captionText, totalRows) {
+    if (totalRows === undefined) totalRows = rows.length;
+    table.replaceChildren();
+    table.createCaption().textContent = captionText + (totalRows > 500
+      ? ' Showing the first 500 of ' + totalRows + ' rows; remaining rows are not displayed.'
+      : ' All ' + totalRows + ' rows shown.');
+    var head = table.createTHead().insertRow();
+    headers.forEach(function (label) {
+      var cell = document.createElement('th');
+      cell.scope = 'col';
+      cell.textContent = label;
+      head.appendChild(cell);
+    });
+    var body = table.createTBody();
+    var count = 0;
+    for (var values of rows) {
+      if (count++ === 500) break;
+      var row = body.insertRow();
+      values.forEach(function (value) {
+        var cell = row.insertCell();
+        if (typeof value === 'number') cell.className = 'numeric';
+        cell.textContent = String(value == null ? '—' : value);
+      });
+    }
+  }
+
+  function wrapChartTooltip(value, chart) {
+    var context = chart.ctx;
+    context.save();
+    context.font = '14px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+    var lines = wrapLabel(value, Math.max(40, chart.width - 48), function (text) {
+      return context.measureText(text).width;
+    });
+    context.restore();
+    if (lines.length > 4) return lines.slice(0, 3).concat('… See data table.');
+    return lines;
+  }
+
+  function applyScientificStyles() {
+    applyPageTheme();
+    if (document.querySelector('[data-scientific-figure-styles]')) return;
+    var style = document.createElement('style');
+    style.setAttribute('data-scientific-figure-styles', '');
+    style.textContent =
+      '*{box-sizing:border-box;}' +
+      'body{margin:0;padding:clamp(12px,2.5vw,28px);font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
+      '.container{max-width:1200px;min-width:0;margin:auto;}' +
+      '.header{margin-bottom:14px;}' +
+      '.header h1{margin:0;font-size:clamp(18px,2vw,22px);font-weight:600;line-height:1.3;overflow-wrap:anywhere;}' +
+      '.figure-description{color:var(--muted);overflow-wrap:anywhere;}' +
+      'svg{display:block;}svg text{fill:var(--text);font-size:14px;}' +
+      '.figure-scroll{max-width:100%;overflow:auto;}' +
+      '.figure-data{margin:16px auto 0;max-width:1200px;border-top:1px solid var(--border);padding-top:10px;}' +
+      'summary{width:fit-content;color:var(--muted);cursor:pointer;}' +
+      '.table-scroll{max-height:360px;overflow:auto;margin-top:10px;}' +
+      'table{width:100%;min-width:560px;border-collapse:collapse;font-size:14px;text-align:left;}' +
+      'caption{text-align:left;color:var(--muted);padding-bottom:8px;overflow-wrap:anywhere;}' +
+      'th,td{padding:7px 10px;border-bottom:1px solid var(--border);overflow-wrap:anywhere;}' +
+      'th{font-weight:600;overflow-wrap:normal;}td{font-variant-numeric:tabular-nums;}.numeric{white-space:nowrap;}' +
+      '.figure-legend{display:flex;flex-wrap:wrap;gap:8px 20px;margin-top:12px;}' +
+      '.figure-legend-item{display:flex;gap:7px;align-items:baseline;min-width:0;max-width:100%;overflow-wrap:anywhere;}' +
+      '.figure-legend-item i{flex:0 0 14px;align-self:center;width:14px;height:14px;}' +
+      '.figure-legend button{border:0;background:none;color:inherit;font:inherit;text-align:left;padding:4px 0;cursor:pointer;}' +
+      '[tabindex="0"]:focus-visible,summary:focus-visible,.figure-legend button:focus-visible{outline:2px solid var(--text);outline-offset:3px;}';
+    document.head.appendChild(style);
+  }
+
+  function renderFigureLegend(container, items) {
+    container.replaceChildren();
+    items.forEach(function (item) {
+      var row = document.createElement('span');
+      row.className = 'figure-legend-item';
+      var swatch = document.createElement('i');
+      swatch.setAttribute('aria-hidden', 'true');
+      swatch.style.backgroundColor = item.color;
+      if (item.dashed) {
+        swatch.style.backgroundColor = 'transparent';
+        swatch.style.height = '0';
+        swatch.style.borderTop = '3px dashed ' + item.color;
+      }
+      var label = document.createElement('span');
+      label.textContent = item.label;
+      row.append(swatch, label);
+      container.appendChild(row);
+    });
+  }
+
+  function formatScaleValues(values) {
+    var distinct = new Set(values).size;
+    for (var precision = 4; precision <= 17; precision++) {
+      var labels = values.map(function (value) { return String(Number(value.toPrecision(precision))); });
+      if (new Set(labels).size === distinct) return labels;
+    }
+    return values.map(String);
+  }
+
+  function renderChartLegend(container, chart) {
+    container.replaceChildren();
+    chart.data.datasets.forEach(function (dataset, index) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'figure-legend-item';
+      button.setAttribute('aria-pressed', String(chart.isDatasetVisible(index)));
+      var swatch = document.createElement('i');
+      swatch.setAttribute('aria-hidden', 'true');
+      swatch.style.backgroundColor = dataset.borderColor || dataset.backgroundColor;
+      var label = document.createElement('span');
+      label.textContent = dataset.label || 'Series ' + (index + 1);
+      button.append(swatch, label);
+      button.addEventListener('click', function () {
+        var visible = !chart.isDatasetVisible(index);
+        chart.setDatasetVisibility(index, visible);
+        chart.update('none');
+        button.setAttribute('aria-pressed', String(visible));
+        button.style.textDecoration = visible ? 'none' : 'line-through';
+      });
+      container.appendChild(button);
+    });
+  }
+
+  function wrapChartAxisLabel(value, maxWidth, context) {
+    context.save();
+    context.font = '14px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+    var lines = wrapLabel(value, maxWidth, function (text) { return context.measureText(text).width; });
+    context.restore();
+    return lines;
+  }
+
+  function observeChartWidth(element, layout) {
+    if (typeof ResizeObserver === 'undefined') return;
+    var previousWidth = element.clientWidth;
+    var pending = false;
+    new ResizeObserver(function () {
+      if (element.clientWidth === previousWidth || pending) return;
+      pending = true;
+      requestAnimationFrame(function () {
+        pending = false;
+        if (element.clientWidth === previousWidth) return;
+        previousWidth = element.clientWidth;
+        layout();
+      });
+    }).observe(element);
+  }
+
+  function fitSvgLabel(element, value, maxWidth) {
+    var text = String(value == null ? '' : value);
+    element.textContent = text;
+    if (element.getComputedTextLength() <= maxWidth) return;
+    element.textContent = '…';
+    if (element.getComputedTextLength() > maxWidth) {
+      element.textContent = '';
+      return;
+    }
+    var glyphs = typeof Intl !== 'undefined' && Intl.Segmenter
+      ? Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text), function (part) { return part.segment; })
+      : Array.from(text);
+    var low = 0;
+    var high = glyphs.length;
+    while (low < high) {
+      var middle = Math.ceil((low + high) / 2);
+      element.textContent = glyphs.slice(0, middle).join('') + '…';
+      if (element.getComputedTextLength() <= maxWidth) low = middle;
+      else high = middle - 1;
+    }
+    element.textContent = glyphs.slice(0, low).join('') + '…';
+  }
+
+  function hideOverlappingSvgLabels(root, selector) {
+    var boundary = root.getBoundingClientRect();
+    var placed = [];
+    root.querySelectorAll(selector).forEach(function (label) {
+      if (!label.textContent) return;
+      var box = label.getBoundingClientRect();
+      var outside = box.left < boundary.left || box.right > boundary.right || box.top < boundary.top || box.bottom > boundary.bottom;
+      var overlaps = placed.some(function (other) {
+        return box.left < other.right + 2 && box.right > other.left - 2 && box.top < other.bottom + 2 && box.bottom > other.top - 2;
+      });
+      if (outside || overlaps) label.textContent = '';
+      else placed.push(box);
+    });
   }
 
   // Apply the page background/text once the body exists.
@@ -253,9 +486,9 @@
       'padding:6px 8px!important;' +
       'border-radius:4px!important;' +
       'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif!important;' +
-      'font-size:12px!important;' +
+      'font-size:14px!important;' +
       'font-weight:400;' +
-      'line-height:16px;' +
+      'line-height:20px;' +
       'text-align:left;' +
       'pointer-events:none!important;' +
       'transition:opacity 120ms ease!important;' +
@@ -268,7 +501,7 @@
   function fitVisibleTooltips() {
     tooltipFitFrame = null;
     document.querySelectorAll('.tooltip').forEach(function (tooltip) {
-      if (parseFloat(window.getComputedStyle(tooltip).opacity) <= 0) return;
+      if (parseFloat(tooltip.style.opacity || window.getComputedStyle(tooltip).opacity) <= 0) return;
 
       var bounds = tooltip.getBoundingClientRect();
       var padding = 8;
@@ -307,13 +540,14 @@
     initializeTooltipLayer();
   }
 
-  // Map a normalized value [0,1] to a sequential colour (blue→red), theme-aware.
+  // Every RGB channel moves in one direction, preserving luminance ordering.
   function sequential(t) {
     t = Math.max(0, Math.min(1, t));
-    var r = Math.round(255 * Math.min(1, 0.1 + 1.6 * t));
-    var g = Math.round(255 * (0.3 + 0.5 * (1 - Math.abs(t - 0.5) * 2)));
-    var b = Math.round(255 * Math.min(1, 0.1 + 1.6 * (1 - t)));
-    return 'rgb(' + r + ',' + g + ',' + b + ')';
+    var low = dark ? [41, 67, 79] : [220, 233, 239];
+    var high = dark ? [176, 211, 224] : [53, 92, 112];
+    return 'rgb(' + low.map(function (value, index) {
+      return Math.round(value + (high[index] - value) * t);
+    }).join(',') + ')';
   }
 
   window.BioRouterViz = {
@@ -329,5 +563,16 @@
     applyChartTooltipDefaults: applyChartTooltipDefaults,
     applyPageTheme: applyPageTheme,
     sequential: sequential,
+    wrapLabel: wrapLabel,
+    renderFigureData: renderFigureData,
+    fitSvgLabel: fitSvgLabel,
+    hideOverlappingSvgLabels: hideOverlappingSvgLabels,
+    wrapChartTooltip: wrapChartTooltip,
+    applyScientificStyles: applyScientificStyles,
+    renderFigureLegend: renderFigureLegend,
+    formatScaleValues: formatScaleValues,
+    renderChartLegend: renderChartLegend,
+    wrapChartAxisLabel: wrapChartAxisLabel,
+    observeChartWidth: observeChartWidth,
   };
 })();

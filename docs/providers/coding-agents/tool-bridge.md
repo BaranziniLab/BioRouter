@@ -1,9 +1,8 @@
 # The tool bridge
 
-> **What this is.** How BioRouter gives subscription-authenticated coding agents an audited
-> Workspace/Knowledge subset and bounded workflow tools while withholding arbitrary host-reading
-> extensions. It also explains the gate stack, capability URL, mirrored tool cards and approval
-> flow.
+> **What this is.** How BioRouter gives subscription-authenticated coding agents reviewed built-in
+> tools, admitted session extensions, and bounded workflow tools. It explains the gate stack,
+> capability URL, catalog refresh, mirrored tool cards and approval flow.
 > **Status:** Current.
 > **Audience:** developers working on the coding-agent providers, the extension layer, or the
 > daemon's routes.
@@ -12,9 +11,11 @@
 shell tools. BioRouter switches those off, because a tool the child runs itself is invisible to
 BioRouter's inspectors, permission modes, `.biorouterignore` and vault — see
 [what the child agent may not do](child-agent-isolation.md). The bridge restores only the reviewed
-surface with every gate intact. It is not generic extension parity: developer, code-execution,
-custom, marketplace, SPOKE, OMOP and Auto Visualiser tools are not advertised to
-subscription-provider chat turns.
+surface with every gate intact. Built-in tools come from the explicit
+`CODING_AGENT_BRIDGE_POLICIES` allowlist in
+[`agent.rs`](../../../crates/biorouter/src/agents/agent.rs). Attached ordinary MCP extensions
+are included only after the existing tool, privacy-tier and extension-reach filters admit them.
+A public provider still cannot discover or invoke a private extension through this bridge.
 
 ## MCP is the mechanism, not one option among several
 
@@ -84,16 +85,112 @@ become available to a child. That falls out of both sides already speaking MCP: 
 `CallToolRequestParams`. The bridge is a relay between two things that already fit.
 
 The consequence worth stating plainly: the relay is generic, but the subscription boundary is an
-allowlist. Chat children receive an audited `workspace` subset, read-only `knowledge` tools, and
-`platform__ingest_source`. That platform macro is the one bounded write: it performs source
-expansion, transactional curation, rollback, graph rebuild and post-commit verification itself.
-Raw Knowledge mutations such as `kb_write_page`, along with generic and custom extensions, remain
-withheld because they may read or write arbitrary host files, including the credential file the
-vendor CLI must retain. Adding another surface requires an isolation review, not merely loading a
-plugin. The bridge enforces its advertised list again at `tools/call`, so an unadvertised name
-cannot be invoked directly to bypass this boundary. A delegated child also persists only the
-Knowledge tools this bridge can serve; if a caller explicitly requests another extension, the
-spawn fails before creating a child rather than silently narrowing the request.
+allowlist. Built-in policy, enabled capability state and current tool availability must all agree.
+An ordinary extension grant also pins its exact configuration and tool subset; dispatch rechecks
+that the grant still matches the attached extension. Loading a different server under the same
+name cannot inherit the old grant. The bridge enforces its advertised list again at `tools/call`,
+so an unadvertised name cannot be invoked directly to bypass this boundary.
+
+Delegated children have a separate, narrower runtime profile. A parent's ordinary extension
+grant does not automatically transfer to a child. The source's child-grant policy, rather than
+the parent's requested extension names, determines what the child actually receives.
+
+## Catalog changes within a user request
+
+An extension may attach successfully while the coding agent still holds the tool catalog from
+the beginning of its provider request. Returning the new tool names in an install report does
+not update that client's callable schema. In Codex 0.147.0, the
+[tool-list notification handler](https://github.com/openai/codex/blob/rust-v0.147.0/codex-rs/rmcp-client/src/logging_client_handler.rs)
+logs the notification without refreshing the tool list. A live Playwright install reproduced
+this gap: the report listed `playwrightagent__browser_tabs`, but the model could not call it.
+
+After a successful bridged Extension Manager or Skills catalog mutation, the old chat dispatcher
+stops admitting further calls. The agent loop waits for all observed parallel tool calls to
+settle, stops the old provider stream, and revokes its lease. It preserves completed tool records,
+rebuilds the tools and system prompt from the current session, and resumes the same user task
+under a fresh grant. The continuation explicitly says not to repeat completed operations.
+Failed mutations and native child tools do not trigger this refresh.
+
+The immutable-grant checks, inspectors, privacy capability and approval path remain in force.
+This compatibility path costs another provider request and context replay per catalog-changing
+step. Native mid-request catalog refresh is a future optimization, not a reason to bypass the
+bridge or widen an existing grant. User-driven changes made outside the manager during an active
+provider request still require separate live validation.
+
+That external-toggle gap is also visible in the source: the provider wake loop listens for
+output, cancellation, elicitation and steering, but not catalog changes. The GUI can update an
+agent's Extension Manager while the request still holds its original prompt and tools. Dispatch
+revalidates revoked tools, but that refusal is not a refreshed prompt. Closing this gap needs a
+coordinated, tool-safe refresh boundary; restarting from a bare catalog event could interrupt
+an admitted operation before its result is recorded. This remains a required runtime fix and
+live test, not a completed prompt-audit item.
+
+Regression coverage includes `mirrored_catalog`, `bridged_catalog_mutation`, the direct-provider
+catalog refresh test, and the Codex MCP-error flag test. Before declaring end-to-end success,
+run the self-test's dynamic-extension scenario in the isolated development app: start detached,
+attach, invoke a real extension tool, detach, and verify the final tool inventory. An install
+report or a passing mocked-provider test alone is not sufficient.
+
+The 2026-08-30 isolated desktop regression passed this sequence with Codex: one install,
+one `browser_tabs` call, and one detach, with the visible extension count changing 0 → 1 → 0.
+The earlier failure in the same test chat had installed and detached without invoking the tool.
+A separate read-only task identified Soul as the chat's primary base and listed its six pages;
+this checks that existing test chat, not every fresh-profile or ingestion scenario.
+
+A later isolated Spoke run completed marketplace approval, user-entered credential configuration,
+one live `get_spoke_schema`, one read-only `query_spoke` returning three Gene records, and detach.
+Its follow-up explicitly forbade reattachment: the model correctly reported the tools unavailable,
+made no additional Spoke call, and the popup showed Spoke off. The installed package was retained.
+That run also exposed four pointless name guesses before installation; an absent installed entry
+must route through discovery and approved installation, not spelling retries.
+The manager's schema, tool descriptions and not-found response now require the exact installed
+name from its inventory, distinguish that name from a marketplace registry id, and point missing
+entries toward approved installation. The recovery test failed before this wording change;
+private-extension admission still precedes the not-found branch.
+
+The installed `anti-ai-writing` skill was hot-loaded, read and applied to a synthetic scheduling
+decision memo, then hot-unloaded in the same user task. The memo correctly compared $4 versus
+$4.50 per daily minute saved and the $60 incremental cost for 10 extra daily minutes. The skill
+count fell from four to three after unload. Permanent package removal remains a separate check.
+
+A subsequent removal returned `status: removed`; the desktop displayed “allowed once” without
+the test operator clicking approval. The approval actor still needs confirmation, so that run
+does not prove the intended cancellation scenario. Its read-only follow-up did prove removal:
+installed-skill search returned zero matches, one exact `loadSkill` call failed with “Skill not
+found”, the picker showed “No skills found”, and neither the package directory nor its removal
+staging directory remained. Spoke stayed installed. The chat retained its inert
+`workspace_skills.v1.remove` entry for the uninstalled skill and its historical transcript; this
+is not a zero-residue purge of prior preferences or records.
+
+Codex's standard MCP result object is decoded as a complete `CallToolResult`, not serialized
+into a text block containing another result. This preserves content types, audience annotations,
+structured data, error state and display metadata. To Do update results carry the updated task's
+id, text and status so the activity row can name the work rather than only its numeric id.
+The subsequent live read-only checklist showed “Starting ‘Confirm the primary knowledge base’”
+and “Marking ‘Examine its page index read-only’ complete”, alongside “Listing pages in Soul”.
+Older saved results without the task payload retain the action-and-id fallback.
+Marketplace labels retain semantic versions, including prerelease and build suffixes:
+“Installing Spoke Agent v0.4.1” instead of “Installing Spokeagent 0 4 1”. Recognized compact
+agent names are expanded without splitting ordinary names such as “Reagent”. Both cases have
+fail-first regressions, and the Spoke version label was checked in the running desktop UI.
+The desktop extension count classifies capability names directly, without waiting for the global
+catalog; a session response arriving first must not temporarily inflate it with built-in tools.
+The separate total-tool count also refetches on catalog changes, cancels superseded queries,
+and clears when switching to a chat whose agent is not ready. Its regressions cover attach,
+detach, out-of-order responses, chat switching and listener cleanup; three failed before the fix.
+
+The checkpoint's full workspace test run completed with 6,909 passed, zero failed, 44 ignored,
+and the paid Anthropic provider test explicitly excluded. The full desktop run passed all 3,788
+tests across 369 files. After the follow-up exact-name guidance and word-boundary changes, all
+38 Extension Manager tests and 45 activity-card tests passed, as did desktop type checking.
+These counts are automated coverage, not a substitute for the remaining live lifecycle and
+mid-request UI-toggle checks above.
+
+For scripted Electron testing, keep `npm run start-gui` attached to a terminal. The non-interactive
+launcher exited before the application main process started during this validation; a terminal
+launch worked. Use the repository's pinned runtime and an isolated `BIOROUTER_PATH_ROOT` with
+`BIOROUTER_DISABLE_KEYRING=true`. Do not launch the bare Electron bundle before the app is ready,
+which opens Electron's welcome window rather than BioRouter.
 
 Verified against a 60-tool surface — both CLIs accepted a 73-character prefixed tool name, a schema
 using `$defs`/`$ref`/`oneOf`, an image result, and a `ui://` embedded resource, all passed through
@@ -101,11 +198,11 @@ unchanged.
 
 ## What still fires on a bridged call
 
-A grant is a snapshot taken when the turn starts, not a handle back to the agent: the provider is
+A grant is a snapshot taken when the provider request starts, not a handle back to the agent: the provider is
 called from inside the agent's own stack and cannot hold a reference to it, and a grant that
 outlived its turn would be a capability with no owner. The snapshot carries the session, the
 permission mode, the extension manager, the inspection manager, the conversation, the already
-filtered tool set, the turn's privacy capability, **the turn's own cancellation token**, the
+filtered tool set, the turn's privacy capability, a request-scoped child of the turn's cancellation token, the
 session's hooks manager, and the app's secret vault when there is one. The last three are there
 because a bridged call is a tool call: without the token nothing the child started is reachable by
 Stop, without the hooks manager a `PreToolUse` rewrite cannot be collected, and without the vault a
@@ -118,9 +215,9 @@ Stop, without the hooks manager a `PreToolUse` rewrite cannot be collected, and 
 | Permission mode | The inspectors' permission decision is honoured: denied is refused, "no decision was reached" is refused too (an absent decision must never read as approval), and `needs_approval` is [put to a person](#a-call-needing-approval-is-put-to-a-person-and-the-call-waits-107) rather than refused. |
 | Privacy Gate C | `dispatch_tool_call` is the one choke point every tool call passes through, and a bridged call goes through it with the turn's `CallCapability`. |
 | `PreToolUse` hook rewrites | Applied and then **re-judged**. The hooks have already run inside the inspector pass, so their `updatedInput` is collected and applied, and every inspector except the hook one re-runs on the rewritten arguments — otherwise a hook would be a hole straight through the security and permission gates, which only ever saw what the child's model asked for. The rewrite is taken scoped to this call's own request id, because the staging buffer is per session and bridged calls run concurrently. |
-| Host file containment | Developer, code-execution and custom tools are absent from subscription grants. Separately, the ordinary Developer text editor always enforces its bound working-directory jail; there is no process-global Auto-mode relaxation for another route or session to inherit. |
+| Host file containment | The built-in policy and admitted extension configuration determine the surface. The Developer text editor enforces its bound working-directory jail; granting an ordinary extension is not an OS sandbox for that extension's process. There is no process-global Auto-mode relaxation for another route or session to inherit. |
 | `.biorouterignore`, vault, session working directory | Whatever BioRouter's dispatcher and inspectors already enforce, because BioRouter is the process executing the tool. A `{{vault:NAME}}` in the arguments is resolved on the leaf dispatch path, after the call has been judged and immediately before it runs — the same position the agent's own path uses, so the inspectors and the user's hooks never see the decrypted secret. |
-| Cancellation | The grant carries the turn's own token and hands it to `dispatch_tool_call`. Stop therefore reaches parking Workspace/Knowledge calls; delegated background children have their own visible session and cancellation route so they can survive one provider invocation while the parent continues supervising them. |
+| Cancellation | The grant passes its request-scoped child token to `dispatch_tool_call`. Both Stop and lease revocation therefore reach parking Workspace/Knowledge calls; delegated background children have their own visible session and cancellation route so they can survive one provider invocation while the parent continues supervising them. |
 
 ⚠ **The inspector pass is why this is not a thin proxy onto `ExtensionManager`.**
 `POST /agent/call_tool` *is* that thin proxy, and its own comment records the cost: it bypasses the
@@ -227,6 +324,30 @@ Every park mints its own uuid and its own `oneshot`. A decision for an id nobody
 dropped and reported as `Unknown`, never re-aimed at whichever call happens to be parked now. Both
 child CLIs issue parallel `tools/call`, so this is the ordinary case rather than a corner one — it
 is BR-62's property for the agent's own path, extended to this one.
+
+### Nested approvals end with their provider request
+
+Manager tools can park their own mandatory approval after the bridge's inspection pass. Those
+inner waits do not carry the bridge nonce, so cancelling only nonce-owned cards left them alive
+after the provider request ended. An issued bridge now owns a child of the user turn's
+cancellation token. Revoking its lease cancels that child, including nested waits and dispatched
+tools, without cancelling the parent turn or a successor request. A retained grant also refuses
+new calls after revocation, before inspection and again before dispatch.
+
+The nested-approval and request-isolation tests failed before this change. Coverage also checks
+that a retained grant cannot dispatch after lease drop, and the existing real-process
+cancellation test continues to exercise the dispatch wiring.
+
+### Approval labels require acknowledgement
+
+The desktop disables decision buttons while posting an answer and only records the requested
+decision after the server returns `delivered`. Network failures, missing acknowledgements and
+unavailable user-action proof leave the card retryable without storing an approval. Expired
+requests and decisions already answered on another surface show neutral terminal states, not
+the approval the current click attempted. Five acknowledgement regressions failed before the
+change; all 22 confirmation-card tests then passed, including duplicate-click, retry and
+navigation coverage. This fixes misleading presentation, not the unresolved attribution of
+the live package-removal approval described above.
 
 ### Secret-safe requests
 
@@ -462,9 +583,9 @@ outlasts stream consumption.
 | Handing the URL to Claude Code | [`crates/biorouter/src/providers/claude_code.rs`](../../../crates/biorouter/src/providers/claude_code.rs) |
 | Handing the URL to Codex | [`crates/biorouter/src/providers/codex.rs`](../../../crates/biorouter/src/providers/codex.rs) |
 
-On the Codex side, `dynamicTools` would remove the HTTP hop entirely and is the eventual
-replacement — but the installed Codex declares the `DynamicToolSpec` types without any request that
-accepts them, so it is not reachable yet.
+MCP remains the implemented return channel for both coding-agent providers. Any vendor-specific
+replacement must preserve the same inspected dispatch, grant revocation and mirrored-result
+contracts; its availability should be verified against the installed CLI version.
 
 ## Related documentation
 

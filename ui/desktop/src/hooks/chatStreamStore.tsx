@@ -30,7 +30,10 @@ import {
   createElicitationResponseMessage,
   createUserMessage,
   getCompactingMessage,
+  getElicitationContent,
+  getSecretRequestContent,
   getThinkingMessage,
+  getToolConfirmationContent,
   NotificationEvent,
   UserAttachment,
 } from '../types/message';
@@ -1213,17 +1216,17 @@ class ChatStreamController {
     // `viewNamesEveryStoredRow`.
     this.viewNamesEveryStoredRow = false;
 
-    const hasToolConfirmation = msg.content.some(
-      (content) => content.type === 'toolConfirmationRequest'
-    );
-    const hasElicitation = msg.content.some(
-      (content) => content.type === 'actionRequired' && content.data.actionType === 'elicitation'
-    );
+    // ⚠ `toolConfirmationRequest` is a DEAD variant: nothing in `crates/`
+    // constructs it, so this predicate never fired and the one place in the
+    // renderer that sets `WaitingForUserInput` never saw an approval card. A
+    // real card arrives as `actionRequired` with `actionType: 'toolConfirmation'`
+    // — which is exactly what the shared helper tests, so use it rather than
+    // spelling the shape a fourth time.
+    const hasToolConfirmation = getToolConfirmationContent(msg) !== undefined;
+    const hasElicitation = getElicitationContent(msg) !== undefined;
     // Issue #117. A credential card parks the turn the same way, and the chat
     // must say so — the install is genuinely waiting on the person.
-    const hasSecretRequest = msg.content.some(
-      (content) => content.type === 'actionRequired' && content.data.actionType === 'secretRequest'
-    );
+    const hasSecretRequest = getSecretRequestContent(msg) !== undefined;
     const derivedChatState =
       hasToolConfirmation || hasElicitation || hasSecretRequest
         ? ChatState.WaitingForUserInput

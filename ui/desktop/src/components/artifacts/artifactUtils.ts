@@ -4,6 +4,7 @@ import { GENERATED_THEMES } from '../../styles/themes.generated';
 import { IMAGE_EXTENSIONS } from '../../utils/imageFormats';
 import { sanitizeArtifactTitle } from '../../utils/untrustedText';
 import type { ArtifactSource } from './artifactTypes';
+import { localFileBasename, parseFileLink, resolveLocalFilePath } from './artifactFileLinks';
 
 const TEXT_EXTENSIONS = new Set([
   'bash',
@@ -54,16 +55,13 @@ const GENERIC_UI_TITLE_PARTS = new Set([
 ]);
 
 export function basenameFromPath(value: string): string {
-  const clean = value.split(/[?#]/)[0];
+  const isUri = /^[a-z][a-z\d+.-]*:\/\//i.test(value);
+  const clean = isUri ? value.split(/[?#]/)[0] : value;
   const parts = clean.split(/[\\/]/).filter(Boolean);
   const base = parts[parts.length - 1] || clean || 'Artifact';
-  // A real filename can contain a literal `%` that is not percent-encoding
-  // (e.g. "results 100%.csv") — decodeURIComponent throws URIError: "URI
-  // malformed" on those. This runs during chat render
-  // (collectArtifactsFromMessages), so an unguarded throw crashes the whole app
-  // into the "Honk!" error boundary. Fall back to the raw basename instead.
+  // Filesystem paths are already decoded; decoding again changes literal `%` names.
   try {
-    return decodeURIComponent(base);
+    return isUri ? decodeURIComponent(base) : base;
   } catch {
     return base;
   }
@@ -341,7 +339,8 @@ export function parseDelimitedTable(text: string, delimiter: string): string[][]
 export function looksLikePreviewableFile(value: string): boolean {
   const href = value.trim();
   if (!href || /^(https?|mailto|tel):/i.test(href)) return false;
-  const localPath = /^file:\/\//i.test(href) ? pathFromArtifactHref(href) : href.split(/[?#]/)[0];
+  const localPath = parseFileLink(href)?.path;
+  if (!localPath) return false;
   const trimmedPath = localPath.replace(/[/\\]+$/, '');
   const basename = basenameFromPath(trimmedPath).toLowerCase();
   if (
@@ -363,7 +362,9 @@ export function looksLikePreviewableFile(value: string): boolean {
   ) {
     return true;
   }
-  const ext = extensionFromPath(localPath);
+  // Literal URI delimiters may follow a recognized extension in the real name.
+  // This is classification only: never strip them from the path sent to the reader.
+  const ext = extensionFromPath(localPath).split(/[#:%]/, 1)[0];
   return (
     TEXT_EXTENSIONS.has(ext) ||
     IMAGE_EXTENSIONS.has(ext) ||
@@ -509,21 +510,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-// `C:\dir`, `C:/dir` or a `\\server\share` UNC path. Without this, a Windows
-// absolute path looks relative and gets glued onto the working directory.
-const WINDOWS_ABSOLUTE_RE = /^(?:[a-zA-Z]:[\\/]|\\\\)/;
-
 // Resolve a possibly-relative path against the session's working directory, so
 // `results/plot.png` from a shell command becomes something the viewer can read.
 export function resolveArtifactPath(rawPath: string, workingDir?: string): string | null {
   const path = pathFromArtifactHref(rawPath.trim().replace(/^["']|["']$/g, ''));
-  if (!path) return null;
-  if (path.startsWith('/') || path.startsWith('~') || WINDOWS_ABSOLUTE_RE.test(path)) return path;
-  if (!workingDir) return null;
-  const cleaned = path.replace(/^\.[\\/]/, '');
-  if (/^\.\.[\\/]/.test(cleaned) || cleaned === '.' || cleaned === '..') return null;
-  const separator = WINDOWS_ABSOLUTE_RE.test(workingDir) ? '\\' : '/';
-  return `${workingDir.replace(/[\\/]+$/, '')}${separator}${cleaned}`;
+  return resolveLocalFilePath(path, workingDir);
 }
 
 function isPreviewableArtifactPath(path: string): boolean {
@@ -536,7 +527,7 @@ function isPreviewableArtifactPath(path: string): boolean {
  *  against the FILE's own directory rather than the app's working directory. */
 export function dirnameFromPath(value: string): string {
   const clean = pathFromArtifactHref(value.trim());
-  const name = basenameFromPath(clean);
+  const name = localFileBasename(clean);
   return clean.slice(0, clean.length - name.length).replace(/[/\\]+$/, '');
 }
 
@@ -592,7 +583,12 @@ export function fileArtifactPathsFromToolCall(
 
   if (name === 'shell' || name === 'bash') {
     const command = argRecord.command;
-    return typeof command === 'string' ? shellRedirectPaths(command, workingDir) : [];
+    const override = argRecord.working_directory;
+    const shellDir =
+      typeof override === 'string'
+        ? (resolveArtifactPath(override, workingDir) ?? undefined)
+        : workingDir;
+    return typeof command === 'string' ? shellRedirectPaths(command, shellDir) : [];
   }
 
   if (!FILE_WRITING_TOOLS.has(name)) return [];
@@ -614,12 +610,78 @@ export function fileArtifactPathsFromToolCall(
 // Output targets named by a shell command's redirections / `-o`|`--output`
 // flags, anchored against `workingDir` and filtered to previewable files.
 function shellRedirectPaths(command: string, workingDir?: string): string[] {
+  const segments: { text: string; quoted: boolean[]; followedByAnd: boolean }[] = [];
+  let start = 0;
+  let quote = '';
+  let quoted: boolean[] = [];
+  let ambiguousScope = false;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (char === '\\' && quote !== "'") {
+      quoted[index - start] = true;
+      quoted[index + 1 - start] = true;
+      index += 1;
+      continue;
+    }
+    if (quote) {
+      quoted[index - start] = true;
+      if (char === quote) quote = '';
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      quoted[index - start] = true;
+      continue;
+    }
+    const and = command.slice(index, index + 2) === '&&';
+    if (and || char === ';' || char === '\n') {
+      segments.push({ text: command.slice(start, index), quoted, followedByAnd: and });
+      if (and) index += 1;
+      start = index + 1;
+      quoted = [];
+    } else if ('(){}|&'.includes(char) && command[index - 1] !== '>') {
+      ambiguousScope = true;
+    }
+  }
+  if (quote) return [];
+  segments.push({ text: command.slice(start), quoted, followedByAnd: false });
+  if (segments.some(({ text }) => /^\s*(?:if|for|while|until|case|function)\b/.test(text))) {
+    ambiguousScope = true;
+  }
+
   const paths: string[] = [];
-  for (const match of command.matchAll(SHELL_OUTPUT_RE)) {
-    const candidate = match[1] ?? match[2] ?? match[3];
-    if (!candidate) continue;
-    const resolved = resolveArtifactPath(candidate, workingDir);
-    if (resolved && isPreviewableArtifactPath(resolved)) paths.push(resolved);
+  let cwd = ambiguousScope ? undefined : workingDir;
+  for (const segment of segments) {
+    for (const match of segment.text.matchAll(SHELL_OUTPUT_RE)) {
+      if (segment.quoted[match.index]) continue;
+      const candidate = match[1] ?? match[2] ?? match[3];
+      const isQuoted = match[1] !== undefined || match[2] !== undefined;
+      if (!candidate || (match[2] === undefined && /[$`]/.test(candidate))) continue;
+      if (!isQuoted && /[*?[\]\\]/.test(candidate)) continue;
+      if (candidate.startsWith('~') && (isQuoted || !candidate.startsWith('~/'))) continue;
+      const resolved = resolveArtifactPath(candidate, cwd);
+      if (resolved && isPreviewableArtifactPath(resolved)) paths.push(resolved);
+    }
+
+    if (/^\s*cd(?:\s|$)/.test(segment.text)) {
+      const literal = /^\s*cd\s+(?:--\s+)?(?:"([^"$`]+)"|'([^']+)'|([^\s'"$`]+))\s*$/.exec(
+        segment.text
+      );
+      const directory = literal && (literal[1] ?? literal[2] ?? literal[3]);
+      const quotedDirectory = literal && (literal[1] !== undefined || literal[2] !== undefined);
+      const literalDirectory =
+        directory &&
+        !directory.startsWith('-') &&
+        !directory.includes('\\') &&
+        (quotedDirectory || !/[*?[\]]/.test(directory)) &&
+        (!directory.startsWith('~') || (!quotedDirectory && directory.startsWith('~/')));
+      cwd =
+        !ambiguousScope && segment.followedByAnd && directory && literalDirectory
+          ? (resolveArtifactPath(directory, cwd) ?? undefined)
+          : undefined;
+    } else if (/^\s*(?:builtin|command|eval|source|\.)(?:\s|$)/.test(segment.text)) {
+      cwd = undefined;
+    }
   }
   return paths;
 }
@@ -755,7 +817,15 @@ function pathsFromCodeBlob(code: string, workingDir?: string): string[] {
       const commandToken = literalValueForKey(objectSrc, 'command');
       const command = commandToken ? resolveStringLiteral(commandToken, bindings) : null;
       if (!command) continue;
-      for (const path of shellRedirectPaths(command, workingDir)) {
+      const directoryToken = literalValueForKey(objectSrc, 'working_directory');
+      const directory = directoryToken ? resolveStringLiteral(directoryToken, bindings) : null;
+      const hasDirectory = /[,{]\s*working_directory\s*:/.test(objectSrc);
+      const shellDir = hasDirectory
+        ? directory
+          ? (resolveArtifactPath(directory, workingDir) ?? undefined)
+          : undefined
+        : workingDir;
+      for (const path of shellRedirectPaths(command, shellDir)) {
         if (!seen.has(path)) {
           seen.add(path);
           out.push(path);
@@ -807,6 +877,7 @@ export function artifactSourceFromResource(
       kind: 'html',
       title,
       html,
+      sourceUri: resource.uri,
       preferredWidth,
       preferredHeight,
     };

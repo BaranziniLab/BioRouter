@@ -166,6 +166,14 @@ const REJECTED = [
   ['punctuated-extension-name', /^registry: .*data-extension-name.*private_agent/m],
   ['duplicate-extension-name', /^registry: .*both declare data-extension-name "twinagent"/m],
 
+  // The catalog's own id, which is a DIFFERENT field from the join key above.
+  // A version in it means the id moves every release, so `install_extension`
+  // only ever resolves the spelling that was current when the model last read
+  // the catalog — the SPOKEAgent defect, caught at the page instead of three
+  // layers away in a Rust snapshot test that can name no card.
+  ['versioned-id', /^registry: .*ends with this card's version "v1\.2\.3"/m],
+  ['punctuated-registry-id', /^registry: .*data-registry-id "suffix agent!" is not a bare key/m],
+
   // The private set is a CLOSED LIST of two, both UCSF — not a property a card
   // grants itself by writing data-privacy="private". Checked in both directions
   // and on the affiliation, because all three changes are ones nobody should be
@@ -509,13 +517,18 @@ test('the compiled private set is keyed on the name, not on the download filenam
   // The case the extension_name field exists for. Every private entry in the
   // real catalog happens to have id == extension_name, so a generator that
   // emitted the id into the Rust const passes every other test here.
+  //
+  // The fixture's id and name are deliberately UNRELATED strings
+  // (`suffixcatalog` vs `suffixagent`) rather than a versioned pair. A shared
+  // prefix would let a generator that truncated the id land on the right answer
+  // by accident, which is the one outcome this test must not accept.
   const out = outPath();
   const rs = rustPath();
   const r = run({ input: fixture('suffixed-download'), out, args: ['--emit-rust', rs] });
   assert.equal(r.code, 0, r.both);
 
   const reg = JSON.parse(readFileSync(out, 'utf8'));
-  assert.equal(reg.extensions[0].id, 'suffixagent-1.2.3');
+  assert.equal(reg.extensions[0].id, 'suffixcatalog');
   assert.equal(reg.extensions[0].extension_name, 'suffixagent');
 
   const rust = readFileSync(rs, 'utf8');

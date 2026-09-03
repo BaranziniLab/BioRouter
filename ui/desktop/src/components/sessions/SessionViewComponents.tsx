@@ -19,6 +19,7 @@ import { extractImagePaths, removeImagePathsFromText } from '../../utils/imageUt
 import { Message } from '../../api';
 import { EmptyState } from '../ui/empty-state';
 import type { ArtifactSource } from '../artifacts/artifactTypes';
+import { filePathLookupBeforeMessage } from '../artifacts/artifactFileProvenance';
 
 /**
  * Get tool responses map from messages
@@ -50,6 +51,7 @@ export const getToolResponsesMap = (
 
 interface SessionMessagesProps {
   messages: Message[];
+  sessionId: string;
   isLoading: boolean;
   error: string | null;
   onRetry: () => void;
@@ -74,6 +76,7 @@ interface SessionMessagesProps {
  */
 export const SessionMessages: React.FC<SessionMessagesProps> = ({
   messages,
+  sessionId,
   isLoading,
   error,
   onRetry,
@@ -123,6 +126,12 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
                   // The prose keeps its markdown; the references are drawn as
                   // read-only chips beside it.
                   const { body: proseText, refs: messageRefs } = splitComposerText(displayText);
+                  const knownFilePaths = filePathLookupBeforeMessage(
+                    messages,
+                    index,
+                    sessionId,
+                    workingDir
+                  );
 
                   // Get tool requests from the message
                   const toolRequests = message.content
@@ -177,6 +186,7 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
                               content={proseText}
                               onOpenArtifact={onOpenArtifact}
                               workingDir={workingDir}
+                              knownFilePaths={knownFilePaths}
                             />
                           </div>
                         )}

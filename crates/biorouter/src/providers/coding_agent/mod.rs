@@ -161,7 +161,7 @@ pub fn native_tools_notice(bridge_url: Option<&str>) -> String {
     }
     let listed = names
         .iter()
-        .map(|n| format!("`{n}`"))
+        .map(|n| format!("`mcp__biorouter__{n}`"))
         .collect::<Vec<_>>()
         .join(", ");
     format!(
@@ -172,7 +172,9 @@ pub fn native_tools_notice(bridge_url: Option<&str>) -> String {
          `spawn_agent` or anything like it.\n\n\
          The tools you actually have are provided over MCP by Biorouter, and they \
          are: {listed}. Use those, and if none of them fits, say so plainly \
-         instead of reaching for a tool of your own."
+         instead of reaching for a tool of your own. Tool names elsewhere in \
+         Biorouter's instructions are internal MCP tool IDs; invoke their \
+         matching MCP-qualified names listed here, not the bare internal IDs."
     )
 }
 

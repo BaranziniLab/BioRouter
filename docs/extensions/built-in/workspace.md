@@ -1,10 +1,10 @@
-# Workspace Control extension
+# Workspace Control capability
 
-> **What this is.** User guide to the built-in Workspace Control extension: the tool surface that lets BioRouter operate the workspace itself — list conversations, open them, read them, inject prompts into them, change what they are allowed to use, and delegate to subagents you can watch in a live tab.
+> **What this is.** User guide to the built-in Workspace Control capability: the tool surface that lets BioRouter operate the workspace itself — list conversations, open them, read them, inject prompts into them, change what they are allowed to use, and delegate to subagents you can watch in a live tab.
 > **Status:** Current.
 > **Audience:** end users.
 
-Every BioRouter conversation is a session: its own agent, its own extensions, skills and knowledge bases, its own history, and — when the desktop app is running — its own tab. Workspace Control gives the agent tools over that layer. Instead of telling you "open Settings and enable the single-cell skill in that other chat", it can do it; instead of a subagent being an opaque spinner, the child runs in a tab you can read, talk to and stop.
+Every BioRouter conversation is a session: its own agent, enabled capabilities, loaded extensions, skills, knowledge bases and history, plus its own desktop tab when the app is running. Workspace Control gives the agent tools over that layer. Instead of telling you "open Settings and enable the single-cell skill in that other chat", it can do it; instead of a subagent being an opaque spinner, the child runs in a tab you can read, talk to and stop.
 
 This page is the user-facing account — what each tool is for, what it asks you first, and how its writes are labelled. If you are trying to *arrange* work rather than look a tool up, start with [Workspace control](../../agent-loop/workspace-control.md), which covers the tab/pane/window layout, delegating to subagents, and the terminal path. If you need the exact contract — every argument and default, the precise refusal strings, the caps — that is [the Workspace Control tool reference](../../agent-loop/workspace-control-tools.md), written for developers and for diagnosing a tool that behaved unexpectedly.
 
@@ -16,12 +16,12 @@ Workspace Control ships in **two sizes**, and most people only ever meet the sma
 
 | Tier | How you get it | What the agent can do |
 |------|----------------|-----------------------|
-| **Delegation** (default) | Automatic. Any session that may delegate loads the extension with a fixed six-tool list: `subagent`, `workspace_list`, `workspace_read_conversation`, `workspace_send_prompt`, `workspace_close`, `workspace_watch`. | Spawn subagents and supervise them; see which conversations exist and which are running; inject a prompt into one. |
-| **Full workspace control** | You enable the `workspace` extension explicitly. | Everything above plus `workspace_set_tools` (change another conversation's extensions, skills, model, knowledge bases), `workspace_open`, and the preview-panel pair. |
+| **Delegation** (default) | Automatic. Any session that may delegate loads the capability with a fixed six-tool list: `subagent`, `workspace_list`, `workspace_read_conversation`, `workspace_send_prompt`, `workspace_close`, `workspace_watch`. | Spawn subagents and supervise them; see which conversations exist and which are running; inject a prompt into one. |
+| **Full workspace control** | You enable the `workspace` capability explicitly. | Everything above plus `workspace_set_tools` (change another conversation's capabilities, extensions, skills, model, or knowledge bases), `workspace_open`, and the preview-panel pair. |
 
 The split is no longer "your own children versus everyone else's" — an injection may go to any conversation the session can see. What separates the tiers now is **capability change versus message**: the delegation tier can *talk to* another conversation, and only the explicit opt-in can *re-tool* one or mint and move tabs. Three of the delegation tier's six tools stay child-scoped whatever the write rule says — `workspace_read_conversation`, `workspace_close` and `workspace_watch` are confined to direct subagent children by `refuse_unless_direct_subagent_child`, which is a separate mechanism from the privacy matrix and did not move.
 
-Concretely, the extension is registered `default_enabled: false` (like Chat Recall). When a session has any ordinary extension loaded and delegation is permitted by your [permission mode](../../security/permission-modes.md), BioRouter auto-injects `workspace` with that six-tool list; the injection is derived state and is dropped again if the reason for it goes away. Enabling `workspace` yourself is what unlocks the rest, and an explicit enable is never downgraded to the injected one.
+Concretely, when delegation is permitted by your [permission mode](../../security/permission-modes.md), BioRouter can inject the restricted six-tool Workspace roster as derived session state. Explicitly enabling Workspace unlocks the full roster, and that explicit choice is never downgraded to delegation-only mode.
 
 ### Turning on the full surface
 
@@ -113,13 +113,13 @@ Some capability changes ask you first **in every permission mode, including Full
 
 A confirmation card appears when a `workspace_set_tools` call:
 
-- **adds a process-spawning extension** (Developer, Computer Controller, Code Execution, and anything the config describes as running a command), or one that sends the conversation's traffic to a remote endpoint;
-- **removes a security-relevant extension** — today Workspace Control itself or the Extension Manager, both of which are how a change stays visible from inside the target;
+- **adds a process-spawning capability or extension** (Developer, Computer Controller, Code Execution, and anything the config describes as running a command), or one that sends the conversation's traffic to a remote endpoint;
+- **removes a security-relevant capability** — today Workspace Control itself or the Extension Manager, both of which are how a change stays visible from inside the target;
 - **removes an extension you configured explicitly** in `config.yaml`;
 - **switches the conversation's provider**, which sends its whole stored history to that provider's endpoint;
 - **adds a skill**, which injects instructions into the target's prompt.
 
-The same rule covers `workspace_open { new: { extensions: […] } }`, because minting a new conversation with the grant baked in — and a `prompt` that starts it running immediately — is the easier route to the same capability.
+The same rule covers `workspace_open { new: { extensions: […] } }`. The field name is retained for compatibility and may carry capability or extension identifiers; the effective classification remains visible in the new conversation.
 
 The card names the target conversation and the specific reason, and says outright that it appears in every mode.
 
@@ -183,7 +183,7 @@ That is why enabling Workspace Control in the desktop app raises a one-time, dis
 - [Workspace control](../../agent-loop/workspace-control.md) — the how-to companion to this page: arranging tabs, panes and windows, delegating, the caps you will meet, and the terminal path.
 - [Workspace Control tool reference](../../agent-loop/workspace-control-tools.md) — the developer-facing contract for the same eight tools: exact arguments, defaults and clamps, every refusal string, and the two places a tool reports success it did not earn.
 - [Subagents](../../agent-loop/subagents.md) — the glass-box tab, steering a child, the fan-out cap, and the `subagent_status` migration note.
-- [Chat Recall extension](chat-recall.md) — the complementary tool for searching past conversations by content.
+- [Chat Recall capability](chat-recall.md) — the complementary tool for searching past conversations by content.
 - [Tool routing](../../agent-loop/tool-routing.md) — the routing table that separates Workspace Control from Chat Recall, Memory and the knowledge base.
 - [Permission modes](../../security/permission-modes.md) — which modes allow autonomous delegation and how mutating tools are graded.
 - [Agent workspace control (BR-71 design)](../../agent-loop/designs/agent-workspace-control.md) — the design of record, including the §5 permissions and abuse-resistance analysis.

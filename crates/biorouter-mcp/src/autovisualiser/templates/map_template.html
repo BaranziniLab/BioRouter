@@ -9,119 +9,65 @@
     <!-- prettier-ignore -->
     <script>{{COMMON}}</script>
     <style>
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f5f7fa;
-            color: #333;
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            overflow: hidden;
-        }
-        
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }
-        
-        .header h1 {
-            margin: 0 0 10px 0;
-            font-size: 2.5em;
-            font-weight: 300;
-        }
-        
-        .header p {
-            margin: 0;
-            font-size: 1.1em;
-            opacity: 0.9;
-        }
-        
-        #map {
-            width: 100%;
-            height: 600px;
-            border-radius: 0 0 12px 12px;
-        }
-        
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: clamp(12px, 2.5vw, 28px); background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        .container { max-width: 1200px; min-width: 0; margin: 0 auto; }
+        h1, .chart-title { margin: 0 0 14px; font-size: clamp(18px, 2vw, 22px); font-weight: 600; line-height: 1.3; text-align: left; overflow-wrap: anywhere; }
+        .figure-subtitle { margin: -6px 0 14px; color: var(--muted); overflow-wrap: anywhere; }
+        .figure-scroll { max-width: 100%; overflow: auto; }
+        svg { display: block; }
+        .tooltip { position: absolute; white-space: pre-line; opacity: 0; pointer-events: none; }
+        .figure-data { max-width: 1200px; margin: 16px auto 0; padding-top: 10px; border-top: 1px solid var(--border); }
+        summary { width: fit-content; color: var(--muted); cursor: pointer; }
+        .table-scroll { max-height: 360px; overflow: auto; margin-top: 10px; }
+        table { width: 100%; min-width: 560px; border-collapse: collapse; font-size: 14px; text-align: left; }
+        caption { text-align: left; color: var(--muted); padding-bottom: 8px; overflow-wrap: anywhere; }
+        th, td { padding: 7px 10px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+        th { font-weight: 600; overflow-wrap: normal; }
+        td { font-variant-numeric: tabular-nums; }
+        .numeric { white-space: nowrap; }
+        button { color: inherit; font: inherit; }
+        button:focus-visible, summary:focus-visible, .figure-scroll:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+        .stats-panel { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--muted); }
+        .stat-card, .stat-item { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+        .stat-value { font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--text); }
+        .stat-title, .stat-label { font-size: 12px; }
+        .chart-legend, .legend-items { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 12px; }
+        .legend-panel { margin-top: 14px; }
+        .legend-title { font-weight: 500; }
+        .legend-item { display: flex; align-items: baseline; gap: 6px; max-width: 100%; min-width: 0; border: 0; padding: 2px 0; background: none; cursor: pointer; text-align: left; }
+        .legend-label { min-width: 0; overflow-wrap: anywhere; }
+        .legend-value { color: var(--muted); font-variant-numeric: tabular-nums; }
+        .legend-color { width: 14px; height: 3px; flex: 0 0 14px; align-self: center; }
+        .legend-item[aria-pressed="false"] { opacity: 0.55; text-decoration: line-through; }
+        #map { width: 100%; height: clamp(360px, 65vh, 600px); background: var(--surface); }
+        .custom-popup { font: 14px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+        .custom-popup h3 { margin: 0 0 8px; font-size: 16px; }
+        .custom-popup p { margin: 5px 0; overflow-wrap: anywhere; }
+        .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--surface); color: var(--text); }
+        .marker-cluster { border-radius: 50%; background: var(--surface); border: 1px solid var(--muted); }
+        .marker-cluster div { width: 30px; height: 30px; margin: 4px; border-radius: 50%; text-align: center; font-size: 14px; line-height: 30px; background: var(--surface); color: var(--text); }
+        .custom-marker { font-family: inherit; }
         .leaflet-control-layers-toggle {
             background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='26' height='26' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linejoin='round'%3E%3Cpath d='M12 2 2 7l10 5 10-5-10-5Z'/%3E%3Cpath d='m2 12 10 5 10-5'/%3E%3Cpath d='m2 17 10 5 10-5'/%3E%3C/svg%3E") !important;
-        }
-        
-        .custom-popup {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        }
-        
-        .custom-popup h3 {
-            margin: 0 0 10px 0;
-            color: #333;
-        }
-        
-        .custom-popup p {
-            margin: 5px 0;
-            color: #666;
-        }
-        
-        .marker-cluster-small {
-            background-color: rgba(181, 226, 140, 0.6);
-        }
-        
-        .marker-cluster-small div {
-            background-color: rgba(110, 204, 57, 0.6);
-        }
-        
-        .marker-cluster-medium {
-            background-color: rgba(241, 211, 87, 0.6);
-        }
-        
-        .marker-cluster-medium div {
-            background-color: rgba(240, 194, 12, 0.6);
-        }
-        
-        .marker-cluster-large {
-            background-color: rgba(253, 156, 115, 0.6);
-        }
-        
-        .marker-cluster-large div {
-            background-color: rgba(241, 128, 23, 0.6);
-            color: white;
-            text-align: center;
-            line-height: 40px;
-            font-weight: bold;
-        }
-        
-        .marker-cluster {
-            border-radius: 50%;
-        }
-        
-        /* MarkerCluster CSS */
-        .marker-cluster-small div,
-        .marker-cluster-medium div,
-        .marker-cluster-large div {
-            width: 30px;
-            height: 30px;
-            margin-left: 5px;
-            margin-top: 5px;
-            text-align: center;
-            border-radius: 15px;
-            font: 12px "Helvetica Neue", Arial, Helvetica, sans-serif;
-        }
-    </style>
+        }    </style>
 </head>
 <body>
     <div class="container">
-        <div id="map"></div>
+        <h1 id="figureTitle">Mapped locations</h1>
+        <p class="figure-subtitle" id="figureSubtitle" hidden></p>
+        <div id="map" aria-label="Mapped locations"></div>
     </div>
 
+    <details class="figure-data">
+        <summary>View figure data</summary>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Figure data"><table id="figureData"></table></div>
+    </details>
+
     <script>
+
+        BioRouterViz.applyPageTheme();
+
         // Data from the tool
         const mapData = {{MAP_DATA}};
         
@@ -132,7 +78,7 @@
         function initMap() {
             const defaultMarkerSvg = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(
                 '<svg xmlns="http://www.w3.org/2000/svg" width="25" height="41" viewBox="0 0 25 41">' +
-                '<path fill="#4f7cff" stroke="#fff" stroke-width="2" d="M12.5 1C6.1 1 1 6.1 1 12.5 1 22 12.5 40 12.5 40S24 22 24 12.5C24 6.1 18.9 1 12.5 1Z"/>' +
+                '<path fill="' + BioRouterViz.palette[0] + '" stroke="#fff" stroke-width="2" d="M12.5 1C6.1 1 1 6.1 1 12.5 1 22 12.5 40 12.5 40S24 22 24 12.5C24 6.1 18.9 1 12.5 1Z"/>' +
                 '<circle cx="12.5" cy="12.5" r="4.5" fill="#fff"/></svg>'
             );
             L.Icon.Default.mergeOptions({
@@ -144,7 +90,7 @@
             // Determine initial center and zoom
             let initialLat = mapData.center ? mapData.center.lat : 39.8283;
             let initialLng = mapData.center ? mapData.center.lng : -98.5795;
-            let initialZoom = mapData.zoom || 4;
+            let initialZoom = mapData.zoom ?? 4;
             
             map = L.map('map').setView([initialLat, initialLng], initialZoom);
             
@@ -208,45 +154,43 @@
             
             markers.forEach(point => {
                 // Create custom icon based on value
-                const value = point.value || 1;
+                const value = point.value ?? 1;
                 const size = Math.max(10, Math.min(30, (value / maxValue) * 30));
                 const color = point.color || getColorByValue(value, maxValue);
                 
+                const bubble = document.createElement('div');
+                bubble.style.cssText = 'display:flex;align-items:center;justify-content:center;border-radius:50%;border:1px solid var(--bg);font-size:14px;font-weight:500;';
+                bubble.style.backgroundColor = color;
+                bubble.style.width = size + 'px'; bubble.style.height = size + 'px';
+                bubble.style.color = BioRouterViz.theme === 'dark' ? '#1b1b19' : '#ffffff';
+                const label = point.label || String(value > 1000 ? Math.round(value / 1000) + 'k' : value);
+                const measure = document.createElement('canvas').getContext('2d');
+                measure.font = '14px ' + getComputedStyle(document.body).fontFamily;
+                if (size >= 24 && measure.measureText(label).width <= size - 6) bubble.textContent = label;
                 const customIcon = L.divIcon({
-                    className: 'custom-marker',
-                    html: `<div style="
-                        background-color: ${color};
-                        width: ${size}px;
-                        height: ${size}px;
-                        border-radius: 50%;
-                        border: 2px solid white;
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        color: white;
-                        font-weight: bold;
-                        font-size: ${Math.max(8, size * 0.4)}px;
-                    ">${point.label || (value > 1000 ? Math.round(value/1000) + 'k' : value)}</div>`,
-                    iconSize: [size, size],
-                    iconAnchor: [size/2, size/2]
+                    className: 'custom-marker', html: bubble.outerHTML,
+                    iconSize: [size, size], iconAnchor: [size / 2, size / 2]
                 });
                 
                 const marker = L.marker([point.lat, point.lng], { 
-                    icon: point.useDefaultIcon ? new L.Icon.Default() : customIcon 
+                    icon: point.useDefaultIcon ? new L.Icon.Default() : customIcon,
+                    alt: point.name || point.label || 'Mapped observation',
+                    title: point.name || point.label || 'Mapped observation'
                 });
                 
                 // Create popup content if provided
-                if (point.popup || point.name || point.description) {
-                    const popupContent = point.popup || `
-                        <div class="custom-popup">
-                            ${point.name ? `<h3>${point.name}</h3>` : ''}
-                            ${point.value !== undefined ? `<p><strong>Value:</strong> ${point.value.toLocaleString()}</p>` : ''}
-                            <p><strong>Location:</strong> ${point.lat.toFixed(4)}, ${point.lng.toFixed(4)}</p>
-                            ${point.description ? `<p><strong>Description:</strong> ${point.description}</p>` : ''}
-                        </div>
-                    `;
-                    marker.bindPopup(popupContent);
+                if (point.popup) {
+                    marker.bindPopup(point.popup);
+                } else {
+                    const popup = document.createElement('div'); popup.className = 'custom-popup';
+                    const heading = document.createElement('h3'); heading.textContent = point.name || point.label || 'Mapped observation';
+                    popup.appendChild(heading);
+                    [point.value === undefined ? null : 'Value: ' + point.value.toLocaleString(),
+                        'Location: ' + point.lat.toFixed(4) + ', ' + point.lng.toFixed(4), point.description]
+                        .filter((text) => text != null).forEach((text) => {
+                            const line = document.createElement('p'); line.textContent = text; popup.appendChild(line);
+                        });
+                    marker.bindPopup(popup);
                 }
                 
                 // Add to cluster group or directly to map
@@ -263,19 +207,18 @@
             }
             
             // Fit map to marker bounds if autoFit is enabled
-            if (mapData.autoFit !== false && markers.length > 0) {
-                const group = new L.featureGroup(markers.map(m => L.marker([m.lat, m.lng])));
-                map.fitBounds(group.getBounds().pad(0.1));
-            }
+            fitMarkerBounds();
         }
         
+        function fitMarkerBounds() {
+            if (mapData.autoFit === false || !mapData.markers.length) return;
+            const bounds = L.latLngBounds(mapData.markers.map((point) => [point.lat, point.lng]));
+            map.fitBounds(bounds.pad(0.1), { maxZoom: 16, animate: false });
+        }
+
         function getColorByValue(value, maxValue) {
-            const ratio = value / maxValue;
-            if (ratio > 0.8) return '#d73027';
-            if (ratio > 0.6) return '#f46d43';
-            if (ratio > 0.4) return '#fdae61';
-            if (ratio > 0.2) return '#74add1';
-            return '#4575b4';
+            const alpha = Math.round((0.55 + Math.max(0, Math.min(1, value / maxValue)) * 0.45) * 255);
+            return BioRouterViz.palette[0] + alpha.toString(16).padStart(2, '0');
         }
         
         // Initialize everything when page loads
@@ -284,6 +227,20 @@
             BioRouterViz.guard(function () {
                 initMap();
                 renderMarkers();
+                document.getElementById('figureTitle').textContent = mapData.title || 'Mapped locations';
+                if (mapData.subtitle) {
+                    const subtitle = document.getElementById('figureSubtitle');
+                    subtitle.textContent = mapData.subtitle; subtitle.hidden = false;
+                }
+                BioRouterViz.renderFigureData(document.getElementById('figureData'), ['Name', 'Latitude (°)', 'Longitude (°)', 'Value', 'Description'],
+                    mapData.markers.map((point) => [point.name || point.label, point.lat, point.lng, point.value, point.description]),
+                    'Mapped observations; marker size represents value when supplied.');
+                let previousWidth = document.getElementById('map').clientWidth;
+                new ResizeObserver(() => {
+                    const width = document.getElementById('map').clientWidth;
+                    if (width === previousWidth) return;
+                    previousWidth = width; map.invalidateSize(); fitMarkerBounds();
+                }).observe(document.getElementById('map'));
                 // Leaflet needs a redraw once it knows its real size, and the
                 // iframe needs the reported height so its dimensions match the map.
                 setTimeout(function () {

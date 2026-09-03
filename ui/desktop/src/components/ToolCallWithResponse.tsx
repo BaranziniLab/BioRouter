@@ -17,7 +17,7 @@ import {
   ToolResponseMessageContent,
   NotificationEvent,
 } from '../types/message';
-import { cn, snakeToTitleCase } from '../utils';
+import { cn, toolIdentifierToTitleCase } from '../utils';
 import { LoadingStatus } from './ui/Dot';
 import { ChevronRight, FlaskConical } from './icons/app-icons';
 import MCPUIResourceRenderer from './MCPUIResourceRenderer';
@@ -62,7 +62,12 @@ type ExecutedToolCall = {
   /** The real error text for a failed call. */
   error?: string;
   resultBytes?: number;
+  todoTask?: { id: string; title: string };
 };
+
+const MAX_EXECUTED_ARGUMENT_BYTES = 2048 + 3; // Backend cap plus a UTF-8 ellipsis.
+const MAX_EXECUTED_TASK_ID_BYTES = 64;
+const MAX_EXECUTED_TASK_TITLE_BYTES = 512;
 
 type ResultMeta = UiMeta & {
   'biorouter/tool-calls'?: unknown;
@@ -114,7 +119,7 @@ function recordOf(value: unknown): Record<string, unknown> | null {
 function normalizeToolGraph(value: unknown): ToolGraphNode[] {
   if (!Array.isArray(value)) return [];
 
-  return value.flatMap((candidate, index) => {
+  return value.flatMap((candidate) => {
     const node = recordOf(candidate);
     if (!node) return [];
 
@@ -127,10 +132,7 @@ function normalizeToolGraph(value: unknown): ToolGraphNode[] {
 
     return [
       {
-        tool:
-          typeof node.tool === 'string' && node.tool.trim()
-            ? node.tool
-            : `Unknown tool ${index + 1}`,
+        tool: typeof node.tool === 'string' && node.tool.trim() ? node.tool : 'Unspecified tool',
         description:
           typeof node.description === 'string' && node.description.trim()
             ? node.description
@@ -139,6 +141,43 @@ function normalizeToolGraph(value: unknown): ToolGraphNode[] {
       },
     ];
   });
+}
+
+function isBoundedMetadataText(value: unknown, maxBytes: number): value is string {
+  if (typeof value !== 'string' || !value.length || value.length > maxBytes) return false;
+  let bytes = 0;
+  for (const character of value) {
+    const point = character.codePointAt(0) ?? 0;
+    if (point >= 0xd800 && point <= 0xdfff) return false;
+    bytes += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+    if (bytes > maxBytes) return false;
+  }
+  return true;
+}
+
+function normalizeExecutedTodoTask(record: Record<string, unknown>): ExecutedToolCall['todoTask'] {
+  if (
+    record.tool !== 'todo__todo_update' ||
+    record.status !== 'ok' ||
+    !isBoundedMetadataText(record.args, MAX_EXECUTED_ARGUMENT_BYTES)
+  ) {
+    return undefined;
+  }
+  const args = parsedCallArguments(record.args);
+  const task = recordOf(record.todo_task);
+  if (!args || Array.isArray(args) || typeof args.id !== 'string' || !task || Array.isArray(task)) {
+    return undefined;
+  }
+  const id = args.id.replace(/^#/, '');
+  if (
+    !isBoundedMetadataText(id, MAX_EXECUTED_TASK_ID_BYTES) ||
+    task.id !== id ||
+    !isBoundedMetadataText(task.title, MAX_EXECUTED_TASK_TITLE_BYTES) ||
+    !task.title.trim()
+  ) {
+    return undefined;
+  }
+  return { id, title: task.title };
 }
 
 /**
@@ -157,6 +196,7 @@ function normalizeExecutedCalls(value: unknown): ExecutedToolCall[] {
         status: record.status === 'error' ? 'error' : 'ok',
         error: typeof record.error === 'string' && record.error.trim() ? record.error : undefined,
         resultBytes: typeof record.result_bytes === 'number' ? record.result_bytes : undefined,
+        todoTask: normalizeExecutedTodoTask(record),
       },
     ];
   });
@@ -642,7 +682,7 @@ export type ToolCallSummaryInput = {
 
 const MAX_SUMMARY_VALUE_LENGTH = 96;
 
-const humanize = (value: string): string => snakeToTitleCase(value.replace(/[-.]/g, '_'));
+const humanize = toolIdentifierToTitleCase;
 
 const stringifySummaryValue = (value: unknown): string => {
   if (typeof value === 'string') return value;
@@ -656,6 +696,32 @@ const compactValue = (value: unknown, maxLength = MAX_SUMMARY_VALUE_LENGTH): str
   if (text.length <= maxLength) return text;
   const keep = Math.max(12, Math.floor((maxLength - 1) / 2));
   return `${text.slice(0, keep)}…${text.slice(-keep)}`;
+};
+
+const toolGraphNodeLabel = ({ tool, description }: ToolGraphNode): string => {
+  const text = description.replace(/\s+/g, ' ').trim();
+  const placeholder =
+    text === 'No description was provided.' ||
+    /^(?:tool(?: call)?|step|update|updating|task|operation)(?:\s+(?:tool(?: call)?|step|update|updating|task|operation))?\s*(?:(?:number|no\.?)\s*)?#?\s*\d+(?:\s+of\s+\d+)?[.!]?$/i.test(
+      text
+    );
+  return placeholder
+    ? humanize(tool.replace(/(?:__|[/\\])/g, '_'))
+        .replace(/\s+/g, ' ')
+        .trim()
+    : text;
+};
+
+const summarizeToolGraph = (graph: ToolGraphNode[]): string => {
+  const descriptions = graph.map(toolGraphNodeLabel);
+  const actions = [...new Set(descriptions)];
+  const shorten = (text: string, limit: number): string => {
+    const characters = Array.from(text);
+    return characters.length <= limit ? text : `${characters.slice(0, limit - 1).join('')}…`;
+  };
+  if (actions.length === 1) return shorten(actions[0], MAX_SUMMARY_VALUE_LENGTH);
+  const actionLimit = Math.floor((MAX_SUMMARY_VALUE_LENGTH - 3) / 2);
+  return `${shorten(actions[0], actionLimit)} → ${shorten(actions[actions.length - 1], actionLimit)}`;
 };
 
 const basename = (value: unknown): string => {
@@ -730,10 +796,195 @@ const summarizeSearchQuery = (value: unknown): string | null => {
   return compactValue(value);
 };
 
-export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
+const namedArgument = (args: Record<string, unknown>, keys: string[]): string | null => {
+  const value = firstPresent(args, keys);
+  return value === undefined ? null : compactValue(value);
+};
+
+const namedEntity = (args: Record<string, unknown>, keys: string[]): string | null => {
+  const value = namedArgument(args, keys);
+  if (!value || /\s/.test(value)) return value;
+  const versioned = value.match(/^(.+?)[-_]v?(\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?)$/);
+  const name = versioned?.[1] ?? value;
+  const label = humanize(
+    name.replace(/^(spoke|playwright|codegraph|cdw|ucsfomop)agent$/i, '$1_agent')
+  );
+  return versioned ? `${label} v${versioned[2]}` : label;
+};
+
+const countNamedArguments = (args: Record<string, unknown>, key: string): number =>
+  Array.isArray(args[key]) ? args[key].length : 0;
+
+const todoTaskTitle = (args: Record<string, unknown>, toolResult: unknown): string | null => {
+  const replacement = namedArgument(args, ['text']);
+  if (replacement) return replacement;
+  if (getToolResultError(toolResult)) return null;
+  const id = String(args.id ?? '').replace(/^#/, '');
+  for (const content of getToolResultContent(toolResult)) {
+    const item = recordOf(content);
+    if (item?.type !== 'text' || typeof item.text !== 'string') continue;
+    try {
+      const task = recordOf(recordOf(JSON.parse(item.text))?.task);
+      if (task?.id === id && typeof task.text === 'string' && task.text.trim()) {
+        return compactValue(task.text);
+      }
+    } catch {
+      // Older transcripts contain a plain-text acknowledgement, without task details.
+    }
+  }
+  return null;
+};
+
+const compactExecutedTaskTitle = (title: string): string => {
+  const characters = Array.from(title.replace(/\s+/g, ' ').trim());
+  if (characters.length <= MAX_SUMMARY_VALUE_LENGTH) return characters.join('');
+  const keep = Math.floor((MAX_SUMMARY_VALUE_LENGTH - 1) / 2);
+  return `${characters.slice(0, keep).join('')}…${characters.slice(-keep).join('')}`;
+};
+
+const summarizeTodoCall = (
+  toolName: string,
+  args: Record<string, unknown>,
+  toolResult: unknown,
+  executedTitle?: string
+): string | null => {
+  if (toolName === 'plan_write') return 'Updating the work plan';
+  if (toolName === 'todo_write') return 'Replacing the task list';
+  if (toolName === 'todo_add') {
+    const count = countNamedArguments(args, 'items');
+    return count > 0 ? `Adding ${count} task${count === 1 ? '' : 's'}` : 'Adding tasks';
+  }
+  if (toolName !== 'todo_update') return null;
+
+  const id = namedArgument(args, ['id']);
+  const title = executedTitle ?? todoTaskTitle(args, toolResult);
+  const task = title ? `“${title}”` : id ? `task ${id.startsWith('#') ? id : `#${id}`}` : 'a task';
+  const status = namedArgument(args, ['status']);
+  if (status === 'completed') return `Marking ${task} complete`;
+  if (status === 'in_progress') return `Starting ${task}`;
+  if (status === 'pending') return `Returning ${task} to pending`;
+  if (namedArgument(args, ['text'])) return `Renaming ${task}`;
+  return `Updating ${task}`;
+};
+
+const summarizeExtensionManagerCall = (
+  toolName: string,
+  args: Record<string, unknown>
+): string | null => {
+  const extension = namedEntity(args, ['extension_name', 'registry_id']);
+
+  if (toolName === 'manage_extensions') {
+    const action = namedArgument(args, ['action']);
+    if (action === 'enable') return extension ? `Attaching ${extension}` : 'Attaching an extension';
+    if (action === 'disable')
+      return extension ? `Detaching ${extension}` : 'Detaching an extension';
+    return extension ? `Managing ${extension}` : 'Managing extensions';
+  }
+  if (toolName === 'install_extension') {
+    const label = extension ? `Installing ${extension}` : 'Installing an extension';
+    return args.enable === false ? `${label} without attaching it` : label;
+  }
+  if (toolName === 'delete_extension_package') {
+    // The count comes FIRST because the Rust side merges both arguments:
+    // `preflight_delete_registry_ids` does `requested.insert(0, registry_id)`,
+    // so a call carrying `registry_id` AND `registry_ids` deletes all of them.
+    // Naming the singular as soon as it is present would report a three-package
+    // delete as one. Same shape in `removeSkillPackage` below.
+    const total =
+      countNamedArguments(args, 'registry_ids') + (namedArgument(args, ['registry_id']) ? 1 : 0);
+    if (total > 1) return `Removing ${total} extension packages`;
+    if (extension) return `Removing extension package ${extension}`;
+    return total === 1 ? 'Removing 1 extension package' : 'Removing an extension package';
+  }
+  // One tool now, and the summary reads off the ARGUMENT rather than the name:
+  // browsing is this call with no query. The retired name stays in the match
+  // because persisted transcripts still hold calls made under it.
+  if (
+    toolName === 'search_marketplace_extensions' ||
+    toolName === 'browse_marketplace_extensions'
+  ) {
+    const query = namedArgument(args, ['query']);
+    return query ? `Searching extensions for ${query}` : 'Browsing available extensions';
+  }
+  if (toolName === 'search_available_extensions')
+    return 'Listing extensions available to this chat';
+  return null;
+};
+
+const summarizeSkillsCall = (toolName: string, args: Record<string, unknown>): string | null => {
+  const skill = namedEntity(args, ['name', 'registry_id']);
+
+  // `setSkillEnabled` carries the verb in `enabled`; the retired pair carried it
+  // in the name, and persisted transcripts still hold both.
+  if (
+    toolName === 'setSkillEnabled' ||
+    toolName === 'hotLoadSkill' ||
+    toolName === 'hotUnloadSkill'
+  ) {
+    const enabling = toolName === 'hotLoadSkill' || args?.enabled === true;
+    if (enabling)
+      return skill ? `Loading skill ${skill} into this chat` : 'Loading a skill into this chat';
+    return skill ? `Unloading skill ${skill} from this chat` : 'Unloading a skill from this chat';
+  }
+  if (toolName === 'searchMarketplaceSkills' || toolName === 'browseMarketplaceSkills') {
+    const query = namedArgument(args, ['query']);
+    return query ? `Searching skills for ${query}` : 'Browsing available skills';
+  }
+  if (toolName === 'installMarketplaceSkill') {
+    const label = skill ? `skill ${skill}` : 'a skill';
+    return args.dry_run === true ? `Previewing installation of ${label}` : `Installing ${label}`;
+  }
+  if (toolName === 'importSkillPackage') {
+    const source = namedArgument(args, ['file_path', 'url']);
+    const label = source ? `skill package ${basename(source)}` : 'a skill package';
+    return args.dry_run === true ? `Previewing installation of ${label}` : `Installing ${label}`;
+  }
+  if (toolName === 'removeSkillPackage') {
+    // `preflight_removal_targets` merges `name` into `names` the same way
+    // `delete_extension_package` merges its pair, so the count leads here too.
+    const total = countNamedArguments(args, 'names') + (namedArgument(args, ['name']) ? 1 : 0);
+    if (total > 1) return `Removing ${total} skill packages`;
+    if (skill) return `Removing skill package ${skill}`;
+    return total === 1 ? 'Removing 1 skill package' : 'Removing a skill package';
+  }
+  return null;
+};
+
+const summarizeBrowserTabs = (args: Record<string, unknown>): string => {
+  const action = namedArgument(args, ['action']);
+  if (action === 'list') return 'Listing browser tabs';
+  if (action === 'new') return 'Opening a new browser tab';
+  if (action === 'close') return 'Closing a browser tab';
+  if (action === 'select') return 'Selecting a browser tab';
+  return 'Managing browser tabs';
+};
+
+const summarizeSafeArguments = (args: Record<string, unknown>): string | null => {
+  const hidden = /(?:content|text|body|password|secret|token|credential|api[_-]?key)/i;
+  const parts = Object.entries(args)
+    .filter(
+      ([key, value]) => !hidden.test(key) && ['string', 'number', 'boolean'].includes(typeof value)
+    )
+    .slice(0, 2)
+    .map(([key, value]) => `${humanize(key)}: ${compactValue(value, 40)}`);
+  return parts.length > 0 ? parts.join(' · ') : null;
+};
+
+const withSafeArguments = (label: string, args: Record<string, unknown>): string => {
+  const details = summarizeSafeArguments(args);
+  return details ? `${label} · ${details}` : label;
+};
+
+export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: unknown): string {
   const args = toolCall.arguments ?? {};
   const toolName = getToolName(toolCall.name);
   const displayName = humanize(toolName);
+  const toolWords = toolName
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[_-]/)
+    .filter(Boolean);
+  const hasToolWord = (...words: string[]) => words.some((word) => toolWords.includes(word));
   const target = firstPresent(args, [
     'path',
     'file',
@@ -743,10 +994,6 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
     'uri',
     'url',
     'ref_id',
-    'documentId',
-    'spreadsheetId',
-    'threadId',
-    'id',
   ]);
   const targetName = target ? basename(target) : null;
   const command = firstPresent(args, ['cmd', 'command', 'script']);
@@ -755,6 +1002,39 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
   // Before the generic name-matching chain: a delegation must be identifiable
   // by its task, not by the fact that it is a delegation.
   if (toolName === 'subagent') return summarizeDelegation(args);
+
+  const todoSummary = toolCall.name.startsWith('todo__')
+    ? summarizeTodoCall(toolName, args, toolResult)
+    : null;
+  if (todoSummary) return todoSummary;
+
+  const extensionManagerSummary = toolCall.name.startsWith('extensionmanager__')
+    ? summarizeExtensionManagerCall(toolName, args)
+    : null;
+  if (extensionManagerSummary) return extensionManagerSummary;
+
+  const skillsSummary = toolCall.name.startsWith('skills__')
+    ? summarizeSkillsCall(toolName, args)
+    : null;
+  if (skillsSummary) return skillsSummary;
+
+  if (toolCall.name.startsWith('knowledge__')) {
+    const baseId = namedArgument(args, ['kb_id']);
+    const base = baseId === 'soul' ? 'Soul' : baseId;
+    if (toolName === 'kb_get_active') return 'Checking the primary knowledge base';
+    if (toolName === 'kb_list_bases') return 'Listing knowledge bases';
+    if (toolName === 'kb_list_pages')
+      return `Listing pages in ${base ?? 'the primary knowledge base'}`;
+    if (toolName === 'kb_read_page') {
+      return `Reading ${targetName ?? 'a knowledge page'}${base ? ` in ${base}` : ''}`;
+    }
+    if (toolName === 'kb_search') {
+      const query = namedArgument(args, ['query']);
+      return `Searching ${base ?? 'knowledge bases'}${query ? ` for ${query}` : ''}`;
+    }
+  }
+
+  if (toolName === 'browser_tabs') return summarizeBrowserTabs(args);
 
   // code_execution's module tools and the skills loader carry their targets
   // under argument names (`module_path`, `terms`, `name`) the generic chains
@@ -776,81 +1056,105 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
     return skillName ? `Loading skill ${skillName}` : 'Loading a skill';
   }
 
-  if (toolName === 'text_editor' || toolName.includes('editor')) {
+  if (toolName === 'text_editor' || hasToolWord('editor')) {
     if (args.command === 'view' && targetName) return `Reading ${targetName}`;
     if (args.command === 'write' && targetName) return `Writing ${targetName}`;
     if (args.command === 'str_replace' && targetName) return `Editing ${targetName}`;
     if (targetName) return `Updating ${targetName}`;
   }
 
-  if (toolName === 'shell' || toolName === 'exec_command' || toolName.includes('command')) {
+  if (toolName === 'shell' || toolName === 'exec_command' || hasToolWord('command')) {
     return command ? `Running ${compactValue(command)}` : `Running a command`;
   }
 
   if (toolName === 'apply_patch') return `Applying a code patch`;
   if (toolName === 'view_image')
     return targetName ? `Inspecting ${targetName}` : `Inspecting an image`;
-  if (toolName.includes('screenshot')) return `Capturing a screenshot`;
+  if (hasToolWord('screenshot')) return `Capturing a screenshot`;
   if (toolName.includes('imagegen')) return `Generating an image`;
 
-  if (toolName.includes('read') || toolName.includes('open') || toolName.includes('fetch')) {
-    return targetName ? `Reading ${targetName}` : `${displayName}`;
+  if (hasToolWord('read')) {
+    return targetName
+      ? `Reading ${targetName}`
+      : withSafeArguments(`Reading ${displayName.replace(/^Read /, '')}`, args);
   }
 
-  if (toolName.includes('write') || toolName.includes('update') || toolName.includes('edit')) {
-    return targetName ? `Updating ${targetName}` : `${displayName}`;
+  if (hasToolWord('open')) {
+    const subject = displayName.replace(/^Open /, '').replace(/^In /, 'in ');
+    return targetName ? `Opening ${targetName}` : withSafeArguments(`Opening ${subject}`, args);
   }
 
-  if (toolName.includes('create')) {
-    return targetName ? `Creating ${targetName}` : `${displayName}`;
+  if (hasToolWord('fetch')) {
+    return targetName
+      ? `Fetching ${targetName}`
+      : withSafeArguments(`Fetching ${displayName.replace(/^Fetch /, '')}`, args);
   }
 
-  if (toolName.includes('delete') || toolName.includes('remove')) {
-    return targetName ? `Removing ${targetName}` : `${displayName}`;
+  if (hasToolWord('write', 'update', 'edit')) {
+    return targetName
+      ? `Updating ${targetName}`
+      : withSafeArguments(`Updating ${displayName.replace(/^(Write|Update|Edit) /, '')}`, args);
   }
 
-  if (toolName.includes('list')) {
-    return targetName ? `Listing ${targetName}` : `${displayName}`;
+  if (hasToolWord('create')) {
+    return targetName
+      ? `Creating ${targetName}`
+      : withSafeArguments(`Creating ${displayName.replace(/^Create /, '')}`, args);
   }
 
-  if (toolName.includes('search') || toolName.includes('query')) {
+  if (hasToolWord('delete', 'remove')) {
+    return targetName
+      ? `Removing ${targetName}`
+      : withSafeArguments(`Removing ${displayName.replace(/^(Delete|Remove) /, '')}`, args);
+  }
+
+  if (hasToolWord('list')) {
+    return targetName
+      ? `Listing ${targetName}`
+      : withSafeArguments(`Listing ${displayName.replace(/^List /, '')}`, args);
+  }
+
+  if (hasToolWord('search', 'query')) {
     const query = summarizeSearchQuery(
       firstPresent(args, ['q', 'query', 'search_query', 'image_query', 'pattern', 'name'])
     );
-    return query ? `Searching for ${query}` : `${displayName}`;
+    return query
+      ? `Searching for ${query}`
+      : withSafeArguments(`Searching ${displayName.replace(/^(Search|Query) /, '')}`, args);
   }
 
-  if (toolName.includes('download')) {
-    return targetName ? `Downloading ${targetName}` : `${displayName}`;
+  if (hasToolWord('download')) {
+    return targetName
+      ? `Downloading ${targetName}`
+      : withSafeArguments(`Downloading ${displayName.replace(/^Download /, '')}`, args);
   }
 
-  if (toolName.includes('send') || toolName.includes('post')) {
+  if (hasToolWord('send', 'post')) {
     return targetName ? `Sending to ${targetName}` : `${displayName}`;
   }
 
-  if (toolName === 'sheets_tool' || toolName.includes('sheet')) {
-    return operation ? `${humanize(compactValue(operation))} in a spreadsheet` : displayName;
+  if (toolName === 'sheets_tool' || hasToolWord('sheet', 'sheets', 'spreadsheet')) {
+    return operation
+      ? `${humanize(compactValue(operation))} in a spreadsheet`
+      : withSafeArguments(displayName, args);
   }
 
-  if (toolName === 'docs_tool' || toolName.includes('doc')) {
-    return operation ? `${humanize(compactValue(operation))} in a document` : displayName;
+  if (toolName === 'docs_tool' || hasToolWord('doc', 'docs', 'document', 'documents')) {
+    return operation
+      ? `${humanize(compactValue(operation))} in a document`
+      : withSafeArguments(displayName, args);
   }
 
   if (toolName === 'execute_code') {
     const toolGraph = normalizeToolGraph(args.tool_graph);
-    if (toolGraph.length > 0) {
-      if (toolGraph.length === 1) return compactValue(toolGraph[0].description);
-      return `Coordinating ${toolGraph.length} tool steps`;
-    }
+    if (toolGraph.length > 0) return summarizeToolGraph(toolGraph);
     return `Executing code`;
   }
 
   if (targetName) return `${displayName} for ${targetName}`;
 
-  const keys = Object.keys(args).filter((key) => !['content', 'text', 'body'].includes(key));
-  if (keys.length > 0) {
-    return `${displayName} with ${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '…' : ''}`;
-  }
+  const safeArguments = summarizeSafeArguments(args);
+  if (safeArguments) return `${displayName} · ${safeArguments}`;
 
   return displayName;
 }
@@ -962,9 +1266,12 @@ function ToolCallView({
   // conditionals mean plan and execution can legitimately differ.
   const resultMeta = (toolResponse?.toolResult as ToolResultWithMeta | undefined)?.value?._meta;
   const executedCalls = normalizeExecutedCalls(resultMeta?.['biorouter/tool-calls']);
+  const droppedCallCount = resultMeta?.['biorouter/tool-calls-dropped'];
   const droppedExecutedCalls =
-    typeof resultMeta?.['biorouter/tool-calls-dropped'] === 'number'
-      ? resultMeta['biorouter/tool-calls-dropped']
+    typeof droppedCallCount === 'number' &&
+    Number.isSafeInteger(droppedCallCount) &&
+    droppedCallCount >= 0
+      ? droppedCallCount
       : 0;
 
   // Status is derived from FACTS — is there a result, and is the turn still
@@ -1030,7 +1337,7 @@ function ToolCallView({
   };
 
   const toolCallStatus = getToolCallStatus(loadingStatus);
-  const toolSummary = summarizeToolCall(toolCall);
+  const toolSummary = summarizeToolCall(toolCall, toolResponse?.toolResult);
   const latestProgress = progressEntries[0]?.message;
   const latestLog = logs && logs.length > 0 ? logs[logs.length - 1] : undefined;
   const liveDetail =
@@ -1138,7 +1445,7 @@ function ToolCallView({
         return null;
       })()}
 
-      {executedCalls.length > 0 && (
+      {(executedCalls.length > 0 || droppedExecutedCalls > 0) && (
         <div className="border-t border-border-subtle">
           <ExecutedCallsView calls={executedCalls} dropped={droppedExecutedCalls} />
         </div>
@@ -1233,25 +1540,19 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
   // drift from them. Both hooks are non-throwing outside a provider.
   const codeStyle = codeThemesByFamily[useThemeFamily()][useResolvedTheme()];
 
-  const renderGraph = () => {
-    if (toolGraph.length === 0) return null;
-
-    const lines: string[] = [];
-
-    toolGraph.forEach((node, index) => {
-      const deps =
-        node.depends_on.length > 0 ? ` (uses ${node.depends_on.map((d) => d + 1).join(', ')})` : '';
-      lines.push(`${index + 1}. ${node.tool}: ${node.description}${deps}`);
-    });
-
-    return lines.join('\n');
-  };
-
   return (
     <div className={TOOL_INTERIOR_CLASS}>
-      <pre className="overflow-x-auto whitespace-pre-wrap text-secondary text-text-muted">
-        {renderGraph()}
-      </pre>
+      <ol className="overflow-x-auto whitespace-pre-wrap text-secondary text-text-muted">
+        {toolGraph.map((node, index) => {
+          const dependencies = node.depends_on.map((dependency) => dependency + 1).join(', ');
+          return (
+            <li key={index} title={`Tool: ${node.tool}`}>
+              {index + 1}. {toolGraphNodeLabel(node)}
+              {dependencies && ` (uses ${dependencies})`}
+            </li>
+          );
+        })}
+      </ol>
       {code && (
         <div className="-mx-3 mt-2 border-t border-border-subtle">
           <ToolCallExpandable
@@ -1315,20 +1616,26 @@ function parsedCallArguments(args?: string): Record<string, ToolCallArgumentValu
  * attributable to a specific call instead of reading as "the step failed".
  */
 function ExecutedCallsView({ calls, dropped }: { calls: ExecutedToolCall[]; dropped: number }) {
+  const total = calls.length + dropped;
   return (
     <ToolCallExpandable
       label={
-        <span className={TOOL_DISCLOSURE_LABEL_CLASS}>View executed calls ({calls.length})</span>
+        <span className={TOOL_DISCLOSURE_LABEL_CLASS}>
+          {dropped > 0
+            ? `View recorded calls (${calls.length} of ${total} executed)`
+            : `View executed calls (${calls.length})`}
+        </span>
       }
       isStartExpanded={false}
     >
       <div className={TOOL_INTERIOR_CLASS}>
         {calls.map((call, index) => (
-          <ExecutedCallRow key={index} call={call} index={index} />
+          <ExecutedCallRow key={index} call={call} />
         ))}
         {dropped > 0 && (
           <div className="py-1 text-supporting text-text-muted">
-            …and {dropped} more call{dropped === 1 ? '' : 's'} not recorded.
+            {dropped} executed call{dropped === 1 ? ' was' : 's were'} not recorded, so{' '}
+            {dropped === 1 ? 'its' : 'their'} details are unavailable.
           </div>
         )}
       </div>
@@ -1357,8 +1664,18 @@ function ExecutedCallArguments({ args }: { args: Record<string, ToolCallArgument
   );
 }
 
-function ExecutedCallRow({ call, index }: { call: ExecutedToolCall; index: number }) {
+function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
   const parsedArgs = parsedCallArguments(call.args);
+  const taskSummary = call.todoTask
+    ? summarizeTodoCall(
+        'todo_update',
+        parsedArgs ?? {},
+        undefined,
+        compactExecutedTaskTitle(call.todoTask.title)
+      )
+    : null;
+  const summary =
+    taskSummary ?? summarizeToolCall({ name: call.tool, arguments: parsedArgs ?? {} });
   return (
     <ToolCallExpandable
       label={
@@ -1369,9 +1686,7 @@ function ExecutedCallRow({ call, index }: { call: ExecutedToolCall; index: numbe
             className="mt-px"
           />
           <span className="min-w-0 flex-1 truncate text-text-muted">
-            <span className="text-text-default">
-              {index + 1}. {call.tool}
-            </span>
+            <span className="text-text-default">{summary}</span>
             {call.status === 'error' && ' · failed'}
           </span>
         </span>
@@ -1391,11 +1706,7 @@ function ExecutedCallRow({ call, index }: { call: ExecutedToolCall; index: numbe
         )}
         {call.error && (
           <div className="mt-2">
-            <NotificationContent
-              status="error"
-              title={`${call.tool} failed`}
-              message={call.error}
-            />
+            <NotificationContent status="error" title={`${summary} failed`} message={call.error} />
           </div>
         )}
       </div>
@@ -1453,7 +1764,16 @@ function ToolResultView({
           />
         )}
         {hasResource(result) && (
-          <pre className="font-sans text-sm whitespace-pre-wrap break-all overflow-x-auto max-w-full">
+          // ⚠ NOT `font-sans`. This is `JSON.stringify(…, null, 2)` in a <pre>
+          // — the same value class the other two raw dumps in this file render
+          // in `font-mono text-code` (ExecutedCallArguments above, and the
+          // malformed-args fallback beside it). All three are disclosures of
+          // ONE tool call, so expanding "View output" and "View executed calls"
+          // put pretty-printed JSON on screen in two typefaces at once.
+          // A proportional face also defeats the point of the <pre>: the
+          // two-space indent `stringify` emits only reads as structure when the
+          // glyphs are fixed-width. D-31 in styles/main.css: mono earns code.
+          <pre className="font-mono text-code whitespace-pre-wrap break-all overflow-x-auto max-w-full">
             {JSON.stringify(result, null, 2)}
           </pre>
         )}

@@ -56,7 +56,7 @@ The lint workflow (`kb_lint`) reports pages with no inbound links as orphans
 
 ## Ingest workflow
 
-When `kb_ingest_source` is called:
+For a source already staged by the ingestion pipeline:
 
 1. Read `raw/<source-id>/source.md` and `meta.yaml`.
 2. Decide what biomedical entities and concepts the source touches.
@@ -81,24 +81,25 @@ When `kb_ingest_source` is called:
 
 ## Query workflow
 
-When `kb_query` is called:
+To answer a knowledge question:
 
 1. Search the knowledge folder for pages matching the question's entities/concepts.
 2. Read the most relevant pages.
 3. Compose an answer that cites pages with `[[knowledge-link]]`.
-4. If `file_as_page=true`, write the answer to `knowledge/notes/<slug>.md` and
-   include it in the response. Append a log entry of kind `query`.
+4. Write an answer page only when the user asks to save it, and only after this
+   retired base has been replaced with a supported OKF or BioOKF base. Follow
+   that base's current schema; do not write new content using this legacy format.
 
 ## Lint workflow
 
-When `kb_lint` is called:
+`kb_lint` is read-only and refuses retired pre-OKF bases. The historical checks
+below describe the old format, not an available repair workflow:
 
 1. Find pages with no inbound links (orphans).
 2. Find pages flagged `contradiction: true`.
 3. Find concepts mentioned in source pages but lacking their own page.
 4. Find sources >90 days old whose claims are not referenced anywhere.
-5. Return a report. If `autofix=true`, fix the easy ones (add missing
-   cross-references, create stub pages) and append a `lint` log entry.
+5. Return a report without edits. Do not pass repair parameters to `kb_lint`.
 
 ## Tone
 

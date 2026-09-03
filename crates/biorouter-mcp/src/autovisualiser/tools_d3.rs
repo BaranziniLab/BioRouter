@@ -297,7 +297,7 @@ Example:
         render(
             "ui://network/graph",
             "network",
-            "Network graph rendered inline for the user.",
+            "Network graph created for the artifact panel.",
             include_str!("templates/network_template.html"),
             &[Asset::D3],
             &[("{{NETWORK_DATA}}", &data_json)],
@@ -347,7 +347,7 @@ Example:
         render(
             "ui://heatmap/chart",
             "heatmap",
-            "Heatmap rendered inline for the user.",
+            "Heatmap created for the artifact panel.",
             include_str!("templates/heatmap_template.html"),
             &[Asset::D3],
             &[("{{HEATMAP_DATA}}", &data_json)],
@@ -360,6 +360,7 @@ Example:
         description = r#"Render a sunburst chart for hierarchical part-of-whole data (radial treemap).
 
 Data is a hierarchical root: {name, value?, children?: [...], category?}. Leaf nodes need a value.
+All supplied values must be finite and non-negative. Aggregate values add a node's own value and its descendants' values.
 
 Example:
 {"name":"Body","children":[{"name":"Brain","children":[{"name":"Cortex","value":40},{"name":"Cerebellum","value":10}]},{"name":"Heart","value":20}]}"#
@@ -374,11 +375,23 @@ Example:
         if depth > MAX_TREE_DEPTH {
             return Err(invalid("Sunburst nesting is too deep."));
         }
+        let mut pending = vec![d];
+        while let Some(node) = pending.pop() {
+            if node
+                .value
+                .is_some_and(|value| !value.is_finite() || value < 0.0)
+            {
+                return Err(invalid("Sunburst values must be finite and non-negative."));
+            }
+            if let Some(children) = &node.children {
+                pending.extend(children);
+            }
+        }
         let data_json = js_value(d)?;
         render(
             "ui://sunburst/chart",
             "sunburst",
-            "Sunburst rendered inline for the user.",
+            "Sunburst created for the artifact panel.",
             include_str!("templates/sunburst_template.html"),
             &[Asset::D3],
             &[("{{SUNBURST_DATA}}", &data_json)],
@@ -409,7 +422,7 @@ Example:
         render(
             "ui://dendrogram/chart",
             "dendrogram",
-            "Dendrogram rendered inline for the user.",
+            "Dendrogram created for the artifact panel.",
             include_str!("templates/dendrogram_template.html"),
             &[Asset::D3],
             &[("{{DENDROGRAM_DATA}}", &data_json)],
@@ -422,6 +435,8 @@ Example:
         description = r#"Render a calendar heatmap (GitHub-style) showing a value for each day.
 
 - values (required): [{date: "YYYY-MM-DD", value}]
+- Dates must be valid calendar dates spanning no more than 3,660 days.
+- For duplicate dates, the last supplied value is used in the cells and scale.
 - title (optional)
 
 Example:
@@ -436,11 +451,36 @@ Example:
             return Err(invalid("Calendar heatmap requires at least one day."));
         }
         check_limit(d.values.len(), MAX_VALUES, "days")?;
+        let dates = d
+            .values
+            .iter()
+            .map(|day| {
+                chrono::NaiveDate::parse_from_str(&day.date, "%Y-%m-%d")
+                    .ok()
+                    .filter(|date| {
+                        day.date.len() == 10 && date.format("%Y-%m-%d").to_string() == day.date
+                    })
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "Invalid calendar date '{}'; use YYYY-MM-DD.",
+                            day.date
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (first, last) = dates
+            .iter()
+            .fold((dates[0], dates[0]), |(first, last), date| {
+                (first.min(*date), last.max(*date))
+            });
+        if (last - first).num_days() + 1 > 3660 {
+            return Err(invalid("Calendar date range exceeds 3,660 days. Choose a shorter range; no dates were silently omitted."));
+        }
         let data_json = js_value(d)?;
         render(
             "ui://calendar/heatmap",
             "calendar",
-            "Calendar heatmap rendered inline for the user.",
+            "Calendar heatmap created for the artifact panel.",
             include_str!("templates/calendar_template.html"),
             &[Asset::D3],
             &[("{{CALENDAR_DATA}}", &data_json)],
@@ -453,6 +493,7 @@ Example:
         description = r#"Render box plots comparing the distribution/spread of several groups (quartiles, whiskers, outliers).
 
 - groups (required): [{label, values: [numbers]}]
+- Mixed empty groups are retained as no-data groups. Observations must be finite.
 - title, yAxisLabel (optional)
 
 Example:
@@ -469,11 +510,24 @@ Example:
         if d.groups.iter().all(|g| g.values.is_empty()) {
             return Err(invalid("Box plot groups require at least one value."));
         }
+        check_limit(d.groups.len(), MAX_LABELS, "groups")?;
+        check_limit(
+            d.groups.iter().map(|group| group.values.len()).sum(),
+            MAX_VALUES,
+            "observations",
+        )?;
+        if d.groups
+            .iter()
+            .flat_map(|group| &group.values)
+            .any(|value| !value.is_finite())
+        {
+            return Err(invalid("Box plot observations must be finite numbers."));
+        }
         let data_json = js_value(d)?;
         render(
             "ui://boxplot/chart",
             "boxplot",
-            "Box plot rendered inline for the user.",
+            "Box plot created for the artifact panel.",
             include_str!("templates/boxplot_template.html"),
             &[Asset::D3],
             &[("{{BOXPLOT_DATA}}", &data_json)],
@@ -486,6 +540,7 @@ Example:
         description = r#"Render a word cloud where size encodes weight/frequency.
 
 - words (required): [{text, weight}]
+- Terms must be non-blank; weights must be finite and non-negative. Zero is allowed. Terms that do not fit remain in the bounded data table, with an explicit omission count.
 - title (optional)
 
 Example:
@@ -500,11 +555,18 @@ Example:
             return Err(invalid("Word cloud requires at least one word."));
         }
         check_limit(d.words.len(), MAX_LABELS, "words")?;
+        if d.words.iter().any(|word| {
+            word.text.trim().is_empty() || !word.weight.is_finite() || word.weight < 0.0
+        }) {
+            return Err(invalid(
+                "Word cloud terms must be non-blank and weights finite and non-negative.",
+            ));
+        }
         let data_json = js_value(d)?;
         render(
             "ui://wordcloud/chart",
             "wordcloud",
-            "Word cloud rendered inline for the user.",
+            "Word cloud created for the artifact panel.",
             include_str!("templates/wordcloud_template.html"),
             &[Asset::D3],
             &[("{{WORDCLOUD_DATA}}", &data_json)],
@@ -538,7 +600,7 @@ Example:
         render(
             "ui://kaplanmeier/chart",
             "kaplan_meier",
-            "Kaplan–Meier plot rendered inline for the user.",
+            "Kaplan–Meier plot created for the artifact panel.",
             include_str!("templates/kaplan_meier_template.html"),
             &[Asset::D3],
             &[("{{KM_DATA}}", &data_json)],
@@ -551,6 +613,7 @@ Example:
         description = r#"Render a forest plot of effect sizes with confidence intervals (meta-analysis, odds/hazard ratios).
 
 - rows (required): [{label, estimate, lower, upper, weight?}]
+- Weights must be finite and non-negative. Omitted weights default to 1; zero retains a minimum visible marker.
 - referenceLine (optional): null line (default 1.0; use 0 for mean differences)
 - logScale (optional): log x-axis (typical for ratios)
 - title, xAxisLabel (optional)
@@ -568,6 +631,11 @@ Example:
         }
         check_limit(d.rows.len(), MAX_LABELS, "rows")?;
         for r in &d.rows {
+            if r.weight
+                .is_some_and(|weight| !weight.is_finite() || weight < 0.0)
+            {
+                return Err(invalid("Forest weights must be finite and non-negative."));
+            }
             if r.lower > r.upper {
                 return Err(invalid(format!(
                     "Forest row '{}' has lower bound greater than upper bound.",
@@ -585,7 +653,7 @@ Example:
         render(
             "ui://forest/chart",
             "forest",
-            "Forest plot rendered inline for the user.",
+            "Forest plot created for the artifact panel.",
             include_str!("templates/forest_template.html"),
             &[Asset::D3],
             &[("{{FOREST_DATA}}", &data_json)],

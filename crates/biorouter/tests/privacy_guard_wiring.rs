@@ -280,6 +280,25 @@ const REGISTRY: &[Guard] = &[
                        a second copy of that pair of conditions is how one of them goes \
                        missing",
             },
+            Site {
+                file: "crates/biorouter/src/agents/workspace_inspector.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "the one crossing whose target does not exist yet. \
+                       `workspace_open { new: { prompt } }` mints its conversation and \
+                       writes into it in a single call, so there is no row for \
+                       `needs_disclosure` to consult and no ledger entry that could make \
+                       it a SECOND crossing — a call that creates its own target is a \
+                       first crossing outright. It therefore asks the pure predicate \
+                       directly, against `Public`, which is the classification a new \
+                       conversation is born at. \
+                       ⚠ This site was ABSENT while the tool was not, which is exactly \
+                       the hole the census exists to make visible from the other \
+                       direction: a private chat could write caller-chosen text into a \
+                       new public conversation with no card and no ledger entry, while \
+                       `workspace_send_prompt` with the same text into the same session \
+                       raised one",
+            },
         ],
     },
     // ------------------------------------------------------- the HTTP reach
@@ -438,6 +457,13 @@ const REGISTRY: &[Guard] = &[
                 kind: SiteKind::Guard,
                 what: "subagent spawn, which builds a whole new agent and so cannot inherit a \
                        capability",
+            },
+            Site {
+                file: "crates/biorouter/src/marketplace.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "the live-registry anti-downgrade path, which raises a registry row to any \
+                       stricter built-in or previously learned extension authority",
             },
             Site {
                 file: "crates/biorouter/src/privacy/refusal.rs",
@@ -644,15 +670,18 @@ const REGISTRY: &[Guard] = &[
                 file: "crates/biorouter/src/agents/extension_manager_extension.rs",
                 counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
-                what: "TWO enable doors in one file. `check_enable_allowed`, i.e. \
-                       `extensionmanager__manage_extensions {action:\"enable\"}`, which is \
-                       the gate plus a not-found branch; and #117's install tool, which \
-                       gates the ATTACH rather than the install. The second is a door and \
-                       not a duplicate: installing writes bytes to disk and is not an \
-                       enable, so a refusal there must still leave the extension correctly \
-                       installed for a session that may legitimately use it. Gating the \
-                       install instead would have made the privacy answer decide whether \
-                       the download happened",
+                what: "#117's marketplace install tool, which gates the ATTACH rather than \
+                       the install. Installing writes bytes to disk and is not an enable, \
+                       so a refusal must still leave the package correctly installed. The \
+                       manager's ordinary enable door uses the stricter \
+                       `extension_manager_enable_refusal`, tracked in the next row. \
+                       TWO calls, and the second is not redundant: the first asks with the \
+                       REGISTRY's name, which is all that is known before the download, and \
+                       the registry's name and the installed one demonstrably differ in \
+                       production (SPOKEAgent advertises `spokeagent-0.4.1` and installs as \
+                       `spokeagent`). The second is a `guard_attach` closure asking the same \
+                       gate again with the manifest's real name, at the only point it is \
+                       knowable. Deleting either leaves a name the gate was never asked about",
             },
             Site {
                 file: "crates/biorouter/src/agents/workspace_extension.rs",
@@ -664,6 +693,21 @@ const REGISTRY: &[Guard] = &[
                        nothing",
             },
         ],
+    },
+    Guard {
+        ident: "extension_manager_enable_refusal",
+        defined_in: "crates/biorouter/src/privacy/refusal.rs",
+        decides: "whether Extension Manager may attach an extension: the shared enable rule \
+                  plus an absolute public-to-private boundary and the narrow proof-backed \
+                  override for a public extension's persisted operator pin",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter/src/agents/extension_manager_extension.rs",
+            counts: c(1, 0, 0),
+            kind: SiteKind::Guard,
+            what: "`check_enable_allowed_impl`, shared by the ordinary manager enable path \
+                   and its proof-backed retry after a user approval",
+        }],
     },
     Guard {
         ident: "tier_refuses",

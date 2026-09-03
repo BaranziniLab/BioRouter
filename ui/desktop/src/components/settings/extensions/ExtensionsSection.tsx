@@ -216,7 +216,7 @@ export default function ExtensionsSection({
         // as soon as it is shown, so the shared 3s default would let decision
         // 14's only suggestion expire long before its message can be read. It
         // stays until the user dismisses it — which is also what separates it
-        // from `toggleExtensionDefault`'s own "Extension enabled in defaults"
+        // from `toggleExtensionDefault`'s own "Extension enabled for new chats"
         // toast, fired for the same click and gone after 3s.
         { autoClose: false }
       );

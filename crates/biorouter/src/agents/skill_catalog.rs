@@ -40,9 +40,10 @@
 //! 1. the **root set** — recomputed on every read, because `Paths::config_dir`
 //!    resolves `BIOROUTER_PATH_ROOT` at call time and a newly installed
 //!    extension adds a root;
-//! 2. the **modification time of every watched directory** — each root plus
-//!    every bundle directory the last scan found, since creating
-//!    `<bundle>/<child>/` bumps the bundle's mtime and not the root's.
+//! 2. the **modification time of every watched path** — each root, every bundle
+//!    directory, each component parent, and every package record. Creating
+//!    `<bundle>/<child>/` bumps the component parent; editing only an
+//!    authoritative package record bumps neither directory.
 //!
 //! ⚠ **mtime has one-second granularity on some filesystems**, so a write in
 //! the same second as the scan can be missed. That window is closed for every
@@ -136,7 +137,10 @@ pub struct SkillRoot {
 pub fn roots() -> Vec<SkillRoot> {
     let mut roots = Vec::new();
 
-    if let Some(home) = dirs::home_dir() {
+    // `Paths::home_dir`, not `dirs::home_dir`: the latter ignores the
+    // environment on Windows, so a relocated home silently did not apply there
+    // and this function kept reading the real profile's `.claude/skills`.
+    if let Some(home) = crate::config::paths::Paths::home_dir() {
         roots.push(SkillRoot {
             path: home.join(".claude/skills"),
             source: SkillSource::new(SkillSourceKind::ClaudeHome, None),
@@ -310,6 +314,94 @@ pub struct PackageSummary {
 /// package record.
 pub const PACKAGE_RECORD_FILE: &str = "biorouter-package.json";
 
+#[derive(Deserialize)]
+struct PackageComponentDirectory {
+    name: String,
+    directory: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PackageComponentDiscovery {
+    Legacy,
+    Invalid,
+    Valid(Vec<PackageComponentSkillFile>),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PackageComponentSkillFile {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// Exact component entry points declared by a package record.  This is the
+/// bounded alternative to recursively searching an imported repository.
+pub(crate) fn package_component_skill_files(bundle_dir: &Path) -> PackageComponentDiscovery {
+    let record_path = bundle_dir.join(PACKAGE_RECORD_FILE);
+    match std::fs::symlink_metadata(&record_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return PackageComponentDiscovery::Legacy;
+        }
+        Err(_) => return PackageComponentDiscovery::Invalid,
+    }
+    let Ok(raw) = std::fs::read_to_string(&record_path) else {
+        return PackageComponentDiscovery::Invalid;
+    };
+    let Ok(record) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return PackageComponentDiscovery::Invalid;
+    };
+    let Some(record) = record.as_object() else {
+        return PackageComponentDiscovery::Invalid;
+    };
+    let Some(raw_components) = record.get("components") else {
+        return PackageComponentDiscovery::Legacy;
+    };
+    let Ok(components) =
+        serde_json::from_value::<Vec<PackageComponentDirectory>>(raw_components.clone())
+    else {
+        return PackageComponentDiscovery::Invalid;
+    };
+    if components.is_empty() {
+        return PackageComponentDiscovery::Invalid;
+    }
+
+    let Ok(canonical_bundle) = std::fs::canonicalize(bundle_dir) else {
+        return PackageComponentDiscovery::Invalid;
+    };
+    let mut skill_files = Vec::with_capacity(components.len());
+    let mut names = HashSet::new();
+    let mut directories = HashSet::new();
+    for component in components {
+        if component.name.is_empty()
+            || !names.insert(component.name.clone())
+            || component.directory.contains('\\')
+            || !directories.insert(component.directory.clone())
+        {
+            return PackageComponentDiscovery::Invalid;
+        }
+        let relative = Path::new(&component.directory);
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return PackageComponentDiscovery::Invalid;
+        }
+        let skill_file = bundle_dir.join(relative).join("SKILL.md");
+        let Ok(canonical_skill) = std::fs::canonicalize(&skill_file) else {
+            return PackageComponentDiscovery::Invalid;
+        };
+        if !canonical_skill.starts_with(&canonical_bundle) || !canonical_skill.is_file() {
+            return PackageComponentDiscovery::Invalid;
+        }
+        skill_files.push(PackageComponentSkillFile {
+            name: component.name,
+            path: skill_file,
+        });
+    }
+    PackageComponentDiscovery::Valid(skill_files)
+}
+
 /// A complete answer to "what skills does this machine have, and which are on".
 #[derive(Debug, Clone)]
 pub struct SkillCatalog {
@@ -321,11 +413,11 @@ pub struct SkillCatalog {
     /// `Arc` so a `SkillsClient` can hold the map across an await without
     /// pinning the whole snapshot or copying every skill body.
     skills: Arc<HashMap<String, Skill>>,
-    /// Bundle directory name → its provenance and members.
-    bundles: BTreeMap<String, BundleRecord>,
+    /// Physical source root plus bundle directory name → provenance and members.
+    bundles: BTreeMap<(PathBuf, String), BundleRecord>,
     /// Source per root path, for attributing a skill to where it came from.
     root_sources: HashMap<PathBuf, SkillSource>,
-    /// (directory, mtime) pairs whose change means this snapshot is stale.
+    /// (path, mtime) pairs whose change means this snapshot is stale.
     watched: Vec<(PathBuf, Option<SystemTime>)>,
 }
 
@@ -358,17 +450,14 @@ impl SkillCatalog {
         // Bundles are derived from the discovery result rather than from a
         // second directory walk, so a bundle can never contain a member the
         // extension would not load (unparseable frontmatter, a shadowed name).
-        let mut bundles: BTreeMap<String, BundleRecord> = BTreeMap::new();
+        let mut bundles: BTreeMap<(PathBuf, String), BundleRecord> = BTreeMap::new();
         for skill in skills.values() {
             let Some(bundle_name) = skill.bundle_name.clone() else {
                 continue;
             };
-            let directory = skill
-                .directory
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| skill.source_root.join(&bundle_name));
-            let entry = bundles.entry(bundle_name).or_insert_with(|| BundleRecord {
+            let directory = skill.source_root.join(&bundle_name);
+            let key = (skill.source_root.clone(), bundle_name);
+            let entry = bundles.entry(key).or_insert_with(|| BundleRecord {
                 package: read_package_record(&directory),
                 directory,
                 source_root: skill.source_root.clone(),
@@ -383,6 +472,24 @@ impl SkillCatalog {
 
         let mut watched: Vec<PathBuf> = roots.iter().map(|root| root.path.clone()).collect();
         watched.extend(bundles.values().map(|record| record.directory.clone()));
+        watched.extend(
+            bundles
+                .values()
+                .map(|record| record.directory.join(PACKAGE_RECORD_FILE)),
+        );
+        for root in &existing {
+            if let Ok(entries) = std::fs::read_dir(root) {
+                watched.extend(entries.flatten().filter_map(|entry| {
+                    let record = entry.path().join(PACKAGE_RECORD_FILE);
+                    std::fs::symlink_metadata(&record).ok().map(|_| record)
+                }));
+            }
+        }
+        watched.extend(
+            skills
+                .values()
+                .filter_map(|skill| skill.directory.parent().map(Path::to_path_buf)),
+        );
         watched.sort();
         watched.dedup();
         let watched = watched
@@ -468,7 +575,7 @@ impl SkillCatalog {
         let bundles: Vec<CatalogBundle> = self
             .bundles
             .iter()
-            .map(|(name, record)| {
+            .map(|((_, name), record)| {
                 let state = compose_state(name, None, &machine_disabled, &hidden_contexts, over);
                 CatalogBundle {
                     name: name.clone(),
@@ -885,6 +992,259 @@ mod tests {
         // keeps that name — no prefix is added as a grouping mechanism (#115).
         assert!(bundle.skills.contains(&"media-use".to_string()));
         assert!(bundle.skills.contains(&"hyperframes".to_string()));
+    }
+
+    #[test]
+    fn same_named_bundles_keep_physical_ownership_and_metadata_separate() {
+        let temp = TempDir::new().unwrap();
+        let first_root = temp.path().join("a/skills");
+        let second_root = temp.path().join("z/skills");
+        write_skill(&first_root, "pack/alpha", "alpha", "First root");
+        write_skill(&second_root, "pack/beta", "beta", "Second root");
+        for (root, display_name, source_url) in [
+            (&first_root, "First Pack", "https://example.invalid/first"),
+            (
+                &second_root,
+                "Second Pack",
+                "https://example.invalid/second",
+            ),
+        ] {
+            fs::write(
+                root.join("pack").join(PACKAGE_RECORD_FILE),
+                serde_json::json!({
+                    "id": "pack",
+                    "displayName": display_name,
+                    "sourceUrl": source_url,
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+
+        let catalog = SkillCatalog::scan(
+            vec![
+                root_at(&second_root, biorouter_root()),
+                root_at(&first_root, biorouter_root()),
+            ],
+            1,
+        );
+        let view = catalog.view(&SessionSkillOverride::default());
+        let bundles: Vec<_> = authored_bundles(&view)
+            .into_iter()
+            .filter(|bundle| bundle.name == "pack")
+            .collect();
+
+        assert_eq!(bundles.len(), 2);
+        assert_eq!(bundles[0].directory, first_root.join("pack"));
+        assert_eq!(bundles[0].source_root, first_root);
+        assert_eq!(bundles[0].display_name, "First Pack");
+        assert_eq!(
+            bundles[0].package.as_ref().unwrap().source_url.as_deref(),
+            Some("https://example.invalid/first")
+        );
+        assert_eq!(bundles[1].directory, second_root.join("pack"));
+        assert_eq!(bundles[1].source_root, second_root);
+        assert_eq!(bundles[1].display_name, "Second Pack");
+        assert_eq!(
+            bundles[1].package.as_ref().unwrap().source_url.as_deref(),
+            Some("https://example.invalid/second")
+        );
+    }
+
+    #[test]
+    fn package_component_paths_cannot_escape_the_package_root() {
+        let temp = TempDir::new().unwrap();
+        let bundle = temp.path().join("bundle");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&bundle).unwrap();
+        write_skill(temp.path(), "outside", "outside", "Must remain outside");
+        fs::write(
+            bundle.join(PACKAGE_RECORD_FILE),
+            serde_json::json!({
+                "components": [{"name": "outside", "directory": "../outside"}],
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            package_component_skill_files(&bundle),
+            PackageComponentDiscovery::Invalid,
+            "an invalid package record must not fall back to broader discovery"
+        );
+        assert!(outside.join("SKILL.md").is_file());
+    }
+
+    #[test]
+    fn package_record_presence_distinguishes_legacy_from_invalid() {
+        let temp = TempDir::new().unwrap();
+        let bundle = temp.path().join("bundle");
+        fs::create_dir_all(&bundle).unwrap();
+        assert_eq!(
+            package_component_skill_files(&bundle),
+            PackageComponentDiscovery::Legacy
+        );
+
+        fs::write(
+            bundle.join(PACKAGE_RECORD_FILE),
+            r#"{"id":"legacy-metadata-only"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            package_component_skill_files(&bundle),
+            PackageComponentDiscovery::Legacy
+        );
+
+        for non_object_record in ["null", "[]", r#""scalar""#, "1", "true"] {
+            fs::write(bundle.join(PACKAGE_RECORD_FILE), non_object_record).unwrap();
+            assert_eq!(
+                package_component_skill_files(&bundle),
+                PackageComponentDiscovery::Invalid,
+                "a non-object package record must be invalid: {non_object_record}"
+            );
+        }
+
+        fs::write(
+            bundle.join(PACKAGE_RECORD_FILE),
+            r#"{"id":"invalid","components":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            package_component_skill_files(&bundle),
+            PackageComponentDiscovery::Invalid
+        );
+
+        fs::write(
+            bundle.join(PACKAGE_RECORD_FILE),
+            r#"{"id":"invalid","components":null}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            package_component_skill_files(&bundle),
+            PackageComponentDiscovery::Invalid
+        );
+
+        fs::write(bundle.join(PACKAGE_RECORD_FILE), "{not-json").unwrap();
+        assert_eq!(
+            package_component_skill_files(&bundle),
+            PackageComponentDiscovery::Invalid
+        );
+
+        #[cfg(unix)]
+        {
+            fs::remove_file(bundle.join(PACKAGE_RECORD_FILE)).unwrap();
+            std::os::unix::fs::symlink(
+                bundle.join("missing-record.json"),
+                bundle.join(PACKAGE_RECORD_FILE),
+            )
+            .unwrap();
+            assert_eq!(
+                package_component_skill_files(&bundle),
+                PackageComponentDiscovery::Invalid
+            );
+        }
+    }
+
+    #[test]
+    fn changing_only_the_authoritative_package_record_makes_the_catalog_stale() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        let package = root.join("package");
+        write_skill(&root, "package/alpha", "alpha", "First");
+        write_skill(&root, "package/beta", "beta", "Second");
+        let record = package.join(PACKAGE_RECORD_FILE);
+        fs::write(
+            &record,
+            serde_json::json!({"components": [
+                {"name": "alpha", "directory": "alpha"}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let roots = vec![root_at(&root, biorouter_root())];
+        let catalog = SkillCatalog::scan(roots.clone(), 1);
+        assert!(!catalog.is_stale(&roots));
+
+        fs::write(
+            &record,
+            serde_json::json!({"components": [
+                {"name": "beta", "directory": "beta"}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&record)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(SystemTime::now() + std::time::Duration::from_secs(2)),
+            )
+            .unwrap();
+
+        assert!(catalog.is_stale(&roots));
+    }
+
+    #[test]
+    fn an_invalid_package_record_is_watched_until_it_is_repaired() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        let package = root.join("package");
+        write_skill(&root, "package/alpha", "alpha", "First");
+        let record = package.join(PACKAGE_RECORD_FILE);
+        fs::write(&record, "{not-json").unwrap();
+        let roots = vec![root_at(&root, biorouter_root())];
+        let catalog = SkillCatalog::scan(roots.clone(), 1);
+        assert!(catalog.skills().get("alpha").is_none());
+        assert!(!catalog.is_stale(&roots));
+
+        fs::write(
+            &record,
+            serde_json::json!({"components": [
+                {"name": "alpha", "directory": "alpha"}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&record)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(SystemTime::now() + std::time::Duration::from_secs(2)),
+            )
+            .unwrap();
+
+        assert!(catalog.is_stale(&roots));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_package_record_symlink_is_invalid_and_watched_for_repair() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        let package = root.join("package");
+        write_skill(&root, "package/alpha", "alpha", "First");
+        let target = package.join("repaired-record.json");
+        let record = package.join(PACKAGE_RECORD_FILE);
+        std::os::unix::fs::symlink(&target, &record).unwrap();
+        let roots = vec![root_at(&root, biorouter_root())];
+        let catalog = SkillCatalog::scan(roots.clone(), 1);
+        assert!(catalog.skills().get("alpha").is_none());
+        assert!(!catalog.is_stale(&roots));
+
+        fs::write(
+            target,
+            serde_json::json!({"components": [
+                {"name": "alpha", "directory": "alpha"}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+
+        assert!(catalog.is_stale(&roots));
     }
 
     /// A bundle with no record is still a bundle. The importer is not a

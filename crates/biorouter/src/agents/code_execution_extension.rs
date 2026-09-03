@@ -1,6 +1,7 @@
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::extension_manager::get_parameter_names;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
+use crate::agents::platform_tools;
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -54,6 +55,9 @@ const MAX_TOOL_CALL_RECORD_TEXT_BYTES: usize = 2048;
 /// Byte cap for a recorded tool NAME — names are wire data from the script,
 /// so they need a bound of their own (real prefixed names are well under it).
 const MAX_TOOL_CALL_RECORD_NAME_BYTES: usize = 256;
+const MAX_TODO_TASK_TITLE_BYTES: usize = 512;
+const MAX_TODO_TASK_ID_BYTES: usize = 64;
+const MAX_TODO_TASK_INPUT_BYTES: usize = 16 * 1024;
 /// TOTAL serialized-byte budget for the whole `biorouter/tool-calls` array
 /// (Codex review of #28): the record-count and per-field caps alone still let
 /// 64 worst-case failure records reach ~¼ MB of meta, which persists in every
@@ -105,6 +109,45 @@ impl HostHooks for SandboxHooks {
     fn max_buffer_size(&self, _context: &mut Context) -> u64 {
         MAX_JS_ARRAY_BUFFER_BYTES
     }
+}
+
+/// What a script is told when it reaches for a `platform__*` tool (issue #141).
+///
+/// The sandbox cannot run these: they are dispatched by the agent loop, which
+/// is why `ExtensionManager::get_prefixed_tools_excluding` — the importable
+/// catalogue — has never listed them, exactly as it strips `workspace__subagent`
+/// for the same reason. Without this the model got `Module not found: platform`
+/// or `Tool not found`, neither of which names a next step, so it retried the
+/// import with a different spelling.
+///
+/// The second sentence is the load-bearing half: the direct call is a route the
+/// Code Execution filter does not close
+/// (`reply_parts::survives_code_execution_filter` exempts every
+/// `platform__*` name), so "call it directly" is advice the model can act on
+/// rather than a bare refusal.
+///
+/// ⚠ **What it must NOT do is promise the tool is in the roster.** Not removing
+/// something is not the same as it being there. This refusal fires on the name
+/// alone and knows nothing about
+/// [`platform_tools::PlatformToolGates`], which are per-agent state
+/// (`dispatch_sub_call` is a static fn with no path to them). Each platform tool
+/// is separately gated: with no `scheduler_service` there is no
+/// `platform__manage_schedule` in either list, and the same holds with Knowledge
+/// disabled, with `BIOROUTER_SESSION_BLOB_LAZY_LOAD` off, and under a
+/// coding-agent bridge surface. An earlier wording said Code Execution "leaves
+/// the platform tools in your tool list", full stop, and so told the model to
+/// call a tool it did not have. The wording below is true whichever way the
+/// gates fell.
+fn agent_loop_tool_refusal(named: &str) -> String {
+    format!(
+        "`{named}` is dispatched by the Biorouter agent loop, not by this sandbox, so there \
+         is no `{module}` module to import and it cannot be called from a script. Call the \
+         `{module}__…` tool directly instead: Code Execution mode does not remove the \
+         {module} tools from your tool list. Each one is separately gated by the capability \
+         it belongs to, so if it is not in your list it is unavailable in this conversation \
+         and no import or spelling will reach it.",
+        module = platform_tools::PLATFORM_EXTENSION_NAME
+    )
 }
 
 fn panic_payload_message(payload: &(dyn Any + Send)) -> Option<&str> {
@@ -1192,6 +1235,64 @@ pub struct CodeExecutionClient {
     context: PlatformExtensionContext,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct TodoTaskRecord {
+    id: String,
+    title: String,
+}
+
+fn todo_task_from_result(
+    tool_name: &str,
+    arguments: &str,
+    result: &CallToolResult,
+) -> Option<TodoTaskRecord> {
+    if tool_name != "todo__todo_update" || result.is_error.unwrap_or(false) {
+        return None;
+    }
+    let arguments: Value = serde_json::from_str(arguments).ok()?;
+    let requested_id = arguments.get("id")?.as_str()?;
+    let id = requested_id.strip_prefix('#').unwrap_or(requested_id);
+    if id.is_empty() || id.len() > MAX_TODO_TASK_ID_BYTES {
+        return None;
+    }
+    let mut remaining = MAX_TODO_TASK_INPUT_BYTES;
+    for content in result.content.iter().filter(|content| {
+        content
+            .audience()
+            .is_none_or(|audience| audience.contains(&Role::User))
+    }) {
+        let RawContent::Text(text) = &content.raw else {
+            continue;
+        };
+        remaining = remaining.checked_sub(text.text.len())?;
+        let Ok(value) = serde_json::from_str::<Value>(&text.text) else {
+            continue;
+        };
+        let Some(task) = value.get("task").and_then(Value::as_object) else {
+            continue;
+        };
+        if task.get("id").and_then(Value::as_str) != Some(id) {
+            continue;
+        }
+        let Some(title) = task.get("text").and_then(Value::as_str) else {
+            continue;
+        };
+        if title.trim().is_empty() {
+            continue;
+        }
+        let title = if title.len() <= MAX_TODO_TASK_TITLE_BYTES {
+            title.to_string()
+        } else {
+            truncate_record_text(title, MAX_TODO_TASK_TITLE_BYTES - '…'.len_utf8())
+        };
+        return Some(TodoTaskRecord {
+            id: id.to_string(),
+            title,
+        });
+    }
+    None
+}
+
 /// Truncate `text` to at most `max_bytes` bytes on a char boundary, marking
 /// the cut with an ellipsis. Records are UI telemetry, so a lossy-but-bounded
 /// copy beats an exact-but-unbounded one.
@@ -1230,6 +1331,9 @@ struct ToolCallRecord {
     /// Size of the result handed back to the script on success.
     #[serde(skip_serializing_if = "Option::is_none")]
     result_bytes: Option<usize>,
+    /// Presentation-only projection of a matching, user-visible Todo result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    todo_task: Option<TodoTaskRecord>,
 }
 
 impl ToolCallRecord {
@@ -1240,6 +1344,7 @@ impl ToolCallRecord {
             status: "ok",
             error: None,
             result_bytes: Some(result_bytes),
+            todo_task: None,
         }
     }
 
@@ -1262,6 +1367,7 @@ impl ToolCallRecord {
             status: "error",
             error: Some(error),
             result_bytes: None,
+            todo_task: None,
         }
     }
 
@@ -1626,16 +1732,16 @@ impl CodeExecutionClient {
             instructions: Some(indoc! {r#"
                 Use execute_code to CHAIN MULTIPLE DEPENDENT TOOL CALLS INTO ONE round-trip.
 
-                This extension exists to reduce round-trips when a task genuinely needs several
+                This capability exists to reduce round-trips when a task genuinely needs several
                 tool calls whose outputs feed each other, or real computation / control flow
                 (loops, conditionals, aggregation) over their results.
 
-                WHEN NOT TO USE THIS EXTENSION:
+                WHEN NOT TO USE THIS CAPABILITY:
                 - Do NOT use execute_code for basic file or system operations. Listing a directory,
                   reading or writing a single file, copying, moving, deleting, or finding files, and
-                  running a single command are simpler and clearer with the developer extension:
-                  call `developer/shell` (ls, cp, mv, rm, mkdir, rg) or `developer/text_editor`
-                  (view, write, str_replace) DIRECTLY, not wrapped in a JavaScript script.
+                  running a single command are simpler and clearer with the Developer capability
+                  when its effective roster includes `shell` or `text_editor`. Call the listed tool
+                  directly, not through JavaScript; if Developer is disabled, do not invent it.
                 - A single tool call is a single tool call. Only reach for execute_code once you
                   have two or more calls that must be chained, or logic to run between them.
 
@@ -1794,12 +1900,30 @@ impl CodeExecutionClient {
         let tools = self.get_tool_infos(Some(cap)).await;
         let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
 
+        // Issue #141: `platform` is *permanently* absent from this catalogue,
+        // not merely unknown, so "Module not found" sent the model looking for
+        // a spelling that does not exist. Both path shapes get the explanation,
+        // because the remedy is the same either way: stop importing and call
+        // the tool.
+        //
+        // Asked only where the ordinary lookup came up empty, so this can never
+        // shadow a real module: nothing reserves the `platform` extension key,
+        // and a refusal that fires ahead of the catalogue would hide an
+        // installed server that happened to normalize to it.
+        let explain_platform = |failed: &str| {
+            if parts.first() == Some(&platform_tools::PLATFORM_EXTENSION_NAME) {
+                agent_loop_tool_refusal(path)
+            } else {
+                failed.to_string()
+            }
+        };
+
         match parts.as_slice() {
             [server] => {
                 let server_tools: Vec<_> =
                     tools.iter().filter(|t| t.server_name == *server).collect();
                 if server_tools.is_empty() {
-                    return Err(format!("Module not found: {server}"));
+                    return Err(explain_platform(&format!("Module not found: {server}")));
                 }
                 let sigs: Vec<_> = server_tools.iter().map(|t| t.to_signature()).collect();
                 Ok(vec![Content::text(format!(
@@ -1811,7 +1935,7 @@ impl CodeExecutionClient {
                 let t = tools
                     .iter()
                     .find(|t| t.server_name == *server && t.tool_name == *tool)
-                    .ok_or_else(|| format!("Tool not found: {server}/{tool}"))?;
+                    .ok_or_else(|| explain_platform(&format!("Tool not found: {server}/{tool}")))?;
                 Ok(vec![Content::text(format!(
                     "// import * as {server} from \"{server}\";\n\n{}\n\n{}",
                     t.to_signature(),
@@ -1880,6 +2004,34 @@ impl CodeExecutionClient {
         Self::handle_search(&tools, &terms_vec, use_regex)
     }
 
+    /// Would these search terms have matched a `platform__*` tool, had the
+    /// catalogue ever contained one?
+    ///
+    /// The third discovery surface. `read_module("platform")` explains the dead
+    /// end; a *search* for the same capability hit it silently — "ingest" simply
+    /// matched nothing, with no pointer to the direct call, which is the same
+    /// dead end one function over. Scored with the caller's OWN matcher against
+    /// synthetic entries for the four tools, so a regex search and a phrase
+    /// search agree with each other and with the ranking next door, instead of
+    /// this hint having its own private idea of "matches".
+    fn platform_tool_search_hint(matcher: &ModuleSearchMatcher) -> Option<String> {
+        platform_tools::PLATFORM_TOOL_NAMES
+            .iter()
+            .find_map(|full_name| {
+                let (server_name, tool_name) = full_name.split_once("__")?;
+                let probe = ToolInfo {
+                    server_name: server_name.to_string(),
+                    tool_name: tool_name.to_string(),
+                    full_name: (*full_name).to_string(),
+                    description: String::new(),
+                    params: Vec::new(),
+                    return_type: String::new(),
+                };
+                (module_search_match_score(&probe, matcher) > 0).then(|| (*full_name).to_string())
+            })
+            .map(|matched| agent_loop_tool_refusal(&matched))
+    }
+
     fn handle_search(
         tools: &[ToolInfo],
         terms: &[String],
@@ -1901,26 +2053,40 @@ impl CodeExecutionClient {
                 .then_with(|| left.tool_name.cmp(&right.tool_name))
         });
 
+        // The catalogue can never contain a `platform__*` tool, so a search that
+        // was looking for one has to be told where it went — whether it matched
+        // nothing at all or matched something else instead.
+        let platform_hint = Self::platform_tool_search_hint(&matcher);
+
         if matching_tools.is_empty() {
             // An empty result set is a valid answer, not a tool failure (issue
             // #26): surfacing it as an error read as "broken tool" in the
             // transcript ([tool_error kind=tool_failure retryable=false]) and
             // fed the failure-streak counters for what was a perfectly good
             // search that simply matched nothing.
-            return Ok(vec![Content::text(format!(
+            let mut text = format!(
                 "No tools matched: {}. This catalog contains only the installed MCP tools, \
                  it does not include skills, web search, documents, or knowledge bases, and \
                  it does not answer questions. Try broader or different terms, or call \
                  read_module(\"<module>\") for a module you already know from the \
                  \"Modules:\" list.",
                 terms.join(", ")
-            ))]);
+            );
+            if let Some(hint) = platform_hint {
+                text.push_str("\n\n");
+                text.push_str(&hint);
+            }
+            return Ok(vec![Content::text(text)]);
         }
 
         let total_matches = matching_tools.len();
         matching_tools.truncate(MAX_MODULE_SEARCH_RESULTS);
 
-        let output = render_module_search_results(&matching_tools, total_matches);
+        let mut output = render_module_search_results(&matching_tools, total_matches);
+        if let Some(hint) = platform_hint {
+            output.push_str("\n\n");
+            output.push_str(&hint);
+        }
         Ok(vec![Content::text(output)])
     }
 
@@ -2052,12 +2218,9 @@ impl CodeExecutionClient {
 
     /// Dispatch one sub-call and report how it went.
     ///
-    /// Returns the script-facing result plus the two telemetry facts the caller
-    /// records. Telemetry may only carry USER-audience error text (Codex review
-    /// of #28): the script-facing strings here are built from assistant-audience
-    /// content, so `user_error` is the sole verbatim text a record may keep, and
-    /// `failure_kind` names the failure class for the sanitized placeholder when
-    /// the tool produced none.
+    /// Returns the script-facing result separately from user-visible telemetry.
+    /// Error text and the optional Todo title come only from User-audience or
+    /// untagged content, never from the assistant-facing value sent to the script.
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_sub_call(
         session_id: &str,
@@ -2067,11 +2230,41 @@ impl CodeExecutionClient {
         extension_manager: Option<&std::sync::Weak<crate::agents::ExtensionManager>>,
         collected_artifacts: &Arc<Mutex<CollectedArtifacts>>,
         cancellation_token: &CancellationToken,
-    ) -> (Result<String, String>, &'static str, Option<String>) {
+    ) -> (
+        Result<String, String>,
+        &'static str,
+        Option<String>,
+        Option<TodoTaskRecord>,
+    ) {
+        // Issue #141, as DEFENCE IN DEPTH — not as the path the model takes.
+        //
+        // A script cannot name an arbitrary tool: every sandbox tool call comes
+        // out of a generated catalogue binding, whose closure owns the
+        // `full_tool_name` it sends down `CALL_TX` (see `create_tool_function`),
+        // and the catalogue is `get_prefixed_tools_excluding`, which has never
+        // held a `platform__*` name. So the reachable dead end is the *import*,
+        // answered by `handle_read_module` / `handle_search_modules` above.
+        //
+        // This branch is what makes the guarantee hold if that ever stops being
+        // true — a future binding built from a wider list, or a caller of this
+        // function that is not `run_tool_handler`. Without it the answer would
+        // be `ExtensionManager`'s "Tool not found", which reads as a spelling
+        // mistake and gets retried; with it, the same remedy the import path
+        // gives. Placed ahead of the manager upgrade so the answer does not
+        // depend on a live manager: the tool would not be there either way.
+        if platform_tools::is_platform_tool_name(tool_name) {
+            return (
+                Err(agent_loop_tool_refusal(tool_name)),
+                "agent_loop_tool",
+                None,
+                None,
+            );
+        }
         let Some(manager) = extension_manager.and_then(std::sync::Weak::upgrade) else {
             return (
                 Err("Extension manager not available".to_string()),
                 "unavailable",
+                None,
                 None,
             );
         };
@@ -2090,17 +2283,23 @@ impl CodeExecutionClient {
                     let (value, kind, user) =
                         Self::completed_sub_call_outcome(tool_name, &result, collected_artifacts)
                             .await;
-                    (value, kind, user)
+                    let todo_task = value
+                        .as_ref()
+                        .ok()
+                        .and_then(|_| todo_task_from_result(tool_name, arguments, &result));
+                    (value, kind, user, todo_task)
                 }
                 Err(e) => (
                     Err(format!("Tool error from {tool_name}: {}", e.message)),
                     "tool_failure",
+                    None,
                     None,
                 ),
             },
             Err(e) => (
                 Err(format!("Dispatch error from {tool_name}: {e}")),
                 "dispatch_error",
+                None,
                 None,
             ),
         }
@@ -2228,7 +2427,7 @@ impl CodeExecutionClient {
                 .await;
                 continue;
             }
-            let (result, mut failure_kind, user_error) = Self::dispatch_sub_call(
+            let (result, mut failure_kind, user_error, todo_task) = Self::dispatch_sub_call(
                 &session_id,
                 cap,
                 &tool_name,
@@ -2257,7 +2456,11 @@ impl CodeExecutionClient {
             // `ToolCallRecord::failed`.
             {
                 let record = match &result {
-                    Ok(value) => ToolCallRecord::ok(&tool_name, &arguments, value.len()),
+                    Ok(value) => {
+                        let mut record = ToolCallRecord::ok(&tool_name, &arguments, value.len());
+                        record.todo_task = todo_task;
+                        record
+                    }
                     Err(_) => ToolCallRecord::failed(
                         &tool_name,
                         &arguments,
@@ -2295,36 +2498,26 @@ impl McpClientTrait for CodeExecutionClient {
                         results, in ONE execution. This is the purpose of this tool: fewer round-trips when a
                         task genuinely needs several calls whose outputs feed each other.
 
-                        DO NOT use this for basic file or system operations. Listing a directory, reading or
-                        writing a single file, copying, moving, deleting, or finding files, and running one
-                        command are simpler with the developer extension: call `developer/shell` (ls, cp, mv,
-                        rm, mkdir, rg) or `developer/text_editor` (view, write, str_replace) DIRECTLY instead
-                        of wrapping them in a script here.
-                        - WRONG: execute_code to `ls`, copy a file, or `rm`; use developer/shell directly.
-                        - WRONG: one execute_code call that wraps a single tool call; just call that tool.
+                        DO NOT use this for a basic operation that one effective direct tool already performs.
+                        - WRONG: one execute_code call that wraps a single tool call; call that tool directly.
                         - RIGHT: several dependent calls, or a loop/aggregation over their outputs, in one script.
 
                         EXAMPLE - Chain dependent calls with logic between them (ONE call):
                         ```javascript
-                        import { shell } from "developer";
-                        const branches = shell({ command: "git branch --format='%(refname:short)'" })
-                          .split("\n").filter(Boolean);
-                        const ahead = branches.map((b) => ({
-                          branch: b,
-                          count: shell({ command: `git rev-list --count main..${b}` }).trim(),
+                        import { list_items, inspect_item } from "module_name";
+                        const items = list_items({ state: "open" });
+                        const inspected = items.map((item) => ({
+                          item,
+                          details: inspect_item({ id: item.id }),
                         }));
-                        record_result({ ahead });
+                        record_result({ inspected });
                         ```
 
                         EXAMPLE - Fan out one call's output into follow-up calls (ONE call):
                         ```javascript
-                        import { shell, text_editor } from "developer";
-                        const files = shell({ command: "rg --files -g '*.md' docs" }).split("\n").filter(Boolean);
-                        const headings = files.map((f) => ({
-                          file: f,
-                          first: text_editor({ path: f, command: "view" }).split("\n")[0],
-                        }));
-                        record_result({ headings });
+                        import { list_items, read_item } from "module_name";
+                        const items = list_items({ category: "recent" });
+                        record_result(items.map((item) => read_item({ id: item.id })));
                         ```
 
                         SYNTAX:
@@ -2342,26 +2535,25 @@ impl McpClientTrait for CodeExecutionClient {
                         - Only the modules listed in "Modules:" above are importable: these and only these.
                         - There is NO Node.js or browser standard library here: no "fs", "path", "os",
                           "child_process", "http", "https", "crypto", "process", and no fetch/require.
-                          For files and commands import from "developer": import { shell, text_editor } from "developer";
-                        - Module names are case-sensitive and are the extension names, not package names.
+                          Use a listed effective capability module for files or commands when one is present.
+                        - Module names are case-sensitive capability or extension names, not package names.
 
                         MULTILINE SCRIPT ARGUMENTS:
                         - String.raw`...` ONLY preserves backslashes (\n stays two characters). It does NOT
                           make ${...} literal: every ${...} in ANY template literal is still parsed as a JS
                           expression (bash's ${VAR:-x} or ${!v} is a syntax error), and a backtick inside the
                           payload terminates the literal. Escape a literal dollar-brace as ${"$"}{ .
-                        - A payload containing backticks or ${...} (shell parameter expansion, markdown code
+                        - A payload containing backticks or ${...} (parameter expansion, markdown code
                           fences, nested scripts) is safer passed as a plain quoted string with \n escapes, or
-                          written to a file with developer/text_editor (write) and run via developer/shell.
+                          handled by an effective direct tool when one is available.
                         - Prefer one scripting language. Avoid nesting another interpreter unless the task requires it.
 
                         TOOL_GRAPH: Always provide tool_graph to describe the execution flow for the UI.
                         Each node has: tool (server/name), description (what it does), depends_on (indices of dependencies).
                         Example for chained operations:
                         [
-                          {"tool": "developer/shell", "description": "list files", "depends_on": []},
-                          {"tool": "developer/text_editor", "description": "read README.md", "depends_on": []},
-                          {"tool": "developer/text_editor", "description": "write output.txt", "depends_on": [0, 1]}
+                          {"tool": "module_name/list_items", "description": "list items", "depends_on": []},
+                          {"tool": "module_name/read_item", "description": "read each item", "depends_on": [0]}
                         ]
 
                         DISCOVERY:
@@ -2524,8 +2716,147 @@ impl McpClientTrait for CodeExecutionClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rmcp::object;
     use std::sync::Arc;
     use test_case::test_case;
+
+    /// Issue #141. A script naming a `platform__*` tool used to fall through to
+    /// `ExtensionManager::dispatch_tool_call`, which does not know these tools
+    /// and answers `Tool '…' not found` — indistinguishable from a typo, so the
+    /// model retried instead of switching to the direct call.
+    ///
+    /// The `None` manager is what makes this a real assertion rather than a
+    /// tautology: with the guard removed, this path returns "Extension manager
+    /// not available" and every assertion below fails.
+    #[tokio::test]
+    async fn a_script_naming_a_platform_tool_is_told_to_call_it_directly() {
+        let collected = Arc::new(Mutex::new(CollectedArtifacts::default()));
+        for name in platform_tools::PLATFORM_TOOL_NAMES {
+            let (result, kind, _user, _todo) = CodeExecutionClient::dispatch_sub_call(
+                "session-141",
+                crate::privacy::CallCapability::for_test_restricted(),
+                name,
+                "{}",
+                None,
+                &collected,
+                &CancellationToken::new(),
+            )
+            .await;
+            let error = result.expect_err("the sandbox cannot run an agent-loop tool");
+            assert_eq!(kind, "agent_loop_tool", "{name}: {error}");
+            assert!(
+                error.contains(name),
+                "the refusal must name the tool the script asked for: {error}"
+            );
+            assert!(
+                error.contains("Call the `platform__…` tool directly"),
+                "a refusal that does not name the remedy is the dead end this replaces: {error}"
+            );
+            assert!(
+                !error.contains("not found"),
+                "'not found' reads as a spelling mistake and gets retried: {error}"
+            );
+        }
+    }
+
+    /// The other half of the same dead end: the model reached
+    /// `read_module("platform")` precisely because the tool was missing from
+    /// its roster, and got `Module not found: platform`.
+    ///
+    /// Both path shapes are covered because `read_module` accepts `server` and
+    /// `server/tool`, and a guard written for only the first leaves the second
+    /// answering `Tool not found: platform/ingest_source`.
+    #[tokio::test]
+    async fn read_module_explains_that_platform_is_not_importable() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let client = CodeExecutionClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: Arc::new(crate::session::SessionManager::new(
+                temp_dir.path().to_path_buf(),
+            )),
+        })
+        .unwrap();
+
+        for path in ["platform", "platform/ingest_source", "/platform"] {
+            let error = client
+                .handle_read_module(
+                    Some(object!({ "module_path": path })),
+                    crate::privacy::CallCapability::for_test_restricted(),
+                )
+                .await
+                .expect_err("there is no importable platform module");
+            assert!(
+                error.contains("dispatched by the Biorouter agent loop")
+                    && error.contains("Call the `platform__…` tool directly"),
+                "{path}: {error}"
+            );
+        }
+
+        // The generic answer is untouched for a module that is merely absent —
+        // a guard written as "any unknown module is a platform tool" would tell
+        // the model to call `typo__…` directly.
+        let error = client
+            .handle_read_module(
+                Some(object!({ "module_path": "platformish" })),
+                crate::privacy::CallCapability::for_test_restricted(),
+            )
+            .await
+            .expect_err("an unknown module is still unknown");
+        assert_eq!(error, "Module not found: platformish");
+    }
+
+    #[tokio::test]
+    async fn model_facing_tool_description_calls_built_ins_capabilities() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            temp_dir.path().to_path_buf(),
+        ));
+        let client = CodeExecutionClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager,
+        })
+        .unwrap();
+
+        let tools = client
+            .list_tools(None, CancellationToken::new())
+            .await
+            .unwrap();
+        let description = tools
+            .tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == "execute_code")
+            .and_then(|tool| tool.description.as_deref())
+            .unwrap();
+
+        // ⚠ **Two surfaces, two different jobs — and asserting one against the
+        // other is why this test could not pass.** `list_tools` returns the
+        // DESCRIPTION, which must stay capability-agnostic: Developer can be
+        // switched off, so a description that hard-codes `developer/shell`
+        // teaches the model to call a tool that may not exist. The name
+        // "Developer capability" belongs to the server INSTRUCTIONS, which are
+        // free to name it because they say in the same breath what to do when
+        // it is absent.
+        assert!(description.contains("capability or extension names"));
+        assert!(!description.contains("developer extension"));
+        assert!(
+            !description.contains("developer/shell")
+                && !description.contains("developer/text_editor"),
+            "the description must not hard-code a capability that may be disabled"
+        );
+
+        let instructions = client
+            .get_info()
+            .expect("code execution publishes server info")
+            .instructions
+            .clone()
+            .expect("code execution publishes server instructions");
+        assert!(instructions.contains("Developer capability"));
+        assert!(!instructions.contains("developer extension"));
+        assert!(
+            instructions.contains("if Developer is disabled"),
+            "naming Developer is only safe while the same passage says what to do without it"
+        );
+    }
 
     #[tokio::test]
     async fn test_execute_code_simple() {
@@ -3133,6 +3464,363 @@ mod tests {
         assert!(record.result_bytes.is_none());
     }
 
+    struct TodoMetadataResultClient(CallToolResult);
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for TodoMetadataResultClient {
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancel_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            Ok(ListToolsResult {
+                tools: Vec::new(),
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<JsonObject>,
+            _meta: McpMeta,
+            _cancel_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            Ok(self.0.clone())
+        }
+
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+    }
+
+    fn todo_metadata_content(id: &str, title: &str) -> Content {
+        Content::text(
+            serde_json::json!({
+                "message": format!("Updated item #{id}"),
+                "task": { "id": id, "text": title, "status": "completed" },
+            })
+            .to_string(),
+        )
+    }
+
+    async fn recorded_todo_metadata_call(
+        tool_name: &str,
+        arguments: Value,
+        result: CallToolResult,
+    ) -> (Value, Result<String, String>) {
+        let temp = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = session_manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "nested todo metadata".into(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let manager = Arc::new(crate::agents::ExtensionManager::new(
+            Arc::new(Mutex::new(None)),
+            session_manager,
+        ));
+        let extension_name = tool_name.split_once("__").unwrap().0;
+        manager
+            .add_client(
+                extension_name.to_string(),
+                crate::agents::extension::ExtensionConfig::Platform {
+                    name: "todo".into(),
+                    description: "Synthetic todo result fixture".into(),
+                    bundled: Some(true),
+                    available_tools: Vec::new(),
+                },
+                Arc::new(TodoMetadataResultClient(result)),
+                None,
+                None,
+            )
+            .await;
+        let collected = Arc::new(Mutex::new(CollectedArtifacts::default()));
+        let (call_tx, call_rx) = mpsc::unbounded_channel();
+        let handler = tokio::spawn(CodeExecutionClient::run_tool_handler(
+            session.id,
+            crate::privacy::CallCapability::for_test_restricted(),
+            call_rx,
+            Some(Arc::downgrade(&manager)),
+            Arc::clone(&collected),
+            CancellationToken::new(),
+        ));
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        call_tx
+            .send((tool_name.to_string(), arguments.to_string(), response_tx))
+            .unwrap();
+        drop(call_tx);
+        let script_result = tokio::time::timeout(std::time::Duration::from_secs(5), response_rx)
+            .await
+            .expect("nested result must complete")
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handler)
+            .await
+            .expect("nested handler must drain")
+            .unwrap();
+        let collected = collected.lock().await;
+        assert_eq!(collected.tool_calls.len(), 1);
+        (
+            serde_json::to_value(&collected.tool_calls[0]).unwrap(),
+            script_result,
+        )
+    }
+
+    #[tokio::test]
+    async fn nested_todo_metadata_records_real_updates_without_adding_model_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = session_manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "real nested todo metadata".into(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let manager = Arc::new(crate::agents::ExtensionManager::new(
+            Arc::new(Mutex::new(None)),
+            Arc::clone(&session_manager),
+        ));
+        manager
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "todo".into(),
+                description: "Todo".into(),
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let client = CodeExecutionClient::new(PlatformExtensionContext {
+            extension_manager: Some(Arc::downgrade(&manager)),
+            session_manager,
+        })
+        .unwrap();
+        let result = client
+            .handle_execute_code(
+                &session.id,
+                crate::privacy::CallCapability::for_test_restricted(),
+                Some(
+                    serde_json::json!({
+                        "code": r##"
+                            import { todo_write, todo_update } from "todo";
+                            todo_write({ content: "- [ ] Verify nested title 🧬" });
+                            todo_update({ id: "#1", status: "in_progress" });
+                            todo_update({ id: "1", status: "completed" });
+                            record_result("constant final result");
+                        "##,
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false));
+        let content = serde_json::to_string(&result.content).unwrap();
+        assert!(content.contains("constant final result"));
+        assert!(!content.contains("Verify nested title"));
+        let calls = result.meta.unwrap().0[TOOL_CALLS_META_KEY]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(calls.len(), 3);
+        assert!(calls[0].get("todo_task").is_none());
+        for call in &calls[1..] {
+            assert_eq!(call["status"], "ok");
+            assert_eq!(
+                call["todo_task"],
+                serde_json::json!({ "id": "1", "title": "Verify nested title 🧬" })
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_todo_metadata_uses_only_matching_user_visible_result_text() {
+        for audience in [
+            None,
+            Some(vec![Role::User]),
+            Some(vec![Role::User, Role::Assistant]),
+        ] {
+            let mut content = todo_metadata_content("7", "Verified user title 🧬");
+            if let Some(audience) = audience {
+                content = content.with_audience(audience);
+            }
+            let result = CallToolResult::success(vec![
+                todo_metadata_content("7", "ASSISTANT_ONLY_TITLE")
+                    .with_audience(vec![Role::Assistant]),
+                content,
+            ]);
+            let (record, script_result) = recorded_todo_metadata_call(
+                "todo__todo_update",
+                serde_json::json!({ "id": "#7", "status": "completed" }),
+                result,
+            )
+            .await;
+            assert!(script_result.is_ok());
+            assert_eq!(
+                record["todo_task"],
+                serde_json::json!({ "id": "7", "title": "Verified user title 🧬" })
+            );
+            assert!(!record.to_string().contains("ASSISTANT_ONLY_TITLE"));
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_todo_metadata_omits_failed_hidden_malformed_and_mismatched_results() {
+        let mut structured_only = CallToolResult::success(Vec::new());
+        structured_only.structured_content = Some(serde_json::json!({
+            "task": { "id": "7", "text": "STRUCTURED_ONLY_TITLE" },
+        }));
+        for result in [
+            CallToolResult::error(vec![todo_metadata_content("7", "FAILED_TITLE")]),
+            CallToolResult::success(vec![todo_metadata_content("8", "WRONG_ID_TITLE")]),
+            CallToolResult::success(vec![todo_metadata_content("7", "ASSISTANT_ONLY_TITLE")
+                .with_audience(vec![Role::Assistant])]),
+            CallToolResult::success(vec![
+                todo_metadata_content("7", "EMPTY_AUDIENCE_TITLE").with_audience(Vec::new())
+            ]),
+            CallToolResult::success(vec![Content::text("Updated item #7")]),
+            CallToolResult::success(vec![Content::text(r#"{"task":{"id":"7""#)]),
+            CallToolResult::success(vec![Content::text(
+                r#"{"task":{"id":7,"text":"NUMERIC_ID"}}"#,
+            )]),
+            CallToolResult::success(vec![todo_metadata_content("7", "   ")]),
+            structured_only,
+        ] {
+            let expected_error = result.is_error.unwrap_or(false);
+            let (record, script_result) = recorded_todo_metadata_call(
+                "todo__todo_update",
+                serde_json::json!({ "id": "7", "status": "completed" }),
+                result,
+            )
+            .await;
+            assert_eq!(script_result.is_err(), expected_error);
+            assert!(record.get("todo_task").is_none(), "{record}");
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_todo_metadata_requires_exact_name_and_string_request_id() {
+        for (name, arguments) in [
+            ("todo__todo_add", serde_json::json!({ "id": "7" })),
+            ("custom__todo_update", serde_json::json!({ "id": "7" })),
+            ("todo__todo_update", serde_json::json!({ "id": 7 })),
+            ("todo__todo_update", serde_json::json!({})),
+            ("todo__todo_update", serde_json::json!({ "id": "##7" })),
+        ] {
+            let (record, script_result) = recorded_todo_metadata_call(
+                name,
+                arguments,
+                CallToolResult::success(vec![todo_metadata_content("7", "UNVERIFIED_TITLE")]),
+            )
+            .await;
+            assert!(script_result.is_ok(), "{script_result:?}");
+            assert!(record.get("todo_task").is_none(), "{record}");
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_todo_metadata_bounds_unicode_title_without_splitting_characters() {
+        let title = "审🧬".repeat(200);
+        let (record, script_result) = recorded_todo_metadata_call(
+            "todo__todo_update",
+            serde_json::json!({ "id": "7", "status": "completed" }),
+            CallToolResult::success(vec![todo_metadata_content("7", &title)]),
+        )
+        .await;
+        assert!(script_result.is_ok());
+        assert_eq!(record["todo_task"]["id"], "7");
+        let projected = record["todo_task"]["title"].as_str().unwrap();
+        assert!(projected.len() <= 512, "{} bytes", projected.len());
+        assert!(!projected.is_empty());
+        assert!(projected.ends_with('…'));
+        assert!(title.starts_with(projected.strip_suffix('…').unwrap()));
+        assert!(!projected.contains('\u{fffd}'));
+    }
+
+    #[tokio::test]
+    async fn nested_todo_metadata_rejects_oversized_projection_inputs_and_ids() {
+        let long_id = "7".repeat(65);
+        let oversized = serde_json::json!({
+            "task": { "id": "7", "text": "OVERSIZED_INPUT_TITLE" },
+            "padding": "x".repeat(16 * 1024),
+        });
+        for (id, content) in [
+            (
+                long_id.as_str(),
+                todo_metadata_content(&long_id, "OVERSIZED_ID_TITLE"),
+            ),
+            ("7", Content::text(oversized.to_string())),
+        ] {
+            let (record, script_result) = recorded_todo_metadata_call(
+                "todo__todo_update",
+                serde_json::json!({ "id": id }),
+                CallToolResult::success(vec![content]),
+            )
+            .await;
+            assert!(script_result.is_ok());
+            assert!(record.get("todo_task").is_none(), "{record}");
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_todo_metadata_never_survives_a_result_size_failure() {
+        let result = CallToolResult::success(vec![
+            todo_metadata_content("7", "SIZE_FAILURE_TITLE").with_audience(vec![Role::User]),
+            Content::text("x".repeat(MAX_JS_TOOL_RESULT_BYTES + 1))
+                .with_audience(vec![Role::Assistant]),
+        ]);
+        let (record, script_result) = recorded_todo_metadata_call(
+            "todo__todo_update",
+            serde_json::json!({ "id": "7", "status": "completed" }),
+            result,
+        )
+        .await;
+        assert!(script_result.is_err());
+        assert_eq!(record["status"], "error");
+        assert!(record.get("todo_task").is_none(), "{record}");
+    }
+
+    #[test]
+    fn nested_todo_metadata_is_charged_to_the_total_record_budget() {
+        let mut record = ToolCallRecord::ok(
+            "todo__todo_update",
+            &serde_json::json!({ "id": "7", "padding": "x".repeat(2048) }).to_string(),
+            1024,
+        );
+        let without_task = record.serialized_bytes();
+        record.todo_task = Some(TodoTaskRecord {
+            id: "7".into(),
+            title: "x".repeat(512),
+        });
+        assert!(record.serialized_bytes() >= without_task + 512);
+
+        let mut collected = CollectedArtifacts::default();
+        for _ in 0..MAX_TOOL_CALL_RECORDS {
+            collected.push_tool_call(record.clone());
+        }
+        assert!(collected.dropped_tool_calls > 0);
+        assert_eq!(
+            collected.tool_calls.len() + collected.dropped_tool_calls,
+            MAX_TOOL_CALL_RECORDS
+        );
+        assert!(
+            serde_json::to_string(&collected.tool_calls).unwrap().len()
+                <= MAX_TOOL_CALL_META_TOTAL_BYTES
+        );
+    }
+
     #[test]
     fn last_launched_app_path_keeps_call_order() {
         let mut collected = CollectedArtifacts::default();
@@ -3172,6 +3860,110 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
+    }
+
+    /// The catalogue's THIRD discovery surface, and the one that stayed a dead
+    /// end after `read_module` was fixed (issue #141).
+    ///
+    /// A model looking for knowledge ingestion searches for it. The four
+    /// `platform__*` tools are permanently outside this catalogue, so the search
+    /// answered "No tools matched" — the same dead end `read_module("platform")`
+    /// used to give, one function over, and with no pointer to the direct call.
+    ///
+    /// Asserted in both shapes, because they render through different code:
+    /// a search that matches nothing at all, and one that matches something else
+    /// while the caller was after the platform tool.
+    #[test]
+    fn a_module_search_for_an_agent_loop_tool_names_the_direct_call() {
+        let text_of = |result: Vec<Content>| match &result[0].raw {
+            RawContent::Text(t) => t.text.clone(),
+            _ => panic!("Expected text"),
+        };
+        let tools = vec![ToolInfo {
+            server_name: "developer".to_string(),
+            tool_name: "shell".to_string(),
+            full_name: "developer__shell".to_string(),
+            description: "Execute shell commands".to_string(),
+            params: vec![("command".to_string(), "string".to_string(), true)],
+            return_type: "string".to_string(),
+        }];
+
+        // Nothing in the catalogue matches, and the thing the caller wanted can
+        // never be in it.
+        let empty = text_of(
+            CodeExecutionClient::handle_search(&tools, &["ingest_source".to_string()], false)
+                .unwrap(),
+        );
+        assert!(empty.contains("No tools matched"), "{empty}");
+        assert!(
+            empty.contains(platform_tools::PLATFORM_INGEST_SOURCE_TOOL_NAME),
+            "an empty search for a platform tool must name it rather than end the trail: {empty}"
+        );
+        assert!(
+            empty.contains("Call the `platform__…` tool directly"),
+            "the pointer must be the same remedy read_module gives: {empty}"
+        );
+
+        // And when the search DOES return something — the model asked for
+        // scheduling, got `developer/shell`, and would otherwise conclude the
+        // scheduler is unreachable.
+        let matched = text_of(
+            CodeExecutionClient::handle_search(
+                &tools,
+                &["shell".to_string(), "manage_schedule".to_string()],
+                false,
+            )
+            .unwrap(),
+        );
+        assert!(matched.contains("developer/shell"), "{matched}");
+        assert!(
+            matched.contains(platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME),
+            "a non-empty result must still point at the platform tool it cannot list: {matched}"
+        );
+
+        // A search with nothing platform-shaped in it must stay quiet, or the
+        // pointer is noise on every failed search rather than an answer.
+        let unrelated = text_of(
+            CodeExecutionClient::handle_search(&tools, &["nonexistent".to_string()], false)
+                .unwrap(),
+        );
+        assert!(
+            !unrelated.contains("platform__"),
+            "the pointer must be earned by the search terms: {unrelated}"
+        );
+
+        // Regex mode scores through the caller's own matcher, so it agrees.
+        let regexed = text_of(
+            CodeExecutionClient::handle_search(&tools, &["ingest_.*".to_string()], true).unwrap(),
+        );
+        assert!(
+            regexed.contains("Call the `platform__…` tool directly"),
+            "a regex search must reach the same explanation: {regexed}"
+        );
+    }
+
+    /// The refusal must not promise the tool is in the roster.
+    ///
+    /// It fires on the name alone and cannot see `PlatformToolGates`, and each
+    /// of the four is separately gated — with no `scheduler_service`,
+    /// `platform__manage_schedule` is in neither the roster nor the catalogue,
+    /// so "Code Execution deliberately leaves the platform tools in your tool
+    /// list" told the model to call a tool it did not have.
+    #[test]
+    fn the_agent_loop_refusal_does_not_claim_the_tool_is_in_the_roster() {
+        let refusal = agent_loop_tool_refusal(platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME);
+        assert!(
+            refusal.contains("if it is not in your list"),
+            "the refusal must allow for the gate being off: {refusal}"
+        );
+        assert!(
+            !refusal.contains("leaves the platform tools in your tool list"),
+            "an unconditional promise about the roster is false for a gated tool: {refusal}"
+        );
+        assert!(
+            refusal.contains("Call the `platform__…` tool directly"),
+            "softening the claim must not cost the remedy: {refusal}"
+        );
     }
 
     #[test]
@@ -4251,7 +5043,7 @@ mod gate_c_bridge_tests {
         let weak = Arc::downgrade(&manager);
         let artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
 
-        let (result, kind, _user) = CodeExecutionClient::dispatch_sub_call(
+        let (result, kind, _user, _todo_task) = CodeExecutionClient::dispatch_sub_call(
             "gate-c",
             crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true),
             "ucsfomopagent__data_sources",
@@ -4288,7 +5080,7 @@ mod gate_c_bridge_tests {
         let weak = Arc::downgrade(&manager);
         let artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
 
-        let (result, kind, _user) = CodeExecutionClient::dispatch_sub_call(
+        let (result, kind, _user, _todo_task) = CodeExecutionClient::dispatch_sub_call(
             "gate-c",
             crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true),
             "ucsfomopagent__data_sources",

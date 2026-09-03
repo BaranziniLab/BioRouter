@@ -1,10 +1,35 @@
-import { useState, useEffect } from 'react';
-import { snakeToTitleCase } from '../utils';
+import { useState, useEffect, useRef } from 'react';
+import { toolIdentifierToTitleCase } from '../utils';
 import PermissionModal from './settings/permission/PermissionModal';
 import { ChevronRight, Lock, Check, X, AlertTriangle } from './icons/app-icons';
 import { confirmToolAction, ActionRequired } from '../api';
 import { Button } from './ui/button';
 import { ToolCallPreview, ToolRiskBadge } from './ToolCallPreview';
+import { userActionHeaders } from '../utils/userAction';
+import { isBrowserSurface } from '../utils/surface';
+
+/**
+ * What this card says instead of offering three buttons that cannot work.
+ *
+ * A `biorouter serve` daemon is started with `Stdio::null()` (SD-7), so no
+ * proof-of-user digest is ever installed and `confirm_tool_action` refuses
+ * every decision with `reason: "noKeyInstalled"` — not for this user, not for
+ * this request, but for anyone, always. Rendering Allow/Deny there is a lie the
+ * user only discovers by clicking.
+ */
+const BROWSER_CANNOT_APPROVE =
+  'This page is served to a browser, which has no way to prove a decision came from you ' +
+  'rather than from the model. Answer this request in the Biorouter desktop app.';
+
+/** The refusal reason the daemon returns when no approval can ever be granted. */
+function refusalIsPermanent(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'reason' in error &&
+    (error as { reason?: unknown }).reason === 'noKeyInstalled'
+  );
+}
 
 const ALLOW_ONCE = 'allow_once';
 const ALWAYS_ALLOW = 'always_allow';
@@ -25,7 +50,7 @@ type ToolConfirmationData = Extract<ActionRequired['data'], { actionType: 'toolC
 
 /** `developer__text_editor` → `Text Editor`. */
 function friendlyToolName(toolName: string): string {
-  return snakeToTitleCase(toolName.substring(toolName.lastIndexOf('__') + 2));
+  return toolIdentifierToTitleCase(toolName.split('__').pop() ?? toolName);
 }
 
 interface ToolConfirmationProps {
@@ -55,6 +80,15 @@ export default function ToolConfirmation({
   const [status, setStatus] = useState(storedState?.status ?? 'unknown');
   const [actionDisplay, setActionDisplay] = useState(storedState?.actionDisplay ?? '');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [confirmationError, setConfirmationError] = useState('');
+  // Empty until we know approvals are impossible here — set up-front on a
+  // browser surface, and by the daemon's own refusal reason anywhere else (a
+  // desktop build talking to a daemon someone started by hand, say).
+  const [cannotApprove, setCannotApprove] = useState(() =>
+    isBrowserSurface() ? BROWSER_CANNOT_APPROVE : ''
+  );
+  const sendingRef = useRef(false);
 
   // Sync internal state with stored state and props
   useEffect(() => {
@@ -83,6 +117,10 @@ export default function ToolConfirmation({
   }, [isClicked, clicked, status, toolName, toolConfirmationId]);
 
   const handleButtonClick = async (newStatus: string) => {
+    if (sendingRef.current || clicked || isClicked || isCancelledMessage) return;
+    sendingRef.current = true;
+    setIsSending(true);
+    setConfirmationError('');
     let newActionDisplay;
 
     if (newStatus === ALWAYS_ALLOW) {
@@ -95,20 +133,9 @@ export default function ToolConfirmation({
       newActionDisplay = 'denied';
     }
 
-    // Update local state
-    setClicked(true);
-    setStatus(newStatus);
-    setActionDisplay(newActionDisplay);
-
-    // Store in global state for persistence across navigation
-    toolConfirmationState.set(toolConfirmationId, {
-      clicked: true,
-      status: newStatus,
-      actionDisplay: newActionDisplay,
-    });
-
     try {
       const response = await confirmToolAction({
+        headers: await userActionHeaders(),
         body: {
           sessionId: sessionId,
           id: toolConfirmationId,
@@ -116,11 +143,41 @@ export default function ToolConfirmation({
           principalType: 'Tool',
         },
       });
-      if (response.error) {
-        console.error('Failed to confirm tool action:', response.error);
+      const acknowledgement = response.data;
+      const acknowledgedStatus =
+        acknowledgement && typeof acknowledgement === 'object' && 'status' in acknowledgement
+          ? acknowledgement.status
+          : undefined;
+      if (refusalIsPermanent(response.error)) {
+        const explanation = (response.error as { error?: unknown }).error;
+        setCannotApprove(typeof explanation === 'string' ? explanation : BROWSER_CANNOT_APPROVE);
+        return;
       }
-    } catch (err) {
-      console.error('Error confirming tool action:', err);
+      if (
+        response.error ||
+        (acknowledgedStatus !== 'delivered' &&
+          acknowledgedStatus !== 'already_resolved' &&
+          acknowledgedStatus !== 'unknown')
+      ) {
+        setConfirmationError('Could not confirm your decision. Try again.');
+        return;
+      }
+      const resolvedStatus = acknowledgedStatus === 'delivered' ? newStatus : acknowledgedStatus;
+      if (acknowledgedStatus === 'already_resolved') newActionDisplay = 'already answered';
+      if (acknowledgedStatus === 'unknown') newActionDisplay = 'no longer available';
+      setClicked(true);
+      setStatus(resolvedStatus);
+      setActionDisplay(newActionDisplay);
+      toolConfirmationState.set(toolConfirmationId, {
+        clicked: true,
+        status: resolvedStatus,
+        actionDisplay: newActionDisplay,
+      });
+    } catch {
+      setConfirmationError('Could not confirm your decision. Try again.');
+    } finally {
+      sendingRef.current = false;
+      setIsSending(false);
     }
   };
 
@@ -143,7 +200,7 @@ export default function ToolConfirmation({
     </div>
   ) : (
     <>
-      <div className="biorouter-message-content overflow-hidden rounded-2xl border border-border-subtle bg-background-default animate-in fade-in slide-in-from-bottom-1 duration-200">
+      <div className="biorouter-message-content text-body overflow-hidden rounded-2xl border border-border-subtle bg-background-default animate-in fade-in slide-in-from-bottom-1 duration-200">
         {/* Security finding banner, only when the backend flagged one */}
         {prompt && (
           <div className="flex items-start gap-2 border-b border-border-subtle bg-background-warning/10 px-4 py-2.5 text-sm text-text-warning">
@@ -156,7 +213,7 @@ export default function ToolConfirmation({
           // Resolved state — one consistent row inside the same card.
           <div className="flex items-center justify-between px-4 py-3">
             <div className="flex items-center gap-2 text-sm text-text-default">
-              {status === 'deny' ? (
+              {status === 'deny' || status === 'unknown' || status === 'already_resolved' ? (
                 <X className="h-4 w-4 shrink-0 text-text-muted" />
               ) : (
                 <Check className="h-4 w-4 shrink-0 text-text-muted" />
@@ -182,8 +239,18 @@ export default function ToolConfirmation({
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <Lock className="h-4 w-4 shrink-0 text-text-muted" />
               <span className="text-sm font-medium text-text-default">
-                {/* Name the tool. "this tool" told the user nothing. */}
-                Run <span className="font-mono">{friendlyToolName(toolName)}</span>?
+                {/* Name the tool. "this tool" told the user nothing.
+                    ⚠ NOT `font-mono`. `friendlyToolName` returns a Title Case
+                    display name ("Install Extension"), not the raw
+                    `extensionmanager__install_extension` id it started life as —
+                    and the resolved state a few lines above renders the SAME
+                    string in the body font. One string, two typefaces, in one
+                    component. Monospace here is a leftover from when this
+                    printed the identifier.
+                    The <span> stays: it keeps the name a distinct node, which is
+                    what lets a test assert on the name alone rather than on the
+                    whole "Run … ?" sentence. Only the font moved. */}
+                Run <span>{friendlyToolName(toolName)}</span>?
               </span>
               {risk && <ToolRiskBadge risk={risk} />}
             </div>
@@ -195,24 +262,52 @@ export default function ToolConfirmation({
               </div>
             )}
 
-            <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" variant="default" onClick={() => handleButtonClick(ALLOW_ONCE)}>
-                Allow Once
-              </Button>
-              {/* Only offer "Always Allow" when there's no security finding. */}
-              {!prompt && (
+            {cannotApprove ? (
+              <p
+                role="status"
+                className="rounded-lg bg-background-muted px-3 py-2 text-sm text-text-muted"
+              >
+                {cannotApprove}
+              </p>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
                 <Button
+                  type="button"
                   size="sm"
-                  variant="secondary"
-                  onClick={() => handleButtonClick(ALWAYS_ALLOW)}
+                  variant="default"
+                  disabled={isSending}
+                  onClick={() => handleButtonClick(ALLOW_ONCE)}
                 >
-                  Always Allow
+                  Allow Once
                 </Button>
-              )}
-              <Button size="sm" variant="outline" onClick={() => handleButtonClick(DENY)}>
-                Deny
-              </Button>
-            </div>
+                {/* Only offer "Always Allow" when there's no security finding. */}
+                {!prompt && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={isSending}
+                    onClick={() => handleButtonClick(ALWAYS_ALLOW)}
+                  >
+                    Always Allow
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={isSending}
+                  onClick={() => handleButtonClick(DENY)}
+                >
+                  Deny
+                </Button>
+              </div>
+            )}
+            {confirmationError && (
+              <p role="alert" className="mt-2 text-sm text-text-warning">
+                {confirmationError}
+              </p>
+            )}
           </div>
         )}
       </div>

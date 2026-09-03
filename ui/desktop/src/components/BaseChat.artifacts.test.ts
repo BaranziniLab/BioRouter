@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { Message } from '../api';
 import {
   collectArtifactsFromMessages,
@@ -48,6 +49,128 @@ const hiddenToolResponse = (id: string, html: string): Message => ({
 });
 
 describe('collectArtifactsFromMessages', () => {
+  it('file-link reliability: does not substitute the launch cwd for an unloaded session', () => {
+    const source = readFileSync(`${process.cwd()}/src/components/BaseChat.tsx`, 'utf8');
+    expect(source).not.toMatch(
+      /const\s+sessionWorkingDir\s*=\s*session\?\.working_dir\s*\|\|\s*getInitialWorkingDir\(\)/
+    );
+  });
+
+  it.each([
+    ['/tmp/source.rs#L2', '/tmp/source.rs', 'source.rs'],
+    ['/tmp/source.rs:2', '/tmp/source.rs', 'source.rs'],
+    ['See /tmp/source.rs#L2.', '/tmp/source.rs', 'source.rs'],
+    ['See /tmp/source.rs%23L42.', '/tmp/source.rs#L42', 'source.rs#L42'],
+    ['/tmp/Study%20%231/report.md', '/tmp/Study #1/report.md', 'report.md'],
+    ['[report](</tmp/Study %231/report.md>)', '/tmp/Study #1/report.md', 'report.md'],
+    ['`/tmp/source.rs%23L42`', '/tmp/source.rs#L42', 'source.rs#L42'],
+  ])(
+    'file-link reliability: auto-artifact collection shares the click path for %s',
+    (text, path, title) => {
+      expect(
+        collectArtifactsFromMessages([visibleMessage([{ type: 'text', text }])], '/work')
+      ).toEqual([{ kind: 'file', path, title }]);
+    }
+  );
+
+  it('file-link reliability: does not auto-open a guessed root for later shorthand', () => {
+    const messages = [
+      visibleMessage([{ type: 'text', text: 'Created `/work/run/results/report.md`.' }]),
+      visibleMessage([{ type: 'text', text: '[Report](report.md)' }]),
+    ];
+    expect(collectArtifactsFromMessages(messages, '/work')).toEqual([
+      { kind: 'file', path: '/work/run/results/report.md', title: 'report.md' },
+    ]);
+  });
+
+  it('file-link reliability: waits for streaming prose to stabilize before opening its final path once', () => {
+    const fileKeys = (artifacts: ReturnType<typeof collectArtifactsFromMessages>) =>
+      artifacts.map((artifact) => {
+        if (artifact.kind !== 'file') throw new Error('expected a file artifact');
+        return `file:${artifact.path}`;
+      });
+    const streaming = visibleMessage([{ type: 'text', text: 'Created `/tmp/report.js`' }]);
+    const partialArtifacts = collectArtifactsFromMessages([streaming], '/work', 0);
+    expect(partialArtifacts).toEqual([]);
+    expect(
+      decideArtifactAutoOpen({
+        scanDone: true,
+        knownKeys: new Set(),
+        reportedMessageCount: 1,
+        loadedMessageCount: 1,
+        artifactKeys: fileKeys(partialArtifacts),
+      })
+    ).toEqual({ action: 'none' });
+
+    streaming.content = [{ type: 'text', text: 'Created `/tmp/report.json`' }];
+    expect(collectArtifactsFromMessages([streaming], '/work', 0)).toEqual([]);
+
+    const stableArtifacts = collectArtifactsFromMessages([streaming], '/work');
+    expect(stableArtifacts).toEqual([
+      { kind: 'file', path: '/tmp/report.json', title: 'report.json' },
+    ]);
+    const artifactKeys = fileKeys(stableArtifacts);
+    const firstDecision = decideArtifactAutoOpen({
+      scanDone: true,
+      knownKeys: new Set(),
+      reportedMessageCount: 1,
+      loadedMessageCount: 1,
+      artifactKeys,
+    });
+    expect(firstDecision.action).toBe('open');
+    if (firstDecision.action !== 'open') throw new Error('unreachable');
+    expect(
+      decideArtifactAutoOpen({
+        scanDone: true,
+        knownKeys: firstDecision.knownKeys,
+        reportedMessageCount: 1,
+        loadedMessageCount: 1,
+        artifactKeys,
+      })
+    ).toEqual({ action: 'none' });
+  });
+
+  it('file-link reliability: keeps successful structured artifacts available mid-stream', () => {
+    const request = visibleMessage([
+      { type: 'text', text: 'Writing `/tmp/report.js`' },
+      {
+        type: 'toolRequest',
+        id: 'stream-write',
+        toolCall: {
+          status: 'success',
+          value: {
+            name: 'developer__text_editor',
+            arguments: { command: 'write', path: '/tmp/report.json' },
+          },
+        },
+      },
+    ]);
+    const response = hiddenToolResponse('stream-write', '<p>not a file resource</p>');
+    const artifacts = collectArtifactsFromMessages([request, response], '/work', 0);
+    expect(artifacts).toContainEqual({
+      kind: 'file',
+      path: '/tmp/report.json',
+      title: 'report.json',
+    });
+    expect(artifacts).toContainEqual(
+      expect.objectContaining({ kind: 'html', sourceUri: 'ui://chart.html' })
+    );
+    expect(artifacts).not.toContainEqual(expect.objectContaining({ path: '/tmp/report.js' }));
+  });
+
+  it('file-link reliability: does not auto-open malformed source locators', () => {
+    expect(
+      collectArtifactsFromMessages(
+        [
+          visibleMessage([
+            { type: 'text', text: 'See /tmp/source.rs:42:7 and /tmp/source.rs#L42:7.' },
+          ]),
+        ],
+        '/work'
+      )
+    ).toEqual([]);
+  });
+
   it('collects artifacts from tool responses paired with visible assistant tool requests', () => {
     const messages: Message[] = [
       visibleMessage([

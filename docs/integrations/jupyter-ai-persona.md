@@ -75,7 +75,7 @@ The suite the integration is verified against:
 2. Verify the `biorouter-acp` entry point loads.
 3. Restart JupyterLab and confirm `@Biorouter` appears in the mention menu.
 4. Create an ACP session and load the `about-biorouter` skill.
-5. Call the Developer extension and verify a deterministic marker.
+5. Call the Developer capability and verify a deterministic marker.
 6. Verify Jupyter's notebook MCP tools are visible to Biorouter.
 7. Confirm tool calls in both Jupyter AI and the persisted Biorouter session.
 

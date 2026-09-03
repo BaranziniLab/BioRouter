@@ -46,9 +46,20 @@ cd ui/desktop && npm run test-e2e               # Run Playwright E2E tests
 ```bash
 cargo fmt                           # Format Rust code
 ./scripts/clippy-lint.sh            # Run clippy linter
-cd ui/desktop && npm run lint:check # ESLint + Prettier check
+cd ui/desktop && npm run lint:check   # tsc + ESLint + themes/contrast/tokens — NOT Prettier
+cd ui/desktop && npm run format:check # Prettier; nothing else runs it, CI included
 just check-everything               # Run all style/lint checks
 ```
+
+⚠ **Frontend formatting is not enforced anywhere.** `lint:check` resolves to
+`typecheck && eslint && check:themes && check:contrast && check:tokens` — no
+Prettier — and no workflow under `.github/workflows/` invokes Prettier either.
+This line used to claim `lint:check` was an "ESLint + Prettier check"; it never
+was, and the drift is measurable: on 2026-09-02, five files under
+`ui/desktop/src` failed `format:check` on `main`. Run `format:check` yourself
+before pushing frontend changes, and do not wire it into CI without fixing
+those five first — a gate that fails on arrival gets disabled rather than
+obeyed.
 
 ### Build & Release
 
@@ -180,15 +191,15 @@ The detailed manual steps and the reasoning behind each invariant follow.
 | `biorouter` | — | Core agent library: main agent loop, LLM providers, MCP extension manager, session/conversation state, workflow execution, scheduling |
 | `biorouter-server` | `biorouterd` | Axum REST API + WebSocket server; routes in `src/routes/`; OpenAPI spec generated via utoipa |
 | `biorouter-cli` | `biorouter` | Interactive CLI; subcommands in `src/commands/` |
-| `biorouter-mcp` | — | Built-in MCP servers (Developer, Computer Controller, Memory, Auto Visualiser, Tutorial, Knowledge, Agent Drafter, DataSQL, Files, Compute). Also hosts `active_work.rs`, which is *not* a server but the process-global registry of long-running work (background shell jobs + running subagents) that `GET /active_work` reads |
+| `biorouter-mcp` | — | Built-in MCP servers (Developer, Computer Controller, Memory, Auto Visualiser, Knowledge, Agent Drafter, DataSQL, Files, Compute). Also hosts `active_work.rs`, which is *not* a server but the process-global registry of long-running work (background shell jobs + running subagents) that `GET /active_work` reads |
 | `biorouter-sandbox` | — | Capability-scoped sandboxed execution (`docker.rs`, `seatbelt.rs`, `local.rs`, `environment.rs`, `shell_sandbox/`); a leaf crate with no engine deps |
 | `biorouter-acp` | — | Agent Communication Protocol for multi-agent orchestration |
 | `biorouter-bench` | — | Benchmarking harness |
 | `biorouter-test` | — | Integration tests |
 
-Only five of `biorouter-mcp`'s servers are spawnable as **subprocesses** via
+Only four of `biorouter-mcp`'s servers are spawnable as **subprocesses** via
 `biorouter mcp <name>` — `autovisualiser`, `computercontroller`, `developer`,
-`memory`, `tutorial` (the `McpCommand` enum in `mcp_server_runner.rs`).
+`memory` (the `McpCommand` enum in `mcp_server_runner.rs`).
 `agent_drafter` (as `appcontrol`), `datasql`, `files_server` and `compute_server`
 are injected **in-process** by `configure_agent` in `routes/apps.rs` via
 `add_inprocess_server`, and have no subprocess name; their absence from that enum
@@ -304,7 +315,7 @@ The Knowledge feature (built across Plans 1-6 in `docs/history/knowledge-base-bu
 - **HTTP routes:** `crates/biorouter-server/src/routes/knowledge.rs` covers `/knowledge/bases`, `/ingest` (SSE), `/graph`, `/history`, `/preview`, `/restore`, `/page`, `/active`, `/export`, `/import`.
 - **Frontend:** `ui/desktop/src/components/knowledge/` (view shell, KB selector, ingest panel, force-graph + change-log drawer). The chat-side KB chip lives at `ui/desktop/src/components/bottom_menu/BottomMenuKnowledgeSelection.tsx`.
 - **Storage layout:** `~/.config/biorouter/knowledge/<kb-id>/` with `raw/`, `knowledge/`, `index.md`, `log.md`, `schema.md`, and a hidden `.git/`.
-- **One axis, one pointer.** A session's knowledge bases are the *visible* set — everything not in `.hidden-kbs` (machine-wide) or `.hidden-kb-sessions/<sha256(session_id)>` (per session, and an empty `[]` there means "this chat hides nothing", not "inherit"). Every base in the set is searched by a `kb_id`-less `kb_search`, with per-hit `kb_id` attribution. One member is the **primary**, persisted as a bare id in `.active-kb` / `.active-kb-sessions/<digest>` (historical filenames, kept so a lagging PATH-installed CLI still reads a valid id): it is the write target for KB-less mutating calls, the default for single-base reads, and the Knowledge view's subject. The primary is always a member of the set — hiding its base promotes to the lexicographically first remaining one (identically whether the chat pinned that primary itself or was merely displaying the machine-wide one, since the two are indistinguishable to the user; the promotion is written at the chat's own scope so the machine pointer stays put for every other chat), deleting its base clears it — and a primary is never *invented* for a scope that has none, so a KB-less write with no primary fails with the candidate list. There is no third "active" collection; `kb_set_active` moves the primary and does not narrow search. Set-only edits (the palette switch, the chat chip) send neither `primary_kb` nor `clear_primary` so the daemon owns the repair; see [`docs/knowledge-base/multi-kb-implementation-plan.md`](docs/knowledge-base/multi-kb-implementation-plan.md).
+- **One axis, one pointer.** A session's knowledge bases are the *visible* set — everything not in `.hidden-kbs` (machine-wide) or `.hidden-kb-sessions/<sha256(session_id)>` (per session; an empty `[]` means "hide nothing", not "inherit"). KB-less search spans this set with per-hit `kb_id` attribution. Its **primary** is the write target, default single-base read target and Knowledge view's subject. Soul is the product default when the user has expressed no preference. A missing `.active-kb` / `.active-kb-sessions/<digest>` inherits; a bare id pins a choice; a blank file explicitly chooses no primary and must not fall back to Soul. KB-less writes with that explicit no-primary state fail with the candidate list. The primary must remain visible; the daemon repairs selection when its base is hidden or deleted. `kb_set_active` changes the primary without narrowing search. Set-only edits send neither `primary_kb` nor `clear_primary`; see [`docs/knowledge-base/multi-kb-implementation-plan.md`](docs/knowledge-base/multi-kb-implementation-plan.md).
 - **Sub-agent loop:** `crates/biorouter-mcp/src/knowledge/subagent/loop_.rs` drives ingest / query / lint macros. Mutating tools accept an optional `txn` so a macro's tool calls commit as one logical change.
 
 When working on the Knowledge feature:
@@ -476,7 +487,10 @@ was removed to make it true:
      reports, and Agent Drafter app preview cards (`create_app`, `configure_app`,
      `update_app`, `build_app`, `launch_app`, `preview_app` all return one).
   2. Files a tool call created, read off the call's **arguments** —
-     `text_editor` (`write`/`create`/`str_replace`/`insert`/`diff`, never `view`),
+     `text_editor` (`write`/`str_replace`/`insert`/`undo_edit`, never `view`; ⚠ this
+     line listed `create` and `diff` as commands until 2026-09-01 — `create` is not a
+     command at all and `diff` is a *parameter* on `str_replace`, and `undo_edit` was
+     missing),
      `write_file`/`create_file`/`edit_file`/…, and `shell` redirect / `-o`
      `--output` targets. Relative paths resolve against the session working dir.
      Only successful tool responses count. See `fileArtifactPathsFromToolCall`.
@@ -753,7 +767,14 @@ gone, along with its exemption from the secret-key middleware; see
   global error card) → base64 `ui://` blob (`finish`). Every tool also enforces
   size limits + semantic checks and returns a friendly `INVALID_PARAMS` message
   instead of producing a broken figure.
-- **Tools (33):** charts (`show_chart`, `render_histogram`, `render_boxplot`,
+- **Tools: 3 advertised, 32 metadata-only.** ⚠ This line read "Tools (33)" until
+  2026-09-01 and listed the 32 figure tools as individually callable. They are **not**:
+  they live in a non-dispatchable `figure_router` behind `render_figure` (a `kind` plus
+  that kind's arguments) and `describe_figure`, with `render_dashboard` the third
+  advertised tool. `exactly_three_tools_are_advertised` in `tests_dashboard.rs:1249` pins
+  it. The 32 names below are the **kinds**, not callable tool names — an error message
+  that hands one of them to a model is naming a call it cannot make (#150).
+  Kinds: charts (`show_chart`, `render_histogram`, `render_boxplot`,
   `render_bubble`, `render_area`, `render_radar`, `render_donut`, `render_gauge`);
   scientific (`render_volcano`, `render_manhattan`, `render_kaplan_meier`,
   `render_forest`); relationships/hierarchies (`render_network`, `render_sankey`,
@@ -928,6 +949,20 @@ read `useSkillCatalog`.
   Precedence: skill `add` > skill `remove` > **bundle** `add` > bundle `remove`
   > machine-wide. The bundle arms are load-bearing — without them a per-chat
   bundle toggle writes a name no skill matches.
+- ⚠ **A refreshed catalog is not an enabled skill, and an install must not say
+  it is.** Both install handlers hard-coded `"usableInThisConversation": true`,
+  so a package reinstalled into a chat that had switched it off was announced as
+  ready and then filtered out of every model-facing list. The answer is composed
+  by `SkillCatalog::view`, never re-decided — and the obvious hand-rolled test
+  ("is this name in `over.remove`?") is wrong for exactly the case that matters,
+  because a per-chat **bundle** toggle persists the bundle's name and no
+  member's. Reading the post-install catalog rather than the `ImportPlan` also
+  settles which shape landed: installed `individual`, the components have no
+  bundle, so a revocation naming the bundle genuinely stops applying.
+  `session_skills::forget` prunes on uninstall, but that is hygiene, not the
+  fix: another chat may hold the same revocation, and `workspace_set_tools`
+  writes overrides into sessions other than the caller's, so no prune on any
+  remove path can ever be complete.
 - ⚠ `CatalogSkill.builtin` answers "did Biorouter put this here?", and
   `CatalogBundle.builtin` answers it for a bundle **row**, which is a different
   control over a different directory. That second field is defence in depth —
@@ -999,14 +1034,25 @@ deleted, not kept in step.
 
 Tests: `cargo test -p biorouter --lib -- skill`,
 `cargo test -p biorouter-server --lib -- routes::skills`,
-`cargo test -p biorouter-cli --lib` (**needs an isolated `HOME` — and `CARGO_HOME`
-kept pointing at the real one**: cargo derives `CARGO_HOME` from `$HOME`, so a bare
-`HOME=$(mktemp -d) cargo test …` loses the crate registry and dies with
-`error[E0463]: can't find crate for \`biorouter\``. That surfaces as **rc=101 with zero
-failing tests**, which reads as a flake rather than as nothing having compiled — and a
-harness that greps for `test result:` reports the PREVIOUS build's count. Use
-`HOME=$(mktemp -d) CARGO_HOME="$HOME/.cargo" cargo test -p biorouter-cli`), and
-`cd ui/desktop && npm run test:run`.
+`cargo test -p biorouter-cli --lib` (**needs an isolated `HOME` — and both `CARGO_HOME`
+and `RUSTUP_HOME` kept pointing at the real ones, as LITERAL paths**: cargo and rustup
+both derive their homes from `$HOME`, so a bare `HOME=$(mktemp -d) cargo test …` loses
+the crate registry and dies with `error[E0463]: can't find crate for \`biorouter\``. That
+surfaces as **rc=101 with zero failing tests**, which reads as a flake rather than as
+nothing having compiled — and a harness that greps for `test result:` reports the
+PREVIOUS build's count.
+
+⚠ **Do not write `CARGO_HOME="$HOME/.cargo"` in the same command.** This line said exactly
+that until 2026-09-01 and it is wrong in zsh: the assignments are applied left to right,
+so `$HOME` expands to the **new temp dir**, not the real one. The failure is not an error
+— it silently redirects `RUSTUP_HOME` as well, so cargo re-downloads the whole toolchain
+and every target recompiles from scratch (measured: `installing component 'rustc'` mid-run,
+and 11m38s for a single crate that normally takes seconds). Use literals:
+
+```bash
+HOME=$(mktemp -d) CARGO_HOME=/Users/wgu/.cargo RUSTUP_HOME=/Users/wgu/.rustup cargo test -p biorouter-cli
+```
+), and `cd ui/desktop && npm run test:run`.
 
 ### Workspace control (several conversations at once)
 
@@ -1017,12 +1063,16 @@ guides: [`docs/agent-loop/workspace-control.md`](docs/agent-loop/workspace-contr
 and the per-tool reference
 [`docs/agent-loop/workspace-control-tools.md`](docs/agent-loop/workspace-control-tools.md);
 delegation is covered by [`docs/agent-loop/subagents.md`](docs/agent-loop/subagents.md)
-and the extension itself by [`docs/extensions/built-in/workspace.md`](docs/extensions/built-in/workspace.md).
+and the capability itself by [`docs/extensions/built-in/workspace.md`](docs/extensions/built-in/workspace.md).
 
-- **The `workspace` platform extension** —
+- **The `workspace` capability** (represented internally by the legacy platform-extension type) —
   `crates/biorouter/src/agents/workspace_extension.rs`, registered
-  `default_enabled: false`. Enabling it is an explicit user decision, not a
-  default: its tools read and write conversations other than the one you are in.
+  **`default_enabled: true`** (`agents/extension.rs:93`, pinned by
+  `workspace_is_a_default_on_capability_granting_its_whole_surface`). ⚠ This line said
+  `false` until 2026-09-01, and `workspace_extension.rs`'s own module doc still does —
+  grep the registry, not the doc. It ships ON as a capability (#76) and grants the FULL
+  surface (`available_tools` empty), including reading and steering other conversations.
+  The delegation gate excludes it by name so it cannot satisfy condition 5 by itself.
   Supporting modules: `agents/workspace_inspector.rs`,
   `agents/workspace_summary.rs`, and `crates/biorouter/src/workspace_services.rs`
   (the shared service the extension and the HTTP layer both call).
@@ -1089,7 +1139,7 @@ Test the gate where it is: the unit tests in `agents/agent.rs`
 prints a URL. The daemon serves the SPA **on its own origin**, so nothing is proxied. This
 replaced a standalone `biorouter-headless` binary and its Linux tarball, both deleted
 2026-08-23; release assets went 11 → 10. Design and reasoning:
-[`docs/deployment/serve-decisions.md`](docs/deployment/serve-decisions.md) (SD-1..SD-7),
+[`docs/deployment/serve-decisions.md`](docs/deployment/serve-decisions.md) (SD-1..SD-8),
 [`serve-architecture.md`](docs/deployment/serve-architecture.md),
 [`browser-access.md`](docs/deployment/browser-access.md).
 
@@ -1102,6 +1152,29 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   **agent**, so every surface that writes a capability key asks `isBrowserSurface()`
   (`ui/desktop/src/utils/surface.ts`) and explains *before* the user can reach the 409. Do not
   "fix" browser mode by weakening the refusal.
+- **A control that can never work here says so, before it is touched** (SD-8). The same
+  `Stdio::null()` that closes SD-1 means NO approval carrying `requires_user_proof` can ever
+  be granted on a `serve` daemon — for anyone, always. So `confirm_tool_action` answers a
+  refusal with `reason: "unproven"` or `"noKeyInstalled"` and a sentence written for a person;
+  the approval card reads `isBrowserSurface()` up front and renders that in place of its
+  buttons; and the roster withholds the tools whose only path runs through such an approval
+  (skills' three mutations, the extension manager's install and delete). Browsing, searching
+  and `manage_extensions` stay — the last one's approval is a fallback for an
+  operator-pinned-off extension and its ordinary path needs none. ⚠ Not a security change:
+  nothing that was refused becomes permitted. The availability flag is sampled ONCE per roster
+  and threaded, so a roster can never half-believe a person is reachable.
+- **Proof of a person is checked at the resolution choke point, not at one route.** Every door
+  that answers a parked decision — the HTTP route, an Agent Drafter app's WebSocket, ACP, the
+  CLI prompt, the TUI modal, an ancestor agent's relay — passes a `DecisionAuthority` into
+  `PendingUserActions::resolve_matching`, which refuses an *allow* on a proof-backed
+  `ToolApproval` from a surface that cannot prove a person acted. It is a newtype with a
+  private field, not an enum, because an enum variant is a literal any crate could write; a
+  repo-walk test in `pending_user_action.rs` asserts the two privileged constructors appear
+  only in `routes/action_required.rs` and the two CLI surfaces. ⚠ The gate keys on
+  `is_allowed()` and the request's own flag, never on the variant — denials and cancellations
+  land from anywhere, and a gate on `ToolApproval(_)` would kill every bridged coding-agent
+  approval on the desktop. A refusing door must also immediately deny: a refusal leaves the
+  caller parked by design, and nothing re-raises an ephemeral card.
 - **The serving path.** `Settings.serve_ui` (`BIOROUTER_SERVE_UI`) →
   `routes::web_ui::attach`, called **after** `check_token` in `commands/agent.rs` so the shell
   and bundle sit *structurally outside* that middleware rather than being exempted by path.

@@ -11,18 +11,22 @@
 //! - [`brxt`] reads a bundle: validate, manifest, extract, `uv sync`.
 //! - [`credentials`] is the secret-safe collection path. Read its header before
 //!   touching anything that carries a value.
-//! - [`transaction`] is the state machine, its rollback, and its resume record.
+//! - [`transaction`] is the state machine and its rollback.
+//! - [`claim`] is what a stopped install leaves on disk, and the only record
+//!   that outlives the process that made it.
 
 pub mod brxt;
+pub mod claim;
 pub mod credentials;
 pub mod transaction;
 
 pub use brxt::{BrxtBundle, BrxtEnvVar, BrxtManifest, BundledSkill};
+pub use claim::{ClaimPhase, ClaimSource, InstallClaim};
 pub use credentials::{
     cancel_credentials, park_credentials, request_credentials, submit_credentials,
     CredentialRequests, CredentialSpec, ParkedCredentials, SubmitOutcome, DEFAULT_CREDENTIAL_TTL,
 };
 pub use transaction::{
     classify_supplied, compose_config, CredentialPolicy, ExtensionInstallTransaction,
-    InstallReport, InstallSource, InstallState, ResumableInstall, ResumableInstalls,
+    InstallReport, InstallSource, InstallState,
 };

@@ -2,6 +2,11 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/react';
 import { screen, waitFor } from '@testing-library/dom';
 import MarkdownContent from './MarkdownContent';
+import {
+  resetFileLinkStatusForTests,
+  type FilePathCheckRequest,
+  type FilePathCheckResult,
+} from './artifacts/fileLinkStatus';
 
 // Mock the icons to avoid import issues
 vi.mock('./icons', () => ({
@@ -263,6 +268,223 @@ console.log('Hello, World!');
       expect(screen.queryByRole('link', { name: 'analysis.sql' })).not.toBeInTheDocument();
     });
 
+    it.each([
+      '[Report](reports/summary.md)',
+      'Open `reports/summary.md`.',
+      'Open reports/summary.md.',
+    ])('file-link reliability: refuses an unanchored relative file: %s', async (content) => {
+      const onOpenArtifact = vi.fn();
+      render(<MarkdownContent content={content} onOpenArtifact={onOpenArtifact} />);
+
+      await waitFor(() => expect(screen.getByText(/Report|reports\/summary\.md/)).toBeVisible());
+      expect(screen.queryByRole('button')).not.toBeInTheDocument();
+      expect(screen.queryByRole('link')).not.toBeInTheDocument();
+      expect(onOpenArtifact).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      '../private/report.md',
+      'reports/../../private/report.md',
+      '%2e%2e/private/report.md',
+    ])(
+      'file-link reliability: preserves relative-path refusal through Markdown: %s',
+      async (target) => {
+        const onOpenArtifact = vi.fn();
+        render(
+          <MarkdownContent
+            content={`[Report](${target})`}
+            workingDir="/work/session"
+            onOpenArtifact={onOpenArtifact}
+          />
+        );
+
+        expect(await screen.findByText('Report')).toBeVisible();
+        expect(screen.queryByRole('button', { name: 'Report' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('link', { name: 'Report' })).not.toBeInTheDocument();
+        expect(onOpenArtifact).not.toHaveBeenCalled();
+      }
+    );
+
+    it.each(['/work/source.rs:42', '/work/source.rs#L42'])(
+      'file-link reliability: separates the source location from file I/O: %s',
+      async (target) => {
+        const onOpenArtifact = vi.fn();
+        render(<MarkdownContent content={`[Source](${target})`} onOpenArtifact={onOpenArtifact} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Source' }));
+        expect(onOpenArtifact).toHaveBeenCalledWith(
+          expect.objectContaining({
+            kind: 'file',
+            title: 'source.rs',
+            path: '/work/source.rs',
+            line: 42,
+          })
+        );
+      }
+    );
+
+    it.each([
+      [[], '/work/source.rs'],
+      [['/earlier/output/source.rs'], '/earlier/output/source.rs'],
+    ] as const)(
+      'file-link reliability: preserves a bare filename source line through URL filtering: %s',
+      async (knownFilePaths, path) => {
+        const onOpenArtifact = vi.fn();
+        render(
+          <MarkdownContent
+            content="[Source](source.rs:42)"
+            workingDir="/work"
+            knownFilePaths={knownFilePaths}
+            onOpenArtifact={onOpenArtifact}
+          />
+        );
+        fireEvent.click(await screen.findByRole('button', { name: 'Source' }));
+        expect(onOpenArtifact).toHaveBeenCalledWith({
+          kind: 'file',
+          title: 'source.rs',
+          path,
+          line: 42,
+        });
+      }
+    );
+
+    it.each(['See /work/Δ/source.rs:42.', 'See /work/Δ/source.rs#L42.'])(
+      'file-link reliability: preserves the full Unicode path and location in prose: %s',
+      async (content) => {
+        const onOpenArtifact = vi.fn();
+        render(<MarkdownContent content={content} onOpenArtifact={onOpenArtifact} />);
+        fireEvent.click(await screen.findByRole('button'));
+        expect(onOpenArtifact).toHaveBeenCalledWith({
+          kind: 'file',
+          title: 'source.rs',
+          path: '/work/Δ/source.rs',
+          line: 42,
+        });
+      }
+    );
+
+    it.each([
+      [String.raw`C:\Users\Ada\Project\report.csv`, 'report.csv'],
+      [String.raw`\\server\share\reports\summary.md`, 'summary.md'],
+    ])(
+      'file-link reliability: opens a plain-prose Windows path exactly: %s',
+      async (path, title) => {
+        const onOpenArtifact = vi.fn();
+        // Markdown uses `\\` to render one literal backslash, so preserve both UNC
+        // introducer slashes in the prose that reaches the component override.
+        const markdownPath = path.startsWith('\\\\') ? `\\\\${path}` : path;
+        render(
+          <MarkdownContent content={`Open ${markdownPath}.`} onOpenArtifact={onOpenArtifact} />
+        );
+
+        fireEvent.click(await screen.findByRole('button', { name: path }));
+        expect(onOpenArtifact).toHaveBeenCalledWith({ kind: 'file', title, path });
+      }
+    );
+
+    it('file-link reliability: never linkifies a root suffix after unsupported path characters', async () => {
+      const onOpenArtifact = vi.fn();
+      render(
+        <MarkdownContent
+          content={'See /work/odd"directory/report.md'}
+          workingDir="/work"
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+      expect(await screen.findByText(/directory\/report.md/)).toBeVisible();
+      expect(screen.queryByRole('button', { name: '/report.md' })).not.toBeInTheDocument();
+      expect(onOpenArtifact).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['See /work/source.rs%23L42.', '/work/source.rs#L42'],
+      ['[Literal](results/source.rs%23L42)', '/work/results/source.rs#L42'],
+      ['[Literal](source.rs%3A42)', '/elsewhere/source.rs:42'],
+      ['[Literal](results/source.rs%2523L42)', '/work/results/source.rs%23L42'],
+    ])(
+      'file-link reliability: resolves encoded literal names without source reinterpretation: %s',
+      async (content, path) => {
+        const onOpenArtifact = vi.fn();
+        render(
+          <MarkdownContent
+            content={content}
+            workingDir="/work"
+            knownFilePaths={['/elsewhere/source.rs:42']}
+            onOpenArtifact={onOpenArtifact}
+          />
+        );
+        fireEvent.click(await screen.findByRole('button'));
+        expect(onOpenArtifact).toHaveBeenCalledWith({
+          kind: 'file',
+          title: path.split('/').pop(),
+          path,
+        });
+      }
+    );
+
+    it.each([
+      '/tmp/source.rs:0',
+      '/tmp/source.rs:9007199254740992',
+      '/tmp/source.rs:42:7',
+      '/tmp/source.rs#L42:7',
+      '/tmp/source.rs%00',
+      'source.rs:0',
+    ])(
+      'file-link reliability: malformed local targets stay inert instead of opening externally: %s',
+      async (target) => {
+        const onOpenArtifact = vi.fn();
+        const electron = installElectronMock();
+        render(<MarkdownContent content={`[Source](${target})`} onOpenArtifact={onOpenArtifact} />);
+        expect(await screen.findByText('Source')).toBeVisible();
+        expect(screen.queryByRole('button', { name: 'Source' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('link', { name: 'Source' })).not.toBeInTheDocument();
+        expect(electron.openExternal).not.toHaveBeenCalled();
+        expect(onOpenArtifact).not.toHaveBeenCalled();
+      }
+    );
+
+    it.each([
+      '/work/Study%20%231/%CE%94%20results.csv',
+      'file:///work/Study%20%231/%CE%94%20results.csv',
+      '</work/Study %231/Δ results.csv>',
+    ])(
+      'file-link reliability: preserves encoded hashes, Unicode and spaces: %s',
+      async (target) => {
+        const onOpenArtifact = vi.fn();
+        render(
+          <MarkdownContent content={`[Results](${target})`} onOpenArtifact={onOpenArtifact} />
+        );
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Results' }));
+        expect(onOpenArtifact).toHaveBeenCalledWith({
+          kind: 'file',
+          title: 'Δ results.csv',
+          path: '/work/Study #1/Δ results.csv',
+        });
+      }
+    );
+
+    it.each([
+      ['/work/source.rs%3A42', 'source.rs:42'],
+      ['/work/source.rs%23L42', 'source.rs#L42'],
+      ['file:///work/source.rs%23L42', 'source.rs#L42'],
+    ])(
+      'file-link reliability: preserves percent-encoded literal source-location characters: %s',
+      async (target, name) => {
+        const onOpenArtifact = vi.fn();
+        render(
+          <MarkdownContent content={`[Literal name](${target})`} onOpenArtifact={onOpenArtifact} />
+        );
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Literal name' }));
+        expect(onOpenArtifact).toHaveBeenCalledWith({
+          kind: 'file',
+          title: name,
+          path: `/work/${name}`,
+        });
+      }
+    );
+
     it('decodes markdown URL escapes before opening a local file with spaces', async () => {
       const onOpenArtifact = vi.fn();
       const content = '[Preview PowerPoint](/private/tmp/BioOKF%20Presentation.pptx)';
@@ -326,7 +548,7 @@ console.log('Hello, World!');
 
       expect(onOpenArtifact).toHaveBeenCalledWith({
         kind: 'file',
-        title: 'BioOKF Presentation.pptx',
+        title: 'BioOKF%20Presentation.pptx',
         path: '/private/tmp/%2e%2e/BioOKF%20Presentation.pptx',
       });
     });
@@ -748,7 +970,11 @@ Another very long URL: https://www.example.com/very/long/path/with/many/segments
     it('uses one inline-code size across the code element and the artifact button', async () => {
       const onOpenArtifact = vi.fn();
       render(
-        <MarkdownContent content="Open `dist/index.html` now." onOpenArtifact={onOpenArtifact} />
+        <MarkdownContent
+          content="Open `dist/index.html` now."
+          workingDir="/Users/wgu/Desktop/weather-website"
+          onOpenArtifact={onOpenArtifact}
+        />
       );
 
       const button = await screen.findByRole('button', { name: 'dist/index.html' });
@@ -1004,6 +1230,205 @@ for the result.`;
       expect(screen.queryByRole('button', { name: 'Run script' })).not.toBeInTheDocument();
       expect(screen.queryByRole('link', { name: 'Run script' })).not.toBeInTheDocument();
       expect(onOpenArtifact).not.toHaveBeenCalled();
+    });
+  });
+
+  // A path the assistant merely NAMED — a script it described, a `/tmp` tree
+  // since cleaned up — used to render as an accent-coloured link that did
+  // nothing when clicked. `check-file-paths` separates the two cases; these
+  // tests pin both halves of the resulting contract, plus the surfaces that
+  // have no bridge to ask.
+  describe('Existence-aware file links', () => {
+    function installCheckBridge(
+      answer: (request: FilePathCheckRequest) => FilePathCheckResult = () => ({
+        exists: true,
+        isDirectory: false,
+      })
+    ) {
+      const checkFilePaths = vi.fn(async (requests: FilePathCheckRequest[]) =>
+        requests.map(answer)
+      );
+      Object.defineProperty(window, 'electron', {
+        configurable: true,
+        value: { checkFilePaths },
+      });
+      return checkFilePaths;
+    }
+
+    afterEach(() => {
+      // @ts-expect-error — remove the per-test electron stub.
+      delete window.electron;
+      resetFileLinkStatusForTests();
+      vi.restoreAllMocks();
+    });
+
+    it('keeps the accent link treatment for a file confirmed to exist', async () => {
+      installCheckBridge();
+      const onOpenArtifact = vi.fn();
+
+      render(
+        <MarkdownContent
+          content="See `/Users/wgu/project/analysis.sql` for the query."
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      const button = await screen.findByRole('button', { name: '/Users/wgu/project/analysis.sql' });
+      expect(button).toHaveClass('text-text-accent');
+      expect(button).toHaveClass('underline');
+      expect(button).toHaveClass('cursor-pointer');
+
+      fireEvent.click(button);
+      expect(onOpenArtifact).toHaveBeenCalledWith({
+        kind: 'file',
+        title: 'analysis.sql',
+        path: '/Users/wgu/project/analysis.sql',
+      });
+    });
+
+    it('decolors a file the main process cannot find and makes it inert', async () => {
+      installCheckBridge(() => ({ exists: false, isDirectory: false }));
+      const onOpenArtifact = vi.fn();
+
+      render(
+        <MarkdownContent
+          content="I would put it in /Users/wgu/project/imagined.py next."
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      const mention = await screen.findByText('/Users/wgu/project/imagined.py');
+      await waitFor(() => expect(mention.tagName).toBe('SPAN'));
+      // Decolored, not muted: the ask was that it read as ordinary prose.
+      expect(mention).toHaveClass('text-text-default');
+      expect(mention).not.toHaveClass('text-text-accent');
+      expect(mention).not.toHaveClass('underline');
+      expect(mention).not.toHaveClass('cursor-pointer');
+      // Not a button, not focusable, and nothing happens when it is clicked.
+      expect(
+        screen.queryByRole('button', { name: '/Users/wgu/project/imagined.py' })
+      ).not.toBeInTheDocument();
+      expect(mention).not.toHaveAttribute('tabindex');
+      fireEvent.click(mention);
+      expect(onOpenArtifact).not.toHaveBeenCalled();
+    });
+
+    it('keeps a missing inline-code path looking like inline code, minus the link', async () => {
+      installCheckBridge(() => ({ exists: false, isDirectory: false }));
+      const onOpenArtifact = vi.fn();
+
+      render(
+        <MarkdownContent
+          content="Write it to `/Users/wgu/project/imagined.py`."
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      const mention = await screen.findByText('/Users/wgu/project/imagined.py');
+      await waitFor(() => expect(mention.tagName).toBe('SPAN'));
+      // The TEXT is unchanged — same family, size and fill as inline code.
+      expect(mention).toHaveClass('font-mono');
+      expect(mention).toHaveClass('text-[13px]');
+      expect(mention).toHaveClass('bg-background-medium');
+      expect(mention).not.toHaveClass('text-text-accent');
+    });
+
+    it('never renders a link before the answer arrives, not even for one frame', async () => {
+      let release: ((results: FilePathCheckResult[]) => void) | undefined;
+      const checkFilePaths = vi.fn(
+        () =>
+          new Promise<FilePathCheckResult[]>((resolve) => {
+            release = resolve;
+          })
+      );
+      Object.defineProperty(window, 'electron', {
+        configurable: true,
+        value: { checkFilePaths },
+      });
+
+      render(
+        <MarkdownContent
+          content="See `/Users/wgu/project/analysis.sql` for the query."
+          onOpenArtifact={vi.fn()}
+        />
+      );
+
+      const mention = await screen.findByText('/Users/wgu/project/analysis.sql');
+      expect(mention.tagName).toBe('SPAN');
+      expect(screen.queryByRole('button')).not.toBeInTheDocument();
+
+      release?.([{ exists: true, isDirectory: false }]);
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: '/Users/wgu/project/analysis.sql' })
+        ).toBeInTheDocument()
+      );
+    });
+
+    it('keeps the legacy behaviour on a surface with no bridge to ask', async () => {
+      const onOpenArtifact = vi.fn();
+
+      // No `window.electron` at all — `biorouter serve` in a browser, and every
+      // suite above this one. "Start plain" would mean nothing is EVER a link
+      // there, so the absence of the bridge keeps the pre-existing contract.
+      render(
+        <MarkdownContent
+          content="See `/Users/wgu/project/imagined.py` for the query."
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      const button = await screen.findByRole('button', { name: '/Users/wgu/project/imagined.py' });
+      expect(button).toHaveClass('text-text-accent');
+      fireEvent.click(button);
+      expect(onOpenArtifact).toHaveBeenCalled();
+    });
+
+    it('asks once for a path a single message mentions three times', async () => {
+      const checkFilePaths = installCheckBridge();
+
+      render(
+        <MarkdownContent
+          content={[
+            'First `/Users/wgu/project/analysis.sql`.',
+            'Then /Users/wgu/project/analysis.sql again.',
+            '- [Third](/Users/wgu/project/analysis.sql)',
+          ].join('\n\n')}
+          onOpenArtifact={vi.fn()}
+        />
+      );
+
+      await waitFor(() =>
+        expect(screen.getAllByRole('button', { name: /analysis\.sql|Third/ })).toHaveLength(3)
+      );
+      expect(checkFilePaths).toHaveBeenCalledTimes(1);
+      expect(checkFilePaths.mock.calls[0][0]).toEqual([
+        { path: '/Users/wgu/project/analysis.sql' },
+      ]);
+    });
+
+    it.each([
+      ['a Windows drive-letter path', 'C:\\Users\\x\\a.py'],
+      ['a home-relative path', '~/a.py'],
+    ])('hands %s to the main process verbatim, unmangled', async (_label, target) => {
+      const checkFilePaths = installCheckBridge();
+
+      render(
+        <MarkdownContent
+          content={`Open \`${target}\` now.`}
+          workingDir="/Users/wgu/project"
+          onOpenArtifact={vi.fn()}
+        />
+      );
+
+      // Resolution of `~` and of a drive letter belongs to the main process,
+      // which knows the host OS; the renderer must not join either onto the
+      // session working directory on its way there.
+      await waitFor(() => expect(checkFilePaths).toHaveBeenCalledTimes(1));
+      expect(checkFilePaths.mock.calls[0][0]).toEqual([
+        { path: target, workingDir: '/Users/wgu/project' },
+      ]);
+      expect(await screen.findByRole('button', { name: target })).toBeInTheDocument();
     });
   });
 });

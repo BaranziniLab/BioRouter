@@ -84,6 +84,7 @@ mod tests {
 
     fn a_plan(id: &str) -> ImportPlan {
         ImportPlan {
+            origin: None,
             kind: ImportKind::Bundle,
             id: id.to_string(),
             display_name: id.to_string(),

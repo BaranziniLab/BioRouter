@@ -440,6 +440,15 @@ pub fn response_message(
     } else {
         rmcp::model::CallToolResult::success(content)
     };
+    response_message_with_result(call_id, result, exec)
+}
+
+#[must_use]
+pub fn response_message_with_result(
+    call_id: &str,
+    result: rmcp::model::CallToolResult,
+    exec: Execution,
+) -> Message {
     let mut response = ToolResponse {
         id: call_id.to_string(),
         tool_result: Ok(result),

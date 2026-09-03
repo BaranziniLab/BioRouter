@@ -7,57 +7,77 @@
     {{ASSETS}}
     <script>{{COMMON}}</script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
-        .container { max-width: 1100px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; }
-        .header { padding: 24px 30px 0; text-align: center; }
-        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
-        .chart-wrap { padding: 24px 30px 30px; position: relative; height: 480px; }
+        .chart-wrap { position: relative; height: 480px; }
     </style>
 </head>
 <body>
     <div class="viz-root">
         <div class="container">
             <div class="header"><h1 id="title">Bubble Chart</h1></div>
-            <div class="chart-wrap"><canvas id="chart"></canvas></div>
+            <div class="figure-scroll" tabindex="0" role="region" aria-label="Bubble chart"><div class="chart-wrap" id="chartHost"><canvas id="chart" role="img" aria-label="Bubble chart; exact coordinates and radii follow in the figure data"></canvas></div></div>
+            <div class="figure-legend" id="legend" aria-label="Toggle chart series"></div>
         </div>
     </div>
+    <details class="figure-data"><summary>View figure data</summary><div class="table-scroll" tabindex="0" role="region" aria-label="Figure data"><table id="figureData"></table></div></details>
     <script>
         const bubbleData = {{BUBBLE_DATA}};
         BioRouterViz.autoResize();
         BioRouterViz.guard(function () {
-            BioRouterViz.applyPageTheme();
+            BioRouterViz.applyScientificStyles();
             BioRouterViz.applyChartDefaults();
             if (bubbleData.title) document.getElementById('title').textContent = bubbleData.title;
 
             const datasets = bubbleData.datasets.map(function (ds, i) {
                 const color = ds.color || BioRouterViz.palette[i % BioRouterViz.palette.length];
+                const fillColor = Chart.helpers.color(color);
                 return {
                     label: ds.label,
-                    data: (ds.data || []).map(function (p) { return { x: p.x, y: p.y, r: Math.max(2, p.r), _label: p.label }; }),
-                    backgroundColor: color + 'cc',
+                    data: (ds.data || []).map(function (p) { return { x: p.x, y: p.y, r: p.r, _label: p.label }; }),
+                    backgroundColor: fillColor.valid ? fillColor.alpha(fillColor.rgb.a * 0.8).rgbString() : color,
                     borderColor: color
                 };
             });
 
-            new Chart(document.getElementById('chart').getContext('2d'), {
+            const context = document.getElementById('chart').getContext('2d');
+            const chartHost = document.getElementById('chartHost');
+            function layout() {
+                const xTitle = BioRouterViz.wrapChartAxisLabel(bubbleData.xAxisLabel || '', Math.max(80, chartHost.clientWidth - 130), context);
+                const yTitle = BioRouterViz.wrapChartAxisLabel(bubbleData.yAxisLabel || '', 300, context);
+                chartHost.style.height = 460 + xTitle.length * 19 + 'px';
+                return { xTitle, yTitle };
+            }
+            const titles = layout();
+            const chart = new Chart(context, {
                 type: 'bubble',
                 data: { datasets: datasets },
                 options: {
                     responsive: true, maintainAspectRatio: false,
                     plugins: {
-                        legend: { position: 'top' },
+                        legend: { display: false },
                         tooltip: { callbacks: { label: function (ctx) {
                             const p = ctx.raw;
                             const name = p._label ? p._label + ': ' : '';
-                            return name + '(' + p.x + ', ' + p.y + ', r=' + p.r + ')';
+                            return BioRouterViz.wrapChartTooltip(name + '(' + p.x + ', ' + p.y + ', r=' + p.r + ')', ctx.chart);
                         } } }
                     },
                     scales: {
-                        x: { title: { display: !!bubbleData.xAxisLabel, text: bubbleData.xAxisLabel }, grid: { color: BioRouterViz.colors.grid } },
-                        y: { title: { display: !!bubbleData.yAxisLabel, text: bubbleData.yAxisLabel }, grid: { color: BioRouterViz.colors.grid } }
+                        x: { title: { display: !!bubbleData.xAxisLabel, text: titles.xTitle }, grid: { color: BioRouterViz.colors.grid } },
+                        y: { title: { display: !!bubbleData.yAxisLabel, text: titles.yTitle }, grid: { color: BioRouterViz.colors.grid } }
                     }
                 }
             });
+            BioRouterViz.observeChartWidth(chartHost, () => {
+                    const titles = layout();
+                    chart.options.scales.x.title.text = titles.xTitle;
+                    chart.options.scales.y.title.text = titles.yTitle;
+                    chart.resize(); chart.update('none');
+            });
+            BioRouterViz.renderChartLegend(document.getElementById('legend'), chart);
+            function* rows() {
+                for (const dataset of bubbleData.datasets) for (const point of dataset.data) yield [dataset.label, point.label || '—', point.x, point.y, point.r];
+            }
+            BioRouterViz.renderFigureData(document.getElementById('figureData'), ['Series', 'Observation', bubbleData.xAxisLabel || 'x', bubbleData.yAxisLabel || 'y', 'Radius (px)'], rows(),
+                'Bubble radius is the supplied r in pixels. Zero-radius observations are retained here but have no visible marker.', bubbleData.datasets.reduce((sum, dataset) => sum + dataset.data.length, 0));
             BioRouterViz.reportSize();
         });
     </script>

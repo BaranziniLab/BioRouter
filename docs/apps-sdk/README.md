@@ -23,4 +23,4 @@ The three documents share a vocabulary worth knowing before you open any of them
 - [Agent Drafter](../agent-drafter/README.md) — the subsystem map this folder is the territory for; start there if you want the shape of Agent Drafter rather than the SDK contract.
 - [BioRouter Apps platform design](../agent-drafter/apps-platform-design.md) — the subsystem overview that summarises these nine pillars, plus a retained historical record of the v1 redesign.
 - [Agent Drafter 100-app test-drive runbook](../agent-drafter/testing/app-test-drive-runbook.md) — how to exercise an authored app end-to-end in a browser, which is how the roadmap's phase gates are actually driven.
-- [Auto Visualiser extension](../extensions/built-in/auto-visualiser.md) — the `render_*` tools that `ui_figure` embeds into an app panel.
+- [Auto Visualiser capability](../extensions/built-in/auto-visualiser.md) — the `render_*` tools that `ui_figure` embeds into an app panel.

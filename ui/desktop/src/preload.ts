@@ -70,6 +70,7 @@ interface SaveDataUrlResponse {
 type EmbeddedBrowserState = {
   url: string;
   title: string;
+  managedApp?: boolean;
   sourceRevision: string;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -172,6 +173,17 @@ type ArtifactFilePreview =
       found: false;
     };
 
+/**
+ * One entry of a batched file-existence check.
+ *
+ * Mirrors `FilePathCheckRequest` in components/artifacts/fileLinkStatus.ts —
+ * preload cannot import renderer modules, so the shape is restated here the way
+ * `ArtifactFilePreview` above is.
+ */
+type FilePathCheckRequest = { path: string; workingDir?: string };
+/** The whole answer to one such entry. */
+type FilePathCheckResult = { exists: boolean; isDirectory: boolean };
+
 type TerminalCreateResult =
   | {
       success: true;
@@ -241,6 +253,17 @@ type ElectronAPI = {
   importSessionFile: () => Promise<string | null>;
   readFile: (directory: string) => Promise<FileResponse>;
   readArtifactFile: (filePath: string) => Promise<ArtifactFilePreview>;
+  /**
+   * Does each of these paths exist, and is it a directory? One answer per
+   * request, in order.
+   *
+   * Batched deliberately: a chat message can name thirty paths, and the
+   * renderer asks about all of them at once rather than thirty round trips.
+   * The reply carries nothing but the two booleans — never file contents, never
+   * a directory listing — so it cannot become a second, weaker read channel
+   * beside `readArtifactFile`.
+   */
+  checkFilePaths: (requests: FilePathCheckRequest[]) => Promise<FilePathCheckResult[]>;
   writeFile: (directory: string, content: string) => Promise<boolean>;
   ensureDirectory: (dirPath: string) => Promise<boolean>;
   listFiles: (dirPath: string, extension?: string) => Promise<string[]>;
@@ -338,14 +361,22 @@ type ElectronAPI = {
     containment?: { x: number; y: number; width: number; height: number };
   }) => Promise<{ path: string; width: number; height: number } | null>;
   embeddedBrowser: {
-    create: (viewId: string, url: string) => Promise<EmbeddedBrowserState | null>;
+    isManagedAppUrl: (url: string) => Promise<boolean>;
+    create: (
+      viewId: string,
+      url: string,
+      managedOnly?: boolean
+    ) => Promise<EmbeddedBrowserState | null>;
     setBounds: (
       viewId: string,
       bounds: { x: number; y: number; width: number; height: number }
     ) => Promise<void>;
     setVisible: (viewId: string, visible: boolean) => Promise<void>;
     navigate: (viewId: string, url: string) => Promise<boolean>;
-    control: (viewId: string, action: 'back' | 'forward' | 'reload' | 'stop') => Promise<boolean>;
+    control: (
+      viewId: string,
+      action: 'back' | 'forward' | 'reload' | 'stop' | 'reload-if-idle'
+    ) => Promise<boolean>;
     destroy: (viewId: string) => Promise<void>;
     readText: (
       viewId: string,
@@ -588,6 +619,8 @@ const electronAPI: ElectronAPI = {
   importSessionFile: () => ipcRenderer.invoke('import-session-file'),
   readFile: (filePath: string) => ipcRenderer.invoke('read-file', filePath),
   readArtifactFile: (filePath: string) => ipcRenderer.invoke('read-artifact-file', filePath),
+  checkFilePaths: (requests: FilePathCheckRequest[]) =>
+    ipcRenderer.invoke('check-file-paths', requests),
   writeFile: (filePath: string, content: string) =>
     ipcRenderer.invoke('write-file', filePath, content),
   ensureDirectory: (dirPath: string) => ipcRenderer.invoke('ensure-directory', dirPath),
@@ -706,15 +739,17 @@ const electronAPI: ElectronAPI = {
     containment?: { x: number; y: number; width: number; height: number };
   }) => ipcRenderer.invoke('capture-region', payload),
   embeddedBrowser: {
-    create: (viewId: string, url: string) =>
-      ipcRenderer.invoke('embedded-browser:create', { viewId, url }),
+    isManagedAppUrl: (url: string) =>
+      ipcRenderer.invoke('embedded-browser:is-managed-app-url', { url }),
+    create: (viewId: string, url: string, managedOnly?: boolean) =>
+      ipcRenderer.invoke('embedded-browser:create', { viewId, url, managedOnly }),
     setBounds: (viewId: string, bounds: { x: number; y: number; width: number; height: number }) =>
       ipcRenderer.invoke('embedded-browser:set-bounds', { viewId, bounds }),
     setVisible: (viewId: string, visible: boolean) =>
       ipcRenderer.invoke('embedded-browser:set-visible', { viewId, visible }),
     navigate: (viewId: string, url: string) =>
       ipcRenderer.invoke('embedded-browser:navigate', { viewId, url }),
-    control: (viewId: string, action: 'back' | 'forward' | 'reload' | 'stop') =>
+    control: (viewId: string, action: 'back' | 'forward' | 'reload' | 'stop' | 'reload-if-idle') =>
       ipcRenderer.invoke('embedded-browser:control', { viewId, action }),
     destroy: (viewId: string) => ipcRenderer.invoke('embedded-browser:destroy', { viewId }),
     readText: (viewId: string, maxChars: number) =>

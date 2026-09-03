@@ -219,6 +219,23 @@ const EXPECTED: &[Site] = &[
     },
     Site {
         needle: "CallCapability::public_enforced(",
+        file: "crates/biorouter-server/src/routes/apps.rs",
+        count: 1,
+        what: "NOT a production decider: `mod skills_grant_scope`'s `dispatch()` \
+               helper, which drives a real tool call to prove #149's app skills \
+               allow-list is enforced at BOTH the roster and the dispatch layer. It \
+               takes the most restrictive pair rather than a permissive one invented \
+               for the test's convenience, and pairs it with `without_human_surface` \
+               plus a 20s deadline so a refusal that PARKS fails the test instead of \
+               hanging the binary. Counted for the same reason as the `tool_turn.rs` \
+               and `bridge.rs` helpers above: a line-wise grep cannot tell a \
+               `#[cfg(test)]` block from production, and a filter that tried would \
+               blind the census to production too. Production app agents never build \
+               a capability here — `configure_agent` arms extensions and the turn \
+               loop samples, which are `sample(` rows above",
+    },
+    Site {
+        needle: "CallCapability::public_enforced(",
         file: "crates/biorouter-server/src/routes/agent.rs",
         count: 1,
         what: "`POST /agent/call_tool`, an entry with no caller identity, which \
@@ -614,6 +631,16 @@ fn compatible_is_the_only_function_that_compares_two_affiliations() {
         // Gate C's classification ratchet destructures `Institutions(..)` to
         // record the owners a chat has touched — a read, never a comparison.
         "crates/biorouter/src/agents/extension_manager.rs",
+        // Serialises a marketplace descriptor for the confirmation card. It
+        // never compares the extension affiliation with a model affiliation.
+        "crates/biorouter/src/agents/extension_manager_extension.rs",
+        // Validates and carries registry affiliation metadata. Its conservative
+        // extension-authority merge delegates to `privacy::affiliation`; model
+        // reach still delegates to `compatible`.
+        "crates/biorouter/src/marketplace.rs",
+        // Converts the durable private-authority representation into the shared
+        // affiliation vocabulary. No model affiliation enters this module.
+        "crates/biorouter/src/privacy/registry_live.rs",
         // The `cfg(test)` module exempted above.
         CFG_TEST_MODULE,
     ];

@@ -1,14 +1,14 @@
-# Chat Recall extension
+# Chat Recall capability
 
-> **What this is.** User guide to the built-in Chat Recall extension: searching your past session history by keyword or session ID so BioRouter can pull earlier context into the current conversation.
+> **What this is.** User guide to the built-in Chat Recall capability: searching your past session history by keyword or session ID so BioRouter can pull earlier context into the current conversation.
 > **Status:** Current.
 > **Audience:** end users.
 
-The Chat Recall extension lets BioRouter search across your saved session history. When you reference past work, or ask a question that needs historical context, BioRouter searches for relevant conversations or loads a summary of a specific session — you do not have to invoke it explicitly.
+The Chat Recall capability lets BioRouter search across your saved session history. When you reference past work, or ask a question that needs historical context, BioRouter searches for relevant conversations or loads a summary of a specific session — you do not have to invoke it explicitly.
 
 Search runs entirely against session history stored on your own machine, under `~/.config/biorouter/sessions/` (a SQLite database). Nothing is sent to a remote search service, and sessions from other machines or other users are not visible.
 
-> **Note.** Unlike most built-in extensions, Chat Recall ships **disabled by default** (`default_enabled: false` in `crates/biorouter/src/agents/extension.rs`), so the configuration step below is required before you can use it.
+> **Note.** Unlike most built-in capabilities, Chat Recall ships **disabled by default** (`default_enabled: false` in `crates/biorouter/src/agents/extension.rs`), so the configuration step below is required before you can use it.
 
 ## Configuration
 
@@ -26,14 +26,14 @@ Search runs entirely against session history stored on your own machine, under `
    ◇  What would you like to configure?
    │  Toggle Extensions
    │
-   ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
+   ◆  Enable capabilities and extensions: (use "space" to toggle and "enter" to submit)
    │  ● chatrecall
    └  Extension settings updated successfully
    ```
 
 ## Available tool
 
-The extension registers a single tool.
+The capability registers a single tool.
 
 | Tool | Description |
 |------|-------------|
@@ -90,4 +90,4 @@ Both sessions were focused on safely refining the cohort dataset. Would you like
 - [Sessions](../../getting-started/managing-sessions.md) — how sessions are created, stored and resumed, and where the SQLite history lives.
 - [CLI command reference](../../cli/command-reference.md) — the `session` subcommands that list sessions and reveal their IDs.
 - [Extensions and skills guide](../extensions-and-skills-guide.md) — how to enable, disable and configure extensions generally.
-- [Memory extension](memory.md) — the complementary way to carry knowledge forward, by teaching BioRouter facts rather than searching old chats.
+- [Memory capability](memory.md) — the complementary way to carry knowledge forward, by teaching BioRouter facts rather than searching old chats.

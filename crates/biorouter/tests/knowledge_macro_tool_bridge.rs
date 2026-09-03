@@ -525,6 +525,7 @@ async fn a_factory_completer_routes_approval_to_the_originating_chat() {
             UserActionOutcome::Approved {
                 permission: Permission::AllowOnce,
             },
+            biorouter::pending_user_action::DecisionAuthority::unproven(),
         ),
         biorouter::pending_user_action::ResolveOutcome::Delivered,
     );

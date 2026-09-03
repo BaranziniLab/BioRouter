@@ -32,7 +32,7 @@ export default function ElicitationRequest({
 
   if (isCancelledMessage) {
     return (
-      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-text-default">
+      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-body text-text-default">
         Information request was cancelled.
       </div>
     );
@@ -40,7 +40,7 @@ export default function ElicitationRequest({
 
   if (submitted) {
     return (
-      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-text-default">
+      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-body text-text-default">
         <div className="flex items-center gap-2">
           <Check className="w-5 h-5 text-text-muted" />
           <span>Information submitted</span>
@@ -51,10 +51,10 @@ export default function ElicitationRequest({
 
   return (
     <div className="flex flex-col">
-      <div className="biorouter-message-content bg-background-muted rounded-2xl rounded-b-none px-4 py-2 text-text-default">
+      <div className="biorouter-message-content bg-background-muted rounded-2xl rounded-b-none px-4 py-2 text-body text-text-default">
         {message || 'Biorouter needs some information from you.'}
       </div>
-      <div className="biorouter-message-content bg-background-default border border-border-subtle rounded-b-2xl px-4 py-3">
+      <div className="biorouter-message-content bg-background-default border border-border-subtle rounded-b-2xl px-4 py-3 text-body">
         <JsonSchemaForm
           schema={requested_schema as JsonSchema}
           onSubmit={handleSubmit}

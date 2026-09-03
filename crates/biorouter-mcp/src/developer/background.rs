@@ -25,8 +25,11 @@ use crate::active_work::{active_work, ActiveWorkKind};
 /// Cap a single job's captured output so a runaway process cannot exhaust
 /// memory. Matches the foreground shell's 400 KB ceiling.
 const MAX_OUTPUT_BYTES: usize = 400_000;
-/// Default and ceiling for `wait`'s bounded watch.
-pub const DEFAULT_WAIT_SECS: u64 = 120;
+/// Ceiling for `shell_status`'s bounded wait.
+///
+/// There is no default: the retired `shell_wait` had one because waiting was
+/// the whole tool, whereas `shell_status` waits only when the caller passes
+/// `timeout_secs`, and an absent value means "peek", not "wait 120 seconds".
 pub const MAX_WAIT_SECS: u64 = 600;
 
 /// Terminal-or-running state of a job. `Exited` carries the real OS exit code,
@@ -88,8 +91,7 @@ struct Job {
 }
 
 /// Registry of background shell jobs, shared (via `Arc`) by the developer
-/// server's `shell`, `shell_output`, `shell_wait`, `shell_kill` and
-/// `shell_list` tools.
+/// server's `shell`, `shell_status` and `shell_kill` tools.
 #[derive(Default)]
 pub struct BackgroundJobs {
     jobs: Mutex<HashMap<String, Arc<Job>>>,
@@ -280,7 +282,7 @@ impl BackgroundJobs {
             Ok(format!("{snap}\n\nThe job has finished."))
         } else {
             Ok(format!(
-                "{snap}\n\nStill running after {dur_secs}s. The job was NOT killed. Call shell_wait again to keep watching, or do other work and check back."
+                "{snap}\n\nStill running after {dur_secs}s. The job was NOT killed. Call shell_status again to keep watching, or do other work and check back."
             ))
         }
     }
@@ -313,7 +315,7 @@ impl BackgroundJobs {
 
     /// One-line summary of every background job — id, label, status, runtime,
     /// whether unread output is waiting, and the command — so the agent can
-    /// rediscover jobs whose `job_id` it has lost. Backs the `shell_list` tool.
+    /// rediscover jobs whose `job_id` it has lost. Backs `shell_status` with no job_id.
     pub async fn list(&self) -> String {
         let jobs = self.jobs.lock().await;
         if jobs.is_empty() {
@@ -326,7 +328,7 @@ impl BackgroundJobs {
             let job = &jobs[&id];
             let status = job.status.lock().await.describe();
             // Peek at the read cursor without draining it, so listing a job
-            // doesn't consume the output a later `shell_output` should return.
+            // doesn't consume the output a later `shell_status` should return.
             let new_output = {
                 let out = job.output.lock().await;
                 out.cursor < out.buf.len()

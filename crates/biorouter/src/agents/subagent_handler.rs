@@ -718,11 +718,28 @@ fn get_agent_messages(
                     .iter()
                     .any(|extension| target.matches_config(extension))
             });
+            let skills_target =
+                crate::agents::extension_manager::resolve_bundled_extension("skills");
+            let trusted_skills = skills_target.as_ref().is_some_and(|target| {
+                loaded
+                    .iter()
+                    .any(|extension| target.matches_config(extension))
+            });
+            let extension_manager_target =
+                crate::agents::extension_manager::resolve_bundled_extension("Extension Manager");
+            let trusted_extension_manager =
+                extension_manager_target.as_ref().is_some_and(|target| {
+                    loaded
+                        .iter()
+                        .any(|extension| target.matches_config(extension))
+                });
             tools.retain(|tool| {
                 crate::agents::agent::coding_agent_bridge_allows_tool(
                     tool.name.as_ref(),
                     false,
                     trusted_knowledge,
+                    trusted_skills,
+                    trusted_extension_manager,
                 )
             });
         }

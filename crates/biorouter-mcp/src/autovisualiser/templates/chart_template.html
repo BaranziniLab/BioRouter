@@ -3,325 +3,202 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interactive Chart</title>
-
+    <title>Chart</title>
     {{ASSETS}}
     <script>{{COMMON}}</script>
-    
     <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f5f5f5;
-            color: #333;
-        }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            overflow: hidden;
-        }
-        
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }
-        
-        .header h1 {
-            margin: 0 0 10px 0;
-            font-size: 2em;
-            font-weight: 300;
-        }
-        
-        .header p {
-            margin: 0;
-            font-size: 1em;
-            opacity: 0.9;
-        }
-        
-        .chart-container {
-            padding: 30px;
-            position: relative;
-            height: 500px;
-        }
-        
-        @media (max-width: 768px) {
-            .chart-container {
-                padding: 15px;
-                height: 400px;
-            }
-        }
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: clamp(12px, 2.5vw, 28px); color: var(--text); background: var(--bg); font-size: 14px; line-height: 1.4; }
+        .container { max-width: 1200px; margin: 0 auto; min-width: 0; }
+        .header { padding: 0 0 16px; text-align: left; }
+        .header h1 { margin: 0; font-size: clamp(18px, 2vw, 22px); font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+        .header p { margin: 6px 0 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+        .chart-container { position: relative; height: 420px; min-width: 0; }
+        .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0 0 12px; padding: 0; list-style: none; }
+        .chart-legend[hidden] { display: none; }
+        .chart-legend li { min-width: 0; max-width: 100%; }
+        .chart-legend button { display: flex; align-items: baseline; gap: 8px; border: 0; padding: 2px 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+        .chart-legend button[aria-pressed="false"] { opacity: 0.55; text-decoration: line-through; }
+        .chart-legend button:focus-visible, summary:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+        .swatch { width: 18px; height: 3px; flex: 0 0 18px; align-self: center; }
+        details { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--border); }
+        summary { width: fit-content; color: var(--muted); cursor: pointer; }
+        .table-scroll { max-height: 360px; overflow: auto; margin-top: 10px; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; text-align: left; }
+        caption { text-align: left; color: var(--muted); padding-bottom: 8px; }
+        th, td { padding: 7px 10px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+        th { font-weight: 600; }
+        td { font-variant-numeric: tabular-nums; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1 id="chartTitle">📊 Chart Visualization</h1>
-            <p id="chartSubtitle">Interactive data visualization</p>
-        </div>
-        
+    <main class="container viz-root">
+        <header class="header">
+            <h1 id="chartTitle">Chart</h1>
+            <p id="chartSubtitle" hidden></p>
+        </header>
+        <ul id="chartLegend" class="chart-legend" aria-label="Data series"></ul>
         <div class="chart-container">
-            <canvas id="mainChart"></canvas>
+            <canvas id="mainChart" role="img" aria-labelledby="chartTitle" aria-describedby="chartSubtitle chartTableSummary"></canvas>
         </div>
-    </div>
-
+        <details>
+            <summary id="chartTableSummary">View chart data</summary>
+            <div class="table-scroll"><table id="chartTable"></table></div>
+        </details>
+    </main>
     <script>
-        // Data will be injected here
         const chartData = {{CHART_DATA}};
-        BioRouterViz.applyChartTooltipDefaults();
-        
+        BioRouterViz.applyPageTheme();
+        BioRouterViz.applyChartDefaults();
+        const canvas = document.getElementById('mainChart');
+        const chartHost = canvas.parentElement;
+        const context = canvas.getContext('2d');
+        const chartType = chartData.type || 'line';
+        const categorical = chartType !== 'scatter' && !chartData.datasets.some((dataset) => dataset.data.some((value) => value && typeof value === 'object'));
+        const colors = BioRouterViz.colors;
         let chart;
-        
-        function getChartOptions(type) {
-            const baseOptions = {
-                responsive: true,
-                maintainAspectRatio: false,
-                interaction: {
-                    intersect: false,
-                    mode: 'index'
-                },
+
+        function layout() {
+            const width = chartHost.clientWidth;
+            const size = width < 600 ? 14 : 16;
+            context.font = size + 'px ' + Chart.defaults.font.family;
+            const measure = (text) => {
+                context.save();
+                context.font = size + 'px ' + Chart.defaults.font.family;
+                const measured = context.measureText(text).width;
+                context.restore();
+                return measured;
+            };
+            const tickCount = Math.max(2, Math.min((chartData.labels || []).length || 2, Math.floor((width - 80) / 100)));
+            const labelWidth = Math.max(42, Math.min(180, (width - 90) / tickCount - 16));
+            const wrap = (text) => BioRouterViz.wrapLabel(text, labelWidth, measure);
+            const maxLines = (chartData.labels || []).reduce((max, label) => Math.max(max, wrap(label).length), 1);
+            const xTitle = BioRouterViz.wrapLabel(chartData.xAxisLabel || '', Math.max(80, width - 110), measure);
+            chartHost.style.height = Math.max(280, Math.min(500, width * 0.5)) + maxLines * size * 1.3 + xTitle.length * size * 1.3 + 48 + 'px';
+            return { size, tickCount, wrap, xTitle };
+        }
+
+        function chartOptions(metrics) {
+            return {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                interaction: { intersect: false, mode: chartType === 'scatter' ? 'nearest' : 'index' },
                 plugins: {
-                    legend: {
-                        position: 'top',
-                        labels: {
-                            usePointStyle: true,
-                            padding: 20,
-                            font: {
-                                size: 12
-                            }
-                        }
-                    },
-                    tooltip: {
-                        displayColors: true
-                    },
-                    title: {
-                        display: false // We handle title in HTML
-                    }
+                    legend: { display: false }, title: { display: false },
+                    tooltip: { callbacks: {
+                        title: (items) => items.length ? BioRouterViz.wrapChartTooltip(items[0].label, items[0].chart) : [],
+                        label: (item) => BioRouterViz.wrapChartTooltip(
+                            (item.dataset.label ? item.dataset.label + ': ' : '') + item.formattedValue,
+                            item.chart
+                        )
+                    } }
                 },
-                animation: {
-                    duration: 750,
-                    easing: 'easeInOutQuart'
+                layout: { padding: { top: 8, right: 12, bottom: 0, left: 0 } },
+                scales: {
+                    x: {
+                        type: categorical ? 'category' : 'linear',
+                        grid: { display: !categorical, color: colors.grid },
+                        border: { color: colors.border },
+                        ticks: { color: colors.text, font: { size: metrics.size }, autoSkip: true, maxTicksLimit: categorical ? metrics.tickCount : 6, minRotation: 0, maxRotation: 0, padding: 8,
+                            ...(categorical ? { callback: function (value) { return metrics.wrap(this.getLabelForValue(value)); } } : {}) },
+                        title: { display: !!chartData.xAxisLabel, text: metrics.xTitle, color: colors.text, font: { size: metrics.size, weight: '500' }, padding: { top: 12, bottom: 0 } }
+                    },
+                    y: {
+                        beginAtZero: chartType === 'bar',
+                        grid: { color: colors.grid }, border: { display: false },
+                        ticks: { color: colors.text, font: { size: metrics.size }, padding: 8, maxTicksLimit: 7 },
+                        title: { display: !!chartData.yAxisLabel, text: BioRouterViz.wrapLabel(chartData.yAxisLabel || '', 260, (text) => context.measureText(text).width), color: colors.text, font: { size: metrics.size, weight: '500' }, padding: { top: 0, bottom: 8 } }
+                    }
                 }
             };
-            
-            if (type === 'scatter') {
-                baseOptions.scales = {
-                    x: {
-                        type: 'linear',
-                        position: 'bottom',
-                        title: {
-                            display: chartData.xAxisLabel ? true : false,
-                            text: chartData.xAxisLabel || 'X Values',
-                            font: {
-                                size: 12
-                            }
-                        },
-                        grid: {
-                            color: 'rgba(0, 0, 0, 0.1)'
-                        }
-                    },
-                    y: {
-                        title: {
-                            display: chartData.yAxisLabel ? true : false,
-                            text: chartData.yAxisLabel || 'Y Values',
-                            font: {
-                                size: 12
-                            }
-                        },
-                        grid: {
-                            color: 'rgba(0, 0, 0, 0.1)'
-                        }
-                    }
-                };
-            } else {
-                baseOptions.scales = {
-                    x: {
-                        grid: {
-                            color: 'rgba(0, 0, 0, 0.1)'
-                        },
-                        title: {
-                            display: chartData.xAxisLabel ? true : false,
-                            text: chartData.xAxisLabel,
-                            font: {
-                                size: 12
-                            }
-                        }
-                    },
-                    y: {
-                        beginAtZero: true,
-                        grid: {
-                            color: 'rgba(0, 0, 0, 0.1)'
-                        },
-                        title: {
-                            display: chartData.yAxisLabel ? true : false,
-                            text: chartData.yAxisLabel,
-                            font: {
-                                size: 12
-                            }
-                        }
-                    }
-                };
-            }
-            
-            // Apply any custom options from the data
-            if (chartData.options) {
-                return mergeOptions(baseOptions, chartData.options);
-            }
-            
-            return baseOptions;
         }
-        
-        function mergeOptions(base, custom) {
-            // Simple deep merge for options
-            const merged = {...base};
-            for (const key in custom) {
-                if (typeof custom[key] === 'object' && !Array.isArray(custom[key]) && custom[key] !== null) {
-                    merged[key] = mergeOptions(base[key] || {}, custom[key]);
-                } else {
-                    merged[key] = custom[key];
-                }
-            }
-            return merged;
-        }
-        
-        // Default color palette
-        const defaultColors = [
-            'rgba(54, 162, 235, 0.8)',   // Blue
-            'rgba(255, 99, 132, 0.8)',   // Red
-            'rgba(75, 192, 192, 0.8)',   // Teal
-            'rgba(255, 159, 64, 0.8)',   // Orange
-            'rgba(153, 102, 255, 0.8)',  // Purple
-            'rgba(255, 206, 86, 0.8)',   // Yellow
-            'rgba(46, 204, 113, 0.8)',   // Green
-            'rgba(231, 76, 60, 0.8)',    // Darker Red
-            'rgba(52, 152, 219, 0.8)',   // Light Blue
-            'rgba(155, 89, 182, 0.8)',   // Violet
-        ];
-        
-        const defaultBorderColors = [
-            'rgba(54, 162, 235, 1)',
-            'rgba(255, 99, 132, 1)',
-            'rgba(75, 192, 192, 1)',
-            'rgba(255, 159, 64, 1)',
-            'rgba(153, 102, 255, 1)',
-            'rgba(255, 206, 86, 1)',
-            'rgba(46, 204, 113, 1)',
-            'rgba(231, 76, 60, 1)',
-            'rgba(52, 152, 219, 1)',
-            'rgba(155, 89, 182, 1)',
-        ];
-        
-        function processDatasets(datasets, chartType) {
-            return datasets.map((dataset, index) => {
-                const processed = {...dataset};
-                
-                // Add default colors if not provided
-                if (!processed.backgroundColor) {
-                    if (chartType === 'bar' && !dataset.label && datasets.length === 1) {
-                        // For single bar dataset without label, use multiple colors
-                        processed.backgroundColor = defaultColors;
-                        processed.borderColor = defaultBorderColors;
-                    } else {
-                        processed.backgroundColor = defaultColors[index % defaultColors.length];
-                        processed.borderColor = defaultBorderColors[index % defaultBorderColors.length];
-                    }
-                }
-                
-                if (!processed.borderColor && processed.backgroundColor) {
-                    processed.borderColor = processed.backgroundColor.replace('0.8', '1');
-                }
-                
-                // Set default border width
-                if (processed.borderWidth === undefined) {
-                    processed.borderWidth = chartType === 'line' ? 2 : 1;
-                }
-                
-                // For line charts, add default tension if not specified
-                if (chartType === 'line' && processed.tension === undefined) {
-                    processed.tension = 0.4;
-                }
-                
-                // For line charts, set fill to false by default if not specified
-                if (chartType === 'line' && processed.fill === undefined) {
-                    processed.fill = false;
-                }
-                
-                return processed;
+
+        function processDatasets() {
+            return chartData.datasets.map((dataset, index) => {
+                const color = BioRouterViz.palette[index % BioRouterViz.palette.length];
+                return {
+                    ...dataset,
+                    backgroundColor: dataset.backgroundColor || dataset.borderColor || color,
+                    borderColor: dataset.borderColor || dataset.backgroundColor || color,
+                    borderWidth: dataset.borderWidth === undefined ? (chartType === 'bar' ? 0 : 2) : dataset.borderWidth,
+                    tension: dataset.tension === undefined ? 0 : dataset.tension,
+                    fill: dataset.fill === undefined ? false : dataset.fill,
+                    pointRadius: chartType === 'scatter' ? 4 : 3,
+                    pointStyle: ['circle', 'rect', 'triangle', 'crossRot'][index % 4],
+                    borderDash: chartType === 'line' && index % 2 ? [6, 3] : []
+                };
             });
         }
-        
-        function initChart() {
-            const ctx = document.getElementById('mainChart').getContext('2d');
-            
-            // Set title and subtitle if provided
-            if (chartData.title) {
-                document.getElementById('chartTitle').textContent = chartData.title;
-            }
-            if (chartData.subtitle) {
-                document.getElementById('chartSubtitle').textContent = chartData.subtitle;
-            }
-            
-            const chartType = chartData.type || 'line';
-            const processedDatasets = processDatasets(chartData.datasets, chartType);
-            
-            const chartConfig = {
-                type: chartType,
-                data: {
-                    labels: chartData.labels || [],
-                    datasets: processedDatasets
-                },
-                options: getChartOptions(chartType)
-            };
-            
-            chart = new Chart(ctx, chartConfig);
-        }
-        
-        // Function to measure and report content size for iframe auto-resizing
-        function reportContentSize() {
-            const contentHeight = Math.max(
-                document.body.scrollHeight,
-                document.body.offsetHeight,
-                document.documentElement.clientHeight,
-                document.documentElement.scrollHeight,
-                document.documentElement.offsetHeight
-            );
-            
-            // Send size change message to parent window (for MCP-UI iframe auto-resize)
-            if (window.parent !== window) {
-                window.parent.postMessage({
-                    type: 'ui-size-change',
-                    payload: {
-                        height: contentHeight
-                    }
-                }, '*');
-            }
-        }
-        
-        // Initialize on load
-        window.onload = function() {
-            initChart();
-            
-            // Report initial size
-            setTimeout(reportContentSize, 100);
-            
-            // Watch for size changes using ResizeObserver if available
-            if (typeof ResizeObserver !== 'undefined') {
-                const resizeObserver = new ResizeObserver(() => {
-                    reportContentSize();
+
+        function renderLegend(datasets) {
+            const legend = document.getElementById('chartLegend');
+            if (datasets.length < 2) { legend.hidden = true; return; }
+            datasets.forEach((dataset, index) => {
+                const item = document.createElement('li');
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.setAttribute('aria-pressed', 'true');
+                const swatch = document.createElement('span');
+                swatch.className = 'swatch';
+                swatch.style.backgroundColor = dataset.borderColor;
+                swatch.setAttribute('aria-hidden', 'true');
+                const label = document.createElement('span');
+                label.textContent = dataset.label || 'Series ' + (index + 1);
+                button.append(swatch, label);
+                button.addEventListener('click', () => {
+                    const visible = !chart.isDatasetVisible(index);
+                    chart.setDatasetVisibility(index, visible);
+                    button.setAttribute('aria-pressed', String(visible));
+                    chart.update();
                 });
-                resizeObserver.observe(document.body);
-                resizeObserver.observe(document.documentElement);
+                item.appendChild(button);
+                legend.appendChild(item);
+            });
+        }
+
+        function renderTable() {
+            const table = document.getElementById('chartTable');
+            const caption = table.createCaption();
+            caption.textContent = chartData.title || 'Chart data';
+            const head = table.createTHead().insertRow();
+            [categorical ? chartData.xAxisLabel || 'Observation' : 'Observation', ...chartData.datasets.map((ds) => ds.label || chartData.yAxisLabel || 'Value')].forEach((label) => {
+                const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = label; head.appendChild(cell);
+            });
+            const count = chartData.datasets.reduce((max, dataset) => Math.max(max, dataset.data.length), 0);
+            const xLabel = chartData.xAxisLabel || 'x';
+            const yLabel = chartData.yAxisLabel || 'y';
+            const body = table.createTBody();
+            for (let index = 0; index < Math.min(count, 500); index++) {
+                const row = body.insertRow();
+                row.insertCell().textContent = (chartData.labels || [])[index] ?? String(index + 1);
+                chartData.datasets.forEach((dataset) => {
+                    const value = dataset.data[index];
+                    row.insertCell().textContent = value && typeof value === 'object' ? xLabel + ': ' + value.x + '; ' + yLabel + ': ' + value.y : String(value ?? '—');
+                });
             }
-            
-            // Fallback: also report on window resize
-            window.addEventListener('resize', reportContentSize);
-        };
+            if (count > 500) caption.textContent += ' — first 500 of ' + count + ' observations';
+        }
+
+        BioRouterViz.guard(function () {
+            const title = chartData.title || (chartData.yAxisLabel && chartData.xAxisLabel ? chartData.yAxisLabel + ' by ' + chartData.xAxisLabel : chartData.datasets[0].label || 'Chart');
+            document.getElementById('chartTitle').textContent = title;
+            document.title = title;
+            if (chartData.subtitle) {
+                const subtitle = document.getElementById('chartSubtitle');
+                subtitle.textContent = chartData.subtitle;
+                subtitle.hidden = false;
+            }
+            const metrics = layout();
+            const datasets = processDatasets();
+            renderLegend(datasets);
+            renderTable();
+            chart = new Chart(context, { type: chartType, data: { labels: chartData.labels || [], datasets }, options: chartOptions(metrics) });
+            BioRouterViz.observeChartWidth(chartHost, () => {
+                    chart.options = chartOptions(layout());
+                    chart.resize();
+                    chart.update('none');
+            });
+            BioRouterViz.autoResize();
+        });
     </script>
 </body>
 </html>

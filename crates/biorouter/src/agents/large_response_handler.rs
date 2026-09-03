@@ -43,6 +43,22 @@ use tracing::{debug, warn};
 /// Override with `BIOROUTER_LARGE_RESPONSE_TOKENS`.
 pub const DEFAULT_LARGE_RESPONSE_TOKENS: usize = 25_000;
 
+/// Internal protocol receipts (notably Workspace terminal-result receipts)
+/// must remain deliverable even when an operator lowers the general
+/// tool-output threshold. Workspace watch/read responses retain this protocol
+/// floor; other tool results continue to honor the exact configured limit.
+const MIN_INTERNAL_PROTOCOL_RESPONSE_TOKENS: usize = 8_192;
+
+fn minimum_response_tokens_for_tool(tool_name: &str) -> usize {
+    match tool_name {
+        "workspace__workspace_watch"
+        | "workspace_watch"
+        | "workspace__workspace_read_conversation"
+        | "workspace_read_conversation" => MIN_INTERNAL_PROTOCOL_RESPONSE_TOKENS,
+        _ => 1,
+    }
+}
+
 /// How much of an offloaded result stays inline as a head/tail preview.
 /// Override with `BIOROUTER_LARGE_RESPONSE_PREVIEW_TOKENS`.
 pub const DEFAULT_LARGE_RESPONSE_PREVIEW_TOKENS: usize = 4_000;
@@ -73,22 +89,28 @@ struct LargeResponseLimits {
 }
 
 impl LargeResponseLimits {
-    fn from_config() -> Self {
-        let config = Config::global();
-        let max_tokens = config
-            .get_param::<usize>("BIOROUTER_LARGE_RESPONSE_TOKENS")
-            .unwrap_or(DEFAULT_LARGE_RESPONSE_TOKENS)
-            .max(1);
-        let preview_tokens = config
-            .get_param::<usize>("BIOROUTER_LARGE_RESPONSE_PREVIEW_TOKENS")
-            .unwrap_or(DEFAULT_LARGE_RESPONSE_PREVIEW_TOKENS)
-            // A preview at least as large as the limit itself would make the
-            // offload pointless.
-            .min(max_tokens.saturating_sub(1).max(1));
+    fn new_with_minimum(max_tokens: usize, preview_tokens: usize, minimum_tokens: usize) -> Self {
+        let max_tokens = max_tokens.max(minimum_tokens).max(1);
+        let preview_tokens = preview_tokens.min(max_tokens.saturating_sub(1).max(1));
         Self {
             max_tokens,
             preview_tokens,
         }
+    }
+
+    fn from_config_with_minimum(minimum_tokens: usize) -> Self {
+        let config = Config::global();
+        let max_tokens = config
+            .get_param::<usize>("BIOROUTER_LARGE_RESPONSE_TOKENS")
+            .unwrap_or(DEFAULT_LARGE_RESPONSE_TOKENS);
+        let preview_tokens = config
+            .get_param::<usize>("BIOROUTER_LARGE_RESPONSE_PREVIEW_TOKENS")
+            .unwrap_or(DEFAULT_LARGE_RESPONSE_PREVIEW_TOKENS);
+        Self::new_with_minimum(max_tokens, preview_tokens, minimum_tokens)
+    }
+
+    fn for_tool(tool_name: &str) -> Self {
+        Self::from_config_with_minimum(minimum_response_tokens_for_tool(tool_name))
     }
 }
 
@@ -113,8 +135,14 @@ async fn oversized_text_tokens(
 /// failure) from being mistaken for delivery of the full payload. Failure to
 /// obtain an exact count returns `false`; fallback estimates are suitable for
 /// bounding a response, not for releasing supervision.
-pub(crate) async fn text_will_remain_inline(text: &str) -> bool {
-    let limits = LargeResponseLimits::from_config();
+pub(crate) async fn text_will_remain_inline_for_tool(text: &str, tool_name: &str) -> bool {
+    text_will_remain_inline_with_limits(text, LargeResponseLimits::for_tool(tool_name)).await
+}
+
+async fn text_will_remain_inline_with_limits(text: &str, limits: LargeResponseLimits) -> bool {
+    if text.chars().count() <= limits.max_tokens {
+        return true;
+    }
     match try_count_tokens(Arc::new(text.to_owned())).await {
         Ok(tokens) => tokens <= limits.max_tokens,
         Err(e) => {
@@ -162,7 +190,7 @@ pub async fn process_tool_response(
         return Ok(result);
     }
 
-    let limits = LargeResponseLimits::from_config();
+    let limits = LargeResponseLimits::for_tool(&ctx.tool_name);
 
     let texts: Vec<&str> = text_indices
         .iter()
@@ -442,6 +470,17 @@ mod tests {
         assert!(!dir.path().join(".biorouter").exists());
     }
 
+    #[tokio::test]
+    async fn inline_delivery_proof_uses_the_same_tokenizer_free_small_text_path() {
+        let limits = LargeResponseLimits::from_config_with_minimum(1);
+        let receipt = "r".repeat(limits.max_tokens);
+        assert!(
+            text_will_remain_inline_with_limits(&receipt, limits).await,
+            "a response the large-response handler returns before tokenizer setup \
+             must be recognized as delivered by collection side effects too"
+        );
+    }
+
     /// The core BR-6 behaviour: an oversized result is replaced by a summary
     /// carrying a head/tail preview, a line count, and a working-dir handle
     /// that holds the *complete* output.
@@ -626,7 +665,35 @@ mod tests {
 
     #[test]
     fn preview_budget_stays_below_the_inline_limit() {
-        let limits = LargeResponseLimits::from_config();
+        let limits = LargeResponseLimits::from_config_with_minimum(1);
         assert!(limits.preview_tokens < limits.max_tokens);
+    }
+
+    #[test]
+    fn internal_protocol_minimum_does_not_change_general_tool_limits() {
+        let general = LargeResponseLimits::new_with_minimum(1, 4_000, 1);
+        let protocol =
+            LargeResponseLimits::new_with_minimum(1, 4_000, MIN_INTERNAL_PROTOCOL_RESPONSE_TOKENS);
+        assert_eq!(general.max_tokens, 1);
+        assert_eq!(general.preview_tokens, 1);
+        assert_eq!(protocol.max_tokens, MIN_INTERNAL_PROTOCOL_RESPONSE_TOKENS);
+        assert_eq!(protocol.preview_tokens, 4_000);
+    }
+
+    #[test]
+    fn workspace_protocol_floor_covers_canonical_and_bare_tool_aliases() {
+        for tool_name in [
+            "workspace__workspace_watch",
+            "workspace_watch",
+            "workspace__workspace_read_conversation",
+            "workspace_read_conversation",
+        ] {
+            assert_eq!(
+                minimum_response_tokens_for_tool(tool_name),
+                MIN_INTERNAL_PROTOCOL_RESPONSE_TOKENS,
+                "missing protocol floor for {tool_name}"
+            );
+        }
+        assert_eq!(minimum_response_tokens_for_tool("developer__shell"), 1);
     }
 }

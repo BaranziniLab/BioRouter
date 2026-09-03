@@ -808,8 +808,9 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
     }
 }
 
-/// Configure extensions that can be used with biorouter
-/// Dialog for toggling which extensions are enabled/disabled
+/// Configure capabilities and extensions that can be used with biorouter.
+/// The storage layer retains the historical extension-shaped representation,
+/// but the user-facing distinction must remain explicit.
 pub fn toggle_extensions_dialog() -> anyhow::Result<()> {
     for warning in biorouter::config::get_warnings() {
         eprintln!("{}", style(format!("Warning: {}", warning)).yellow());
@@ -818,9 +819,7 @@ pub fn toggle_extensions_dialog() -> anyhow::Result<()> {
     let extensions = get_all_extensions();
 
     if extensions.is_empty() {
-        cliclack::outro(
-            "No extensions configured yet. Run configure and add some extensions first.",
-        )?;
+        cliclack::outro("No capabilities or extensions are configured yet.")?;
         return Ok(());
     }
 
@@ -840,9 +839,9 @@ pub fn toggle_extensions_dialog() -> anyhow::Result<()> {
         .map(|(name, _)| name)
         .collect();
 
-    // Let user toggle extensions
+    // Let the user toggle both categories while preserving their classification.
     let selected = cliclack::multiselect(
-        "enable extensions: (use \"space\" to toggle and \"enter\" to submit)",
+        "Enable capabilities and extensions: (use \"space\" to toggle and \"enter\" to submit)",
     )
     .required(false)
     .items(
@@ -864,7 +863,7 @@ pub fn toggle_extensions_dialog() -> anyhow::Result<()> {
 
     let config = Config::global();
     cliclack::outro(format!(
-        "Extension settings saved successfully to {}",
+        "Capability and extension settings saved successfully to {}",
         config.path()
     ))?;
     Ok(())
@@ -991,11 +990,6 @@ fn configure_builtin_extension() -> anyhow::Result<()> {
             "memory",
             "Memory",
             "Teach Biorouter your preferences so it remembers them as you go.",
-        ),
-        (
-            "tutorial",
-            "Tutorial",
-            "Access interactive tutorials and step-by-step guides.",
         ),
         (
             "agent_drafter",
@@ -1898,11 +1892,11 @@ pub async fn handle_openrouter_auth() -> anyhow::Result<()> {
                                 ),
                                 timeout: Some(biorouter::config::DEFAULT_EXTENSION_TIMEOUT),
                                 bundled: Some(true),
-                                description: "Developer extension".to_string(),
+                                description: "Developer capability".to_string(),
                                 available_tools: Vec::new(),
                             },
                         });
-                        println!("✓ Developer extension enabled");
+                        println!("✓ Developer capability enabled");
                     }
 
                     cliclack::outro("OpenRouter setup complete! You can now use biorouter.")?;
@@ -1976,11 +1970,11 @@ pub async fn handle_tetrate_auth() -> anyhow::Result<()> {
                                 ),
                                 timeout: Some(biorouter::config::DEFAULT_EXTENSION_TIMEOUT),
                                 bundled: Some(true),
-                                description: "Developer extension".to_string(),
+                                description: "Developer capability".to_string(),
                                 available_tools: Vec::new(),
                             },
                         });
-                        println!("✓ Developer extension enabled");
+                        println!("✓ Developer capability enabled");
                     }
 
                     cliclack::outro(

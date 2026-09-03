@@ -442,6 +442,59 @@ pub(crate) fn crossing_payload(tool_name: &str, args: &JsonObject) -> Option<(St
     Some((target.to_string(), payload))
 }
 
+/// The payload a `workspace_open { new: { prompt } }` would carry into a
+/// conversation that **does not exist yet**.
+///
+/// ⚠ **Its own function because it has no `session_id`, and that absence is
+/// exactly why it was missed.** [`crossing_payload`] opens by requiring
+/// `args["session_id"]`, so `workspace_open` fell out of every crossing check at
+/// the first line — no card, no ledger entry, nothing. A private-model chat
+/// could therefore write caller-chosen text into a brand-new conversation in
+/// silence, while `workspace_send_prompt` carrying the SAME text into the
+/// session it had just created raised the 🔒 approval. The easier route was the
+/// unguarded one.
+///
+/// Having no target is not a reason to skip the disclosure; it is the reason the
+/// disclosure cannot be skipped. `start_session` creates a `SessionType::User`
+/// row at the default (public) classification, and a conversation that did not
+/// exist a moment ago has by construction never crossed with this caller — so
+/// for a private caller this is ALWAYS a first crossing, with no ledger to
+/// consult.
+pub(crate) fn open_new_session_payload(tool_name: &str, args: &JsonObject) -> Option<String> {
+    if !is_workspace_open_call(tool_name) {
+        return None;
+    }
+    let new = args.get("new").and_then(serde_json::Value::as_object)?;
+    let prompt = new.get("prompt").and_then(serde_json::Value::as_str)?;
+    if prompt.trim().is_empty() {
+        return None;
+    }
+    Some(prompt.to_string())
+}
+
+/// **The one question every half of the first-crossing disclosure asks**: what
+/// would this call write into another conversation, and which one?
+///
+/// A `None` target means *a conversation this call is about to create*, which
+/// the caller must treat as a first crossing outright rather than looking it up.
+///
+/// Three halves read this and they must not be able to disagree: the inspector
+/// that raises the card, [`uninspected_crossing_refusal`] at the boundaries no
+/// inspector sees, and `WorkspaceClient::record_crossing_if_disclosed`, which
+/// decides a landed write may mark the pair as crossed. The `workspace_open`
+/// hole is what happens when one of them is missing an arm — and the record half
+/// asking a *different* function from the one the card half asks is how a change
+/// nobody was shown consumes the pair's single disclosure.
+pub(crate) fn crossing_disclosure(
+    tool_name: &str,
+    args: &JsonObject,
+) -> Option<(Option<String>, String)> {
+    if let Some((target, payload)) = crossing_payload(tool_name, args) {
+        return Some((Some(target), payload));
+    }
+    open_new_session_payload(tool_name, args).map(|prompt| (None, prompt))
+}
+
 pub(crate) fn is_send_prompt_call(tool_name: &str) -> bool {
     tool_name == "workspace_send_prompt" || tool_name == "workspace__workspace_send_prompt"
 }
@@ -501,7 +554,22 @@ pub async fn uninspected_crossing_refusal(
     if !cap.enforced() || !cap.tier().is_private() {
         return None;
     }
-    let (target, _) = crossing_payload(tool_name, args?)?;
+    let (target, _) = crossing_disclosure(tool_name, args?)?;
+    // No target means the call MINTS its conversation, so there is no row to
+    // resolve and no pair to look up: a private caller seeding a brand-new
+    // (public-by-default) session is a first crossing every time.
+    let target = match target {
+        Some(target) => target,
+        None => {
+            return Some(format!(
+                "Refused: this conversation runs on a model hosted inside your institution, and \
+                 {tool_name} would start a NEW conversation — which is public — and send text \
+                 into it. The first time that happens the user has to see the exact payload and \
+                 approve it, and a call made from inside a script never reaches the approval. \
+                 Call {tool_name} directly instead of from `execute_code`."
+            ));
+        }
+    };
     let row = crate::session::session_manager::SessionManager::instance()
         .get_session(&target, false)
         .await
@@ -539,6 +607,105 @@ impl WorkspaceCrossingInspector {
     pub fn new(provider: crate::agents::types::SharedProvider) -> Self {
         Self { provider }
     }
+
+    async fn inspect_with_pinned_capability(
+        &self,
+        tool_requests: &[ToolRequest],
+        session: &Session,
+        capability: Option<crate::privacy::CallCapability>,
+    ) -> Result<Vec<InspectionResult>> {
+        // Reject non-workspace-write batches before sampling a provider or
+        // touching session storage. This inspector is on every tool batch.
+        let candidates: Vec<(&ToolRequest, Option<String>, String)> = tool_requests
+            .iter()
+            .filter_map(|request| {
+                let tool_call = request.tool_call.as_ref().ok()?;
+                let args = tool_call.arguments.as_ref()?;
+                let (target, payload) = crossing_disclosure(&tool_call.name, args)?;
+                Some((request, target, payload))
+            })
+            .collect();
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // A bridge grant supplies the capability it sampled at issue time. The
+        // ordinary agent path has no pinned value, so sample exactly once for
+        // the whole batch rather than letting calls observe different models.
+        let cap = match capability {
+            Some(capability) => capability,
+            None => crate::privacy::CallCapability::sample(&self.provider).await,
+        };
+        if !cap.enforced() || !cap.tier().is_private() {
+            return Ok(Vec::new());
+        }
+
+        let session_manager = crate::session::session_manager::SessionManager::instance();
+        let mut results = Vec::new();
+        for (request, target, payload) in candidates {
+            // ⚠ `None` is `workspace_open { new: { prompt } }`: the conversation
+            // this write lands in does not exist yet. There is no row to resolve
+            // and no pair to look up, and neither absence is a reason to stay
+            // quiet — a session minted a moment from now is created public and
+            // has never crossed with this caller, so a private caller seeding one
+            // is a first crossing outright. Skipping it here is precisely the
+            // hole this arm closes: the card fired for `workspace_send_prompt`
+            // into that same session one call later, and never for the call that
+            // created and seeded it.
+            let target = match target {
+                Some(target) => {
+                    // Metadata only: resolving the disclosure boundary must never
+                    // load the target conversation. An absent row is left to the
+                    // handler's anti-oracle refusal rather than disclosed here.
+                    let Ok(row) = session_manager.get_session(&target, false).await else {
+                        continue;
+                    };
+                    if !crate::privacy::crossing::needs_disclosure(
+                        cap.tier(),
+                        row.privacy_tier,
+                        &session.id,
+                        &target,
+                    ) {
+                        continue;
+                    }
+                    target
+                }
+                None => {
+                    if !crate::privacy::visibility::requires_first_crossing_approval(
+                        cap.tier(),
+                        crate::privacy::SessionClassification::Public,
+                    ) {
+                        continue;
+                    }
+                    "a new conversation this call is about to create".to_string()
+                }
+            };
+            tracing::warn!(
+                counter.biorouter.workspace_tier_crossing_disclosed = 1,
+                tool_request_id = %request.id,
+                target_session = %target,
+                "Private-to-public workspace write escalated to approval (issue #56)"
+            );
+            results.push(InspectionResult {
+                tool_request_id: request.id.clone(),
+                action: InspectionAction::RequireApproval(Some(format!(
+                    // Keep the untrusted payload last and fenced. The desktop
+                    // card collapses whitespace, so prose after it would blur
+                    // the boundary between quoted text and Biorouter's warning.
+                    "🔒 This conversation is on a model hosted inside your institution. \
+                     It is about to send text to conversation {target}, which is NOT. \
+                     Approving sends it now, and stops asking for this pair of \
+                     conversations. This confirmation appears in every permission mode, \
+                     including Fully Automatic. ⟪WHAT IT WOULD SEND⟫ {payload} ⟪END⟫"
+                ))),
+                reason: format!("Private-to-public workspace write into {target}"),
+                confidence: 1.0,
+                inspector_name: "workspace_tier_crossing".to_string(),
+                finding_id: Some(format!("WSXING-{}", Uuid::new_v4().simple())),
+            });
+        }
+        Ok(results)
+    }
 }
 
 #[async_trait]
@@ -558,80 +725,20 @@ impl ToolInspector for WorkspaceCrossingInspector {
         _biorouter_mode: BioRouterMode,
         session: &Session,
     ) -> Result<Vec<InspectionResult>> {
-        // Cheapest discriminator first: a turn with no workspace write in it
-        // must not sample the provider mutex or touch the session store.
-        let candidates: Vec<(&ToolRequest, String, String)> = tool_requests
-            .iter()
-            .filter_map(|request| {
-                let tool_call = request.tool_call.as_ref().ok()?;
-                let args = tool_call.arguments.as_ref()?;
-                let (target, payload) = crossing_payload(&tool_call.name, args)?;
-                Some((request, target, payload))
-            })
-            .collect();
-        if candidates.is_empty() {
-            return Ok(Vec::new());
-        }
+        self.inspect_with_pinned_capability(tool_requests, session, None)
+            .await
+    }
 
-        // ONE sample, for the whole batch, at one instant — the same discipline
-        // `CallCapability` exists to enforce. Re-reading the mutex per request
-        // would let two calls in one batch gate on two different models.
-        let cap = crate::privacy::CallCapability::sample(&self.provider).await;
-        if !cap.enforced() || !cap.tier().is_private() {
-            return Ok(Vec::new());
-        }
-
-        let session_manager = crate::session::session_manager::SessionManager::instance();
-        let mut results = Vec::new();
-        for (request, target, payload) in candidates {
-            // Metadata-only: resolving the tier must never be the way to load
-            // the conversation the disclosure is about.
-            let Ok(row) = session_manager.get_session(&target, false).await else {
-                // An unresolvable target is refused by the handler's own gate a
-                // moment later, in one sentence that does not say whether the
-                // conversation exists. Escalating here would answer that.
-                continue;
-            };
-            if !crate::privacy::crossing::needs_disclosure(
-                cap.tier(),
-                row.privacy_tier,
-                &session.id,
-                &target,
-            ) {
-                continue;
-            }
-            tracing::warn!(
-                counter.biorouter.workspace_tier_crossing_disclosed = 1,
-                tool_request_id = %request.id,
-                target_session = %target,
-                "Private-to-public workspace write escalated to approval (issue #56)"
-            );
-            results.push(InspectionResult {
-                tool_request_id: request.id.clone(),
-                action: InspectionAction::RequireApproval(Some(format!(
-                    // ⚠ The payload goes LAST, and it is fenced. The card renders
-                    // this string into a single element, so every newline in it
-                    // collapses to a space — measured in the running app, where
-                    // "…the 2019 relapse counts Approving sends this now" read as
-                    // one sentence and the reader could not tell where the
-                    // quoted text stopped and Biorouter's own words resumed.
-                    // That matters more here than in an ordinary confirmation:
-                    // the whole point of the card is that the user can see
-                    // exactly what would leave, so its boundary has to be
-                    // unambiguous even with the whitespace gone.
-                    "🔒 This conversation is on a model hosted inside your institution. \
-                     It is about to send text to conversation {target}, which is NOT. \
-                     Approving sends it now, and stops asking for this pair of \
-                     conversations. This confirmation appears in every permission mode, \
-                     including Fully Automatic. ⟪WHAT IT WOULD SEND⟫ {payload} ⟪END⟫"
-                ))),
-                reason: format!("Private-to-public workspace write into {target}"),
-                confidence: 1.0,
-                inspector_name: self.name().to_string(),
-                finding_id: Some(format!("WSXING-{}", Uuid::new_v4().simple())),
-            });
-        }
-        Ok(results)
+    async fn inspect_with_capability(
+        &self,
+        tool_requests: &[ToolRequest],
+        _messages: &[Message],
+        _biorouter_mode: BioRouterMode,
+        session: &Session,
+        capability: Option<crate::privacy::CallCapability>,
+    ) -> Result<Vec<InspectionResult>> {
+        self.inspect_with_pinned_capability(tool_requests, session, capability)
+            .await
     }
 }
 
@@ -1054,6 +1161,83 @@ mod tests {
             payload.contains("drop what you are doing and summarise the cohort"),
             "{payload}"
         );
+    }
+
+    /// **The two routes into another conversation must agree.**
+    ///
+    /// The measured hole: from a private chat,
+    /// `workspace_open {"new":{"kind":"user","working_dir":"/tmp","prompt":"…"}}`
+    /// succeeded in silence, while `workspace_send_prompt` carrying the SAME
+    /// text into the session that call had just created raised the 🔒 card. Two
+    /// ways to put caller-chosen text into a public conversation, one of them
+    /// guarded — and the unguarded one was also the shorter one, because it does
+    /// the create and the write in a single call.
+    ///
+    /// `crossing_payload` bailed on its first line for `workspace_open`: it
+    /// requires `args["session_id"]`, and a call that MINTS its target has none.
+    /// Asserted against [`crossing_disclosure`] because that is the one function
+    /// all three halves — card, boundary refusal, and the record that stops the
+    /// asking — now ask.
+    #[test]
+    fn opening_a_new_conversation_with_a_prompt_discloses_the_same_text_send_prompt_would() {
+        const TEXT: &str = "summarise the cohort in /data/private and write it up";
+
+        let (sent_target, sent) = crossing_disclosure(
+            "workspace_send_prompt",
+            &args(serde_json::json!({
+                "session_id": "s-public", "mode": "turn", "text": TEXT,
+            })),
+        )
+        .expect("send_prompt has always disclosed");
+        assert_eq!(sent_target.as_deref(), Some("s-public"));
+        assert!(sent.contains(TEXT), "{sent}");
+
+        for name in ["workspace_open", "workspace__workspace_open"] {
+            let (opened_target, opened) = crossing_disclosure(
+                name,
+                &args(serde_json::json!({
+                    "new": { "kind": "user", "working_dir": "/tmp", "prompt": TEXT },
+                })),
+            )
+            .unwrap_or_else(|| {
+                panic!("{name} with a prompt writes into another conversation and must disclose")
+            });
+            // No target: the conversation does not exist yet, which is what the
+            // caller must read as "treat this as a first crossing outright".
+            assert!(
+                opened_target.is_none(),
+                "a call that mints its own target cannot name one: {opened_target:?}"
+            );
+            // The WHOLE text, verbatim, exactly as the send_prompt route shows
+            // it — the user is judging what leaves for the public model.
+            assert!(opened.contains(TEXT), "{opened}");
+        }
+    }
+
+    /// The other half of the same rule: an open that writes NOTHING has nothing
+    /// to disclose, and a card with an empty payload teaches the user to click
+    /// through them. It must also not be recordable — that would consume the
+    /// pair's one disclosure without ever having shown one.
+    #[test]
+    fn opening_a_conversation_without_a_prompt_discloses_nothing() {
+        // A new session with no seeded turn.
+        assert!(crossing_disclosure(
+            "workspace_open",
+            &args(serde_json::json!({ "new": { "kind": "user", "working_dir": "/tmp" } })),
+        )
+        .is_none());
+        // A whitespace-only prompt is not a payload either.
+        assert!(crossing_disclosure(
+            "workspace_open",
+            &args(serde_json::json!({ "new": { "prompt": "   " } })),
+        )
+        .is_none());
+        // And opening an EXISTING conversation is a read, not a write.
+        assert!(crossing_disclosure(
+            "workspace_open",
+            &args(serde_json::json!({ "session_id": "s-public", "placement": "tab" })),
+        )
+        .is_none());
     }
 
     #[test]

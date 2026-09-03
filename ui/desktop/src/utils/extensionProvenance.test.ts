@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  PROVENANCE_FILE,
+  PROVENANCE_MUTATIONS_DIR,
   mergeProvenance,
   nameToKey,
   recordExtensionProvenance,
@@ -11,10 +11,26 @@ import {
 
 const dirs: string[] = [];
 
+interface UpsertMutation {
+  op: 'upsert';
+  key: string;
+  record: Record<string, string>;
+}
+
 function tempConfigDir(): string {
   const dir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'brxt-prov-'));
   dirs.push(dir);
   return dir;
+}
+
+function provenanceMutations(configDir: string): UpsertMutation[] {
+  const mutationDir = path.join(configDir, PROVENANCE_MUTATIONS_DIR);
+  return fsSync
+    .readdirSync(mutationDir)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) =>
+      JSON.parse(fsSync.readFileSync(path.join(mutationDir, name), 'utf8'))
+    ) as UpsertMutation[];
 }
 
 afterEach(() => {
@@ -77,22 +93,22 @@ describe('recordExtensionProvenance', () => {
     });
 
     expect(record).not.toBeNull();
-    const store = JSON.parse(
-      fsSync.readFileSync(path.join(configDir, PROVENANCE_FILE), 'utf8')
-    ) as { version: number; extensions: Record<string, Record<string, string>> };
-    expect(store.version).toBe(1);
-    expect(store.extensions.cdwagent.registry_id).toBe('cdwagent');
+    const [mutation] = provenanceMutations(configDir);
+    expect(mutation.op).toBe('upsert');
+    expect(mutation.key).toBe('cdwagent');
+    expect(mutation.record.registry_id).toBe('cdwagent');
+    expect(mutation.record.install_id).toMatch(/^[0-9a-f-]{36}$/);
     // ⚠ The field the whole feature turns on: renaming the config entry moves
     // the key this record is filed under, so the daemon finds it by the install
     // directory instead. Dropping this makes every rename a downgrade again.
-    expect(store.extensions.cdwagent.install_dir).toBe(
+    expect(mutation.record.install_dir).toBe(
       '/home/researcher/.config/biorouter/extensions/CDWAgent'
     );
-    expect(store.extensions.cdwagent.source_url).toBe('https://example.test/cdwagent.brxt');
-    expect(store.extensions.cdwagent.recorded_at).toBe('2026-08-03T19:00:00Z');
+    expect(mutation.record.source_url).toBe('https://example.test/cdwagent.brxt');
+    expect(mutation.record.recorded_at).toBe('2026-08-03T19:00:00Z');
     // sha256 of "not really a zip", so the field is evidence rather than a
     // constant the writer made up.
-    expect(store.extensions.cdwagent.bundle_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(mutation.record.bundle_sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
   /**
@@ -109,10 +125,9 @@ describe('recordExtensionProvenance', () => {
       configDir,
       now: () => 'now',
     });
-    const store = JSON.parse(
-      fsSync.readFileSync(path.join(configDir, PROVENANCE_FILE), 'utf8')
-    ) as { extensions: Record<string, { registry_id: string }> };
-    expect(store.extensions.myrenamedconnector.registry_id).toBe('cdwagent');
+    const [mutation] = provenanceMutations(configDir);
+    expect(mutation.key).toBe('myrenamedconnector');
+    expect(mutation.record.registry_id).toBe('cdwagent');
   });
 
   it('records even when the bundle cannot be hashed', () => {
@@ -126,6 +141,23 @@ describe('recordExtensionProvenance', () => {
     });
     expect(record?.registry_id).toBe('cdwagent');
     expect(record?.bundle_sha256).toBeUndefined();
+  });
+
+  it('writes immutable install mutations so concurrent records cannot overwrite each other', () => {
+    const configDir = tempConfigDir();
+    for (const extensionName of ['first agent', 'second agent']) {
+      recordExtensionProvenance({
+        extensionName,
+        registryId: extensionName.replace(' ', '-'),
+        configDir,
+        now: () => 'now',
+      });
+    }
+
+    const mutations = provenanceMutations(configDir);
+    expect(mutations).toHaveLength(2);
+    expect(mutations.map((mutation) => mutation.key).sort()).toEqual(['firstagent', 'secondagent']);
+    expect(new Set(mutations.map((mutation) => mutation.record.install_id)).size).toBe(2);
   });
 
   it('reports failure rather than throwing when the store cannot be written', () => {

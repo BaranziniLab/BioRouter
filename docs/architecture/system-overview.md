@@ -45,7 +45,7 @@ The backend is a Rust workspace (`crates/`) organized into several crates:
 | `biorouter-test` | Integration tests |
 
 The built-in MCP servers shipped in `biorouter-mcp` are `developer`, `computercontroller`, `memory`,
-`autovisualiser`, `tutorial`, `knowledge`, `agent_drafter`, `datasql`, `compute_server`, and
+`autovisualiser`, `knowledge`, `agent_drafter`, `datasql`, `compute_server`, and
 `files_server`.
 
 Key Rust dependencies:

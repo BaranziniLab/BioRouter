@@ -58,6 +58,8 @@ struct PackageRecord {
     installed_at: Option<String>,
     entry_point: Option<String>,
     groups: std::collections::BTreeMap<String, Vec<String>>,
+    /// Common parent of every component directory, relative to this package.
+    skills_path: Option<String>,
     /// Component names, so a re-import of an exported package round-trips.
     components: Vec<RecordComponent>,
 }
@@ -171,6 +173,15 @@ pub(super) fn install_in(
 fn stage(plan: &ImportPlan, staging: &Path) -> Result<()> {
     std::fs::create_dir_all(staging).with_context(|| format!("creating {}", staging.display()))?;
 
+    if plan.kind == ImportKind::Bundle {
+        for component in &plan.components {
+            let safe = super::archive::safe_entry_name(&component.directory)?;
+            if safe != component.directory {
+                bail!("unsafe component directory: {}", component.directory);
+            }
+        }
+    }
+
     for (relative, data) in &plan.files {
         // Re-checked here rather than trusted from the plan: this is the last
         // point before bytes reach the filesystem, and a plan can be built by
@@ -226,6 +237,7 @@ fn stage(plan: &ImportPlan, staging: &Path) -> Result<()> {
             installed_at: Some(chrono::Utc::now().to_rfc3339()),
             entry_point: plan.entry_point.clone(),
             groups: plan.groups.clone(),
+            skills_path: common_component_root(&plan.components),
             components: plan
                 .components
                 .iter()
@@ -243,6 +255,19 @@ fn stage(plan: &ImportPlan, staging: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn common_component_root(components: &[super::PlannedSkill]) -> Option<String> {
+    let mut parents = components.iter().map(|component| {
+        component
+            .directory
+            .rsplit_once('/')
+            .map_or("", |(parent, _)| parent)
+    });
+    let first = parents.next()?;
+    parents
+        .all(|parent| parent == first)
+        .then(|| first.to_string())
 }
 
 /// Remove an installed package (or single skill) by its directory name.

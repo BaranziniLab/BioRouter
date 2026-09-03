@@ -422,6 +422,96 @@ impl FileLockGuard {
         Ok(Self { file })
     }
 
+    /// How long a knowledge write may wait for another holder before it gives
+    /// up and says so (#157).
+    ///
+    /// FINITE, because the alternative measured in a live daemon was an unbounded
+    /// wait: writes to one base stopped answering entirely — no result, no error,
+    /// no timeout — while reads to the same base and writes to other bases were
+    /// fine, and only restarting the daemon cleared it. The desktop app runs one
+    /// long-lived daemon (observed uptime: days), so "until restart" is a long
+    /// time to be unable to save.
+    ///
+    /// ⚠ And LONGER THAN THE LONGEST LEGITIMATE HOLD, which is what actually sets
+    /// the number. A macro holds this lock across its whole sub-agent loop, so the
+    /// ceiling is that loop's own budget — [`SubAgentBounds::max_wall`], 300 s by
+    /// default but **900 s** as `biorouter-cli`'s knowledge commands construct it
+    /// — plus conversion, staging and commit either side of it. A bound below that
+    /// does not report a wedge, it manufactures one: an ordinary long ingest would
+    /// fail every concurrent caller with a message blaming a holder that is in fact
+    /// working normally, and the louder the message the more convincing the false
+    /// report. This constant was first written as 120 s, under even the DEFAULT
+    /// budget, which is the bug this paragraph exists to stop recurring;
+    /// `the_lock_wait_exceeds_every_macro_wall_clock_budget` fails if a macro
+    /// budget is ever raised past it.
+    ///
+    /// Raising it also lengthens the SYNCHRONOUS wait in [`Self::acquire_bounded`],
+    /// which would be a bad trade if it could pin a Tokio worker for half an hour.
+    /// It cannot: checked caller by caller, every production path into the sync
+    /// `lock_existing_kb` runs inside `spawn_blocking` — the `*_async` wrappers go
+    /// through `run_existing_kb_mutation`, and `reset_knowledge` is spawned by its
+    /// route. Re-check that before raising this further.
+    const KB_WRITE_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1800);
+
+    /// How long a READ may wait for the same lock (#159).
+    ///
+    /// Deliberately far shorter than [`Self::KB_WRITE_LOCK_WAIT`], and the
+    /// asymmetry is the point rather than an oversight:
+    ///
+    /// * A **write** that gives up loses work, so it waits out the longest
+    ///   legitimate holder.
+    /// * A **read** that gives up loses nothing and is safe to retry, so making
+    ///   it wait the same 30 minutes buys the caller nothing and costs them a
+    ///   view of their own knowledge base.
+    ///
+    /// Reads take this lock for FAIRNESS, not visibility — `get_graph`'s own
+    /// note says so, and `read_page` takes no lock at all — so the property to
+    /// preserve is "a stream of readers cannot starve a macro", which a bounded
+    /// wait preserves exactly. What it drops is the case that has no business
+    /// blocking a read at all: an OPEN TRANSACTION, which holds this lock for as
+    /// long as somebody leaves it open. Measured before this bound:
+    /// `kb_get_graph` and `kb_lint` never returned while a transaction was open
+    /// on the base, while another base answered in 8 ms.
+    const KB_READ_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
+
+    /// `acquire`, but bounded. Whatever holds the lock, the caller gets a
+    /// sentence naming the base instead of a call that never returns.
+    ///
+    /// This does NOT explain why a lock is ever held that long — that is #157's
+    /// open question, and this deliberately does not pretend to answer it. It
+    /// converts an unbounded wait into a reportable failure, which is worth
+    /// having whatever the cause turns out to be.
+    fn acquire_bounded(path: &Path, wait: std::time::Duration, what: &str) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(Self { file }),
+                Err(error) if is_lock_contended(&error) => {
+                    if std::time::Instant::now() >= deadline {
+                        anyhow::bail!(
+                            "timed out after {}s waiting for the write lock on {what}. Another \
+                             knowledge operation still holds it; nothing was written. If this \
+                             persists with no operation running, restarting Biorouter releases \
+                             the lock (see issue #157).",
+                            wait.as_secs()
+                        );
+                    }
+                    std::thread::park_timeout(std::time::Duration::from_millis(10));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
     /// Interruptible `flock` acquisition for async callers. There is no
     /// artificial deadline: a live operation waits as long as its owner does,
     /// while cancellation bounds shutdown latency to one poll interval.
@@ -492,8 +582,8 @@ pub enum PrimaryUpdate<'a> {
     Clear,
     /// Drop this scope's own pointer so it falls back to the machine-wide one.
     /// The mirror of [`KnowledgeService::clear_hidden_for_session`], and
-    /// distinct from [`PrimaryUpdate::Clear`]. At machine scope — where there
-    /// is nothing above to inherit — the two coincide.
+    /// distinct from [`PrimaryUpdate::Clear`]. At machine scope this restores
+    /// Biorouter's product default (`soul`); it does not mean explicit no-primary.
     Inherit,
     /// Pin this id. It must be a member of the *resulting* set.
     Set(&'a str),
@@ -510,7 +600,7 @@ pub enum PrimaryUpdate<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StoredPrimary {
     /// No file. This scope has expressed nothing, so a session falls back to
-    /// the machine-wide pointer.
+    /// the machine-wide pointer and the machine scope falls back to Soul.
     Inherit,
     /// A file holding one bare kb id.
     Pinned(String),
@@ -781,16 +871,16 @@ impl StoredPrimary {
     }
 }
 
-/// "No primary at this scope", spelled the way that scope can actually
-/// represent it. A session needs the blank-file override so it does not
-/// re-inherit; the machine has nothing above it, so removing the file is the
-/// identical state and leaves no debris behind for users who never used the
-/// feature.
-fn no_primary_for(session_id: Option<&str>) -> StoredPrimary {
-    match session_id {
-        Some(_) => StoredPrimary::NoPrimary,
-        None => StoredPrimary::Inherit,
-    }
+/// The shipped default when a scope has never expressed a primary choice.
+/// Kept here rather than importing Biorouter's Soul module because the MCP
+/// crate is below the application crate in the dependency graph.
+const DEFAULT_PRIMARY_KB_ID: &str = "soul";
+
+/// "No primary at this scope" is always an explicit blank-file choice. At
+/// machine scope an absent file now means "use the product default Soul", so
+/// removing the file would incorrectly undo a user's explicit Clear.
+fn no_primary_for(_session_id: Option<&str>) -> StoredPrimary {
+    StoredPrimary::NoPrimary
 }
 
 impl KnowledgeService {
@@ -1098,7 +1188,15 @@ impl KnowledgeService {
         if !kb_root.exists() {
             anyhow::bail!("kb '{kb_id}' not found");
         }
-        let guard = FileLockGuard::acquire(&self.kb_lock_path(kb_id)).map_err(|error| {
+        // #157: bounded, not blocking. `acquire` uses `flock` with no deadline, so
+        // a lock nobody releases turned every later write to this base into a
+        // call that never returned.
+        let guard = FileLockGuard::acquire_bounded(
+            &self.kb_lock_path(kb_id),
+            FileLockGuard::KB_WRITE_LOCK_WAIT,
+            &format!("knowledge base '{kb_id}'"),
+        )
+        .map_err(|error| {
             if !kb_root.exists() {
                 anyhow::anyhow!("kb '{kb_id}' not found")
             } else {
@@ -1347,17 +1445,59 @@ impl KnowledgeService {
         self.lock_kb_path_cancellable(kb_id, cancel).await
     }
 
+    /// [`Self::lock_kb_cancellable`] at the READ deadline.
+    ///
+    /// Same lock, same queue, same fairness — only the patience differs. It
+    /// exists because the read/write split (#159) was applied at the tool
+    /// boundary, and the two *macros* decide read-vs-write from an argument
+    /// (`lint`'s `autofix`, `query`'s `file_as_page`) that is known one line
+    /// before the lock is taken. Without this they took the 1800s write
+    /// deadline for the read case, which is the whole defect: the Knowledge
+    /// view's "Check for problems" never sends `autofix`, so the GUI's lint is
+    /// ALWAYS read-only and parked for thirty minutes behind any open
+    /// transaction, while `kb_lint` on the same base refused in 45 seconds.
+    pub async fn lock_kb_cancellable_for_read(
+        &self,
+        kb_id: &str,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<KnowledgeWriteGuard> {
+        self.lock_kb_path_waiting(kb_id, cancel, FileLockGuard::KB_READ_LOCK_WAIT)
+            .await
+    }
+
+    /// [`Self::lock_existing_kb_cancellable`] for a READ path: same queue, same
+    /// fairness, [`FileLockGuard::KB_READ_LOCK_WAIT`] instead of the write
+    /// deadline. See that constant for why the two differ (#159).
+    pub(crate) async fn lock_existing_kb_for_read(
+        &self,
+        kb_id: &str,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<KnowledgeWriteGuard> {
+        self.lock_existing_kb_waiting(kb_id, cancel, FileLockGuard::KB_READ_LOCK_WAIT)
+            .await
+    }
+
     pub(crate) async fn lock_existing_kb_cancellable(
         &self,
         kb_id: &str,
         cancel: Option<&CancellationToken>,
+    ) -> Result<KnowledgeWriteGuard> {
+        self.lock_existing_kb_waiting(kb_id, cancel, FileLockGuard::KB_WRITE_LOCK_WAIT)
+            .await
+    }
+
+    async fn lock_existing_kb_waiting(
+        &self,
+        kb_id: &str,
+        cancel: Option<&CancellationToken>,
+        wait: std::time::Duration,
     ) -> Result<KnowledgeWriteGuard> {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         if !kb_root.exists() {
             anyhow::bail!("kb '{kb_id}' not found");
         }
-        self.lock_kb_path_cancellable(kb_id, cancel)
+        self.lock_kb_path_waiting(kb_id, cancel, wait)
             .await
             .map_err(|error| {
                 if !kb_root.exists() {
@@ -1377,21 +1517,79 @@ impl KnowledgeService {
         kb_id: &str,
         cancel: Option<&CancellationToken>,
     ) -> Result<KnowledgeWriteGuard> {
+        self.lock_kb_path_waiting(kb_id, cancel, FileLockGuard::KB_WRITE_LOCK_WAIT)
+            .await
+    }
+
+    /// [`Self::lock_kb_path_cancellable`] with the queue deadline supplied.
+    ///
+    /// The deadline is a parameter for ONE reason: so the tests can prove it
+    /// actually fires. The shipped value is 30 minutes (it has to clear the
+    /// longest legitimate macro), which is not a duration a test can wait out,
+    /// and driving `tokio::time` forward instead needs the `test-util` feature
+    /// this crate does not enable. Threading it through is the alternative to a
+    /// bound nothing exercises — and both arms take the same deadline, so a test
+    /// that drives one is testing the code path the other uses.
+    async fn lock_kb_path_waiting(
+        &self,
+        kb_id: &str,
+        cancel: Option<&CancellationToken>,
+        wait: std::time::Duration,
+    ) -> Result<KnowledgeWriteGuard> {
         paths::validate_kb_id(kb_id)?;
         let m = self
             .locks
             .entry(kb_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
-        let process_guard = match cancel {
-            Some(cancel) => {
-                tokio::select! {
+        // #157: BOUNDED — and on BOTH arms. This in-process mutex, not the file
+        // lock below, is what matched every symptom measured in a live daemon:
+        // writes to one base stopped answering while reads and other bases were
+        // fine, and only a restart cleared it (a file lock would have survived
+        // one; an in-process `Mutex` does not). A holder that never releases
+        // makes every later caller here await forever.
+        //
+        // ⚠ Two ways to put this fix in the wrong place, both of which I did:
+        //
+        //  1. Bounding `lock_existing_kb`'s FILE lock instead. It compiled, its
+        //     unit test passed, and it changed nothing — the MCP tools reach a
+        //     base through THIS function. Measured: with only that bound in
+        //     place, `kb_get_graph` still returned nothing at 200 s.
+        //  2. Bounding only the `None` arm. Nearly every tool handler in
+        //     `server.rs` passes `Some(context.ct)`, so the arm that looks like
+        //     the exception is the one the whole surface actually takes; a
+        //     cancel token is an escape only if somebody cancels.
+        //
+        // Evidence, both halves: the DIAGNOSIS came from the running app — a live
+        // daemon, a real wedge, and a `kb_get_graph` that answered at the deadline
+        // instead of never — which is what caught (1) being on the wrong wait
+        // while its unit test was passing. The BEHAVIOUR is covered here, by tests
+        // that drive `lock_kb_path_waiting` with a short deadline on each arm.
+        let queued = async {
+            match cancel {
+                Some(cancel) => tokio::select! {
                     biased;
-                    () = cancel.cancelled() => anyhow::bail!("knowledge operation cancelled while waiting for the KB lock"),
-                    guard = m.lock_owned() => guard,
-                }
+                    () = cancel.cancelled() => None,
+                    guard = m.lock_owned() => Some(guard),
+                },
+                None => Some(m.lock_owned().await),
             }
-            None => m.lock_owned().await,
+        };
+        let process_guard = match tokio::time::timeout(wait, queued).await {
+            Ok(Some(guard)) => guard,
+            Ok(None) => {
+                anyhow::bail!("knowledge operation cancelled while waiting for the KB lock")
+            }
+            // Both causes named, because this message cannot tell them apart and
+            // a confident wrong diagnosis is worse than an honest fork.
+            Err(_) => anyhow::bail!(
+                "timed out after {}s waiting for knowledge base '{kb_id}'. Another \
+                     operation still holds it. Most often that is an OPEN TRANSACTION: \
+                     commit or abort it (kb_commit_txn / kb_abort_txn) and this will go \
+                     through. Otherwise an ingest, query or lint is running — let it finish \
+                     and retry. Nothing was written.",
+                wait.as_secs()
+            ),
         };
         if cancel.is_some_and(CancellationToken::is_cancelled) {
             anyhow::bail!("knowledge operation cancelled after acquiring the KB queue lock");
@@ -1410,9 +1608,40 @@ impl KnowledgeService {
             }
             Ok::<_, anyhow::Error>(file_guard)
         });
-        let file_guard = acquire
-            .await
-            .map_err(|error| anyhow::anyhow!("knowledge KB lock task failed: {error}"))??;
+        // #157: BOUNDED, and this is the half that actually wedges. Proven on a
+        // live daemon: with nothing running, an outside `flock(LOCK_EX|LOCK_NB)`
+        // on the base's lock file is REFUSED, and `sample` shows every waiter
+        // parked in `acquire_cancellable` -> `fs2::unix::flock` -> the syscall,
+        // having already passed the in-process mutex above. So a leaked
+        // `FileLockGuard` — not a busy mutex — is what turns later operations on
+        // that base into calls that never return, until the process exits.
+        //
+        // ⚠ I twice reported the in-process mutex as the mechanism. It can wedge
+        // too, and it is bounded above, but the file lock is a SECOND unbounded
+        // wait on the same path, and bounding only one leaves the hang intact.
+        // A cancel token is not a deadline: `acquire_cancellable` waits forever
+        // while nobody cancels.
+        //
+        // On elapse, drop `cancel_waiter_on_drop` FIRST. That cancels the token
+        // the blocking task is polling, so it stops waiting on `flock` and the
+        // thread returns to the pool instead of being pinned for the life of the
+        // process — bounding the caller while leaking a blocking thread per
+        // attempt would trade one exhaustion for another.
+        let file_guard = match tokio::time::timeout(wait, acquire).await {
+            Ok(joined) => joined
+                .map_err(|error| anyhow::anyhow!("knowledge KB lock task failed: {error}"))??,
+            Err(_) => {
+                drop(cancel_waiter_on_drop);
+                anyhow::bail!(
+                    "timed out after {}s waiting for the on-disk lock of knowledge base \
+                     '{kb_id}'. Another operation still holds it. Most often that is an OPEN \
+                     TRANSACTION: commit or abort it (kb_commit_txn / kb_abort_txn) and this \
+                     will go through. Otherwise an ingest, query or lint is running — let it \
+                     finish and retry. Nothing was written.",
+                    wait.as_secs()
+                );
+            }
+        };
         drop(cancel_waiter_on_drop);
         if cancel.is_some_and(CancellationToken::is_cancelled) {
             anyhow::bail!("knowledge operation cancelled after acquiring the KB lock");
@@ -1550,12 +1779,29 @@ impl KnowledgeService {
             anyhow::bail!("kb '{id}' already exists at {}", kb_root.display());
         }
         let metadata = BasePublicationSnapshot::capture(&self.root)?;
-        anyhow::ensure!(
-            !registry::load(&self.root)?
-                .iter()
-                .any(|entry| entry.id == id),
-            "kb-id '{id}' already registered"
-        );
+        // #158: this is the guard a user actually hits, and a bare "already
+        // registered" is a dead end when the row is an ORPHAN — the directory is
+        // gone (checked immediately above), so `kb_list_bases` does not show the
+        // base and the id can be neither seen, read, deleted nor re-created.
+        // Name the stale row and where it lives so the refusal points somewhere.
+        //
+        // `registry::register` carries the same distinction for its own callers;
+        // this one exists because create refuses here first and never reaches it.
+        if let Some(stale) = registry::load(&self.root)?
+            .into_iter()
+            .find(|entry| entry.id == id)
+        {
+            if stale.path.exists() {
+                anyhow::bail!("kb-id '{id}' already registered");
+            }
+            anyhow::bail!(
+                "kb-id '{id}' is registered but its directory is missing ({}). The row is \
+                 stale, which is why this id is neither listed nor creatable. Remove it from \
+                 {} to free the id.",
+                stale.path.display(),
+                registry::registry_path(&self.root).display()
+            );
+        }
         let staged_root = self
             .root
             .join(format!(".creating-{id}-{}", uuid::Uuid::new_v4()));
@@ -1851,8 +2097,30 @@ impl KnowledgeService {
         } else {
             (source_kb_id, destination_kb_id)
         };
-        let _first = self.lock_kb(first).await?;
-        let _second = self.lock_kb(second).await?;
+        // ⚠ The DEADLINE depends on `dry_run`, and this is the asymmetry #159
+        // introduced, applied to the one read path that was still missing it.
+        //
+        // `kb_merge_preview` writes nothing — the server does not even take a
+        // transaction slot for it — but it took the WRITE deadline here, which
+        // #159 raised from 120s to 1800s so a real merge could outlast a long
+        // ingest. The result was a read-only preview parking for THIRTY MINUTES
+        // behind any open transaction on either base. Found by the live tool
+        // sweep, where an earlier case left a transaction open on the
+        // destination and the preview simply never came back; the daemon log
+        // showed the same `kb_merge_preview` dispatched twice, five minutes
+        // apart, with nothing in between.
+        //
+        // A read that gives up loses nothing, so it gets the short deadline and
+        // returns a refusal the caller can act on. A write that gives up may
+        // strand half a merge, so it keeps the long one. Both still queue on the
+        // same lock in the same id order — only the patience differs.
+        let wait = if dry_run {
+            FileLockGuard::KB_READ_LOCK_WAIT
+        } else {
+            FileLockGuard::KB_WRITE_LOCK_WAIT
+        };
+        let _first = self.lock_kb_path_waiting(first, None, wait).await?;
+        let _second = self.lock_kb_path_waiting(second, None, wait).await?;
 
         // A caller can wait here while another writer raises either base and
         // commits private content. Re-authorize over the locked snapshots before
@@ -3282,7 +3550,11 @@ impl KnowledgeService {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         anyhow::ensure!(kb_root.exists(), "kb '{kb_id}' does not exist");
-        let guard = self.lock_kb(kb_id).await?;
+        // #159: the READ deadline, for the reason above — the queue is here for
+        // fairness against macros, and an open transaction is not a macro.
+        let guard = self
+            .lock_kb_path_waiting(kb_id, None, FileLockGuard::KB_READ_LOCK_WAIT)
+            .await?;
         let svc = self.clone();
         let kb_id = kb_id.to_string();
         tokio::task::spawn_blocking(move || {
@@ -3345,7 +3617,9 @@ impl KnowledgeService {
     }
 
     /// Read the persisted primary-KB id (set via the UI or `kb_set_active`).
-    /// Returns `Ok(None)` if no file exists or the file is empty.
+    /// Returns `Ok(None)` if no preference file exists or it is explicitly
+    /// blank. This is a raw persistence read; use [`Self::primary_for_session`]
+    /// for the effective primary, including the shipped Soul default.
     pub fn get_primary_persisted(&self) -> anyhow::Result<Option<String>> {
         self.get_primary_persisted_unlocked()
     }
@@ -3354,7 +3628,9 @@ impl KnowledgeService {
         self.get_primary_path_unlocked(&crate::knowledge::paths::primary_kb_path(self.root()))
     }
 
-    /// Persist the primary-KB id. Pass `None` to clear.
+    /// Persist the primary-KB id. Pass `None` to record an explicit durable
+    /// clear. Use `set_selection(None, None, PrimaryUpdate::Inherit)` to remove
+    /// that preference and restore the shipped Soul default.
     pub fn set_primary_persisted(&self, id: Option<&str>) -> anyhow::Result<()> {
         let _lock = self.lock_root()?;
         self.set_primary_persisted_unlocked(id)
@@ -3364,8 +3640,9 @@ impl KnowledgeService {
         let path = crate::knowledge::paths::primary_kb_path(self.root());
         let value = match id {
             Some(id) => StoredPrimary::Pinned(id.to_string()),
-            // Machine scope: nothing above to inherit, so "no file" and "blank
-            // file" are the same state. Prefer no file.
+            // A blank file is a real machine-level choice. An absent file now
+            // means "use Soul", so deleting it here would undo an explicit
+            // Clear on the next read.
             None => no_primary_for(None),
         };
         self.write_primary_file_unlocked(&path, &value)
@@ -3506,12 +3783,13 @@ impl KnowledgeService {
     /// This scope's **primary** knowledge base: the write target for KB-less
     /// mutating calls and the default subject for single-base reads.
     ///
-    /// Resolution is session file → machine file, and the result is returned
-    /// only while it names a member of [`Self::session_kb_ids`]. A non-member
-    /// yields `None` rather than promoting: promoting at read time would make
-    /// "no primary" unreachable and let a KB-less *write* silently land in a
-    /// base the user never ranked. Promotion happens once, at the moment the
-    /// set changes, in [`Self::repair_primary_unlocked`].
+    /// Resolution is session file → machine file → shipped Soul default, and
+    /// the result is returned only while it names a member of
+    /// [`Self::session_kb_ids`]. A non-member yields `None` rather than
+    /// promoting: promoting at read time would make explicit "no primary"
+    /// unreachable and let a KB-less *write* silently land in an arbitrary
+    /// base. Promotion happens once, at the moment the set changes, in
+    /// [`Self::repair_primary_unlocked`].
     ///
     /// Only an *absent* session file inherits. A session file that exists but
     /// is blank is an explicit "no primary here" and stops the fallback dead —
@@ -3542,8 +3820,8 @@ impl KnowledgeService {
     }
 
     /// Resolve a scope's *own* tri-state into the one it is actually **using**:
-    /// only an absent session file inherits, and only a session has anything
-    /// above it to inherit from.
+    /// an absent session file inherits from the machine scope, while an absent
+    /// machine preference inherits the shipped Soul product default.
     ///
     /// Split out of [`Self::stored_primary_unlocked`] because the repair path
     /// needs both halves — it decides against the pointer the scope is using
@@ -3553,11 +3831,15 @@ impl KnowledgeService {
         own: &StoredPrimary,
         session_id: Option<&str>,
     ) -> anyhow::Result<StoredPrimary> {
-        match (own, session_id) {
+        let resolved = match (own, session_id) {
             (StoredPrimary::Inherit, Some(_)) => self
                 .read_primary_file_unlocked(&crate::knowledge::paths::primary_kb_path(self.root())),
             _ => Ok(own.clone()),
-        }
+        }?;
+        Ok(match resolved {
+            StoredPrimary::Inherit => StoredPrimary::Pinned(DEFAULT_PRIMARY_KB_ID.to_string()),
+            settled => settled,
+        })
     }
 
     /// Every knowledge base installed on this machine, as ids, sorted — the
@@ -3615,8 +3897,8 @@ impl KnowledgeService {
     /// It still never *invents* a pointer, which is a different thing from
     /// moving one the user already had:
     ///
-    /// - the two "no id" states are returned untouched, so a scope that has
-    ///   never chosen a primary is never handed one;
+    /// - an explicit `NoPrimary` choice is returned untouched, so a user who
+    ///   cleared the primary is never silently handed one again;
     /// - a pointer at a base that no longer **exists** is *cleared*, never
     ///   promoted — deletion clears, hiding promotes.
     ///
@@ -3902,12 +4184,11 @@ impl KnowledgeService {
         // known-coherent here, and a re-read would be three more chances to
         // observe someone else's half-finished edit.
         let effective = match next_primary {
-            // Just written: this scope now defers upwards, so what governs is
-            // the machine pointer and not the one it held a moment ago.
-            Some(StoredPrimary::Inherit) if session_id.is_some() => self
-                .read_primary_file_unlocked(&crate::knowledge::paths::primary_kb_path(
-                    self.root(),
-                ))?,
+            // Just written: this scope now defers to the machine pointer, and an
+            // unset machine pointer resolves to the shipped Soul default.
+            Some(StoredPrimary::Inherit) => {
+                self.effective_primary_unlocked(&StoredPrimary::Inherit, session_id)?
+            }
             Some(settled) => settled,
             None => effective_primary,
         };
@@ -4186,6 +4467,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let svc = KnowledgeService::new(dir.path().to_path_buf());
         (dir, svc)
+    }
+
+    #[test]
+    fn shipped_schema_workflows_match_available_knowledge_tools() {
+        for (name, schema) in [
+            ("okf", SCHEMA_OKF),
+            ("biookf", SCHEMA_BIOOKF),
+            ("legacy", include_str!("schema_default.md")),
+        ] {
+            assert!(schema.contains("`kb_lint` is read-only"), "{name}");
+            for unavailable in ["`kb_ingest_source`", "`kb_query`", "`autofix=true`"] {
+                assert!(!schema.contains(unavailable), "{name}: {unavailable}");
+            }
+            assert!(schema.contains("only when the user asks to save"), "{name}");
+        }
     }
 
     #[test]
@@ -4806,7 +5102,20 @@ mod tests {
                 .await
         });
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        // ⚠ A LIVENESS wait, not a performance assertion. What this test is about
+        // is cancellation semantics; reaching the mock server at all is only the
+        // precondition. One second was a budget for "spawn a task, resolve a URL
+        // and complete an HTTP round trip", which is a property of the machine —
+        // it failed 6/6 here on a loaded box while passing in a quieter full-suite
+        // run 30 minutes earlier, with and without the change under test.
+        //
+        // Same shape as the other wall-clock deadlines this campaign had to fix:
+        // a policy row decided by the host's $HOME, a scheduler test starved by
+        // its siblings, an esbuild reaper given one second to fork. Generous here
+        // costs nothing when the code is right and stops a green suite going red
+        // for reasons that have nothing to do with it.
+        const REACHED_SERVER: std::time::Duration = std::time::Duration::from_secs(30);
+        tokio::time::timeout(REACHED_SERVER, async {
             loop {
                 if !server.received_requests().await.unwrap().is_empty() {
                     break;
@@ -4818,7 +5127,10 @@ mod tests {
         .expect("the source conversion never reached the blocking HTTP response");
         cancel.cancel();
 
-        let error = tokio::time::timeout(std::time::Duration::from_secs(1), ingest)
+        // Cancellation itself IS bounded on purpose: it must interrupt promptly,
+        // and a generous bound here would hide a cancel that never lands. 10s is
+        // still two orders of magnitude above the work involved.
+        let error = tokio::time::timeout(std::time::Duration::from_secs(10), ingest)
             .await
             .expect("cancellation did not interrupt source conversion")
             .expect("the source task panicked")
@@ -5207,6 +5519,61 @@ mod tests {
     /// derived from [`paths::kb_root`]. Windows refuses to move a directory
     /// with an open handle underneath it, so a lock built that way breaks
     /// `delete_base` and every base rename there and nowhere else.
+    /// #157. A held write lock must produce a REPORTABLE failure, not a call
+    /// that never returns.
+    ///
+    /// Measured in a live daemon before this: writes to one base stopped
+    /// answering entirely — no result, no error, 45s+ — while reads to that same
+    /// base and writes to other bases were unaffected, and only a restart
+    /// cleared it. This does not explain why a lock is held that long; it makes
+    /// the wait finite and the failure legible.
+    #[test]
+    fn a_held_write_lock_times_out_with_a_sentence_instead_of_hanging() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("held.lock");
+
+        // A real contended flock, taken and kept for the duration.
+        let held = super::FileLockGuard::acquire(&lock).expect("take the lock");
+
+        let started = std::time::Instant::now();
+        let Err(err) = super::FileLockGuard::acquire_bounded(
+            &lock,
+            std::time::Duration::from_millis(300),
+            "knowledge base 'probe'",
+        ) else {
+            panic!("a lock held by someone else must not be waited on forever");
+        };
+        let waited = started.elapsed();
+
+        let msg = err.to_string();
+        assert!(msg.contains("timed out"), "must say it timed out: {msg}");
+        assert!(
+            msg.contains("probe"),
+            "must name the base, so the caller knows WHICH one is stuck: {msg}"
+        );
+        assert!(
+            msg.contains("nothing was written"),
+            "must say the write did not happen: {msg}"
+        );
+        assert!(
+            waited >= std::time::Duration::from_millis(250),
+            "it must actually wait for the deadline, not fail instantly: {waited:?}"
+        );
+
+        // And once the holder lets go, the same call succeeds — the bound must
+        // not have broken ordinary contention.
+        drop(held);
+        assert!(
+            super::FileLockGuard::acquire_bounded(
+                &lock,
+                std::time::Duration::from_secs(5),
+                "knowledge base 'probe'",
+            )
+            .is_ok(),
+            "a released lock must be takeable — the bound must not break ordinary contention"
+        );
+    }
+
     #[test]
     fn the_write_lock_path_is_never_derived_from_the_base_root() {
         let production = include_str!("service.rs")
@@ -5360,6 +5727,467 @@ mod tests {
             recovered.head().unwrap().shorthand(),
             Some("main" | "master")
         ));
+    }
+
+    /// #159: a READ gives up long before a write does, so an open transaction
+    /// cannot make a base unreadable.
+    ///
+    /// The asymmetry is the whole fix, so both halves are asserted here: a
+    /// read's deadline must be shorter than a write's, and the read path must
+    /// actually use it. Held with a bare `FileLockGuard` so only the on-disk
+    /// half blocks, matching the live wedge.
+    #[tokio::test]
+    async fn a_read_gives_up_far_sooner_than_a_write_when_the_base_is_locked() {
+        assert!(
+            FileLockGuard::KB_READ_LOCK_WAIT < FileLockGuard::KB_WRITE_LOCK_WAIT,
+            "a read must not wait as long as a write: losing a read costs nothing \
+             and it can be retried, so making it wait out the longest legitimate \
+             writer is all cost and no benefit"
+        );
+
+        let (_dir, svc) = svc();
+        let kb = "read-vs-write";
+        svc.create_base(kb, "K", None).unwrap();
+        let held = svc.lock_existing_kb(kb).expect("hold the on-disk lock");
+
+        // The read path's own entry point, at a short deadline, so this asserts
+        // the wiring rather than the constant.
+        let waited = std::time::Instant::now();
+        let error = match svc
+            .lock_kb_path_waiting(kb, None, std::time::Duration::from_millis(150))
+            .await
+        {
+            Ok(_) => panic!("a read behind a held lock must give up, not hang"),
+            Err(error) => error,
+        };
+        assert!(waited.elapsed() >= std::time::Duration::from_millis(150));
+        assert!(format!("{error:#}").contains("timed out"), "{error:#}");
+        drop(held);
+
+        // …and with the lock free it succeeds, so the bound is not refusing
+        // every read.
+        svc.lock_kb_path_waiting(kb, None, std::time::Duration::from_millis(150))
+            .await
+            .expect("an uncontended read must still acquire the lock");
+    }
+
+    /// A merge PREVIEW takes the read deadline; a real merge takes the write one.
+    ///
+    /// `kb_merge_preview` writes nothing, and the server does not even take a
+    /// transaction slot for it — but `merge_bases` locked both bases at the
+    /// WRITE deadline whatever `dry_run` said. #159 had just raised that from
+    /// 120s to 1800s so a real merge could outlast a long ingest, which turned a
+    /// read-only preview into a THIRTY-MINUTE park behind any open transaction
+    /// on either base.
+    ///
+    /// Found by the live tool sweep, not by this suite: an earlier case left a
+    /// transaction open on the destination and the preview never came back. The
+    /// daemon log showed the same `kb_merge_preview` dispatched twice, five
+    /// minutes apart, with nothing in between.
+    ///
+    /// The assertion is a DURATION, because that is the whole defect. Asserting
+    /// only that the preview errors would pass against the 1800s version too —
+    /// eventually. What matters is that it gives up while someone is still
+    /// waiting for it.
+    #[tokio::test]
+    async fn a_merge_preview_gives_up_on_a_locked_base_instead_of_waiting_out_a_write() {
+        let (_dir, svc) = svc();
+        svc.create_base("dst", "Destination", None).unwrap();
+        svc.create_base("src", "Source", None).unwrap();
+
+        // Hold the destination exactly as an open transaction does.
+        let held = svc.lock_existing_kb("dst").expect("hold the destination");
+
+        // `User`, not `Model`: the point is the DEADLINE, and a Model authority
+        // would refuse at the tier barrier before ever reaching the lock.
+        let proof = crate::knowledge::merge::UserKbMerge::for_test();
+        let authority = crate::knowledge::merge::MergeAuthority::User(&proof);
+        let started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(
+            FileLockGuard::KB_READ_LOCK_WAIT + std::time::Duration::from_secs(30),
+            svc.merge_bases("dst", "src", &authority, true),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        drop(held);
+
+        let error = outcome
+            .expect("a preview must not outlast the READ deadline — it took the write one")
+            .expect_err("a preview behind a held lock must refuse, not succeed");
+        assert!(format!("{error:#}").contains("timed out"), "{error:#}");
+        assert!(
+            elapsed < FileLockGuard::KB_WRITE_LOCK_WAIT,
+            "a preview waited {elapsed:?}, i.e. the WRITE deadline; it must use the read one"
+        );
+    }
+
+    /// Every WRITE-deadline lock site is a write, by name.
+    ///
+    /// This is a repo-grep guard, and it exists because the same defect has now
+    /// been found three times in three places: `merge_bases` and `kb_export`
+    /// first, then `lint` and `query`. Each time the audit that fixed it looked
+    /// at one file and the next instance was in another. A read that takes the
+    /// 1800s write deadline does not fail — it *parks*, for thirty minutes,
+    /// behind any open transaction, and the user reports a hang with no error.
+    ///
+    /// So the check is over the tree rather than over a list of known sites: if
+    /// you add a caller of a write-deadline helper, either it is a write and
+    /// belongs in the table below, or it is a read and belongs on
+    /// `lock_kb_cancellable_for_read` / `lock_existing_kb_for_read`.
+    ///
+    /// ⚠ The right fix on a failure is almost never to add a row. Ask what the
+    /// call DOES first — three of the five instances so far were reads.
+    #[test]
+    fn no_read_path_takes_the_write_deadline() {
+        // Source files that may take a write-deadline lock, and why each is a
+        // write. A file absent from this map may not take one at all.
+        let permitted: std::collections::HashMap<&str, &str> = [
+            (
+                "knowledge/server.rs",
+                "kb_write_page, kb_add_raw_source, kb_begin_txn, kb_append_log",
+            ),
+            (
+                "knowledge/service.rs",
+                "the helpers themselves, plus real mutations",
+            ),
+            ("knowledge/macros/lint.rs", "the autofix arm only"),
+            ("knowledge/macros/query.rs", "the file_as_page arm only"),
+            ("knowledge/macros/ingest.rs", "ingest writes"),
+            ("knowledge/conversation_ingest.rs", "ingest writes"),
+        ]
+        .into_iter()
+        .collect();
+
+        let write_helpers = [
+            "lock_kb(",
+            "lock_kb_cancellable(",
+            "lock_existing_kb_cancellable(",
+            "lock_kb_path_cancellable(",
+        ];
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders: Vec<String> = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir)
+                .expect("read the source tree")
+                .flatten()
+            {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(&root)
+                    .expect("under src")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if permitted.contains_key(rel.as_str()) {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).expect("read a source file");
+                // Production code only. A TEST that holds a write lock on
+                // purpose — to prove a waiter blocks — is doing exactly what it
+                // should, and the first run of this guard flagged one
+                // (`knowledge/tier_user.rs`, a fixture holding `lock_kb`). Test
+                // modules sit at the end of a file in this crate, so everything
+                // from the first `#[cfg(test)]` onwards is out of scope.
+                let production = match source.find("#[cfg(test)]") {
+                    Some(at) => &source[..at],
+                    None => source.as_str(),
+                };
+                for (n, line) in production.lines().enumerate() {
+                    let code = line.trim_start();
+                    // Skip prose, so a comment naming the rule cannot trip it —
+                    // this repo has shipped that bug three times.
+                    if code.starts_with("//") || code.starts_with('*') {
+                        continue;
+                    }
+                    if write_helpers.iter().any(|h| line.contains(h)) {
+                        offenders.push(format!("{rel}:{} — {}", n + 1, code.trim()));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these take the 1800s WRITE deadline from a file that is not listed as a \
+             writer. If the call is a read, use `lock_kb_cancellable_for_read` or \
+             `lock_existing_kb_for_read`; only add a row if it genuinely writes:\n  {}",
+            offenders.join("\n  ")
+        );
+
+        // ⚠ The sweep above is FILE-granular, which measurement showed is not
+        // enough on its own: reverting `lint`'s read arm to the write deadline
+        // leaves it green, because `lint.rs` is a permitted file. The permission
+        // is for its autofix arm only, so the two files that branch must be
+        // held to actually having the read arm.
+        for (file, discriminator) in [
+            ("knowledge/macros/lint.rs", "autofix"),
+            ("knowledge/macros/query.rs", "file_as_page"),
+        ] {
+            let source = std::fs::read_to_string(root.join(file)).expect("read the macro");
+            assert!(
+                source.contains("lock_kb_cancellable_for_read"),
+                "{file} is permitted to take the write deadline for its `{discriminator}` \
+                 arm ONLY. It no longer takes the read deadline anywhere, so its read \
+                 path is parking for thirty minutes behind an open transaction."
+            );
+        }
+    }
+
+    /// #157, the OTHER unbounded wait on the same path — the on-disk `flock`.
+    ///
+    /// This is the one that actually wedged a live daemon. Held here by a
+    /// SEPARATE `FileLockGuard` rather than by a `lock_kb` guard, which is what
+    /// makes it a file-lock test: the in-process mutex is free, so a waiter
+    /// walks straight past the bound above and blocks in `acquire_cancellable`.
+    /// Exactly the stack a `sample` of the wedged daemon showed.
+    ///
+    /// Fails against the shipped-at-the-time code, which awaited that
+    /// `spawn_blocking` with no deadline and simply never returned.
+    #[tokio::test]
+    async fn a_waiter_that_cannot_get_the_on_disk_lock_gives_up_and_names_the_base() {
+        let (_dir, svc) = svc();
+        let kb = "flock-wedged-b2";
+        svc.create_base(kb, "K", None).unwrap();
+
+        // The leak, reproduced: the file lock is held and nothing holds the
+        // in-process mutex, so only the `flock` half can block.
+        let held = svc.lock_existing_kb(kb).expect("take the on-disk lock");
+        assert!(
+            !svc.kb_queue_is_occupied(kb),
+            "the in-process queue must be FREE"
+        );
+
+        let waited = std::time::Instant::now();
+        let error = match svc
+            .lock_kb_path_waiting(kb, None, std::time::Duration::from_millis(200))
+            .await
+        {
+            Ok(_) => panic!("a waiter behind a held on-disk lock must time out, not hang"),
+            Err(error) => error,
+        };
+        let elapsed = waited.elapsed();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("timed out"), "{message}");
+        assert!(
+            message.contains("on-disk lock"),
+            "must say WHICH lock: {message}"
+        );
+        assert!(
+            message.contains(kb),
+            "the base must be named so the user knows which one is stuck: {message}"
+        );
+        assert!(message.contains("Nothing was written"), "{message}");
+        assert!(
+            elapsed >= std::time::Duration::from_millis(200),
+            "returned in {elapsed:?} — that is not the deadline firing"
+        );
+        drop(held);
+    }
+
+    /// #157, the shipped behaviour: a caller that cannot get the queue lock
+    /// eventually gives up and SAYS SO, instead of never returning.
+    ///
+    /// Driven at 150 ms rather than the shipped 30 minutes — the duration is
+    /// arithmetic, the wiring is what this proves.
+    #[tokio::test]
+    async fn a_waiter_that_cannot_get_the_kb_queue_gives_up_and_names_the_base() {
+        let (_dir, svc) = svc();
+        // ⚠ A DISTINCTIVE id, not the `"k"` the tests around this one use. With
+        // `"k"` the naming assertion below is satisfied by the letter k in
+        // "knowledge base" — it passed against a message with the id stripped
+        // out of it entirely, which is the whole property it claims to check.
+        let kb = "wedged-base-7f3";
+        svc.create_base(kb, "K", None).unwrap();
+        let held = svc.lock_kb(kb).await.unwrap();
+
+        let waited = std::time::Instant::now();
+        let error = match svc
+            .lock_kb_path_waiting(kb, None, std::time::Duration::from_millis(150))
+            .await
+        {
+            Ok(_) => panic!("a waiter behind a held lock must time out, not hang"),
+            Err(error) => error,
+        };
+        let elapsed = waited.elapsed();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("timed out"), "{message}");
+        assert!(
+            message.contains(kb),
+            "the base must be named so the user knows WHICH one is stuck: {message}"
+        );
+        assert!(
+            message.contains("Nothing \\\nwas written.") || message.contains("Nothing was written"),
+            "the caller must be told no write landed: {message}"
+        );
+        // Both causes, because the message cannot tell them apart.
+        assert!(message.contains("let it finish"), "{message}");
+        assert!(
+            message.contains("kb_commit_txn"),
+            "the message must name the fix for the COMMON cause — an open transaction: {message}"
+        );
+        assert!(
+            elapsed >= std::time::Duration::from_millis(150),
+            "returned in {elapsed:?} — that is not the deadline firing"
+        );
+        drop(held);
+    }
+
+    /// The same deadline on the CANCELLABLE arm.
+    ///
+    /// This is the arm that matters most and the one I first left unbounded:
+    /// nearly every tool handler in `server.rs` passes `Some(context.ct)`, so the
+    /// arm that reads like the special case is the one the whole tool surface
+    /// takes. A cancel token bounds the wait only if somebody actually cancels.
+    #[tokio::test]
+    async fn the_cancellable_arm_is_bounded_too_when_nobody_cancels() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let held = svc.lock_kb("k").await.unwrap();
+
+        let never_fired = CancellationToken::new();
+        let error = match svc
+            .lock_kb_path_waiting(
+                "k",
+                Some(&never_fired),
+                std::time::Duration::from_millis(150),
+            )
+            .await
+        {
+            Ok(_) => panic!("an uncancelled waiter must still hit the deadline"),
+            Err(error) => error,
+        };
+
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("timed out"),
+            "expected the deadline, got: {message}"
+        );
+        assert!(!never_fired.is_cancelled());
+        drop(held);
+    }
+
+    /// ...and cancellation still wins over the deadline when it does fire, with
+    /// its own distinct message. Restructuring the two arms into one `timeout`
+    /// could have collapsed these into a single "timed out" answer.
+    #[tokio::test]
+    async fn cancelling_a_queued_waiter_still_reports_cancellation_not_a_timeout() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let held = svc.lock_kb("k").await.unwrap();
+
+        let cancel = CancellationToken::new();
+        let fires = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            fires.cancel();
+        });
+        let error = match svc
+            .lock_kb_path_waiting("k", Some(&cancel), std::time::Duration::from_secs(30))
+            .await
+        {
+            Ok(_) => panic!("a cancelled waiter must not acquire the lock"),
+            Err(error) => error,
+        };
+
+        let message = format!("{error:#}");
+        assert!(message.contains("cancelled"), "{message}");
+        assert!(
+            !message.contains("timed out"),
+            "cancellation must not be reported as the deadline: {message}"
+        );
+        drop(held);
+    }
+
+    /// #157. The lock wait must exceed the longest hold it can legitimately be
+    /// waiting on, or it stops reporting wedges and starts inventing them.
+    ///
+    /// A macro holds the KB lock across its whole sub-agent loop, so every
+    /// `max_wall` budget anywhere in the workspace is a lower bound on a
+    /// legitimate hold. `KB_WRITE_LOCK_WAIT` was first written as 120 s against a
+    /// default budget of 300 s and a CLI budget of 900 s — every long ingest would
+    /// have failed its concurrent callers with a message blaming a stuck holder.
+    /// Grepping the tree rather than naming the constants is deliberate: the CLI's
+    /// budget lives in a crate that depends on this one, so it cannot be imported
+    /// here, and a hand-copied list is exactly what drifts.
+    #[test]
+    fn the_lock_wait_exceeds_every_macro_wall_clock_budget() {
+        // CARGO_MANIFEST_DIR is <workspace>/crates/biorouter-mcp; go up twice.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let crates = root.join("crates");
+        assert!(
+            crates.is_dir(),
+            "this guard walks {}; if that path is wrong every assertion below \
+             passes for the wrong reason",
+            crates.display()
+        );
+
+        // `max_wall: Duration::from_secs(300)` and `const MAX_WALL_SECS: u64 = 30`.
+        let literal = regex::Regex::new(r"max_wall\s*:\s*Duration::from_secs\((\d+)\)").unwrap();
+        let named = regex::Regex::new(r"MAX_WALL_SECS\s*:\s*u64\s*=\s*(\d+)").unwrap();
+
+        let mut scanned = 0usize;
+        let mut budgets: Vec<(String, u64)> = vec![];
+        for entry in walkdir::WalkDir::new(&crates) {
+            let entry = entry.expect("this guard must not silently skip an unreadable directory");
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("unreadable source file {}: {e}", path.display()));
+            scanned += 1;
+            let rel = path
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            for caps in literal
+                .captures_iter(&text)
+                .chain(named.captures_iter(&text))
+            {
+                budgets.push((rel.clone(), caps[1].parse().unwrap()));
+            }
+        }
+
+        // A walk that reads nothing is indistinguishable from a walk that finds
+        // nothing wrong, so make both ways of doing no work loud.
+        assert!(
+            scanned > 500,
+            "only {scanned} source files scanned — the walk is not covering the \
+             workspace, so this guard proves nothing"
+        );
+        assert!(
+            budgets.len() >= 3,
+            "found {} wall-clock budgets; the sub-agent default, the CLI's and the \
+             credibility fallback's are all expected, so a shortfall means the \
+             patterns have gone stale and stopped matching",
+            budgets.len()
+        );
+
+        let wait = FileLockGuard::KB_WRITE_LOCK_WAIT.as_secs();
+        for (file, budget) in &budgets {
+            assert!(
+                *budget < wait,
+                "{file} allows a macro to run for {budget}s while a caller waiting \
+                 for that macro's knowledge base gives up after {wait}s. The waiter \
+                 would fail an operation that is working normally, and blame a stuck \
+                 lock for it. Raise KB_WRITE_LOCK_WAIT above {budget}s."
+            );
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -6966,7 +7794,7 @@ mod tests {
     fn inherit_lifts_the_no_primary_override_a_delete_installed() -> anyhow::Result<()> {
         let tmp = tempfile::TempDir::new()?;
         let svc = KnowledgeService::new(tmp.path().to_path_buf());
-        for id in ["alpha", "beta", "gamma"] {
+        for id in ["alpha", "beta", "gamma", DEFAULT_PRIMARY_KB_ID] {
             svc.create_base(id, id, None)?;
         }
         svc.set_primary_persisted(Some("alpha"))?;
@@ -6995,11 +7823,50 @@ mod tests {
             "inheriting means holding no pointer of its own"
         );
 
-        // At machine scope there is nothing above to inherit, so the two
-        // spellings coincide — and neither leaves debris behind.
+        // At machine scope Inherit restores the product default Soul. It is
+        // distinct from Clear and leaves no preference file behind.
         let sel = svc.set_selection(None, None, PrimaryUpdate::Inherit)?;
-        assert_eq!(sel.primary_kb, None);
+        assert_eq!(sel.primary_kb.as_deref(), Some(DEFAULT_PRIMARY_KB_ID));
         assert!(!crate::knowledge::paths::primary_kb_path(svc.root()).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn soul_is_the_default_until_the_user_explicitly_changes_or_clears_it() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base(DEFAULT_PRIMARY_KB_ID, "Soul", None)?;
+        svc.create_base("project", "Project", None)?;
+
+        let primary_path = crate::knowledge::paths::primary_kb_path(svc.root());
+        assert!(!primary_path.exists());
+        assert_eq!(
+            svc.primary_for_session(None)?.as_deref(),
+            Some(DEFAULT_PRIMARY_KB_ID)
+        );
+        assert_eq!(
+            svc.primary_for_session(Some("fresh-chat"))?.as_deref(),
+            Some(DEFAULT_PRIMARY_KB_ID)
+        );
+
+        svc.set_selection(None, None, PrimaryUpdate::Clear)?;
+        assert!(
+            primary_path.exists(),
+            "Clear must persist as a blank override"
+        );
+        assert_eq!(std::fs::read_to_string(&primary_path)?, "");
+        assert_eq!(svc.primary_for_session(None)?, None);
+        assert_eq!(svc.primary_for_session(Some("fresh-chat"))?, None);
+
+        svc.set_selection(None, None, PrimaryUpdate::Set("project"))?;
+        assert_eq!(svc.primary_for_session(None)?.as_deref(), Some("project"));
+
+        svc.set_selection(None, None, PrimaryUpdate::Inherit)?;
+        assert!(!primary_path.exists());
+        assert_eq!(
+            svc.primary_for_session(None)?.as_deref(),
+            Some(DEFAULT_PRIMARY_KB_ID)
+        );
         Ok(())
     }
 

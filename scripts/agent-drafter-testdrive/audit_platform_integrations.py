@@ -16,7 +16,6 @@ BUILTIN_EXTENSIONS = {
     "computercontroller",
     "autovisualiser",
     "memory",
-    "tutorial",
     "agent_drafter",
     "knowledge",
 }

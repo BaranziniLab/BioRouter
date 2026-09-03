@@ -85,7 +85,10 @@ fn test_dashboard_tool_is_registered_and_advertised() {
     let router = AutoVisualiserRouter::new();
     assert!(router.tool_router.has_route("render_dashboard"));
 
-    // Every figure the dashboard can dispatch to must also be a real tool.
+    // Every figure the dashboard can dispatch to must still BE a tool — it is
+    // just no longer an ADVERTISED one. The invariant did not weaken when the
+    // 32 moved behind `render_figure`; it moved to `figure_router`, which is
+    // also what `describe_figure` reads their schemas out of.
     for name in [
         "show_chart",
         "render_volcano",
@@ -93,7 +96,14 @@ fn test_dashboard_tool_is_registered_and_advertised() {
         "render_mermaid",
         "render_choropleth",
     ] {
-        assert!(router.tool_router.has_route(name), "{name} is not registered");
+        assert!(
+            router.figure_router.has_route(name),
+            "{name} is not registered"
+        );
+        assert!(
+            !router.tool_router.has_route(name),
+            "{name} is advertised again; the 128-tool ceiling is why it must not be"
+        );
     }
 
     // And the instructions must steer the model to combine figures.
@@ -173,6 +183,434 @@ fn test_figure_accepts_stringified_object() {
 fn test_figure_requires_a_tool() {
     let err = serde_json::from_value::<DashboardFigure>(json!({"params": {}})).unwrap_err();
     assert!(err.to_string().contains("needs a `tool`"));
+}
+
+// ---------------------------------------------------------------------------
+// A panel names `render_figure`, because that is the only figure tool the model
+// can see (#142)
+//
+// The 32 per-figure tools are still REGISTERED but no longer ADVERTISED, so
+// `render_figure` is the one figure name in the model's roster — and therefore
+// the one it writes into a panel. Measured live on Versa: asked for a dashboard
+// with one chart, the model sent
+// `{"tool": "render_figure", "params": {"kind": "chart", "data": …}}` and the
+// whole call failed with "Every figure in the dashboard failed to render: …
+// Unknown visualization 'render_figure'", whose advice named three tools it
+// cannot call. `render_dashboard` was unusable from a real chat.
+// ---------------------------------------------------------------------------
+
+/// One payload, so the spellings below can be compared against each other
+/// rather than against a hand-written expectation that could encode the bug.
+fn chart_payload() -> serde_json::Value {
+    json!({
+        "type": "bar",
+        "title": "Counts",
+        "labels": ["A", "B"],
+        "datasets": [{"label": "Sample", "data": [3.0, 7.0]}]
+    })
+}
+
+async fn one_panel_report(figure: serde_json::Value) -> Result<CallToolResult, ErrorData> {
+    AutoVisualiserRouter::new()
+        .render_dashboard(params_from(json!({
+            "title": "Made-up counts",
+            "panels": [{"title": "Counts", "figure": figure}],
+        })))
+        .await
+}
+
+/// The exact shape the live model sent.
+///
+/// Fails the shipped implementation, whose dispatch table had no `render_figure`
+/// arm — and also fails a fix that teaches only `DashboardFigure` about `kind`
+/// without routing `render_figure` to a real figure tool.
+#[tokio::test]
+async fn test_panel_accepts_the_render_figure_tool_with_a_kind() {
+    let result = one_panel_report(json!({
+        "tool": "render_figure",
+        "params": {"kind": "chart", "data": chart_payload()},
+    }))
+    .await
+    .expect("a `render_figure` panel must render");
+
+    let html = dashboard_html(&result);
+    assert_eq!(
+        panel_documents(&html).len(),
+        1,
+        "the panel must have rendered"
+    );
+    assert!(!html.contains("Unknown visualization"));
+    let receipt = result.structured_content.as_ref().unwrap();
+    assert_eq!(receipt["figuresCreated"], 1);
+    assert_eq!(receipt["figuresFailed"], 0);
+}
+
+/// A model that writes the `render_figure` arguments straight onto the figure
+/// object, with no `params` wrapper. `DashboardFigure` already hands the
+/// leftovers through as the call's arguments, so the unwrap must read whatever
+/// it produced.
+///
+/// Fails an implementation that reaches for `figure.params["params"]["kind"]`,
+/// i.e. one that assumes the nested spelling.
+#[tokio::test]
+async fn test_panel_accepts_a_flattened_render_figure_call() {
+    let result = one_panel_report(json!({
+        "tool": "render_figure",
+        "kind": "chart",
+        "data": chart_payload(),
+    }))
+    .await
+    .expect("a flattened `render_figure` panel must render");
+    assert_eq!(panel_documents(&dashboard_html(&result)).len(), 1);
+}
+
+/// The two spellings must draw the SAME figure, not merely both draw one — and
+/// the retired name must keep working, because a dashboard call already in
+/// flight (or an older transcript being re-run) uses it.
+///
+/// Fails an implementation that accepts `render_figure` by routing it somewhere
+/// of its own — re-serializing `data`, dropping unrecognised fields, defaulting
+/// the kind — which would render a panel and quietly draw the wrong thing. Also
+/// fails one that REPLACES the retired names rather than adding to them.
+#[tokio::test]
+async fn test_render_figure_panel_matches_the_retired_tool_name_byte_for_byte() {
+    let via_entry = one_panel_report(json!({
+        "tool": "render_figure",
+        "params": {"kind": "chart", "data": chart_payload()},
+    }))
+    .await
+    .expect("render_figure panel");
+    let via_retired = one_panel_report(json!({
+        "tool": "show_chart",
+        "params": {"data": chart_payload()},
+    }))
+    .await
+    .expect("the retired tool name must still dispatch");
+
+    let entry_panels = panel_documents(&dashboard_html(&via_entry));
+    let retired_panels = panel_documents(&dashboard_html(&via_retired));
+    assert_eq!(retired_panels.len(), 1, "the retired name rendered nothing");
+    assert_eq!(
+        entry_panels, retired_panels,
+        "`render_figure` and the retired name must produce the same figure"
+    );
+}
+
+/// `mermaid` is the one kind whose payload is NOT the underlying tool's `data`
+/// argument — it takes `mermaid_code`. A panel therefore has to reshape it
+/// through `figure_arguments`, exactly as the declared `render_figure` does.
+///
+/// Fails an implementation that unwraps the panel by hand as
+/// `call_figure_tool(kind.tool_name(), json!({"data": data}))`, which draws 31
+/// kinds correctly and fails only this one.
+#[tokio::test]
+async fn test_render_figure_panel_reshapes_mermaid_like_the_entry_point_does() {
+    let via_entry = one_panel_report(json!({
+        "tool": "render_figure",
+        "params": {"kind": "mermaid", "data": "graph TD; A-->B;"},
+    }))
+    .await
+    .expect("mermaid through a `render_figure` panel");
+    let via_retired = one_panel_report(mermaid_figure())
+        .await
+        .expect("retired mermaid panel");
+
+    assert_eq!(
+        panel_documents(&dashboard_html(&via_entry)),
+        panel_documents(&dashboard_html(&via_retired)),
+    );
+}
+
+/// A kind the enum does not have must say so against `kind`, and point at the
+/// tool that lists the kinds — not fall through to "Unknown visualization",
+/// which talks about a tool name the model did not get wrong.
+#[tokio::test]
+async fn test_render_figure_panel_with_an_unknown_kind_says_so() {
+    let err = one_panel_report(json!({
+        "tool": "render_figure",
+        "params": {"kind": "sparkline", "data": {}},
+    }))
+    .await
+    .unwrap_err();
+
+    let message = err.message.to_string();
+    assert!(message.contains("Unknown figure kind"), "{message}");
+    assert!(message.contains("sparkline"), "{message}");
+    assert!(message.contains("describe_figure"), "{message}");
+}
+
+// ---------------------------------------------------------------------------
+// A rejected payload must name a call the model can make (#150 item 1)
+// ---------------------------------------------------------------------------
+
+/// `render_volcano` still dispatches but is advertised nowhere, so naming it
+/// hands the model an identifier it cannot call — it retries the same rejected
+/// shape or gives up.
+///
+/// Fails the shipped implementation, which interpolated the dispatch table's own
+/// literal (`"`{}` arguments are invalid: {e}", $tool`).
+#[tokio::test]
+async fn test_bad_arguments_name_render_figure_and_the_kind() {
+    let router = AutoVisualiserRouter::new();
+    let err = router
+        .render_figure(Parameters(RenderFigureParams {
+            kind: FigureKind::Volcano,
+            // `negLog10P` but no `log2fc` — the exact case in the issue.
+            data: json!({"points": [{"label": "MYC", "negLog10P": 4.0}]}),
+        }))
+        .await
+        .unwrap_err();
+
+    let message = err.message.to_string();
+    assert!(message.contains("log2fc"), "must still say what is wrong: {message}");
+    assert!(message.contains("render_figure"), "{message}");
+    assert!(message.contains("\"volcano\""), "must name the kind: {message}");
+    assert!(
+        !message.contains("render_volcano"),
+        "the model cannot call `render_volcano`: {message}"
+    );
+    assert!(
+        message.contains("describe_figure"),
+        "must point at the schema: {message}"
+    );
+}
+
+/// The same message reaches the model through a panel's error card and through
+/// the assistant-audience failure list, which is where it is actually read.
+#[tokio::test]
+async fn test_a_failed_panel_names_render_figure_not_the_retired_tool() {
+    let result = AutoVisualiserRouter::new()
+        .render_dashboard(params_from(json!({
+            "title": "Partial",
+            "panels": [
+                {"title": "Good", "figure": bar_chart_figure()},
+                {"title": "Bad volcano", "figure": {
+                    "tool": "render_figure",
+                    "params": {"kind": "volcano", "data": {"points": [{"negLog10P": 4.0}]}},
+                }},
+            ],
+        })))
+        .await
+        .expect("one good panel keeps the report alive");
+
+    let html = dashboard_html(&result);
+    assert_eq!(panel_documents(&html).len(), 1);
+    assert!(html.contains("render_figure"));
+    assert!(
+        !html.contains("render_volcano"),
+        "the error card names a tool the model cannot call"
+    );
+
+    let RawContent::Text(text) = &*result.content[1] else {
+        panic!("expected assistant text");
+    };
+    assert!(text.text.contains("Figure 2 (Bad volcano)"), "{}", text.text);
+    assert!(text.text.contains("render_figure"), "{}", text.text);
+    assert!(!text.text.contains("render_volcano"), "{}", text.text);
+}
+
+/// The dashboard is not the only door into the dispatcher: Agent Drafter's
+/// `ui_figure` takes a model-written tool name and calls
+/// `render_standalone_figure` with it. Putting the unwrap in `call_figure_tool`
+/// rather than in the panel path is what makes that door accept `render_figure`
+/// too, so assert it rather than assuming it.
+///
+/// Fails an implementation that unwraps `render_figure` inside
+/// `render_figure_fragment` — every dashboard test above would still pass.
+#[tokio::test]
+async fn test_the_standalone_embedding_api_accepts_render_figure_too() {
+    let via_entry = render_standalone_figure(
+        "render_figure",
+        json!({"kind": "chart", "data": chart_payload()}),
+    )
+    .await
+    .expect("`render_figure` through the standalone API");
+    let via_retired = render_standalone_figure("show_chart", json!({"data": chart_payload()}))
+        .await
+        .expect("the retired name through the standalone API");
+    assert_eq!(via_entry, via_retired);
+}
+
+/// The unit half of the two panel tests above: the leniency is deliberate, and
+/// each accepted alias is one a model was seen to reach for.
+///
+/// ⚠ NOT wiring coverage. This calls `render_figure_call` directly, so it passes
+/// with the `render_figure` arm of `call_figure_tool` deleted outright — the
+/// unwrap could be unreachable and every assertion here would still hold. The
+/// wiring is pinned above, by `test_panel_accepts_the_render_figure_tool_with_a_kind`,
+/// `test_panel_accepts_a_flattened_render_figure_call`,
+/// `test_render_figure_panel_matches_the_retired_tool_name_byte_for_byte`,
+/// `test_render_figure_panel_reshapes_mermaid_like_the_entry_point_does`,
+/// `test_render_figure_panel_with_an_unknown_kind_says_so` and
+/// `test_the_standalone_embedding_api_accepts_render_figure_too`. What this adds
+/// is the per-alias detail those would only fail on in aggregate.
+#[test]
+fn test_render_figure_call_unwraps_the_shapes_a_model_sends() {
+    for payload in [
+        json!({"kind": "chart", "data": {"type": "bar"}}),
+        json!({"kind": "chart", "params": {"type": "bar"}}),
+        json!({"kind": "chart", "arguments": {"type": "bar"}}),
+        json!({"kind": "chart", "args": {"type": "bar"}}),
+        // No payload key at all — the leftovers ARE the payload.
+        json!({"kind": "chart", "type": "bar"}),
+        // The whole object stringified. `DashboardFigure` accepts this shape at
+        // the panel level and this refused it one level in, so a model that
+        // stringifies nested arguments (a habit recorded in this codebase, and
+        // the reason `normalize_dashboard_args` exists) got a message about
+        // `kind` when the fault was the quoting.
+        json!("{\"kind\": \"chart\", \"data\": {\"type\": \"bar\"}}"),
+    ] {
+        let (kind, data) = render_figure_call(payload.clone())
+            .unwrap_or_else(|e| panic!("{payload} was refused: {}", e.message));
+        assert_eq!(kind, FigureKind::Chart, "{payload}");
+        assert_eq!(data["type"], "bar", "{payload}");
+    }
+
+    // A string that is not JSON at all must say so, not fall through to a
+    // complaint about a missing `kind`.
+    let err = render_figure_call(json!("kind=chart")).unwrap_err();
+    assert!(
+        err.message.contains("did not parse"),
+        "{}",
+        err.message
+    );
+
+    // `kind` has no aliases on purpose. Two independent reasons: when a panel
+    // omitted `tool`, `DashboardFigure` will already have consumed
+    // `type`/`name`/`kind` hunting for the TOOL name; and in every case, a chart
+    // payload's own `type: "bar"` must not be able to choose the figure.
+    let err = render_figure_call(json!({"type": "chart", "data": {}})).unwrap_err();
+    assert!(err.message.contains("needs a `kind`"), "{}", err.message);
+}
+
+// ---------------------------------------------------------------------------
+// A panel that names a KIND and no tool at all (#142, the regression the
+// `render_figure` unwrap introduced)
+//
+// `DashboardFigure` hunts `tool`/`type`/`name`/`kind` for the TOOL name, so
+// `{"kind": "mermaid", "data": "<source>"}` resolves straight to
+// `render_mermaid` and never reaches the `render_figure` unwrap. Thirty-one
+// kinds survive that by accident — their payload already IS the tool's `data`.
+// `mermaid` is the one that needs reshaping, and it was reshaped in
+// `figure_arguments`, i.e. behind a door this shape does not use. The result was
+// a REFUSAL phrased against `render_figure` telling the model to go and check a
+// schema that would have confirmed exactly what it had already sent.
+// ---------------------------------------------------------------------------
+
+/// Every shape a `kind`-only mermaid panel can take must RENDER, not explain
+/// itself. `describe_figure` reports mermaid's `dataIs` as "the Mermaid diagram
+/// source, as a string", so `{"kind": "mermaid", "data": "<source>"}` is the
+/// documented payload and refusing it is a false error whatever it says.
+///
+/// Fails an implementation that keeps the mermaid leniency in `figure_arguments`
+/// instead of on `RenderMermaidParams`, whichever way that refusal is worded.
+#[tokio::test]
+async fn test_a_kind_only_mermaid_panel_renders_instead_of_being_refused() {
+    let canonical = one_panel_report(mermaid_figure())
+        .await
+        .expect("the retired spelling still renders");
+    let expected = panel_documents(&dashboard_html(&canonical));
+
+    for figure in [
+        json!({"kind": "mermaid", "data": "graph TD; A-->B;"}),
+        json!({"kind": "mermaid", "mermaid_code": "graph TD; A-->B;"}),
+        json!({"kind": "mermaid", "params": {"data": "graph TD; A-->B;"}}),
+        json!({"kind": "mermaid", "params": {"mermaid_code": "graph TD; A-->B;"}}),
+        json!({"type": "mermaid", "data": "graph TD; A-->B;"}),
+        // And through the `render_figure` door, which must not have regressed
+        // while the leniency moved out from under it.
+        json!({"tool": "render_figure", "params": {"kind": "mermaid", "data": "graph TD; A-->B;"}}),
+        json!({"tool": "render_figure", "params": {"kind": "mermaid",
+                                                   "data": {"mermaid_code": "graph TD; A-->B;"}}}),
+    ] {
+        let result = one_panel_report(figure.clone())
+            .await
+            .unwrap_or_else(|e| panic!("{figure} was refused: {}", e.message));
+        assert_eq!(
+            panel_documents(&dashboard_html(&result)),
+            expected,
+            "{figure} drew a different diagram"
+        );
+    }
+}
+
+/// The `kind`-only shape for the other 31, and for the spelling the review
+/// measured working today — `{"kind": "volcano", "params": {…}}`, where `params`
+/// is the per-kind tool's own arguments because `DashboardFigure` resolved the
+/// kind to that tool directly.
+///
+/// ⚠ Fails any "fix" that drops `kind` from `DashboardFigure`'s tool-name hunt:
+/// the panel would then have no tool at all, or `render_figure_call` would take
+/// `params` as the payload and double-wrap it.
+#[tokio::test]
+async fn test_a_kind_only_panel_draws_the_same_figure_as_the_tool_name() {
+    let canonical = one_panel_report(json!({
+        "tool": "render_figure",
+        "params": {"kind": "chart", "data": chart_payload()},
+    }))
+    .await
+    .expect("canonical render_figure panel");
+    let expected = panel_documents(&dashboard_html(&canonical));
+
+    for figure in [
+        json!({"kind": "chart", "data": chart_payload()}),
+        json!({"kind": "chart", "params": {"data": chart_payload()}}),
+        json!({"kind": "show_chart", "params": {"data": chart_payload()}}),
+    ] {
+        let result = one_panel_report(figure.clone())
+            .await
+            .unwrap_or_else(|e| panic!("{figure} was refused: {}", e.message));
+        assert_eq!(
+            panel_documents(&dashboard_html(&result)),
+            expected,
+            "{figure} drew a different figure"
+        );
+    }
+
+    // The volcano spelling from the review, asserted against its own canonical
+    // form rather than the chart's.
+    let via_kind = one_panel_report(json!({
+        "kind": "volcano",
+        "params": {"data": {"points": [
+            {"label": "MYC", "log2fc": 2.4, "negLog10P": 4.0},
+            {"label": "TP53", "log2fc": -1.8, "negLog10P": 2.7},
+        ]}},
+    }))
+    .await
+    .expect("`{kind: volcano, params: {data}}` is measured working and must stay so");
+    assert_eq!(
+        panel_documents(&dashboard_html(&via_kind)),
+        panel_documents(&dashboard_html(
+            &one_panel_report(volcano_figure()).await.unwrap()
+        )),
+    );
+}
+
+/// A mermaid payload with no source anywhere is the one case that SHOULD fail,
+/// and it must fail against `render_figure`/`kind` — not render an empty diagram
+/// (which looks like the tool worked) and not name `render_mermaid` (which a
+/// chat agent cannot call).
+#[tokio::test]
+async fn test_a_mermaid_panel_with_no_source_is_refused_in_the_models_vocabulary() {
+    let result = AutoVisualiserRouter::new()
+        .render_dashboard(params_from(json!({
+            "title": "Partial",
+            "panels": [
+                {"title": "Good", "figure": bar_chart_figure()},
+                {"title": "Sourceless", "figure": {"kind": "mermaid", "data": {"nodes": []}}},
+            ],
+        })))
+        .await
+        .expect("one good panel keeps the report alive");
+
+    let html = dashboard_html(&result);
+    assert_eq!(panel_documents(&html).len(), 1);
+    assert!(html.contains("Mermaid diagram is its source text"), "{html}");
+    assert!(html.contains("render_figure"));
+    assert!(
+        !html.contains("render_mermaid"),
+        "the model cannot call `render_mermaid`"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +746,9 @@ async fn test_dashboard_combines_multiple_figures() {
     if let RawContent::Text(text) = &*result.content[1] {
         assert!(text.text.contains("2 figures"));
         assert!(text.text.contains("The report is complete"));
-        assert!(text.text.contains("already displayed"));
+        assert!(text.text.contains("ready for the artifact panel"));
+        assert!(text.text.contains("Inspect the existing artifact"));
+        assert!(!text.text.contains("already displayed"));
         assert!(text.text.contains("finalise or confirm"));
     } else {
         panic!("expected an assistant-audience text note");
@@ -581,6 +1021,84 @@ async fn test_rejects_too_many_panels() {
 }
 
 #[tokio::test]
+async fn partial_dashboard_receipt_preserves_failure_guidance_after_a_long_title() {
+    let router = AutoVisualiserRouter::new();
+    let result = router
+        .render_dashboard(params_from(json!({
+            "title": "Δ".repeat(2_000),
+            "panels": [
+                {"title": "Good", "figure": bar_chart_figure()},
+                {"title": "Long panel title ".repeat(100), "figure": {
+                    "tool": "show_chart", "params": {"data": {"type":"bar", "datasets":[]}}
+                }}
+            ]
+        })))
+        .await
+        .unwrap();
+    let receipt = result.structured_content.as_ref().unwrap();
+    assert_eq!(receipt["status"], "created_with_errors");
+    assert_eq!(receipt["figuresCreated"], 1);
+    assert_eq!(receipt["figuresFailed"], 1);
+    assert_eq!(receipt["failures"][0]["figure"], 2);
+    assert_eq!(receipt["failures"][0]["tool"], "show_chart");
+    assert!(receipt["failures"][0]["error"].as_str().unwrap().contains("at least one dataset"));
+    assert!(receipt["recovery"].as_str().unwrap().contains("whole report"));
+    assert!(serde_json::to_string(receipt).unwrap().len() < 3_000);
+    assert_eq!(panel_documents(&dashboard_html(&result)).len(), 1);
+}
+
+#[tokio::test]
+async fn dashboard_receipt_keeps_guidance_for_a_successful_long_title() {
+    let result = AutoVisualiserRouter::new()
+        .render_dashboard(params_from(json!({
+            "title": "Δ".repeat(2_000),
+            "panels": [{"figure": bar_chart_figure()}]
+        })))
+        .await
+        .unwrap();
+    let receipt = result.structured_content.as_ref().unwrap();
+    assert_eq!(receipt["status"], "created");
+    assert_eq!(receipt["figuresCreated"], 1);
+    assert_eq!(receipt["figuresFailed"], 0);
+    assert_eq!(receipt["failuresOmitted"], 0);
+    assert_eq!(receipt["failures"], json!([]));
+    assert!(receipt["recovery"].as_str().unwrap().contains("Inspect the existing artifact"));
+    assert!(serde_json::to_string(receipt).unwrap().len() < 1_000);
+}
+
+#[tokio::test]
+async fn partial_dashboard_receipt_bounds_errors_and_numbers_them_across_sections() {
+    let bad_panels: Vec<_> = (1..MAX_PANELS).map(|_| json!({
+        "figure": {"tool": "unknown_🧬".repeat(200), "params": {}}
+    })).collect();
+    let result = AutoVisualiserRouter::new()
+        .render_dashboard(params_from(json!({
+            "title": "Partial",
+            "sections": [
+                {"title": "Good", "panels": [{"figure": bar_chart_figure()}]},
+                {"title": "Failures", "panels": bad_panels}
+            ]
+        })))
+        .await
+        .unwrap();
+    let receipt = result.structured_content.as_ref().unwrap();
+    assert_eq!(receipt["status"], "created_with_errors");
+    assert_eq!(receipt["figuresCreated"], 1);
+    assert_eq!(receipt["figuresFailed"], 23);
+    assert_eq!(receipt["failuresOmitted"], 15);
+    let errors = receipt["failures"].as_array().unwrap();
+    assert_eq!(errors.len(), 8);
+    for (index, error) in errors.iter().enumerate() {
+        assert_eq!(error["figure"], index + 2);
+        assert!(error["tool"].as_str().unwrap().chars().count() <= 64);
+        assert!(error["error"].as_str().unwrap().chars().count() <= 128);
+        assert_eq!(error["detailsTruncated"], true);
+    }
+    assert!(serde_json::to_string(receipt).unwrap().len() < 12_000);
+    assert_eq!(panel_documents(&dashboard_html(&result)).len(), 1);
+}
+
+#[tokio::test]
 async fn test_unknown_tool_fails_only_its_own_panel() {
     let router = AutoVisualiserRouter::new();
     let result = router
@@ -598,6 +1116,32 @@ async fn test_unknown_tool_fails_only_its_own_panel() {
     // The good panel still renders; the bad one becomes an error card in-page.
     assert_eq!(panel_documents(&html).len(), 1);
     assert!(html.contains("Unknown visualization 'render_sparkline'"));
+
+    // ...and the advice must be a call the model can actually make. This used to
+    // read "Use one of the Auto Visualiser render_* tool names, e.g.
+    // render_volcano, render_heatmap, show_chart" — three names absent from a
+    // chat agent's roster, which is #142's complaint one layer above the
+    // argument errors #150 is about. Both halves are asserted, because dropping
+    // the retired names while saying nothing usable in their place would pass a
+    // "does not contain render_volcano" check and still strand the model.
+    assert!(
+        html.contains("render_figure"),
+        "must name the tool that draws figures: {html}"
+    );
+    assert!(
+        html.contains("volcano") && html.contains("heatmap"),
+        "must list the kinds to choose from"
+    );
+    assert!(
+        html.contains("describe_figure"),
+        "must point at the schema tool"
+    );
+    for retired in ["render_volcano", "render_heatmap", "show_chart"] {
+        assert!(
+            !html.contains(retired),
+            "`{retired}` is not in a chat agent's roster; suggesting it is a dead end"
+        );
+    }
 
     // ...and the model is told precisely which figure to fix.
     if let RawContent::Text(text) = &*result.content[1] {
@@ -873,4 +1417,402 @@ async fn dump_sample_dashboard() {
     let html = dashboard_html(&result);
     std::fs::write(&out, &html).unwrap();
     println!("wrote {} bytes to {out}", html.len());
+}
+
+// ---------------------------------------------------------------------------
+// The consolidation guards: 33 declared tools became 3, and nothing was lost
+// ---------------------------------------------------------------------------
+
+/// The ceiling this consolidation exists for. Azure and OpenAI reject a
+/// `tools` array longer than 128 with a non-retryable 400, and Auto Visualiser
+/// alone was 33 of the 130 built-in tools. A future contributor re-adding a
+/// `#[tool]` attribute to a figure method fails here rather than silently
+/// re-inflating the surface and killing every turn on those providers.
+#[test]
+fn exactly_three_tools_are_advertised() {
+    let router = AutoVisualiserRouter::new();
+    let mut advertised: Vec<String> = router
+        .tool_router
+        .list_all()
+        .into_iter()
+        .map(|tool| tool.name.to_string())
+        .collect();
+    advertised.sort();
+    assert_eq!(
+        advertised,
+        ["describe_figure", "render_dashboard", "render_figure"],
+        "the advertised Auto Visualiser surface changed"
+    );
+}
+
+/// The three tables agree by construction — `figure_kinds!` generates the enum,
+/// the slug and the tool name together — so what this actually checks is the
+/// join to the ROUTER: that each generated tool name is a registered `#[tool]`,
+/// and that no registered figure tool is unnamed by any kind. A kind naming a
+/// tool that is not registered would break `describe_figure`, which reads each
+/// kind's schema off `figure_router`.
+///
+/// ⚠ It does NOT reach `call_figure_tool`'s dispatch table, which is a separate
+/// hand-written list — registration and dispatch are different maps, and a name
+/// can be in one and not the other.
+/// `every_kind_reports_bad_arguments_against_render_figure` below covers that
+/// join, by walking all 32 kinds through the dispatcher itself.
+#[test]
+fn every_kind_resolves_to_a_real_figure_tool() {
+    let router = AutoVisualiserRouter::new();
+    assert_eq!(FigureKind::ALL.len(), 32);
+    for kind in FigureKind::ALL {
+        assert!(
+            router.figure_router.has_route(kind.tool_name()),
+            "kind `{}` names `{}`, which is not a registered tool",
+            kind.slug(),
+            kind.tool_name()
+        );
+    }
+    // And no figure tool is orphaned — one that no kind names would be
+    // unreachable through the only door the model now has.
+    let named: std::collections::HashSet<&str> =
+        FigureKind::ALL.iter().map(|k| k.tool_name()).collect();
+    for tool in router.figure_router.list_all() {
+        assert!(
+            named.contains(tool.name.as_ref()),
+            "`{}` is registered but no kind reaches it",
+            tool.name
+        );
+    }
+}
+
+/// The join `every_kind_resolves_to_a_real_figure_tool` cannot see: every kind
+/// must reach a DISPATCH-TABLE arm, and that arm must phrase its refusal in the
+/// chat agent's vocabulary.
+///
+/// This is the guard `figure_argument_error`'s fallback comment cites. Two ways
+/// a kind can land in that fallback, and neither is visible to the router check
+/// above: its `tool_name()` is missing from the hand-written dispatch table (it
+/// then falls to `unknown_figure_error` instead), or the table dispatches it
+/// under a literal no kind claims (it is then named back at a model that cannot
+/// call it — #150's exact failure).
+///
+/// An empty payload is used because every figure's parameter struct requires
+/// its data: `render_mermaid` wants a source and the other 31 want `data`.
+#[tokio::test]
+async fn every_kind_reports_bad_arguments_against_render_figure() {
+    let router = AutoVisualiserRouter::new();
+    for kind in FigureKind::ALL {
+        let err = router
+            .call_figure_tool(kind.tool_name(), json!({}), FigureVocabulary::RenderFigure)
+            .await
+            .err()
+            .unwrap_or_else(|| {
+                panic!(
+                    "`{}` accepted an empty payload; this guard needs one it refuses",
+                    kind.slug()
+                )
+            });
+        let message = err.message.to_string();
+
+        assert!(
+            !message.contains("Unknown visualization"),
+            "kind `{}` names `{}`, which the dispatch table does not answer to: {message}",
+            kind.slug(),
+            kind.tool_name()
+        );
+        assert!(
+            message.starts_with("`render_figure` arguments are invalid for kind"),
+            "kind `{}` fell through to the tool-name fallback: {message}",
+            kind.slug()
+        );
+        assert!(
+            message.contains(&format!("\"{}\"", kind.slug())),
+            "must name the kind the model passed: {message}"
+        );
+        assert!(
+            message.contains("describe_figure"),
+            "must point at the schema: {message}"
+        );
+        assert!(
+            !message.contains(kind.tool_name()),
+            "`{}` is not in a chat agent's roster: {message}",
+            kind.tool_name()
+        );
+    }
+}
+
+/// The same walk, in the OTHER vocabulary. `ui_figure` hands its app agent the
+/// per-kind tool names and has no `render_figure`/`describe_figure`, so this
+/// door must keep naming the tool — the shared choke point cannot phrase both.
+#[tokio::test]
+async fn the_standalone_vocabulary_keeps_naming_the_tool() {
+    let router = AutoVisualiserRouter::new();
+    for kind in FigureKind::ALL {
+        let message = router
+            .call_figure_tool(kind.tool_name(), json!({}), FigureVocabulary::ToolName)
+            .await
+            .expect_err("an empty payload must be refused")
+            .message
+            .to_string();
+
+        assert!(
+            message.starts_with(&format!("`{}` arguments are invalid", kind.tool_name())),
+            "kind `{}` lost the tool-name phrasing: {message}",
+            kind.slug()
+        );
+        assert!(
+            !message.contains("describe_figure"),
+            "an app agent has no describe_figure: {message}"
+        );
+    }
+}
+
+/// The no-regression proof, aimed at the only place behaviour could differ.
+///
+/// For 31 of the 32 kinds `render_figure` builds `{"data": …}` and calls
+/// `call_figure_tool` — byte for byte the call the dashboard already makes, so
+/// equivalence there is structural, and `every_kind_resolves_to_a_real_figure_tool`
+/// covers the part that could actually be wrong (the kind → tool join). What
+/// needs real evidence is `mermaid`, the one kind whose payload is reshaped,
+/// and a spread of kinds across the families to catch a dispatch mix-up.
+#[tokio::test]
+async fn the_entry_point_renders_what_the_legacy_call_rendered() {
+    let router = AutoVisualiserRouter::new();
+
+    let cases: Vec<(FigureKind, serde_json::Value)> = vec![
+        (
+            FigureKind::Chart,
+            serde_json::json!({"type":"bar","title":"T","labels":["a","b"],
+                "datasets":[{"label":"s","data":[1.0,2.0]}]}),
+        ),
+        (
+            FigureKind::Donut,
+            serde_json::json!({"title":"T","data":[{"label":"a","value":10.0}]}),
+        ),
+        (
+            FigureKind::Sankey,
+            serde_json::json!({"nodes":[{"name":"a"},{"name":"b"}],
+                "links":[{"source":"a","target":"b","value":10.0}]}),
+        ),
+        (
+            FigureKind::Chord,
+            serde_json::json!({"labels":["a","b"],"matrix":[[0.0,10.0],[5.0,0.0]]}),
+        ),
+        (
+            FigureKind::Treemap,
+            serde_json::json!({"name":"root","children":[{"name":"a","value":10.0}]}),
+        ),
+        (
+            FigureKind::Map,
+            serde_json::json!({"title":"T","markers":[
+                {"lat":37.7,"lng":-122.4,"name":"a","color":"#556677","value":0.0}]}),
+        ),
+    ];
+
+    for (kind, payload) in cases {
+        let legacy = router
+            .call_figure_tool(
+                kind.tool_name(),
+                serde_json::json!({ "data": payload }),
+                FigureVocabulary::RenderFigure,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("legacy call for `{}` failed: {e:?}", kind.slug()));
+        let via_entry = router
+            .render_figure(Parameters(RenderFigureParams {
+                kind,
+                data: payload,
+            }))
+            .await
+            .unwrap_or_else(|e| panic!("render_figure for `{}` failed: {e:?}", kind.slug()));
+        assert_eq!(
+            decode_html(&legacy),
+            decode_html(&via_entry),
+            "`{}` renders differently through render_figure",
+            kind.slug()
+        );
+    }
+}
+
+/// `mermaid` is the one kind whose wire shape is genuinely different — it takes
+/// `mermaid_code`, not `data`. The normalization has to accept what a model told
+/// "pass it as `data`" will send.
+///
+/// ⚠ That normalization is NOT the entry point's any more; it belongs to
+/// `RenderMermaidParams`'s own `Deserialize`, so every door inherits it. This
+/// test still enters through `render_figure` because that is the door whose
+/// behaviour must not regress, but it is no longer the one doing the work — see
+/// `test_a_kind_only_mermaid_panel_renders_instead_of_being_refused` for the
+/// door that had none.
+#[tokio::test]
+async fn mermaid_accepts_the_shapes_a_model_will_send_and_refuses_the_rest() {
+    let router = AutoVisualiserRouter::new();
+    let source = "graph TD; A-->B;";
+
+    let legacy = router
+        .call_figure_tool(
+            "render_mermaid",
+            serde_json::json!({ "mermaid_code": source }),
+            FigureVocabulary::RenderFigure,
+        )
+        .await
+        .expect("legacy mermaid");
+
+    for shape in [
+        serde_json::json!(source),
+        serde_json::json!({ "mermaid_code": source }),
+        serde_json::json!({ "code": source }),
+        serde_json::json!({ "source": source }),
+        serde_json::json!({ "data": source }),
+        serde_json::json!({ "diagram": source }),
+        // The shape a model that stringifies nested arguments sends.
+        serde_json::json!(format!("{{\"mermaid_code\": \"{source}\"}}")),
+    ] {
+        let rendered = router
+            .render_figure(Parameters(RenderFigureParams {
+                kind: FigureKind::Mermaid,
+                data: shape.clone(),
+            }))
+            .await
+            .unwrap_or_else(|e| panic!("mermaid rejected {shape}: {e:?}"));
+        assert_eq!(decode_html(&legacy), decode_html(&rendered), "{shape}");
+    }
+
+    // A payload with no source anywhere must say what to do, not render an
+    // empty diagram.
+    let err = router
+        .render_figure(Parameters(RenderFigureParams {
+            kind: FigureKind::Mermaid,
+            data: serde_json::json!({ "nodes": [] }),
+        }))
+        .await
+        .unwrap_err();
+    assert!(err.message.contains("describe_figure"), "{}", err.message);
+}
+
+/// A describe tool that advertised shapes the renderer rejects would be worse
+/// than none: it is the model's only route to a kind's arguments now.
+#[tokio::test]
+async fn describe_figure_answers_for_every_kind_and_lists_them_all() {
+    let router = AutoVisualiserRouter::new();
+
+    let catalog = router
+        .describe_figure(Parameters(DescribeFigureParams { kind: None }))
+        .await
+        .expect("catalog");
+    let catalog = result_text(&catalog);
+    for kind in FigureKind::ALL {
+        assert!(
+            catalog.contains(kind.slug()),
+            "the catalog omits `{}`",
+            kind.slug()
+        );
+    }
+
+    for kind in FigureKind::ALL {
+        let described = router
+            .describe_figure(Parameters(DescribeFigureParams { kind: Some(*kind) }))
+            .await
+            .unwrap_or_else(|e| panic!("describe_figure({}) failed: {e:?}", kind.slug()));
+        let body: serde_json::Value =
+            serde_json::from_str(&result_text(&described)).expect("describe returns JSON");
+        assert_eq!(body["kind"], kind.slug());
+        assert!(
+            body["schema"].is_object() && !body["schema"].as_object().unwrap().is_empty(),
+            "`{}` has no schema",
+            kind.slug()
+        );
+        assert!(
+            body["guidance"].as_str().is_some_and(|g| !g.trim().is_empty()),
+            "`{}` lost its worked example — that text is the model's only \
+             per-kind documentation now",
+            kind.slug()
+        );
+    }
+}
+
+/// The 17 KB of per-kind prose must stay in `describe_figure`'s RESULT, not
+/// creep back into the declarations.
+///
+/// ⚠ **This is NOT a provider limit, and an earlier draft of this test wrongly
+/// said it was.** A design review claimed Azure/OpenAI cap
+/// `tools[n].function.description` at 1024 characters and reject the request.
+/// Measured against the live Versa Azure gpt-5.5 endpoint on 2026-08-31: a turn
+/// carrying `render_dashboard`'s 2,626-character description succeeded. The
+/// array-length cap of 128 is real and enforced; a description cap is not, at
+/// least not at that size.
+///
+/// What this guards is the thing that made the surface expensive in the first
+/// place: 33 declarations carrying 17,509 bytes of worked examples, sent on
+/// every single turn. The budget is generous enough that `render_dashboard`'s
+/// deliberately long call-once guidance fits, and tight enough that folding a
+/// kind's examples back into a declared tool fails here.
+#[test]
+fn per_kind_documentation_stays_out_of_the_declarations() {
+    let router = AutoVisualiserRouter::new();
+    let total: usize = router
+        .tool_router
+        .list_all()
+        .iter()
+        .map(|tool| tool.description.as_deref().unwrap_or_default().len())
+        .sum();
+    assert!(
+        total <= 4_096,
+        "the advertised Auto Visualiser descriptions total {total} bytes; per-kind \
+         schemas and examples belong in describe_figure's result, which is not sent \
+         on every turn"
+    );
+}
+
+/// The advertised surface must not hand a chat agent a name it cannot call.
+///
+/// #142 is about the error strings, but they are not the only place the retired
+/// names leaked: a tool's INPUT SCHEMA is read on every turn, and
+/// `DashboardFigure`'s doc comment shipped `{"tool": "render_volcano", …}` as a
+/// worked example — twice — while the errors around it were being rewritten to
+/// stop naming it. A model copying an example out of the schema it was just
+/// handed is not making a mistake.
+///
+/// Those shapes are still ACCEPTED; they moved to `//` comments beside the
+/// struct, where a contributor reads them and a model does not. `describe_figure`
+/// is exempt because it answers with a per-kind schema as a RESULT, and the
+/// schema it reads back is the real tool's.
+#[test]
+fn the_advertised_surface_names_no_retired_figure_tool() {
+    let router = AutoVisualiserRouter::new();
+    let retired: Vec<&str> = FigureKind::ALL.iter().map(|k| k.tool_name()).collect();
+
+    // Every string the model is handed unprompted: the server instructions, and
+    // each declared tool's description AND input schema.
+    let mut surfaces = vec![(
+        "server instructions".to_string(),
+        router.get_info().instructions.unwrap_or_default(),
+    )];
+    for tool in router.tool_router.list_all() {
+        surfaces.push((
+            tool.name.to_string(),
+            format!(
+                "{}{}",
+                tool.description.as_deref().unwrap_or_default(),
+                serde_json::to_string(&*tool.input_schema).unwrap()
+            ),
+        ));
+    }
+
+    for (where_, text) in surfaces {
+        for name in &retired {
+            assert!(
+                !text.contains(name),
+                "{where_} advertises `{name}`, which is not in a chat agent's roster"
+            );
+        }
+    }
+}
+
+/// The plain text of a tool result, for the tools that answer with text rather
+/// than a `ui://` resource.
+fn result_text(result: &CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+        .collect::<Vec<_>>()
+        .join("")
 }

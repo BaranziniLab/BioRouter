@@ -6,35 +6,31 @@
     <title>Network Graph</title>
     {{ASSETS}}
     <script>{{COMMON}}</script>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; }
-        .header { padding: 20px 30px 0; text-align: center; }
-        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
-        #graph { width: 100%; height: 560px; display: block; }
-        .node-label { font-size: 11px; fill: var(--text); pointer-events: none; }
-        .tooltip { position: absolute; background: var(--text); color: var(--surface); padding: 6px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; opacity: 0; transition: opacity .15s; z-index: 10; }
-    </style>
+    <style>.node-label{pointer-events:none;}.tooltip{position:absolute;opacity:0;pointer-events:none;}</style>
 </head>
 <body>
     <div class="viz-root">
         <div class="container">
             <div class="header"><h1 id="title">Network Graph</h1></div>
-            <svg id="graph"></svg>
+            <div class="figure-scroll" tabindex="0" role="region" aria-label="Scientific figure"><svg id="graph" role="img" aria-label="Scientific figure; exact values follow in the data table"></svg></div>
         </div>
     </div>
     <div class="tooltip" id="tooltip"></div>
+    <details class="figure-data">
+        <summary>View figure data</summary>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Figure data"><table id="figureData"></table></div>
+    </details>
     <script>
         const networkData = {{NETWORK_DATA}};
         BioRouterViz.autoResize();
         BioRouterViz.guard(function () {
-            BioRouterViz.applyPageTheme();
+            BioRouterViz.applyScientificStyles();
             if (networkData.title) document.getElementById('title').textContent = networkData.title;
 
             const svgEl = document.getElementById('graph');
-            const width = svgEl.clientWidth || 1100;
+            let width = Math.max(720, svgEl.parentElement.clientWidth);
             const height = 560;
-            const svg = d3.select('#graph').attr('viewBox', [0, 0, width, height]);
+            const svg = d3.select('#graph').attr('width', width).attr('height', height);
             const tooltip = d3.select('#tooltip');
 
             const groups = Array.from(new Set(networkData.nodes.map(function (n) { return n.group || 'default'; })));
@@ -47,8 +43,8 @@
 
             if (networkData.directed) {
                 svg.append('defs').append('marker')
-                    .attr('id', 'arrow').attr('viewBox', '0 -5 10 10').attr('refX', 22).attr('refY', 0)
-                    .attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
+                    .attr('id', 'arrow').attr('viewBox', '0 -5 10 10').attr('refX', 10).attr('refY', 0)
+                    .attr('markerUnits', 'userSpaceOnUse').attr('markerWidth', 8).attr('markerHeight', 8).attr('orient', 'auto')
                     .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', BioRouterViz.colors.muted);
             }
 
@@ -64,14 +60,17 @@
                 .style('cursor', 'grab')
                 .on('mouseover', function (event, d) {
                     tooltip.style('opacity', 1)
-                        .html('<strong>' + (d.label || d.id) + '</strong>' + (d.group ? '<br/>group: ' + d.group : '') + (d.value != null ? '<br/>value: ' + d.value : ''))
+                        .text((d.label || d.id) + (d.group ? '\nGroup: ' + d.group : '') + (d.value != null ? '\nValue: ' + d.value : ''))
                         .style('left', (event.pageX + 12) + 'px').style('top', (event.pageY - 10) + 'px');
                 })
                 .on('mouseout', function () { tooltip.style('opacity', 0); });
 
             const label = svg.append('g').selectAll('text').data(nodes).join('text')
                 .attr('class', 'node-label').attr('dx', function (d) { return radius(d) + 3; }).attr('dy', 4)
-                .text(function (d) { return d.label || d.id; });
+                .each(function (d, index) {
+                    BioRouterViz.fitSvgLabel(this, index < 40 ? d.label || d.id : '', 140);
+                    d.displayLabel = this.textContent;
+                });
 
             const sim = d3.forceSimulation(nodes)
                 .force('link', d3.forceLink(links).id(function (d) { return d.id; }).distance(70))
@@ -79,16 +78,44 @@
                 .force('center', d3.forceCenter(width / 2, height / 2))
                 .force('collide', d3.forceCollide().radius(function (d) { return radius(d) + 4; }))
                 .on('tick', function () {
-                    link.attr('x1', function (d) { return d.source.x; }).attr('y1', function (d) { return d.source.y; })
-                        .attr('x2', function (d) { return d.target.x; }).attr('y2', function (d) { return d.target.y; });
+                    nodes.forEach(function (d) {
+                        const padding = radius(d) + 8;
+                        d.x = Math.max(padding, Math.min(width - padding, d.x));
+                        d.y = Math.max(padding, Math.min(height - padding, d.y));
+                    });
+                    link.each(function (d) {
+                        const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+                        const distance = Math.hypot(dx, dy) || 1;
+                        const inset = networkData.directed ? radius(d.target) + 3 : 0;
+                        d3.select(this).attr('x1', d.source.x).attr('y1', d.source.y)
+                            .attr('x2', d.target.x - dx / distance * inset).attr('y2', d.target.y - dy / distance * inset);
+                    });
                     node.attr('cx', function (d) { return d.x; }).attr('cy', function (d) { return d.y; });
-                    label.attr('x', function (d) { return d.x; }).attr('y', function (d) { return d.y; });
+                    label.attr('x', function (d) { return d.x; }).attr('y', function (d) { return d.y; })
+                        .text(function (d) { return d.displayLabel; })
+                        .each(function (d) {
+                            if (!this.textContent) return;
+                            const box = this.getBBox();
+                            if (nodes.some((other) => other !== d && box.x < other.x + radius(other) && box.x + box.width > other.x - radius(other) && box.y < other.y + radius(other) && box.y + box.height > other.y - radius(other))) this.textContent = '';
+                        });
+                    BioRouterViz.hideOverlappingSvgLabels(svg.node(), '.node-label');
                 });
 
             node.call(d3.drag()
                 .on('start', function (event, d) { if (!event.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
                 .on('drag', function (event, d) { d.fx = event.x; d.fy = event.y; })
                 .on('end', function (event, d) { if (!event.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+
+            window.addEventListener('resize', function () {
+                const nextWidth = Math.max(720, svgEl.parentElement.clientWidth);
+                if (nextWidth === width) return;
+                width = nextWidth; svg.attr('width', width);
+                sim.force('center', d3.forceCenter(width / 2, height / 2)).alpha(0.2).restart();
+            });
+            BioRouterViz.renderFigureData(document.getElementById('figureData'), ['Record', 'Label', 'Node / source ID', 'Target ID', 'Group', 'Value'], [
+                ...networkData.nodes.map((node) => ['Node', node.label || node.id, node.id, '', node.group, node.value]),
+                ...networkData.links.map((link) => ['Edge', link.label, link.source, link.target, '', link.value])
+            ], 'Node and edge records. Up to 40 labels are shown where space permits; all displayed records retain their full labels.');
 
             BioRouterViz.reportSize();
         });

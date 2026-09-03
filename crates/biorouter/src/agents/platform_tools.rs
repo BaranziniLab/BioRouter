@@ -1,3 +1,32 @@
+//! The `platform__*` tools: the four capabilities the **Agent** owns rather
+//! than any extension.
+//!
+//! They are advertised by [`Agent::list_tools_for`] and dispatched by
+//! [`Agent::dispatch_tool_call`], and they exist nowhere in the
+//! [`ExtensionManager`]. That single fact is what the whole file has to keep in
+//! view, because two other subsystems read the extension manager to decide what
+//! the model may reach:
+//!
+//! * `code_execution`'s importable-module catalogue is
+//!   `ExtensionManager::get_prefixed_tools_excluding`, so **no script can ever
+//!   `import` a platform tool** — exactly as no script can import
+//!   `workspace__subagent`, which that method strips for the same reason.
+//! * `reply_parts::survives_code_execution_filter` narrows the model's directly
+//!   callable list to `code_execution__*` when Code Execution is on, on the
+//!   premise that anything dropped can be reached by writing code instead.
+//!
+//! Compose those two and the platform tools were reachable from nowhere (issue
+//! #141): dropped from the roster, absent from the catalogue, so
+//! `platform.ingest_source` answered `Module not found: platform`. The exemption
+//! calls [`is_platform_tool_name`] — which IS a hand-written list of four names,
+//! [`PLATFORM_TOOL_NAMES`]. The property being bought is not "no list"; it is
+//! ONE list instead of a second copy at each gate, so a fifth platform tool is
+//! covered everywhere the day it is added to that one.
+//!
+//! [`Agent::list_tools_for`]: crate::agents::Agent
+//! [`Agent::dispatch_tool_call`]: crate::agents::Agent
+//! [`ExtensionManager`]: crate::agents::ExtensionManager
+
 use indoc::indoc;
 use rmcp::model::{Tool, ToolAnnotations};
 use rmcp::object;
@@ -5,6 +34,92 @@ pub const PLATFORM_MANAGE_SCHEDULE_TOOL_NAME: &str = "platform__manage_schedule"
 pub const PLATFORM_INGEST_CONVERSATION_TOOL_NAME: &str = "platform__ingest_conversation";
 pub const PLATFORM_INGEST_SOURCE_TOOL_NAME: &str = "platform__ingest_source";
 pub const PLATFORM_READ_SESSION_BLOB_TOOL_NAME: &str = "platform__read_session_blob";
+
+/// The extension key the four tools are advertised under. Not a registered
+/// extension — `PLATFORM_EXTENSIONS` has no `platform` entry and the
+/// `ExtensionManager` map has no `platform` key — but it is the prefix the
+/// model sees, and the name `list_tools(extension_name = Some("platform"))`
+/// filters on.
+pub const PLATFORM_EXTENSION_NAME: &str = "platform";
+
+/// Every `platform__*` tool, in advertisement order.
+///
+/// One list, so a reader can never be built from three of the four. Its
+/// membership is asserted against the constants below.
+pub const PLATFORM_TOOL_NAMES: &[&str] = &[
+    PLATFORM_MANAGE_SCHEDULE_TOOL_NAME,
+    PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
+    PLATFORM_INGEST_SOURCE_TOOL_NAME,
+    PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
+];
+
+/// Is this the name of a tool the **agent loop** dispatches?
+///
+/// Deliberately an exact-name test rather than a `platform__` prefix match: the
+/// prefix is not reserved (an installed extension normalizing to `platform`
+/// would take it), and every gate that asks this question is granting a tool a
+/// path around the extension manager. Only the four names this file defines,
+/// and dispatches, get that.
+pub fn is_platform_tool_name(name: &str) -> bool {
+    PLATFORM_TOOL_NAMES.contains(&name)
+}
+
+/// Which of the four the caller's session may see.
+///
+/// Each field is one gate, sampled by the Agent — the only thing that can read
+/// all three — and passed in.
+///
+/// Prescriptive, not a report of current practice: the only construction site
+/// is `Agent::platform_tool_gates`, and `code_execution`'s catalogue consumes
+/// no gates at all (the platform tools are never in it). Should a second reader
+/// ever appear it **must** take this value rather than re-derive it — two of the
+/// three gates (the scheduler handle, the Knowledge capability) are per-agent
+/// state no other caller can see, and the third is a process-global flag that
+/// must be sampled once, not re-read inside a gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlatformToolGates {
+    /// `AgentConfig::scheduler_service.is_some()` — without a scheduler the
+    /// tool's own handler answers "Scheduler not available", so advertising it
+    /// is an invitation to fail.
+    pub scheduler: bool,
+    /// The Knowledge capability is enabled. Ingestion belongs to it: disabling
+    /// Knowledge must take these higher-level write paths with its primitives,
+    /// rather than leaving them as an unlabelled bypass.
+    pub knowledge: bool,
+    /// `message_blobs::lazy_load_enabled()` — with the default hydrating read
+    /// the payloads are spliced back in at load time, so the model never sees a
+    /// stub and would have nothing to read back.
+    pub session_blobs: bool,
+}
+
+impl PlatformToolGates {
+    /// The tools this session may see, filtered by the `extension_name` a
+    /// caller scoped its listing to (`None` means "everything").
+    ///
+    /// ONE assembly. It has a single caller today — the Agent's tool list — and
+    /// the rule for any future one is that it comes here rather than pushing its
+    /// own copy: the four `if`s used to be four separate pushes at the bottom of
+    /// `Agent::list_tools_for`, which is how the model's roster and
+    /// `code_execution`'s view of the world came to disagree about the same four
+    /// tools (issue #141).
+    pub fn tools(self, extension_name: Option<&str>) -> Vec<Tool> {
+        if !matches!(extension_name, None | Some(PLATFORM_EXTENSION_NAME)) {
+            return Vec::new();
+        }
+        let mut tools = Vec::new();
+        if self.scheduler {
+            tools.push(manage_schedule_tool());
+        }
+        if self.knowledge {
+            tools.push(ingest_conversation_tool());
+            tools.push(ingest_source_tool());
+        }
+        if self.session_blobs {
+            tools.push(read_session_blob_tool());
+        }
+        tools
+    }
+}
 
 /// BR-7: read back a tool result that was too large to keep inline in the
 /// conversation. Only offered when lazy blob loading is on — otherwise the
@@ -224,6 +339,89 @@ pub fn manage_schedule_tool() -> Tool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `platform__*` constant this file declares is in
+    /// [`PLATFORM_TOOL_NAMES`].
+    ///
+    /// The list is what `is_platform_tool_name` answers from, and that predicate
+    /// is what exempts a tool from the Code Execution filter. A fifth tool added
+    /// here but not to the list would therefore be advertised, dropped from the
+    /// model's roster the moment Code Execution is on, and absent from the JS
+    /// catalogue — issue #141 exactly, reintroduced silently. Nothing else
+    /// catches it: the tool builder compiles, the dispatch branch compiles, and
+    /// no count anywhere disagrees.
+    ///
+    /// ⚠ Membership, not length. This assertion used to compare
+    /// `declared.len()` with `PLATFORM_TOOL_NAMES.len()`, which passes for an
+    /// edit that adds a fifth constant while dropping an existing entry from the
+    /// list — the exact silent regression above, wearing a passing test. The
+    /// expected VALUES are derived from the scan (the constant's value is on the
+    /// same source line as its name), so the two sets are compared directly.
+    ///
+    /// This is the anti-rot guard for the *file*; the load-bearing behavioural
+    /// assertion is
+    /// `agents::agent::tests::each_platform_tool_tracks_its_own_gate_and_the_listing_scope`,
+    /// which pins `PlatformToolGates::tools(all, None) == PLATFORM_TOOL_NAMES` —
+    /// i.e. that the list is also what the Agent actually advertises, in order,
+    /// and that each entry tracks its own gate.
+    #[test]
+    fn the_name_list_holds_every_platform_tool_constant() {
+        let source = std::fs::read_to_string(std::path::Path::new(file!()))
+            .or_else(|_| {
+                std::fs::read_to_string(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("src/agents/platform_tools.rs"),
+                )
+            })
+            .expect("the audit must not pass vacuously: this file must be readable");
+        let declared: std::collections::BTreeSet<String> = source
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix("pub const PLATFORM_")?;
+                let (_ident, value) = rest.split_once("_TOOL_NAME: &str = ")?;
+                // `"platform__manage_schedule";` -> `platform__manage_schedule`
+                let value = value.trim().strip_prefix('"')?;
+                let (value, _) = value.split_once('"')?;
+                Some(value.to_string())
+            })
+            .collect();
+        assert!(
+            !declared.is_empty(),
+            "the scan found no constants at all, so it proves nothing"
+        );
+        let listed: std::collections::BTreeSet<String> = PLATFORM_TOOL_NAMES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        assert_eq!(
+            declared, listed,
+            "PLATFORM_TOOL_NAMES must hold exactly the platform tools this file declares"
+        );
+    }
+
+    /// Every advertised platform tool has its own branch in
+    /// `Agent::dispatch_tool_call`.
+    ///
+    /// The two halves live in different files and neither refers to the other,
+    /// so a tool can be added to the roster with no route: the model calls it,
+    /// the call falls through to the extension manager, and the answer is
+    /// `Tool '…' not found`. The constant's identifier is DERIVED from its
+    /// value rather than listed here, so this covers a fifth tool too.
+    #[test]
+    fn every_advertised_platform_tool_has_a_dispatch_branch() {
+        let agent_rs = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agents/agent.rs"),
+        )
+        .expect("the audit must not pass vacuously: agent.rs must be readable");
+        for name in PLATFORM_TOOL_NAMES {
+            let ident = format!("{}_TOOL_NAME", name.to_uppercase().replace("__", "_"));
+            let branch = format!("if tool_call.name == {ident} {{");
+            assert!(
+                agent_rs.contains(&branch),
+                "`{name}` is advertised but `Agent::dispatch_tool_call` has no `{branch}`"
+            );
+        }
+    }
 
     /// The knowledge extension's own instructions tell the model to reach for
     /// this tool instead of hand-rolling ingestion out of the `kb_*` primitives

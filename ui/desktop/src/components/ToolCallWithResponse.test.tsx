@@ -53,7 +53,248 @@ describe('summarizeToolCall', () => {
         name: 'ucsfomopagent__cohort_lookup',
         arguments: { cohort_id: 42, table: 'condition_occurrence' },
       })
-    ).toBe('Cohort Lookup with cohort_id, table');
+    ).toBe('Cohort Lookup · Cohort ID: 42 · Table: condition_occurrence');
+  });
+
+  it('describes todo lifecycle calls instead of presenting task ids as operations', () => {
+    expect(
+      summarizeToolCall({
+        name: 'todo__todo_update',
+        arguments: { id: '#1', status: 'completed' },
+      })
+    ).toBe('Marking task #1 complete');
+    expect(
+      summarizeToolCall({
+        name: 'todo__todo_update',
+        arguments: { id: '2', status: 'in_progress' },
+      })
+    ).toBe('Starting task #2');
+    expect(
+      summarizeToolCall({
+        name: 'todo__todo_update',
+        arguments: { id: '#3', status: 'pending' },
+      })
+    ).toBe('Returning task #3 to pending');
+    expect(
+      summarizeToolCall({ name: 'todo__todo_add', arguments: { items: ['Audit', 'Test'] } })
+    ).toBe('Adding 2 tasks');
+    expect(summarizeToolCall({ name: 'todo__plan_write', arguments: { plan: '...' } })).toBe(
+      'Updating the work plan'
+    );
+  });
+
+  it('names extension and skill lifecycle operations with their action and target', () => {
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__manage_extensions',
+        arguments: { action: 'enable', extension_name: 'Playwright Agent' },
+      })
+    ).toBe('Attaching Playwright Agent');
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__manage_extensions',
+        arguments: { action: 'disable', extension_name: 'Playwright Agent' },
+      })
+    ).toBe('Detaching Playwright Agent');
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__install_extension',
+        arguments: { registry_id: 'playwrightagent', enable: true },
+      })
+    ).toBe('Installing Playwright Agent');
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__install_extension',
+        arguments: { registry_id: 'spokeagent-0.4.1', enable: true },
+      })
+    ).toBe('Installing Spoke Agent v0.4.1');
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__install_extension',
+        arguments: { registry_id: 'sample-agent-1.2.3-rc.1+build.2', enable: true },
+      })
+    ).toBe('Installing Sample Agent v1.2.3-rc.1+build.2');
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__install_extension',
+        arguments: { registry_id: 'reagent-1.0.0', enable: true },
+      })
+    ).toBe('Installing Reagent v1.0.0');
+    // Both arguments are merged on the Rust side, so naming the singular first
+    // (today's `if (extension)` early return) understates the batch.
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__delete_extension_package',
+        arguments: { registry_id: 'spokeagent', registry_ids: ['playwrightagent', 'cdwagent'] },
+      })
+    ).toBe('Removing 3 extension packages');
+    // Dropping the `total === 1` arm silently anonymises every ordinary
+    // one-package batch delete, because the name is not read out of the array.
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__delete_extension_package',
+        arguments: { registry_ids: ['spokeagent'] },
+      })
+    ).toBe('Removing 1 extension package');
+    // Deleting the `if (extension)` branch outright would lose the name here.
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__delete_extension_package',
+        arguments: { registry_id: 'spokeagent' },
+      })
+    ).toBe('Removing extension package Spoke Agent');
+    // The skill mirror: `preflight_removal_targets` merges `name` into `names`.
+    expect(
+      summarizeToolCall({
+        name: 'skills__removeSkillPackage',
+        arguments: { name: 'alpha', names: ['beta'] },
+      })
+    ).toBe('Removing 2 skill packages');
+    // Same `total === 1` arm, on the skill half.
+    expect(
+      summarizeToolCall({
+        name: 'skills__removeSkillPackage',
+        arguments: { names: ['beta'] },
+      })
+    ).toBe('Removing 1 skill package');
+    // Same named-singular branch, on the skill half.
+    expect(
+      summarizeToolCall({
+        name: 'skills__removeSkillPackage',
+        arguments: { name: 'alpha' },
+      })
+    ).toBe('Removing skill package Alpha');
+    expect(
+      summarizeToolCall({
+        name: 'skills__hotLoadSkill',
+        arguments: { name: 'Soul OKF ingestion' },
+      })
+    ).toBe('Loading skill Soul OKF ingestion into this chat');
+    expect(
+      summarizeToolCall({
+        name: 'skills__hotUnloadSkill',
+        arguments: { name: 'Soul OKF ingestion' },
+      })
+    ).toBe('Unloading skill Soul OKF ingestion from this chat');
+  });
+
+  it('names the actual todo task from its result rather than only its number', () => {
+    const call = { name: 'todo__todo_update', arguments: { id: '#2', status: 'completed' } };
+    const result = {
+      status: 'success',
+      value: {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              message: 'Updated item #2',
+              task: { id: '2', text: 'Verify browser access', status: 'completed' },
+            }),
+          },
+        ],
+      },
+    };
+    expect(summarizeToolCall(call, result)).toBe('Marking “Verify browser access” complete');
+    expect(
+      summarizeToolCall({ ...call, arguments: { id: '#3', status: 'completed' } }, result)
+    ).toBe('Marking task #3 complete');
+    expect(
+      summarizeToolCall(call, {
+        status: 'success',
+        value: { content: [{ type: 'text', text: 'Updated item #2' }] },
+      })
+    ).toBe('Marking task #2 complete');
+    expect(summarizeToolCall(call, { ...result, value: { ...result.value, isError: true } })).toBe(
+      'Marking task #2 complete'
+    );
+    expect(
+      summarizeToolCall({
+        name: 'todo__todo_update',
+        arguments: {
+          id: '#2',
+          text: 'Check database connectivity',
+        },
+      })
+    ).toBe('Renaming “Check database connectivity”');
+  });
+
+  it('renders the task title on a collapsed completed todo card', () => {
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        onOpenArtifact={noopOpenArtifact}
+        toolRequest={
+          {
+            type: 'toolRequest',
+            id: 'todo-title',
+            toolCall: {
+              status: 'success',
+              value: { name: 'todo__todo_update', arguments: { id: '1', status: 'in_progress' } },
+            },
+          } as ToolRequestMessageContent
+        }
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'todo-title',
+          toolResult: {
+            status: 'success',
+            value: {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    task: { id: '1', text: 'Audit extension permissions', status: 'in_progress' },
+                  }),
+                },
+              ],
+              isError: false,
+            },
+          },
+        }}
+      />
+    );
+    expect(screen.getByText(/Starting “Audit extension permissions”/)).toBeInTheDocument();
+    expect(screen.queryByText(/Updating #1/)).not.toBeInTheDocument();
+  });
+
+  it('names knowledge operations without internal KB abbreviations', () => {
+    expect(summarizeToolCall({ name: 'knowledge__kb_get_active' })).toBe(
+      'Checking the primary knowledge base'
+    );
+    expect(summarizeToolCall({ name: 'knowledge__kb_list_bases' })).toBe('Listing knowledge bases');
+    expect(
+      summarizeToolCall({ name: 'knowledge__kb_list_pages', arguments: { kb_id: 'soul' } })
+    ).toBe('Listing pages in Soul');
+    expect(
+      summarizeToolCall({
+        name: 'knowledge__kb_read_page',
+        arguments: {
+          kb_id: 'soul',
+          path: 'knowledge/index.md',
+        },
+      })
+    ).toBe('Reading index.md in Soul');
+    expect(
+      summarizeToolCall({ name: 'knowledge__kb_search', arguments: { query: 'browser checks' } })
+    ).toBe('Searching knowledge bases for browser checks');
+  });
+
+  it('describes browser-tab actions rather than listing an argument key', () => {
+    expect(
+      summarizeToolCall({ name: 'playwrightagent__browser_tabs', arguments: { action: 'list' } })
+    ).toBe('Listing browser tabs');
+    expect(
+      summarizeToolCall({ name: 'playwrightagent__browser_tabs', arguments: { action: 'new' } })
+    ).toBe('Opening a new browser tab');
+  });
+
+  it('never puts secret-like argument values in a collapsed generic label', () => {
+    expect(
+      summarizeToolCall({
+        name: 'thirdparty__authenticate',
+        arguments: { api_key: 'do-not-render', account: 'research' },
+      })
+    ).toBe('Authenticate · Account: research');
   });
 
   // #27 — module/skill tools carry their targets under argument names the
@@ -99,14 +340,14 @@ describe('summarizeToolCall', () => {
         name: 'otherext__read_module',
         arguments: { module_path: 'developer/shell' },
       })
-    ).toBe('Read Module');
+    ).toBe('Reading Module · Module Path: developer/shell');
 
     expect(
       summarizeToolCall({
         name: 'otherext__search_modules',
         arguments: { terms: ['fetch', 'http'] },
       })
-    ).toBe('Search Modules');
+    ).toBe('Searching Modules');
 
     expect(
       summarizeToolCall({
@@ -126,7 +367,7 @@ describe('summarizeToolCall', () => {
     expect(summarizeToolCall({ name: 'skills__loadSkill', arguments: {} })).toBe('Loading a skill');
   });
 
-  it('summarizes multi-step tool graphs as coordinated work', () => {
+  it('names the work in multi-step tool graphs instead of a step count', () => {
     expect(
       summarizeToolCall({
         name: 'multi_tool_use__execute_code',
@@ -138,7 +379,120 @@ describe('summarizeToolCall', () => {
           ],
         },
       })
-    ).toBe('Coordinating 3 tool steps');
+    ).toBe('Read the manifest → Patch the UI');
+  });
+
+  it('uses tool identities when graph descriptions are numbered placeholders', () => {
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__execute_code',
+        arguments: {
+          tool_graph: [
+            { tool: 'agent_drafter/build_app', description: 'Step #1' },
+            { tool: 'agent_drafter/smoke_app', description: 'Updating #2' },
+          ],
+        },
+      })
+    ).toBe('Agent Drafter Build App → Agent Drafter Smoke App');
+  });
+
+  it('does not repeat identical action descriptions in a coordinated label', () => {
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__execute_code',
+        arguments: {
+          tool_graph: [
+            { tool: 'files/read', description: 'Read queue data' },
+            { tool: 'files/read', description: 'Read queue data' },
+          ],
+        },
+      })
+    ).toBe('Read queue data');
+  });
+
+  it.each([
+    undefined,
+    '',
+    'No description was provided.',
+    'Tool call number 1',
+    'Update #2',
+    'Step 1 of 3',
+    'Update task #2',
+    'Operation no. 4 of 5',
+  ])('names a single action when its description is %s', (description) => {
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__execute_code',
+        arguments: { tool_graph: [{ tool: 'files/read', description }] },
+      })
+    ).toBe('Files Read');
+  });
+
+  it('preserves an ordinal label when it also names substantive work', () => {
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__execute_code',
+        arguments: {
+          tool_graph: [
+            { tool: 'files/read', description: 'Step 1 of 3: Read the signed manifest' },
+          ],
+        },
+      })
+    ).toBe('Step 1 of 3: Read the signed manifest');
+  });
+
+  it('ignores malformed graph nodes and falls back for an empty graph', () => {
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__execute_code',
+        arguments: { tool_graph: [null, false, 1] },
+      })
+    ).toBe('Executing code');
+  });
+
+  it('bounds coordinated labels without breaking Unicode characters', () => {
+    const label = summarizeToolCall({
+      name: 'code_execution__execute_code',
+      arguments: {
+        tool_graph: [
+          { tool: 'read', description: `Read ${'🧬'.repeat(100)}` },
+          { tool: 'write', description: `Save ${'🧬'.repeat(100)}` },
+        ],
+      },
+    });
+    expect(label.startsWith('Read ')).toBe(true);
+    expect(Array.from(label).length).toBeLessThanOrEqual(96);
+    expect(() => encodeURIComponent(label)).not.toThrow();
+  });
+
+  it('matches action words rather than misleading substrings inside nouns', () => {
+    expect(
+      summarizeToolCall({
+        name: 'workspace__create_thread',
+        arguments: { threadId: 'thread-42' },
+      })
+    ).toBe('Creating Thread · Thread ID: thread-42');
+    expect(
+      summarizeToolCall({
+        name: 'data__spreadsheet_summary',
+        arguments: { spreadsheetId: 'sheet-7' },
+      })
+    ).toBe('Spreadsheet Summary · Spreadsheet ID: sheet-7');
+    expect(
+      summarizeToolCall({
+        name: 'clinical__doctor_lookup',
+        arguments: { id: 'doctor-3' },
+      })
+    ).toBe('Doctor Lookup · ID: doctor-3');
+  });
+
+  it('distinguishes reading, opening, and fetching actions', () => {
+    expect(
+      summarizeToolCall({ name: 'codex__open_in_codex', arguments: { operationId: 'op-3' } })
+    ).toBe('Opening in Codex · Operation ID: op-3');
+    expect(
+      summarizeToolCall({ name: 'network__fetch_profile', arguments: { id: 'person-7' } })
+    ).toBe('Fetching Profile · ID: person-7');
   });
 
   it('renders the friendly summary before raw details and reveals details on demand', () => {
@@ -258,7 +612,9 @@ describe('summarizeToolCall', () => {
 
     fireEvent.click(screen.getByText('Attempt the command').closest('button') as HTMLElement);
 
-    expect(screen.getByText('1. developer/shell: Attempt the command')).toBeInTheDocument();
+    const step = screen.getByText('1. Attempt the command');
+    expect(step).toHaveAttribute('title', 'Tool: developer/shell');
+    expect(screen.queryByText(/developer\/shell:/)).not.toBeInTheDocument();
     expect(screen.getByText('Tool call failed')).toBeInTheDocument();
     expect(screen.getByText('The command could not be started')).toBeInTheDocument();
     expect(screen.queryByText('Tool details unavailable')).not.toBeInTheDocument();
@@ -295,6 +651,64 @@ describe('summarizeToolCall', () => {
 
     expect(screen.getByText(/Running partially-started-command/)).toBeInTheDocument();
     expect(screen.queryByText('Tool details unavailable')).not.toBeInTheDocument();
+  });
+
+  /// A raw resource dump is CODE and must be set in the monospace face.
+  ///
+  /// It was `font-sans` while the two other pretty-printed-JSON dumps in this
+  /// same file — `ExecutedCallArguments` and the malformed-args fallback — use
+  /// `font-mono text-code`. All three are disclosures of ONE tool call, so
+  /// opening "View output" and "View executed calls" showed the same class of
+  /// value in two typefaces on one card. A proportional face also throws away
+  /// the point of the <pre>: `JSON.stringify(…, null, 2)`'s indent only reads
+  /// as structure in a fixed-width font.
+  ///
+  /// jsdom never runs Tailwind, so asserting a computed font would pass
+  /// whatever the class says. This asserts the CLASS on the element.
+  it('dumps a raw resource result in the monospace face, not the body font', () => {
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-resource',
+      toolCall: {
+        status: 'success',
+        value: { name: 'developer__exec_command', arguments: { cmd: 'make-report' } },
+      },
+    };
+
+    const { container } = render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        toolResponse={
+          {
+            type: 'toolResponse',
+            id: 'tool-resource',
+            toolResult: {
+              status: 'success',
+              value: {
+                content: [
+                  {
+                    type: 'resource',
+                    resource: { uri: 'file:///tmp/report.csv', mimeType: 'text/csv' },
+                  },
+                ],
+              },
+            },
+          } as never
+        }
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+
+    fireEvent.click(screen.getByText(/Running make-report/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText('View output').closest('button') as HTMLElement);
+
+    const dump = [...container.querySelectorAll('pre')].find((node) =>
+      node.textContent?.includes('file:///tmp/report.csv')
+    );
+    expect(dump).toBeDefined();
+    expect(dump!.className).toMatch(/font-mono/);
+    expect(dump!.className).not.toMatch(/font-sans/);
   });
 
   it('shows MCP is_error text as an inline tool failure', () => {
@@ -532,25 +946,30 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     );
 
     // Expand the step row, then the executed-calls section.
-    fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
+    fireEvent.click(
+      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+    );
     fireEvent.click(screen.getByText('View executed calls (2)').closest('button') as HTMLElement);
 
-    expect(screen.getByText(/1\. developer__text_editor/)).toBeInTheDocument();
-    expect(screen.getByText(/2\. developer__shell/)).toBeInTheDocument();
-    expect(screen.getByText('2. developer__shell').parentElement?.textContent).toContain(
-      '· failed'
-    );
+    expect(screen.getByText('Reading manifest.json')).toBeInTheDocument();
+    expect(screen.getByText('Running lss /tmp').parentElement?.textContent).toContain('· failed');
+    expect(screen.queryByText(/\d+\. developer__/)).not.toBeInTheDocument();
 
     // Expanding the failing call reveals its exact args and its real error.
-    fireEvent.click(screen.getByText(/2\. developer__shell/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText('Running lss /tmp').closest('button') as HTMLElement);
     expect(screen.getByText('lss /tmp')).toBeInTheDocument();
-    expect(screen.getByText('developer__shell failed')).toBeInTheDocument();
+    expect(screen.getByText('Running lss /tmp failed')).toBeInTheDocument();
     expect(
       screen.getByText('Tool error from developer__shell: lss: command not found')
     ).toBeInTheDocument();
 
-    // The declared plan stays visible alongside — never force-matched.
-    expect(screen.getByText(/1\. developer\/text_editor: Read the manifest/)).toBeInTheDocument();
+    // The declared plan stays visible alongside — never force-matched — but
+    // uses the semantic operation as its visible label.
+    expect(screen.getByText('1. Read the manifest')).toHaveAttribute(
+      'title',
+      'Tool: developer/text_editor'
+    );
+    expect(screen.queryByText(/developer\/text_editor:/)).not.toBeInTheDocument();
   });
 
   it('renders the generated code through the shared syntax highlighter', () => {
@@ -563,7 +982,9 @@ describe('ToolCallWithResponse executed-call transparency', () => {
       />
     );
 
-    fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
+    fireEvent.click(
+      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+    );
     const codeToggle = screen.getByText('View generated code').closest('button') as HTMLElement;
     fireEvent.click(codeToggle);
 
@@ -610,12 +1031,16 @@ describe('ToolCallWithResponse executed-call transparency', () => {
       />
     );
 
-    fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
+    fireEvent.click(
+      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+    );
     fireEvent.click(screen.getByText('View executed calls (1)').closest('button') as HTMLElement);
-    fireEvent.click(screen.getByText(/1\. developer__shell/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(/Running/).closest('button') as HTMLElement);
 
     // The literal markdown source is visible as text…
-    expect(screen.getByText(new RegExp('\\[click me\\]\\(https://evil'))).toBeInTheDocument();
+    expect(screen.getAllByText(new RegExp('\\[click me\\]\\(https://evil')).length).toBeGreaterThan(
+      0
+    );
     // …and was NOT interpreted: no link, no image request.
     expect(container.querySelector('a')).toBeNull();
     expect(container.querySelector('img')).toBeNull();
@@ -649,10 +1074,103 @@ describe('ToolCallWithResponse executed-call transparency', () => {
       />
     );
 
-    fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
-    fireEvent.click(screen.getByText('View executed calls (1)').closest('button') as HTMLElement);
+    fireEvent.click(
+      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+    );
+    fireEvent.click(
+      screen.getByText('View recorded calls (1 of 4 executed)').closest('button') as HTMLElement
+    );
 
-    expect(screen.getByText(/and 3 more calls not recorded/)).toBeInTheDocument();
+    expect(
+      screen.getByText('3 executed calls were not recorded, so their details are unavailable.')
+    ).toBeInTheDocument();
+  });
+
+  it('shows dropped-call disclosure when no recorded rows are displayable', () => {
+    const droppedOnlyResponse = {
+      type: 'toolResponse' as const,
+      id: 'tool-exec-1',
+      toolResult: {
+        status: 'success',
+        value: {
+          isError: false,
+          content: [{ type: 'text', text: 'Result: done' }],
+          _meta: {
+            'biorouter/tool-calls': [null, { tool: '' }],
+            'biorouter/tool-calls-dropped': 2,
+          },
+        },
+      },
+    } as never;
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={coordinatedRequest}
+        toolResponse={droppedOnlyResponse}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+
+    fireEvent.click(
+      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+    );
+    fireEvent.click(
+      screen.getByText('View recorded calls (0 of 2 executed)').closest('button') as HTMLElement
+    );
+    expect(
+      screen.getByText('2 executed calls were not recorded, so their details are unavailable.')
+    ).toBeInTheDocument();
+  });
+
+  it('replaces numbered placeholders and opaque identifiers in the expanded graph', () => {
+    const placeholderRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-placeholder-graph',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'code_execution__execute_code',
+          arguments: {
+            tool_graph: [
+              { tool: 'agent_drafter/build_app', description: 'Step 1 of 3', depends_on: [] },
+              {
+                tool: 'agent_drafter/configure_app',
+                description: 'Update task #2',
+                depends_on: [0],
+              },
+              {
+                tool: 'agent_drafter/smoke_app',
+                description: 'Operation no. 4 of 5',
+                depends_on: [1],
+              },
+            ],
+          },
+        },
+      },
+    };
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={placeholderRequest}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+
+    fireEvent.click(
+      screen
+        .getByText('Agent Drafter Build App → Agent Drafter Smoke App')
+        .closest('button') as HTMLElement
+    );
+    expect(screen.getByText('1. Agent Drafter Build App')).toHaveAttribute(
+      'title',
+      'Tool: agent_drafter/build_app'
+    );
+    expect(screen.getByText('2. Agent Drafter Configure App (uses 1)')).toBeInTheDocument();
+    expect(screen.getByText('3. Agent Drafter Smoke App (uses 2)')).toBeInTheDocument();
+    expect(screen.queryByText(/(?:Step|Update task|Operation no\.)/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/agent_drafter\//)).not.toBeInTheDocument();
   });
 
   // Codex review of #28: content marked assistant-only was deliberately kept
@@ -703,6 +1221,140 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     expect(
       screen.getByText('The tool reported that it could not complete the request.')
     ).toBeInTheDocument();
+  });
+});
+
+describe('ToolCallWithResponse nested todo metadata', () => {
+  const planTitle = 'Planned title is not execution evidence';
+  const request: ToolRequestMessageContent = {
+    type: 'toolRequest',
+    id: 'nested-todo',
+    toolCall: {
+      status: 'success',
+      value: {
+        name: 'code_execution__execute_code',
+        arguments: {
+          tool_graph: [{ tool: 'todo/todo_update', description: planTitle, depends_on: [] }],
+          code: 'record_result("constant final result");',
+        },
+      },
+    },
+  };
+
+  const renderNestedCalls = (calls: Record<string, unknown>[], outerFailed = false) => {
+    const rendered = render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={request}
+        toolResponse={
+          {
+            type: 'toolResponse',
+            id: 'nested-todo',
+            toolResult: {
+              status: 'success',
+              value: {
+                isError: outerFailed,
+                content: [
+                  { type: 'text', text: outerFailed ? 'Later call failed' : 'Result: done' },
+                ],
+                _meta: { 'biorouter/tool-calls': calls },
+              },
+            },
+          } as never
+        }
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    fireEvent.click(screen.getByText(new RegExp(planTitle)).closest('button') as HTMLElement);
+    fireEvent.click(
+      screen.getByText(`View executed calls (${calls.length})`).closest('button') as HTMLElement
+    );
+    return rendered;
+  };
+
+  const record = {
+    tool: 'todo__todo_update',
+    args: JSON.stringify({ id: '#1', status: 'completed' }),
+    status: 'ok',
+    result_bytes: 100,
+    todo_task: { id: '1', title: 'Verify actual nested task 🧬' },
+  };
+
+  it.each([
+    { status: 'in_progress', expected: 'Starting “Verify actual nested task 🧬”' },
+    { status: 'completed', expected: 'Marking “Verify actual nested task 🧬” complete' },
+    { status: 'pending', expected: 'Returning “Verify actual nested task 🧬” to pending' },
+  ])('names a successful $status row from the matching task metadata', ({ status, expected }) => {
+    renderNestedCalls([{ ...record, args: JSON.stringify({ id: '#1', status }) }]);
+    expect(screen.getByText(expected)).toBeInTheDocument();
+    expect(
+      screen.queryByText(new RegExp(`(?:Starting|Marking|Returning) “${planTitle}”`))
+    ).toBeNull();
+  });
+
+  it('keeps an earlier successful task title when a later call fails the outer step', () => {
+    renderNestedCalls([record], true);
+    expect(screen.getByText('Marking “Verify actual nested task 🧬” complete')).toBeInTheDocument();
+  });
+
+  it.each([
+    { label: 'legacy missing metadata', patch: { todo_task: undefined } },
+    { label: 'mismatched task id', patch: { todo_task: { id: '2', title: 'UNVERIFIED_TITLE' } } },
+    { label: 'numeric task id', patch: { todo_task: { id: 1, title: 'UNVERIFIED_TITLE' } } },
+    {
+      label: 'nonstring title',
+      patch: { todo_task: { id: '1', title: { text: 'UNVERIFIED_TITLE' } } },
+    },
+    { label: 'empty title', patch: { todo_task: { id: '1', title: '   ' } } },
+    { label: 'oversized title', patch: { todo_task: { id: '1', title: 'x'.repeat(513) } } },
+    { label: 'failed record', patch: { status: 'error', error: 'Update rejected' } },
+    { label: 'unknown record status', patch: { status: 'pending' } },
+    { label: 'missing record status', patch: { status: undefined } },
+    {
+      label: 'numeric request id',
+      patch: { args: JSON.stringify({ id: 1, status: 'completed' }) },
+    },
+  ])('falls back to the task number for $label', ({ patch }) => {
+    renderNestedCalls([{ ...record, ...patch }]);
+    expect(screen.getByText('Marking task #1 complete')).toBeInTheDocument();
+    expect(screen.queryByText(/Marking “/)).toBeNull();
+    expect(screen.queryByText(/UNVERIFIED_TITLE/)).toBeNull();
+  });
+
+  it('does not infer a title from the declared graph when recorded arguments are truncated', () => {
+    renderNestedCalls([{ ...record, args: '{"id":"1"' }]);
+    expect(screen.getByText('Updating a task')).toBeInTheDocument();
+    expect(screen.queryByText('Updating “Verify actual nested task 🧬”')).toBeNull();
+    expect(screen.queryByText(`Updating “${planTitle}”`)).toBeNull();
+  });
+
+  it('does not apply Todo metadata to a different tool', () => {
+    renderNestedCalls([
+      { ...record, tool: 'todo__todo_add', args: JSON.stringify({ items: ['One'] }) },
+    ]);
+    expect(screen.getByText('Adding 1 task')).toBeInTheDocument();
+    expect(screen.queryByText(/Verify actual nested task/)).toBeNull();
+  });
+
+  it('renders a task title as text, never links, images, or HTML', () => {
+    const title = '[link](https://evil.invalid) ![pixel](https://evil.invalid/x) <img src=x>';
+    const { container } = renderNestedCalls([{ ...record, todo_task: { id: '1', title } }]);
+    expect(screen.getByText(`Marking “${title}” complete`)).toBeInTheDocument();
+    expect(container.querySelector('a')).toBeNull();
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('shortens Unicode titles without creating lone surrogate code units', () => {
+    renderNestedCalls([{ ...record, todo_task: { id: '1', title: '🧬'.repeat(110) } }]);
+    const label = screen.getByText(/^Marking “/).textContent ?? '';
+    expect(Array.from(label).length).toBeLessThanOrEqual(115);
+    expect(label).toContain('…');
+    expect(
+      Array.from(label).some((character) => {
+        const code = character.charCodeAt(0);
+        return character.length === 1 && code >= 0xd800 && code <= 0xdfff;
+      })
+    ).toBe(false);
   });
 });
 

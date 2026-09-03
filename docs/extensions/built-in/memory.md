@@ -1,10 +1,10 @@
-# Memory extension
+# Memory capability
 
-> **What this is.** User guide to the built-in Memory extension: enabling it, the trigger words that store, recall and forget memories, where memories live on disk, and a worked example teaching BioRouter a lab's analysis standards.
+> **What this is.** User guide to the built-in Memory capability: enabling it, the trigger words that store, recall and forget memories, where memories live on disk, and a worked example teaching BioRouter a lab's analysis standards.
 > **Status:** Current. `crates/biorouter-mcp/src/memory` ships in the product and the local/global model described here still matches. This page predates the Knowledge feature; see [Knowledge and memory](#knowledge-and-memory) for how the two relate.
 > **Audience:** end users.
 
-The Memory extension lets you teach BioRouter personalized information — commands, code snippets, preferences, configurations, lab conventions — that it can recall and apply later. Knowledge can be project-specific (**local**) or user-wide (**global**), so BioRouter remembers what matters to you across sessions.
+The Memory capability lets you teach BioRouter personalized information — commands, code snippets, preferences, configurations, lab conventions — that it can recall and apply later. Knowledge can be project-specific (**local**) or user-wide (**global**), so BioRouter remembers what matters to you across sessions.
 
 ## Configuration
 
@@ -22,14 +22,14 @@ The Memory extension lets you teach BioRouter personalized information — comma
    ◇  What would you like to configure?
    │  Toggle Extensions
    │
-   ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
+   ◆  Enable capabilities and extensions: (use "space" to toggle and "enter" to submit)
    │  ● memory
    └  Extension settings updated successfully
    ```
 
 ## Why use Memory
 
-With the Memory extension you are not just storing static notes, you are teaching BioRouter how to assist you better. Imagine telling BioRouter:
+With the Memory capability you are not just storing static notes, you are teaching BioRouter how to assist you better. Imagine telling BioRouter:
 
 > _learn everything about MCP servers and save it to memory._
 
@@ -123,7 +123,7 @@ BioRouter recognizes certain words as signals to store, retrieve or remove memor
 
 ## Knowledge and memory
 
-The Memory extension is best for short, durable facts and preferences that should ride along in every prompt. For larger bodies of structured knowledge — ingested documents, cross-referenced pages, a browsable graph — BioRouter's Knowledge feature is the better fit, and it stores its content separately under `~/.config/biorouter/knowledge/`. See [knowledge ingestion formats](../../knowledge-base/ingestion-format-roadmap.md) for what Knowledge can absorb.
+The Memory capability is best for short, durable facts and preferences that should ride along in every prompt. For larger bodies of structured knowledge — ingested documents, cross-referenced pages, a browsable graph — BioRouter's Knowledge feature is the better fit, and it stores its content separately under `~/.config/biorouter/knowledge/`. See [knowledge ingestion formats](../../knowledge-base/ingestion-format-roadmap.md) for what Knowledge can absorb.
 
 ## Example usage
 
@@ -215,7 +215,7 @@ Would you like me to run the full comparison and generate the Table 1 summary?
 
 ## Related documentation
 
-- [Chat Recall extension](chat-recall.md) — the complementary way to recover past context, by searching old sessions rather than storing facts.
+- [Chat Recall capability](chat-recall.md) — the complementary way to recover past context, by searching old sessions rather than storing facts.
 - [Knowledge ingestion formats](../../knowledge-base/ingestion-format-roadmap.md) — the Knowledge feature, which covers larger bodies of structured knowledge.
 - [Extensions and skills guide](../extensions-and-skills-guide.md) — how to enable, disable and configure extensions generally.
 - [Context engineering](../../agent-loop/context-engineering.md) — how memories, skills and other injected context share the window.

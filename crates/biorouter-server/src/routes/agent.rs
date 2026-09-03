@@ -27,7 +27,9 @@ use biorouter::providers::create;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, Session, SessionManager, WorkingDirUpdate};
-use biorouter::workflow::{Workflow, WorkflowKnowledgeBases};
+use biorouter::workflow::Workflow;
+#[cfg(test)]
+use biorouter::workflow::WorkflowKnowledgeBases;
 use biorouter::workflow_deeplink;
 use biorouter::{
     agents::{
@@ -36,7 +38,7 @@ use biorouter::{
     },
     config::permission::PermissionLevel,
 };
-use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
+use biorouter_mcp::knowledge::service::KnowledgeService;
 // Issue #56 DR-16. Named through the LIB path, not `crate::auth`: `src/routes/`
 // is compiled into the `biorouterd` binary as well as the lib (see
 // `routes::secret_matches`), and the digest is a process-global that must have
@@ -293,6 +295,16 @@ pub struct GetToolsQuery {
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
+pub struct CallableToolCountQuery {
+    session_id: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct CallableToolCountResponse {
+    count: usize,
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct StartAgentRequest {
     working_dir: String,
     #[serde(default)]
@@ -407,18 +419,11 @@ pub struct StopAgentRequest {
 /// One rule still earns its keep: a `default` that was not listed in `visible`
 /// is unioned into the set, because the invariant requires the primary to be a
 /// member and the author plainly meant it.
+#[cfg(test)]
 pub(crate) fn plan_workflow_knowledge_selection(
     selection: &WorkflowKnowledgeBases,
 ) -> (Vec<String>, Option<String>) {
-    let mut visible: Vec<String> = selection.visible.clone();
-    if let Some(default) = selection.default.as_deref() {
-        if !visible.iter().any(|id| id == default) {
-            visible.push(default.to_string());
-        }
-    }
-    visible.sort();
-    visible.dedup();
-    (visible, selection.default.clone())
+    biorouter::workflow::runtime::plan_knowledge_selection(selection)
 }
 
 /// Install a workflow's declared selection into the session it just created.
@@ -435,26 +440,15 @@ fn apply_workflow_knowledge_selection(
     session_id: &str,
     workflow: &Workflow,
 ) -> Result<(), ErrorResponse> {
-    let Some(selection) = workflow.knowledge_bases.as_ref() else {
-        return Ok(());
-    };
-
-    let (visible, primary) = plan_workflow_knowledge_selection(selection);
-    let primary = match primary.as_deref() {
-        Some(id) => PrimaryUpdate::Set(id),
-        None => PrimaryUpdate::Clear,
-    };
-
-    svc.set_visible_kbs(Some(session_id), &visible, primary)
-        .map_err(|err| {
+    biorouter::workflow::runtime::apply_knowledge_selection(svc, session_id, workflow).map_err(
+        |err| {
             error!("Failed to apply workflow knowledge bases: {}", err);
             ErrorResponse {
                 message: format!("Failed to apply workflow knowledge bases: {}", err),
                 status: StatusCode::BAD_REQUEST,
             }
-        })?;
-
-    Ok(())
+        },
+    )
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -698,6 +692,21 @@ async fn start_agent(
         return Err(error);
     }
 
+    let prepared_workflow_prompt = if let Some(workflow) = original_workflow.as_ref() {
+        match biorouter::workflow::runtime::prepare_prompt(manager, &session.id, workflow).await {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                discard_failed_new_session(&state, &session.id).await;
+                return Err(ErrorResponse {
+                    message: error.to_string(),
+                    status: StatusCode::BAD_REQUEST,
+                });
+            }
+        }
+    } else {
+        None
+    };
+
     if let Some(workflow) = original_workflow.as_ref() {
         apply_workflow_knowledge_selection(&state.knowledge_service, &session.id, workflow)?;
     }
@@ -705,8 +714,11 @@ async fn start_agent(
     let workflow_extensions = original_workflow
         .as_ref()
         .and_then(|r| r.extensions.as_deref());
-    let extensions_to_use =
+    let mut extensions_to_use =
         resolve_extensions_for_new_session(workflow_extensions, extension_overrides);
+    if let Some(workflow) = original_workflow.as_ref() {
+        biorouter::workflow::runtime::ensure_required_extensions(workflow, &mut extensions_to_use);
+    }
     let mut extension_data = session.extension_data.clone();
     let extensions_state = EnabledExtensionsState::new(extensions_to_use);
     if let Err(e) = extensions_state.to_extension_data(&mut extension_data) {
@@ -726,7 +738,7 @@ async fn start_agent(
             })?;
     }
 
-    if let Some(workflow) = original_workflow {
+    if let Some(workflow) = original_workflow.clone() {
         manager
             .update(&session.id)
             .workflow(Some(workflow))
@@ -757,6 +769,7 @@ async fn start_agent(
     let session_for_spawn = session.clone();
     let state_for_spawn = state.clone();
     let session_id_for_task = session.id.clone();
+    let workflow_for_spawn = original_workflow;
     let task = tokio::spawn(async move {
         match state_for_spawn
             .get_agent(session_for_spawn.id.clone())
@@ -764,6 +777,23 @@ async fn start_agent(
         {
             Ok(agent) => {
                 let results = agent.load_extensions_from_session(&session_for_spawn).await;
+                let context: HashMap<&str, Value> = HashMap::new();
+                let desktop_prompt = render_global_file("desktop_prompt.md", &context)
+                    .expect("Prompt should render");
+                if let Some(workflow) = workflow_for_spawn.as_ref() {
+                    biorouter::workflow::runtime::apply_prepared_to_agent(
+                        agent.as_ref(),
+                        workflow,
+                        true,
+                        prepared_workflow_prompt.clone(),
+                    )
+                    .await;
+                    if prepared_workflow_prompt.is_none() {
+                        agent.set_session_context_prompt(Some(desktop_prompt)).await;
+                    }
+                } else {
+                    agent.set_session_context_prompt(Some(desktop_prompt)).await;
+                }
                 tracing::debug!(
                     "Background extension loading completed for session {}",
                     session_for_spawn.id
@@ -1048,7 +1078,14 @@ async fn update_from_session(
         .await
         {
             Ok(Some(workflow)) => {
-                if let Some(prompt) = apply_workflow_to_agent(&agent, &workflow, true).await {
+                if let Some(prompt) =
+                    apply_workflow_to_agent(&agent, &payload.session_id, &workflow, true)
+                        .await
+                        .map_err(|e| ErrorResponse {
+                            message: e.to_string(),
+                            status: StatusCode::BAD_REQUEST,
+                        })?
+                {
                     update_prompt = prompt;
                 }
             }
@@ -1063,7 +1100,7 @@ async fn update_from_session(
             }
         }
     }
-    agent.extend_system_prompt(update_prompt).await;
+    agent.set_session_context_prompt(Some(update_prompt)).await;
 
     Ok(StatusCode::OK)
 }
@@ -1201,6 +1238,45 @@ async fn get_tools(
     tools.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(Json(tools))
+}
+
+#[utoipa::path(
+    get,
+    path = "/agent/callable_tool_count",
+    params(
+        ("session_id" = String, Query, description = "Active session whose model-visible tools should be counted")
+    ),
+    responses(
+        (status = 200, description = "Model-visible callable tool count", body = CallableToolCountResponse),
+        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 424, description = "Agent not initialized")
+    )
+)]
+async fn get_callable_tool_count(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<CallableToolCountQuery>,
+) -> Result<Json<CallableToolCountResponse>, StatusCode> {
+    let session_id = query.session_id;
+    let child_initializing = biorouter::agents::subagent_handle::is_child_initializing(&session_id);
+    let agent = if child_initializing {
+        state
+            .peek_agent(&session_id)
+            .await
+            .ok_or(StatusCode::FAILED_DEPENDENCY)?
+    } else {
+        state.get_agent_for_route(session_id.clone()).await?
+    };
+
+    // This endpoint drives a model-context warning. Count the final model-facing
+    // surface, after Gate E, frontend additions, Code Execution narrowing,
+    // and coding-agent bridge replacement. `/agent/tools` deliberately remains
+    // the unfiltered permission-editor surface so a human can administer private
+    // tools a public model cannot see.
+    let count = agent
+        .callable_tool_count(&session_id)
+        .await
+        .map_err(|_| StatusCode::FAILED_DEPENDENCY)?;
+    Ok(Json(CallableToolCountResponse { count }))
 }
 
 #[utoipa::path(
@@ -1518,6 +1594,10 @@ async fn agent_add_extension(
             error!("Failed to persist extension state: {}", e);
             ErrorResponse::internal(format!("Failed to persist extension state: {}", e))
         })?;
+    // After the write, never before. The clicking window self-repairs from its
+    // own response, but a second window, the History list and `useToolCount` in
+    // another pane had no signal at all and stayed stale.
+    biorouter::catalog::CatalogEvents::global().publish_session_refresh(&request.session_id);
 
     // Issue #56 DR-26 at the USER's enable surface — the second half of the
     // ruling's "warn the user, naming both institutions, before proceeding", and
@@ -1898,6 +1978,8 @@ async fn agent_remove_extension(
                 status: StatusCode::INTERNAL_SERVER_ERROR,
             }
         })?;
+    // After the write, never before — see `agent_add_extension`.
+    biorouter::catalog::CatalogEvents::global().publish_session_refresh(&request.session_id);
 
     Ok(StatusCode::OK)
 }
@@ -1992,7 +2074,13 @@ async fn restart_agent_internal(
         .await
         {
             Ok(Some(workflow)) => {
-                if let Some(prompt) = apply_workflow_to_agent(&agent, &workflow, true).await {
+                if let Some(prompt) = apply_workflow_to_agent(&agent, session_id, &workflow, true)
+                    .await
+                    .map_err(|e| ErrorResponse {
+                        message: e.to_string(),
+                        status: StatusCode::BAD_REQUEST,
+                    })?
+                {
                     update_prompt = prompt;
                 }
             }
@@ -2007,7 +2095,7 @@ async fn restart_agent_internal(
             }
         }
     }
-    agent.extend_system_prompt(update_prompt).await;
+    agent.set_session_context_prompt(Some(update_prompt)).await;
 
     Ok(extension_results)
 }
@@ -2367,6 +2455,9 @@ async fn call_tool(
         .get_agent_for_route(payload.session_id.clone())
         .await?;
 
+    // Captured before `payload.name` is moved: the classifier below needs it,
+    // and this route is the one catalog-mutating door that never persisted.
+    let tool_name = payload.name.clone();
     let tool_call = CallToolRequestParams {
         task: None,
         name: payload.name.into(),
@@ -2380,16 +2471,44 @@ async fn call_tool(
     // would hand an HTTP client whatever reach the user's chat happens to have.
     // Public + enforced is the most restrictive pair, and it is a constant, so
     // there is nothing here to race with `update_provider`.
-    let tool_result = match agent
-        .extension_manager
-        .dispatch_tool_call(
-            &payload.session_id,
-            tool_call,
-            biorouter::privacy::CallCapability::public_enforced(),
-            CancellationToken::default(),
-        )
-        .await
-    {
+    // F-15: and there is nobody here to ask, either. This entry has no admitted
+    // turn and no stream to draw a card on, so a decision raised beneath it
+    // would be inserted into a queue only the agent loop drains — waiting out
+    // its whole time-to-live unanswerable, and then surfacing in the NEXT chat
+    // turn as a question about something that happened minutes ago. Refusing
+    // to park is the same reasoning as the capability above, one layer down.
+    //
+    // ⚠ The scope has to cover RUNNING the tool, not just dispatching it, and
+    // that is the same one-of-two-steps split the #152 note below describes.
+    // `dispatch_tool_call` hands back a `ToolCallResult` whose `.result` is a
+    // future; the tool body — and therefore every `park()` in it — executes when
+    // that future is awaited. Scoping only the dispatch left the run outside,
+    // where `no_human_surface()` is false, so the refusal above never fired.
+    //
+    // Measured cost: `skills__installMarketplaceSkill` and
+    // `skills__importSkillPackage` — both `requires_user_proof: true` — parked a
+    // card nobody could answer and never returned. Not a slow download: 180 s
+    // with no reply, while their `dryRun` siblings answered in 0.5 s and 9.8 s,
+    // and the daemon log showed `calling client.call_tool` with no completion.
+    let dispatched = biorouter::user_surface::without_human_surface(async {
+        let dispatch = agent
+            .extension_manager
+            .dispatch_tool_call(
+                &payload.session_id,
+                tool_call,
+                biorouter::privacy::CallCapability::public_enforced(),
+                CancellationToken::default(),
+            )
+            .await;
+        match dispatch {
+            // Awaited HERE, inside the scope, so the tool body sees the flag.
+            Ok(tool_result) => Ok(tool_result.result.await),
+            Err(error) => Err(error),
+        }
+    })
+    .await;
+
+    let awaited = match dispatched {
         Ok(result) => result,
         // Issue #56 Gate C: this used to be
         // `.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)`, which threw the
@@ -2400,10 +2519,71 @@ async fn call_tool(
         Err(error) => return dispatch_failure_response(&error).map(Json),
     };
 
-    let result = tool_result
-        .result
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // #152: dispatching a tool and RUNNING it are two separate fallible steps —
+    // `dispatch_tool_call` hands back a `ToolCallResult` whose `.result` is a
+    // future. The `Err` arm above repairs the first; this repairs the second,
+    // which is where the overwhelming majority of tool errors are raised.
+    //
+    // ⚠ This line was `.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)` — the
+    // exact thing the comment three lines above says was wrong, left in place on
+    // the sibling site when that one was fixed. Measured cost: 45 of 419 driven
+    // tool calls answered `500` with a ZERO-LENGTH body while `rmcp` logged the
+    // real message at WARN ("no such background job: …", "kb '…' already
+    // exists", "`render_figure` arguments are invalid for kind \"volcano\"").
+    // A 500 is retryable by convention and a tool error is not, so the caller
+    // both lost the remedy and was invited to retry a call that cannot succeed.
+    //
+    // `extension_manager.rs:2837-2840` already maps `ServiceError::McpError`
+    // back to its `ErrorData`, so the awaited error downcasts correctly here —
+    // the classifier was simply never asked.
+    let result = match awaited {
+        Ok(result) => result,
+        // No downcast needed, and that is the point: this future's error type is
+        // ALREADY `ErrorData`, so the message was never ambiguous or wrapped —
+        // it was simply discarded. `dispatch_failure_response` exists for the
+        // sibling site above, whose error arrives as an `anyhow::Error` and has
+        // to be classified; here the classification is in the type.
+        Err(error) => {
+            return Ok(Json(CallToolResponse {
+                content: vec![Content::text(error.message.to_string())],
+                structured_content: None,
+                is_error: true,
+                _meta: None,
+            }))
+        }
+    };
+
+    // A `manage_extensions` through this route mutated the LIVE manager and
+    // left `enabled_extensions.v0` untouched — the exact divergence the agent
+    // loop's post-batch block exists to close, on a path that never reaches it.
+    // Persist first, then announce: a consumer woken before the row lands would
+    // refetch the old state and render it authoritatively.
+    if result.is_error != Some(true) {
+        if let Some(mutation) =
+            biorouter::agents::session_extensions::tool_catalog_mutation(&tool_name)
+        {
+            if mutation.persist_extension_state {
+                if let Err(error) = agent.persist_extension_state(&payload.session_id).await {
+                    // Reported as a tool error rather than a status code, for
+                    // the same reason as every other refusal on this route: the
+                    // caller is a tool caller and the remedy is in the text.
+                    // A subagent session lands here deliberately — its grants
+                    // are immutable, and the tool must not appear to succeed.
+                    return Ok(Json(CallToolResponse {
+                        content: vec![Content::text(format!(
+                            "{tool_name} changed the live tool catalog, but this session could \
+                             not record it, so the change will not survive a reload: {error}"
+                        ))],
+                        structured_content: None,
+                        is_error: true,
+                        _meta: None,
+                    }));
+                }
+            }
+            biorouter::catalog::CatalogEvents::global()
+                .publish_session_refresh(&payload.session_id);
+        }
+    }
 
     Ok(Json(CallToolResponse {
         content: result.content,
@@ -2501,6 +2681,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/agent/restart", post(restart_agent))
         .route("/agent/update_working_dir", post(update_working_dir))
         .route("/agent/tools", get(get_tools))
+        .route("/agent/callable_tool_count", get(get_callable_tool_count))
         .route("/agent/read_resource", post(read_resource))
         .route("/agent/call_tool", post(call_tool))
         .route("/agent/list_apps", get(list_apps))
@@ -4623,6 +4804,52 @@ mod gate_c_call_tool_tests {
     use biorouter::privacy::refusal::privacy_refusal;
     use biorouter::privacy::ProviderTier;
     use rmcp::model::{ErrorCode, ErrorData};
+
+    /// #152. The tests below prove the CLASSIFIER is right; none of them proved
+    /// it was REACHED on the path that carries most tool errors, and for a long
+    /// time it was not.
+    ///
+    /// `dispatch_tool_call` hands back a `ToolCallResult` whose `.result` is a
+    /// future: dispatching a tool and RUNNING it are two separate fallible
+    /// steps. The dispatch arm was repaired; the await three lines below it kept
+    /// `.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)`, so every error raised
+    /// by the tool ITSELF — the common case — was answered `500` with a
+    /// zero-length body while `rmcp` logged the real message at WARN. Measured
+    /// on a 419-case drive: 45 of them.
+    ///
+    /// This asserts the shape of the repaired arm at the source, because the
+    /// alternative is an `AppState` that opens the real user session database.
+    /// A line-wise pin is weak evidence in general; it is the right strength
+    /// here, because the defect was not a wrong CLASSIFICATION but a call site
+    /// that never classified at all.
+    #[test]
+    fn the_tool_results_own_error_is_answered_as_a_tool_error_not_a_bare_500() {
+        let source = include_str!("agent.rs");
+        let awaited = source
+            // ⚠ Anchor updated when the no-human-surface scope was widened to
+            // cover RUNNING the tool: the await moved inside that scope and the
+            // binding it produces is now `awaited`. The classification this
+            // test pins is unchanged — re-read #152 before touching it again.
+            .split("let result = match awaited {")
+            .nth(1)
+            .expect(
+                "the tool-result await must be a `match` that inspects its error; if this \
+                 shape changed, re-read #152 before updating the anchor",
+            );
+        // `split` rather than a byte-index slice: `clippy::string_slice` is denied
+        // repo-wide, and indexing a string can land inside a UTF-8 character.
+        let arm = awaited.split("};").next().unwrap_or(awaited);
+        assert!(
+            arm.contains("is_error: true") && arm.contains("error.message"),
+            "the awaited tool error must reach the caller as its own message. #152: this arm \
+             was `.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)`, which discarded every \
+             message a tool produced. Arm was:\n{arm}"
+        );
+        assert!(
+            !arm.contains("INTERNAL_SERVER_ERROR"),
+            "a tool that answered is not a server fault (#152). Arm was:\n{arm}"
+        );
+    }
 
     fn text_of(response: &super::CallToolResponse) -> String {
         response

@@ -10,8 +10,8 @@ Context engineering is about building background knowledge, preferences, and wor
 
 | Mechanism | Guide | What it gives you |
 |---|---|---|
-| Memory | [Memory extension](../extensions/built-in/memory.md) | Teach biorouter key information — commands, code snippets, preferences, configurations — that it recalls and applies later, scoped either per-project (local) or globally. |
-| Skills | [Skills extension](../extensions/built-in/skills.md) | Load reusable sets of instructions that teach biorouter how to perform a specific task, discovered automatically at startup from `.agents/skills/` and `~/.config/agents/skills/`. |
+| Memory | [Memory capability](../extensions/built-in/memory.md) | Teach biorouter key information — commands, code snippets, preferences, configurations — that it recalls and applies later, scoped either per-project (local) or globally. |
+| Skills | [Skills capability](../extensions/built-in/skills.md) | Load reusable sets of instructions that teach biorouter how to perform a specific task, discovered automatically at startup from `.agents/skills/` and `~/.config/agents/skills/`. |
 | Extensions and skills together | [Extensions, skills, and MCP agents](../extensions/extensions-and-skills-guide.md) | How the three extensibility mechanisms — MCP-server extensions, skills, and built-in platform extensions — relate to one another. |
 | Workflows | [Workflows](../workflows/README.md) | Package instructions, prompts, extension requirements, parameters, and model settings into one shareable file that launches a reproducible, pre-configured session. |
 | Configuration files | [Configuration file reference](../configuration/config-file-reference.md) | Persist default behaviours, model choices, tool permissions, and extensions in `config.yaml`. |

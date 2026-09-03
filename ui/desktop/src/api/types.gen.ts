@@ -273,6 +273,14 @@ export type CallToolResponse = {
     structured_content?: unknown;
 };
 
+export type CallableToolCountQuery = {
+    session_id: string;
+};
+
+export type CallableToolCountResponse = {
+    count: number;
+};
+
 export type CancelActiveWorkResponse = {
     message: string;
 };
@@ -1615,7 +1623,8 @@ export type LintReport = {
     /**
      * Link targets written in source pages that name no page under
      * `knowledge/` — again over all four grammars, so a typed base's `edges:`
-     * citations are read.
+     * citations are read. Existing, confined raw evidence files are not missing
+     * concept pages, even though the graph represents them as external nodes.
      */
     missing_concept_pages: Array<string>;
     /**
@@ -3314,13 +3323,12 @@ export type SetActiveBody = {
      */
     hidden_kbs?: Array<string> | null;
     /**
-     * Drop this session's own primary override so it follows the machine-wide
-     * default again — the way back from `clear_primary`, and the only way out
-     * of the explicit "no primary" that deleting a session's pinned base
-     * leaves behind. Mutually exclusive with `primary_kb` and `clear_primary`.
-     *
-     * At machine scope there is nothing above to inherit, so this coincides
-     * with `clear_primary`.
+     * Drop this scope's own primary preference. A session then follows the
+     * machine-wide choice; at machine scope this restores Biorouter's shipped
+     * Soul default. This is the way back from `clear_primary`, and the only
+     * way out of the explicit "no primary" that deleting a session's pinned
+     * base leaves behind. Mutually exclusive with `primary_kb` and
+     * `clear_primary`.
      */
     inherit_primary?: boolean;
     /**
@@ -4147,6 +4155,10 @@ export type ConfirmToolActionErrors = {
      */
     401: unknown;
     /**
+     * Refused: `reason` is `unproven` (this request carried no proof it came from the user) or `noKeyInstalled` (this daemon can never obtain that proof)
+     */
+    403: unknown;
+    /**
      * Internal server error
      */
     500: unknown;
@@ -4280,6 +4292,38 @@ export type CallToolResponses = {
 };
 
 export type CallToolResponse2 = CallToolResponses[keyof CallToolResponses];
+
+export type GetCallableToolCountData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * Active session whose model-visible tools should be counted
+         */
+        session_id: string;
+    };
+    url: '/agent/callable_tool_count';
+};
+
+export type GetCallableToolCountErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+    /**
+     * Agent not initialized
+     */
+    424: unknown;
+};
+
+export type GetCallableToolCountResponses = {
+    /**
+     * Model-visible callable tool count
+     */
+    200: CallableToolCountResponse;
+};
+
+export type GetCallableToolCountResponse = GetCallableToolCountResponses[keyof GetCallableToolCountResponses];
 
 export type CancelTurnData = {
     body: CancelTurnRequest;
@@ -7290,7 +7334,12 @@ export type GetSessionData = {
          */
         session_id: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * Omit conversation history when only session metadata is needed
+         */
+        metadata_only?: boolean | null;
+    };
     url: '/sessions/{session_id}';
 };
 
