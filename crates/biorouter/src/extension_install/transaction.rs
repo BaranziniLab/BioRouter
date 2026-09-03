@@ -179,6 +179,21 @@ pub struct ExtensionInstallTransaction {
     /// still written to the credential store, never to `config.yaml`.
     supplied: HashMap<String, String>,
     enable: bool,
+    /// #42. The `enabled` flag `config.yaml` already carried for this
+    /// extension, sampled **once, before this run writes anything**, and `None`
+    /// when the file carried no entry the operator authored.
+    ///
+    /// ⚠ Sampling once is the whole point. Every later read of the config would
+    /// see the row *this install just wrote*, so an install that registered
+    /// `enabled: false` would go on to read its own write back as somebody
+    /// else's decision — a pin it created itself. The value is filled in by
+    /// `run_inner` before the credential phase; `None` until then, which is
+    /// also the correct answer for a run that never reached it.
+    operator_switch: Option<bool>,
+    /// What this run actually persisted, or `None` when it registered nothing.
+    /// Read only by [`ExtensionInstallTransaction::report`], so the report's
+    /// `enabled` is the value on disk rather than a second guess at it.
+    registered_enabled: Option<bool>,
     manager: Option<std::sync::Weak<ExtensionManager>>,
     /// Asked with the extension's REAL name — the one in the downloaded
     /// bundle's manifest — immediately before the attach. `Some(reason)` blocks
@@ -215,6 +230,8 @@ impl ExtensionInstallTransaction {
             source,
             supplied: HashMap::new(),
             enable: true,
+            operator_switch: None,
+            registered_enabled: None,
             manager: None,
             attach_guard: None,
             undo: Undo::default(),
@@ -300,6 +317,11 @@ impl ExtensionInstallTransaction {
         let manifest = bundle.manifest().clone();
         let skills = bundle.skills().to_vec();
         let key = name_to_key(&manifest.name);
+        // #42. Sampled HERE — the first point the extension's real name is
+        // known, and still before this run has written a byte of config — so
+        // the register step below decides against the operator's switch as it
+        // stood when the install started, never against its own write.
+        self.operator_switch = persisted_enabled_state(&manifest.name);
 
         // ── extract + build ───────────────────────────────────────────────
         let root = extensions_root();
@@ -340,8 +362,8 @@ impl ExtensionInstallTransaction {
         env_keys.sort();
         env_keys.dedup();
         let config = compose_config(&manifest, &install_dir, envs, env_keys.clone());
-        // ⚠ **An install may update a package. It may not overturn the
-        // operator's decision about whether it runs.** Issue #42's pin — a
+        // ⚠ **An install may update a package. It may not author the
+        // operator's switch — in EITHER direction.** Issue #42's pin — a
         // persisted `enabled: false` — is enforced by `manage_extensions`,
         // which refuses without a proof-backed grant and refuses a private
         // extension outright. The install door consulted no entry at all, so
@@ -349,19 +371,37 @@ impl ExtensionInstallTransaction {
         // every future chat, behind an approval card that says only "install".
         // Measured: `playwrightagent` went `false` -> `true` in config.yaml.
         //
-        // The real name is only knowable here, after the bundle is read, which
-        // is why this cannot live at the call site.
-        let pinned_off = pinned_off_by_operator(&manifest.name);
-        // ⚠ The guard runs on the REAL name, which is only knowable here. The
-        // caller's pre-flight could only ask about the name the registry
-        // advertised, and a registry that omits `extension_name` makes that the
-        // registry ID — a different string, as SPOKEAgent's own entry proved
+        // The mirror of that is the same bug wearing the other sign, and it is
+        // the one a `pinned_off` guard alone cannot catch: re-installing an
+        // extension the user had switched ON, with `enable: false`, switched it
+        // OFF machine-wide — and the row it wrote is then indistinguishable
+        // from a deliberate operator pin, because
+        // `privacy::refusal::extension_enable_refusal` reads exactly
+        // "persisted AND `enabled: false`". So the install had, in one step,
+        // disabled the extension and taken away the model's ability to undo it.
+        //
+        // [`enabled_to_persist`] is therefore the whole decision, and it is
+        // asked against `self.operator_switch` — the flag sampled before this
+        // run wrote anything. The real name is only knowable here, after the
+        // bundle is read, which is why this cannot live at the call site.
+        //
+        // ⚠ The guard runs on the REAL name for the same reason. The caller's
+        // pre-flight could only ask about the name the registry advertised, and
+        // a registry that omits `extension_name` makes that the registry ID — a
+        // different string, as SPOKEAgent's own entry proved
         // (`spokeagent-0.4.1` advertised, `spokeagent` installed).
         let guard_refusal = self
             .attach_guard
             .as_ref()
             .and_then(|guard| guard(&manifest.name));
-        let enable = self.enable && !pinned_off && guard_refusal.is_none();
+        // What this run would ask for if the row were its to author: the
+        // caller's flag, minus an attach the privacy guard refuses.
+        let requested = self.enable && guard_refusal.is_none();
+        let enable = enabled_to_persist(self.operator_switch, requested);
+        // Attaching is a strictly smaller question than persisting: a run that
+        // left an already-enabled extension alone must still not pull it into
+        // *this* chat when the caller did not ask for it, or the guard refused.
+        let attach_now = enable && requested;
         // Silent, then announced below with the bundle's skills folded in —
         // `set_extension` cannot see those, and two events for one install
         // would leave the second as the only complete one.
@@ -370,13 +410,14 @@ impl ExtensionInstallTransaction {
             config: config.clone(),
         });
         self.undo.config_key = Some(key.clone());
+        self.registered_enabled = Some(enable);
         announce_install(&key, &manifest, &config, enable, &skills);
         if let InstallSource::Marketplace { registry_id, url } = &self.source {
             record_provenance(&manifest.name, registry_id, url, &install_dir);
         }
 
         // ── attach ────────────────────────────────────────────────────────
-        let attached = enable && self.attach(config).await;
+        let attached = attach_now && self.attach(config).await;
         // A claim that outlives a finished install is a permanent phantom
         // "pending install" on every reader.
         claim::remove_claim(&self.install_id);
@@ -716,10 +757,17 @@ impl ExtensionInstallTransaction {
         skills: &[BundledSkill],
         configured_keys: &[String],
     ) -> InstallReport {
-        let pinned_off = self.enable && pinned_off_by_operator(&manifest.name);
+        // #42, read off the ONE pre-write sample rather than off the config
+        // file: after `set_extension_silent` the file carries this run's own
+        // row, so re-reading it here would report an install's own
+        // `enable: false` back to the caller as "the operator pinned it".
+        let pinned_off = self.enable && self.operator_switch == Some(false);
         InstallReport {
             install_id: self.install_id.clone(),
-            enabled: self.enable && !pinned_off && state.is_success(),
+            // What is on disk, not a second derivation of it. A run that
+            // registered nothing (cancelled, or short of a credential) reports
+            // `false`, which is what `state.is_success()` already said.
+            enabled: state.is_success() && self.registered_enabled.unwrap_or(false),
             state,
             extension_name: Some(manifest.name.clone()),
             display_name: Some(manifest.display_name.clone()),
@@ -837,16 +885,47 @@ fn adopt_stored_secrets(manifest: &BrxtManifest, env_keys: &mut Vec<String>) {
     adopt_stored_secrets_with(manifest, env_keys, secret_already_stored);
 }
 
-/// Did the operator persist `enabled: false` for this extension?
+/// The `enabled` flag the operator's own `config.yaml` carries for this
+/// extension, or `None` when the file has no entry for it.
 ///
-/// Issue #42's pin. "Persisted" is the load-bearing half: a default-off
-/// PLATFORM extension is absent from the config file and stays freely
-/// enableable, so `extension_entry_is_persisted` separates a deliberate
-/// operator decision from an injected default.
-fn pinned_off_by_operator(extension_name: &str) -> bool {
+/// Issue #42's pin, generalised from "is it pinned off?" to "what does the
+/// switch say?", because an install has to honour it in both positions.
+///
+/// "Persisted" is the load-bearing half: a default-off PLATFORM extension is
+/// absent from the config file and injected with its default by
+/// [`get_extension_entry_by_name`](crate::config::extensions::get_extension_entry_by_name),
+/// so `extension_entry_is_persisted` is what separates a deliberate operator
+/// decision from an injected default. An injected default answers `None` here
+/// and the install authors the row, exactly as it does for a first install.
+fn persisted_enabled_state(extension_name: &str) -> Option<bool> {
+    if !crate::config::extensions::extension_entry_is_persisted(extension_name) {
+        return None;
+    }
     crate::config::extensions::get_extension_entry_by_name(extension_name)
-        .is_some_and(|entry| !entry.enabled)
-        && crate::config::extensions::extension_entry_is_persisted(extension_name)
+        .map(|entry| entry.enabled)
+}
+
+/// What an install may write to an extension's `enabled` flag.
+///
+/// `operator_switch` is [`persisted_enabled_state`] sampled **before** this run
+/// wrote anything; `None` means the config file carried no entry, so this
+/// install is the row's author and the caller's request stands.
+///
+/// ⚠ **An install updates a PACKAGE. It never authors a switch somebody else
+/// already set.** Both directions are real defects, and a guard that only
+/// looked at one of them is what shipped:
+///
+///  * `Some(false)` + `requested: true` — #42's pin. `manage_extensions`
+///    refuses to re-enable a persisted `enabled: false` without a proof-backed
+///    grant, and refuses a private extension outright; an install that flipped
+///    it to `true` overturned that behind a card saying only "install".
+///  * `Some(true)` + `requested: false` — the mirror. Re-installing (an
+///    upgrade, a marketplace re-install, a resumed run) with `enable: false`
+///    switched OFF an extension the user was using, machine-wide, and left
+///    behind a row `privacy::refusal::extension_enable_refusal` reads as an
+///    operator pin — so the model could not put it back either.
+fn enabled_to_persist(operator_switch: Option<bool>, requested: bool) -> bool {
+    operator_switch.unwrap_or(requested)
 }
 
 /// What the credential phase is working on, so the helpers below take one
@@ -1088,7 +1167,8 @@ mod tests {
         assert_eq!(already_written.len(), 1);
     }
 
-    /// Issue #42's operator pin, on the install door.
+    /// Issue #42's operator switch, on the install door — in **both**
+    /// positions.
     ///
     /// `manage_extensions` refuses a persisted `enabled: false` without a
     /// proof-backed grant, and refuses a private extension outright. The install
@@ -1096,28 +1176,33 @@ mod tests {
     /// behind a card that says only "install" — measured, `playwrightagent` went
     /// false -> true in config.yaml.
     ///
-    /// The predicate needs BOTH halves: a default-off platform extension is
-    /// absent from the config file and must stay freely enableable, so
-    /// "disabled" alone would pin things the operator never touched.
+    /// The mirror row is the one the original guard could not catch, and it is
+    /// the more damaging of the two: an install that switches OFF an extension
+    /// the user had on does not merely disable it, it leaves behind exactly the
+    /// row `privacy::refusal::extension_enable_refusal` reads as an operator
+    /// pin — so the model is then refused when it tries to put it back, and for
+    /// a PRIVATE extension the proof-backed escape hatch does not apply either.
+    ///
+    /// ⚠ Fails an implementation that returns `requested` (the shipped one),
+    /// and equally one that returns `operator_switch.unwrap_or(false)` or
+    /// `unwrap_or(true)` — a first install has to be able to land in either
+    /// position.
     #[test]
-    fn an_install_may_update_a_package_but_not_overturn_the_operator() {
-        // `pinned_off_by_operator` reads process-global config, so the rule is
-        // asserted here as the conjunction it is; the live behaviour is covered
-        // by the extension-manager tests that own a config fixture.
-        let cases = [
-            // (entry exists & disabled, entry persisted, pinned?)
-            (true, true, true),
-            (true, false, false),  // injected default-off: still enableable
-            (false, true, false),  // operator enabled it
-            (false, false, false), // not configured at all
-        ];
-        for (disabled, persisted, expected) in cases {
-            assert_eq!(
-                disabled && persisted,
-                expected,
-                "pin = persisted AND disabled, not either alone"
-            );
-        }
+    fn an_install_may_update_a_package_but_never_authors_the_operators_switch() {
+        assert!(
+            enabled_to_persist(Some(true), false),
+            "re-installing with `enable: false` switched off an extension the user had ON, and \
+             the row it wrote then reads as an operator pin the model may not undo"
+        );
+        assert!(
+            !enabled_to_persist(Some(false), true),
+            "#42: an install must not overturn a persisted `enabled: false`"
+        );
+        // No persisted entry: this install authors the row, so the caller's
+        // request stands. `--no-enable` and the model's `enable: false` both
+        // depend on the second row here.
+        assert!(enabled_to_persist(None, true));
+        assert!(!enabled_to_persist(None, false));
     }
 
     /// The claim is a plaintext file in the user's config directory. Same rule

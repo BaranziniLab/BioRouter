@@ -687,15 +687,27 @@ async fn update_session_user_workflow_values(
                     message: format!("Failed to get agent: {}", status),
                     status,
                 })?;
-            if let Some(prompt) = apply_workflow_to_agent(&agent, &session_id, &workflow, false)
-                .await
-                .map_err(|e| ErrorResponse {
-                    message: e.to_string(),
-                    status: StatusCode::BAD_REQUEST,
-                })?
-            {
-                agent.extend_system_prompt(prompt).await;
-            }
+            // ⚠ The returned prompt is deliberately DROPPED.
+            // `apply_workflow_to_agent` already committed it, through
+            // `workflow::runtime::apply_prepared_to_agent` ->
+            // `Agent::set_session_context_prompt`, into the single named
+            // `session_context` slot — re-applying replaces, it does not stack.
+            // Feeding it a second time to `extend_system_prompt` (which is
+            // `Vec::push` on `system_prompt_extras`, with no dedup) appended
+            // another full copy of the workflow block on EVERY
+            // `PUT /sessions/{id}/user_workflow_values`, and since
+            // `prepare_prompt` now inlines each declared skill's whole
+            // `SKILL.md`, a copy is kilobytes. The two call sites in
+            // `routes/agent.rs` were converted to the named-slot form; this one
+            // was missed. See `configure_agent` in `routes/apps.rs` for the
+            // same mechanism on the app socket.
+            let _committed_by_apply_workflow_to_agent =
+                apply_workflow_to_agent(&agent, &session_id, &workflow, false)
+                    .await
+                    .map_err(|e| ErrorResponse {
+                        message: e.to_string(),
+                        status: StatusCode::BAD_REQUEST,
+                    })?;
             Ok(Json(UpdateSessionUserWorkflowValuesResponse { workflow }))
         }
         Ok(None) => Err(ErrorResponse {

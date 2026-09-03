@@ -836,6 +836,79 @@ mod withheld_capability_tests {
     }
 }
 
+#[cfg(test)]
+mod prompt_slot_tests {
+    //! A per-connection prompt goes in the ONE named slot, never on the
+    //! accumulating extras list.
+    //!
+    //! `Agent::extend_system_prompt` is `Vec::push` on
+    //! `PromptManager::system_prompt_extras`, with no dedup;
+    //! `Agent::set_session_context_prompt` writes a single `BTreeMap` entry, so
+    //! re-applying replaces. Every call site here runs **again on each connect
+    //! or each apply**, against an agent `get_agent` caches per session, so the
+    //! first shape appends another full copy of a kilobyte-scale prompt every
+    //! time. `PromptManager`'s own tests cover the two mechanisms; these bind
+    //! the call sites to the right one.
+    //!
+    //! ⚠ **A source pin, deliberately, and only because behaviour is out of
+    //! reach here.** `granted_app_capabilities` records the usual rule — pin
+    //! behaviour, not text — and it holds wherever behaviour can be observed.
+    //! It cannot be here: the built system prompt is reachable only through
+    //! `Agent::prompt_manager`, which is `pub(super)` inside
+    //! `biorouter::agents`, and the crate exposes no accessor. So a test in
+    //! this crate can construct the agent and never read what it holds.
+    //!
+    //! The needle is assembled at run time for the trap that doc also records:
+    //! `include_str!` pulls THIS module into the haystack, so a literal spelled
+    //! here would match itself and the test would pass with the production call
+    //! sites reverted.
+
+    /// A method call on the appending API — a dot, `extend`, the rest of the
+    /// name and its open paren. Assembled rather than spelled, so this line is
+    /// not itself a hit.
+    fn appending_call() -> String {
+        format!(".{}{}", "extend", "_system_prompt(")
+    }
+
+    /// The app socket's two prompt installs (#2's sibling defect).
+    ///
+    /// `configure_agent` runs on every app socket connect and
+    /// `configure_worker_agent` on every durable worker profile's — and
+    /// `build_worker` resolves a durable profile through
+    /// `get_or_create_by_external_key`, so both reuse the cached agent across
+    /// browser reloads. Both appended.
+    #[test]
+    fn the_app_prompts_are_installed_in_the_named_slot() {
+        let hits = include_str!("apps.rs").matches(&appending_call()).count();
+        assert_eq!(
+            hits, 0,
+            "an app prompt is installed with the appending API; every browser reload then stacks \
+             another full copy of the manifest description, the author's system prompt, the \
+             capability and orchestration guidance and the whole ui_* block"
+        );
+    }
+
+    /// #2 proper: `PUT /sessions/{id}/user_workflow_values`.
+    ///
+    /// `apply_workflow_to_agent` already commits the block into the named slot
+    /// (`workflow::runtime::apply_prepared_to_agent`), so the call site's own
+    /// append was a second, undeduped copy on every apply — and `prepare_prompt`
+    /// now inlines each declared skill's entire `SKILL.md`, so a copy is
+    /// kilobytes. The two call sites in `routes/agent.rs` were converted; this
+    /// one was missed.
+    #[test]
+    fn the_workflow_block_is_installed_in_the_named_slot() {
+        let hits = include_str!("session.rs")
+            .matches(&appending_call())
+            .count();
+        assert_eq!(
+            hits, 0,
+            "the workflow block is appended on top of the commit apply_workflow_to_agent already \
+             made, so every apply leaves another full copy in the system prompt"
+        );
+    }
+}
+
 impl CapabilityReport {
     /// True when anything the app asked for is unavailable — the page renders a
     /// degraded-capability banner, whether or not the model mentions it.
@@ -1555,7 +1628,20 @@ async fn inject_workspace_capabilities(
     if let Some(data) = cfg.capabilities.data.as_ref() {
         let _ = std::fs::create_dir_all(&workspace);
         let sources = resolve_sql_sources(&workspace, data);
-        if !sources.is_empty() {
+        if sources.is_empty() {
+            // #153. A `data` block that resolves to nothing arms no server at
+            // all — and `Capabilities::advertised()` still emits "data" for the
+            // mere declaration, so staying quiet here produced exactly the
+            // failure this field exists to close: `ready` says the app has
+            // `data`, no `capability_report` follows, and the app's agent calls
+            // `datasql__*` and is told "Tool not found". The declaration was
+            // honest and the file it named is missing or unreadable; say so.
+            warn!(
+                app = %manifest.id,
+                "declared data sources resolved to none; datasql tools NOT granted"
+            );
+            withheld.push("data".to_string());
+        } else {
             let server = biorouter_mcp::datasql::server::DataSqlServer::new(sources);
             if let Err(e) = agent
                 .extension_manager
@@ -1582,7 +1668,21 @@ async fn inject_workspace_capabilities(
         }
     }
     if let Some(compute) = cfg.capabilities.compute.as_ref() {
-        if compute.sandbox != "none" {
+        if compute.sandbox == "none" {
+            // #153, and this is the COMMON case rather than an edge one:
+            // `ComputeCapability::sandbox` defaults to `"none"`
+            // (`agent_drafter/manifest.rs`), so every manifest that writes
+            // `"compute": {"timeout_s": 120}` and omits the key lands here —
+            // while `advertised()` emits "compute" for any compute block at
+            // all. `ready` therefore promised a capability that was never armed
+            // and nothing said otherwise. Withholding it is right; withholding
+            // it silently is the bug.
+            warn!(
+                app = %manifest.id,
+                "compute sandbox is \"none\" (the default); compute tools NOT granted"
+            );
+            withheld.push("compute".to_string());
+        } else {
             let _ = std::fs::create_dir_all(&workspace);
             match biorouter_mcp::compute_server::for_capability(workspace, compute) {
                 Some(server) => {
@@ -1944,7 +2044,19 @@ async fn configure_agent(
         }
     }
 
-    agent.extend_system_prompt(prompt).await;
+    // ⚠ **One named slot, not an append.** `configure_agent` runs on every app
+    // socket connect, against the agent `get_agent` CACHES for this session —
+    // so `extend_system_prompt` (which is `Vec::push` on
+    // `system_prompt_extras`, never deduped) appended another full copy of the
+    // app's system prompt on every browser reload. The prompt is not small: it
+    // carries the manifest description, the author's own `system_prompt`, the
+    // capability guidance, the orchestration guidance and the whole `ui_*`
+    // block. `set_session_context_prompt` writes the one named slot the
+    // workflow path uses, so a reconnect REPLACES rather than stacks — and a
+    // manifest edited between connects no longer leaves its old text active
+    // alongside the new. Same mechanism, same fix, as the workflow call site in
+    // `routes/session.rs`.
+    agent.set_session_context_prompt(Some(prompt)).await;
 
     // BRSDK guardrails: a one-line `goal` auto-installs the goal Stop-hook so the
     // app's agent keeps working until the goal condition holds — reusing the
@@ -2496,8 +2608,13 @@ async fn configure_worker_agent(
     }
 
     inject_worker_servers(agent, manifest, profile_name, cfg, main_bridge).await;
+    // The named slot here too, and for exactly the reason the main agent needs
+    // it: `build_worker` resolves a DURABLE profile through
+    // `get_or_create_by_external_key`, so a reconnecting browser reuses the same
+    // worker session — and therefore the agent `get_agent` cached for it. An
+    // appending write would stack another whole worker prompt on every reload.
     agent
-        .extend_system_prompt(worker_system_prompt(manifest, profile_name, cfg))
+        .set_session_context_prompt(Some(worker_system_prompt(manifest, profile_name, cfg)))
         .await;
 }
 
@@ -10493,6 +10610,155 @@ mod tests {
                 "a padded name must resolve to the base it obviously means"
             );
             assert_eq!(declared_kb(&with(Some("cohort"))), Some("cohort"));
+        }
+    }
+
+    /// #153, the half that never shipped: **declared, never armed, never
+    /// reported.**
+    ///
+    /// `Capabilities::advertised()` emits a token for the mere *declaration*, so
+    /// an arming path that builds nothing and pushes nothing onto
+    /// `withheld_capabilities` leaves the `ready` frame promising a capability
+    /// the app does not have, sends no `capability_report`, renders no degraded
+    /// banner — and the app's agent then calls the tool and is told "Tool not
+    /// found". That is the exact failure `withheld_capabilities`' own doc
+    /// comment says it fixes; two of the four paths never reported.
+    mod declared_but_unarmed {
+        use super::super::{
+            advertised_app_capabilities, granted_app_capabilities, inject_workspace_capabilities,
+            BrsdkSettings,
+        };
+        use super::privacy_capability::{lock_env_for, PUBLIC_HOST};
+        use biorouter_mcp::agent_drafter::store::Manifest;
+
+        /// A manifest carrying exactly the declared capabilities, through serde
+        /// so the DEFAULTS apply — which is the whole point for `compute`:
+        /// `ComputeCapability::sandbox` defaults to `"none"`, so a block written
+        /// without the key is the ordinary case rather than an exotic one.
+        fn manifest(id: &str, capabilities: serde_json::Value) -> Manifest {
+            serde_json::from_value(serde_json::json!({
+                "id": id,
+                "title": id,
+                "kind": "agentic",
+                "entry": "index.html",
+                "agent": { "capabilities": capabilities },
+            }))
+            .expect("the fixture manifest must parse")
+        }
+
+        /// Run the real arming step against a sandboxed root and return what it
+        /// refused to arm.
+        async fn withheld(manifest: &Manifest) -> Vec<String> {
+            // Warm the process-global `SessionManager` against the REAL path
+            // root before the env lock relocates it — same reason as
+            // `an_apps_skill_grant_is_bounded_to_search_and_load`.
+            let _warm = crate::state::AppState::new().await.unwrap();
+            let root = tempfile::TempDir::new().unwrap();
+            let _env = lock_env_for(root.path(), PUBLIC_HOST);
+            let state = crate::state::AppState::new_with_knowledge_root(root.path().join("kb"))
+                .await
+                .unwrap();
+            let session = state
+                .session_manager()
+                .create_session(
+                    root.path().to_path_buf(),
+                    "declared-but-unarmed".to_string(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap();
+            let agent = state.get_agent(session.id.clone()).await.unwrap();
+            let cfg = manifest
+                .agent
+                .clone()
+                .expect("the fixture declares an agent");
+            inject_workspace_capabilities(&agent, manifest, &cfg).await
+        }
+
+        /// The reported reproduction: `"compute": {"timeout_s": 120}`, no
+        /// `sandbox` key.
+        ///
+        /// `advertised()` says "compute"; `compute.sandbox` is `"none"`; no
+        /// compute server is built. Before the fix that combination reported
+        /// nothing at all, so `ready` advertised `compute` and
+        /// `compute__compute_run` answered "Tool not found".
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_compute_block_with_the_default_sandbox_is_reported_not_swallowed() {
+            let manifest = manifest(
+                "computedefault",
+                serde_json::json!({ "compute": { "timeout_s": 120 } }),
+            );
+
+            // The precondition, asserted rather than assumed: without this the
+            // rows below would pass vacuously on a manifest that declared
+            // nothing.
+            let advertised = advertised_app_capabilities(&manifest, BrsdkSettings::current());
+            assert!(
+                advertised.iter().any(|c| c == "compute"),
+                "the `ready` frame does not advertise compute for this manifest, so this test \
+                 proves nothing: {advertised:?}"
+            );
+
+            let withheld = withheld(&manifest).await;
+            assert!(
+                withheld.iter().any(|c| c == "compute"),
+                "a compute block whose sandbox is \"none\" (the DEFAULT) armed nothing and said \
+                 nothing: {withheld:?}"
+            );
+            assert!(
+                !granted_app_capabilities(advertised, &withheld)
+                    .iter()
+                    .any(|c| c == "compute"),
+                "the withheld capability has to drop out of the ready frame too"
+            );
+        }
+
+        /// The other unreported path: a `data` block whose sources resolve to
+        /// none — a file that is missing, unreadable, or outside the app's
+        /// workspace jail. Declared honestly, armed never.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_data_block_resolving_no_sources_is_reported_not_swallowed() {
+            let manifest = manifest(
+                "datanosources",
+                serde_json::json!({
+                    "data": {
+                        "sources": [
+                            { "name": "cohort", "kind": "sql", "file": "no-such-file.db" }
+                        ]
+                    }
+                }),
+            );
+
+            let advertised = advertised_app_capabilities(&manifest, BrsdkSettings::current());
+            assert!(
+                advertised.iter().any(|c| c == "data"),
+                "the fixture does not advertise data: {advertised:?}"
+            );
+
+            let withheld = withheld(&manifest).await;
+            assert!(
+                withheld.iter().any(|c| c == "data"),
+                "a data block that resolved zero sources armed nothing and said nothing: \
+                 {withheld:?}"
+            );
+        }
+
+        /// The counter-case, so "report everything" cannot pass: a compute block
+        /// with a real sandbox is armed, and nothing is withheld.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn an_armable_compute_block_is_not_reported_as_withheld() {
+            let manifest = manifest(
+                "computelocal",
+                serde_json::json!({ "compute": { "sandbox": "local", "timeout_s": 5 } }),
+            );
+            let withheld = withheld(&manifest).await;
+            assert!(
+                withheld.is_empty(),
+                "a capability that armed cleanly must not be reported as withheld: {withheld:?}"
+            );
         }
     }
 

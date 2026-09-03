@@ -569,3 +569,114 @@ async fn a_failed_install_leaves_no_claim() {
     // Nothing was written outside the sandbox on the way.
     assert!(extensions_root().starts_with(sandbox()));
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// The operator's switch (#42), in both positions
+//
+// `privacy::refusal::extension_enable_refusal` reads exactly "the config file
+// carries an entry for this extension AND that entry says `enabled: false`" and
+// calls it an operator pin: `manage_extensions enable` is then refused without
+// a proof-backed grant, and a PRIVATE extension is refused even with one. So an
+// install that writes that row has not merely disabled an extension — it has
+// taken away the model's ability to undo it, with a message that blames a person.
+//
+// These drive the real transaction against the sandbox and read `config.yaml`
+// back, because the defect was entirely about what reaches that file.
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// The `enabled` flag `config.yaml` currently carries, or `None` when it has no
+/// entry at all — the same distinction the enable gate's `persisted` argument
+/// draws.
+fn switch_in_config(name: &str) -> Option<bool> {
+    if !biorouter::config::extension_entry_is_persisted(name) {
+        return None;
+    }
+    biorouter::config::get_extension_entry_by_name(name).map(|entry| entry.enabled)
+}
+
+/// **An install updates a package. It does not author the operator's switch.**
+///
+/// Measured before the fix, in this order:
+///   1. install `switchfixture` — `config.yaml` says `enabled: true`;
+///   2. re-install it with `enable: false` — `config.yaml` said `enabled:
+///      false`, and `manage_extensions {"action":"enable"}` was then refused
+///      with "The operator turned it off deliberately";
+///   3. with the switch genuinely pinned off, install with `enable: true` —
+///      #42's own direction, already guarded, and re-asserted here so the fix
+///      to (2) cannot be written as "just take the caller's flag".
+///
+/// Fails an implementation that persists this run's own `enable` flag (the
+/// shipped one) on row 2, and one that persists it unconditionally on row 3.
+#[tokio::test]
+#[serial_test::serial]
+async fn an_install_never_rewrites_the_operators_enabled_switch() {
+    sandbox();
+    if !uv_or_skip("an_install_never_rewrites_the_operators_enabled_switch") {
+        return;
+    }
+    clear_claims();
+    let name = "switchfixture";
+    let key = biorouter::config::extensions::name_to_key(name);
+    let tree = extensions_root().join(name);
+    let _ = std::fs::remove_dir_all(&tree);
+    biorouter::config::remove_extension(&key);
+    assert_eq!(
+        switch_in_config(name),
+        None,
+        "the fixture starts from an unconfigured extension, or it proves nothing"
+    );
+
+    let fixture = bundle(name, Vec::new(), &working_pyproject(name));
+    let install = |enable: bool| {
+        let path = fixture.path.clone();
+        async move {
+            ExtensionInstallTransaction::new(InstallSource::LocalFile { path })
+                .enabled(enable)
+                .run(CredentialPolicy::Refuse, None)
+                .await
+        }
+    };
+
+    // 1. A first install authors the row, so the caller's flag stands.
+    let first = install(true).await;
+    assert!(first.state.is_success(), "{first:?}");
+    assert_eq!(
+        switch_in_config(name),
+        Some(true),
+        "the precondition for row 2 is an extension the user has ON"
+    );
+    assert!(first.enabled, "{first:?}");
+
+    // 2. The mirror case. The user's switch stays where the user left it.
+    let second = install(false).await;
+    assert!(second.state.is_success(), "{second:?}");
+    assert_eq!(
+        switch_in_config(name),
+        Some(true),
+        "an install with `enable: false` switched OFF an extension the user had enabled — and \
+         the row it wrote is what `extension_enable_refusal` reads as an operator pin"
+    );
+    assert!(
+        !second.operator_pinned_off,
+        "nothing was pinned; reporting a pin here blames the user for the install's own flag"
+    );
+
+    // 3. #42's own direction, against a switch that really was set by a person.
+    biorouter::config::set_extension_enabled(&key, false);
+    assert_eq!(switch_in_config(name), Some(false));
+    let third = install(true).await;
+    assert!(third.state.is_success(), "{third:?}");
+    assert_eq!(
+        switch_in_config(name),
+        Some(false),
+        "#42: an install must not overturn a persisted `enabled: false`"
+    );
+    assert!(
+        third.operator_pinned_off,
+        "the install was blocked by a real pin and has to say so: {third:?}"
+    );
+    assert!(!third.enabled, "{third:?}");
+
+    biorouter::config::remove_extension(&key);
+    let _ = std::fs::remove_dir_all(&tree);
+}

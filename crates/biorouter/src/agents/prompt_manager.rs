@@ -609,6 +609,43 @@ mod tests {
         assert!(result.contains("Thirdinstruction"));
     }
 
+    /// The two mechanisms, side by side, on the same block of text.
+    ///
+    /// Every caller that re-runs on a reconnect or a re-apply — the app socket's
+    /// `configure_agent`, the workflow apply behind
+    /// `PUT /sessions/{id}/user_workflow_values` — has a choice between these
+    /// two, and the difference is invisible until the prompt is measured:
+    /// `add_system_prompt_extra` is `Vec::push` with no dedup, so N applications
+    /// leave N full copies in the built prompt. The blocks involved are not
+    /// small (a workflow block inlines each declared skill's entire `SKILL.md`;
+    /// an app's prompt carries its whole `ui_*` guidance), so the accumulation
+    /// eats the context window silently.
+    #[test]
+    fn a_reapplied_block_appears_once_in_the_named_slot_and_twice_when_appended() {
+        const BLOCK: &str = "WORKFLOW BLOCK SENTINEL";
+
+        let mut named = PromptManager::new();
+        for _ in 0..3 {
+            named.set_named_system_prompt_extra("session_context", Some(BLOCK.into()));
+        }
+        assert_eq!(
+            named.builder().build().matches(BLOCK).count(),
+            1,
+            "the named slot is what makes re-applying idempotent"
+        );
+
+        let mut appended = PromptManager::new();
+        for _ in 0..3 {
+            appended.add_system_prompt_extra(BLOCK.to_string());
+        }
+        assert_eq!(
+            appended.builder().build().matches(BLOCK).count(),
+            3,
+            "the appending path is not deduped — this is the behaviour a call site must not pick \
+             for anything it runs more than once per agent"
+        );
+    }
+
     #[test]
     fn named_system_prompt_extras_replace_and_remove_stale_context() {
         let mut manager = PromptManager::new();
