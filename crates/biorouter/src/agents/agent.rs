@@ -11,6 +11,15 @@ use uuid::Uuid;
 
 use super::final_output_tool::FinalOutputTool;
 use super::platform_tools;
+/// Re-exported for [`crate::scheduler`], which classifies a finished scheduled
+/// run and has to be able to recognise one that stopped because a permission
+/// prompt expired with nobody there to answer it.
+///
+/// `agents::tool_execution` is a private module, and one shared constant beats a
+/// second copy of the sentence: a classifier keying on prose it does not own is
+/// a classifier that silently stops matching, and a scheduled run that stops
+/// matching is one that reports success for having done nothing.
+pub(crate) use super::tool_execution::EXPIRED_RESPONSE;
 use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE};
 use super::turn_abort::TurnAbortCode;
 use crate::action_required_manager::ActionRequiredManager;
@@ -1844,28 +1853,25 @@ impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
 /// whose *name* begins with `workspace_` — its tools arrive as
 /// `workspace_foo__bar`, which starts with `workspace_` — and every one of them
 /// would be refused inside a subagent with the misleading message "Subagents
-/// cannot use workspace tools." An explicit list cannot do that, and it is a
-/// closed set we control: when a `workspace_*` tool is added, this list is where
-/// the compiler-free reminder lives. It is not left to a reminder, though:
-/// `the_refusal_list_mirrors_every_tool_the_workspace_extension_advertises`
-/// cross-checks it against `WorkspaceClient::get_tools()` in both directions, so
-/// an eighth tool added there fails this crate's suite instead of quietly
-/// becoming reachable inside a delegation tree.
-const WORKSPACE_TOOL_NAMES: [&str; 8] = [
-    "workspace_list",
-    "workspace_open",
-    "workspace_read_conversation",
-    "workspace_send_prompt",
-    "workspace_set_tools",
-    "workspace_close",
-    "workspace_watch",
-    // Reading another conversation's screen is the same class of reach as
-    // reading its transcript, so a subagent is refused both for the same
-    // reason: it must not inspect the workspace it was spawned into. Reading
-    // and screenshotting are one tool now (`capture: true`), so one name
-    // refuses both.
-    "workspace_read_panel",
-];
+/// cannot use workspace tools." An explicit list cannot do that.
+///
+/// ⚠ **The list is DERIVED from the dispatcher, not hand-mirrored from the
+/// advertisement, and that distinction is a hole that shipped.** This used to be
+/// its own eight-name array cross-checked against `WorkspaceClient::get_tools()`
+/// in both directions. `workspace_capture_panel` was then retired from
+/// `get_tools()` — reading and screenshotting became one tool — and trimmed from
+/// here to keep that check green, while `WorkspaceClient::call_tool` went on
+/// honouring the alias. A `SessionType::SubAgent` naming the retired name
+/// therefore got a screenshot of another conversation's panel instead of the
+/// flat refusal, and the list agreed with its own test the whole time.
+///
+/// **A guard is derived from what is REACHABLE, never from what is offered.** A
+/// name that stops being advertised does not stop being callable, and a model
+/// that once saw a tool remembers its name. So this is now literally the
+/// dispatcher's own list; see
+/// [`crate::agents::workspace_extension::DISPATCHED_TOOL_NAMES`], which a
+/// source-shape test in that file pins against the `match` itself.
+use crate::agents::workspace_extension::DISPATCHED_TOOL_NAMES as WORKSPACE_TOOL_NAMES;
 
 pub(crate) fn is_workspace_tool_refused_for(
     session_type: crate::session::session_manager::SessionType,
@@ -16337,14 +16343,20 @@ mod tests {
     }
 
     /// The rot vector both the guard's own comment and its over-match test
-    /// share: `WORKSPACE_TOOL_NAMES` is a hand-maintained mirror of what the
-    /// workspace extension advertises, and
-    /// `the_workspace_guard_does_not_swallow_a_third_party_extension` iterates
-    /// that same list — so an eighth `workspace_*` tool added to `get_tools()`
-    /// later would be dispatchable inside a delegation tree with nothing
-    /// failing. Cross-check against the real advertisement, both directions:
-    /// a new tool that is not refused, and a refused name that no longer
-    /// exists, are both errors.
+    /// share: `the_workspace_guard_does_not_swallow_a_third_party_extension`
+    /// iterates `WORKSPACE_TOOL_NAMES`, so a `workspace_*` tool the extension
+    /// gains later would be dispatchable inside a delegation tree with nothing
+    /// failing. Every advertised tool must therefore be refused.
+    ///
+    /// ⚠ **Only that direction.** This test used to assert the converse too — a
+    /// refused name that is no longer advertised is "stale" — and that assertion
+    /// is what made the hole. `workspace_capture_panel` was retired from
+    /// `get_tools()` while `call_tool` went on honouring it; trimming the guard
+    /// to keep this test green is exactly what left a subagent able to
+    /// screenshot another conversation's panel. A name can legitimately be
+    /// reachable and unadvertised, and *that* is the set a guard must cover, so
+    /// the guard is now derived from the dispatcher and the identity is asserted
+    /// below instead.
     #[test]
     fn the_refusal_list_mirrors_every_tool_the_workspace_extension_advertises() {
         use crate::session::session_manager::SessionType;
@@ -16377,13 +16389,20 @@ mod tests {
                  WORKSPACE_TOOL_NAMES, so a subagent could call it"
             );
         }
-        for name in WORKSPACE_TOOL_NAMES {
-            assert!(
-                advertised.iter().any(|a| a == name),
-                "{name} is refused for subagents but is no longer advertised, so \
-                 the list is stale"
-            );
-        }
+        // NOT "every refused name is still advertised" — see the ⚠ above. What
+        // must hold is that the guard IS the dispatcher's list rather than a
+        // second copy that can be trimmed to keep some other test green.
+        assert_eq!(
+            WORKSPACE_TOOL_NAMES.as_slice(),
+            crate::agents::workspace_extension::DISPATCHED_TOOL_NAMES.as_slice(),
+            "the subagent guard must be DERIVED from what the dispatcher accepts, \
+             not re-typed beside it"
+        );
+        assert!(
+            WORKSPACE_TOOL_NAMES.len() >= advertised.len(),
+            "a dispatcher that accepts fewer names than are advertised means a tool \
+             the model is offered cannot run: {advertised:?}"
+        );
         // …and the spawn tool stays out of the name list itself, so the two
         // mechanisms cannot both claim it and the refusal message stays
         // specific ("cannot create other subagents", not "workspace tools").

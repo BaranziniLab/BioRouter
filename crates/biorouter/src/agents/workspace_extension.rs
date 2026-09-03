@@ -1565,6 +1565,42 @@ fn session_liveness(
 /// stronger claim that nothing is currently staged.
 const PENDING_TOOLS: &[(&str, &str)] = &[];
 
+/// Every tool name [`WorkspaceClient::call_tool`]'s dispatcher will actually act
+/// on — the advertised set **plus every retired alias it still honours**.
+///
+/// ⚠ **This, and not `get_tools()`, is what the subagent refusal in
+/// `agents/agent.rs` is derived from.** The difference is not theoretical: it
+/// shipped as a hole. `workspace_capture_panel` was retired from the
+/// advertisement when reading and screenshotting a panel became one tool, and
+/// the refusal list was trimmed to match — but the dispatcher kept honouring the
+/// old name, so a `SessionType::SubAgent` that asked for `workspace_capture_panel`
+/// got a screenshot of another conversation's panel instead of the flat refusal.
+/// The rot-check cross-referenced the advertisement, so the list and its test
+/// agreed with each other while the dispatcher accepted a ninth name.
+///
+/// The rule that follows: **a guard is derived from what is REACHABLE, never
+/// from what is offered.** A name that stops being advertised does not stop
+/// being callable, and a model that once saw a tool remembers its name.
+///
+/// `the_dispatcher_accepts_exactly_the_names_the_guard_is_built_from` (in this
+/// file's `tests` module) reads the `match` in `call_tool` out of this file's
+/// own source, both directions, so a future alias added there without being
+/// added here fails this crate's suite.
+pub(crate) const DISPATCHED_TOOL_NAMES: [&str; 9] = [
+    "workspace_list",
+    "workspace_read_conversation",
+    "workspace_send_prompt",
+    "workspace_set_tools",
+    "workspace_close",
+    "workspace_watch",
+    "workspace_open",
+    "workspace_read_panel",
+    // Retired from `get_tools()` — reading and capturing are one tool now — and
+    // still accepted by the dispatcher, which is precisely why it has to be
+    // here. See the warning above.
+    "workspace_capture_panel",
+];
+
 /// Tool names that once existed and must never reappear in [`INSTRUCTIONS`],
 /// checked as plain substrings of the whole block.
 ///
@@ -2423,6 +2459,11 @@ impl WorkspaceClient {
         cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
+        // Kept before `parse_args` consumes it, exactly as `handle_send_prompt`
+        // does: the record half of the first-crossing disclosure asks
+        // `crossing_disclosure` with the SAME raw arguments the inspector asked
+        // it with, so the two cannot disagree about whether there was a payload.
+        let raw_arguments = arguments.clone();
         let args: WorkspaceOpenParams = parse_args(arguments)?;
         // A CLOSED vocabulary, checked before anything is created. The GUI half
         // below branches on `placement == "window"` and forwards everything else
@@ -2469,7 +2510,9 @@ impl WorkspaceClient {
                 (session_id, None)
             }
             (None, Some(new)) => {
-                let created = self.open_new_session(caller_session_id, cap, new).await?;
+                let created = self
+                    .open_new_session(caller_session_id, cap, new, raw_arguments.as_ref())
+                    .await?;
                 (created.session_id.clone(), Some(created))
             }
         };
@@ -2509,6 +2552,7 @@ impl WorkspaceClient {
         caller_session_id: &str,
         cap: crate::privacy::CallCapability,
         new: WorkspaceOpenNew,
+        raw_arguments: Option<&JsonObject>,
     ) -> Result<NewSession, String> {
         // Issue #111, and FIRST — ahead of the extension gate, the daemon lookup
         // and `create_session` — because a refusal that has already minted a row
@@ -2610,6 +2654,17 @@ impl WorkspaceClient {
             use crate::session_events;
             let slot_rx = session_events::subscribe(&session_id);
             let turn_id = services.start_detached_turn(&session_id, message).await?;
+            // Issue #56: the RECORD half of the first-crossing disclosure, and
+            // it is HERE — after the write has landed — for the reason
+            // `privacy/crossing.rs` spells out: recording at the question would
+            // let a refused call buy silence for the next one.
+            //
+            // The new row's own classification is read rather than assumed. The
+            // inspector had to assume public (it ran before this session
+            // existed); if the row turns out otherwise, no crossing happened and
+            // nothing is recorded, so the next open asks again.
+            self.record_new_session_crossing(cap, caller_session_id, &session_id, raw_arguments)
+                .await;
             Self::hold_slot_until_turn_ends(
                 cap_guard,
                 TurnFollower::new(slot_rx, turn_id),
@@ -2622,6 +2677,39 @@ impl WorkspaceClient {
             working_dir,
             notice,
         })
+    }
+
+    /// Mark a freshly created-and-seeded conversation as having crossed, so the
+    /// caller's next `workspace_send_prompt` into it does not ask again.
+    ///
+    /// The three conditions [`Self::record_crossing_if_disclosed`] documents all
+    /// apply; this only resolves the tier of a row that did not exist when the
+    /// card was raised.
+    async fn record_new_session_crossing(
+        &self,
+        cap: crate::privacy::CallCapability,
+        caller_session_id: &str,
+        session_id: &str,
+        raw_arguments: Option<&JsonObject>,
+    ) {
+        if !cap.enforced() {
+            return;
+        }
+        let tier = self
+            .context
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .ok()
+            .map(|row| row.privacy_tier);
+        Self::record_crossing_if_disclosed(
+            cap,
+            tier,
+            caller_session_id,
+            session_id,
+            "workspace_open",
+            raw_arguments,
+        );
     }
 
     /// The GUI half of [`Self::handle_open`] (§4.3): `open_tab` relies on the
@@ -2876,7 +2964,13 @@ impl WorkspaceClient {
             return;
         }
         let Some(args) = arguments else { return };
-        if crate::agents::workspace_inspector::crossing_payload(tool_name, args).is_none() {
+        // `crossing_disclosure`, not `crossing_payload`: the card half asks the
+        // former, and a record half asking a narrower question is how a write
+        // nobody was shown consumes the pair's single disclosure. It is also
+        // what makes `workspace_open { new: { prompt } }` recordable at all —
+        // that shape carries no `session_id`, so `crossing_payload` answers
+        // `None` for it by construction.
+        if crate::agents::workspace_inspector::crossing_disclosure(tool_name, args).is_none() {
             return;
         }
         crate::privacy::crossing::record(caller_session_id, target_session_id);
@@ -5627,6 +5721,58 @@ pub(crate) mod tests {
     /// advertised — and an empty table makes that the stronger claim, not a
     /// weaker one. The first loop is a standing guard for the next phase that
     /// stages a tool ahead of its handler.
+    /// **The guard's real invariant, pinned against the dispatcher itself.**
+    ///
+    /// [`DISPATCHED_TOOL_NAMES`] is what `agents/agent.rs` refuses a
+    /// `SessionType::SubAgent`, so it has to be exactly the set of names the
+    /// `match` in [`WorkspaceClient::call_tool`] acts on — including aliases the
+    /// advertisement has already forgotten. Cross-referencing `get_tools()`
+    /// instead is what let `workspace_capture_panel` stay dispatchable while
+    /// every test agreed it had been retired.
+    ///
+    /// Read out of this file's own source, both directions: an arm added to the
+    /// dispatcher without a row here fails, and a row here that no arm accepts
+    /// fails too (an over-broad guard is a misleading refusal for some third
+    /// party's tool).
+    #[test]
+    fn the_dispatcher_accepts_exactly_the_names_the_guard_is_built_from() {
+        let source = include_str!("workspace_extension.rs");
+        // The dispatcher only — not `get_tools`, not the instruction block, and
+        // stopping before the `_ =>` arm so `PENDING_TOOLS` (which is answered,
+        // not dispatched) stays out of it.
+        let dispatch = source
+            .split("let content = match name {")
+            .nth(1)
+            .and_then(|rest| rest.split("_ => match PENDING_TOOLS").next())
+            .expect("call_tool's dispatcher");
+
+        let mut accepted: Vec<&str> = Vec::new();
+        for literal in dispatch.split('"').skip(1).step_by(2) {
+            if literal.starts_with("workspace_") && !accepted.contains(&literal) {
+                accepted.push(literal);
+            }
+        }
+        assert!(
+            accepted.len() > 1,
+            "the dispatcher scan found nothing — the split markers have moved, and a \
+             vacuously passing rot-check is worse than none"
+        );
+
+        for name in &accepted {
+            assert!(
+                DISPATCHED_TOOL_NAMES.contains(name),
+                "{name} is dispatched by call_tool but is not in DISPATCHED_TOOL_NAMES, \
+                 so a subagent could call it"
+            );
+        }
+        for name in DISPATCHED_TOOL_NAMES {
+            assert!(
+                accepted.contains(&name),
+                "{name} is in DISPATCHED_TOOL_NAMES but no dispatcher arm accepts it"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn advertises_no_tool_whose_handler_is_still_a_placeholder() {
         let c = client();

@@ -89,9 +89,92 @@ pub fn get_default_scheduled_workflows_dir() -> Result<PathBuf, SchedulerError> 
     Ok(workflows_dir)
 }
 
+/// The largest a schedule id may be. Not a security property on its own — the
+/// character set below is — but a `format!("{id}.{ext}")` filename still has to
+/// fit a filesystem's name limit, and an id nobody can type is an id nobody can
+/// manage.
+const MAX_SCHEDULE_ID_LEN: usize = 64;
+
+/// A schedule id is a **plain slug**, because it names a file.
+///
+/// ⚠ **This is a security boundary, not a tidiness rule.** The id is
+/// interpolated into a filename under [`get_default_scheduled_workflows_dir`],
+/// and `Path::join` *discards its base* when the argument is absolute, while
+/// `..` is resolved by the kernel at `fs::copy`. An unvalidated id is therefore
+/// an arbitrary-file-write primitive reachable from `POST /schedule/create`:
+/// `{"id": "/tmp/pwned"}` wrote `/tmp/pwned.yaml`.
+///
+/// Shaped after `biorouter_mcp::knowledge::paths::validate_kb_id`, which exists
+/// for exactly the same reason, and deliberately a little wider than it: `_` and
+/// upper case are allowed because a schedule id is typed by the user in the GUI
+/// and derived from a workflow's file stem by
+/// `Scheduler::generate_unique_job_id`, so both already occur in the field.
+/// What is refused is every character that can leave the directory or change
+/// what the name means — `/`, `\`, `.`, `:`, NUL and the rest.
+pub fn validate_schedule_id(id: &str) -> Result<(), SchedulerError> {
+    if id.is_empty() {
+        return Err(SchedulerError::InvalidJobId(
+            "schedule id must not be empty".to_string(),
+        ));
+    }
+    if id.len() > MAX_SCHEDULE_ID_LEN {
+        return Err(SchedulerError::InvalidJobId(format!(
+            "schedule id is longer than {MAX_SCHEDULE_ID_LEN} characters"
+        )));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(SchedulerError::InvalidJobId(format!(
+            "schedule id '{id}' may only contain letters, digits, '-' and '_'"
+        )));
+    }
+    Ok(())
+}
+
+/// The file extension a copied workflow keeps.
+///
+/// Read off the *source* path, which is caller-supplied too, so it is checked
+/// rather than trusted: it is the second value interpolated into the same
+/// filename. A file name cannot contain a path separator on any platform we
+/// build for, so this cannot traverse — but `:` on Windows names an alternate
+/// data stream, and an absurdly long extension is a name-limit failure with a
+/// confusing message. Anything unexpected falls back to `yaml`.
+fn workflow_copy_extension(original: &Path) -> String {
+    original
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| {
+            !ext.is_empty() && ext.len() <= 16 && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+        .unwrap_or("yaml")
+        .to_string()
+}
+
+/// Where `make_copy` will put the job's own copy of its workflow, and the check
+/// that there is something to copy.
+///
+/// Deliberately does **no** copying: [`Scheduler::add_scheduled_job`] plans the
+/// path here and performs the copy only after every refusal has had its say.
+fn planned_workflow_copy(job: &ScheduledJob) -> Result<PathBuf, SchedulerError> {
+    let original = Path::new(&job.source);
+    if !original.is_file() {
+        return Err(SchedulerError::WorkflowLoadError(format!(
+            "Workflow file not found: {}",
+            job.source
+        )));
+    }
+    let scheduled_workflows_dir = get_default_scheduled_workflows_dir()?;
+    Ok(scheduled_workflows_dir.join(format!("{}.{}", job.id, workflow_copy_extension(original))))
+}
+
 #[derive(Debug)]
 pub enum SchedulerError {
     JobIdExists(String),
+    /// The id is not a plain slug. See [`validate_schedule_id`] — this is the
+    /// arbitrary-file-write refusal, and it maps to a 400, not a 500.
+    InvalidJobId(String),
     JobNotFound(String),
     StorageError(io::Error),
     WorkflowLoadError(String),
@@ -106,6 +189,7 @@ impl std::fmt::Display for SchedulerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SchedulerError::JobIdExists(id) => write!(f, "Job ID '{}' already exists.", id),
+            SchedulerError::InvalidJobId(why) => write!(f, "Invalid job ID: {}", why),
             SchedulerError::JobNotFound(id) => write!(f, "Job ID '{}' not found.", id),
             SchedulerError::StorageError(e) => write!(f, "Storage error: {}", e),
             SchedulerError::WorkflowLoadError(e) => write!(f, "Workflow load error: {}", e),
@@ -888,6 +972,12 @@ impl Scheduler {
         original_job_spec: ScheduledJob,
         make_copy: bool,
     ) -> Result<(), SchedulerError> {
+        // ⚠ FIRST, ahead of every other check and long before anything derives a
+        // path from it. The id names a file (see [`validate_schedule_id`]), and
+        // the copy below used to run before the cron was parsed and before the
+        // duplicate guard, so `{"id": "/tmp/pwned"}` landed `/tmp/pwned.yaml`
+        // even on the request paths that answered 400 or 409.
+        validate_schedule_id(&original_job_spec.id)?;
         {
             let jobs_guard = self.jobs.lock().await;
             if jobs_guard.contains_key(&original_job_spec.id) {
@@ -897,26 +987,23 @@ impl Scheduler {
 
         let mut stored_job = original_job_spec;
         let job_id = stored_job.id.clone();
-        if make_copy {
-            let original_workflow_path = Path::new(&stored_job.source);
-            if !original_workflow_path.is_file() {
-                return Err(SchedulerError::WorkflowLoadError(format!(
-                    "Workflow file not found: {}",
-                    stored_job.source
-                )));
-            }
+        let original_source = stored_job.source.clone();
 
-            let scheduled_workflows_dir = get_default_scheduled_workflows_dir()?;
-            let original_extension = original_workflow_path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .unwrap_or("yaml");
-
-            let destination_filename = format!("{}.{}", stored_job.id, original_extension);
-            let destination_workflow_path = scheduled_workflows_dir.join(destination_filename);
-
-            fs::copy(original_workflow_path, &destination_workflow_path)?;
-            stored_job.source = destination_workflow_path.to_string_lossy().into_owned();
+        // The copy is PLANNED here and PERFORMED at the bottom, once every
+        // refusal has had its say.
+        //
+        // ⚠ The order is the fix, not a tidy-up. `fs::copy` truncates its
+        // destination, and the destination is `<id>.<ext>` — so copying before
+        // the duplicate guard meant a rejected `add` that merely reused an
+        // existing id had already overwritten *that job's* workflow file, and
+        // then answered 409 as though nothing had happened.
+        let planned_copy = if make_copy {
+            Some(planned_workflow_copy(&stored_job)?)
+        } else {
+            None
+        };
+        if let Some(destination) = planned_copy.as_ref() {
+            stored_job.source = destination.to_string_lossy().into_owned();
             stored_job.current_session_id = None;
             stored_job.process_start_time = None;
         }
@@ -924,6 +1011,11 @@ impl Scheduler {
         // Built before the write so an invalid cron is refused without touching
         // the file, and so the write below is the last fallible step that can
         // leave the two out of step.
+        //
+        // ⚠ It is built from the job as it will be STORED, which is why the
+        // source rewrite above happens first — but note that the task itself
+        // only ever reads the id and the cron string (`run_cron_tick` re-reads
+        // the row), so this cannot bind a stale path.
         let cron_task = self.create_cron_task(stored_job.clone())?;
 
         // The ONE mutation that inserts. Everything else edits in place, so that
@@ -950,6 +1042,22 @@ impl Scheduler {
             Ok(())
         })
         .await?;
+
+        // The row is ours now — the id was a slug, the cron parsed, and no other
+        // process holds this id — so the copy can finally happen. If it fails
+        // the row is taken back out, because a job whose workflow file does not
+        // exist would fire forever and fail every time.
+        if let Some(destination) = planned_copy {
+            if let Err(error) = fs::copy(Path::new(&original_source), &destination) {
+                let id_to_undo = job_id.clone();
+                let _ = persist_change(&self.storage_path, move |list| {
+                    list.retain(|job| job.id != id_to_undo);
+                    Ok(())
+                })
+                .await;
+                return Err(SchedulerError::StorageError(error));
+            }
+        }
 
         let job_uuid = self
             .tokio_scheduler
@@ -1691,26 +1799,54 @@ async fn execute_job(
     // Kept, because the outcome of this run is decided partly by whether the
     // token fired — see `finish_scheduled_run` at the bottom of this function.
     let run_token = cancel_token.clone();
-    let stream = crate::session_context::with_session_id(Some(session_id.clone()), async {
-        agent
-            .reply(user_message, session_config, Some(cancel_token))
-            .await
+
+    // ⚠ **A scheduled run is unattended by definition, and the scope must cover
+    // the whole RUN — not the reply call, and certainly not a single dispatch.**
+    //
+    // `Agent::reply` returns a *stream*: almost nothing happens inside the call
+    // that builds it, and every tool the turn dispatches runs while the loop
+    // below polls it. `without_human_surface` is a `tokio::task_local`, so it
+    // follows the future it is wrapped around and NOTHING else — wrapping only
+    // the `reply(..)` call would set the flag for the construction and clear it
+    // before the first tool ever ran, which is the exact shape of the mistake
+    // this comment exists to stop being made again.
+    //
+    // Without it, a decision raised inside a `SessionType::Scheduled` session
+    // parks a card in a queue no interface drains: nobody can answer it, the run
+    // blocks until the TTL, and the outcome used to be recorded as a success —
+    // which for `daily-meditation` silently consumed a day of the user's chats.
+    //
+    // ⚠ This covers everything that asks through `PendingUserActions::park` or
+    // `ActionRequiredManager::request_and_wait` (any MCP server's
+    // `create_elicitation` included). The tool-permission prompt in
+    // `agents/tool_execution.rs` does NOT consult `no_human_surface()` yet, so it
+    // still parks for its TTL; `classify_scheduled_run` below is what stops that
+    // being reported as a success.
+    let transcript = &mut conversation;
+    let stream_error = crate::user_surface::without_human_surface(async {
+        let stream = crate::session_context::with_session_id(Some(session_id.clone()), async {
+            agent
+                .reply(user_message, session_config, Some(cancel_token))
+                .await
+        })
+        .await?;
+
+        use futures::StreamExt;
+        let mut stream = std::pin::pin!(stream);
+
+        let mut stream_error = None;
+        while let Some(message_result) = stream.next().await {
+            tokio::task::yield_now().await;
+
+            if let Err(error) = apply_scheduled_stream_item(transcript, message_result) {
+                tracing::error!("Error in agent stream: {}", error);
+                stream_error = Some(error);
+                break;
+            }
+        }
+        Ok::<_, anyhow::Error>(stream_error)
     })
     .await?;
-
-    use futures::StreamExt;
-    let mut stream = std::pin::pin!(stream);
-
-    let mut stream_error = None;
-    while let Some(message_result) = stream.next().await {
-        tokio::task::yield_now().await;
-
-        if let Err(error) = apply_scheduled_stream_item(&mut conversation, message_result) {
-            tracing::error!("Error in agent stream: {}", error);
-            stream_error = Some(error);
-            break;
-        }
-    }
 
     // Scheduled run finished: SessionEnd hooks (awaited; failure-open).
     {
@@ -1756,11 +1892,20 @@ async fn execute_job(
 /// * **Refused.** Gate B returns its refusal as a normal one-message stream (an
 ///   `Err` there would surface as a 500 from `/reply`). The scheduled run drained
 ///   it without looking at it and reported success.
+/// * **Approval expired.** A tool the turn wanted needed a person to approve it,
+///   and a `SessionType::Scheduled` session has no interface anybody is looking
+///   at. The prompt parked for its whole TTL (an hour by default) and then
+///   expired; the turn carried on and ended normally, so the stream reported no
+///   error and the run was recorded as a success — clearing `last_error` and
+///   advancing `last_run`. That cursor is `daily-meditation`'s Chat Recall
+///   discovery position, so a run in which the one thing it wanted to do was
+///   refused silently consumed a day of the user's chats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScheduledRunEnd {
     Completed,
     Cancelled,
     Refused,
+    ApprovalExpired,
 }
 
 /// Classify a finished run from the two signals available at the boundary.
@@ -1796,10 +1941,42 @@ fn classify_scheduled_run(cancelled: bool, conversation: &Conversation) -> Sched
         _ => false,
     };
     if refused {
-        ScheduledRunEnd::Refused
-    } else {
-        ScheduledRunEnd::Completed
+        return ScheduledRunEnd::Refused;
     }
+    if an_approval_expired(conversation) {
+        return ScheduledRunEnd::ApprovalExpired;
+    }
+    ScheduledRunEnd::Completed
+}
+
+/// Did a tool in this run stop because its permission prompt expired unanswered?
+///
+/// ⚠ **A TOOL RESPONSE, not text.** The refusal arm above had to reason
+/// carefully about a workflow prompt that quotes its marker; this one cannot
+/// have that problem, because a tool response is written by the tool machinery
+/// and neither the model nor the workflow author can author one. That is the
+/// whole reason the structural half is checked rather than the assistant's
+/// `user_only` "the prompt expired" notification, whose wording lives inline in
+/// `tool_execution.rs` and would drift silently.
+///
+/// The needle is the same `EXPIRED_RESPONSE` constant the expiry arm writes, so
+/// the two halves cannot disagree about what an expiry looks like.
+fn an_approval_expired(conversation: &Conversation) -> bool {
+    conversation.iter().any(|message| {
+        message.content.iter().any(|content| {
+            let crate::conversation::message::MessageContent::ToolResponse(response) = content
+            else {
+                return false;
+            };
+            let Ok(result) = &response.tool_result else {
+                return false;
+            };
+            result.content.iter().any(|item| {
+                item.as_text()
+                    .is_some_and(|text| text.text.contains(crate::agents::agent::EXPIRED_RESPONSE))
+            })
+        })
+    })
 }
 
 /// The one place a scheduled run is allowed to call itself a success.
@@ -1822,6 +1999,13 @@ fn finish_scheduled_run(
             "the privacy barrier refused this run's turn, so no work was done and the \
              schedule's last-run cursor was not advanced. This chat is private and the \
              model it is bound to is public; switch it to a private model."
+        )),
+        ScheduledRunEnd::ApprovalExpired => Err(anyhow!(
+            "this run asked for a tool permission nobody could answer — a scheduled run \
+             has no interface to show the card on — so the prompt expired, the tool did \
+             not run, and the schedule's last-run cursor was not advanced. Run this \
+             schedule from a chat, or give the workflow a permission mode that does not \
+             need approval."
         )),
     }
 }
@@ -1937,6 +2121,162 @@ mod tests {
             creator_session_id: None,
             last_error: None,
         }
+    }
+
+    /// The pure half of the arbitrary-write refusal.
+    ///
+    /// Every string below reaches `format!("{id}.{ext}")` and then
+    /// `Path::join`, where an absolute argument silently replaces the base and
+    /// `..` is resolved by the kernel at `fs::copy`.
+    #[test]
+    fn a_schedule_id_that_is_not_a_plain_slug_is_refused() {
+        for good in [
+            "daily-meditation",
+            "scheduled_job",
+            "loop-1a2b3c4d",
+            "a",
+            "A1",
+        ] {
+            assert!(
+                validate_schedule_id(good).is_ok(),
+                "{good} is a plain slug and must stay creatable"
+            );
+        }
+        for bad in [
+            "",
+            "/tmp/pwned",
+            "../../pwned",
+            "..",
+            ".",
+            "a/b",
+            "a\\b",
+            "with space",
+            "dot.ted",
+            "c:stream",
+            "nul\0byte",
+            "\u{2044}slash",
+        ] {
+            assert!(
+                matches!(
+                    validate_schedule_id(bad),
+                    Err(SchedulerError::InvalidJobId(_))
+                ),
+                "{bad:?} must be refused: it names a file"
+            );
+        }
+        assert!(validate_schedule_id(&"a".repeat(MAX_SCHEDULE_ID_LEN)).is_ok());
+        assert!(validate_schedule_id(&"a".repeat(MAX_SCHEDULE_ID_LEN + 1)).is_err());
+    }
+
+    /// The whole defect, driven through the real entry point: an absolute id
+    /// escapes `scheduled_workflows` entirely, and the copy used to happen
+    /// before *any* validation — so the file landed even on the requests that
+    /// were then refused.
+    ///
+    /// Asserting the refusal alone would not catch it. The write is the finding;
+    /// the error code is only how it is reported.
+    #[tokio::test]
+    async fn an_absolute_schedule_id_is_refused_and_writes_nothing() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let workflow_path = create_test_workflow(temp_dir.path(), "real-workflow");
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(storage_path.clone(), session_manager)
+            .await
+            .unwrap();
+
+        // `Path::join` discards `scheduled_workflows` for an absolute argument,
+        // so this id chooses its own directory. Pointed at the test's own temp
+        // dir rather than /tmp so a regression cannot litter the machine.
+        let outside = temp_dir.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let escaped = outside.join("pwned");
+        let mut job = dormant_job(escaped.to_str().unwrap(), &workflow_path);
+        job.cron = "0 0 3 * * *".to_string();
+
+        let result = scheduler.add_scheduled_job(job, true).await;
+
+        // ⚠ The WRITE is asserted first, and deliberately. The finding is the
+        // file, not the status code: the old order copied before it parsed the
+        // cron and before the duplicate guard, so the file landed even on the
+        // requests that were then refused. A test that checks the error first
+        // reports "wrong error" for a run that also wrote outside the managed
+        // directory.
+        assert!(
+            !escaped.with_extension("yaml").exists(),
+            "the id escaped the managed directory and wrote {}",
+            escaped.with_extension("yaml").display()
+        );
+        assert!(
+            fs::read_dir(&outside).unwrap().next().is_none(),
+            "a refused add must leave nothing behind"
+        );
+        assert!(
+            matches!(result, Err(SchedulerError::InvalidJobId(_))),
+            "an absolute id must be refused, got {result:?}"
+        );
+        assert!(
+            !storage_path.exists() || ids_on_disk(&storage_path).is_empty(),
+            "a refused add must not persist a row either"
+        );
+    }
+
+    /// The second half of the ordering fix. `fs::copy` TRUNCATES its
+    /// destination, so an `add` that merely reused an existing id had already
+    /// replaced that job's workflow file by the time it answered 409 — a
+    /// rejected request silently rewriting what a live schedule runs.
+    ///
+    /// Two `Scheduler`s over one file, the shipped topology of issue #140: the
+    /// second one's in-memory map has never heard of the first one's job, so the
+    /// cheap check at the top of `add_scheduled_job` passes and the only guard
+    /// left is the one inside `persist_change` — which the copy used to run
+    /// ahead of.
+    #[tokio::test]
+    async fn a_duplicate_id_does_not_overwrite_the_workflow_the_id_already_owns() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let daemon = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        let cli = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+
+        // Unique per run: `make_copy` writes into the real managed directory,
+        // which is shared with whatever else is on this machine.
+        let id = format!("dup-guard-{}", uuid::Uuid::new_v4().simple());
+        let mine = create_test_workflow(temp_dir.path(), "mine");
+        let mut first = dormant_job(&id, &mine);
+        first.cron = "0 0 3 * * *".to_string();
+        cli.add_scheduled_job(first, true).await.unwrap();
+
+        let copied = get_default_scheduled_workflows_dir()
+            .unwrap()
+            .join(format!("{id}.yaml"));
+        let before = fs::read_to_string(&copied).expect("the first add copied its workflow");
+
+        let theirs = temp_dir.path().join("theirs.yaml");
+        fs::write(&theirs, "prompt: replaced\n").unwrap();
+        let mut second = dormant_job(&id, &theirs);
+        second.cron = "0 0 3 * * *".to_string();
+        let result = daemon.add_scheduled_job(second, true).await;
+
+        let after = fs::read_to_string(&copied).unwrap();
+        let _ = fs::remove_file(&copied);
+        assert!(
+            matches!(result, Err(SchedulerError::JobIdExists(_))),
+            "the duplicate id must be refused, got {result:?}"
+        );
+        assert_eq!(
+            after, before,
+            "a refused duplicate must not have rewritten the existing job's workflow"
+        );
     }
 
     fn ids_on_disk(storage_path: &Path) -> Vec<String> {
@@ -2469,6 +2809,163 @@ mod tests {
         assert_eq!(
             classify_scheduled_run(false, &only_the_refusal),
             ScheduledRunEnd::Refused
+        );
+    }
+
+    /// The transcript an expired permission prompt leaves behind: the tool
+    /// machinery writes an error tool response carrying `EXPIRED_RESPONSE`, and
+    /// the turn then carries on and ends normally.
+    fn expired_approval_transcript() -> Conversation {
+        let mut conversation = Conversation::default();
+        conversation.push(Message::user().with_text("Meditate over the last week of chats."));
+        conversation.push(Message::assistant().with_text("Reading the week's sessions."));
+        conversation.push(Message::user().with_tool_response(
+            "req-1",
+            Ok(rmcp::model::CallToolResult {
+                content: vec![rmcp::model::Content::text(
+                    crate::agents::agent::EXPIRED_RESPONSE,
+                )],
+                structured_content: None,
+                is_error: Some(true),
+                meta: None,
+            }),
+        ));
+        conversation
+            .push(Message::assistant().with_text("I was going to write the note but could not."));
+        conversation
+    }
+
+    /// A scheduled run that stopped because an approval nobody could give
+    /// expired is NOT a success.
+    ///
+    /// `SessionType::Scheduled` has no interface, so the card parks in a queue
+    /// no one drains for the whole hour-long TTL. The turn then continues and
+    /// ends without error, which the classifier's `_ => false` arm read as
+    /// success — clearing `last_error` and advancing `last_run`. For
+    /// `daily-meditation` that cursor IS the Chat Recall discovery position, so
+    /// a run in which the write never happened silently consumed a day of the
+    /// user's chats.
+    #[test]
+    fn an_expired_approval_is_not_a_success_and_does_not_move_the_cursor() {
+        let expired = expired_approval_transcript();
+        assert_eq!(
+            classify_scheduled_run(false, &expired),
+            ScheduledRunEnd::ApprovalExpired,
+            "an approval that expired unanswered is not work done"
+        );
+        assert!(finish_scheduled_run("session-1".to_string(), false, &expired).is_err());
+
+        // The consequence, which is the finding: the discovery cursor must stay
+        // where it is, and the failure must be visible on the schedule.
+        let cursor = chrono::DateTime::parse_from_rfc3339("2026-08-20T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut job = dormant_job("daily-meditation", Path::new("/does/not/matter.yaml"));
+        job.last_run = Some(cursor);
+        let outcome = finish_scheduled_run("session-1".to_string(), false, &expired);
+        RunCompletion::from_result(&outcome, Utc::now()).apply(&mut job);
+        assert_eq!(
+            job.last_run,
+            Some(cursor),
+            "a run whose only tool was never approved must not advance the cursor"
+        );
+        assert!(
+            job.last_error.is_some(),
+            "the expiry must be visible on the schedule, not only in a log line"
+        );
+    }
+
+    /// The over-match this classifier must not have. A run that merely *talks
+    /// about* an expired prompt — `daily-meditation` summarising a chat in which
+    /// one happened — did work, and its cursor must advance. Only a real tool
+    /// response counts, and neither the model nor a workflow author can write
+    /// one of those.
+    #[test]
+    fn a_run_that_merely_quotes_an_expiry_still_counts_as_work_done() {
+        let mut summarised = Conversation::default();
+        summarised.push(Message::user().with_text(format!(
+            "Note that a past chat said: {}",
+            crate::agents::agent::EXPIRED_RESPONSE
+        )));
+        summarised.push(Message::assistant().with_text(format!(
+            "One session ended with \"{}\" — recorded.",
+            crate::agents::agent::EXPIRED_RESPONSE
+        )));
+        assert_eq!(
+            classify_scheduled_run(false, &summarised),
+            ScheduledRunEnd::Completed,
+            "prose about an expiry is not an expiry; only a tool response is"
+        );
+
+        // And a tool response that succeeded is not one either.
+        let mut worked = Conversation::default();
+        worked.push(Message::user().with_tool_response(
+            "req-1",
+            Ok(rmcp::model::CallToolResult {
+                content: vec![rmcp::model::Content::text("wrote the note")],
+                structured_content: None,
+                is_error: None,
+                meta: None,
+            }),
+        ));
+        worked.push(Message::assistant().with_text("Done."));
+        assert_eq!(
+            classify_scheduled_run(false, &worked),
+            ScheduledRunEnd::Completed
+        );
+    }
+
+    /// **The scope has to cover the RUN, not the call that builds it.**
+    ///
+    /// `Agent::reply` returns a stream; every tool the turn dispatches runs while
+    /// the drain loop polls it. `without_human_surface` is a `tokio::task_local`,
+    /// so it follows the future it wraps and nothing else — wrapping only the
+    /// `reply(..)` call would set the flag for the construction and clear it
+    /// before the first tool ran, and no counter anywhere would report that.
+    ///
+    /// A source-shape pin, for the same reason as
+    /// `a_scheduled_run_never_reports_success_without_classifying_its_end`: a
+    /// behavioural test needs a real provider and would write into the
+    /// developer's own session store. Modelled on
+    /// `biorouter-server/tests/call_tool_no_human_surface.rs`, which pins the
+    /// same property at the other surface that has no person to ask.
+    #[test]
+    fn a_scheduled_run_drains_its_stream_inside_the_unattended_scope() {
+        let source = include_str!("scheduler.rs");
+        let execute = source
+            .split("async fn execute_job(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n/// Why a scheduled run stopped").next())
+            .expect("execute_job production body");
+
+        let scope = execute
+            .find("without_human_surface(async")
+            .expect("a scheduled run must be scoped as unattended: there is nobody to ask");
+        let reply = execute
+            .find(".reply(user_message, session_config")
+            .expect("execute_job starts the run's turn");
+        let drain = execute
+            .find("while let Some(message_result) = stream.next().await")
+            .expect("execute_job drains the reply stream");
+        // `match_indices` rather than a slice-then-find: `clippy::string_slice`
+        // is denied here, and rightly — a byte offset into a `&str` is only safe
+        // on a character boundary, which a search result happens to be and the
+        // next edit to these markers might not.
+        let scope_end = execute
+            .match_indices("\n    })\n    .await?;")
+            .map(|(index, _)| index)
+            .find(|index| *index > scope)
+            .expect("the unattended scope is closed");
+
+        assert!(
+            scope < reply && reply < scope_end,
+            "the turn must START inside the unattended scope"
+        );
+        assert!(
+            scope < drain && drain < scope_end,
+            "the stream must be DRAINED inside the unattended scope — a task_local does not \
+             survive a future awaited outside its own scope(), so scoping the reply call \
+             alone would clear the flag before the first tool ran"
         );
     }
 

@@ -90,6 +90,20 @@ async fn create_schedule(
 ) -> Result<Json<ScheduledJob>, StatusCode> {
     let scheduler = state.scheduler();
 
+    // ⚠ The id names a FILE. `Path::join` throws its base away when the argument
+    // is absolute and `..` resolves in the kernel, so an unvalidated `req.id`
+    // was an arbitrary-file-write primitive on this route:
+    // `{"id": "/tmp/pwned"}` wrote `/tmp/pwned.yaml`, and did so *before* the
+    // cron was parsed and before the duplicate guard, so the file landed even
+    // when this handler answered 400 or 409.
+    //
+    // Refused here as well as inside `add_scheduled_job` — the same function in
+    // both places, so the two cannot drift — because a request this malformed
+    // should not reach the scheduler at all.
+    if let Err(error) = biorouter::scheduler::validate_schedule_id(&req.id) {
+        tracing::warn!("Refusing schedule create with an invalid id: {error}");
+        return Err(StatusCode::BAD_REQUEST);
+    }
     tracing::info!(
         "Server: Calling scheduler.add_scheduled_job() for job '{}'",
         req.id
@@ -121,6 +135,10 @@ async fn create_schedule(
                     StatusCode::BAD_REQUEST
                 }
                 biorouter::scheduler::SchedulerError::JobIdExists(_) => StatusCode::CONFLICT,
+                // Unreachable from this handler (the guard above answers first),
+                // and mapped anyway so a future caller that skips the guard
+                // still gets "you sent something bad", not "the server broke".
+                biorouter::scheduler::SchedulerError::InvalidJobId(_) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             }
         })?;
