@@ -840,9 +840,72 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
 /// `pub(crate)` so `Agent::list_tools` can restore the sub-workflow-enriched
 /// description onto the tool the workspace extension advertises with `&[]` —
 /// only the agent holds the `sub_workflows` map.
+#[cfg(test)]
+mod delegation_restraint_tests {
+    use super::*;
+
+    /// The description says when NOT to delegate, and that an explicit ask wins.
+    ///
+    /// Field report: a chat delegated the same task three times — the
+    /// delegations failed, and the user had to say "dont delegate. its a single
+    /// cypher query". The description explained how to delegate at length and
+    /// never once said when not to, which is the same gap `workspace_open` had
+    /// (it explained `subagent` vs itself and never said when to open a
+    /// conversation at all).
+    ///
+    /// ⚠ Restraint alone would be a worse bug than the one it fixes: a model
+    /// that argues with "spin up three subagents" is broken in a way the user
+    /// notices immediately. So the two clauses are asserted TOGETHER, and their
+    /// ORDER is asserted too — the explicit-request clause has to come first and
+    /// say it outranks the rest, or a model reading top-down applies the
+    /// restraint to a direct instruction.
+    #[test]
+    fn the_description_says_when_not_to_delegate_and_that_an_ask_outranks_it() {
+        let desc = build_tool_description(&[]);
+
+        let ask = desc
+            .find("WHEN THE USER ASKS FOR A SUBAGENT")
+            .expect("an explicit request must be addressed, or restraint reads as refusal");
+        let restraint = desc
+            .find("DELEGATE ONLY WHAT YOU CANNOT DO HERE")
+            .expect("the description must say when NOT to delegate");
+        assert!(
+            ask < restraint,
+            "the explicit-request clause must come FIRST; a model reading top-down \
+             would otherwise apply the restraint to a direct instruction"
+        );
+        assert!(
+            desc.contains("outranks"),
+            "the explicit request must be stated as outranking the judgement, not \
+             as one consideration among several"
+        );
+        // The specific failure from the report: repeated delegation after a
+        // dispatch failure.
+        assert!(
+            desc.contains("do not re-delegate a task that already failed to dispatch"),
+            "the report was three consecutive failed delegations of one task"
+        );
+    }
+}
+
 pub(crate) fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
     let mut desc = String::from(
         "Delegate a task to a subagent that runs independently with its own context.\n\n\
+         WHEN THE USER ASKS FOR A SUBAGENT, DELEGATE. However the request is \
+         phrased — \"spin up a subagent\", \"run these in parallel\", \"delegate \
+         this\" — that is an instruction, and it outranks every judgement below. \
+         Do not talk them out of it and do not do the work inline instead.\n\n\
+         OTHERWISE, DELEGATE ONLY WHAT YOU CANNOT DO HERE. If the tools you already \
+         hold can finish the task, use them and answer — a subagent costs a round \
+         trip, a separate context that cannot see this conversation, and a tab the \
+         user has to read. One question that needs one tool call is not a \
+         delegation. Reach for this unasked when the work needs its own context to \
+         stay out of yours (a long independent investigation), or genuinely needs \
+         tools this chat does not have.\n\n\
+         If you have NO tool for the task and no extension here provides one, say so \
+         plainly and ask the user whether to delegate — do not delegate repeatedly \
+         hoping a child will have what you lack, and do not re-delegate a task that \
+         already failed to dispatch.\n\n\
          Modes:\n\
          1. Ad-hoc: Provide `instructions` for a custom task\n\
          2. Predefined: Provide `subworkflow` name to run a predefined task\n\
