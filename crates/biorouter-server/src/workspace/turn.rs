@@ -1222,7 +1222,15 @@ pub(crate) fn classify_abort(
         TurnAbortCode::ToolLoop { .. } => (TurnErrorScope::Inference, false, None),
         TurnAbortCode::WorkerTimeout { .. } => (TurnErrorScope::Inference, true, None),
         TurnAbortCode::OutputRecoveryExhausted { .. } => (TurnErrorScope::Inference, false, None),
+        // Signed history that is already on the record and cannot be replayed
+        // unchanged: there is nowhere to resume from, so offering Retry would be
+        // offering a button that cannot work.
         TurnAbortCode::SignedReplayInvalidated => (TurnErrorScope::Inference, false, None),
+        // A dropped connection mid-tool-call, with the partial response
+        // discarded rather than persisted. The chat is back at the state the
+        // turn started from, which is precisely the precondition `retryTurn`
+        // needs — the last stored row is still the user's message.
+        TurnAbortCode::SignedStreamTruncated => (TurnErrorScope::Inference, true, None),
     }
 }
 
@@ -2866,6 +2874,24 @@ mod tests {
                 elapsed_s: 90,
             }),
             (TurnErrorScope::Inference, true, None)
+        );
+    }
+
+    /// The two signed aborts must not classify alike. A dropped connection
+    /// mid-tool-call is transient and the agent rolled the turn back, so the
+    /// client gets a Retry; signed history that cannot be replayed unchanged has
+    /// nowhere to resume from and must not.
+    #[test]
+    fn only_the_rolled_back_signed_abort_is_retryable() {
+        use biorouter::agents::TurnAbortCode;
+
+        assert_eq!(
+            classify_abort(&TurnAbortCode::SignedStreamTruncated),
+            (TurnErrorScope::Inference, true, None)
+        );
+        assert_eq!(
+            classify_abort(&TurnAbortCode::SignedReplayInvalidated),
+            (TurnErrorScope::Inference, false, None)
         );
     }
 

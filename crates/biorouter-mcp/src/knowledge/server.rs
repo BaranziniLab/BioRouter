@@ -2052,7 +2052,7 @@ impl KnowledgeServer {
         let caller = CallerIdentity::from_context(Some(context));
         let transaction_slot = (!dry_run).then(|| self.transactions.slot(&p.kb_id));
         let transaction_state = match transaction_slot.as_ref() {
-            Some(slot) => Some(lock_transaction_slot(&slot, &p.kb_id, Some(&context.ct)).await?),
+            Some(slot) => Some(lock_transaction_slot(slot, &p.kb_id, Some(&context.ct)).await?),
             None => None,
         };
         if transaction_state

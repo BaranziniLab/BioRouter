@@ -651,7 +651,6 @@ mod tests {
 #[cfg(test)]
 mod shared_namespace_tests {
     use super::*;
-    use crate::providers::base::ProviderMetadata;
 
     /// Configuring UCSF's PRIVATE Versa must not configure the PUBLIC Azure card.
     ///

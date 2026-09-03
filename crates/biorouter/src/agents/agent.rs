@@ -2342,6 +2342,94 @@ async fn persist_carried_over_interrupts(
     Ok(messages)
 }
 
+/// The terminal text for a signed turn the provider cut off before its tool
+/// arguments were complete.
+///
+/// It deliberately does NOT say "start a new chat", because for this case that
+/// is wrong advice: the partial response is discarded rather than persisted, so
+/// the chat is back where the turn started and re-running it is the fix. The
+/// decoder's own message already says "Please retry"; this is where that
+/// promise is kept.
+pub(crate) const SIGNED_STREAM_TRUNCATED_NOTICE: &str =
+    "The connection to the model dropped before it finished sending a tool call. \
+     BioRouter did not run the incomplete call, and discarded the partial response \
+     rather than keeping a signed message the model never finished. Nothing was \
+     changed — retry to run the turn again.";
+
+/// The decoder's classification of a tool request it refused to make callable.
+///
+/// Only the decoder's own tag may drive behaviour here: a provider's error
+/// *message* can carry raw arguments and secrets, and matching on its prose
+/// would make the loop's recovery depend on wording that changes without notice.
+fn tool_call_failure_kind(request: &ToolRequest) -> Option<&str> {
+    request.tool_call.as_ref().err().and_then(|error| {
+        error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("biorouterToolCallFailure"))
+            .and_then(Value::as_str)
+    })
+}
+
+/// Whether a message records work that actually happened — a dispatched call or
+/// its result. Rolling such a row back would erase the only evidence a tool ran,
+/// which is strictly worse than keeping an unreplayable history.
+fn records_executed_work(message: &Message) -> bool {
+    message.content.iter().any(|content| match content {
+        MessageContent::ToolResponse(_) | MessageContent::FrontendToolRequest(_) => true,
+        MessageContent::ToolRequest(request) => request.tool_call.is_ok(),
+        _ => false,
+    })
+}
+
+/// Whether this signed turn can simply be **abandoned** — rolled back to the
+/// state the provider was already called with — instead of ending the chat.
+///
+/// This is the narrow case the user hits when a Bedrock connection dies
+/// mid-`tool_use`: the reasoning block closed and was signed, the tool block
+/// never did, and nothing ran. All three conditions are load-bearing and none
+/// implies another:
+///
+/// 1. **Every** tool request in the response is a failure the decoder tagged
+///    `incomplete_stream`. `invalid_arguments` is a different event — there the
+///    provider finished sending a block list we cannot use, so there is no
+///    earlier point to resume from and the turn stays terminal.
+/// 2. Nothing executed. A response that pairs a complete call with a truncated
+///    one has already had side effects; discarding that iteration would lose
+///    them.
+/// 3. Every row this iteration staged belongs to this same response. That is
+///    what makes the discard a *rollback*: with it, dropping the staged rows
+///    leaves exactly the conversation the provider was called with, and without
+///    it "discard the partial message" would silently take unrelated rows too.
+fn signed_stream_truncation_is_recoverable(response: &Message, staged: &Conversation) -> bool {
+    let mut saw_truncated_request = false;
+    for content in &response.content {
+        match content {
+            MessageContent::ToolRequest(request) => {
+                if tool_call_failure_kind(request) != Some("incomplete_stream") {
+                    return false;
+                }
+                saw_truncated_request = true;
+            }
+            MessageContent::FrontendToolRequest(_) | MessageContent::ToolResponse(_) => {
+                return false
+            }
+            _ => {}
+        }
+    }
+    if !saw_truncated_request || staged.iter().any(records_executed_work) {
+        return false;
+    }
+    match response.id.as_deref() {
+        Some(response_id) => staged
+            .iter()
+            .all(|message| message.id.as_deref() == Some(response_id)),
+        // No id means nothing could have been folded under one, so a staged row
+        // cannot be attributed to this response and must not be dropped.
+        None => staged.is_empty(),
+    }
+}
+
 /// The ids of this signed turn's tool requests that have an executable
 /// counterpart and a response slot, in the provider-authored order the signed
 /// assistant block fixes.
@@ -9718,7 +9806,39 @@ impl Agent {
                                 let signed_provider_turn =
                                     continues_signed_turn(&response, &messages_to_add);
 
-                                if signed_provider_turn {
+                                if signed_provider_turn
+                                    && signed_stream_truncation_is_recoverable(
+                                        &response,
+                                        &messages_to_add,
+                                    )
+                                {
+                                    // The stream died before the tool arguments
+                                    // were complete and nothing ran. Persisting
+                                    // the partial signed message is what makes a
+                                    // retry unsafe — it would replay a block list
+                                    // the signature never covered — so the whole
+                                    // iteration is rolled back at the break below,
+                                    // once every row it can still stage has been
+                                    // staged. Every one of those rows belongs to
+                                    // this response (the predicate checks it), so
+                                    // what is left is exactly the conversation the
+                                    // provider was called with.
+                                    //
+                                    // The response is deliberately neither yielded
+                                    // nor pushed: the terminal frame carries the
+                                    // explanation, and an assistant row at the tail
+                                    // of the transcript would leave the desktop's
+                                    // Retry with no user message to re-send.
+                                    //
+                                    // Deliberately NOT setting
+                                    // `signed_replay_invalidated_this_iteration`:
+                                    // no signed content entered the conversation,
+                                    // so there is nothing to strip out of it.
+                                    pending_turn_abort = Some((
+                                        TurnAbortCode::SignedStreamTruncated,
+                                        SIGNED_STREAM_TRUNCATED_NOTICE.to_string(),
+                                    ));
+                                } else if signed_provider_turn {
                                     // A Bedrock reasoning signature authenticates
                                     // the provider-authored assistant block list,
                                     // including original tool arguments and order.
@@ -9820,6 +9940,21 @@ impl Agent {
                                 );
 
                                 no_tools_called = false;
+                                if matches!(
+                                    pending_turn_abort,
+                                    Some((TurnAbortCode::SignedStreamTruncated, _))
+                                ) {
+                                    // The rollback, at the LAST point anything can
+                                    // still be staged (a PreToolUse hook fires even
+                                    // for a request that was never callable, and
+                                    // stages its context above). Discarding here
+                                    // rather than at the branch that decided means
+                                    // nothing can slip in behind the decision and
+                                    // land an assistant-side row at the tail of a
+                                    // transcript whose whole point is that the
+                                    // user's prompt is still the last thing in it.
+                                    messages_to_add.clear();
+                                }
                                 if pending_turn_abort.is_some() {
                                     break;
                                 }
@@ -10240,6 +10375,36 @@ impl Agent {
                         checkpoint_anchor_ts,
                         CheckpointKind::PostStep,
                     ).await;
+                }
+
+                if matches!(
+                    pending_turn_abort,
+                    Some((TurnAbortCode::SignedStreamTruncated, _))
+                ) {
+                    // The rollback is durable but INVISIBLE to anything watching
+                    // live: the partial reply was streamed as `Message` frames
+                    // before it was abandoned, and every consumer appended those
+                    // rows to its own transcript. The desktop then reads the tail
+                    // of that transcript to decide whether Retry has a user
+                    // message to re-send, so leaving the ghost rows in place
+                    // would offer a Retry that silently does nothing — worse
+                    // than the "start a new chat" this replaces.
+                    //
+                    // Resync to what the STORE holds, never to the in-memory
+                    // conversation: the frame's standing rule is that a reload
+                    // must agree with it, so a read failure means saying nothing
+                    // rather than claiming a history no reload would reproduce.
+                    match session_manager.get_session(&session_config.id, true).await {
+                        Ok(session) => {
+                            if let Some(stored) = session.conversation {
+                                yield AgentEvent::HistoryReplaced(stored);
+                            }
+                        }
+                        Err(e) => warn!(
+                            "Could not re-read the conversation after rolling back a truncated \
+                             signed turn; live transcripts keep the abandoned rows until reload: {e}"
+                        ),
+                    }
                 }
 
                 if let Some((code, message)) = pending_turn_abort.take() {
@@ -11890,6 +12055,125 @@ mod tests {
             .with_id("m2")
             .with_redacted_thinking("bytes");
         assert!(continues_signed_turn(&redacted, &empty));
+    }
+
+    fn shell_call(command: &str) -> CallToolRequestParams {
+        CallToolRequestParams {
+            task: None,
+            meta: None,
+            name: "developer__shell".into(),
+            arguments: Some(rmcp::object!({ "command": command })),
+        }
+    }
+
+    fn truncated_request(id: &str, tool: &str) -> Message {
+        Message::assistant().with_id("m1").with_tool_request(
+            id,
+            Err(ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!("stream ended before the tool block for `{tool}` completed"),
+                Some(serde_json::json!({"biorouterToolCallFailure": "incomplete_stream"})),
+            )),
+        )
+    }
+
+    fn signed_row() -> Message {
+        Message::assistant()
+            .with_id("m1")
+            .with_thinking("planning the edit", "sig")
+    }
+
+    /// The narrow case a truncated signed turn may be rolled back from, and the
+    /// three ways it must refuse. Each refusal is its own bug if it regresses,
+    /// and none of them is implied by the others.
+    #[test]
+    fn only_an_unexecuted_incomplete_stream_signed_turn_may_be_rolled_back() {
+        let staged = Conversation::new_unvalidated(vec![signed_row()]);
+        let response = truncated_request("toolu_a", "developer__text_editor");
+        assert!(
+            signed_stream_truncation_is_recoverable(&response, &staged),
+            "a signed row plus an unfinished call, with nothing executed, rolls back"
+        );
+
+        // 1. A different failure kind. `invalid_arguments` means the provider
+        //    finished sending a block list we cannot use — there is no earlier
+        //    point to resume from, so the turn stays terminal.
+        let invalid = Message::assistant().with_id("m1").with_tool_request(
+            "toolu_a",
+            Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                "Could not parse tool arguments",
+                Some(serde_json::json!({"biorouterToolCallFailure": "invalid_arguments"})),
+            )),
+        );
+        assert!(!signed_stream_truncation_is_recoverable(&invalid, &staged));
+
+        // An untagged failure is not assumed to be a truncation either: the tag
+        // is the decoder's own classification, and its absence is unknown, not
+        // benign.
+        let untagged = Message::assistant().with_id("m1").with_tool_request(
+            "toolu_a",
+            Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, "something", None)),
+        );
+        assert!(!signed_stream_truncation_is_recoverable(&untagged, &staged));
+
+        // 2. Work already happened. A response that pairs a COMPLETE call with a
+        //    truncated one has had side effects; discarding the iteration would
+        //    erase the only record that a tool ran.
+        let mixed = truncated_request("toolu_b", "developer__text_editor")
+            .with_tool_request("toolu_a", Ok(shell_call("ls")));
+        assert!(!signed_stream_truncation_is_recoverable(&mixed, &staged));
+        let executed = Conversation::new_unvalidated(vec![
+            signed_row().with_tool_request("toolu_a", Ok(shell_call("ls")))
+        ]);
+        assert!(!signed_stream_truncation_is_recoverable(
+            &response, &executed
+        ));
+
+        // 3. A staged row that is not part of this response. Dropping it would
+        //    be a loss, not a rollback.
+        let foreign = Conversation::new_unvalidated(vec![
+            Message::assistant().with_id("m0").with_text("earlier turn"),
+            signed_row(),
+        ]);
+        assert!(!signed_stream_truncation_is_recoverable(
+            &response, &foreign
+        ));
+
+        // A response with no id can own no staged row, so it may only be rolled
+        // back when nothing is staged at all.
+        let anonymous = Message::assistant()
+            .with_thinking("planning", "sig")
+            .with_tool_request(
+                "toolu_a",
+                Err(ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    "stream ended",
+                    Some(serde_json::json!({"biorouterToolCallFailure": "incomplete_stream"})),
+                )),
+            );
+        assert!(signed_stream_truncation_is_recoverable(
+            &anonymous,
+            &Conversation::new_unvalidated(vec![])
+        ));
+        assert!(!signed_stream_truncation_is_recoverable(
+            &anonymous, &staged
+        ));
+
+        // A signed turn with no tool request at all is not this case.
+        assert!(!signed_stream_truncation_is_recoverable(
+            &signed_row(),
+            &Conversation::new_unvalidated(vec![])
+        ));
+    }
+
+    /// The advice in the terminal text is the part the user acts on, and for
+    /// this case "start a new chat" is wrong: the turn was rolled back, so the
+    /// chat is usable and re-running it is the fix.
+    #[test]
+    fn the_truncation_notice_offers_a_retry_instead_of_a_new_chat() {
+        assert!(!SIGNED_STREAM_TRUNCATED_NOTICE.contains("Start a new chat"));
+        assert!(SIGNED_STREAM_TRUNCATED_NOTICE.contains("retry"));
     }
 
     /// Extract the elicitation id from a queued request message.

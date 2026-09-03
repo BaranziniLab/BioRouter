@@ -2209,6 +2209,125 @@ mod bedrock_stream_tests {
         );
     }
 
+    /// The exact shape the user-reported `us.anthropic.claude-sonnet-5` failure
+    /// hands the agent loop, pinned here so the agent-loop test next door
+    /// (`tests/signed_stream_truncation_agent_loop.rs`) scripts reality rather
+    /// than a guess: a SIGNED reasoning block that closed cleanly, followed by a
+    /// `tool_use` block the connection cut off mid-arguments.
+    ///
+    /// Three properties are load-bearing downstream and none of them is implied
+    /// by the others: the two messages share ONE id (so the agent folds them
+    /// into a single signed assistant row), the failure is tagged
+    /// `incomplete_stream` (which is what separates "the provider never finished
+    /// sending" from "the provider sent arguments we cannot use"), and the
+    /// signed row itself never reaches `finish()` — it was already emitted.
+    #[test]
+    fn signed_truncated_tool_block_reports_incomplete_stream_under_the_signed_id() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let reasoning = |index, text: &str| {
+            ConverseStreamOutput::ContentBlockDelta(
+                ContentBlockDeltaEvent::builder()
+                    .content_block_index(index)
+                    .delta(ContentBlockDelta::ReasoningContent(
+                        ReasoningContentBlockDelta::Text(text.to_string()),
+                    ))
+                    .build()
+                    .unwrap(),
+            )
+        };
+        let signature = |index, signature: &str| {
+            ConverseStreamOutput::ContentBlockDelta(
+                ContentBlockDeltaEvent::builder()
+                    .content_block_index(index)
+                    .delta(ContentBlockDelta::ReasoningContent(
+                        ReasoningContentBlockDelta::Signature(signature.to_string()),
+                    ))
+                    .build()
+                    .unwrap(),
+            )
+        };
+
+        let during = drain(
+            &mut decoder,
+            &[
+                message_start(),
+                reasoning(0, "I will rewrite the file."),
+                signature(0, "bedrock-signature"),
+                block_stop(0),
+                tool_start(1, "toolu_trunc", "developer__text_editor"),
+                tool_delta(
+                    1,
+                    "{\"command\":\"write\",\"path\":\"/tmp/a.rs\",\"file_text\":\"fn ma",
+                ),
+                // the connection died here: no contentBlockStop, no messageStop
+            ],
+        );
+        let signed = during
+            .iter()
+            .filter_map(|(message, _)| message.as_ref())
+            .find(|message| {
+                message
+                    .content
+                    .iter()
+                    .any(|content| matches!(content, MessageContent::Thinking(_)))
+            })
+            .expect("the closed reasoning block is emitted during the stream");
+        assert_eq!(
+            signed.content[0].as_thinking().unwrap().signature,
+            "bedrock-signature"
+        );
+
+        let flushed = decoder.finish();
+        assert!(decoder.was_truncated());
+        assert!(
+            !flushed
+                .iter()
+                .filter_map(|(message, _)| message.as_ref())
+                .any(|message| message
+                    .content
+                    .iter()
+                    .any(|content| matches!(content, MessageContent::Thinking(_)))),
+            "the signed row was already emitted; finish() must not re-emit it"
+        );
+
+        let failures: Vec<&ErrorData> = flushed
+            .iter()
+            .filter_map(|(message, _)| message.as_ref())
+            .flat_map(|message| message.content.iter())
+            .filter_map(|content| match content {
+                MessageContent::ToolRequest(request) => request.tool_call.as_ref().err(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(
+            failures[0]
+                .data
+                .as_ref()
+                .and_then(|data| data.get("biorouterToolCallFailure"))
+                .and_then(Value::as_str),
+            Some("incomplete_stream"),
+            "the tag is what tells the agent loop this was a cut connection"
+        );
+
+        let flushed_id = flushed
+            .iter()
+            .filter_map(|(message, _)| message.as_ref())
+            .find(|message| {
+                message
+                    .content
+                    .iter()
+                    .any(|content| matches!(content, MessageContent::ToolRequest(_)))
+            })
+            .and_then(|message| message.id.clone());
+        assert_eq!(
+            flushed_id.as_deref(),
+            signed.id.as_deref(),
+            "the truncated request must carry the SAME id as the signed row it belongs to"
+        );
+    }
+
     /// Text already delivered before a truncation stays delivered; only the
     /// incomplete tool block is turned into a failure.
     #[test]

@@ -5914,8 +5914,11 @@ mod tests {
                 // (`knowledge/tier_user.rs`, a fixture holding `lock_kb`). Test
                 // modules sit at the end of a file in this crate, so everything
                 // from the first `#[cfg(test)]` onwards is out of scope.
+                // `split_at`, not `&source[..at]`: `clippy::string_slice` is denied
+                // repo-wide. The index came from `find` so it is a char boundary
+                // here, but the slice form invites one that is not.
                 let production = match source.find("#[cfg(test)]") {
-                    Some(at) => &source[..at],
+                    Some(at) => source.split_at(at).0,
                     None => source.as_str(),
                 };
                 for (n, line) in production.lines().enumerate() {
@@ -7893,7 +7896,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
     /// Hiding Soul is a user decision, and the product default must not undo it.
     ///
     /// The default resolves at READ time — an absent machine pointer becomes
@@ -7941,6 +7943,7 @@ mod tests {
         Ok(())
     }
 
+    #[test]
     fn soul_is_the_default_until_the_user_explicitly_changes_or_clears_it() -> anyhow::Result<()> {
         let tmp = tempfile::TempDir::new()?;
         let svc = KnowledgeService::new(tmp.path().to_path_buf());

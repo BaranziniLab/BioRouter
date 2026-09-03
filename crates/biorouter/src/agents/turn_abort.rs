@@ -49,6 +49,19 @@ pub enum TurnAbortCode {
     /// exact provider-visible history it authenticated. No provider call was
     /// attempted because sending a changed prefix is guaranteed to fail.
     SignedReplayInvalidated,
+    /// A provider-**signed** turn's response stream ended before a tool block's
+    /// arguments were complete, and nothing had run.
+    ///
+    /// The sibling above and this one are both "signed content we cannot send
+    /// back", and the difference between them is the whole reason this variant
+    /// exists. `SignedReplayInvalidated` describes history that is already on
+    /// the record and cannot be replayed without mutation — there is nowhere
+    /// safe to resume from, so it is terminal. This one describes a turn that
+    /// left **no** record: the partial assistant message was discarded rather
+    /// than persisted, so the conversation is byte-for-byte the one the
+    /// provider was already called with. Re-issuing it replays an untouched
+    /// prefix, which is why it is the one signed abort that is retryable.
+    SignedStreamTruncated,
 }
 
 impl TurnAbortCode {
@@ -61,6 +74,7 @@ impl TurnAbortCode {
             Self::WorkerTimeout { .. } => "worker_timeout",
             Self::OutputRecoveryExhausted { .. } => "output_recovery_exhausted",
             Self::SignedReplayInvalidated => "signed_replay_invalidated",
+            Self::SignedStreamTruncated => "signed_stream_truncated",
         }
     }
 
@@ -78,6 +92,7 @@ impl TurnAbortCode {
             Self::WorkerTimeout { .. } => exit::WORKER_TIMEOUT,
             Self::OutputRecoveryExhausted { .. } => exit::OUTPUT_RECOVERY_EXHAUSTED,
             Self::SignedReplayInvalidated => exit::SIGNED_REPLAY_INVALIDATED,
+            Self::SignedStreamTruncated => exit::SIGNED_STREAM_TRUNCATED,
         }
     }
 }
@@ -147,6 +162,8 @@ pub mod exit {
     pub const OUTPUT_RECOVERY_EXHAUSTED: u8 = 79;
     /// Signed provider reasoning cannot be replayed without mutation.
     pub const SIGNED_REPLAY_INVALIDATED: u8 = 80;
+    /// A signed turn was cut off mid-tool-call and rolled back; retry it.
+    pub const SIGNED_STREAM_TRUNCATED: u8 = 81;
 }
 
 #[cfg(test)]
@@ -229,10 +246,28 @@ mod tests {
                 zero_progress: false,
             },
             TurnAbortCode::SignedReplayInvalidated,
+            TurnAbortCode::SignedStreamTruncated,
         ] {
             assert_ne!(code.exit_code(), exit::OK, "{code:?} must not exit 0");
             assert!(!code.wire_code().is_empty());
         }
+    }
+
+    /// The two signed aborts are separate codes on every boundary a harness can
+    /// read. Collapsing either onto the other is how "retry this" and "this
+    /// chat is over" become one indistinguishable outcome again.
+    #[test]
+    fn the_two_signed_aborts_never_share_a_code() {
+        let invalidated = TurnAbortCode::SignedReplayInvalidated;
+        let truncated = TurnAbortCode::SignedStreamTruncated;
+        assert_ne!(invalidated.wire_code(), truncated.wire_code());
+        assert_ne!(invalidated.exit_code(), truncated.exit_code());
+        assert_eq!(truncated.wire_code(), "signed_stream_truncated");
+
+        let json = serde_json::to_value(&truncated).unwrap();
+        assert_eq!(json["reason"], "signed_stream_truncated");
+        let back: TurnAbortCode = serde_json::from_value(json).unwrap();
+        assert_eq!(back, truncated);
     }
 
     #[test]
