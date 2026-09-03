@@ -7832,6 +7832,53 @@ mod tests {
     }
 
     #[test]
+    /// Hiding Soul is a user decision, and the product default must not undo it.
+    ///
+    /// The default resolves at READ time — an absent machine pointer becomes
+    /// `Pinned("soul")` in `effective_primary_unlocked` — and that resolution
+    /// runs BEFORE the visible set is consulted. So the question this answers is
+    /// whether the repair path downstream actually filters the resolved default
+    /// against what the scope can see, or whether a hidden Soul comes back as
+    /// the primary anyway. Reasoning said the former; this measures it.
+    ///
+    /// Written while completing an uncommitted work-in-progress that solved the
+    /// same problem by WRITING the pointer once at startup instead. That
+    /// approach was discarded as superseded — resolving at read time needs no
+    /// lock, no startup write and cannot go stale — but its test list named this
+    /// case, and it was the one case main had no test for.
+    #[test]
+    fn a_hidden_soul_does_not_come_back_as_the_default_primary() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base(DEFAULT_PRIMARY_KB_ID, "Soul", None)?;
+        svc.create_base("project", "Project", None)?;
+
+        // Never configured: the default applies.
+        assert_eq!(
+            svc.primary_for_session(None)?.as_deref(),
+            Some(DEFAULT_PRIMARY_KB_ID)
+        );
+
+        // The user hides Soul machine-wide, expressing nothing about the primary.
+        svc.set_selection(
+            None,
+            Some(&[DEFAULT_PRIMARY_KB_ID.to_string()]),
+            PrimaryUpdate::Unchanged,
+        )?;
+
+        let primary = svc.primary_for_session(None)?;
+        assert_ne!(
+            primary.as_deref(),
+            Some(DEFAULT_PRIMARY_KB_ID),
+            "a hidden base must never be the primary — the product default cannot \
+             override the user's decision to hide it"
+        );
+        // It falls to the remaining visible base rather than to nothing, which is
+        // the same rule every other primary repair follows.
+        assert_eq!(primary.as_deref(), Some("project"));
+        Ok(())
+    }
+
     fn soul_is_the_default_until_the_user_explicitly_changes_or_clears_it() -> anyhow::Result<()> {
         let tmp = tempfile::TempDir::new()?;
         let svc = KnowledgeService::new(tmp.path().to_path_buf());
