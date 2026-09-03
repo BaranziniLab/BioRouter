@@ -2063,11 +2063,15 @@ impl KnowledgeServer {
         }
         let report = self
             .service
-            .merge_bases(
+            .merge_bases_cancellable(
                 &p.kb_id,
                 &p.source_kb_id,
                 &crate::knowledge::merge::MergeAuthority::Model(&caller.kb_caller()),
                 dry_run,
+                // A merge holds TWO KB locks at the write deadline. Without the
+                // request's token, Stop did nothing for up to 2 x 1800s — which
+                // is how a live drive stalled on `kb_merge`.
+                Some(&context.ct),
             )
             .await
             .map_err(into_err)?;

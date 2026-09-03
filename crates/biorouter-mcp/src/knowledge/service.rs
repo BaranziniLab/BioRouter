@@ -2067,12 +2067,30 @@ impl KnowledgeService {
     /// source's content at PUBLIC if the process died mid-commit, which is
     /// silent. It is the same ordering, for the same reason, as the ratchet in
     /// `KnowledgeServer::call_tool`.
+    /// [`Self::merge_bases`] with the caller's cancellation token.
+    ///
+    /// A merge is the only operation that holds TWO KB locks, taken in id
+    /// order, and it holds them at the write deadline. Passing `None` for the
+    /// token therefore made Stop do nothing for up to 2 x 1800s — measured in a
+    /// live drive, where `kb_merge` parked and the sweep stalled on it.
     pub async fn merge_bases(
         &self,
         destination_kb_id: &str,
         source_kb_id: &str,
         authority: &crate::knowledge::merge::MergeAuthority<'_>,
         dry_run: bool,
+    ) -> Result<crate::knowledge::merge::MergeReport> {
+        self.merge_bases_cancellable(destination_kb_id, source_kb_id, authority, dry_run, None)
+            .await
+    }
+
+    pub async fn merge_bases_cancellable(
+        &self,
+        destination_kb_id: &str,
+        source_kb_id: &str,
+        authority: &crate::knowledge::merge::MergeAuthority<'_>,
+        dry_run: bool,
+        cancel: Option<&CancellationToken>,
     ) -> Result<crate::knowledge::merge::MergeReport> {
         paths::validate_kb_id(destination_kb_id)?;
         paths::validate_kb_id(source_kb_id)?;
@@ -2119,8 +2137,8 @@ impl KnowledgeService {
         } else {
             FileLockGuard::KB_WRITE_LOCK_WAIT
         };
-        let _first = self.lock_kb_path_waiting(first, None, wait).await?;
-        let _second = self.lock_kb_path_waiting(second, None, wait).await?;
+        let _first = self.lock_kb_path_waiting(first, cancel, wait).await?;
+        let _second = self.lock_kb_path_waiting(second, cancel, wait).await?;
 
         // A caller can wait here while another writer raises either base and
         // commits private content. Re-authorize over the locked snapshots before
@@ -5938,6 +5956,50 @@ mod tests {
                  path is parking for thirty minutes behind an open transaction."
             );
         }
+    }
+
+    /// A merge honours Stop. It holds TWO locks; neither may ignore the token.
+    ///
+    /// Found by driving the app: the tool sweep stalled on `kb_merge`, and the
+    /// reason was that `merge_bases` passed `None` for the cancellation token on
+    /// both `lock_kb_path_waiting` calls. A merge is the one operation that
+    /// takes two KB locks, in id order, at the WRITE deadline — so a caller
+    /// pressing Stop waited out up to 2 x 1800s while the turn looked cancelled.
+    ///
+    /// The dry-run half was already fixed (it takes the read deadline). This is
+    /// the real merge, where the long deadline is correct and the missing
+    /// cancellation was not.
+    #[tokio::test]
+    async fn a_merge_stops_when_the_caller_cancels() {
+        let (_dir, svc) = svc();
+        svc.create_base("dst", "Destination", None).unwrap();
+        svc.create_base("src", "Source", None).unwrap();
+
+        // Hold the first lock in id order ("dst" < "src") so the merge queues.
+        let held = svc.lock_existing_kb("dst").expect("hold the destination");
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let proof = crate::knowledge::merge::UserKbMerge::for_test();
+        let authority = crate::knowledge::merge::MergeAuthority::User(&proof);
+        let started = std::time::Instant::now();
+        let error = svc
+            .merge_bases_cancellable("dst", "src", &authority, false, Some(&token))
+            .await
+            .expect_err("a cancelled merge must not proceed");
+        let elapsed = started.elapsed();
+        drop(held);
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "a cancelled merge waited {elapsed:?} — it is ignoring the token and \
+             will sit out the 1800s write deadline"
+        );
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("cancel") || text.contains("timed out"),
+            "the refusal should say it was cancelled: {text}"
+        );
     }
 
     /// #157, the OTHER unbounded wait on the same path — the on-disk `flock`.
