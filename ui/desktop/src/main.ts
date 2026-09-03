@@ -303,6 +303,67 @@ export function workingDirForSender(event: { sender: Electron.WebContents }): st
 }
 
 /**
+ * True only for a directory that is genuinely a *folder* — something a file
+ * manager opens and nothing else.
+ *
+ * `stats.isDirectory()` on its own is not that test. A macOS package
+ * (`.app`, `.pkg`, `.workflow`, `.rtfd`, …) stats as a directory, and `open`ing
+ * one LAUNCHES or installs it, so a bare `isDirectory()` waves every bundle
+ * straight through to execution. Rather than carry a list of package
+ * extensions — a denylist, which fails open on the one nobody thought of —
+ * anything carrying an extension is treated as not-a-plain-folder and takes the
+ * confirmation below. The folders this handler actually opens (a working
+ * directory, a skill directory, a knowledge base) have no extension, so the
+ * common path is unchanged.
+ */
+async function isPlainDirectory(resolvedPath: string): Promise<boolean> {
+  try {
+    const stats = await fs.stat(resolvedPath);
+    return stats.isDirectory() && path.extname(resolvedPath) === '';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Native confirmation before a path is handed to the OS's default handler.
+ *
+ * The asymmetry this removes: `open-external` will not let a URL reach the
+ * system browser without `validateExternalBrowserTarget` AND a dialog naming
+ * the destination, while a FILE reached the system browser — or a shell, or an
+ * installer — with no check at all. Once handed over, a generated `.html` runs
+ * as `file://` with no CSP and no sandbox, which is precisely what the artifact
+ * panel's own iframe exists to prevent. The path is chosen by the agent, so the
+ * user is the one who decides.
+ *
+ * Same shape as `confirmPublicExternalNavigation`: name the exact target,
+ * default to Cancel.
+ */
+async function confirmSystemHandlerOpen(
+  event: { sender: Electron.WebContents },
+  resolvedPath: string
+): Promise<boolean> {
+  const options: Electron.MessageBoxOptions = {
+    type: 'question',
+    buttons: ['Cancel', 'Open'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    message: 'Open this with the app your system uses for it?',
+    detail:
+      `${resolvedPath}\n\n` +
+      'Biorouter hands this to your operating system, which decides what runs. ' +
+      'A web page opened this way runs outside the app sandbox.',
+  };
+  const window = BrowserWindow.fromWebContents(event.sender);
+  const result =
+    window && !window.isDestroyed()
+      ? await dialog.showMessageBox(window, options)
+      : await dialog.showMessageBox(options);
+  return result.response === 1;
+}
+
+/**
  * Reject addresses that only exist inside the user's machine or LAN: the
  * biorouterd loopback API, cloud metadata at 169.254.169.254, printers, routers.
  */
@@ -5752,9 +5813,39 @@ async function appMain() {
     event.returnValue = app.getVersion();
   });
 
-  ipcMain.handle('open-directory-in-explorer', async (_event, dirPath: string) => {
+  ipcMain.handle('open-directory-in-explorer', async (event, dirPath: string) => {
     try {
+      if (typeof dirPath !== 'string' || dirPath.trim() === '') return false;
       const expanded = path.resolve(expandBiorouterPath(dirPath));
+
+      // The same containment `read-artifact-file` takes, and for the same
+      // reason. Without it this handler was strictly MORE permissive than the
+      // preview reader beside it: the panel refused to *show* a file it would
+      // happily hand to the OS — same panel, same file, two answers. The path
+      // is named by the agent, so it is not trusted input.
+      if (!isAllowedFilePath(expanded, workingDirForSender(event))) {
+        console.error(
+          `open-directory-in-explorer blocked: '${expanded}' is outside allowed directories`
+        );
+        return false;
+      }
+
+      // A plain directory opens a file manager and that is the end of it. Any
+      // other target is handed to whatever the OS has registered for it, and
+      // that is a different act: a generated `.html` opens in the default
+      // browser as `file://` with no CSP and no sandbox, and a `.command`,
+      // `.exe`, `.desktop` or `.app` bundle is *executed*. Those get the same
+      // treatment `open-external` gives a URL — a native dialog naming the
+      // target, defaulting to Cancel — because containment alone does not
+      // distinguish "show me this folder" from "run this".
+      //
+      // The extension test is what keeps macOS package bundles out of the
+      // no-dialog path: `/Applications/Anything.app` is a directory.
+      if (!(await isPlainDirectory(expanded))) {
+        const confirmed = await confirmSystemHandlerOpen(event, expanded);
+        if (!confirmed) return false;
+      }
+
       const err = await shell.openPath(expanded);
       // shell.openPath returns an empty string on success, error message on failure
       if (err) console.error('Error opening directory in explorer:', err);
