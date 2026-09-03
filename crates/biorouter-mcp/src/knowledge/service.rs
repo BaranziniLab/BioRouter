@@ -1445,6 +1445,26 @@ impl KnowledgeService {
         self.lock_kb_path_cancellable(kb_id, cancel).await
     }
 
+    /// [`Self::lock_kb_cancellable`] at the READ deadline.
+    ///
+    /// Same lock, same queue, same fairness — only the patience differs. It
+    /// exists because the read/write split (#159) was applied at the tool
+    /// boundary, and the two *macros* decide read-vs-write from an argument
+    /// (`lint`'s `autofix`, `query`'s `file_as_page`) that is known one line
+    /// before the lock is taken. Without this they took the 1800s write
+    /// deadline for the read case, which is the whole defect: the Knowledge
+    /// view's "Check for problems" never sends `autofix`, so the GUI's lint is
+    /// ALWAYS read-only and parked for thirty minutes behind any open
+    /// transaction, while `kb_lint` on the same base refused in 45 seconds.
+    pub async fn lock_kb_cancellable_for_read(
+        &self,
+        kb_id: &str,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<KnowledgeWriteGuard> {
+        self.lock_kb_path_waiting(kb_id, cancel, FileLockGuard::KB_READ_LOCK_WAIT)
+            .await
+    }
+
     /// [`Self::lock_existing_kb_cancellable`] for a READ path: same queue, same
     /// fairness, [`FileLockGuard::KB_READ_LOCK_WAIT`] instead of the write
     /// deadline. See that constant for why the two differ (#159).
@@ -5799,6 +5819,125 @@ mod tests {
             elapsed < FileLockGuard::KB_WRITE_LOCK_WAIT,
             "a preview waited {elapsed:?}, i.e. the WRITE deadline; it must use the read one"
         );
+    }
+
+    /// Every WRITE-deadline lock site is a write, by name.
+    ///
+    /// This is a repo-grep guard, and it exists because the same defect has now
+    /// been found three times in three places: `merge_bases` and `kb_export`
+    /// first, then `lint` and `query`. Each time the audit that fixed it looked
+    /// at one file and the next instance was in another. A read that takes the
+    /// 1800s write deadline does not fail — it *parks*, for thirty minutes,
+    /// behind any open transaction, and the user reports a hang with no error.
+    ///
+    /// So the check is over the tree rather than over a list of known sites: if
+    /// you add a caller of a write-deadline helper, either it is a write and
+    /// belongs in the table below, or it is a read and belongs on
+    /// `lock_kb_cancellable_for_read` / `lock_existing_kb_for_read`.
+    ///
+    /// ⚠ The right fix on a failure is almost never to add a row. Ask what the
+    /// call DOES first — three of the five instances so far were reads.
+    #[test]
+    fn no_read_path_takes_the_write_deadline() {
+        // Source files that may take a write-deadline lock, and why each is a
+        // write. A file absent from this map may not take one at all.
+        let permitted: std::collections::HashMap<&str, &str> = [
+            (
+                "knowledge/server.rs",
+                "kb_write_page, kb_add_raw_source, kb_begin_txn, kb_append_log",
+            ),
+            (
+                "knowledge/service.rs",
+                "the helpers themselves, plus real mutations",
+            ),
+            ("knowledge/macros/lint.rs", "the autofix arm only"),
+            ("knowledge/macros/query.rs", "the file_as_page arm only"),
+            ("knowledge/macros/ingest.rs", "ingest writes"),
+            ("knowledge/conversation_ingest.rs", "ingest writes"),
+        ]
+        .into_iter()
+        .collect();
+
+        let write_helpers = [
+            "lock_kb(",
+            "lock_kb_cancellable(",
+            "lock_existing_kb_cancellable(",
+            "lock_kb_path_cancellable(",
+        ];
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders: Vec<String> = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir)
+                .expect("read the source tree")
+                .flatten()
+            {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(&root)
+                    .expect("under src")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if permitted.contains_key(rel.as_str()) {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).expect("read a source file");
+                // Production code only. A TEST that holds a write lock on
+                // purpose — to prove a waiter blocks — is doing exactly what it
+                // should, and the first run of this guard flagged one
+                // (`knowledge/tier_user.rs`, a fixture holding `lock_kb`). Test
+                // modules sit at the end of a file in this crate, so everything
+                // from the first `#[cfg(test)]` onwards is out of scope.
+                let production = match source.find("#[cfg(test)]") {
+                    Some(at) => &source[..at],
+                    None => source.as_str(),
+                };
+                for (n, line) in production.lines().enumerate() {
+                    let code = line.trim_start();
+                    // Skip prose, so a comment naming the rule cannot trip it —
+                    // this repo has shipped that bug three times.
+                    if code.starts_with("//") || code.starts_with('*') {
+                        continue;
+                    }
+                    if write_helpers.iter().any(|h| line.contains(h)) {
+                        offenders.push(format!("{rel}:{} — {}", n + 1, code.trim()));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these take the 1800s WRITE deadline from a file that is not listed as a \
+             writer. If the call is a read, use `lock_kb_cancellable_for_read` or \
+             `lock_existing_kb_for_read`; only add a row if it genuinely writes:\n  {}",
+            offenders.join("\n  ")
+        );
+
+        // ⚠ The sweep above is FILE-granular, which measurement showed is not
+        // enough on its own: reverting `lint`'s read arm to the write deadline
+        // leaves it green, because `lint.rs` is a permitted file. The permission
+        // is for its autofix arm only, so the two files that branch must be
+        // held to actually having the read arm.
+        for (file, discriminator) in [
+            ("knowledge/macros/lint.rs", "autofix"),
+            ("knowledge/macros/query.rs", "file_as_page"),
+        ] {
+            let source = std::fs::read_to_string(root.join(file)).expect("read the macro");
+            assert!(
+                source.contains("lock_kb_cancellable_for_read"),
+                "{file} is permitted to take the write deadline for its `{discriminator}` \
+                 arm ONLY. It no longer takes the read deadline anywhere, so its read \
+                 path is parking for thirty minutes behind an open transaction."
+            );
+        }
     }
 
     /// #157, the OTHER unbounded wait on the same path — the on-disk `flock`.

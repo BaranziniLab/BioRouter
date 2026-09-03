@@ -579,9 +579,19 @@ pub struct LintResult {
 
 pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> {
     let cancel = args.cancel.clone();
-    let lock = svc
-        .lock_kb_cancellable(&args.kb_id, cancel.as_ref())
-        .await?;
+    // A lint without `autofix` writes nothing, so it takes the READ deadline.
+    // The GUI never sends `autofix` (the Knowledge view's "Check for problems"
+    // posts `{ model }` only), so this IS the common path — and on the write
+    // deadline it parked for thirty minutes behind an open transaction while
+    // `kb_lint` on the same base refused in forty-five seconds. Two surfaces
+    // disagreeing about one base is what makes it a bug rather than a delay.
+    let lock = if args.autofix {
+        svc.lock_kb_cancellable(&args.kb_id, cancel.as_ref())
+            .await?
+    } else {
+        svc.lock_kb_cancellable_for_read(&args.kb_id, cancel.as_ref())
+            .await?
+    };
     super::ensure_not_cancelled(cancel.as_ref(), "lint preflight")?;
     // Issue #56. Before the sub-agent, not after: an autofix that fails halfway
     // has already written pages. Task 10C (CP2) puts the barrier on the line
