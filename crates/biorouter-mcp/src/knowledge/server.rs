@@ -608,80 +608,6 @@ async fn lock_transaction_slot_waiting(
     })
 }
 
-#[cfg(test)]
-mod transaction_slot_bound_tests {
-    use super::*;
-
-    /// A caller waiting on a busy base gives up and says so.
-    ///
-    /// Found by DRIVING the app, not by reading it: a `kb_write_page` behind an
-    /// open transaction sat for twenty-one minutes — no error, no progress, and
-    /// nothing in the daemon log after the dispatch line. The tool had not
-    /// failed; it was queued on a slot with neither a deadline nor a cancel,
-    /// inheriting the 1800s KB-lock wait it is held across.
-    ///
-    /// The assertion is a DURATION and a MESSAGE. Asserting only that it
-    /// eventually errors would pass against the unbounded version too — after
-    /// half an hour — which is precisely the bug.
-    #[tokio::test]
-    async fn a_busy_base_refuses_instead_of_parking_for_the_write_deadline() {
-        let slot: ActiveKnowledgeTransactionSlot = Arc::new(Mutex::new(None));
-        let held = Arc::clone(&slot).lock_owned().await;
-
-        let wait = std::time::Duration::from_millis(120);
-        let started = std::time::Instant::now();
-        let outcome = lock_transaction_slot_waiting(&slot, "busy-base", None, wait).await;
-        let waited = started.elapsed();
-        drop(held);
-
-        let error = outcome.err().expect("a busy slot must refuse, not hang");
-        assert!(
-            error.message.contains("busy with another transaction"),
-            "the refusal must name the cause and the remedy: {}",
-            error.message
-        );
-        assert!(
-            waited >= wait,
-            "it must actually wait the deadline it was given"
-        );
-        // The shipped deadline is the read one, and the point of the bound is
-        // that it is far shorter than the 1800s KB write wait it is held across.
-        assert!(
-            SLOT_WAIT < std::time::Duration::from_secs(1800),
-            "SLOT_WAIT must stay well under the write deadline it exists to escape"
-        );
-    }
-
-    /// Cancelling actually cancels. `Stop` in the GUI cancels the request token,
-    /// and a caller parked here used to ignore it — the turn looked cancelled
-    /// while the task went on waiting.
-    #[tokio::test]
-    async fn cancelling_a_waiter_returns_immediately() {
-        let slot: ActiveKnowledgeTransactionSlot = Arc::new(Mutex::new(None));
-        let held = Arc::clone(&slot).lock_owned().await;
-        let token = tokio_util::sync::CancellationToken::new();
-        token.cancel();
-
-        let started = std::time::Instant::now();
-        let error = lock_transaction_slot_waiting(
-            &slot,
-            "busy-base",
-            Some(&token),
-            std::time::Duration::from_secs(30),
-        )
-        .await
-        .err()
-        .expect("a cancelled waiter must not acquire");
-        drop(held);
-
-        assert!(error.message.contains("cancelled"), "{}", error.message);
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
-            "cancellation must return at once, not wait out the deadline"
-        );
-    }
-}
-
 #[tool_router(router = tool_router)]
 impl KnowledgeServer {
     pub fn new() -> Result<Self> {
@@ -5949,6 +5875,80 @@ mod tests {
         assert!(
             call_sites >= 4,
             "expected the four listing surfaces to reach the predicate, found {call_sites}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod transaction_slot_bound_tests {
+    use super::*;
+
+    /// A caller waiting on a busy base gives up and says so.
+    ///
+    /// Found by DRIVING the app, not by reading it: a `kb_write_page` behind an
+    /// open transaction sat for twenty-one minutes — no error, no progress, and
+    /// nothing in the daemon log after the dispatch line. The tool had not
+    /// failed; it was queued on a slot with neither a deadline nor a cancel,
+    /// inheriting the 1800s KB-lock wait it is held across.
+    ///
+    /// The assertion is a DURATION and a MESSAGE. Asserting only that it
+    /// eventually errors would pass against the unbounded version too — after
+    /// half an hour — which is precisely the bug.
+    #[tokio::test]
+    async fn a_busy_base_refuses_instead_of_parking_for_the_write_deadline() {
+        let slot: ActiveKnowledgeTransactionSlot = Arc::new(Mutex::new(None));
+        let held = Arc::clone(&slot).lock_owned().await;
+
+        let wait = std::time::Duration::from_millis(120);
+        let started = std::time::Instant::now();
+        let outcome = lock_transaction_slot_waiting(&slot, "busy-base", None, wait).await;
+        let waited = started.elapsed();
+        drop(held);
+
+        let error = outcome.err().expect("a busy slot must refuse, not hang");
+        assert!(
+            error.message.contains("busy with another transaction"),
+            "the refusal must name the cause and the remedy: {}",
+            error.message
+        );
+        assert!(
+            waited >= wait,
+            "it must actually wait the deadline it was given"
+        );
+        // The shipped deadline is the read one, and the point of the bound is
+        // that it is far shorter than the 1800s KB write wait it is held across.
+        assert!(
+            SLOT_WAIT < std::time::Duration::from_secs(1800),
+            "SLOT_WAIT must stay well under the write deadline it exists to escape"
+        );
+    }
+
+    /// Cancelling actually cancels. `Stop` in the GUI cancels the request token,
+    /// and a caller parked here used to ignore it — the turn looked cancelled
+    /// while the task went on waiting.
+    #[tokio::test]
+    async fn cancelling_a_waiter_returns_immediately() {
+        let slot: ActiveKnowledgeTransactionSlot = Arc::new(Mutex::new(None));
+        let held = Arc::clone(&slot).lock_owned().await;
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+
+        let started = std::time::Instant::now();
+        let error = lock_transaction_slot_waiting(
+            &slot,
+            "busy-base",
+            Some(&token),
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .err()
+        .expect("a cancelled waiter must not acquire");
+        drop(held);
+
+        assert!(error.message.contains("cancelled"), "{}", error.message);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "cancellation must return at once, not wait out the deadline"
         );
     }
 }
