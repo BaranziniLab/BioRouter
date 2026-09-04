@@ -79,6 +79,62 @@ describe('workingDirLabel', () => {
   });
 });
 
+/**
+ * The unlocked chip shows the FULL path, left-truncated, so the directory is
+ * readable while it is still being chosen. Two facts about it are assertable
+ * here; the third is not.
+ *
+ * ⚠ **jsdom cannot see either the width cap or the bidi ordering** — it has no
+ * layout engine and does not implement the Unicode bidirectional algorithm, so
+ * `textContent` reads back the logical string whether the box is 112px or 46ch
+ * and whether the leading separator is drawn at the far end or not. What is
+ * assertable here is the DOM contract: the exact string reaches the chip
+ * unmangled, and it reaches it inside the isolation element the stylesheet
+ * selects. The width and the visual glyph order are pinned at the source in
+ * `styles/dirChipPath.test.ts` and were measured in a real browser.
+ */
+describe('the chip renders the whole path, inside its bidi isolate', () => {
+  const chipPath = (container: HTMLElement) =>
+    container.querySelector<HTMLElement>('.biorouter-dir-chip-path');
+
+  it.each([
+    ['an ordinary path', '/Users/wgu/Downloads'],
+    // A path whose trailing slash is REAL must keep it, and one without a
+    // trailing slash must not grow one — the shipped RTL box reordered the
+    // LEADING separator to the visual right end and made these two
+    // indistinguishable, showing `…wgu/Downloads/` for the path below.
+    ['a path with a real trailing slash', '/Users/wgu/Downloads/'],
+    ['a leading-slash root', '/'],
+    // Backslashes are bidi-neutral too: `C:\` rendered `\:C`, fully reversed.
+    ['a Windows path', 'C:\\Users\\wgu\\Desktop'],
+    ['a Windows drive root', 'C:\\'],
+  ])('shows %s exactly as it is, inside a <bdi>', (_label, dir) => {
+    const { container } = render(
+      <DirSwitcher className="" sessionId={undefined} workingDir={dir} locked={false} />
+    );
+
+    const path = chipPath(container);
+    expect(path).not.toBeNull();
+    expect(path!.textContent).toBe(dir);
+
+    // The stylesheet's LTR isolate is `.biorouter-dir-chip-path > bdi`; without
+    // the element the rule matches nothing and the separators reorder again.
+    const bdi = path!.querySelector('bdi');
+    expect(bdi).not.toBeNull();
+    expect(bdi!.textContent).toBe(dir);
+  });
+
+  it('leaves the locked chip on its basename, with no isolate and no head clipping', () => {
+    const { container } = render(
+      <DirSwitcher className="" sessionId="session-1" workingDir="/Users/wgu/Downloads" locked />
+    );
+
+    expect(screen.getByTestId('dir-switcher-locked')).toHaveTextContent('Downloads');
+    expect(chipPath(container)).toBeNull();
+    expect(container.querySelector('bdi')).toBeNull();
+  });
+});
+
 // #44 — the authoritative lock derivation the chip's `locked` prop is fed
 // from. The two store-shaped scenarios that motivated it: a resumed transcript
 // that has not hydrated yet (messages.length 0 for a non-empty session) must
@@ -321,7 +377,12 @@ describe('DirSwitcher — the working directory is a path, so it is monospace', 
     render(
       <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={false} />
     );
-    expect(screen.getByText(WORKING_DIR).className).toMatch(/font-mono/);
+    // The path sits one level deeper than it used to — inside the `<bdi>` that
+    // isolates it as LTR — so the face is inherited from the chip rather than
+    // carried on the text's own element. `closest` is the "walk ancestors"
+    // case this block's comment already allows for; asserting on the innermost
+    // element would fail while the chip is correctly monospace.
+    expect(screen.getByText(WORKING_DIR).closest('.font-mono')).not.toBeNull();
   });
 
   it('sets the locked basename label in monospace', () => {

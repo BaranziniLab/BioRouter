@@ -184,7 +184,25 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
       disabled={isDirectoryChooserOpen}
     >
       <FolderDot className="mr-0.5" size={16} />
-      <div className="max-w-[112px] min-w-0 truncate font-mono [direction:rtl]">{workingDir}</div>
+      {/* The path is WIDER here than the locked chip's basename, and the two
+          caps are deliberately different rather than one number shared: while
+          the directory is still choosable the full path is what the user is
+          deciding on, and 112px (~14 characters of 12px mono) truncates
+          `/Users/wgu/Downloads` — a path short enough that no one should have
+          to hover to read it.
+
+          `biorouter-dir-chip-path` carries the cap, the RTL box that clips the
+          HEAD rather than the tail, and the `<bdi>` LTR isolate that stops the
+          path's leading separator being reordered to the visual right end (it
+          rendered `…wgu/Downloads/`, a trailing slash the real path does not
+          have). All three are authored CSS in `main.css`, together, with the
+          reasoning — a newly written Tailwind arbitrary value can silently
+          fail to generate, and these three must never drift apart. `min-w-0`
+          stays so flex can still shrink the chip under pressure; the counts
+          across the strip are `flex-shrink-0` and never give way. */}
+      <div className="biorouter-dir-chip-path min-w-0 truncate font-mono">
+        <bdi>{workingDir}</bdi>
+      </div>
     </button>
   );
 
