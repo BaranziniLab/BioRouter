@@ -16,6 +16,7 @@ import { ChatKindIcon } from '../chats/ChatKindIcon';
 import type { ChatKindSource } from '../chats/chatKind';
 import type { SessionClassification } from '../../api';
 import { useTabDragReorder } from './useTabDragReorder';
+import { useTabBandWindowGesture } from './useTabBandWindowGesture';
 import { useChatTabDrag } from './ChatTabDragContext';
 import type { TabAnnotation } from './workspaceCommandPlanner';
 
@@ -159,6 +160,12 @@ export function ChatTabStrip({
   const { draggedTabId, dragOverTabId, beginDrag, guardClick } = sharedDrag ?? ownDrag;
   const activeTabRef = useRef<HTMLButtonElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
+
+  // The empty part of the band is a titlebar: drag moves the window,
+  // double-click zooms. Done with pointer events and IPC, NOT by giving the
+  // leftover space a `drag` app-region — see the hook, and the note on the
+  // scroll box below for the race that rules the app-region version out.
+  const bandGesture = useTabBandWindowGesture();
 
   // #37 — FLIP: tabs SLIDE to their new slots with the spring easing instead
   // of teleporting. Reorder is a pure array move in the reducer, so React
@@ -418,6 +425,22 @@ export function ChatTabStrip({
         // tab still lands exactly on it (172px, or 16px unreserved) rather than
         // 8px further right. The right half of the shorthand is untouched.
         style={{ paddingLeft: 0, WebkitAppRegion: 'no-drag' } as CSSProperties}
+        // THE EMPTY BAND IS A TITLEBAR — and this is how, given that it cannot
+        // be an app region. Every handler is gated on `target === currentTarget`
+        // inside the hook, so only the background of the scroll box (and the 3px
+        // gaps between tabs) acts: a press on a tab, its close control or the
+        // end slot has a deeper target and is untouched. `beginDrag` on the tab
+        // still owns tab drags, and it never sees these events.
+        //
+        // Nothing here declares an app region, which is the whole point: the
+        // `no-drag` box above stays identical for zero tabs and for twenty, so
+        // this adds no rect for the browser process to learn about a lifecycle
+        // late. See useTabBandWindowGesture.
+        onPointerDown={bandGesture.onPointerDown}
+        onPointerUp={bandGesture.onPointerUp}
+        onPointerCancel={bandGesture.onPointerCancel}
+        onLostPointerCapture={bandGesture.onLostPointerCapture}
+        onDoubleClick={bandGesture.onDoubleClick}
       >
         {tabs.map((tab, index) => {
           const isActive = tab.tabId === activeTabId;
