@@ -1033,6 +1033,7 @@ const CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS: &[&str] = &[
     "extensionmanager__search_marketplace_extensions",
     "extensionmanager__install_extension",
     "extensionmanager__delete_extension_package",
+    "extensionmanager__remove_extension",
 ];
 
 const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
@@ -11471,6 +11472,7 @@ mod tests {
             MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE,
             "extensionmanager__install_extension",
             "extensionmanager__delete_extension_package",
+            "extensionmanager__remove_extension",
         ] {
             assert_eq!(
                 tool_catalog_mutation(name),
@@ -11747,6 +11749,7 @@ mod tests {
         for name in [
             "extensionmanager__manage_extensions",
             "extensionmanager__delete_extension_package",
+            "extensionmanager__remove_extension",
             "skills__hotLoadSkill",
             "skills__hotUnloadSkill",
             "skills__removeSkillPackage",

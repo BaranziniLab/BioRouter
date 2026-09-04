@@ -896,6 +896,17 @@ const summarizeExtensionManagerCall = (
     if (extension) return `Removing extension package ${extension}`;
     return total === 1 ? 'Removing 1 extension package' : 'Removing an extension package';
   }
+  if (toolName === 'remove_extension') {
+    // Same count-first shape as its marketplace sibling above:
+    // `preflight_delete_identifiers` is literally the same function, so a call
+    // carrying `extension_name` AND `extension_names` removes all of them.
+    const total =
+      countNamedArguments(args, 'extension_names') +
+      (namedArgument(args, ['extension_name']) ? 1 : 0);
+    if (total > 1) return `Removing ${total} extensions`;
+    if (extension) return `Removing extension ${extension}`;
+    return total === 1 ? 'Removing 1 extension' : 'Removing an extension';
+  }
   // One tool now, and the summary reads off the ARGUMENT rather than the name:
   // browsing is this call with no query. The retired name stays in the match
   // because persisted transcripts still hold calls made under it.

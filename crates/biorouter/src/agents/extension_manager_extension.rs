@@ -136,37 +136,171 @@ pub struct DeleteExtensionPackageParams {
     pub registry_ids: Vec<String>,
 }
 
-fn preflight_delete_registry_ids(
-    params: DeleteExtensionPackageParams,
+/// Uninstall an extension that the marketplace cannot name (#164).
+///
+/// ⚠ **Keyed on the INSTALLED NAME, and that is the whole point of the tool.**
+/// [`DeleteExtensionPackageParams`] takes a BAAM registry id and resolves it
+/// against the marketplace catalog, so an extension with no registry id — a
+/// sideloaded `.brxt`, an MCP server somebody added to `config.yaml` by hand,
+/// anything installed outside BAAM — cannot be *named* by that tool at all, let
+/// alone deleted by it. Removing one degenerated into the agent editing config
+/// and provenance files a step at a time, which is a worse thing to hand a
+/// model than one audited transaction behind one approval.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveExtensionParams {
+    /// One exact installed extension name, as returned by
+    /// `search_available_extensions` — not a marketplace title or registry id.
+    // ⚠ `alias`, not `rename`, and a `//` comment rather than a `///` one: the
+    // SCHEMA still teaches the snake_case name (a doc comment here would ship
+    // this paragraph to the model as the property's description), and the alias
+    // only forgives the camelCase spelling. It exists because the caller is not
+    // guessing — our own result payloads hand it `extensionName`, since `json!` keys are
+    // camelCase for the GUI that reads the same payloads — and it passes back
+    // the spelling we gave it. Rejecting that costs a whole round-trip to say
+    // "expected extension_name", a correction the caller should never have had to make.
+    #[serde(alias = "extensionName")]
+    pub extension_name: Option<String>,
+    /// Several exact installed extension names. The whole batch is validated
+    /// before any extension is removed.
+    #[serde(default)]
+    #[schemars(length(max = 50))]
+    // ⚠ `alias`, not `rename` — see `extension_name` above.
+    #[serde(alias = "extensionNames")]
+    pub extension_names: Vec<String>,
+}
+
+/// The most identifiers either uninstall door acts on under one approval.
+///
+/// ⚠ The bound is a property of the APPROVAL, not of the machinery: the card
+/// lists what is about to be deleted, and a list nobody reads to the end is a
+/// card nobody meaningfully approved.
+const MAX_DELETION_BATCH: usize = 50;
+
+/// Which uninstall door named the batch, and so what its refusals call the
+/// things in it.
+#[derive(Clone, Copy)]
+enum DeletionIdentifier {
+    /// `delete_extension_package` — a trusted BAAM registry id.
+    MarketplaceRegistryId,
+    /// `remove_extension` — the exact installed name.
+    InstalledExtensionName,
+}
+
+impl DeletionIdentifier {
+    fn empty_batch(self) -> &'static str {
+        match self {
+            Self::MarketplaceRegistryId => {
+                "Give registry_id for one package or registry_ids for a batch"
+            }
+            Self::InstalledExtensionName => {
+                "Give extension_name for one extension or extension_names for a batch"
+            }
+        }
+    }
+
+    fn over_cap(self) -> &'static str {
+        match self {
+            Self::MarketplaceRegistryId => {
+                "An extension deletion batch may contain at most 50 packages"
+            }
+            Self::InstalledExtensionName => {
+                "An extension removal batch may contain at most 50 extensions"
+            }
+        }
+    }
+
+    fn empty_item(self) -> &'static str {
+        match self {
+            Self::MarketplaceRegistryId => "Marketplace registry ids cannot be empty",
+            Self::InstalledExtensionName => "Installed extension names cannot be empty",
+        }
+    }
+
+    fn ambiguous_batch(self) -> &'static str {
+        match self {
+            Self::MarketplaceRegistryId => {
+                "Two registry ids resolve to the same installed package; nothing was deleted"
+            }
+            Self::InstalledExtensionName => {
+                "Two extension names resolve to the same installed package; nothing was removed"
+            }
+        }
+    }
+
+    fn duplicate(self, identifier: &str) -> String {
+        match self {
+            Self::MarketplaceRegistryId => {
+                format!("`{identifier}` duplicates a package in this batch")
+            }
+            Self::InstalledExtensionName => {
+                format!("`{identifier}` duplicates an extension in this batch")
+            }
+        }
+    }
+}
+
+/// The batch shape both uninstall doors accept: the single-identifier field
+/// first, then the list, bounded and free of duplicates before anything is
+/// touched.
+///
+/// Shared rather than mirrored. The two doors spell their identifiers
+/// differently — a registry id names a marketplace entry, an extension name
+/// names what is installed — but the cap, the empty-batch refusal and the
+/// duplicate refusal are ONE rule, and a second copy is how the two would come
+/// to disagree about the bound that makes the approval card readable.
+fn preflight_delete_identifiers(
+    single: Option<String>,
+    mut requested: Vec<String>,
+    kind: DeletionIdentifier,
 ) -> Result<Vec<String>, ExtensionManagerToolError> {
-    let mut requested = params.registry_ids;
-    if let Some(registry_id) = params.registry_id {
-        requested.insert(0, registry_id);
+    if let Some(identifier) = single {
+        requested.insert(0, identifier);
     }
     if requested.is_empty() {
         return Err(ExtensionManagerToolError::OperationFailed {
-            message: "Give registry_id for one package or registry_ids for a batch".to_owned(),
+            message: kind.empty_batch().to_owned(),
         });
     }
-    if requested.len() > 50 {
+    if requested.len() > MAX_DELETION_BATCH {
         return Err(ExtensionManagerToolError::OperationFailed {
-            message: "An extension deletion batch may contain at most 50 packages".to_owned(),
+            message: kind.over_cap().to_owned(),
         });
     }
     let mut seen = std::collections::BTreeSet::new();
-    for registry_id in &requested {
-        if registry_id.is_empty() {
+    for identifier in &requested {
+        if identifier.is_empty() {
             return Err(ExtensionManagerToolError::OperationFailed {
-                message: "Marketplace registry ids cannot be empty".to_owned(),
+                message: kind.empty_item().to_owned(),
             });
         }
-        if !seen.insert(registry_id.clone()) {
+        if !seen.insert(identifier.clone()) {
             return Err(ExtensionManagerToolError::OperationFailed {
-                message: format!("`{registry_id}` duplicates a package in this batch"),
+                message: kind.duplicate(identifier),
             });
         }
     }
     Ok(requested)
+}
+
+fn preflight_delete_registry_ids(
+    params: DeleteExtensionPackageParams,
+) -> Result<Vec<String>, ExtensionManagerToolError> {
+    preflight_delete_identifiers(
+        params.registry_id,
+        params.registry_ids,
+        DeletionIdentifier::MarketplaceRegistryId,
+    )
+}
+
+fn preflight_remove_extension_names(
+    params: RemoveExtensionParams,
+) -> Result<Vec<String>, ExtensionManagerToolError> {
+    preflight_delete_identifiers(
+        params.extension_name,
+        params.extension_names,
+        DeletionIdentifier::InstalledExtensionName,
+    )
 }
 
 fn default_true() -> bool {
@@ -212,6 +346,7 @@ pub const INSTALL_EXTENSION_TOOL_NAME: &str = "install_extension";
 pub const BROWSE_MARKETPLACE_EXTENSIONS_TOOL_NAME: &str = "browse_marketplace_extensions";
 pub const SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME: &str = "search_marketplace_extensions";
 pub const DELETE_EXTENSION_PACKAGE_TOOL_NAME: &str = "delete_extension_package";
+pub const REMOVE_EXTENSION_TOOL_NAME: &str = "remove_extension";
 pub const MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE: &str = "extensionmanager__manage_extensions";
 
 const MARKETPLACE_APPROVAL_TTL: Duration = Duration::from_secs(5 * 60);
@@ -465,22 +600,39 @@ async fn preflight_marketplace_deletions(
             package,
         });
     }
-    validate_unique_deletion_targets(&plans)?;
+    validate_unique_deletion_targets(
+        plans.iter().map(|plan| {
+            (
+                plan.package.provenance.config_key.as_str(),
+                Some(plan.package.install_dir.as_path()),
+            )
+        }),
+        DeletionIdentifier::MarketplaceRegistryId,
+    )?;
     Ok(plans)
 }
 
-fn validate_unique_deletion_targets(
-    plans: &[ValidatedMarketplaceDeletion],
+/// Refuse a batch in which two identifiers name one installed thing.
+///
+/// Shared by both uninstall doors, because the failure it prevents is the same
+/// on either: the second pass over one directory finds it already renamed
+/// aside and reports a rollback nobody can act on, and the approval card the
+/// user read claimed two removals when there was one. A `None` install
+/// directory does NOT collide with another `None` — an MCP server configured
+/// by hand owns no directory, and two of them are two distinct removals.
+fn validate_unique_deletion_targets<'a>(
+    targets: impl IntoIterator<Item = (&'a str, Option<&'a std::path::Path>)>,
+    kind: DeletionIdentifier,
 ) -> Result<(), ExtensionManagerToolError> {
     let mut config_keys = std::collections::BTreeSet::new();
     let mut install_dirs = std::collections::BTreeSet::new();
-    if plans.iter().any(|plan| {
-        !config_keys.insert(plan.package.provenance.config_key.clone())
-            || !install_dirs.insert(plan.package.install_dir.clone())
-    }) {
+    let collides = targets.into_iter().any(|(config_key, install_dir)| {
+        !config_keys.insert(config_key.to_owned())
+            || install_dir.is_some_and(|dir| !install_dirs.insert(dir.to_path_buf()))
+    });
+    if collides {
         return Err(ExtensionManagerToolError::OperationFailed {
-            message: "Two registry ids resolve to the same installed package; nothing was deleted"
-                .to_owned(),
+            message: kind.ambiguous_batch().to_owned(),
         });
     }
     Ok(())
@@ -650,9 +802,17 @@ fn validated_marketplace_package_at(
     })
 }
 
-async fn detach_marketplace_package_from_session(
+/// Unload the extension from THIS chat's live manager before its files move,
+/// reporting whether it had been attached so a rollback can put it back.
+///
+/// Shared by both uninstall doors: the marketplace one reaches it with the
+/// config key its provenance record carries, the general one with the key of
+/// the entry it resolved. Nothing here is marketplace-shaped — it is the live
+/// manager and a key.
+async fn detach_extension_from_session(
     manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
-    package: &ValidatedPackageInstall,
+    config_key: &str,
+    config: &ExtensionConfig,
     cancel: &CancellationToken,
 ) -> Result<bool, ExtensionManagerToolError> {
     if cancel.is_cancelled() {
@@ -660,9 +820,7 @@ async fn detach_marketplace_package_from_session(
             message: "The extension deletion was cancelled before detaching the package".to_owned(),
         });
     }
-    let was_attached = manager
-        .is_extension_enabled(&package.provenance.config_key)
-        .await;
+    let was_attached = manager.is_extension_enabled(config_key).await;
     if cancel.is_cancelled() {
         return Err(ExtensionManagerToolError::OperationFailed {
             message: "The extension deletion was cancelled before detaching the package".to_owned(),
@@ -670,7 +828,7 @@ async fn detach_marketplace_package_from_session(
     }
     if was_attached {
         manager
-            .remove_extension(&package.extension_name)
+            .remove_extension(&config.name())
             .await
             .map_err(|error| ExtensionManagerToolError::OperationFailed {
                 message: format!("Could not detach the package from this chat: {error}"),
@@ -678,7 +836,7 @@ async fn detach_marketplace_package_from_session(
         if cancel.is_cancelled() {
             return Err(restore_detached_attachment(
                 manager,
-                package,
+                config,
                 true,
                 "The extension deletion was cancelled before package files changed",
             )
@@ -688,16 +846,26 @@ async fn detach_marketplace_package_from_session(
     Ok(was_attached)
 }
 
-async fn restore_staged_marketplace_package(
+/// Undo a staging rename and, if the extension had been attached, re-attach it.
+///
+/// `staged` is `None` for an extension with no package directory of its own —
+/// an MCP server configured by hand has nothing on disk to move — in which case
+/// only the attachment is restored. That case is why the parameter is an
+/// option rather than the caller skipping the call: a rollback that is
+/// sometimes performed and sometimes silently not is the shape a missed
+/// re-attach hides in.
+async fn restore_staged_package(
     manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
-    package: &ValidatedPackageInstall,
-    quarantine: &std::path::Path,
+    config: &ExtensionConfig,
+    staged: Option<(&std::path::Path, &std::path::Path)>,
     was_attached: bool,
 ) -> Result<(), String> {
-    std::fs::rename(quarantine, &package.install_dir)
-        .map_err(|error| format!("the staged package could not be restored: {error}"))?;
+    if let Some((quarantine, install_dir)) = staged {
+        std::fs::rename(quarantine, install_dir)
+            .map_err(|error| format!("the staged package could not be restored: {error}"))?;
+    }
     if was_attached {
-        manager.add_extension(package.config.clone()).await.map_err(|error| {
+        manager.add_extension(config.clone()).await.map_err(|error| {
             format!(
                 "the package files were restored, but the chat attachment could not be restored: {error}"
             )
@@ -724,14 +892,14 @@ fn provenance_removal_error(
 
 async fn restore_detached_attachment(
     manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
-    package: &ValidatedPackageInstall,
+    config: &ExtensionConfig,
     was_attached: bool,
     reason: &str,
 ) -> ExtensionManagerToolError {
     let message = if !was_attached {
         reason.to_owned()
     } else {
-        match manager.add_extension(package.config.clone()).await {
+        match manager.add_extension(config.clone()).await {
             Ok(()) => format!("{reason}; the chat attachment was restored"),
             Err(error) => {
                 format!("{reason}; the chat attachment could not be restored: {error}")
@@ -741,25 +909,84 @@ async fn restore_detached_attachment(
     ExtensionManagerToolError::OperationFailed { message }
 }
 
-async fn remove_staged_marketplace_config(
+/// What an uninstall must drop from the provenance store, if anything.
+///
+/// Two shapes because there are two conditional removals, not because there are
+/// two policies. [`crate::privacy::provenance::remove_marketplace_install_provenance`]
+/// compares a record's install id, registry id, install directory and source
+/// URL — the four fields a validated BAAM package always has — and can
+/// therefore not name a record missing any of them.
+/// [`crate::privacy::provenance::remove_extension_provenance_if_matches`]
+/// compares the whole record instead, which is what `remove_extension` needs:
+/// the records it meets were written by older builds, or by a `.brxt` install
+/// with no registry id at all. Both refuse to delete a record that changed
+/// under them, so a concurrent reinstall survives either way.
+#[derive(Clone, Debug, PartialEq)]
+enum ProvenanceTarget {
+    Install(crate::privacy::provenance::MarketplaceInstallProvenance),
+    Record {
+        key: String,
+        record: crate::privacy::provenance::ExtensionProvenance,
+    },
+    /// Nothing recorded where this extension came from — the ordinary case for
+    /// a hand-configured MCP server, and not an error.
+    Nothing,
+}
+
+impl ProvenanceTarget {
+    /// `None` when there is nothing to remove; otherwise the conditional
+    /// removal's own answer, where `Ok(false)` means the record changed.
+    fn remove(&self) -> Option<std::io::Result<bool>> {
+        match self {
+            Self::Install(expected) => {
+                Some(crate::privacy::provenance::remove_marketplace_install_provenance(expected))
+            }
+            Self::Record { key, record } => Some(
+                crate::privacy::provenance::remove_extension_provenance_if_matches(key, record),
+            ),
+            Self::Nothing => None,
+        }
+    }
+}
+
+/// One uninstall's rollback subject: what to put back, and where.
+///
+/// Both doors stage the same way — detach, rename the package aside, remove the
+/// config row, drop the provenance record — so they roll back through one
+/// implementation rather than two that drift. `install_dir` is `None` for an
+/// extension with no package directory of its own.
+struct StagedUninstall<'a> {
+    config_key: &'a str,
+    entry: ExtensionEntry,
+    install_dir: Option<&'a std::path::Path>,
+    quarantine: Option<&'a std::path::Path>,
+}
+
+impl StagedUninstall<'_> {
+    fn staged_rename(&self) -> Option<(&std::path::Path, &std::path::Path)> {
+        self.quarantine.zip(self.install_dir)
+    }
+}
+
+async fn remove_staged_config(
     manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
-    package: &ValidatedPackageInstall,
-    quarantine: &std::path::Path,
+    staged: &StagedUninstall<'_>,
     was_attached: bool,
 ) -> Result<ExtensionEntry, ExtensionManagerToolError> {
-    let expected_entry = ExtensionEntry {
-        enabled: package.enabled,
-        config: package.config.clone(),
-    };
+    let expected_entry = staged.entry.clone();
     let config_removed = match crate::config::extensions::remove_extension_if_matches(
-        &package.provenance.config_key,
+        staged.config_key,
         &expected_entry,
     ) {
         Ok(removed) => removed,
         Err(error) => {
-            let restoration =
-                restore_staged_marketplace_package(manager, package, quarantine, was_attached)
-                    .await;
+            let restoration = restore_staged_package(
+                manager,
+                &expected_entry.config,
+                staged.staged_rename(),
+                was_attached,
+            )
+            .await;
             return Err(ExtensionManagerToolError::OperationFailed {
                 message: match restoration {
                     Ok(()) => format!(
@@ -773,8 +1000,13 @@ async fn remove_staged_marketplace_config(
         }
     };
     if !config_removed {
-        let restoration =
-            restore_staged_marketplace_package(manager, package, quarantine, was_attached).await;
+        let restoration = restore_staged_package(
+            manager,
+            &expected_entry.config,
+            staged.staged_rename(),
+            was_attached,
+        )
+        .await;
         return Err(ExtensionManagerToolError::OperationFailed {
             message: match restoration {
                 Ok(()) => "The extension configuration changed before deletion; the staged package was restored"
@@ -788,19 +1020,21 @@ async fn remove_staged_marketplace_config(
     Ok(expected_entry)
 }
 
-async fn remove_staged_marketplace_provenance(
+async fn remove_staged_provenance(
     manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
-    package: &ValidatedPackageInstall,
-    quarantine: &std::path::Path,
+    staged: &StagedUninstall<'_>,
+    provenance: &ProvenanceTarget,
     was_attached: bool,
     expected_entry: ExtensionEntry,
-) -> Result<(), ExtensionManagerToolError> {
-    let provenance_result =
-        crate::privacy::provenance::remove_marketplace_install_provenance(&package.provenance);
+) -> Result<bool, ExtensionManagerToolError> {
+    let Some(provenance_result) = provenance.remove() else {
+        return Ok(false);
+    };
     if matches!(&provenance_result, Ok(true)) {
-        return Ok(());
+        return Ok(true);
     }
 
+    let config = expected_entry.config.clone();
     let config_restored = crate::config::extensions::restore_extension_if_absent(expected_entry)
         .map_err(|error| error.to_string())
         .and_then(|restored| {
@@ -809,7 +1043,7 @@ async fn remove_staged_marketplace_provenance(
                 .ok_or_else(|| "a concurrent configuration replacement was preserved".to_owned())
         });
     let package_restored =
-        restore_staged_marketplace_package(manager, package, quarantine, was_attached).await;
+        restore_staged_package(manager, &config, staged.staged_rename(), was_attached).await;
     let restoration = match (config_restored, package_restored) {
         (Ok(()), Ok(())) => Ok(()),
         (config, package) => Err(format!(
@@ -832,7 +1066,7 @@ async fn delete_staged_marketplace_package(
     if cancel.is_cancelled() {
         return Err(restore_detached_attachment(
             manager,
-            package,
+            &package.config,
             was_attached,
             "The extension deletion was cancelled before package files changed",
         )
@@ -841,7 +1075,7 @@ async fn delete_staged_marketplace_package(
     if let Err(error) = revalidate_approved_marketplace_deletion(plan, caller).await {
         return Err(restore_detached_attachment(
             manager,
-            package,
+            &package.config,
             was_attached,
             &format!("The installed package changed immediately before deletion: {error}"),
         )
@@ -853,15 +1087,29 @@ async fn delete_staged_marketplace_package(
     if let Err(error) = std::fs::rename(&package.install_dir, &quarantine) {
         return Err(restore_detached_attachment(
             manager,
-            package,
+            &package.config,
             was_attached,
             &format!("Could not stage the package for deletion: {error}"),
         )
         .await);
     }
+    let staged = StagedUninstall {
+        config_key: &package.provenance.config_key,
+        entry: ExtensionEntry {
+            enabled: package.enabled,
+            config: package.config.clone(),
+        },
+        install_dir: Some(&package.install_dir),
+        quarantine: Some(&quarantine),
+    };
     if cancel.is_cancelled() {
-        let restoration =
-            restore_staged_marketplace_package(manager, package, &quarantine, was_attached).await;
+        let restoration = restore_staged_package(
+            manager,
+            &package.config,
+            staged.staged_rename(),
+            was_attached,
+        )
+        .await;
         return Err(ExtensionManagerToolError::OperationFailed {
             message: match restoration {
                 Ok(()) => "The extension deletion was cancelled; the staged package was restored"
@@ -871,12 +1119,11 @@ async fn delete_staged_marketplace_package(
         });
     }
 
-    let expected_entry =
-        remove_staged_marketplace_config(manager, package, &quarantine, was_attached).await?;
-    remove_staged_marketplace_provenance(
+    let expected_entry = remove_staged_config(manager, &staged, was_attached).await?;
+    remove_staged_provenance(
         manager,
-        package,
-        &quarantine,
+        &staged,
+        &ProvenanceTarget::Install(package.provenance.clone()),
         was_attached,
         expected_entry,
     )
@@ -938,7 +1185,13 @@ async fn delete_one_marketplace_package(
     cancel: &CancellationToken,
     caller: crate::privacy::ProviderTier,
 ) -> (bool, Value) {
-    let result = match detach_marketplace_package_from_session(manager, &plan.package, cancel).await
+    let result = match detach_extension_from_session(
+        manager,
+        &plan.package.provenance.config_key,
+        &plan.package.config,
+        cancel,
+    )
+    .await
     {
         Ok(was_attached) => {
             match delete_staged_marketplace_package(manager, plan, was_attached, cancel, caller)
@@ -1038,6 +1291,711 @@ fn marketplace_deletion_report(
         single.as_ref().and_then(Value::as_object),
     ) {
         for key in ["registryId", "extensionName", "detachedFromCurrentSession"] {
+            if let Some(value) = single.get(key) {
+                report.insert(key.to_owned(), value.clone());
+            }
+        }
+    }
+    report
+}
+
+/// Everything one `remove_extension` call is about to touch, resolved from the
+/// INSTALLED inventory and validated before the user is asked anything.
+///
+/// ⚠ `PartialEq` is load-bearing exactly as it is on
+/// [`ValidatedMarketplaceDeletion`]: the post-approval re-validation compares a
+/// freshly resolved plan against the approved one, so every field that could
+/// change while the card was on screen has to participate in `==`.
+#[derive(Clone, Debug, PartialEq)]
+struct ValidatedExtensionRemoval {
+    extension_name: String,
+    config_key: String,
+    entry: ExtensionEntry,
+    extensions_root: Option<PathBuf>,
+    /// The package directory this extension owns, when it owns one. `None` for
+    /// an MCP server somebody configured by hand — `npx -y some-server` has no
+    /// tree under `extensions/`, and deleting a directory merely NAMED after it
+    /// would be deleting somebody else's package.
+    install_dir: Option<PathBuf>,
+    /// Slugs of the skills that directory contributes to the catalog.
+    ///
+    /// They are not copied into the skills root at install time:
+    /// [`crate::agents::skill_catalog::roots`] treats
+    /// `<extensions>/<name>/skills/` as a root of its own, so deleting the
+    /// directory IS the removal. They are resolved here so the approval card
+    /// can say what else disappears, and so the catalog event afterwards can
+    /// say what did.
+    bundled_skills: Vec<String>,
+    provenance: ProvenanceTarget,
+}
+
+impl ValidatedExtensionRemoval {
+    fn staged<'a>(&'a self, quarantine: Option<&'a std::path::Path>) -> StagedUninstall<'a> {
+        StagedUninstall {
+            config_key: &self.config_key,
+            entry: self.entry.clone(),
+            install_dir: self.install_dir.as_deref(),
+            quarantine,
+        }
+    }
+}
+
+/// Resolve, gate and validate every named extension before anything is removed.
+///
+/// The marketplace sibling resolves each identifier against the BAAM catalog;
+/// this one resolves against the machine's own inventory. That difference IS
+/// the tool: an extension with no registry id is unnameable there and ordinary
+/// here.
+fn preflight_extension_removals(
+    names: &[String],
+    cap: crate::privacy::CallCapability,
+) -> Result<Vec<ValidatedExtensionRemoval>, ExtensionManagerToolError> {
+    preflight_extension_removals_at(
+        names,
+        cap,
+        crate::extension_install::brxt::extensions_root(),
+        get_all_extensions(),
+    )
+}
+
+fn preflight_extension_removals_at(
+    names: &[String],
+    cap: crate::privacy::CallCapability,
+    root: PathBuf,
+    configured: Vec<ExtensionEntry>,
+) -> Result<Vec<ValidatedExtensionRemoval>, ExtensionManagerToolError> {
+    // A machine that has never installed a `.brxt` has no extensions root, and
+    // that is not an error here — every entry simply resolves to no install
+    // directory. The marketplace door treats the same absence as fatal because
+    // a validated package IS a directory under it.
+    let canonical_root = std::fs::canonicalize(&root).ok();
+    let mut plans = Vec::with_capacity(names.len());
+    for name in names {
+        plans.push(validated_extension_removal(
+            name,
+            cap,
+            canonical_root.as_deref(),
+            &configured,
+        )?);
+    }
+    validate_unique_deletion_targets(
+        plans
+            .iter()
+            .map(|plan| (plan.config_key.as_str(), plan.install_dir.as_deref())),
+        DeletionIdentifier::InstalledExtensionName,
+    )?;
+    Ok(plans)
+}
+
+/// One installed extension, gated and resolved.
+///
+/// ⚠ **The order of the three refusals below is the same order
+/// [`check_enable_allowed_impl`] uses, and for the same reasons.** Capability
+/// extensions are refused first because they are not extensions the user
+/// installed; the privacy gate comes next; and the not-found answer comes LAST,
+/// below the gate, because "Extension 'ucsfomopagent' not found" tells a public
+/// model what this machine has installed (issue #56, finding 13). A public
+/// caller asking about a private name meets one refusal whether it is
+/// installed, configured off, or absent.
+fn validated_extension_removal(
+    name: &str,
+    cap: crate::privacy::CallCapability,
+    canonical_root: Option<&std::path::Path>,
+    configured: &[ExtensionEntry],
+) -> Result<ValidatedExtensionRemoval, ExtensionManagerToolError> {
+    let refuse = |error: ErrorData| ExtensionManagerToolError::OperationFailed {
+        message: error.message.to_string(),
+    };
+
+    // 1. Bundled and platform capabilities are managed elsewhere and own no
+    // package directory. The skills side calls the same rule `refuse_shipped`:
+    // nothing Biorouter itself put there is uninstallable through a tool.
+    if crate::agents::extension_manager::resolve_bundled_extension(name).is_some() {
+        return Err(refuse(
+            crate::agents::extension_manager::capability_management_error(name),
+        ));
+    }
+    let key = crate::config::extensions::name_to_key(name);
+    let entry = configured
+        .iter()
+        .find(|entry| entry.config.key() == key)
+        .cloned();
+    if let Some(refusal) = entry.as_ref().and_then(|entry| {
+        crate::agents::extension_manager::capability_management_refusal(&entry.config)
+    }) {
+        return Err(refuse(refusal));
+    }
+
+    // 2. Gate F1, through the extension manager's own door rather than a
+    // second spelling of it. `persisted` is passed FALSE deliberately, and it
+    // is the one argument that differs from an enable: issue #42's arm refuses
+    // to re-enable what the operator pinned off, which is an argument about
+    // turning something ON. Removal is the opposite direction, it is behind a
+    // proof-backed approval that names the extension, and the marketplace door
+    // does not consult the pin either. The tier and affiliation arms above it
+    // apply unchanged, which is the whole reason to come through here.
+    if let Some(refusal) = crate::privacy::refusal::extension_manager_enable_refusal(
+        cap,
+        name,
+        entry.as_ref(),
+        false,
+        false,
+    ) {
+        return Err(refuse(refusal));
+    }
+
+    // 3. Only now may an absent name be admitted to.
+    let Some(entry) = entry else {
+        return Err(ExtensionManagerToolError::OperationFailed {
+            message: format!(
+                "Extension '{name}' is not installed. Use the exact installed name from \
+                 search_available_extensions; do not retry guessed names."
+            ),
+        });
+    };
+
+    let install_dir = removal_install_dir(&key, &entry.config, canonical_root)?;
+    let bundled_skills = install_dir
+        .as_deref()
+        .map(bundled_skill_slugs)
+        .unwrap_or_default();
+    let provenance = match crate::privacy::provenance::extension_provenance_for_key(&key) {
+        Some(record) => ProvenanceTarget::Record {
+            key: key.clone(),
+            record,
+        },
+        None => ProvenanceTarget::Nothing,
+    };
+
+    Ok(ValidatedExtensionRemoval {
+        extension_name: entry.config.name(),
+        config_key: key,
+        entry,
+        extensions_root: canonical_root.map(std::path::Path::to_path_buf),
+        install_dir,
+        bundled_skills,
+        provenance,
+    })
+}
+
+/// The package directory this configuration owns, or `None` when it owns none.
+///
+/// ⚠ **A directory is only this extension's when the config key agrees.** The
+/// marketplace door proves ownership from a provenance record; there is no such
+/// record to lean on here, so ownership is established the two ways an install
+/// actually creates: the entry launches out of a directory under the extensions
+/// root (`--directory <dir>` in a stdio command's arguments), or a directory
+/// named after the entry exists there. Both are then held to
+/// `name_to_key(<directory name>) == <config key>`, which is exactly the link a
+/// `.brxt` install makes — `extensions_root().join(&manifest.name)` for an
+/// entry whose name is that same `manifest.name`.
+///
+/// An entry that launches out of ANOTHER package's directory is refused rather
+/// than resolved to nothing: removing it would leave a tree with no
+/// configuration pointing at it, and deleting that tree would break the
+/// extension that owns it. Neither is a decision to take without saying so.
+fn removal_install_dir(
+    config_key: &str,
+    config: &ExtensionConfig,
+    canonical_root: Option<&std::path::Path>,
+) -> Result<Option<PathBuf>, ExtensionManagerToolError> {
+    let Some(canonical_root) = canonical_root else {
+        return Ok(None);
+    };
+    let owns = |candidate: &std::path::Path| {
+        candidate.is_dir()
+            && candidate.parent() == Some(canonical_root)
+            && candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(crate::config::extensions::name_to_key)
+                .as_deref()
+                == Some(config_key)
+    };
+
+    let mut referenced = None;
+    if let ExtensionConfig::Stdio { args, .. } = config {
+        for argument in args {
+            let Ok(candidate) = std::fs::canonicalize(argument) else {
+                continue;
+            };
+            if candidate.parent() != Some(canonical_root) {
+                continue;
+            }
+            if !owns(&candidate) {
+                return Err(ExtensionManagerToolError::OperationFailed {
+                    message: format!(
+                        "`{}` runs out of `{}`, which belongs to a different installed package; \
+                         refusing to remove it. Remove that package by its own name instead.",
+                        config.name(),
+                        candidate.display()
+                    ),
+                });
+            }
+            referenced = Some(candidate);
+        }
+    }
+    if referenced.is_some() {
+        return Ok(referenced);
+    }
+
+    let named = std::fs::canonicalize(canonical_root.join(config.name()))
+        .ok()
+        .filter(|candidate| owns(candidate));
+    Ok(named)
+}
+
+/// The skills `<install_dir>/skills/` contributes, by directory slug.
+///
+/// The same shape `read_bundled_skills` reads out of the archive — one
+/// `SKILL.md` one level down — because a slug this disagreed with would name a
+/// skill in the catalog event that never existed.
+fn bundled_skill_slugs(install_dir: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(install_dir.join("skills")) else {
+        return Vec::new();
+    };
+    let mut slugs = entries
+        .flatten()
+        .filter(|entry| entry.path().join("SKILL.md").is_file())
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    slugs.sort();
+    slugs
+}
+
+fn extension_removal_approval_request(
+    plans: &[ValidatedExtensionRemoval],
+) -> crate::pending_user_action::UserActionRequest {
+    let arguments = serde_json::json!({
+        "operation": "removeExtension",
+        "extensionNames": plans.iter().map(|plan| plan.extension_name.clone()).collect::<Vec<_>>(),
+        "extensions": plans.iter().map(|plan| serde_json::json!({
+            "extensionName": plan.extension_name,
+            "configKey": plan.config_key,
+            "enabled": plan.entry.enabled,
+            "installDirectory": plan.install_dir,
+            "bundledSkills": plan.bundled_skills,
+            "provenanceRecorded": plan.provenance != ProvenanceTarget::Nothing,
+        })).collect::<Vec<_>>(),
+        "credentialsPreserved": true,
+    })
+    .as_object()
+    .expect("extension removal approval is an object")
+    .clone();
+    let preview = crate::conversation::tool_preview::ToolPreview::for_tool_call(
+        REMOVE_EXTENSION_TOOL_NAME,
+        &arguments,
+    );
+    crate::pending_user_action::UserActionRequest::ToolApproval(
+        crate::pending_user_action::ToolApprovalRequest {
+            tool_name: REMOVE_EXTENSION_TOOL_NAME.to_owned(),
+            arguments,
+            prompt: Some(format!(
+                "Permanently remove {} installed extension(s) and their package files?",
+                plans.len()
+            )),
+            risk: Some(crate::permission::tool_risk::ToolRisk::High),
+            preview,
+            requires_user_proof: true,
+        },
+    )
+}
+
+/// Re-resolve one approved plan and refuse if anything about it moved.
+///
+/// The marketplace sibling's reason applies verbatim: the approval card was on
+/// screen for up to [`MARKETPLACE_APPROVAL_TTL`], and what the user approved was
+/// the tree as it stood then.
+fn revalidate_approved_extension_removal(
+    approved: &ValidatedExtensionRemoval,
+    cap: crate::privacy::CallCapability,
+) -> Result<(), ExtensionManagerToolError> {
+    let current =
+        preflight_extension_removals(std::slice::from_ref(&approved.extension_name), cap)?;
+    if current.first() == Some(approved) {
+        Ok(())
+    } else {
+        Err(ExtensionManagerToolError::OperationFailed {
+            message: "The installed extension changed after approval".to_owned(),
+        })
+    }
+}
+
+/// Drop `config_key` from every stored session roster that still names it.
+///
+/// ⚠ **Without this the uninstall is not finished, and the symptom appears
+/// somewhere else entirely.** A session's `enabled_extensions.v0` holds whole
+/// `ExtensionConfig`s, and `Agent::load_extensions_from_session` spawns each one
+/// on resume — so an old chat reopened after the package directory is gone tries
+/// to launch a deleted server and logs a load failure that looks like a broken
+/// extension rather than a removed one.
+///
+/// Best-effort by design, and it runs AFTER the package is definitively gone:
+/// pruning is cleanup of dangling references, so a partial sweep leaves exactly
+/// the state that existed before the tool was written, not a half-removed
+/// extension. What could not be pruned is reported rather than swallowed.
+async fn prune_extension_from_sessions(
+    session_manager: &Arc<crate::session::SessionManager>,
+    extension_name: &str,
+    config_key: &str,
+) -> (usize, Vec<String>) {
+    use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
+
+    let candidates = match session_manager
+        .sessions_mentioning_extension(extension_name)
+        .await
+    {
+        Ok(candidates) => candidates,
+        Err(error) => return (0, vec![format!("could not scan sessions: {error}")]),
+    };
+
+    let mut updated = 0_usize;
+    let mut problems = Vec::new();
+    for session_id in candidates {
+        let holds_it = session_manager
+            .get_extension_state(
+                &session_id,
+                EnabledExtensionsState::EXTENSION_NAME,
+                EnabledExtensionsState::VERSION,
+            )
+            .await
+            .ok()
+            .flatten()
+            .and_then(|value| serde_json::from_value::<EnabledExtensionsState>(value).ok())
+            .is_some_and(|state| {
+                state
+                    .extensions
+                    .iter()
+                    .any(|config| config.key() == config_key)
+            });
+        // The `LIKE` is a prefilter over one JSON column shared by every
+        // per-session extension, so most candidates hold no roster entry at
+        // all. Skipping them is not an optimization: `update_extension_state`
+        // always writes, and a write bumps `updated_at`, which would reorder
+        // the History sidebar for every session that merely quoted the name.
+        if !holds_it {
+            continue;
+        }
+        let result = session_manager
+            .update_extension_state(
+                &session_id,
+                EnabledExtensionsState::EXTENSION_NAME,
+                EnabledExtensionsState::VERSION,
+                |current| {
+                    let mut state = current
+                        .map(|value| {
+                            serde_json::from_value::<EnabledExtensionsState>(value.clone())
+                        })
+                        .transpose()?
+                        .unwrap_or_else(|| EnabledExtensionsState::new(Vec::new()));
+                    state.extensions.retain(|config| config.key() != config_key);
+                    state.to_value()
+                },
+            )
+            .await;
+        match result {
+            Ok(Some(_)) => updated += 1,
+            // The session was deleted between the scan and the write. Nothing
+            // to prune and nothing to report.
+            Ok(None) => {}
+            Err(error) => problems.push(format!("{session_id}: {error}")),
+        }
+    }
+    (updated, problems)
+}
+
+/// Announce the skills that vanished with the package directory.
+///
+/// The install path publishes the mirror of this from `announce_install`;
+/// without it a live interface keeps offering skills whose files are gone.
+/// `remove_extension_if_matches` has already published the extension's own
+/// removal row, which is why only the skills are named here.
+fn announce_removed_skills(plan: &ValidatedExtensionRemoval) {
+    if plan.bundled_skills.is_empty() {
+        return;
+    }
+    // The catalog is a process-global snapshot behind an mtime check with a
+    // one-second window, so an in-process writer must invalidate rather than
+    // rely on the stat — the rule `skill_catalog` states for every writer.
+    crate::agents::skill_catalog::invalidate();
+    let skills = plan
+        .bundled_skills
+        .iter()
+        .map(|slug| crate::catalog::CatalogSkillChange {
+            id: slug.clone(),
+            name: None,
+            change: crate::catalog::CatalogEntryChange::Removed,
+            source_extension_key: Some(plan.config_key.clone()),
+        })
+        .collect();
+    crate::catalog::CatalogEvents::global().publish(
+        crate::catalog::CatalogChangeReason::Uninstall,
+        Vec::new(),
+        skills,
+        None,
+    );
+}
+
+async fn remove_staged_extension(
+    manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
+    session_manager: &Arc<crate::session::SessionManager>,
+    plan: &ValidatedExtensionRemoval,
+    was_attached: bool,
+    cancel: &CancellationToken,
+    cap: crate::privacy::CallCapability,
+) -> Result<Value, ExtensionManagerToolError> {
+    let config = &plan.entry.config;
+    if cancel.is_cancelled() {
+        return Err(restore_detached_attachment(
+            manager,
+            config,
+            was_attached,
+            "The extension removal was cancelled before package files changed",
+        )
+        .await);
+    }
+    if let Err(error) = revalidate_approved_extension_removal(plan, cap) {
+        return Err(restore_detached_attachment(
+            manager,
+            config,
+            was_attached,
+            &format!("The installed extension changed immediately before removal: {error}"),
+        )
+        .await);
+    }
+
+    // Staging is a rename inside the extensions root, so the removal is
+    // reversible right up to the final `remove_dir_all`. An extension with no
+    // directory of its own stages nothing and the config row is the whole
+    // removal.
+    let quarantine = match (&plan.install_dir, &plan.extensions_root) {
+        (Some(install_dir), Some(root)) => {
+            let quarantine = root.join(format!(".delete-{}", uuid::Uuid::new_v4()));
+            if let Err(error) = std::fs::rename(install_dir, &quarantine) {
+                return Err(restore_detached_attachment(
+                    manager,
+                    config,
+                    was_attached,
+                    &format!("Could not stage the package for removal: {error}"),
+                )
+                .await);
+            }
+            Some(quarantine)
+        }
+        _ => None,
+    };
+    let staged = plan.staged(quarantine.as_deref());
+    if cancel.is_cancelled() {
+        let restoration =
+            restore_staged_package(manager, config, staged.staged_rename(), was_attached).await;
+        return Err(ExtensionManagerToolError::OperationFailed {
+            message: match restoration {
+                Ok(()) => "The extension removal was cancelled; the staged package was restored"
+                    .to_owned(),
+                Err(error) => format!("The extension removal was cancelled; {error}"),
+            },
+        });
+    }
+
+    let expected_entry = remove_staged_config(manager, &staged, was_attached).await?;
+    let provenance_removed = remove_staged_provenance(
+        manager,
+        &staged,
+        &plan.provenance,
+        was_attached,
+        expected_entry,
+    )
+    .await?;
+
+    // Past this point the removal is not reversible, which is why session
+    // pruning and the catalog announcement come after it rather than before.
+    let (package_removed, package_problem) = match &quarantine {
+        Some(quarantine) => delete_quarantined_package(quarantine, &plan.extension_name),
+        None => (None, None),
+    };
+    let (sessions_updated, session_problems) =
+        prune_extension_from_sessions(session_manager, &plan.extension_name, &plan.config_key)
+            .await;
+    announce_removed_skills(plan);
+
+    Ok(serde_json::json!({
+        "extensionName": plan.extension_name,
+        "status": "removed",
+        "detachedFromCurrentSession": was_attached,
+        "configurationRemoved": true,
+        "installDirectoryRemoved": package_removed,
+        "installDirectoryProblem": package_problem,
+        "provenanceRecordRemoved": provenance_removed,
+        "removedSkills": plan.bundled_skills,
+        "sessionsUpdated": sessions_updated,
+        "sessionProblems": session_problems,
+        "credentialsPreserved": true,
+    }))
+}
+
+/// Delete the staged package, and if that fails make sure it can no longer
+/// contribute anything.
+///
+/// ⚠ **A quarantine directory that survives is still a SKILL ROOT.**
+/// [`crate::agents::skill_catalog::roots`] enumerates every child of the
+/// extensions directory that has a `skills/` subdirectory — it does not skip
+/// dot-names — so a `.delete-<uuid>` left behind by a failed delete keeps
+/// serving the very skills the removal just told the user were gone, now under
+/// a garbage extension name. Removing the `skills/` subtree on its own is the
+/// targeted fallback: whatever made the full delete fail (a busy `.venv`, a
+/// permission on a build artefact) rarely applies to a directory of markdown.
+///
+/// The removal itself is NOT reported as a failure. The extension is genuinely
+/// gone — unregistered, detached, its provenance dropped, and it cannot load
+/// again — so the honest report is a success carrying the leftover as a
+/// problem, not an error that hides everything that did happen.
+fn delete_quarantined_package(
+    quarantine: &std::path::Path,
+    extension_name: &str,
+) -> (Option<bool>, Option<String>) {
+    let Err(error) = std::fs::remove_dir_all(quarantine) else {
+        return (Some(true), None);
+    };
+    let skills = quarantine.join("skills");
+    let orphaned_skills = skills.is_dir() && std::fs::remove_dir_all(&skills).is_err();
+    tracing::warn!(
+        "removed extension {extension_name} but could not delete its quarantined package at {}: {error}",
+        quarantine.display()
+    );
+    let problem = if orphaned_skills {
+        format!(
+            "the extension is removed, but its files could not be deleted from {} ({error}), and              its bundled skills are still on disk there",
+            quarantine.display()
+        )
+    } else {
+        format!(
+            "the extension is removed, but its files could not be deleted from {} ({error})",
+            quarantine.display()
+        )
+    };
+    (Some(false), Some(problem))
+}
+
+async fn remove_one_extension(
+    manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
+    session_manager: &Arc<crate::session::SessionManager>,
+    plan: &ValidatedExtensionRemoval,
+    cancel: &CancellationToken,
+    cap: crate::privacy::CallCapability,
+) -> (bool, Value) {
+    let error =
+        match detach_extension_from_session(manager, &plan.config_key, &plan.entry.config, cancel)
+            .await
+        {
+            Ok(was_attached) => {
+                match remove_staged_extension(
+                    manager,
+                    session_manager,
+                    plan,
+                    was_attached,
+                    cancel,
+                    cap,
+                )
+                .await
+                {
+                    Ok(result) => return (true, result),
+                    Err(error) => error,
+                }
+            }
+            Err(error) => error,
+        };
+    (
+        false,
+        serde_json::json!({
+            "extensionName": plan.extension_name,
+            "status": "error",
+            "error": error.to_string(),
+            "credentialsPreserved": true,
+        }),
+    )
+}
+
+fn untouched_removal_result(plan: &ValidatedExtensionRemoval, status: &str, reason: &str) -> Value {
+    serde_json::json!({
+        "extensionName": plan.extension_name,
+        "status": status,
+        "error": reason,
+        "untouched": true,
+        "credentialsPreserved": true,
+    })
+}
+
+async fn execute_extension_removal_batch(
+    manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
+    session_manager: &Arc<crate::session::SessionManager>,
+    plans: &[ValidatedExtensionRemoval],
+    cancel: &CancellationToken,
+    cap: crate::privacy::CallCapability,
+) -> (bool, Vec<Value>) {
+    let mut all_removed = true;
+    let mut results = Vec::with_capacity(plans.len());
+    for (index, plan) in plans.iter().enumerate() {
+        if cancel.is_cancelled() {
+            results.extend(plans[index..].iter().map(|plan| {
+                untouched_removal_result(
+                    plan,
+                    "cancelled",
+                    "The removal batch was cancelled before this extension was changed",
+                )
+            }));
+            return (false, results);
+        }
+        if let Err(error) = revalidate_approved_extension_removal(plan, cap) {
+            results.extend(plans[index..].iter().map(|plan| {
+                untouched_removal_result(
+                    plan,
+                    "notRemoved",
+                    &format!(
+                        "The approved batch changed before this extension could be removed: {error}"
+                    ),
+                )
+            }));
+            return (false, results);
+        }
+
+        let (removed, result) =
+            remove_one_extension(manager, session_manager, plan, cancel, cap).await;
+        all_removed &= removed;
+        results.push(result);
+    }
+    (all_removed, results)
+}
+
+fn extension_removal_report(
+    extension_names: Vec<String>,
+    results: Vec<Value>,
+    all_removed: bool,
+) -> Value {
+    let mut report = serde_json::json!({
+        "state": if all_removed { "removed" } else { "partial" },
+        "extensionNames": extension_names,
+        "results": results,
+        "credentialsPreserved": true,
+    });
+    // A single removal is reported flat as well as in `results`, so a caller
+    // that asked about one extension does not have to index an array to learn
+    // what happened to it. The same courtesy `marketplace_deletion_report` does.
+    let single = report
+        .get("results")
+        .and_then(Value::as_array)
+        .filter(|results| results.len() == 1)
+        .and_then(|results| results.first())
+        .cloned();
+    if let (Some(report), Some(single)) = (
+        report.as_object_mut(),
+        single.as_ref().and_then(Value::as_object),
+    ) {
+        for key in [
+            "extensionName",
+            "detachedFromCurrentSession",
+            "removedSkills",
+            "sessionsUpdated",
+        ] {
             if let Some(value) = single.get(key) {
                 report.insert(key.to_owned(), value.clone());
             }
@@ -1176,6 +2134,7 @@ impl ExtensionManagerClient {
                 - search_marketplace_extensions: Search trusted BAAM entries; omit the query to browse everything visible to this model
                 - install_extension: Install an exact trusted registry id after user approval
                 - delete_extension_package: Permanently delete one or several validated marketplace packages after one user approval
+                - remove_extension: Permanently remove one or several installed extensions by installed name, marketplace or not
                 - list_resources/read_resource: Resource tools, when they are advertised for the current session
 
                 When you lack the tools needed to complete a task, use search_available_extensions first
@@ -1199,6 +2158,12 @@ impl ExtensionManagerClient {
                 approval and credential dialogs, and a credential in a chat message cannot configure anything.
                 delete_extension_package validates the entire bounded batch before removing any package,
                 reports each result, and deliberately preserves shared credentials.
+                Use remove_extension to uninstall anything that did not come from the marketplace — a
+                sideloaded .brxt or an MCP server configured by hand — naming it by its exact installed
+                name; delete_extension_package cannot name one at all, and neither tool is a reason to
+                edit config.yaml or the provenance store yourself. It removes the configuration entry,
+                the package directory and its bundled skills, detaches the extension from every chat
+                that had it, and preserves shared credentials.
                 Use list_resources and read_resource only when they appear in the current tool catalog;
                 they are omitted when no loaded extension supports resources.
             "#}.to_string()),
@@ -1665,6 +2630,85 @@ impl ExtensionManagerClient {
         )])
     }
 
+    /// Uninstall an installed extension the marketplace cannot name (#164).
+    ///
+    /// The sibling of [`Self::handle_delete_extension_package`], keyed on the
+    /// installed name instead of a BAAM registry id, and running the SAME
+    /// transaction: one bounded, de-duplicated, fully preflighted batch; one
+    /// proof-backed approval; a re-validation after it that aborts on anything
+    /// that moved while the card was on screen; then per-extension detach,
+    /// stage, unregister, drop provenance, delete, prune sessions, announce.
+    ///
+    /// ⚠ **Credentials are deliberately NOT touched**, exactly as on the
+    /// marketplace path. An API key may be shared between extensions — the same
+    /// UCSF credential unlocks more than one connector — so revoking it here
+    /// would break an extension the user never asked to remove, and the value
+    /// is unrecoverable. `package_deletion_path_never_revokes_or_removes_credentials`
+    /// holds both handlers to it.
+    async fn handle_remove_extension(
+        &self,
+        arguments: Option<JsonObject>,
+        session_id: String,
+        cap: crate::privacy::CallCapability,
+        cancel: CancellationToken,
+    ) -> Result<Vec<Content>, ExtensionManagerToolError> {
+        let arguments = arguments.ok_or(ExtensionManagerToolError::MissingParameter {
+            param_name: "arguments".to_owned(),
+        })?;
+        let params: RemoveExtensionParams = serde_json::from_value(Value::Object(arguments))?;
+
+        let extension_names = preflight_remove_extension_names(params)?;
+        let approved = preflight_extension_removals(&extension_names, cap)?;
+        await_extension_change_approval(
+            crate::pending_user_action::PendingUserActions::global(),
+            &session_id,
+            extension_removal_approval_request(&approved),
+            MARKETPLACE_APPROVAL_TTL,
+            Some(&cancel),
+        )
+        .await?;
+        if cancel.is_cancelled() {
+            return Err(ExtensionManagerToolError::OperationFailed {
+                message: "The extension removal was cancelled; nothing was removed".to_owned(),
+            });
+        }
+        // The re-validation that makes the batch atomic against a tree that
+        // changed while the user was deciding. Without it an approval for one
+        // configuration can be spent on another.
+        let current = preflight_extension_removals(&extension_names, cap)?;
+        if current != approved {
+            return Err(ExtensionManagerToolError::OperationFailed {
+                message: "An installed extension changed after approval; nothing was removed"
+                    .to_owned(),
+            });
+        }
+
+        let manager = self
+            .context
+            .extension_manager
+            .as_ref()
+            .and_then(|weak| weak.upgrade())
+            .ok_or(ExtensionManagerToolError::ManagerUnavailable)?;
+        let (all_removed, results) = execute_extension_removal_batch(
+            &manager,
+            &self.context.session_manager,
+            &current,
+            &cancel,
+            cap,
+        )
+        .await;
+        // The extension rows were announced by `remove_extension_if_matches` and
+        // the skill rows by `announce_removed_skills`; this wakes the chat that
+        // asked, whose own tool roster just changed under it.
+        if !session_id.is_empty() {
+            crate::catalog::CatalogEvents::global().publish_session_refresh(&session_id);
+        }
+        let report = extension_removal_report(extension_names, results, all_removed);
+        Ok(vec![Content::text(
+            serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_owned()),
+        )])
+    }
+
     async fn manage_extensions_impl(
         &self,
         action: ManageExtensionAction,
@@ -2081,6 +3125,20 @@ impl McpClientTrait for ExtensionManagerClient {
                 )
                 .await
             }
+            // #164. Carries the admitted capability for the same reason its
+            // marketplace sibling does: the removal runs inside the driven
+            // future, and a fresh sample there would let a Public-admitted call
+            // uninstall a private connector after the user switched models
+            // mid-turn.
+            REMOVE_EXTENSION_TOOL_NAME => {
+                self.handle_remove_extension(
+                    arguments,
+                    meta.session_id.clone(),
+                    meta.capability,
+                    _cancellation_token.clone(),
+                )
+                .await
+            }
             // Issue #56: these two reach an MCP server, so they carry the
             // capability this call was ADMITTED on into Gate C's sibling guard
             // rather than letting the manager sample a newer one.
@@ -2255,6 +3313,25 @@ impl ExtensionManagerClient {
             )
             .annotate(ToolAnnotations {
                 title: Some("Delete an installed BAAM package".to_owned()),
+                read_only_hint: Some(false),
+                destructive_hint: Some(true),
+                idempotent_hint: Some(false),
+                open_world_hint: Some(false),
+            }),
+            Tool::new(
+                REMOVE_EXTENSION_TOOL_NAME.to_owned(),
+                "Permanently remove one or up to 50 installed extensions by exact installed name, whether or not they came from the BAAM marketplace. Use this for a sideloaded .brxt or a hand-configured MCP server; delete_extension_package only accepts a marketplace registry id. One proof-backed approval covers the batch, and it detaches the extension, removes its configuration entry, deletes its package directory and bundled skills, and drops its provenance record. Shared credentials are preserved."
+                    .to_owned(),
+                Arc::new(
+                    serde_json::to_value(schema_for!(RemoveExtensionParams))
+                        .expect("Failed to serialize schema")
+                        .as_object()
+                        .expect("Schema must be an object")
+                        .clone(),
+                ),
+            )
+            .annotate(ToolAnnotations {
+                title: Some("Remove an installed extension".to_owned()),
                 read_only_hint: Some(false),
                 destructive_hint: Some(true),
                 idempotent_hint: Some(false),
@@ -2627,6 +3704,7 @@ mod tests {
             SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME,
             INSTALL_EXTENSION_TOOL_NAME,
             DELETE_EXTENSION_PACKAGE_TOOL_NAME,
+            REMOVE_EXTENSION_TOOL_NAME,
         ] {
             assert!(names.iter().any(|name| name == expected), "{expected}");
         }
@@ -2662,6 +3740,14 @@ mod tests {
         // The capability's own one-line summary must name what it can now do,
         // including the irreversible half.
         assert!(instructions.contains("permanently delete"));
+        // ⚠ #164. The instructions are where the model learns WHICH door a
+        // non-marketplace extension goes through. Without this sentence it
+        // reaches for `delete_extension_package`, is told the registry id does
+        // not resolve, and falls back to editing `config.yaml` by hand — the
+        // exact behaviour `remove_extension` exists to replace.
+        assert!(instructions.contains("remove_extension"));
+        assert!(instructions.contains("did not come from the marketplace"));
+        assert!(instructions.contains("edit config.yaml"));
     }
 
     fn package_entry(name: &str, install_dir: &std::path::Path) -> ExtensionEntry {
@@ -2801,7 +3887,12 @@ mod tests {
             .join("\n")
     }
 
-    async fn wait_for_delete_card(session_id: &str) -> String {
+    /// ⚠ Parameterized by tool name rather than duplicated: both uninstall
+    /// doors publish the same proof-backed card, and a second copy of this
+    /// fixture is how one door would quietly stop being checked for the proof
+    /// requirement the assertion at the bottom pins.
+    async fn wait_for_delete_card(session_id: &str, tool_name: &str) -> String {
+        let expected_tool = tool_name;
         tokio::time::timeout(
             Duration::from_secs(30),
             crate::action_required_manager::ActionRequiredManager::global()
@@ -2821,13 +3912,13 @@ mod tests {
                 };
                 let crate::conversation::message::ActionRequiredData::ToolConfirmation {
                     id,
-                    tool_name,
+                    tool_name: card_tool,
                     ..
                 } = &action.data
                 else {
                     return None;
                 };
-                (tool_name == DELETE_EXTENSION_PACKAGE_TOOL_NAME).then(|| id.clone())
+                (card_tool == expected_tool).then(|| id.clone())
             })
             .expect("the deletion call must publish a tool-confirmation card");
         assert!(crate::pending_user_action::PendingUserActions::global()
@@ -2835,8 +3926,8 @@ mod tests {
         approval_id
     }
 
-    async fn approve_delete_card(session_id: &str) {
-        let approval_id = wait_for_delete_card(session_id).await;
+    async fn approve_delete_card(session_id: &str, tool_name: &str) {
+        let approval_id = wait_for_delete_card(session_id, tool_name).await;
         assert_eq!(
             crate::pending_user_action::PendingUserActions::global().resolve_in_session(
                 session_id,
@@ -2858,12 +3949,27 @@ mod tests {
         session_id: String,
         arguments: Value,
     ) -> CallToolResult {
+        run_approved_uninstall(
+            client,
+            session_id,
+            DELETE_EXTENSION_PACKAGE_TOOL_NAME,
+            arguments,
+        )
+        .await
+    }
+
+    async fn run_approved_uninstall(
+        client: Arc<ExtensionManagerClient>,
+        session_id: String,
+        tool_name: &'static str,
+        arguments: Value,
+    ) -> CallToolResult {
         let running = tokio::spawn({
             let session_id = session_id.clone();
             async move {
                 client
                     .call_tool(
-                        DELETE_EXTENSION_PACKAGE_TOOL_NAME,
+                        tool_name,
                         Some(arguments.as_object().unwrap().clone()),
                         McpMeta::new(
                             session_id,
@@ -2874,7 +3980,7 @@ mod tests {
                     .await
             }
         });
-        approve_delete_card(&session_id).await;
+        approve_delete_card(&session_id, tool_name).await;
         tokio::time::timeout(Duration::from_secs(30), running)
             .await
             .expect("the approved deletion must finish promptly")
@@ -2937,6 +4043,208 @@ mod tests {
         }
     }
 
+    /// A `.brxt` somebody sideloaded, or an MCP server they added by hand:
+    /// installed, on disk, and invisible to the marketplace. No provenance
+    /// record is written, which is exactly the state
+    /// `delete_extension_package` cannot act on.
+    struct RemovalFixture {
+        config_key: String,
+        extension_name: String,
+        install_dir: PathBuf,
+        skill_slug: String,
+    }
+
+    impl Drop for RemovalFixture {
+        fn drop(&mut self) {
+            crate::config::extensions::remove_extension(&self.config_key);
+            if self.install_dir.exists() {
+                let _ = std::fs::remove_dir_all(&self.install_dir);
+            }
+        }
+    }
+
+    fn install_sideloaded_fixture(label: &str) -> RemovalFixture {
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let extension_name = format!("ManagerRemove{label}{suffix}");
+        let config_key = crate::config::extensions::name_to_key(&extension_name);
+        let install_dir = crate::extension_install::brxt::extensions_root().join(&extension_name);
+        let skill_slug = format!("bundled-{label}").to_lowercase();
+        std::fs::create_dir_all(install_dir.join("skills").join(&skill_slug)).unwrap();
+        std::fs::write(
+            install_dir
+                .join("skills")
+                .join(&skill_slug)
+                .join("SKILL.md"),
+            "---\nname: bundled-fixture\n---\n",
+        )
+        .unwrap();
+        crate::config::extensions::set_extension(package_entry(&extension_name, &install_dir));
+        assert!(
+            crate::privacy::provenance::extension_provenance_for_key(&config_key).is_none(),
+            "a sideloaded fixture must have no provenance, or it is not the case under test"
+        );
+        RemovalFixture {
+            config_key,
+            extension_name,
+            install_dir,
+            skill_slug,
+        }
+    }
+
+    /// ⚠ The leftover of a failed delete is still a SKILL ROOT — `roots()`
+    /// takes every child of the extensions directory with a `skills/`
+    /// subdirectory, dot-names included — so a quarantine that survives keeps
+    /// serving skills the user was just told were gone.
+    #[cfg(unix)]
+    #[test]
+    fn a_package_that_cannot_be_deleted_still_stops_contributing_skills() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let quarantine = root.path().join(".delete-fixture");
+        let skills = quarantine.join("skills").join("bundled");
+        std::fs::create_dir_all(&skills).unwrap();
+        std::fs::write(skills.join("SKILL.md"), "---\nname: bundled\n---\n").unwrap();
+        // A directory whose contents cannot be unlinked, so the whole-tree
+        // delete fails the way a busy `.venv` or a root-owned build artefact
+        // makes it fail in the field.
+        let locked = quarantine.join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("pinned"), "x").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let (removed, problem) = delete_quarantined_package(&quarantine, "Fixture");
+        // Running as root ignores the mode above, and a test that silently
+        // asserts nothing is worse than one that says why.
+        if removed == Some(true) {
+            assert!(problem.is_none());
+            return;
+        }
+
+        assert_eq!(removed, Some(false));
+        let problem = problem.expect("a package that survived must be reported");
+        assert!(problem.contains("could not be deleted"), "{problem}");
+        assert!(
+            !quarantine.join("skills").exists(),
+            "the skills subtree must be gone even when the package could not be, or the \
+             catalog keeps serving them under the quarantine's name: {problem}"
+        );
+        assert!(
+            !problem.contains("bundled skills are still on disk"),
+            "the fallback succeeded, so the report must not claim otherwise: {problem}"
+        );
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// The gap this tool exists to close, end to end: an extension with no
+    /// registry id, uninstalled in one call.
+    #[tokio::test]
+    async fn approved_removal_uninstalls_a_non_marketplace_extension_and_its_bundled_skills() {
+        let _path_root = pinned_path_root();
+        let fixture = install_sideloaded_fixture("Single");
+        let (_manager_root, manager, client, _session_id) = a_live_tool_client().await;
+        let session_id = format!("remove-single-{}", uuid::Uuid::new_v4());
+
+        // The marketplace door cannot even NAME it — that is the gap, not a
+        // shortcoming of this fixture.
+        assert!(
+            preflight_marketplace_deletions(
+                std::slice::from_ref(&fixture.extension_name),
+                ProviderTier::Private,
+            )
+            .await
+            .is_err(),
+            "an extension with no registry id must be unnameable by the marketplace door"
+        );
+
+        let result = run_approved_uninstall(
+            Arc::new(client),
+            session_id,
+            REMOVE_EXTENSION_TOOL_NAME,
+            serde_json::json!({ "extension_name": fixture.extension_name.clone() }),
+        )
+        .await;
+
+        assert_ne!(result.is_error, Some(true), "{}", tool_result_text(&result));
+        let report: Value = serde_json::from_str(&tool_result_text(&result)).unwrap();
+        assert_eq!(report["state"], "removed");
+        assert_eq!(report["results"][0]["status"], "removed");
+        assert_eq!(report["results"][0]["configurationRemoved"], true);
+        assert_eq!(report["results"][0]["installDirectoryRemoved"], true);
+        // Nothing recorded where a sideloaded package came from, so there was
+        // no record to drop — reported honestly rather than as a success.
+        assert_eq!(report["results"][0]["provenanceRecordRemoved"], false);
+        assert_eq!(
+            report["removedSkills"],
+            serde_json::json!([fixture.skill_slug])
+        );
+        assert_eq!(report["credentialsPreserved"], true);
+
+        assert!(!fixture.install_dir.exists());
+        assert!(get_extension_entry_by_name(&fixture.extension_name).is_none());
+        assert!(!manager.is_extension_enabled(&fixture.config_key).await);
+    }
+
+    /// The stored roster holds whole `ExtensionConfig`s and
+    /// `Agent::load_extensions_from_session` spawns each one on resume, so a
+    /// session left naming a removed extension tries to launch a deleted server
+    /// and reports it as a broken extension rather than a removed one.
+    #[tokio::test]
+    async fn a_removal_prunes_the_extension_from_every_stored_session_roster() {
+        let _path_root = pinned_path_root();
+        let fixture = install_sideloaded_fixture("Sessions");
+        let (_manager_root, _manager, client, roster_session) = a_live_tool_client().await;
+        let session_manager = client.context.session_manager.clone();
+
+        use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
+        let entry = get_extension_entry_by_name(&fixture.extension_name)
+            .expect("the fixture entry is configured");
+        let stored = EnabledExtensionsState::new(vec![entry.config.clone()])
+            .to_value()
+            .unwrap();
+        session_manager
+            .update_extension_state(
+                &roster_session,
+                EnabledExtensionsState::EXTENSION_NAME,
+                EnabledExtensionsState::VERSION,
+                |_| Ok(stored),
+            )
+            .await
+            .expect("the fixture roster is stored")
+            .expect("the fixture session exists");
+
+        let result = run_approved_uninstall(
+            Arc::new(client),
+            format!("remove-sessions-{}", uuid::Uuid::new_v4()),
+            REMOVE_EXTENSION_TOOL_NAME,
+            serde_json::json!({ "extension_name": fixture.extension_name.clone() }),
+        )
+        .await;
+        assert_ne!(result.is_error, Some(true), "{}", tool_result_text(&result));
+        let report: Value = serde_json::from_str(&tool_result_text(&result)).unwrap();
+        assert_eq!(report["state"], "removed");
+        assert_eq!(report["sessionsUpdated"], 1);
+
+        let remaining = session_manager
+            .get_extension_state(
+                &roster_session,
+                EnabledExtensionsState::EXTENSION_NAME,
+                EnabledExtensionsState::VERSION,
+            )
+            .await
+            .expect("the roster is readable")
+            .and_then(|value| serde_json::from_value::<EnabledExtensionsState>(value).ok())
+            .expect("the roster is still a roster");
+        assert!(
+            remaining
+                .extensions
+                .iter()
+                .all(|config| config.key() != fixture.config_key),
+            "a removed extension must not survive in a stored session roster"
+        );
+    }
+
     #[tokio::test]
     async fn post_approval_config_revalidation_leaves_the_replacement_and_package_untouched() {
         let _path_root = pinned_path_root();
@@ -2967,7 +4275,8 @@ mod tests {
                     .await
             }
         });
-        let approval_id = wait_for_delete_card(&session_id).await;
+        let approval_id =
+            wait_for_delete_card(&session_id, DELETE_EXTENSION_PACKAGE_TOOL_NAME).await;
         let mut replacement = fixture.entry.clone();
         replacement.enabled = false;
         crate::config::extensions::set_extension(replacement.clone());
@@ -3073,18 +4382,19 @@ mod tests {
             "a pre-staging cancellation must leave the approved package untouched"
         );
 
-        let mut alias_descriptor = descriptor.clone();
-        alias_descriptor.registry_id = "different-registry-id".to_owned();
-        let alias = validate_unique_deletion_targets(&[
-            ValidatedMarketplaceDeletion {
-                descriptor: descriptor.clone(),
-                package: validated.clone(),
-            },
-            ValidatedMarketplaceDeletion {
-                descriptor: alias_descriptor,
-                package: validated.clone(),
-            },
-        ])
+        let alias = validate_unique_deletion_targets(
+            [
+                (
+                    validated.provenance.config_key.as_str(),
+                    Some(validated.install_dir.as_path()),
+                ),
+                (
+                    validated.provenance.config_key.as_str(),
+                    Some(validated.install_dir.as_path()),
+                ),
+            ],
+            DeletionIdentifier::MarketplaceRegistryId,
+        )
         .expect_err("two registry ids may not alias one package");
         assert!(alias.to_string().contains("same installed package"));
 
@@ -3175,32 +4485,244 @@ mod tests {
         );
     }
 
+    /// ⚠ **Uninstalling an extension must never touch a credential**, on
+    /// EITHER door. An API key can be shared between extensions — one UCSF
+    /// credential unlocks more than one connector — so revoking it while
+    /// removing one of them breaks an extension the user did not ask about,
+    /// and the value is not recoverable from anywhere.
+    ///
+    /// The four regions are named separately rather than taken as one span,
+    /// because a span defined by its two ends silently swallows whatever is
+    /// inserted between them: `handle_remove_extension` was written directly
+    /// underneath `handle_delete_extension_package`, and a guard that still ran
+    /// from there to `manage_extensions_impl` would have "covered" the new
+    /// handler by accident — and stopped covering it the moment either moved.
     #[test]
-    fn package_deletion_path_never_revokes_or_removes_credentials() {
+    fn extension_uninstall_paths_never_revoke_or_remove_credentials() {
         let source = include_str!("extension_manager_extension.rs");
-        let delete_handler = source
-            .split("async fn handle_delete_extension_package")
-            .nth(1)
-            .and_then(|tail| tail.split("async fn manage_extensions_impl").next())
-            .expect("delete handler boundaries");
-        let delete_report = source
-            .split("fn marketplace_deletion_report")
-            .nth(1)
-            .and_then(|tail| tail.split("/// The `manage_extensions` enable door").next())
-            .expect("delete report boundaries");
-        let delete_body = format!("{delete_handler}\n{delete_report}");
-        for forbidden in [
-            "revoke(",
-            "remove_secret",
-            "delete_secret",
-            "env_keys.clear",
+        let region = |label: &'static str, start: &str, end: &str| -> String {
+            source
+                .split(start)
+                .nth(1)
+                .and_then(|tail| tail.split(end).next())
+                .unwrap_or_else(|| panic!("{label} boundaries"))
+                .to_owned()
+        };
+
+        // The two handler regions ABUT — the first ends exactly where the
+        // second begins — so nothing can be added between them and fall outside
+        // both. Slicing the second from its doc comment rather than its `fn`
+        // line is deliberate: the promise not to touch a credential is stated
+        // there, and a guard that could not see the promise could not check it.
+        let marketplace_handler = region(
+            "marketplace delete handler",
+            "async fn handle_delete_extension_package",
+            "/// Uninstall an installed extension the marketplace cannot name",
+        );
+        let removal_handler = region(
+            "extension removal handler",
+            "/// Uninstall an installed extension the marketplace cannot name",
+            "async fn manage_extensions_impl",
+        );
+        let marketplace_report = region(
+            "marketplace delete report",
+            "fn marketplace_deletion_report",
+            "struct ValidatedExtensionRemoval",
+        );
+        let removal_execution = region(
+            "extension removal execution",
+            "struct ValidatedExtensionRemoval",
+            "/// The `manage_extensions` enable door",
+        );
+
+        for (label, body) in [
+            ("marketplace delete handler", &marketplace_handler),
+            ("extension removal handler", &removal_handler),
+            ("marketplace delete report", &marketplace_report),
+            ("extension removal execution", &removal_execution),
         ] {
-            assert!(
-                !delete_body.contains(forbidden),
-                "package deletion must preserve possibly shared credentials: {forbidden}"
-            );
+            for forbidden in [
+                "revoke(",
+                "remove_secret",
+                "delete_secret",
+                "env_keys.clear",
+            ] {
+                assert!(
+                    !body.contains(forbidden),
+                    "{label} must preserve possibly shared credentials: {forbidden}"
+                );
+            }
         }
-        assert!(delete_body.contains("credentialsPreserved"));
+
+        // Preserving them silently is not enough: the result and the approval
+        // card both have to say so, or a user reading either concludes the key
+        // went with the extension.
+        assert!(marketplace_report.contains("credentialsPreserved"));
+        assert!(removal_execution.contains("credentialsPreserved"));
+        assert!(removal_handler.contains("credentials"));
+    }
+
+    #[test]
+    fn extension_removal_batch_preflight_is_bounded_ordered_and_unique() {
+        let names = preflight_remove_extension_names(RemoveExtensionParams {
+            extension_name: Some("first".to_owned()),
+            extension_names: vec!["second".to_owned()],
+        })
+        .expect("valid batch");
+        assert_eq!(names, vec!["first", "second"]);
+
+        assert!(preflight_remove_extension_names(RemoveExtensionParams {
+            extension_name: Some("same".to_owned()),
+            extension_names: vec!["same".to_owned()],
+        })
+        .unwrap_err()
+        .to_string()
+        .contains("duplicates"));
+        assert!(preflight_remove_extension_names(RemoveExtensionParams {
+            extension_name: None,
+            extension_names: Vec::new(),
+        })
+        .is_err());
+        assert!(preflight_remove_extension_names(RemoveExtensionParams {
+            extension_name: None,
+            extension_names: (0..51).map(|index| format!("ext-{index}")).collect(),
+        })
+        .unwrap_err()
+        .to_string()
+        .contains("50"));
+
+        let schema = serde_json::to_value(schema_for!(RemoveExtensionParams)).unwrap();
+        let properties = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("removal schema properties");
+        assert!(properties.contains_key("extension_name"));
+        assert!(properties.contains_key("extension_names"));
+        assert_eq!(
+            properties
+                .get("extension_names")
+                .and_then(|value| value.get("maxItems"))
+                .and_then(Value::as_u64),
+            Some(50)
+        );
+        assert!(
+            serde_json::from_value::<RemoveExtensionParams>(serde_json::json!({
+                "extension_name": "one",
+                "unexpected": true
+            }))
+            .is_err()
+        );
+        // The camelCase spelling our own payloads hand back is forgiven, not
+        // taught — the schema above still says `extension_name`.
+        assert_eq!(
+            serde_json::from_value::<RemoveExtensionParams>(
+                serde_json::json!({ "extensionName": "one" })
+            )
+            .expect("the camelCase alias is accepted")
+            .extension_name
+            .as_deref(),
+            Some("one")
+        );
+    }
+
+    /// ⚠ **The directory is only this extension's when the config key agrees.**
+    /// Without that test `remove_extension` would delete
+    /// `<extensions>/<config name>` on nothing more than a name — which for a
+    /// hand-configured MCP server that never installed anything means deleting
+    /// whatever happens to sit at that name.
+    #[test]
+    fn a_package_directory_is_only_removable_when_it_belongs_to_the_entry_being_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        for name in ["Alpha", "Beta", "Delta"] {
+            std::fs::create_dir_all(root_path.join(name)).unwrap();
+        }
+
+        let owns_its_own = package_entry("Alpha", &root_path.join("Alpha"));
+        assert_eq!(
+            removal_install_dir("alpha", &owns_its_own.config, Some(&root_path)).unwrap(),
+            Some(root_path.join("Alpha"))
+        );
+
+        // Named after nothing on disk, and launching out of nothing on disk:
+        // an `npx` server somebody added by hand. Removable, but its removal is
+        // the config row alone.
+        let hand_configured = ExtensionEntry {
+            enabled: true,
+            config: ExtensionConfig::Stdio {
+                name: "Gamma".to_owned(),
+                description: "hand-configured".to_owned(),
+                cmd: "npx".to_owned(),
+                args: vec!["-y".to_owned(), "gamma-server".to_owned()],
+                envs: crate::agents::extension::Envs::default(),
+                env_keys: Vec::new(),
+                timeout: Some(300),
+                bundled: None,
+                available_tools: Vec::new(),
+            },
+        };
+        assert_eq!(
+            removal_install_dir("gamma", &hand_configured.config, Some(&root_path)).unwrap(),
+            None
+        );
+
+        // No arguments naming a directory, but one exists under its own name.
+        let named_only = ExtensionEntry {
+            enabled: true,
+            config: ExtensionConfig::stdio("Delta", "delta-server", "named only", 30_u64),
+        };
+        assert_eq!(
+            removal_install_dir("delta", &named_only.config, Some(&root_path)).unwrap(),
+            Some(root_path.join("Delta"))
+        );
+
+        // Launching out of ANOTHER package's directory is refused rather than
+        // resolved to nothing: silently removing only the config row orphans a
+        // tree, and removing the tree breaks the package that owns it.
+        let squatter = package_entry("Alpha", &root_path.join("Beta"));
+        let refusal = removal_install_dir("alpha", &squatter.config, Some(&root_path))
+            .expect_err("an entry pointed at another package's directory is refused");
+        assert!(
+            refusal.to_string().contains("different installed package"),
+            "{refusal}"
+        );
+
+        // A machine that never installed a `.brxt` has no extensions root at
+        // all, and that is not an error — nothing owns a directory.
+        assert_eq!(
+            removal_install_dir("alpha", &owns_its_own.config, None).unwrap(),
+            None
+        );
+    }
+
+    /// The three refusals, in the order [`validated_extension_removal`] asks
+    /// them. The last assertion is the one worth keeping: a public caller must
+    /// not be able to tell an installed private extension from an absent one,
+    /// which is why the privacy gate sits ABOVE the not-installed answer.
+    #[test]
+    fn removal_refuses_capabilities_and_gates_private_names_above_the_not_installed_answer() {
+        let capability = validated_extension_removal("developer", public_enforcing(), None, &[])
+            .expect_err("a built-in capability is not an installed extension");
+        assert!(capability.to_string().contains("developer"), "{capability}");
+
+        let private = validated_extension_removal("ucsfomopagent", public_enforcing(), None, &[])
+            .expect_err("a public caller may not remove a private extension");
+        assert!(private.to_string().contains("private"), "{private}");
+        assert!(
+            !private.to_string().contains("not installed"),
+            "a refusal that says whether a private extension is installed is the \
+             install-state oracle finding 13 closed: {private}"
+        );
+
+        let absent =
+            validated_extension_removal("no-such-extension", public_enforcing(), None, &[])
+                .expect_err("an absent public name is reported absent");
+        assert!(absent.to_string().contains("not installed"), "{absent}");
+        assert!(
+            absent.to_string().contains("search_available_extensions"),
+            "a not-installed answer must name the inventory to look in, or the \
+             model guesses another name: {absent}"
+        );
     }
 
     #[test]
@@ -4410,10 +5932,22 @@ mod proof_gated_roster_tests {
     }
 
     #[test]
-    fn the_two_proof_backed_mutations_are_withheld_when_no_person_is_reachable() {
+    fn the_proof_backed_mutations_are_withheld_when_no_person_is_reachable() {
         let offered = names(false);
-        assert!(!offered.contains(&INSTALL_EXTENSION_TOOL_NAME.to_string()));
-        assert!(!offered.contains(&DELETE_EXTENSION_PACKAGE_TOOL_NAME.to_string()));
+        for withheld in [
+            INSTALL_EXTENSION_TOOL_NAME,
+            DELETE_EXTENSION_PACKAGE_TOOL_NAME,
+            // #164. It parks on the same proof-backed approval as the door it
+            // sits beside, so a daemon that cannot obtain one must not advertise
+            // it either — advertised-and-always-refused is the state SD-8 exists
+            // to prevent.
+            REMOVE_EXTENSION_TOOL_NAME,
+        ] {
+            assert!(
+                !offered.contains(&withheld.to_string()),
+                "{withheld} parks on a proof-backed approval nobody can answer here"
+            );
+        }
     }
 
     #[test]
@@ -4437,9 +5971,17 @@ mod proof_gated_roster_tests {
     #[test]
     fn a_desktop_daemon_is_offered_the_complete_roster() {
         let offered = names(true);
-        assert!(offered.contains(&INSTALL_EXTENSION_TOOL_NAME.to_string()));
-        assert!(offered.contains(&DELETE_EXTENSION_PACKAGE_TOOL_NAME.to_string()));
-        // The gate removes exactly two entries and nothing else.
-        assert_eq!(offered.len(), names(false).len() + 2);
+        for proof_backed in [
+            INSTALL_EXTENSION_TOOL_NAME,
+            DELETE_EXTENSION_PACKAGE_TOOL_NAME,
+            REMOVE_EXTENSION_TOOL_NAME,
+        ] {
+            assert!(
+                offered.contains(&proof_backed.to_string()),
+                "{proof_backed}"
+            );
+        }
+        // The gate removes exactly those entries and nothing else.
+        assert_eq!(offered.len(), names(false).len() + 3);
     }
 }

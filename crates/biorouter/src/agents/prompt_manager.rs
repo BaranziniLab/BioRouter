@@ -112,6 +112,7 @@ struct SystemPromptContext {
     extension_state_change_available: bool,
     extension_package_install_available: bool,
     extension_package_delete_available: bool,
+    extension_removal_available: bool,
     extension_resource_tools_available: bool,
     extension_resource_tools_directly_callable: bool,
     skill_load_available: bool,
@@ -308,6 +309,12 @@ fn build_system_prompt_context(
         "extensionmanager",
         "delete_extension_package",
     );
+    // ⚠ Its own clause, gated on its own tool, exactly like the four above: the
+    // two uninstall tools accept different identifiers and one can be offered
+    // without the other, so a shared clause would tell a model it can remove a
+    // sideloaded extension when only the marketplace door is on the roster.
+    let extension_removal_available =
+        capability_has_tool(&capabilities, "extensionmanager", "remove_extension");
     let extension_resource_tools_available =
         capability_has_tool(&capabilities, "extensionmanager", "list_resources")
             && capability_has_tool(&capabilities, "extensionmanager", "read_resource");
@@ -332,6 +339,7 @@ fn build_system_prompt_context(
         extension_state_change_available,
         extension_package_install_available,
         extension_package_delete_available,
+        extension_removal_available,
         extension_resource_tools_available,
         extension_resource_tools_directly_callable,
         skill_load_available,
@@ -875,8 +883,18 @@ mod tests {
         assert!(!install.contains("- permanently delete"));
 
         let delete = build(&["delete_extension_package"]);
-        assert!(delete.contains("- permanently delete an installed extension package"));
+        assert!(delete.contains("- permanently delete an installed marketplace extension package"));
         assert!(!delete.contains("- install an extension package"));
+        assert!(!delete.contains("- permanently remove any installed extension"));
+
+        // #164. The two uninstall doors are separately gated, so being offered
+        // the marketplace one must not read as being offered the other: the
+        // identifiers differ, and a model that conflates them names a registry
+        // id no catalog resolves and falls back to editing config.yaml.
+        let remove = build(&["remove_extension"]);
+        assert!(remove.contains("- permanently remove any installed extension"));
+        assert!(remove.contains("did not come from the marketplace"));
+        assert!(!remove.contains("- permanently delete an installed marketplace extension"));
 
         // Browse and search are ONE tool now — browsing is the same call with no
         // query — so there is one clause, gated on the one surviving name.
@@ -888,7 +906,14 @@ mod tests {
         // can open the paragraph with a subject-less "It" — which is what
         // happened when the marketplace sentence led with a pronoun whose
         // antecedent lived in a clause that had not rendered.
-        for rendered in [&discovery, &state_change, &install, &delete, &marketplace] {
+        for rendered in [
+            &discovery,
+            &state_change,
+            &install,
+            &delete,
+            &remove,
+            &marketplace,
+        ] {
             assert!(rendered.contains(
                 "The Extension Manager capability can do only what this turn's effective roster allows:"
             ));

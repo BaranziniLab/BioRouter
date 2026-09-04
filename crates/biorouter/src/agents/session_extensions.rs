@@ -27,7 +27,8 @@ pub fn tool_catalog_mutation(tool_name: &str) -> Option<ToolCatalogMutation> {
     let persist_extension_state = match tool_name {
         "extensionmanager__manage_extensions"
         | "extensionmanager__install_extension"
-        | "extensionmanager__delete_extension_package" => true,
+        | "extensionmanager__delete_extension_package"
+        | "extensionmanager__remove_extension" => true,
         "skills__installMarketplaceSkill"
         | "skills__importSkillPackage"
         | "skills__removeSkillPackage"

@@ -143,6 +143,27 @@ describe('summarizeToolCall', () => {
         arguments: { registry_id: 'spokeagent' },
       })
     ).toBe('Removing extension package Spoke Agent');
+    // #164's sibling door, keyed on the installed name. Without its own arm the
+    // transcript falls back to the raw tool name for the one uninstall path a
+    // non-marketplace extension can take.
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__remove_extension',
+        arguments: { extension_name: 'spokeagent', extension_names: ['cdwagent'] },
+      })
+    ).toBe('Removing 2 extensions');
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__remove_extension',
+        arguments: { extension_names: ['spokeagent'] },
+      })
+    ).toBe('Removing 1 extension');
+    expect(
+      summarizeToolCall({
+        name: 'extensionmanager__remove_extension',
+        arguments: { extension_name: 'spokeagent' },
+      })
+    ).toBe('Removing extension Spoke Agent');
     // The skill mirror: `preflight_removal_targets` merges `name` into `names`.
     expect(
       summarizeToolCall({

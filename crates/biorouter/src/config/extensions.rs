@@ -14,7 +14,12 @@ pub const DEFAULT_DISPLAY_NAME: &str = "Developer";
 const EXTENSIONS_CONFIG_KEY: &str = "extensions";
 const RETIRED_BUILTIN_EXTENSIONS: &[&str] = &["tutorial"];
 
-#[derive(Debug, Deserialize, Serialize, Clone, ToSchema)]
+/// ⚠ `PartialEq` is not derive-everything hygiene: `remove_extension_if_matches`
+/// already compares the two fields by hand, and `remove_extension`'s
+/// post-approval re-validation compares whole entries — an approval is only
+/// atomic against a tree that moved under it if "the same entry" has one
+/// definition.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, ToSchema)]
 pub struct ExtensionEntry {
     pub enabled: bool,
     #[serde(flatten)]
