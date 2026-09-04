@@ -35,7 +35,7 @@ import { userActionHeaders } from '../utils/userAction';
 import type { SessionClassification } from '../api/types.gen';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
-import { getNavigationShortcutText } from '../utils/keyboardShortcuts';
+import { getNavigationShortcutText, getSteerShortcutText } from '../utils/keyboardShortcuts';
 import type { UserAttachment } from '../types/message';
 import { useStopAcknowledgement } from '../hooks/useStopAcknowledgement';
 import { isRunningState } from '../hooks/chatStreamStore';
@@ -2803,6 +2803,18 @@ export default function ChatInput({
                         ? 'Restarting chat...'
                         : 'Send'}
                 </p>
+                {/* BR-61's steer chord has been bound since BR-61 and was
+                    advertised nowhere, so it was reachable only by someone who
+                    had read the Enter handler. This is the one moment it
+                    applies — a turn is in flight, so plain Enter QUEUES this
+                    message — which makes the tooltip the honest place to say
+                    what the other chord does, rather than a permanent hint that
+                    would be wrong whenever nothing is running. */}
+                {canSteer && !isAnyImageLoading && !isAnyDroppedFileLoading && (
+                  <p className="text-text-muted">
+                    {getSteerShortcutText()} adds it to the running turn
+                  </p>
+                )}
               </TooltipContent>
             </Tooltip>
           )}
