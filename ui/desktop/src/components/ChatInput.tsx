@@ -28,7 +28,7 @@ import type { ModelCostRow } from '../hooks/useCostTracking';
 import { DroppedFile, useFileDrop } from '../hooks/useFileDrop';
 import { useDiverge } from '../hooks/useDiverge';
 import { Workflow } from '../workflow';
-import MessageQueue from './MessageQueue';
+import MessageQueue, { canSteerMessage } from './MessageQueue';
 import { detectInterruption } from '../utils/interruptionDetector';
 import { getSession, llamacppStatus, Message } from '../api';
 import { userActionHeaders } from '../utils/userAction';
@@ -1773,6 +1773,42 @@ export default function ChatInput({
     return true;
   }, [canSteer, displayValue, pastedImages.length, allDroppedFiles.length, steerText]);
 
+  /** BR-61: send a queued message into the running turn without stopping it. */
+  const handleSteerMessage = (messageId: string) => {
+    const messageToSteer = queuedMessages.find((msg) => msg.id === messageId);
+    if (!messageToSteer || !canSteer) return;
+
+    setQueuedMessages((prev) => prev.filter((msg) => msg.id !== messageId));
+    steerText(messageToSteer.content);
+  };
+
+  /**
+   * Cmd/Ctrl+Enter with an EMPTY composer: steer the front of the queue — the
+   * keyboard equivalent of its "Add now" button.
+   *
+   * The composer must be empty of everything, not merely of text. A composer
+   * holding images or dropped files cannot steer (a soft interrupt has no
+   * attachment channel), and quietly sending a QUEUED message instead would be
+   * the chord doing something the user did not ask for. It does nothing there.
+   *
+   * Eligibility is the button's own: `canSteer`, `canSteerMessage`, and not
+   * mid-edit — the row's button is disabled while its editor is open, and the
+   * user can click into the composer with that editor still open, so without
+   * this the chord would steer the row out from under the edit in progress.
+   */
+  const handleSteerNextQueuedMessage = (): boolean => {
+    if (!canSteer) return false;
+    if (displayValue.trim() || pastedImages.length > 0 || allDroppedFiles.length > 0) {
+      return false;
+    }
+    const next = queuedMessages[0];
+    if (!next || !canSteerMessage(next) || editingMessageIdRef.current === next.id) {
+      return false;
+    }
+    handleSteerMessage(next.id);
+    return true;
+  };
+
   const canSubmit =
     !isLoading &&
     (displayValue.trim() ||
@@ -1979,8 +2015,17 @@ export default function ChatInput({
 
       // BR-61: Cmd/Ctrl+Enter while a turn is running steers it — the message
       // reaches the model on its next step instead of waiting for the turn to end.
-      if ((evt.metaKey || evt.ctrlKey) && handleSteerFromComposer()) {
-        return;
+      if (evt.metaKey || evt.ctrlKey) {
+        if (handleSteerFromComposer()) {
+          return;
+        }
+        // ...and with an EMPTY composer it steers the front of the queue: the
+        // keyboard equivalent of the queue's own "Add now" button. One meaning
+        // for one key — "send what I have into the running turn" — rather than
+        // a second meaning that would depend on invisible state.
+        if (handleSteerNextQueuedMessage()) {
+          return;
+        }
       }
 
       // Handle interruption and queue logic
@@ -2103,15 +2148,6 @@ export default function ChatInput({
     setQueuedMessages((prev) =>
       prev.map((msg) => (msg.id === messageId ? { ...msg, content: newContent } : msg))
     );
-  };
-
-  /** BR-61: send a queued message into the running turn without stopping it. */
-  const handleSteerMessage = (messageId: string) => {
-    const messageToSteer = queuedMessages.find((msg) => msg.id === messageId);
-    if (!messageToSteer || !canSteer) return;
-
-    setQueuedMessages((prev) => prev.filter((msg) => msg.id !== messageId));
-    steerText(messageToSteer.content);
   };
 
   const stopAndSendPendingRef = useRef(new Set<string>());
