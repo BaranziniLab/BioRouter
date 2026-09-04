@@ -86,6 +86,10 @@ function harness(candidate: ArtifactSource, current: ArtifactSource | null = liv
     artifactInitialScanDoneRef: { current: true },
     knownArtifactKeysRef: { current: new Set([artifactKey(oldCard)]) },
     handleOpenArtifact: vi.fn(),
+    // The mentioned-file existence gate, pinned SETTLED: these fixtures are
+    // `ui://` cards and a live app URL, none of which the gate asks about. Its
+    // own deferral is covered in BaseChat.artifacts.test.ts.
+    gatePending: false,
   };
   const run = () =>
     executeSource(`(${effect.getText(tree)})();`, {

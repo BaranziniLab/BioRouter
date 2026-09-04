@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 
 /**
  * Does the file a chat link points at actually exist?
@@ -41,6 +41,14 @@ export type FilePathCheckRequest = { path: string; workingDir?: string };
 export type FilePathCheckResult = { exists: boolean; isDirectory: boolean };
 
 type CheckFilePaths = (requests: FilePathCheckRequest[]) => Promise<FilePathCheckResult[]>;
+
+/** The batched answer: a lookup over the requested set, plus its settledness. */
+export type FileLinkExistences = {
+  /** The verdict for one requested path; `unchecked` for anything not asked. */
+  of: (path: string, workingDir?: string) => FileLinkExistence;
+  /** True while at least one requested path is still `checking`. */
+  pending: boolean;
+};
 
 /** Only `present` and `unchecked` may render as a clickable link. */
 export function isOpenableFileLink(existence: FileLinkExistence): boolean {
@@ -94,8 +102,24 @@ const queued = new Map<string, FilePathCheckRequest>();
 const listeners = new Set<() => void>();
 let flushScheduled = false;
 
+/**
+ * Monotonic store version, for the batched hook below.
+ *
+ * A per-path `getSnapshot` can return the verdict itself, because a verdict is a
+ * string and React can compare it. A hook watching a WHOLE SET has no such
+ * value — building a Map per render would be a fresh object every time and spin
+ * `useSyncExternalStore` forever — so it subscribes to this counter instead and
+ * derives the answers from `answers` under a `useMemo` keyed on it.
+ */
+let revision = 0;
+
 function notify(): void {
+  revision += 1;
   for (const listener of [...listeners]) listener();
+}
+
+function getRevision(): number {
+  return revision;
 }
 
 /**
@@ -225,6 +249,96 @@ export function useFileLinkExistence(
   return existence;
 }
 
+/**
+ * The verdicts for a WHOLE SET of paths, in one subscription and one batch.
+ *
+ * {@link useFileLinkExistence} is per-link because a link IS a component; the
+ * artifact panel holds its paths as data — one list, rebuilt whenever the
+ * transcript changes — and cannot mount a hook per row. Same cache, same
+ * batching, same four states; the only additions are that the answer is a
+ * lookup rather than a value, and that a list can be *partly* answered, which
+ * the caller has to be able to see.
+ *
+ * `pending` is that visibility, and it exists for one specific caller need:
+ * something that takes a ONE-TIME baseline of the artifact list (the panel's
+ * auto-open snapshot) must not take it mid-sweep, or every path confirmed a
+ * moment later reads as newly created. It is false wherever no answer is
+ * coming — no bridge, or an empty request list — so it can never wedge.
+ *
+ * @param requests the paths to ask about. Re-derived arrays are fine: identity
+ *   is taken from the CONTENT, so an equal list never re-asks.
+ */
+export function useFileLinkExistences(
+  requests: readonly FilePathCheckRequest[]
+): FileLinkExistences {
+  const supported = fileLinkChecksSupported();
+  const signature = useMemo(
+    () => requests.map((request) => cacheKey(request.path, request.workingDir)).join('\u0001'),
+    [requests]
+  );
+  // Everything below is keyed on the signature rather than the array, so the
+  // array is read through a ref: closing over it would pin the first list a
+  // given signature was seen with.
+  const requestsRef = useRef(requests);
+  requestsRef.current = requests;
+
+  useEffect(() => {
+    if (!supported) return;
+    for (const request of requestsRef.current) requestCheck(request.path, request.workingDir);
+  }, [supported, signature]);
+
+  const storeRevision = useSyncExternalStore(subscribe, getRevision, getRevision);
+
+  const verdicts = useMemo(() => {
+    const map = new Map<string, FileLinkExistence>();
+    for (const request of requestsRef.current) {
+      const key = cacheKey(request.path, request.workingDir);
+      map.set(key, supported ? (answers.get(key)?.verdict ?? 'checking') : 'unchecked');
+    }
+    return map;
+    // `storeRevision` is the subscription: it is what makes this recompute when
+    // an answer lands, and is deliberately not read in the body.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supported, signature, storeRevision]);
+
+  // A `missing` verdict is provisional here for the same reason it is for a
+  // single link — the assistant routinely names a file just before writing it —
+  // so ask once more when the TTL expires. One timer for the whole set; the
+  // re-ask re-batches, and `requestCheck` skips whatever is still fresh.
+  //
+  // Deliberately ONE retry per distinct missing set, exactly as the single-path
+  // hook behaves: re-asking a path that is still gone leaves the verdict string
+  // unchanged, so this effect does not re-fire and nothing polls. What actually
+  // rescues a file written later is the tool call that wrote it — which reaches
+  // the panel as its own confirmed artifact.
+  const missingSignature = useMemo(
+    () =>
+      [...verdicts]
+        .filter(([, verdict]) => verdict === 'missing')
+        .map(([key]) => key)
+        .join('\u0001'),
+    [verdicts]
+  );
+  useEffect(() => {
+    if (!supported || !missingSignature) return;
+    const timer = setTimeout(() => {
+      for (const request of requestsRef.current) requestCheck(request.path, request.workingDir);
+    }, MISSING_TTL_MS);
+    return () => clearTimeout(timer);
+  }, [supported, missingSignature]);
+
+  return useMemo(
+    () => ({
+      of: (path: string, workingDir?: string): FileLinkExistence =>
+        // A path outside the requested set was never asked about, which is the
+        // absence of an answer, not a negative one.
+        verdicts.get(cacheKey(path, workingDir)) ?? 'unchecked',
+      pending: [...verdicts.values()].some((verdict) => verdict === 'checking'),
+    }),
+    [verdicts]
+  );
+}
+
 /** Drop every cached verdict. Tests only — the cache is process-global. */
 export function resetFileLinkStatusForTests(): void {
   answers.clear();
@@ -232,4 +346,7 @@ export function resetFileLinkStatusForTests(): void {
   queued.clear();
   listeners.clear();
   flushScheduled = false;
+  // Monotonic, never reset: a mounted `useSyncExternalStore` compares the
+  // counter it last read, so rewinding it would read as "nothing changed".
+  revision += 1;
 }

@@ -1,11 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { renderHook, waitFor } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import type { Message } from '../api';
 import {
+  applyMentionedFileGate,
   collectArtifactsFromMessages,
   decideArtifactAutoOpen,
+  mentionedArtifactPaths,
   shouldAutoRepairArtifact,
+  useSessionArtifacts,
 } from './BaseChat';
+import type { ArtifactSource } from './artifacts/artifactTypes';
+import {
+  resetFileLinkStatusForTests,
+  type FileLinkExistence,
+  type FilePathCheckRequest,
+} from './artifacts/fileLinkStatus';
 import {
   getArtifactPanelExpansionContentWidth,
   getDefaultArtifactPanelWidth,
@@ -48,6 +58,32 @@ const hiddenToolResponse = (id: string, html: string): Message => ({
   ],
 });
 
+const writeRequest = (id: string, name: string, args: Record<string, unknown>): Message =>
+  visibleMessage([
+    {
+      type: 'toolRequest',
+      id,
+      toolCall: { status: 'success', value: { name, arguments: args } },
+    },
+  ]);
+
+const textToolResponse = (id: string, text: string, isError = false): Message => ({
+  id: crypto.randomUUID(),
+  role: 'tool',
+  created: 2,
+  metadata: { userVisible: false, agentVisible: true },
+  content: [
+    {
+      type: 'toolResponse',
+      id,
+      toolResult: {
+        status: 'success',
+        value: { is_error: isError, content: [{ type: 'text', text }] },
+      },
+    },
+  ],
+});
+
 describe('collectArtifactsFromMessages', () => {
   it('file-link reliability: does not substitute the launch cwd for an unloaded session', () => {
     const source = readFileSync(`${process.cwd()}/src/components/BaseChat.tsx`, 'utf8');
@@ -69,7 +105,7 @@ describe('collectArtifactsFromMessages', () => {
     (text, path, title) => {
       expect(
         collectArtifactsFromMessages([visibleMessage([{ type: 'text', text }])], '/work')
-      ).toEqual([{ kind: 'file', path, title }]);
+      ).toEqual([{ kind: 'file', path, title, mentionedOnly: true }]);
     }
   );
 
@@ -79,7 +115,12 @@ describe('collectArtifactsFromMessages', () => {
       visibleMessage([{ type: 'text', text: '[Report](report.md)' }]),
     ];
     expect(collectArtifactsFromMessages(messages, '/work')).toEqual([
-      { kind: 'file', path: '/work/run/results/report.md', title: 'report.md' },
+      {
+        kind: 'file',
+        path: '/work/run/results/report.md',
+        title: 'report.md',
+        mentionedOnly: true,
+      },
     ]);
   });
 
@@ -99,6 +140,7 @@ describe('collectArtifactsFromMessages', () => {
         reportedMessageCount: 1,
         loadedMessageCount: 1,
         artifactKeys: fileKeys(partialArtifacts),
+        gatePending: false,
       })
     ).toEqual({ action: 'none' });
 
@@ -107,7 +149,7 @@ describe('collectArtifactsFromMessages', () => {
 
     const stableArtifacts = collectArtifactsFromMessages([streaming], '/work');
     expect(stableArtifacts).toEqual([
-      { kind: 'file', path: '/tmp/report.json', title: 'report.json' },
+      { kind: 'file', path: '/tmp/report.json', title: 'report.json', mentionedOnly: true },
     ]);
     const artifactKeys = fileKeys(stableArtifacts);
     const firstDecision = decideArtifactAutoOpen({
@@ -116,6 +158,7 @@ describe('collectArtifactsFromMessages', () => {
       reportedMessageCount: 1,
       loadedMessageCount: 1,
       artifactKeys,
+      gatePending: false,
     });
     expect(firstDecision.action).toBe('open');
     if (firstDecision.action !== 'open') throw new Error('unreachable');
@@ -126,6 +169,7 @@ describe('collectArtifactsFromMessages', () => {
         reportedMessageCount: 1,
         loadedMessageCount: 1,
         artifactKeys,
+        gatePending: false,
       })
     ).toEqual({ action: 'none' });
   });
@@ -251,32 +295,6 @@ describe('collectArtifactsFromMessages', () => {
     );
   });
 
-  const writeRequest = (id: string, name: string, args: Record<string, unknown>): Message =>
-    visibleMessage([
-      {
-        type: 'toolRequest',
-        id,
-        toolCall: { status: 'success', value: { name, arguments: args } },
-      },
-    ]);
-
-  const textToolResponse = (id: string, text: string, isError = false): Message => ({
-    id: crypto.randomUUID(),
-    role: 'tool',
-    created: 2,
-    metadata: { userVisible: false, agentVisible: true },
-    content: [
-      {
-        type: 'toolResponse',
-        id,
-        toolResult: {
-          status: 'success',
-          value: { is_error: isError, content: [{ type: 'text', text }] },
-        },
-      },
-    ],
-  });
-
   it('previews a markdown file the agent wrote', () => {
     const messages: Message[] = [
       writeRequest('t1', 'developer__text_editor', {
@@ -352,6 +370,7 @@ describe('collectArtifactsFromMessages', () => {
         kind: 'file',
         title: 'report.pdf',
         path: '/Users/ada/Desktop/results/report.pdf',
+        mentionedOnly: true,
       },
     ]);
   });
@@ -384,7 +403,7 @@ describe('collectArtifactsFromMessages', () => {
       visibleMessage([{ type: 'text', text: 'See ./results/plot.png in the output folder.' }]),
     ];
     expect(collectArtifactsFromMessages(messages, '/work')).toEqual([
-      { kind: 'file', title: 'plot.png', path: '/work/results/plot.png' },
+      { kind: 'file', title: 'plot.png', path: '/work/results/plot.png', mentionedOnly: true },
     ]);
   });
 
@@ -399,8 +418,18 @@ describe('collectArtifactsFromMessages', () => {
       ]),
     ];
     expect(collectArtifactsFromMessages(messages)).toEqual([
-      { kind: 'file', title: 'alpha/report.pdf', path: '/proj/alpha/report.pdf' },
-      { kind: 'file', title: 'bravo/report.pdf', path: '/proj/bravo/report.pdf' },
+      {
+        kind: 'file',
+        title: 'alpha/report.pdf',
+        path: '/proj/alpha/report.pdf',
+        mentionedOnly: true,
+      },
+      {
+        kind: 'file',
+        title: 'bravo/report.pdf',
+        path: '/proj/bravo/report.pdf',
+        mentionedOnly: true,
+      },
     ]);
   });
 
@@ -419,7 +448,7 @@ describe('collectArtifactsFromMessages', () => {
       visibleMessage([{ type: 'text', text: 'Open /proj/alpha/report.pdf now please.' }]),
     ];
     expect(collectArtifactsFromMessages(messages)).toEqual([
-      { kind: 'file', title: 'report.pdf', path: '/proj/alpha/report.pdf' },
+      { kind: 'file', title: 'report.pdf', path: '/proj/alpha/report.pdf', mentionedOnly: true },
     ]);
   });
 
@@ -508,7 +537,19 @@ describe('collectArtifactsFromMessages', () => {
       textToolResponse('t1', 'ok'),
     ];
 
-    expect(collectArtifactsFromMessages(messages, '/work')).toHaveLength(1);
+    const artifacts = collectArtifactsFromMessages(messages, '/work');
+    expect(artifacts).toHaveLength(1);
+    // …and the surviving entry is no longer a mere mention. The prose was
+    // collected first and won the dedupe, but a successful write is a receipt:
+    // leaving the flag on would put a file the agent demonstrably created
+    // behind an existence check it does not need, and give it the wrong
+    // not-found copy if it were later deleted.
+    expect(artifacts[0]).toEqual({
+      kind: 'file',
+      title: 'report.md',
+      path: '/work/report.md',
+      mentionedOnly: undefined,
+    });
   });
 
   it('resolves relative files named in assistant text from the session working directory', () => {
@@ -517,7 +558,12 @@ describe('collectArtifactsFromMessages', () => {
     ]);
 
     expect(collectArtifactsFromMessages([messages], '/work/site')).toEqual([
-      { kind: 'file', title: 'index.html', path: '/work/site/dist/index.html' },
+      {
+        kind: 'file',
+        title: 'index.html',
+        path: '/work/site/dist/index.html',
+        mentionedOnly: true,
+      },
     ]);
   });
 
@@ -637,6 +683,251 @@ describe('getDefaultArtifactPanelWidth', () => {
   });
 });
 
+/**
+ * The panel's half of the file-link existence rule (#…): a path the assistant
+ * only NAMED must not become a card.
+ *
+ * The reproduced defect: the assistant wrote, in prose, "writing it to a file
+ * (e.g. `~/Desktop/kdps-intent.md`) and telling me the path is more reliable" —
+ * a suggestion for a file that had never existed. `referencedFilePaths` pulled
+ * it out of the backticks, the panel made a card, opened it in a tab and
+ * rendered an error. The SAME extractor already refused to make it a chat link,
+ * because only that consumer was hardened.
+ *
+ * Clicking the card was already denied by the main-process allowlist, so this is
+ * not a read hole — it is chrome any model (or a prompt injection reaching one)
+ * can put in the user's panel, and a panel full of dead cards is a panel nobody
+ * trusts.
+ */
+describe('applyMentionedFileGate', () => {
+  const mentioned = (path: string): ArtifactSource => ({
+    kind: 'file',
+    title: path.split('/').pop() as string,
+    path,
+    mentionedOnly: true,
+  });
+  const written = (path: string): ArtifactSource => ({
+    kind: 'file',
+    title: path.split('/').pop() as string,
+    path,
+  });
+  const figure: ArtifactSource = { kind: 'html', title: 'chart.html', html: '<p>c</p>' };
+  const always = (existence: FileLinkExistence) => (): FileLinkExistence => existence;
+
+  it('drops a mentioned path the main process cannot find', () => {
+    const artifacts = [mentioned('/Users/ada/Desktop/kdps-intent.md'), figure];
+
+    expect(applyMentionedFileGate(artifacts, always('missing'))).toEqual([figure]);
+  });
+
+  it('keeps a mentioned path that is really on disk, and marks it confirmed', () => {
+    // Clearing the flag is what earns the honest not-found copy later: a file
+    // seen on disk and gone at read time really was moved or deleted.
+    expect(applyMentionedFileGate([mentioned('/work/report.md')], always('present'))).toEqual([
+      { kind: 'file', title: 'report.md', path: '/work/report.md', mentionedOnly: undefined },
+    ]);
+  });
+
+  it('shows nothing while the answer is still in flight', () => {
+    // The link path's rule, unchanged: a dead path is never a card, not even for
+    // ONE frame. A card that appears and vanishes a tick later is the same bug
+    // on a shorter timescale, so a confirmed hit UPGRADES rather than a hit
+    // being walked back.
+    expect(applyMentionedFileGate([mentioned('/work/maybe.md')], always('checking'))).toEqual([]);
+  });
+
+  it('keeps every mentioned path where the check is unavailable', () => {
+    // `biorouter serve` (whose `window.electron` shim carries no
+    // `checkFilePaths`) and every vitest suite without a bridge. "Start hidden"
+    // there would mean the panel silently loses every prose artifact it has
+    // ever had, so `unchecked` keeps the pre-existing behaviour.
+    const artifacts = [mentioned('/work/report.md')];
+
+    expect(applyMentionedFileGate(artifacts, always('unchecked'))).toEqual(artifacts);
+  });
+
+  it('never gates a path a tool call wrote, whatever the check says', () => {
+    // A successful write is a stronger signal than a stat, and gating it would
+    // add a round trip to the common case.
+    const artifacts = [written('/work/plot.png'), figure];
+
+    expect(applyMentionedFileGate(artifacts, always('missing'))).toEqual(artifacts);
+  });
+
+  it('preserves array identity when nothing is gated, so the panel memo is stable', () => {
+    const artifacts = [written('/work/plot.png'), figure];
+
+    expect(applyMentionedFileGate(artifacts, always('missing'))).toBe(artifacts);
+  });
+
+  it('asks only about the mentioned paths, in tab order', () => {
+    const artifacts = [
+      written('/work/plot.png'),
+      mentioned('/work/a.md'),
+      figure,
+      mentioned('/work/b.md'),
+    ];
+
+    expect(mentionedArtifactPaths(artifacts)).toEqual(['/work/a.md', '/work/b.md']);
+  });
+
+  it('gates the prose path end to end while keeping the tool-written one', () => {
+    // The whole chain on one transcript: the agent writes `plot.png` and, in the
+    // same breath, SUGGESTS a `notes.md` it never creates.
+    const messages: Message[] = [
+      visibleMessage([
+        { type: 'text', text: 'Wrote /work/plot.png. You could also keep /work/notes.md.' },
+        {
+          type: 'toolRequest',
+          id: 't1',
+          toolCall: {
+            status: 'success',
+            value: {
+              name: 'developer__text_editor',
+              arguments: { command: 'write', path: '/work/plot.png' },
+            },
+          },
+        },
+      ]),
+      textToolResponse('t1', 'ok'),
+    ];
+    const collected = collectArtifactsFromMessages(messages, '/work');
+    expect(mentionedArtifactPaths(collected)).toEqual(['/work/notes.md']);
+
+    expect(applyMentionedFileGate(collected, always('missing'))).toEqual([
+      { kind: 'file', title: 'plot.png', path: '/work/plot.png', mentionedOnly: undefined },
+    ]);
+  });
+
+  it('feeds the panel the GATED list, not the raw collection', () => {
+    // The defect was one consumer of a shared extractor left unhardened, which
+    // is invisible to a unit test of either half. `useSessionArtifacts` is the
+    // seam BaseChatContent actually reads, so this asserts the wiring at the
+    // source; `useSessionArtifacts` itself is exercised for real below.
+    const source = readFileSync(`${process.cwd()}/src/components/BaseChat.tsx`, 'utf8');
+    expect(source).toMatch(
+      /const \{ artifacts: sessionArtifacts, gatePending \} = useSessionArtifacts\(/
+    );
+    expect(source).toMatch(/gatePending,/);
+  });
+});
+
+/**
+ * The seam BaseChatContent reads, exercised for real: messages in, cards out,
+ * over the actual batched IPC bridge. This is what proves the panel's consumer
+ * of `referencedFilePaths` is hardened — asserting the gate and the hook
+ * separately cannot, because the defect WAS the two not being connected.
+ */
+describe('useSessionArtifacts', () => {
+  /** A `window.electron` carrying only the existence bridge. */
+  function installCheckBridge(exists: (path: string) => boolean) {
+    const checkFilePaths = vi.fn(async (requests: FilePathCheckRequest[]) =>
+      requests.map((request) => ({ exists: exists(request.path), isDirectory: false }))
+    );
+    Object.defineProperty(window, 'electron', { configurable: true, value: { checkFilePaths } });
+    return checkFilePaths;
+  }
+
+  afterEach(() => {
+    // @ts-expect-error — remove the per-test electron stub.
+    delete window.electron;
+    resetFileLinkStatusForTests();
+    vi.restoreAllMocks();
+  });
+
+  // The reproduced defect, verbatim: the assistant SUGGESTED writing a spec to a
+  // path that had never existed, and the panel made a card for it, opened it in
+  // a tab and rendered "File not available".
+  const suggestion = () => [
+    visibleMessage([
+      {
+        type: 'text',
+        text: 'If the spec is long, writing it to a file (e.g. `/Users/ada/Desktop/kdps-intent.md`) and telling me the path is more reliable than pasting into chat.',
+      },
+    ]),
+  ];
+
+  it('never cards a prose path that does not exist', async () => {
+    const checkFilePaths = installCheckBridge(() => false);
+    const messages = suggestion();
+
+    const { result } = renderHook(() => useSessionArtifacts(messages, '/work'));
+
+    // Not even for one frame: the first render is already empty, and it stays
+    // empty once the answer lands.
+    expect(result.current.artifacts).toEqual([]);
+    await waitFor(() => expect(result.current.gatePending).toBe(false));
+    expect(result.current.artifacts).toEqual([]);
+    expect(checkFilePaths.mock.calls[0][0]).toEqual([
+      { path: '/Users/ada/Desktop/kdps-intent.md', workingDir: '/work' },
+    ]);
+  });
+
+  it('cards a prose path that is really on disk', async () => {
+    installCheckBridge(() => true);
+    const messages = suggestion();
+
+    const { result } = renderHook(() => useSessionArtifacts(messages, '/work'));
+
+    await waitFor(() => expect(result.current.artifacts).toHaveLength(1));
+    expect(result.current.artifacts[0]).toEqual({
+      kind: 'file',
+      title: 'kdps-intent.md',
+      path: '/Users/ada/Desktop/kdps-intent.md',
+      // Confirmed on disk, so a later read failure is a real disappearance.
+      mentionedOnly: undefined,
+    });
+    expect(result.current.gatePending).toBe(false);
+  });
+
+  it('cards every prose path where no bridge can answer', () => {
+    // `biorouter serve` and every bridgeless suite. Hiding here would silently
+    // strip the panel of every prose artifact on the browser surface.
+    const { result } = renderHook(() => useSessionArtifacts(suggestion(), '/work'));
+
+    expect(result.current.artifacts).toEqual([
+      {
+        kind: 'file',
+        title: 'kdps-intent.md',
+        path: '/Users/ada/Desktop/kdps-intent.md',
+        mentionedOnly: true,
+      },
+    ]);
+    // Nothing to wait for, so the panel's baseline must not defer on our account.
+    expect(result.current.gatePending).toBe(false);
+  });
+
+  it('cards a tool-written file without asking about it at all', async () => {
+    const checkFilePaths = installCheckBridge(() => false);
+    const messages: Message[] = [
+      writeRequest('t1', 'developer__text_editor', { command: 'write', path: '/work/report.md' }),
+      textToolResponse('t1', 'ok'),
+    ];
+
+    const { result } = renderHook(() => useSessionArtifacts(messages, '/work'));
+
+    // A successful write is a receipt: it survives a bridge that says "no", and
+    // costs no round trip.
+    expect(result.current.artifacts).toEqual([
+      { kind: 'file', title: 'report.md', path: '/work/report.md' },
+    ]);
+    expect(result.current.gatePending).toBe(false);
+    await Promise.resolve();
+    expect(checkFilePaths).not.toHaveBeenCalled();
+  });
+
+  it('reports the gate pending until the sweep settles', async () => {
+    installCheckBridge(() => true);
+
+    const { result } = renderHook(() => useSessionArtifacts(suggestion(), '/work'));
+
+    // The panel's one-time auto-open baseline reads this: taken now, it would
+    // bank an empty list and then treat the confirmed card as newly created.
+    expect(result.current.gatePending).toBe(true);
+    await waitFor(() => expect(result.current.gatePending).toBe(false));
+  });
+});
+
 describe('decideArtifactAutoOpen', () => {
   const empty = new Set<string>();
 
@@ -651,6 +942,7 @@ describe('decideArtifactAutoOpen', () => {
         reportedMessageCount: 8,
         loadedMessageCount: 0,
         artifactKeys: [],
+        gatePending: false,
       })
     ).toEqual({ action: 'wait' });
   });
@@ -665,12 +957,46 @@ describe('decideArtifactAutoOpen', () => {
       reportedMessageCount: 8,
       loadedMessageCount: 8,
       artifactKeys: ['file:/w/a.png', 'file:/w/b.png'],
+      gatePending: false,
     });
     expect(decision.action).toBe('snapshot');
     if (decision.action !== 'snapshot') throw new Error('unreachable');
     expect([...decision.knownKeys]).toEqual(['file:/w/a.png', 'file:/w/b.png']);
     // No `openIndex` field exists on a snapshot decision — nothing opens.
     expect('openIndex' in decision).toBe(false);
+  });
+
+  it('waits for the mentioned-file gate before taking a baseline', () => {
+    // The transcript has hydrated, but the prose paths are still being checked,
+    // so `artifactKeys` is PARTIAL. Snapshotting now would bank the short list
+    // and then treat every path confirmed a moment later as newly created —
+    // springing the panel on a reopened saved session, which is the exact
+    // failure the baseline exists to prevent, on a shorter timescale.
+    expect(
+      decideArtifactAutoOpen({
+        scanDone: false,
+        knownKeys: empty,
+        reportedMessageCount: 8,
+        loadedMessageCount: 8,
+        artifactKeys: ['file:/w/a.png'],
+        gatePending: true,
+      })
+    ).toEqual({ action: 'wait' });
+  });
+
+  it("still opens a live turn's new artifact while the gate is resolving", () => {
+    // After the baseline, a gate answer landing is just another artifact
+    // appearing — which is what auto-open is FOR. Deferring here would mean a
+    // figure the agent just made sat unopened behind an unrelated check.
+    const decision = decideArtifactAutoOpen({
+      scanDone: true,
+      knownKeys: new Set(['file:/w/a.png']),
+      reportedMessageCount: 2,
+      loadedMessageCount: 4,
+      artifactKeys: ['file:/w/a.png', 'file:/w/b.png'],
+      gatePending: true,
+    });
+    expect(decision.action).toBe('open');
   });
 
   it('snapshots an empty new session without waiting', () => {
@@ -681,6 +1007,7 @@ describe('decideArtifactAutoOpen', () => {
         reportedMessageCount: 0,
         loadedMessageCount: 0,
         artifactKeys: [],
+        gatePending: false,
       })
     ).toEqual({ action: 'snapshot', knownKeys: new Set() });
   });
@@ -692,6 +1019,7 @@ describe('decideArtifactAutoOpen', () => {
       reportedMessageCount: 2,
       loadedMessageCount: 4,
       artifactKeys: ['file:/w/a.png', 'file:/w/b.png', 'file:/w/c.png'],
+      gatePending: false,
     });
     expect(decision.action).toBe('open');
     if (decision.action !== 'open') throw new Error('unreachable');
@@ -710,6 +1038,7 @@ describe('decideArtifactAutoOpen', () => {
         reportedMessageCount: 2,
         loadedMessageCount: 4,
         artifactKeys: ['file:/w/a.png', 'file:/w/b.png'],
+        gatePending: false,
       })
     ).toEqual({ action: 'none' });
   });

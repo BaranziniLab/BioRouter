@@ -16,6 +16,7 @@ import { cn } from '../../utils';
 import { injectArtifactBrowserCsp } from '../../utils/artifactSecurity';
 import { withPreviewActivityTracking } from '../../utils/previewActivity';
 import { sendArtifactAnnotation } from '../../utils/annotationChannel';
+import { artifactFileErrorMessage } from '../../utils/artifactFileErrors';
 import { describeUnsupportedFormat } from '../../utils/formatSupport';
 import { isImageExtension } from '../../utils/imageFormats';
 import {
@@ -1489,7 +1490,18 @@ function ArtifactPreviewBody({
   const file = preview.preview;
 
   if (file.kind === 'error') {
-    return <ArtifactErrorState message={file.error} path={file.path} code={file.code} />;
+    return (
+      <ArtifactErrorState
+        // A path the assistant only NAMED never existed, so the generic ENOENT
+        // copy ("moved, renamed, or deleted") would assert a history it does not
+        // have. `mentionedOnly` survives only when nothing confirmed the path.
+        message={artifactFileErrorMessage(file, {
+          mentionedOnly: artifact.kind === 'file' && artifact.mentionedOnly === true,
+        })}
+        path={file.path}
+        code={file.code}
+      />
+    );
   }
 
   if (file.kind === 'image') {

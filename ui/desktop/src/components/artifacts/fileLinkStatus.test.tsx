@@ -5,6 +5,7 @@ import {
   isOpenableFileLink,
   resetFileLinkStatusForTests,
   useFileLinkExistence,
+  useFileLinkExistences,
   type FilePathCheckRequest,
   type FilePathCheckResult,
 } from './fileLinkStatus';
@@ -288,6 +289,131 @@ describe('a path named before it exists', () => {
     // polling every extant link forever would be a cost with no payoff.
     await vi.advanceTimersByTimeAsync(10_000);
     expect(checkFilePaths).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+});
+
+/**
+ * The batched hook the artifact panel uses. Everything below is about the two
+ * things it adds over the per-link hook: a lookup instead of a value, and a
+ * `pending` flag — because a caller that takes a ONE-TIME baseline of the list
+ * (the panel's auto-open snapshot) must be able to tell "no cards" from "no
+ * answers yet".
+ */
+describe('useFileLinkExistences', () => {
+  it('reports every path unchecked, and settled, with no bridge', () => {
+    const { result } = renderHook(() =>
+      useFileLinkExistences([{ path: '/work/a.md' }, { path: '/work/b.md' }])
+    );
+
+    // The browser surface (`biorouter serve`) and every bridgeless suite: the
+    // pre-existing contract is to show everything, and there is nothing to wait
+    // for, so a caller must not defer on our account.
+    expect(result.current.of('/work/a.md')).toBe('unchecked');
+    expect(result.current.of('/work/b.md')).toBe('unchecked');
+    expect(result.current.pending).toBe(false);
+  });
+
+  it('is pending until the answers land, then reports each verdict', async () => {
+    const checkFilePaths = installCheckBridge((request) => ({
+      exists: request.path.endsWith('.md'),
+      isDirectory: false,
+    }));
+
+    const requests = [{ path: '/work/real.md' }, { path: '/work/imagined.py' }];
+    const { result } = renderHook(() => useFileLinkExistences(requests));
+
+    expect(result.current.pending).toBe(true);
+    expect(result.current.of('/work/real.md')).toBe('checking');
+
+    await waitFor(() => expect(result.current.pending).toBe(false));
+    expect(result.current.of('/work/real.md')).toBe('present');
+    expect(result.current.of('/work/imagined.py')).toBe('missing');
+    // One round trip for the whole list, not one stat per card.
+    expect(checkFilePaths).toHaveBeenCalledTimes(1);
+    expect(checkFilePaths.mock.calls[0][0]).toHaveLength(2);
+  });
+
+  it('is settled for an empty list, so a caller never waits on nothing', () => {
+    installCheckBridge();
+
+    const { result } = renderHook(() => useFileLinkExistences([]));
+
+    expect(result.current.pending).toBe(false);
+  });
+
+  it('reports unchecked for a path outside the requested set', async () => {
+    installCheckBridge(() => ({ exists: false, isDirectory: false }));
+
+    const requests = [{ path: '/work/asked.md' }];
+    const { result } = renderHook(() => useFileLinkExistences(requests));
+    await waitFor(() => expect(result.current.of('/work/asked.md')).toBe('missing'));
+
+    // Never asked is the ABSENCE of an answer, not a negative one — so it takes
+    // the same verdict as having no bridge and stays openable.
+    expect(result.current.of('/work/never-asked.md')).toBe('unchecked');
+  });
+
+  it('keys by working directory, matching the per-link hook exactly', async () => {
+    installCheckBridge((request) => ({
+      exists: request.workingDir === '/work/a',
+      isDirectory: false,
+    }));
+
+    const requests = [
+      { path: 'report.md', workingDir: '/work/a' },
+      { path: 'report.md', workingDir: '/work/b' },
+    ];
+    const { result } = renderHook(() => useFileLinkExistences(requests));
+
+    await waitFor(() => expect(result.current.of('report.md', '/work/a')).toBe('present'));
+    expect(result.current.of('report.md', '/work/b')).toBe('missing');
+  });
+
+  it('shares one cache with the per-link hook, so a chat link never re-asks', async () => {
+    const checkFilePaths = installCheckBridge();
+
+    const requests = [{ path: '/work/shared.md' }];
+    const list = renderHook(() => useFileLinkExistences(requests));
+    await waitFor(() => expect(list.result.current.of('/work/shared.md')).toBe('present'));
+
+    const link = renderHook(() => useFileLinkExistence('/work/shared.md'));
+    await waitFor(() => expect(link.result.current).toBe('present'));
+    expect(checkFilePaths).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not re-ask when the caller rebuilds an equal request array', async () => {
+    const checkFilePaths = installCheckBridge();
+
+    // The panel re-derives its list on every transcript change; identity is
+    // taken from the CONTENT so an equal list is the same question.
+    const { result, rerender } = renderHook(
+      ({ path }: { path: string }) => useFileLinkExistences([{ path }]),
+      { initialProps: { path: '/work/stable.md' } }
+    );
+    await waitFor(() => expect(result.current.of('/work/stable.md')).toBe('present'));
+
+    rerender({ path: '/work/stable.md' });
+    rerender({ path: '/work/stable.md' });
+    await waitFor(() => expect(checkFilePaths).toHaveBeenCalledTimes(1));
+  });
+
+  it('re-asks once for a path that was missing, so a file written later appears', async () => {
+    vi.useFakeTimers();
+    let exists = false;
+    const checkFilePaths = vi.fn(async (reqs: FilePathCheckRequest[]) =>
+      reqs.map(() => ({ exists, isDirectory: false }))
+    );
+    Object.defineProperty(window, 'electron', { configurable: true, value: { checkFilePaths } });
+
+    const requests = [{ path: '/work/promised.md' }];
+    const { result } = renderHook(() => useFileLinkExistences(requests));
+    await vi.waitFor(() => expect(result.current.of('/work/promised.md')).toBe('missing'));
+
+    exists = true;
+    await vi.advanceTimersByTimeAsync(2500);
+
+    await vi.waitFor(() => expect(result.current.of('/work/promised.md')).toBe('present'));
     vi.useRealTimers();
   });
 });
