@@ -67,6 +67,18 @@ pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
     ),
     ("AZURE_OPENAI_DEPLOYMENT_NAME", "deployment selection"),
     ("AZURE_OPENAI_API_VERSION", "wire version"),
+    // Versa's own namespace for the same three overrides. They exist because
+    // onboarding used to write the `AZURE_OPENAI_*` keys above on Versa's
+    // behalf, which made the PUBLIC `azure_openai` card report itself
+    // Configured whenever a user connected UCSF's PRIVATE Versa. Same meaning,
+    // same classification as their legacy twins: they move a Private
+    // provider's endpoint, they do not raise a tier.
+    (
+        "VERSA_AZURE_ENDPOINT",
+        "moves a Private provider's endpoint; does not raise a tier (see Task 5)",
+    ),
+    ("VERSA_AZURE_DEPLOYMENT_NAME", "deployment selection"),
+    ("VERSA_AZURE_API_VERSION", "wire version"),
     (
         "AWS_ENDPOINT_URL_BEDROCK",
         "moves a Private provider's endpoint; does not raise a tier (see Task 5)",
@@ -171,10 +183,10 @@ mod tests {
         // of the two lists. Adding a config read to any of them fails this test
         // until someone decides whether it determines capability. That is the
         // checkable list: it does not depend on anyone remembering a rule.
-        let scanned = scan_get_param_keys(); // 23 today
+        let scanned = scan_get_param_keys(); // 26 today
         assert_eq!(
             scanned.len(),
-            23,
+            26,
             "the tier-input files' config surface changed: {scanned:?}"
         );
         for key in &scanned {

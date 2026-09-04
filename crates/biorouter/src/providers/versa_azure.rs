@@ -115,15 +115,10 @@ impl AuthProvider for VersaAzureAuthProvider {
 /// a closure inside a function that reads global config cannot be tested.
 /// A blank stored value is treated as absent -- writing an empty string into
 /// the box in Advanced means "use the default", not "point at nowhere".
-fn resolve_override(
-    fallback: &str,
-    lookup: impl Fn(&str) -> Option<String>,
-    own_key: &str,
-    legacy_key: &str,
-) -> String {
-    [own_key, legacy_key]
+fn resolve_override(fallback: &str, own: Option<String>, legacy: Option<String>) -> String {
+    [own, legacy]
         .into_iter()
-        .filter_map(&lookup)
+        .flatten()
         .find(|value| !value.trim().is_empty())
         .unwrap_or_else(|| fallback.to_string())
 }
@@ -144,28 +139,32 @@ impl VersaAzureProvider {
         // in the same grid, and Public where Versa is Private. The legacy read
         // stays so an install that customised those keys before this change
         // keeps resolving to the same endpoint.
-        let param = |own: &str, legacy: &str, fallback: &str| -> String {
-            resolve_override(
-                fallback,
-                |key| config.get_param::<String>(key).ok(),
-                own,
-                legacy,
-            )
-        };
-        let endpoint = param(
-            "VERSA_AZURE_ENDPOINT",
-            "AZURE_OPENAI_ENDPOINT",
+        // ⚠ Every key below is a STRING LITERAL passed straight to `get_param`,
+        // and it has to stay that way. `privacy::config_keys` scans this file for
+        // literal-keyed `get_param` calls to build the list of keys that move a
+        // provider's tier, and a key assembled at runtime — even one as innocent
+        // as a `|own, legacy|` closure parameter — is invisible to that scan. The
+        // first draft of this fix did exactly that and took the three
+        // `AZURE_OPENAI_*` keys off the privacy surface without anyone deciding
+        // to; two tests in that module caught it.
+        let endpoint = resolve_override(
             VERSA_AZURE_ENDPOINT,
+            config.get_param::<String>("VERSA_AZURE_ENDPOINT").ok(),
+            config.get_param::<String>("AZURE_OPENAI_ENDPOINT").ok(),
         );
-        let deployment_name = param(
-            "VERSA_AZURE_DEPLOYMENT_NAME",
-            "AZURE_OPENAI_DEPLOYMENT_NAME",
+        let deployment_name = resolve_override(
             VERSA_AZURE_DEPLOYMENT,
+            config
+                .get_param::<String>("VERSA_AZURE_DEPLOYMENT_NAME")
+                .ok(),
+            config
+                .get_param::<String>("AZURE_OPENAI_DEPLOYMENT_NAME")
+                .ok(),
         );
-        let api_version = param(
-            "VERSA_AZURE_API_VERSION",
-            "AZURE_OPENAI_API_VERSION",
+        let api_version = resolve_override(
             VERSA_AZURE_API_VERSION,
+            config.get_param::<String>("VERSA_AZURE_API_VERSION").ok(),
+            config.get_param::<String>("AZURE_OPENAI_API_VERSION").ok(),
         );
 
         // ⚠ `.ok()` here used to discard the REASON the key was unavailable, and
@@ -461,57 +460,23 @@ mod tests {
 
     #[test]
     fn an_override_prefers_versas_own_key_then_the_legacy_one_then_the_default() {
-        let lookup = |pairs: Vec<(&'static str, &'static str)>| {
-            move |key: &str| {
-                pairs
-                    .iter()
-                    .find(|(k, _)| *k == key)
-                    .map(|(_, v)| (*v).to_string())
-            }
-        };
         // Own key wins.
         assert_eq!(
-            resolve_override(
-                "default",
-                lookup(vec![
-                    ("VERSA_AZURE_ENDPOINT", "own"),
-                    ("AZURE_OPENAI_ENDPOINT", "legacy")
-                ]),
-                "VERSA_AZURE_ENDPOINT",
-                "AZURE_OPENAI_ENDPOINT",
-            ),
+            resolve_override("default", Some("own".into()), Some("legacy".into())),
             "own"
         );
         // An install that customised the shared key BEFORE the namespace existed
         // still resolves to the endpoint it chose.
         assert_eq!(
-            resolve_override(
-                "default",
-                lookup(vec![("AZURE_OPENAI_ENDPOINT", "legacy")]),
-                "VERSA_AZURE_ENDPOINT",
-                "AZURE_OPENAI_ENDPOINT",
-            ),
+            resolve_override("default", None, Some("legacy".into())),
             "legacy"
         );
         // Nothing stored: the shipped UCSF default, which is why onboarding never
         // needed to write these keys at all.
-        assert_eq!(
-            resolve_override(
-                "default",
-                lookup(vec![]),
-                "VERSA_AZURE_ENDPOINT",
-                "AZURE_OPENAI_ENDPOINT",
-            ),
-            "default"
-        );
+        assert_eq!(resolve_override("default", None, None), "default");
         // Blank is absent, not "point at nowhere".
         assert_eq!(
-            resolve_override(
-                "default",
-                lookup(vec![("VERSA_AZURE_ENDPOINT", "   ")]),
-                "VERSA_AZURE_ENDPOINT",
-                "AZURE_OPENAI_ENDPOINT",
-            ),
+            resolve_override("default", Some("   ".into()), None),
             "default"
         );
     }
