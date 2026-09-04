@@ -701,6 +701,21 @@ value's *location* is as load-bearing as the number.
   in the chat header, the artifact panel and the terminal dock: a fixed height
   *centred* in its band, because the bands differ and a band-filling tab would be
   a different size in each one.
+- **The sidebar is a RANGE, not a width** — `components/ui/sidebarWidth.ts`,
+  216–360px with a 288px default, dragged from `SidebarResizeHandle` and stored
+  per user in `localStorage` (clamped **on read**, so a value from an older build
+  can never land outside today's bounds). Two consequences that are easy to get
+  wrong. ⚠ **The window's `minWidth` derives from the MINIMUM** (216 + 760 = 976,
+  `main.ts`): a floor taken from the default is one the user can push the window
+  under from the other side, by widening the sidebar until the reading column is
+  squeezed at a width the floor called roomy. ⚠ **The wide end is closed by an
+  identity, not by a clamp** — `SIDEBAR_MAX_WIDTH + 760 = 1120 =
+  SIDEBAR_COMPACT_WIDTH`, rung 1 of the yield ladder — so raising the max without
+  moving the ladder silently starts eating the measure. `styles/measures.test.ts`
+  pins both. The arithmetic lives in a React-free module because jsdom computes
+  no layout: a test that mounts the sidebar cannot see how wide it got, and the
+  handle's affordance (hover hairline + `col-resize`) is authored CSS in
+  `main.css` for the same reason the composer's focus edge is.
 - **`--measure-chat` is a flat `760px`.** It was briefly widened into a clamp and
   that was wrong for this measure specifically — a 1180px composer is a line of
   prose the eye has to track back across. `styles/measures.test.ts` asserts the

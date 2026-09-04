@@ -1,6 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { SIDEBAR_COMPACT_WIDTH } from '../components/Layout/yieldLadder';
+// Imported rather than re-parsed out of the component's source, which is what
+// this file used to do: the sidebar's bounds now live in a pure module with no
+// React and no DOM, so the values can be read directly and the regex that stood
+// between this assertion and the number it asserts is gone.
+import {
+  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_MAX_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+} from '../components/ui/sidebarWidth';
 
 /**
  * The reading measures. **The two are governed by opposite rules, and that is
@@ -34,7 +44,6 @@ import { describe, expect, it } from 'vitest';
 const CSS = readFileSync(join(__dirname, 'main.css'), 'utf8');
 const READABLE = readFileSync(join(__dirname, '../components/Layout/ReadableContent.tsx'), 'utf8');
 const MAIN = readFileSync(join(__dirname, '../main.ts'), 'utf8');
-const SIDEBAR = readFileSync(join(__dirname, '../components/ui/sidebar.tsx'), 'utf8');
 
 function declaration(name: string): string {
   const match = CSS.match(new RegExp(`--${name}:\\s*([^;]+);`));
@@ -111,26 +120,55 @@ describe('the page measure scales with the window', () => {
  * grid with it. The floor is therefore not a taste call — it is sidebar +
  * column, the width at which the reading column first reaches its own measure.
  *
+ * ⚠ **The sidebar's MINIMUM, not its default.** The sidebar became
+ * user-resizable, and the moment a measure has a range, deriving a floor from
+ * the middle of that range makes the floor a lie: widen the sidebar and the
+ * reading column is squeezed at a window width this number called roomy. The
+ * minimum is the only width in the range that is a property of the app rather
+ * than of a preference, so it is the one the window is allowed to promise.
+ *
+ * The wide end of the range is not left unguarded — it is closed by
+ * construction, and the second test below pins the identity that closes it.
+ *
  * ⚠ Not the regression in docs/desktop-ui/window-scaling-regressions.md. That
  * one is a flat `max-width` that stops a WIDE window buying content. This is a
  * floor under a NARROW one and does nothing above it.
  *
- * Asserted as arithmetic, not as three separate literals, so that changing the
- * sidebar width or the chat measure fails here instead of silently leaving the
- * window able to compress the heatmap again.
+ * Asserted as arithmetic, not as separate literals, so that changing the
+ * sidebar's bounds or the chat measure fails here instead of silently leaving
+ * the window able to compress the heatmap again.
  */
 describe('the minimum window width is derived from the sidebar and the chat measure', () => {
   const px = (value: string): number =>
     value.endsWith('rem') ? parseFloat(value) * 16 : parseFloat(value);
 
-  it('is exactly the sidebar plus the reading column', () => {
-    const sidebar = SIDEBAR.match(/const SIDEBAR_WIDTH = '([^']+)'/);
-    if (!sidebar) throw new Error('SIDEBAR_WIDTH is not declared in components/ui/sidebar.tsx');
-
+  it('is exactly the narrowest sidebar plus the reading column', () => {
     const minWidth = MAIN.match(/^\s*minWidth: (\d+),$/m);
     if (!minWidth) throw new Error('the main window declares no minWidth');
 
-    expect(Number(minWidth[1])).toBe(px(sidebar[1]) + px(declaration('measure-chat')));
+    expect(Number(minWidth[1])).toBe(SIDEBAR_MIN_WIDTH + px(declaration('measure-chat')));
+  });
+
+  /**
+   * What makes deriving the floor from the MINIMUM safe rather than merely
+   * cheaper: the widest the user can drag the sidebar, plus the chat measure, is
+   * exactly rung 1 of the yield ladder. So at every window width where the
+   * sidebar still holds a column of its own, even a fully widened one leaves the
+   * measure whole — and below that width rung 1 has already collapsed the
+   * sidebar to an overlay, where it takes nothing from the chat at all.
+   *
+   * Asserted here rather than left as a comment because it is the ONLY thing
+   * standing between a wider sidebar and a squeezed reading column. Raising
+   * SIDEBAR_MAX_WIDTH without moving the ladder must fail, loudly.
+   */
+  it('leaves the reading column whole even at the widest sidebar', () => {
+    expect(SIDEBAR_MAX_WIDTH + px(declaration('measure-chat'))).toBe(SIDEBAR_COMPACT_WIDTH);
+  });
+
+  /** The default has to sit inside the bounds the two tests above reason about. */
+  it('keeps the default width inside the resizable range', () => {
+    expect(SIDEBAR_DEFAULT_WIDTH).toBeGreaterThanOrEqual(SIDEBAR_MIN_WIDTH);
+    expect(SIDEBAR_DEFAULT_WIDTH).toBeLessThanOrEqual(SIDEBAR_MAX_WIDTH);
   });
 
   /**
