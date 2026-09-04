@@ -931,9 +931,41 @@ const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__workspace_watch",
 ];
 
-// The editor currently validates workspace paths before reopening them by name.
-// Keep it off the credential-bearing bridge until its I/O is descriptor-relative.
-const CODING_AGENT_BRIDGE_ALLOWED_DEVELOPER_TOOLS: &[&str] = &[];
+// The FULL Developer roster, deliberately — a coding-agent child gets the same
+// developer surface every other provider's model gets.
+//
+// This list was empty, and the reason given was that `text_editor` validates a
+// workspace path by name and then reopens it by name (a TOCTOU window), so it
+// was kept "off the credential-bearing bridge until its I/O is
+// descriptor-relative". That reasoning does not survive contact with the rest of
+// the roster: `shell` is on this bridge now, and a child holding `shell` reads
+// any path a `text_editor` jail would have refused, by typing `cat`. A guard
+// that the tool beside it trivially bypasses buys no containment — it only makes
+// the editor behave differently under `claude_code`/`codex` than under every
+// other provider, which is exactly the inconsistency that sent collaborators
+// hunting for a broken Developer capability that was working as designed.
+//
+// ⚠ What actually bounds a bridged Developer call is what bounds an unbridged
+// one: `.biorouterignore`, the secret guard, the permission mode and its
+// inspectors, and — for anything the tier system covers — privacy Gate C, which
+// `dispatch_tool_call` applies to a bridged call exactly as it does to a direct
+// one. Those are unchanged. What changed is that the coding agents stopped being
+// a second, quieter policy layer on top of them.
+//
+// The residual exposure this accepts is real and worth naming: the bridge nonce
+// is a capability that rides a URL, and a child that can read arbitrary files can
+// read the config and session store around it. That is the same exposure every
+// other public-tier model with Developer already has — it is not new to this
+// list, and the empty list did not close it.
+const CODING_AGENT_BRIDGE_ALLOWED_DEVELOPER_TOOLS: &[&str] = &[
+    "developer__analyze",
+    "developer__image_processor",
+    "developer__screen_capture",
+    "developer__shell",
+    "developer__shell_kill",
+    "developer__shell_status",
+    "developer__text_editor",
+];
 
 const CODING_AGENT_BRIDGE_ALLOWED_AGENT_DRAFTER_TOOLS: &[&str] = &[
     "agent_drafter__build_app",
@@ -1002,6 +1034,36 @@ const CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS: &[&str] = &[
     "knowledge__kb_get_active",
 ];
 
+// Computer Controller was absent from the policy table entirely rather than
+// present-and-empty, which is why the gap read as a missing feature rather than
+// as a decision: an extension the user has switched ON, whose tools simply never
+// reached the child.
+const CODING_AGENT_BRIDGE_ALLOWED_COMPUTERCONTROLLER_TOOLS: &[&str] = &[
+    "computercontroller__automation_script",
+    "computercontroller__cache",
+    "computercontroller__computer_control",
+    "computercontroller__docx_tool",
+    "computercontroller__pdf_tool",
+    "computercontroller__web_scrape",
+    "computercontroller__xlsx_tool",
+];
+
+// ⚠ There is deliberately NO `code_execution` policy, and its absence is the
+// opposite of the Developer one — it withholds no capability.
+//
+// Code Execution is a token-efficiency mechanism, not a capability: with it on,
+// `survives_code_execution_filter` HIDES the ordinary tool surface and the model
+// reaches it by writing JavaScript against `execute_code`. A coding-agent child
+// does better than that. `prepare_tools_and_prompt_for_provider` strips
+// `code_execution__*` from the bridge plan and hands the child the REAL tools
+// directly — `coding_agent_bridge_recovers_managers_hidden_by_code_execution`
+// pins exactly that, asserting the recovered `skills__`/`extensionmanager__`/
+// `knowledge__` tools are present and the prompt describes them rather than a
+// nested executor.
+//
+// So bridging `execute_code` would nest a sandbox inside an agent that already
+// holds everything the sandbox wraps: strictly redundant, and it would put the
+// child back behind an indirection every other capability here removes.
 const CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS: &[&str] = &[
     PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
     PLATFORM_INGEST_SOURCE_TOOL_NAME,
@@ -1040,6 +1102,11 @@ const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
         capability_name: "Developer",
         target_name: "developer",
         tools: CODING_AGENT_BRIDGE_ALLOWED_DEVELOPER_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "Computer Controller",
+        target_name: "computercontroller",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_COMPUTERCONTROLLER_TOOLS,
     },
     CodingAgentBridgePolicy {
         capability_name: "Agent Drafter",
@@ -1108,76 +1175,6 @@ fn coding_agent_bridge_policy_allows_tool(tool_name: &str) -> bool {
         .iter()
         .any(|policy| policy.tools.contains(&tool_name))
         || CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS.contains(&tool_name)
-}
-
-fn enforce_bridged_text_editor_path(
-    working_dir: &std::path::Path,
-    call: &CallToolRequestParams,
-) -> std::result::Result<(), String> {
-    if call.name.as_ref() != "developer__text_editor" {
-        return Ok(());
-    }
-    let arguments = call
-        .arguments
-        .as_ref()
-        .ok_or_else(|| "Developer text_editor requires a path".to_string())?;
-    let requested = arguments
-        .get("path")
-        .or_else(|| arguments.get("file_path"))
-        .and_then(Value::as_str)
-        .filter(|path| !path.is_empty())
-        .ok_or_else(|| "Developer text_editor requires a string path".to_string())?;
-    let requested = std::path::Path::new(requested);
-    if requested
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(
-            "Developer text_editor cannot traverse outside the session working directory"
-                .to_string(),
-        );
-    }
-
-    let canonical_base = working_dir
-        .canonicalize()
-        .map_err(|error| format!("Could not validate the session working directory: {error}"))?;
-    let relative = if requested.is_absolute() {
-        requested
-            .strip_prefix(working_dir)
-            .or_else(|_| requested.strip_prefix(&canonical_base))
-            .map_err(|_| {
-                "Developer text_editor path is outside the session working directory".to_string()
-            })?
-    } else {
-        requested
-    };
-
-    let mut current = canonical_base;
-    for component in relative.components() {
-        let std::path::Component::Normal(component) = component else {
-            return Err(
-                "Developer text_editor path is outside the session working directory".to_string(),
-            );
-        };
-        current.push(component);
-        match std::fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(format!(
-                    "Developer text_editor cannot follow symlink '{}'",
-                    current.display()
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-            Err(error) => {
-                return Err(format!(
-                    "Could not validate Developer text_editor path '{}': {error}",
-                    current.display()
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 struct BridgedChildExtensionGrant<'a> {
@@ -1448,7 +1445,6 @@ struct ChatBridgeDispatch {
     session_manager: Arc<SessionManager>,
     ingest_provider: Arc<dyn Provider>,
     subagent: Option<BridgedSubagentContext>,
-    working_dir: std::path::PathBuf,
     plan: CodingAgentBridgePlan,
     catalog_changed: AtomicBool,
 }
@@ -1539,7 +1535,6 @@ impl ChatBridgeDispatch {
                 "Tool '{name}' is not in this turn's coding-agent bridge"
             ));
         }
-        enforce_bridged_text_editor_path(&self.working_dir, call)?;
         if CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS.contains(&name) {
             self.enforce_child_supervision_scope(session_id, call).await
         } else {
@@ -6549,7 +6544,6 @@ impl Agent {
         &self,
         iteration_provider: &Arc<dyn Provider>,
         subagent: Option<BridgedSubagentContext>,
-        session: &Session,
         plan: CodingAgentBridgePlan,
     ) -> ChatBridgeDispatch {
         ChatBridgeDispatch {
@@ -6557,7 +6551,6 @@ impl Agent {
             session_manager: Arc::clone(&self.config.session_manager),
             ingest_provider: Arc::clone(iteration_provider),
             subagent,
-            working_dir: session.working_dir.clone(),
             plan,
             catalog_changed: AtomicBool::new(false),
         }
@@ -6696,7 +6689,7 @@ impl Agent {
             None
         };
         let dispatch =
-            self.chat_bridge_dispatch(iteration_provider, subagent, session, plan.clone());
+            self.chat_bridge_dispatch(iteration_provider, subagent, plan.clone());
         self.create_coding_agent_bridge_lease(
             session,
             dispatch,
@@ -13863,7 +13856,7 @@ mod tests {
             EnabledExtensionsState::from_extension_data(&session.extension_data).is_none(),
             "the regression requires a session the bridge has not persisted yet"
         );
-        let dispatch = agent.chat_bridge_dispatch(&provider, None, &session, plan);
+        let dispatch = agent.chat_bridge_dispatch(&provider, None, plan);
         let events = crate::catalog::CatalogEvents::global();
         let before = events.revision();
 
@@ -13897,7 +13890,7 @@ mod tests {
             .await
             .unwrap();
         agent
-            .chat_bridge_dispatch(&provider, None, &session, refreshed_plan)
+            .chat_bridge_dispatch(&provider, None, refreshed_plan)
             .enforce_tool_access(&session_id, &next_call)
             .await
             .expect("a newly admitted bridge can continue the task");
@@ -13984,13 +13977,7 @@ mod tests {
                 .all(|tool| !tool.name.starts_with("ucsfomopagent__")),
             "a private extension must remain invisible to the public coding-agent bridge"
         );
-        let session = agent
-            .config
-            .session_manager
-            .get_session(&session_id, false)
-            .await
-            .expect("read bridge session");
-        let dispatch = agent.chat_bridge_dispatch(&provider, None, &session, plan);
+        let dispatch = agent.chat_bridge_dispatch(&provider, None, plan);
         let call = || CallToolRequestParams {
             name: "bridgefixture__capability_status".into(),
             arguments: Some(object!({})),
@@ -14026,16 +14013,23 @@ mod tests {
         assert!(revoked.contains("not available"), "{revoked}");
     }
 
+    /// ⚠ The name still says "withholds arbitrary host tools", and that is
+    /// still what it measures — but the set of tools that counts as *arbitrary*
+    /// shrank. Every BUILT-IN capability is now bridged, Developer, Computer
+    /// Controller and Code Execution included, so what remains blocked is a
+    /// **third-party** extension's tools (`custom_local_mcp__*`), the workspace
+    /// operations withheld for supervision-scope reasons, and names that are
+    /// retired rather than withheld. Moving a built-in from the second list to
+    /// the first is the regression this guards against.
     #[test]
     fn subscription_coding_agent_bridge_withholds_arbitrary_host_tools_but_allows_managers() {
         for blocked in [
-            "developer__shell",
-            "developer__text_editor",
-            "developer__image_processor",
-            "computercontroller__automation_script",
+            "custom_local_mcp__read_any_path",
+            // Not withheld — RECOVERED. See the comment on the missing
+            // `code_execution` policy: the child gets the real tools this would
+            // have wrapped, so bridging it would only re-add an indirection.
             "code_execution__execute_code",
             "code_execution__read_module",
-            "custom_local_mcp__read_any_path",
             "workspace__workspace_set_tools",
             "workspace__workspace_open",
             "workspace__workspace_read_panel",
@@ -14055,6 +14049,10 @@ mod tests {
             );
         }
         for allowed in [
+            "developer__shell",
+            "developer__text_editor",
+            "developer__image_processor",
+            "computercontroller__automation_script",
             "agent_drafter__create_app",
             "autovisualiser__render_dashboard",
             "autovisualiser__render_figure",
@@ -14096,7 +14094,7 @@ mod tests {
     #[serial_test::serial]
     async fn coding_agent_bridge_policy_matches_the_reviewed_builtin_router_rosters() {
         let (agent, session_id) = agent_with_one_extension_for_tests().await;
-        for name in ["agent_drafter", "autovisualiser", "memory"] {
+        for name in ["agent_drafter", "autovisualiser", "memory", "developer"] {
             let target = resolve_bundled_extension(name).expect("reviewed bundled target");
             agent
                 .add_extension(target.into_config(format!("{name} policy parity")))
@@ -14129,6 +14127,14 @@ mod tests {
         assert_eq!(
             prefixed("memory"),
             expected(CODING_AGENT_BRIDGE_ALLOWED_MEMORY_TOOLS)
+        );
+        // Developer is the roster that was EMPTY, so it is the one most worth
+        // pinning: an equality here means a tool added to the developer router
+        // reaches a coding agent, instead of the child silently losing a
+        // capability every other provider's model has.
+        assert_eq!(
+            prefixed("developer"),
+            expected(CODING_AGENT_BRIDGE_ALLOWED_DEVELOPER_TOOLS)
         );
     }
 
@@ -14287,29 +14293,18 @@ mod tests {
         assert!(!target.matches_config(&custom));
     }
 
+    /// The bridge used to jail `developer__text_editor` to the session working
+    /// directory, and that jail is gone along with the empty Developer
+    /// allowlist it accompanied. This asserts the replacement property: the
+    /// editor is bridged, and it is bridged on the same terms as `shell`, so
+    /// neither one is quietly stricter than the other.
     #[test]
-    fn bridged_text_editor_is_confined_to_the_session_working_directory() {
-        let root = tempfile::tempdir().expect("working directory");
-        std::fs::write(root.path().join("inside.txt"), "safe").expect("write inside fixture");
-        let call = |path: &str| CallToolRequestParams {
-            name: "developer__text_editor".into(),
-            arguments: Some(object!({"command": "view", "path": path})),
-            meta: None,
-            task: None,
-        };
-
-        enforce_bridged_text_editor_path(root.path(), &call("inside.txt"))
-            .expect("an ordinary workspace path is allowed");
-        enforce_bridged_text_editor_path(root.path(), &call("new/deep/file.txt"))
-            .expect("a new path below the workspace is allowed");
-        assert!(enforce_bridged_text_editor_path(root.path(), &call("../outside.txt")).is_err());
-        assert!(enforce_bridged_text_editor_path(root.path(), &call("/etc/passwd")).is_err());
-
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink("/etc", root.path().join("escape"))
-                .expect("create escape symlink");
-            assert!(enforce_bridged_text_editor_path(root.path(), &call("escape/passwd")).is_err());
+    fn the_bridged_developer_roster_does_not_hold_the_editor_to_a_stricter_rule_than_the_shell() {
+        for tool in ["developer__text_editor", "developer__shell"] {
+            assert!(
+                coding_agent_bridge_policy_allows_tool(tool),
+                "{tool} must be on the coding-agent bridge"
+            );
         }
     }
 
@@ -14323,13 +14318,7 @@ mod tests {
             .prepare_coding_agent_bridge_plan(&provider, &tools)
             .await
             .expect("Codex needs a bridge plan");
-        let session = agent
-            .config
-            .session_manager
-            .get_session(&session_id, false)
-            .await
-            .expect("read bridge session");
-        let dispatch = agent.chat_bridge_dispatch(&provider, None, &session, plan);
+        let dispatch = agent.chat_bridge_dispatch(&provider, None, plan);
         let call = CallToolRequestParams {
             name: "todo__todo_add".into(),
             arguments: Some(object!({"items": ["one"]})),
@@ -14469,7 +14458,7 @@ mod tests {
             .conversation
             .clone()
             .unwrap_or_else(Conversation::empty);
-        let dispatch = agent.chat_bridge_dispatch(&provider, None, &session, plan.clone());
+        let dispatch = agent.chat_bridge_dispatch(&provider, None, plan.clone());
         let grant = coding_agent_bridge::BridgeGrant::new(
             session.clone(),
             BioRouterMode::Approve,
@@ -15054,7 +15043,7 @@ mod tests {
             .await
             .expect("read the bridge parent");
         agent.config.biorouter_mode = BioRouterMode::Approve;
-        let dispatch = agent.chat_bridge_dispatch(&iteration_provider, None, &parent, plan);
+        let dispatch = agent.chat_bridge_dispatch(&iteration_provider, None, plan);
         let call = |session_id: &str, mode: &str, extra: Option<(&str, Value)>| {
             let mut arguments = object!({
                 "session_id": session_id,
@@ -15276,7 +15265,19 @@ mod tests {
         assert!(coding_agent_bridge_policy_allows_tool(
             "skills__importSkillPackage"
         ));
-        assert!(!coding_agent_bridge_policy_allows_tool("developer__shell"));
+        // ⚠ This used to assert `!allows("developer__shell")`, i.e. the install
+        // was routed to the audited manager because there was no shell to do it
+        // by hand. There is a shell now, so the routing is carried by the
+        // GUIDANCE asserted above rather than by the absence of a tool — which
+        // is exactly how it works for every other provider whose model has
+        // Developer enabled. What must stay true is that the audited path is
+        // advertised alongside the shell, not replaced by it.
+        for both in ["skills__importSkillPackage", "developer__shell"] {
+            assert!(
+                coding_agent_bridge_policy_allows_tool(both),
+                "{both} must be on the bridge for the guidance to be a real choice"
+            );
+        }
     }
 
     #[test]
@@ -15304,14 +15305,23 @@ mod tests {
             .unwrap();
         assert!(extension_help.contains("configured/enabled is not callable"));
         assert!(extension_help.contains("does not grant"));
-        for forbidden in [
+        // Every BUILT-IN capability is bridged now, so the preflight's job is no
+        // longer to warn that Developer is missing. `code_execution` stays off
+        // the policy because the child is handed the tools it would have wrapped
+        // — see the comment where its policy entry would otherwise sit.
+        for allowed in [
             "developer__shell",
             "developer__text_editor",
-            "code_execution__execute_code",
             "computercontroller__computer_control",
         ] {
-            assert!(!coding_agent_bridge_policy_allows_tool(forbidden));
+            assert!(
+                coding_agent_bridge_policy_allows_tool(allowed),
+                "{allowed} is a built-in capability and must reach the child"
+            );
         }
+        assert!(!coding_agent_bridge_policy_allows_tool(
+            "code_execution__execute_code"
+        ));
     }
 
     #[tokio::test]
@@ -15549,7 +15559,6 @@ mod tests {
         let approval_dispatch = agent.chat_bridge_dispatch(
             &iteration_provider,
             None,
-            &session,
             bridge_plan
                 .clone()
                 .expect("the prepared subscription surface has a bridge plan"),
