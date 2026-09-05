@@ -57,6 +57,16 @@ Common operations:
   two really are the same concept, say so to the user rather than assuming the
   merge decided it. The source base is only read and is left unchanged.
 - `kb_list_history` / `kb_restore_state` — git-backed change log + revert.
+- `kb_delete_base` — permanently delete a knowledge base: pages, raw sources, git
+  history, registry entry and any selection pointing at it. **There is no undo.**
+  `kb_restore_state` reverts a commit *inside* a base and cannot bring a deleted base
+  back, so `kb_export` first if the content might be wanted again. Reach for this to
+  clean up a base you created and no longer need. If the user only wants it out of the
+  way, moving the primary with `kb_set_active` or hiding the base in the Knowledge view
+  does that without destroying anything — prefer those unless deletion is what was
+  asked for. `kb_id` is required and is never inferred from the primary; the built-in
+  `soul` base cannot be deleted. The user is shown an approval naming the base and its
+  page count before anything is removed, in every permission mode.
 - `kb_search` — search curated knowledge pages. If you omit `kb_id`, the search runs across **every knowledge base in this session** and each hit is tagged with the `kb_id` it came from. Cite that id when you use a hit.
 
 Two formats:

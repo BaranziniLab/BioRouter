@@ -1910,9 +1910,21 @@ impl CodeExecutionClient {
         // shadow a real module: nothing reserves the `platform` extension key,
         // and a refusal that fires ahead of the catalogue would hide an
         // installed server that happened to normalize to it.
+        // The same shape as the `platform` explanation, for the one tool that is
+        // stripped from the catalogue as a POLICY rather than because it was
+        // never in it: `kb_delete_base` is contracted to show the user an
+        // approval naming the base, and the sandbox has no inspector chain to
+        // raise one. Without this the miss is "Tool not found:
+        // knowledge/kb_delete_base", which reads as a spelling mistake — the
+        // exact failure mode issue #141 recorded — and the remedy (a direct
+        // call, which does work) is not in the message.
         let explain_platform = |failed: &str| {
             if parts.first() == Some(&platform_tools::PLATFORM_EXTENSION_NAME) {
                 agent_loop_tool_refusal(path)
+            } else if parts.last().is_some_and(|leaf| {
+                crate::security::knowledge_delete::is_knowledge_delete_tool(leaf)
+            }) {
+                crate::security::knowledge_delete::sandbox_import_refusal(path)
             } else {
                 failed.to_string()
             }
@@ -2346,6 +2358,15 @@ impl CodeExecutionClient {
             tool_name, evaluated, BOUNDARY,
         ) {
             return Some(("session_store_read", refusal));
+        }
+        // The same boundary, and the same reason stated the other way round:
+        // `kb_delete_base` promises the user an approval card naming the base
+        // and its page count, and a script call is dispatched with no inspector
+        // chain to raise one. The refusal names the doors that do ask.
+        if let Some(refusal) = crate::security::knowledge_delete::uninspected_boundary_refusal(
+            tool_name, evaluated, BOUNDARY,
+        ) {
+            return Some(("knowledge_delete_consent", refusal));
         }
         // Issue #56, the first-crossing disclosure, and the sharpest of the
         // three: an undisclosed write here does not merely escape ONE approval
