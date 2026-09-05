@@ -248,18 +248,37 @@ async fn analyze(
     // a retry cannot produce information the model does not have. It has to go
     // and ask.
     if user_description.is_none() && !evidence.is_conclusive() {
+        // The user's own recent prose, quoted back. The heuristic above already
+        // rejected it as a problem statement, but it is the model that can read
+        // it in context — and the failure being guarded against is a loop where
+        // the tool asks for something the user has already said.
+        let their_words = if evidence.recent_user_messages.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "What the user has said in this chat, most recent last:\n{}\n\n",
+                evidence
+                    .recent_user_messages
+                    .iter()
+                    .map(|message| format!("  > {message}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        };
         return text(format!(
             "I could not tell what went wrong from this chat on its own, so nothing has \
              been filed and nothing will be until you say what to report.\n\n\
-             {digest}\n\
-             ASK THE USER what they want to report, and be specific — name what you can \
-             see above and ask whether that is the problem, or whether it is something \
-             else (something looked wrong on screen, an answer was incorrect, the app was \
-             slow, a control did nothing). Then call this tool again with \
+             {digest}\n{their_words}\
+             If those messages ALREADY describe the problem, do not ask again — call this \
+             tool with `action: \"file\"` and put the user's own description in \
+             `description`.\n\n\
+             Otherwise ASK THE USER what they want to report, and be specific: name what \
+             you can see above and ask whether that is the problem, or whether it is \
+             something else (something looked wrong on screen, an answer was incorrect, \
+             the app was slow, a control did nothing). Then call this tool again with \
              `action: \"file\"`, a `title`, a `description`, and `steps` if they gave \
              them.\n\n\
-             Do NOT call `action: \"file\"` before they have answered, and do not invent \
-             a report from the failures above."
+             Do NOT invent a report from the failures above."
         ));
     }
 
@@ -374,8 +393,17 @@ pub async fn handle_report_bug(
     let conversation = conversation_for(session, session_manager.as_ref()).await?;
     let evidence = evidence::collect(session, &conversation);
     let scrubbed_working_dir = redact::scrub(&evidence.working_dir, home).text;
+    // ⚠ The transcript is the third source, and it is not a nicety. Measured
+    // live: asked *"Report a bug to BioRouter: the Auto Visualiser renders a
+    // blank panel for a single-row dataset"*, gpt-5.5 reached for this tool
+    // correctly and called it with `{"action": "analyze"}` and nothing else --
+    // so the tool asked the user to describe a problem they had described one
+    // message earlier. A model omitting an optional argument is the ordinary
+    // case; reading the user's own last message is how the tool stops depending
+    // on it.
     let user_description = string_arg(&arguments, "description")
-        .or_else(|| string_arg(&arguments, "user_description"));
+        .or_else(|| string_arg(&arguments, "user_description"))
+        .or_else(|| evidence::described_problem(&evidence.recent_user_messages));
 
     if Action::infer(&arguments) == Action::Analyze {
         return analyze(
@@ -771,7 +799,74 @@ mod tests {
         assert!(body.contains("nothing has been filed"), "{body}");
         assert!(body.contains("ASK THE USER"), "{body}");
         assert!(
-            body.contains("Do NOT call `action: \"file\"` before they have answered"),
+            body.contains("Do NOT invent a report from the failures above"),
+            "{body}"
+        );
+    }
+
+    /// ⚠ Measured live, then pinned. gpt-5.5 called this tool with
+    /// `{"action": "analyze"}` and nothing else while the user's description
+    /// sat one message above, and the tool asked them to describe a problem
+    /// they had just described.
+    #[tokio::test]
+    async fn the_users_own_message_stands_in_for_the_argument_the_model_omitted() {
+        let (_dir, manager, session) = session_with_failures(0).await;
+        manager
+            .add_message(
+                &session.id,
+                &Message::user().with_text(
+                    "Report a bug to BioRouter: when I ask for a chart of a one-row \
+                     dataset the artifact panel renders completely blank.",
+                ),
+            )
+            .await
+            .unwrap();
+
+        let result = handle_report_bug(
+            args(serde_json::json!({"action": "analyze"})),
+            &session,
+            manager,
+            None,
+        )
+        .await;
+        let body = body_of(&result);
+        assert!(
+            body.contains("The user is reporting"),
+            "the user described the problem; asking again is a loop: {body}"
+        );
+        assert!(
+            body.contains("the artifact panel renders completely blank"),
+            "{body}"
+        );
+        assert!(!body.contains("ASK THE USER"), "{body}");
+    }
+
+    /// A bare "report a bug" still gets the question — and now sees the user's
+    /// own words quoted back, so a case the heuristic misses is recoverable by
+    /// the model's own judgement rather than lost.
+    #[tokio::test]
+    async fn a_bare_request_still_asks_but_shows_the_model_what_was_said() {
+        let (_dir, manager, session) = session_with_failures(0).await;
+        manager
+            .add_message(&session.id, &Message::user().with_text("report a bug"))
+            .await
+            .unwrap();
+
+        let result = handle_report_bug(
+            args(serde_json::json!({"action": "analyze"})),
+            &session,
+            manager,
+            None,
+        )
+        .await;
+        let body = body_of(&result);
+        assert!(body.contains("ASK THE USER"), "{body}");
+        assert!(
+            body.contains("> report a bug"),
+            "the user's own words must be quoted back: {body}"
+        );
+        assert!(
+            body.contains("If those messages ALREADY describe"),
             "{body}"
         );
     }

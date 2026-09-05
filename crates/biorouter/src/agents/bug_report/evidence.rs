@@ -354,6 +354,65 @@ pub fn failures_in(conversation: &Conversation) -> (Vec<ToolFailure>, usize, usi
     (collected, total_failed, total_calls, externalized)
 }
 
+/// Phrases that carry no information about the bug, only the request to file
+/// one. Lower-case, matched as a prefix after trimming punctuation.
+const TRIGGER_PHRASES: &[&str] = &[
+    "report a bug to biorouter",
+    "report a bug in biorouter",
+    "file an issue with biorouter",
+    "report a problem to biorouter",
+    "report a bug",
+    "report this bug",
+    "file a bug report",
+    "file a bug",
+    "file an issue",
+    "report an issue",
+    "report a problem",
+    "report this",
+    "biorouter",
+];
+
+/// How much has to be left after the trigger phrase for it to be a description.
+///
+/// A sentence, roughly. Short enough that "the chart panel is blank" counts,
+/// long enough that "yes", "please" and "the app" do not.
+const DESCRIPTION_FLOOR_CHARS: usize = 30;
+
+/// What the user said the problem is, taken from their own last message.
+///
+/// ⚠ Exists because of a measured live failure, not a hypothetical. Asked
+/// *"Report a bug to BioRouter: the Auto Visualiser renders a blank panel for a
+/// single-row dataset"*, gpt-5.5 reached for the tool correctly and called it
+/// with `{"action": "analyze"}` — no `description`, though the parameter is
+/// documented and the user's words were one message above. The tool then asked
+/// the user to describe a problem they had just described. A model that omits
+/// an optional argument is the ordinary case, so the tool reads the transcript
+/// rather than depending on it.
+///
+/// Returns `None` for a bare trigger ("report a bug"), which genuinely carries
+/// nothing and genuinely needs the question.
+pub fn described_problem(recent_user_messages: &[String]) -> Option<String> {
+    let last = recent_user_messages.last()?;
+    let trimmed = last.trim();
+    let lowered = trimmed.to_ascii_lowercase();
+
+    // Longest phrase first, so "report a bug to biorouter" is not consumed as
+    // "report a bug" leaving " to biorouter" behind.
+    let mut best = trimmed;
+    for phrase in TRIGGER_PHRASES {
+        if let Some(rest) = lowered.strip_prefix(phrase) {
+            let cut = trimmed.len() - rest.len();
+            let candidate = trimmed[cut..].trim_start_matches([':', ',', '-', '—', '.', ' ']);
+            if candidate.len() < best.len() {
+                best = candidate;
+            }
+        }
+    }
+
+    let best = best.trim();
+    (best.chars().count() >= DESCRIPTION_FLOOR_CHARS).then(|| best.to_string())
+}
+
 /// The user's own recent prose, most recent last.
 fn recent_user_text(conversation: &Conversation) -> Vec<String> {
     let mut out: Vec<String> = conversation
@@ -702,6 +761,69 @@ mod tests {
         ]);
         let headline = evidence.headline().unwrap();
         assert!(headline.contains("internal"), "{headline}");
+    }
+
+    /// ⚠ From a live run, not from imagination. gpt-5.5 called this tool with
+    /// `{"action": "analyze"}` and nothing else while the user's description
+    /// sat one message above it, and the tool asked them to describe a problem
+    /// they had just described.
+    #[test]
+    fn the_users_own_last_message_supplies_the_description_the_model_omitted() {
+        let described = described_problem(&[
+            "hello".to_string(),
+            "Report a bug to BioRouter: when I ask the Auto Visualiser for a chart of a \
+             dataset with only one row, the artifact panel renders blank."
+                .to_string(),
+        ])
+        .expect("a described problem is recognised");
+        assert!(
+            described.starts_with("when I ask the Auto Visualiser"),
+            "{described}"
+        );
+        assert!(
+            !described.to_lowercase().contains("report a bug"),
+            "{described}"
+        );
+    }
+
+    /// ⚠ The longest trigger wins, or "report a bug to biorouter" leaves
+    /// " to biorouter" behind and the tool reports that as the bug.
+    #[test]
+    fn the_longest_trigger_phrase_is_the_one_stripped() {
+        let described = described_problem(&[
+            "report a bug to biorouter — the sidebar will not resize below 1200 pixels".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(described, "the sidebar will not resize below 1200 pixels");
+    }
+
+    /// A bare trigger carries nothing, and must still produce the question.
+    #[test]
+    fn a_bare_request_is_not_a_description() {
+        for bare in [
+            "report a bug",
+            "report a bug.",
+            "file an issue",
+            "biorouter: report a bug",
+            "report a bug please",
+        ] {
+            assert!(
+                described_problem(&[bare.to_string()]).is_none(),
+                "`{bare}` carries no problem statement"
+            );
+        }
+        assert!(described_problem(&[]).is_none());
+    }
+
+    /// A message that never mentions filing at all is still a description --
+    /// "the panel is blank, tell someone" arrives that way.
+    #[test]
+    fn prose_with_no_trigger_at_all_still_counts() {
+        assert_eq!(
+            described_problem(&["The artifact panel is blank for one-row datasets.".to_string()])
+                .as_deref(),
+            Some("The artifact panel is blank for one-row datasets.")
+        );
     }
 
     #[test]
